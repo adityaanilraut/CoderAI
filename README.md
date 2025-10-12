@@ -1,2 +1,166 @@
-# CoderAI
-Coding Agent CLI Tool
+# CoderAI - Intelligent Coding Agent CLI
+
+A powerful coding agent CLI tool similar to Claude Code and Gemini CLI, featuring MCP (Model Context Protocol) tools, beautiful Rich terminal UI, and support for multiple LLM backends.
+
+## Features
+
+- **Rich Terminal UI**: Beautiful syntax highlighting, progress indicators, tables, and panels
+- **Multiple LLM Support**: GPT-5, GPT-5-mini, GPT-5-nano, and LM Studio local models
+- **Dynamic Model Switching**: Change models mid-conversation without losing context
+- **Comprehensive MCP Tools**:
+  - File operations (read, write, search, replace)
+  - Terminal command execution
+  - Git operations (status, diff, commit, log)
+  - Codebase search (semantic and grep)
+  - Web search for documentation
+  - Knowledge base and memory
+- **Dual Modes**: Interactive chat and single-shot commands
+- **Advanced Session Management**: 
+  - Persistent conversation history
+  - Context clearing and resetting
+  - Session export to JSON
+  - Resume previous sessions
+- **Streaming Responses**: Real-time token-by-token display
+- **Rich Command System**: 15+ interactive commands for full control
+- **System Diagnostics**: Status monitoring, token usage, and configuration viewing
+
+## Installation
+
+```bash
+pip install -e .
+```
+
+## Quick Start
+
+```bash
+# Interactive mode (default)
+coderAI chat
+
+# Single-shot mode
+coderAI "fix the bug in app.py"
+
+# Use specific model
+coderAI --model gpt-5-mini chat
+
+# Use local LM Studio
+coderAI --model lmstudio chat
+
+# Resume previous session
+coderAI --resume SESSION_ID
+```
+
+## Configuration
+
+Configure API keys and preferences:
+
+```bash
+# Set OpenAI API key
+coderAI config set openai_key YOUR_API_KEY
+
+# Show current configuration
+coderAI config show
+
+# Set default model
+coderAI config set default_model gpt-5-mini
+
+# Configure LM Studio endpoint
+coderAI config set lmstudio_endpoint http://localhost:1234/v1
+```
+
+Configuration is stored at `~/.coderAI/config.json`. You can also use environment variables:
+
+- `OPENAI_API_KEY`: OpenAI API key
+- `LMSTUDIO_ENDPOINT`: LM Studio API endpoint
+- `CODERAI_DEFAULT_MODEL`: Default model to use
+
+## Commands
+
+### CLI Commands
+
+```bash
+# Basic Usage
+coderAI chat                    # Interactive mode
+coderAI "your prompt"           # Single-shot mode
+coderAI --model MODEL chat      # Use specific model
+
+# Model Management
+coderAI models                  # List available models
+coderAI set-model gpt-5-mini    # Set default model
+
+# Configuration
+coderAI config set KEY VALUE    # Set configuration
+coderAI config show             # Show configuration
+coderAI config reset            # Reset to defaults
+
+# History Management
+coderAI history list            # List conversation sessions
+coderAI history delete ID       # Delete specific session
+coderAI history clear           # Clear all history
+
+# System
+coderAI status                  # Show system status
+coderAI info                    # Show agent info
+coderAI setup                   # Run setup wizard
+coderAI --version               # Show version
+coderAI --help                  # Show help
+```
+
+### Interactive Chat Commands
+
+Inside a chat session, use these commands (starting with `/`):
+
+```bash
+/help            # Show help message
+/clear           # Clear screen
+/clear-context   # Clear conversation context
+/change-model    # Switch model/provider
+/model           # Show current model info
+/providers       # List available providers
+/status          # Show session status
+/tools           # List available tools
+/config          # Show configuration
+/tokens          # Show token usage
+/save            # Manually save session
+/export          # Export conversation to JSON
+/history         # Show conversation history
+/exit            # Exit chat
+```
+
+**📚 For detailed documentation, see [COMMANDS.md](COMMANDS.md)**
+
+## Available Models
+
+- `gpt-5`: GPT-5 (most capable)
+- `gpt-5-mini`: GPT-5 Mini (balanced)
+- `gpt-5-nano`: GPT-5 Nano (fastest)
+- `lmstudio`: Local LM Studio model
+
+## Examples
+
+### Interactive Mode
+
+```bash
+$ coderAI chat
+CoderAI> Create a Python web server using Flask
+
+[Agent proceeds to create files, install dependencies, etc.]
+```
+
+### Single-shot Mode
+
+```bash
+$ coderAI "analyze the performance of my app"
+[Analysis results displayed with Rich formatting]
+```
+
+### Using Local Models
+
+```bash
+# Start LM Studio with a model, then:
+$ coderAI --model lmstudio chat
+```
+
+## License
+
+MIT License
+
