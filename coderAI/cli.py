@@ -266,9 +266,11 @@ def setup():
     display.print("   For using local models with LM Studio")
     use_lmstudio = click.confirm("   Configure LM Studio?", default=False)
     if use_lmstudio:
-        endpoint = click.prompt("   LM Studio endpoint", default="http://localhost:1234/v1")
+        endpoint = click.prompt("   LM Studio server URL", default="http://localhost:1234/v1")
         config_manager.set("lmstudio_endpoint", endpoint)
-        display.print_success("   LM Studio endpoint saved")
+        model = click.prompt("   LM Studio model name (optional)", default="local-model", show_default=True)
+        config_manager.set("lmstudio_model", model)
+        display.print_success("   LM Studio configuration saved")
     display.print()
     
     display.print_success("Setup complete! Run 'coderAI chat' to start.")

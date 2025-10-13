@@ -11,13 +11,13 @@ class LMStudioProvider(LLMProvider):
     """LM Studio local LLM provider using OpenAI-compatible API."""
 
     def __init__(
-        self, model: str = "qwen/qwen3-4b-2507", endpoint: str = "http://10.0.0.34:1234/v1", **kwargs
+        self, model: str = "local-model", endpoint: str = "http://localhost:1234/v1", **kwargs
     ):
         """Initialize LM Studio provider.
 
         Args:
             model: Model name (not strictly required for LM Studio)
-            endpoint: LM Studio API endpoint
+            endpoint: LM Studio API endpoint (default: http://localhost:1234/v1)
             **kwargs: Additional options
         """
         super().__init__(model, None, **kwargs)

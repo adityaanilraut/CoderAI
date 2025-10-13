@@ -15,8 +15,8 @@ class Config(BaseModel):
     default_model: str = Field(default="lmstudio")
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: Optional[int] = Field(default=4096)
-    lmstudio_endpoint: str = Field(default="http://10.0.0.34:1234/v1")
-    lmstudio_model: str = Field(default="qwen/qwen3-4b-2507")
+    lmstudio_endpoint: str = Field(default="http://localhost:1234/v1")
+    lmstudio_model: str = Field(default="local-model")
     web_search_api_key: Optional[str] = Field(default=None)
     web_search_engine: str = Field(default="duckduckgo")  # or 'google', 'bing'
     streaming: bool = Field(default=True)
