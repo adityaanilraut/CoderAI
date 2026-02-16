@@ -2,6 +2,7 @@
 
 import json
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -13,7 +14,7 @@ class Message(BaseModel):
     """A single message in the conversation."""
 
     role: str  # 'user', 'assistant', 'system', 'tool'
-    content: str
+    content: Optional[str] = None
     timestamp: float = Field(default_factory=time.time)
     tool_calls: Optional[List[Dict[str, Any]]] = None
     tool_call_id: Optional[str] = None
@@ -62,7 +63,7 @@ class HistoryManager:
 
     def create_session(self, model: str = "gpt-5-mini") -> Session:
         """Create a new session."""
-        session_id = f"session_{int(time.time())}_{id(self)}"
+        session_id = f"session_{int(time.time())}_{uuid.uuid4().hex[:8]}"
         self.current_session = Session(session_id=session_id, model=model)
         return self.current_session
 

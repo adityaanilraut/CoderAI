@@ -28,8 +28,8 @@ class GitStatusTool(Tool):
     async def execute(self, repo_path: str = ".") -> Dict[str, Any]:
         """Get git status."""
         try:
-            process = await asyncio.create_subprocess_shell(
-                "git status --porcelain -b",
+            process = await asyncio.create_subprocess_exec(
+                "git", "status", "--porcelain", "-b",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=repo_path,
@@ -84,14 +84,14 @@ class GitDiffTool(Tool):
     ) -> Dict[str, Any]:
         """Get git diff."""
         try:
-            cmd = "git diff"
+            cmd = ["git", "diff"]
             if staged:
-                cmd += " --cached"
+                cmd.append("--cached")
             if file_path:
-                cmd += f" {file_path}"
+                cmd.append(file_path)
 
-            process = await asyncio.create_subprocess_shell(
-                cmd,
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=repo_path,
@@ -140,12 +140,9 @@ class GitCommitTool(Tool):
     async def execute(self, message: str, repo_path: str = ".") -> Dict[str, Any]:
         """Create git commit."""
         try:
-            # Escape message for shell
-            escaped_message = message.replace('"', '\\"')
-            cmd = f'git commit -m "{escaped_message}"'
-
-            process = await asyncio.create_subprocess_shell(
-                cmd,
+            # Use create_subprocess_exec to avoid shell injection
+            process = await asyncio.create_subprocess_exec(
+                "git", "commit", "-m", message,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=repo_path,
@@ -189,10 +186,8 @@ class GitLogTool(Tool):
     async def execute(self, repo_path: str = ".", limit: int = 10) -> Dict[str, Any]:
         """Get git log."""
         try:
-            cmd = f"git log --oneline -n {limit}"
-
-            process = await asyncio.create_subprocess_shell(
-                cmd,
+            process = await asyncio.create_subprocess_exec(
+                "git", "log", "--oneline", "-n", str(limit),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=repo_path,
@@ -213,4 +208,3 @@ class GitLogTool(Tool):
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
-

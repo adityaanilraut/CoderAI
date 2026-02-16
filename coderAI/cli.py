@@ -1,6 +1,7 @@
 """CLI entry point for CoderAI."""
 
 import asyncio
+import logging
 import sys
 from pathlib import Path
 
@@ -15,11 +16,12 @@ from .ui.interactive import interactive_chat
 
 
 @click.group(invoke_without_command=True)
-@click.option("--model", "-m", help="Model to use (gpt-5, gpt-5-mini, gpt-5-nano, lmstudio)")
+@click.option("--model", "-m", help="Model to use (gpt-5, gpt-5-mini, claude-4-sonnet, lmstudio)")
 @click.option("--resume", "-r", help="Resume a previous session by ID")
 @click.option("--version", "-v", is_flag=True, help="Show version")
+@click.option("--verbose", is_flag=True, help="Enable verbose/debug logging")
 @click.pass_context
-def cli(ctx, model, resume, version):
+def cli(ctx, model, resume, version, verbose):
     """CoderAI - Intelligent Coding Agent CLI Tool.
 
     Run 'coderAI chat' for interactive mode or provide a prompt directly.
@@ -27,6 +29,17 @@ def cli(ctx, model, resume, version):
     if version:
         click.echo(f"CoderAI version {__version__}")
         sys.exit(0)
+
+    # Set up logging if verbose
+    if verbose:
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        )
+    
+    # Store options in context for subcommands
+    ctx.ensure_object(dict)
+    ctx.obj["verbose"] = verbose
 
     # If no subcommand, default to chat
     if ctx.invoked_subcommand is None:
@@ -72,14 +85,15 @@ async def _run_chat(model, resume):
                     return {}
                 
                 # Validate model name
-                valid_models = ["gpt-5", "gpt-5-mini", "gpt-5-nano", "lmstudio"]
+                valid_models = list(agent.provider.SUPPORTED_MODELS.keys()) if hasattr(agent.provider, 'SUPPORTED_MODELS') else []
+                valid_models.extend(["lmstudio", "claude-4-sonnet", "claude-3.5-sonnet", "claude-3.5-haiku", "claude-3-opus"])
+                
                 if user_input not in valid_models:
                     display.print_error(f"Invalid model: {user_input}")
                     display.print_info(f"Valid models: {', '.join(valid_models)}")
                     return {}
                 
                 # Change model
-                nonlocal agent
                 old_model = agent.model
                 agent.model = user_input
                 agent.provider = agent._create_provider()
@@ -246,23 +260,32 @@ def setup():
     
     # OpenAI API Key
     display.print("[bold]1. OpenAI API Key[/bold]")
-    display.print("   Required for using GPT-5 models")
+    display.print("   Required for using GPT models")
     api_key = click.prompt("   Enter your OpenAI API key (or press Enter to skip)", default="", show_default=False)
     if api_key:
         config_manager.set("openai_api_key", api_key)
         display.print_success("   OpenAI API key saved")
     display.print()
     
+    # Anthropic API Key
+    display.print("[bold]2. Anthropic API Key[/bold]")
+    display.print("   Required for using Claude models")
+    anthropic_key = click.prompt("   Enter your Anthropic API key (or press Enter to skip)", default="", show_default=False)
+    if anthropic_key:
+        config_manager.set("anthropic_api_key", anthropic_key)
+        display.print_success("   Anthropic API key saved")
+    display.print()
+    
     # Default Model
-    display.print("[bold]2. Default Model[/bold]")
-    display.print("   Available: gpt-5, gpt-5-mini, gpt-5-nano, lmstudio")
+    display.print("[bold]3. Default Model[/bold]")
+    display.print("   Available: gpt-5, gpt-5-mini, claude-4-sonnet, claude-3.5-sonnet, lmstudio")
     model = click.prompt("   Enter default model", default="gpt-5-mini")
     config_manager.set("default_model", model)
     display.print_success(f"   Default model set to {model}")
     display.print()
     
     # LM Studio (optional)
-    display.print("[bold]3. LM Studio Configuration (Optional)[/bold]")
+    display.print("[bold]4. LM Studio Configuration (Optional)[/bold]")
     display.print("   For using local models with LM Studio")
     use_lmstudio = click.confirm("   Configure LM Studio?", default=False)
     if use_lmstudio:
@@ -282,10 +305,22 @@ def models():
     display.print_header("Available Models and Providers")
     
     display.print("\n[bold cyan]OpenAI Provider[/bold cyan]")
-    display.print("  • [yellow]gpt-5[/yellow] - Most capable model")
-    display.print("  • [yellow]gpt-5-mini[/yellow] - Balanced performance and cost")
-    display.print("  • [yellow]gpt-5-nano[/yellow] - Fast and efficient")
+    display.print("  • [yellow]gpt-5[/yellow] - GPT-5 (most capable, multimodal)")
+    display.print("  • [yellow]gpt-5-mini[/yellow] - GPT-5 Mini (balanced performance and cost)")
+    display.print("  • [yellow]gpt-4-turbo[/yellow] - GPT-4 Turbo (fast, 128k context)")
+    display.print("  • [yellow]gpt-4[/yellow] - GPT-4 (original)")
+    display.print("  • [yellow]gpt-3.5-turbo[/yellow] - GPT-3.5 Turbo (fastest, cheapest)")
+    display.print("  • [yellow]o1[/yellow] - o1 (reasoning model)")
+    display.print("  • [yellow]o1-mini[/yellow] - o1 Mini (fast reasoning)")
+    display.print("  • [yellow]o3-mini[/yellow] - o3 Mini (latest reasoning)")
     display.print("\n  [dim]Requires: OpenAI API key[/dim]")
+    
+    display.print("\n[bold cyan]Anthropic Provider[/bold cyan]")
+    display.print("  • [yellow]claude-4-sonnet[/yellow] - Claude 4 Sonnet (latest, most capable)")
+    display.print("  • [yellow]claude-3.5-sonnet[/yellow] - Claude 3.5 Sonnet (excellent coding)")
+    display.print("  • [yellow]claude-3.5-haiku[/yellow] - Claude 3.5 Haiku (fast, affordable)")
+    display.print("  • [yellow]claude-3-opus[/yellow] - Claude 3 Opus (most creative)")
+    display.print("\n  [dim]Requires: Anthropic API key[/dim]")
     
     display.print("\n[bold cyan]LM Studio Provider[/bold cyan]")
     display.print("  • [yellow]lmstudio[/yellow] - Use any local model")
@@ -300,7 +335,10 @@ def models():
 @click.argument("model_name")
 def set_model(model_name):
     """Set default model for new sessions."""
-    valid_models = ["gpt-5", "gpt-5-mini", "gpt-5-nano", "lmstudio"]
+    from .llm.openai import OpenAIProvider
+    from .llm.anthropic import MODEL_ALIASES
+    
+    valid_models = list(OpenAIProvider.SUPPORTED_MODELS.keys()) + list(MODEL_ALIASES.keys()) + ["lmstudio"]
     
     if model_name not in valid_models:
         display.print_error(f"Invalid model: {model_name}")
@@ -310,6 +348,22 @@ def set_model(model_name):
     
     config_manager.set("default_model", model_name)
     display.print_success(f"Default model set to: {model_name}")
+
+
+@cli.command()
+def cost():
+    """Show API cost tracking for the current session."""
+    display.print_header("API Cost Tracking")
+    display.print_info("Cost tracking is available during active chat sessions.")
+    display.print_info("Use '/tokens' in chat to see current session costs.")
+    display.print()
+    display.print("[dim]Per-model pricing (per 1K tokens):[/dim]")
+    display.print("  [yellow]gpt-5[/yellow]:         $0.0025 input / $0.01 output")
+    display.print("  [yellow]gpt-5-mini[/yellow]:    $0.00015 input / $0.0006 output")
+    display.print("  [yellow]claude-4-sonnet[/yellow]: $0.003 input / $0.015 output")
+    display.print("  [yellow]claude-3.5-sonnet[/yellow]: $0.003 input / $0.015 output")
+    display.print("  [yellow]lmstudio[/yellow]:       Free (local)")
+    display.print()
 
 
 @cli.command()
@@ -324,6 +378,7 @@ def status():
     display.print(f"  Default model: [yellow]{config.default_model}[/yellow]")
     display.print(f"  Streaming: {config.streaming}")
     display.print(f"  Save history: {config.save_history}")
+    display.print(f"  Log level: {config.log_level}")
     
     # Check OpenAI
     display.print("\n[bold cyan]OpenAI Provider:[/bold cyan]")
@@ -332,6 +387,14 @@ def status():
     else:
         display.print("  ✗ API key not configured")
         display.print("    [dim]Run 'coderAI setup' or 'coderAI config set openai_api_key YOUR_KEY'[/dim]")
+    
+    # Check Anthropic
+    display.print("\n[bold cyan]Anthropic Provider:[/bold cyan]")
+    if config.anthropic_api_key:
+        display.print("  ✓ API key configured")
+    else:
+        display.print("  ✗ API key not configured")
+        display.print("    [dim]Run 'coderAI setup' or 'coderAI config set anthropic_api_key YOUR_KEY'[/dim]")
     
     # Check LM Studio
     display.print("\n[bold cyan]LM Studio Provider:[/bold cyan]")
@@ -352,7 +415,7 @@ def main():
     """Main entry point."""
     # Check if a prompt was provided as a positional argument (not a subcommand)
     if len(sys.argv) > 1 and not sys.argv[1].startswith("-") and sys.argv[1] not in [
-        "chat", "ask", "config", "history", "info", "setup", "models", "set-model", "status"
+        "chat", "ask", "config", "history", "info", "setup", "models", "set-model", "status", "cost"
     ]:
         # Treat as a single-shot prompt
         prompt = " ".join(sys.argv[1:])
@@ -363,4 +426,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

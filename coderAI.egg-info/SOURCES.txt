@@ -7,6 +7,7 @@ coderAI/agent.py
 coderAI/cli.py
 coderAI/config.py
 coderAI/history.py
+coderAI/system_prompt.py
 coderAI.egg-info/PKG-INFO
 coderAI.egg-info/SOURCES.txt
 coderAI.egg-info/dependency_links.txt
@@ -14,6 +15,7 @@ coderAI.egg-info/entry_points.txt
 coderAI.egg-info/requires.txt
 coderAI.egg-info/top_level.txt
 coderAI/llm/__init__.py
+coderAI/llm/anthropic.py
 coderAI/llm/base.py
 coderAI/llm/lmstudio.py
 coderAI/llm/openai.py
@@ -21,11 +23,15 @@ coderAI/tools/__init__.py
 coderAI/tools/base.py
 coderAI/tools/filesystem.py
 coderAI/tools/git.py
+coderAI/tools/mcp.py
 coderAI/tools/memory.py
+coderAI/tools/project.py
 coderAI/tools/search.py
 coderAI/tools/terminal.py
+coderAI/tools/undo.py
 coderAI/tools/web.py
 coderAI/ui/__init__.py
 coderAI/ui/display.py
 coderAI/ui/interactive.py
 coderAI/ui/streaming.py
+tests/test_coderAI.py

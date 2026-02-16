@@ -13,17 +13,20 @@ This guide will help you install and set up CoderAI on your system.
 ### Method 1: Install from Source (Recommended for Development)
 
 1. **Clone or navigate to the repository:**
+
    ```bash
    cd /Users/aditya/Desktop/vibe/coderAI
    ```
 
 2. **Create a virtual environment (recommended):**
+
    ```bash
    python3 -m venv venv
    source venv/bin/activate  # On Windows: venv\Scripts\activate
    ```
 
 3. **Install in development mode:**
+
    ```bash
    pip install -e .
    ```
@@ -44,6 +47,7 @@ pip install rich click openai requests pydantic aiohttp tiktoken python-dotenv p
 ```
 
 Then install the package:
+
 ```bash
 pip install -e .
 ```
@@ -69,6 +73,7 @@ coderAI setup
 ```
 
 This will guide you through:
+
 1. Setting your OpenAI API key
 2. Choosing a default model
 3. Configuring LM Studio (optional)
@@ -76,16 +81,19 @@ This will guide you through:
 ### Manual Setup
 
 1. **Set your OpenAI API key:**
+
    ```bash
    coderAI config set openai_api_key YOUR_API_KEY
    ```
 
    Or use an environment variable:
+
    ```bash
    export OPENAI_API_KEY="your-api-key-here"
    ```
 
 2. **Set default model (optional):**
+
    ```bash
    coderAI config set default_model gpt-5-mini
    ```
@@ -120,31 +128,79 @@ CoderAI stores configuration and history in `~/.coderAI/`:
 
 ## Using Local Models with LM Studio
 
-If you want to use local models instead of OpenAI:
+You can run CoderAI with local LLMs using [LM Studio](https://lmstudio.ai/).
 
-1. **Download and install LM Studio:**
-   - Visit https://lmstudio.ai/
-   - Download for your platform (Windows, macOS, Linux)
-   - Install and launch LM Studio
+### 1. Prerequisites
 
-2. **Load a model:**
-   - In LM Studio, browse and download a model (e.g., Llama 2, Mistral)
-   - Load the model
+1.  **Download and Install LM Studio**: Visit https://lmstudio.ai/
+2.  **Load a Model**: In LM Studio, search for and download a model (e.g., Llama 3, Mistral, Qwen).
+3.  **Start Local Server**: In LM Studio, go to the "Local Server" tab and click "Start Server".
+    - Default endpoint: `http://localhost:1234/v1`
 
-3. **Start the local server:**
-   - In LM Studio, go to the "Local Server" tab
-   - Click "Start Server"
-   - Note the endpoint (usually http://localhost:1234/v1)
+### 2. Configuration Methods
 
-4. **Configure CoderAI:**
-   ```bash
-   coderAI config set lmstudio_endpoint http://localhost:1234/v1
-   ```
+#### Method A: Using CLI (Recommended)
 
-5. **Use with CoderAI:**
-   ```bash
-   coderAI --model lmstudio chat
-   ```
+Configure the server URL:
+
+```bash
+coderAI config set lmstudio_endpoint http://localhost:1234/v1
+```
+
+Optionally, set a specific model name (default is `local-model`):
+
+```bash
+coderAI config set lmstudio_model your-model-name
+```
+
+#### Method B: Interactive Setup
+
+Run the wizard and follow the prompts:
+
+```bash
+coderAI setup
+```
+
+#### Method C: Environment Variables
+
+```bash
+export LMSTUDIO_ENDPOINT="http://localhost:1234/v1"
+coderAI --model lmstudio chat
+```
+
+### 3. Verification
+
+Check your configuration:
+
+```bash
+coderAI status
+```
+
+### 4. Usage
+
+Start a chat session with the local model:
+
+```bash
+coderAI --model lmstudio chat
+```
+
+## Troubleshooting
+
+### Connection Errors
+
+If you see "Cannot connect to host", verify:
+
+1.  LM Studio server is running (Green indicator in LM Studio).
+2.  The endpoint URL is correct in `coderAI config show`.
+3.  You can reach the server: `curl http://localhost:1234/v1/models`
+
+### Model Errors
+
+If LM Studio complains about the model name, set it to match the loaded model:
+
+```bash
+coderAI config set lmstudio_model expected-model-name
+```
 
 ## Testing Your Installation
 
@@ -169,6 +225,7 @@ coderAI chat
 ```
 
 Try some commands:
+
 - `Hello, can you help me code?`
 - `/help` - Show help
 - `/exit` - Exit
@@ -180,11 +237,13 @@ Try some commands:
 If you get `coderAI: command not found`:
 
 1. Make sure you're in the virtual environment:
+
    ```bash
    source venv/bin/activate
    ```
 
 2. Reinstall:
+
    ```bash
    pip install -e .
    ```
@@ -207,11 +266,13 @@ pip install --upgrade -r requirements.txt
 If you get authentication errors:
 
 1. Verify your API key:
+
    ```bash
    coderAI config show
    ```
 
 2. Set it again:
+
    ```bash
    coderAI config set openai_api_key YOUR_KEY
    ```
@@ -227,11 +288,13 @@ If you get authentication errors:
 If LM Studio isn't working:
 
 1. Verify LM Studio is running:
+
    ```bash
    curl http://localhost:1234/v1/models
    ```
 
 2. Check the endpoint:
+
    ```bash
    coderAI config show
    ```
@@ -302,7 +365,7 @@ After installation:
 ## Support
 
 For issues or questions:
+
 - Check the troubleshooting section above
 - Review the examples in EXAMPLES.md
 - Check system info: `coderAI info`
-

@@ -2,6 +2,7 @@
 
 import json
 import os
+import stat
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -12,6 +13,7 @@ class Config(BaseModel):
     """Configuration model for CoderAI."""
 
     openai_api_key: Optional[str] = Field(default=None)
+    anthropic_api_key: Optional[str] = Field(default=None)
     default_model: str = Field(default="lmstudio")
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: Optional[int] = Field(default=4096)
@@ -22,6 +24,7 @@ class Config(BaseModel):
     streaming: bool = Field(default=True)
     save_history: bool = Field(default=True)
     context_window: int = Field(default=128000)
+    log_level: str = Field(default="WARNING")  # DEBUG, INFO, WARNING, ERROR
 
     class Config:
         """Pydantic config."""
@@ -53,11 +56,13 @@ class ConfigManager:
         # Override with environment variables
         env_mappings = {
             "OPENAI_API_KEY": "openai_api_key",
+            "ANTHROPIC_API_KEY": "anthropic_api_key",
             "CODERAI_DEFAULT_MODEL": "default_model",
             "CODERAI_TEMPERATURE": "temperature",
             "CODERAI_MAX_TOKENS": "max_tokens",
             "LMSTUDIO_ENDPOINT": "lmstudio_endpoint",
             "WEB_SEARCH_API_KEY": "web_search_api_key",
+            "CODERAI_LOG_LEVEL": "log_level",
         }
 
         for env_var, config_key in env_mappings.items():
@@ -74,7 +79,7 @@ class ConfigManager:
         return self._config
 
     def save(self, config: Optional[Config] = None) -> None:
-        """Save configuration to file."""
+        """Save configuration to file with restricted permissions."""
         if config is None:
             config = self._config
         if config is None:
@@ -82,6 +87,13 @@ class ConfigManager:
 
         with open(self.config_file, "w") as f:
             json.dump(config.model_dump(exclude_none=True), f, indent=2)
+
+        # Set file permissions to owner-only read/write (0600)
+        # This protects API keys from being read by other users
+        try:
+            self.config_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        except OSError:
+            pass  # May fail on some filesystems, not critical
 
     def set(self, key: str, value: Any) -> None:
         """Set a configuration value."""
@@ -100,10 +112,9 @@ class ConfigManager:
         config = self.load()
         data = config.model_dump(exclude_none=True)
         # Mask sensitive data
-        if "openai_api_key" in data and data["openai_api_key"]:
-            data["openai_api_key"] = f"{data['openai_api_key'][:8]}...{data['openai_api_key'][-4:]}"
-        if "web_search_api_key" in data and data["web_search_api_key"]:
-            data["web_search_api_key"] = f"{data['web_search_api_key'][:8]}...{data['web_search_api_key'][-4:]}"
+        for key in ["openai_api_key", "anthropic_api_key", "web_search_api_key"]:
+            if key in data and data[key]:
+                data[key] = f"{data[key][:8]}...{data[key][-4:]}"
         return data
 
     def reset(self) -> None:
@@ -115,4 +126,3 @@ class ConfigManager:
 
 # Global config manager instance
 config_manager = ConfigManager()
-

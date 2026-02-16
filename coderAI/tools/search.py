@@ -8,11 +8,11 @@ from typing import Any, Dict, List
 from .base import Tool
 
 
-class CodebaseSearchTool(Tool):
-    """Tool for semantic codebase search."""
+class TextSearchTool(Tool):
+    """Tool for text-based codebase search."""
 
-    name = "codebase_search"
-    description = "Search the codebase for code patterns or text"
+    name = "text_search"
+    description = "Search the codebase for text patterns or code snippets"
 
     def get_parameters(self) -> Dict[str, Any]:
         """Get parameters schema."""
@@ -146,17 +146,18 @@ class GrepTool(Tool):
         case_insensitive: bool = False,
         recursive: bool = True,
     ) -> Dict[str, Any]:
-        """Execute grep search."""
+        """Execute grep search using create_subprocess_exec to avoid shell injection."""
         try:
-            cmd = "grep"
+            cmd = ["grep", "-n"]
             if case_insensitive:
-                cmd += " -i"
+                cmd.append("-i")
             if recursive:
-                cmd += " -r"
-            cmd += f" -n '{pattern}' {path}"
+                cmd.append("-r")
+            cmd.append(pattern)
+            cmd.append(path)
 
-            process = await asyncio.create_subprocess_shell(
-                cmd,
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -186,4 +187,3 @@ class GrepTool(Tool):
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
-

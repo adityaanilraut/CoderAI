@@ -7,12 +7,44 @@ from typing import Any, Dict
 
 from .base import Tool
 
+# Maximum file size (1 MB) that can be read at once
+MAX_FILE_SIZE = 1_048_576
+
+# Maximum number of glob results to prevent context overflow
+MAX_GLOB_RESULTS = 200
+
+# Paths that tools should never write to
+PROTECTED_PATHS = [
+    ".ssh",
+    ".gnupg",
+    ".aws",
+    ".config/gcloud",
+    ".kube",
+    ".docker",
+    ".bash_history",
+    ".zsh_history",
+]
+
+
+def _is_path_protected(path: Path) -> bool:
+    """Check if a path targets a protected location."""
+    resolved = path.resolve()
+    home = Path.home()
+    for protected in PROTECTED_PATHS:
+        protected_path = (home / protected).resolve()
+        try:
+            resolved.relative_to(protected_path)
+            return True
+        except ValueError:
+            continue
+    return False
+
 
 class ReadFileTool(Tool):
     """Tool for reading file contents."""
 
     name = "read_file"
-    description = "Read the contents of a file"
+    description = "Read the contents of a file (max 1MB)"
 
     def get_parameters(self) -> Dict[str, Any]:
         """Get parameters schema."""
@@ -36,11 +68,31 @@ class ReadFileTool(Tool):
         }
 
     async def execute(self, path: str, start_line: int = None, end_line: int = None) -> Dict[str, Any]:
-        """Read file contents."""
+        """Read file contents with size limit."""
         try:
             path_obj = Path(path).expanduser()
             if not path_obj.exists():
-                return {"success": False, "error": f"File not found: {path}"}
+                return {
+                    "success": False,
+                    "error": f"File not found: {path}",
+                    "hint": "Use list_directory or glob_search to find the correct path.",
+                }
+
+            if not path_obj.is_file():
+                return {
+                    "success": False,
+                    "error": f"Not a file: {path}",
+                    "hint": "Use list_directory for directories.",
+                }
+
+            # Check file size before reading
+            file_size = path_obj.stat().st_size
+            if file_size > MAX_FILE_SIZE:
+                return {
+                    "success": False,
+                    "error": f"File too large: {file_size:,} bytes (limit: {MAX_FILE_SIZE:,} bytes).",
+                    "hint": "Use start_line and end_line to read a specific range, or use grep to search.",
+                }
 
             with open(path_obj, "r", encoding="utf-8") as f:
                 if start_line is not None or end_line is not None:
@@ -56,6 +108,13 @@ class ReadFileTool(Tool):
                 "path": str(path_obj),
                 "content": content,
                 "lines": len(content.split("\n")),
+                "size_bytes": file_size,
+            }
+        except UnicodeDecodeError:
+            return {
+                "success": False,
+                "error": f"Cannot read binary file: {path}",
+                "hint": "This appears to be a binary file. Use run_command with appropriate tools like 'file', 'hexdump', etc.",
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -65,7 +124,7 @@ class WriteFileTool(Tool):
     """Tool for writing/creating files."""
 
     name = "write_file"
-    description = "Write content to a file (creates or overwrites)"
+    description = "Write content to a file (creates or overwrites). Protected system paths are blocked."
 
     def get_parameters(self) -> Dict[str, Any]:
         """Get parameters schema."""
@@ -85,9 +144,18 @@ class WriteFileTool(Tool):
         }
 
     async def execute(self, path: str, content: str) -> Dict[str, Any]:
-        """Write content to file."""
+        """Write content to file with path protection."""
         try:
             path_obj = Path(path).expanduser()
+
+            # Check path protection
+            if _is_path_protected(path_obj):
+                return {
+                    "success": False,
+                    "error": f"Cannot write to protected path: {path}",
+                    "hint": "This path is protected for security. Choose a different location.",
+                }
+
             path_obj.parent.mkdir(parents=True, exist_ok=True)
 
             with open(path_obj, "w", encoding="utf-8") as f:
@@ -136,11 +204,21 @@ class SearchReplaceTool(Tool):
     async def execute(
         self, path: str, search: str, replace: str, replace_all: bool = False
     ) -> Dict[str, Any]:
-        """Search and replace in file."""
+        """Search and replace in file with protection."""
         try:
             path_obj = Path(path).expanduser()
             if not path_obj.exists():
-                return {"success": False, "error": f"File not found: {path}"}
+                return {
+                    "success": False,
+                    "error": f"File not found: {path}",
+                    "hint": "Check the path with list_directory or glob_search.",
+                }
+
+            if _is_path_protected(path_obj):
+                return {
+                    "success": False,
+                    "error": f"Cannot modify protected path: {path}",
+                }
 
             with open(path_obj, "r", encoding="utf-8") as f:
                 content = f.read()
@@ -148,7 +226,8 @@ class SearchReplaceTool(Tool):
             if search not in content:
                 return {
                     "success": False,
-                    "error": f"Search text not found in file",
+                    "error": "Search text not found in file",
+                    "hint": "Use text_search or grep to verify the exact text in the file.",
                 }
 
             if replace_all:
@@ -194,10 +273,18 @@ class ListDirectoryTool(Tool):
         try:
             path_obj = Path(path).expanduser()
             if not path_obj.exists():
-                return {"success": False, "error": f"Directory not found: {path}"}
+                return {
+                    "success": False,
+                    "error": f"Directory not found: {path}",
+                    "hint": "Check the parent directory with list_directory.",
+                }
 
             if not path_obj.is_dir():
-                return {"success": False, "error": f"Not a directory: {path}"}
+                return {
+                    "success": False,
+                    "error": f"Not a directory: {path}",
+                    "hint": "Use read_file to read file contents.",
+                }
 
             entries = []
             for entry in sorted(path_obj.iterdir()):
@@ -223,7 +310,7 @@ class GlobSearchTool(Tool):
     """Tool for finding files using glob patterns."""
 
     name = "glob_search"
-    description = "Find files matching a glob pattern"
+    description = f"Find files matching a glob pattern (max {MAX_GLOB_RESULTS} results)"
 
     def get_parameters(self) -> Dict[str, Any]:
         """Get parameters schema."""
@@ -243,23 +330,46 @@ class GlobSearchTool(Tool):
         }
 
     async def execute(self, pattern: str, base_path: str = ".") -> Dict[str, Any]:
-        """Find files matching pattern."""
+        """Find files matching pattern with result limit."""
         try:
             base = Path(base_path).expanduser()
             if not base.exists():
-                return {"success": False, "error": f"Base path not found: {base_path}"}
+                return {
+                    "success": False,
+                    "error": f"Base path not found: {base_path}",
+                    "hint": "Check the path with list_directory.",
+                }
 
             matches = []
+            total_matches = 0
             for match in base.glob(pattern):
                 if match.is_file():
-                    matches.append(str(match.relative_to(base) if match.is_relative_to(base) else match))
+                    # Skip common ignore patterns
+                    if any(
+                        p in match.parts
+                        for p in [".git", "node_modules", "__pycache__", ".venv", "venv"]
+                    ):
+                        continue
 
-            return {
+                    total_matches += 1
+                    if len(matches) < MAX_GLOB_RESULTS:
+                        matches.append(
+                            str(match.relative_to(base) if match.is_relative_to(base) else match)
+                        )
+
+            result = {
                 "success": True,
                 "pattern": pattern,
                 "matches": matches,
                 "count": len(matches),
             }
+
+            if total_matches > MAX_GLOB_RESULTS:
+                result["note"] = (
+                    f"Showing {MAX_GLOB_RESULTS} of {total_matches} total matches. "
+                    "Use a more specific pattern to narrow results."
+                )
+
+            return result
         except Exception as e:
             return {"success": False, "error": str(e)}
-

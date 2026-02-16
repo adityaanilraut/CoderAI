@@ -1,6 +1,7 @@
 """Streaming response handler for real-time display."""
 
 import json
+import uuid
 from typing import Any, Dict, List, Optional
 
 from rich.live import Live
@@ -41,7 +42,10 @@ class StreamingHandler:
             self.live = live
 
             async for chunk in stream:
-                delta = chunk.get("choices", [{}])[0].get("delta", {})
+                choices = chunk.get("choices", [])
+                if not choices:
+                    continue  # Skip chunks with no choices (e.g. usage-only chunks)
+                delta = choices[0].get("delta", {})
 
                 # Handle content
                 if "content" in delta and delta["content"]:
@@ -49,7 +53,7 @@ class StreamingHandler:
                     live.update(Markdown(self.current_content))
 
                 # Handle tool calls
-                if "tool_calls" in delta:
+                if delta.get("tool_calls"):
                     for tool_call_delta in delta["tool_calls"]:
                         index = tool_call_delta.get("index", 0)
 
@@ -57,29 +61,28 @@ class StreamingHandler:
                         while len(self.tool_calls) <= index:
                             self.tool_calls.append(
                                 {
-                                    "id": "",
+                                    "id": f"call_{uuid.uuid4().hex[:24]}",
                                     "type": "function",
                                     "function": {"name": "", "arguments": ""},
                                 }
                             )
 
-                        # Update tool call
-                        if "id" in tool_call_delta:
+                        # Update tool call id only when the stream provides a real value
+                        if tool_call_delta.get("id"):
                             self.tool_calls[index]["id"] = tool_call_delta["id"]
 
                         if "function" in tool_call_delta:
                             func = tool_call_delta["function"]
-                            if "name" in func:
+                            if func.get("name"):
                                 self.tool_calls[index]["function"]["name"] += func["name"]
-                            if "arguments" in func:
+                            if func.get("arguments"):
                                 self.tool_calls[index]["function"]["arguments"] += func[
                                     "arguments"
                                 ]
 
-                # Check for finish
-                finish_reason = chunk.get("choices", [{}])[0].get("finish_reason")
-                if finish_reason:
-                    break
+                # Note: we let the stream exhaust naturally instead of breaking
+                # on finish_reason, as some providers send additional chunks
+                # after the finish_reason field is set.
 
         return {
             "content": self.current_content,

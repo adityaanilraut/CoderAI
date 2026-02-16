@@ -43,6 +43,7 @@ A powerful coding agent CLI tool similar to Claude Code and Gemini CLI, featurin
 
 - **Rich Terminal UI**: Beautiful syntax highlighting, progress indicators, tables, and panels
 - **Multiple LLM Support**: GPT-5, GPT-5-mini, GPT-5-nano, and LM Studio local models
+- **Dynamic Model Switching**: Change models mid-conversation without losing context
 - **Comprehensive MCP Tools**:
   - File operations (read, write, search, replace)
   - Terminal command execution
@@ -51,8 +52,14 @@ A powerful coding agent CLI tool similar to Claude Code and Gemini CLI, featurin
   - Web search for documentation
   - Knowledge base and memory
 - **Dual Modes**: Interactive chat and single-shot commands
-- **Session Management**: Persistent conversation history
+- **Advanced Session Management**: 
+  - Persistent conversation history
+  - Context clearing and resetting
+  - Session export to JSON
+  - Resume previous sessions
 - **Streaming Responses**: Real-time token-by-token display
+- **Rich Command System**: 15+ interactive commands for full control
+- **System Diagnostics**: Status monitoring, token usage, and configuration viewing
 
 ## Installation
 
@@ -85,7 +92,7 @@ Configure API keys and preferences:
 
 ```bash
 # Set OpenAI API key
-coderAI config set openai_key YOUR_API_KEY
+coderAI config set openai_api_key YOUR_API_KEY
 
 # Show current configuration
 coderAI config show
@@ -93,29 +100,73 @@ coderAI config show
 # Set default model
 coderAI config set default_model gpt-5-mini
 
-# Configure LM Studio endpoint
+# Configure LM Studio endpoint (provide your server URL)
 coderAI config set lmstudio_endpoint http://localhost:1234/v1
+
+# Configure LM Studio model name (optional)
+coderAI config set lmstudio_model your-model-name
 ```
 
 Configuration is stored at `~/.coderAI/config.json`. You can also use environment variables:
 
 - `OPENAI_API_KEY`: OpenAI API key
-- `LMSTUDIO_ENDPOINT`: LM Studio API endpoint
+- `LMSTUDIO_ENDPOINT`: LM Studio API endpoint (e.g., http://localhost:1234/v1)
 - `CODERAI_DEFAULT_MODEL`: Default model to use
 
 ## Commands
 
+### CLI Commands
+
 ```bash
+# Basic Usage
 coderAI chat                    # Interactive mode
 coderAI "your prompt"           # Single-shot mode
 coderAI --model MODEL chat      # Use specific model
+
+# Model Management
+coderAI models                  # List available models
+coderAI set-model gpt-5-mini    # Set default model
+
+# Configuration
 coderAI config set KEY VALUE    # Set configuration
 coderAI config show             # Show configuration
+coderAI config reset            # Reset to defaults
+
+# History Management
 coderAI history list            # List conversation sessions
-coderAI history clear           # Clear history
+coderAI history delete ID       # Delete specific session
+coderAI history clear           # Clear all history
+
+# System
+coderAI status                  # Show system status
+coderAI info                    # Show agent info
+coderAI setup                   # Run setup wizard
 coderAI --version               # Show version
 coderAI --help                  # Show help
 ```
+
+### Interactive Chat Commands
+
+Inside a chat session, use these commands (starting with `/`):
+
+```bash
+/help            # Show help message
+/clear           # Clear screen
+/clear-context   # Clear conversation context
+/change-model    # Switch model/provider
+/model           # Show current model info
+/providers       # List available providers
+/status          # Show session status
+/tools           # List available tools
+/config          # Show configuration
+/tokens          # Show token usage
+/save            # Manually save session
+/export          # Export conversation to JSON
+/history         # Show conversation history
+/exit            # Exit chat
+```
+
+**📚 For detailed documentation, see [COMMANDS.md](COMMANDS.md)**
 
 ## Available Models
 
@@ -142,12 +193,22 @@ $ coderAI "analyze the performance of my app"
 [Analysis results displayed with Rich formatting]
 ```
 
-### Using Local Models
+### Using Local Models (LM Studio)
 
 ```bash
-# Start LM Studio with a model, then:
+# 1. Start LM Studio and note your server URL (usually http://localhost:1234/v1)
+
+# 2. Configure the endpoint:
+$ coderAI config set lmstudio_endpoint http://YOUR_SERVER_URL:PORT/v1
+
+# 3. (Optional) Set model name if needed:
+$ coderAI config set lmstudio_model your-model-name
+
+# 4. Start using LM Studio:
 $ coderAI --model lmstudio chat
 ```
+
+**Note:** Replace `YOUR_SERVER_URL:PORT` with your actual LM Studio server address. The default is `http://localhost:1234/v1`.
 
 ## License
 

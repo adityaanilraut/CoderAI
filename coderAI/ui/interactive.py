@@ -122,6 +122,10 @@ Type your message or command. Press Ctrl+C or type 'exit' to quit.
                     else:
                         continue
                     
+                    # Skip system messages in history display
+                    if role == "system":
+                        continue
+                    
                     if content:
                         display.print(f"\n[bold]{i}. {role.title()}:[/bold]")
                         display.print(content[:200] + ("..." if len(content) > 200 else ""))
@@ -137,11 +141,12 @@ Type your message or command. Press Ctrl+C or type 'exit' to quit.
 
         elif command == "/change-model":
             # Change model/provider
+            from ..llm.openai import OpenAIProvider
+            
             display.print_header("Available Models")
-            display.print("  1. [cyan]gpt-5[/cyan] - OpenAI GPT-5 (most capable)")
-            display.print("  2. [cyan]gpt-5-mini[/cyan] - OpenAI GPT-5 Mini (balanced)")
-            display.print("  3. [cyan]gpt-5-nano[/cyan] - OpenAI GPT-5 Nano (fast)")
-            display.print("  4. [cyan]lmstudio[/cyan] - Local LM Studio model")
+            for model_name in OpenAIProvider.SUPPORTED_MODELS:
+                display.print(f"  • [cyan]{model_name}[/cyan]")
+            display.print(f"  • [cyan]lmstudio[/cyan] - Local LM Studio model")
             display.print("\nType the model name in your next message to switch (or 'cancel' to cancel)")
             context["awaiting_model_change"] = True
             return False
@@ -262,7 +267,7 @@ Type your message or command. Press Ctrl+C or type 'exit' to quit.
             display.print_header("Available LLM Providers")
             
             display.print("\n[bold cyan]OpenAI Provider[/bold cyan]")
-            display.print("  Models: gpt-5, gpt-5-mini, gpt-5-nano")
+            display.print("  Models: gpt-5, gpt-5-mini, gpt-4-turbo, gpt-4, gpt-3.5-turbo, o1, o1-mini, o3-mini")
             display.print("  Features: Function calling, streaming")
             display.print("  Requires: OpenAI API key")
             
@@ -352,4 +357,3 @@ Type your message or command. Press Ctrl+C or type 'exit' to quit.
 
 # Global interactive chat instance
 interactive_chat = InteractiveChat()
-
