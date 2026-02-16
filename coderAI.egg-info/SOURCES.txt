@@ -14,7 +14,6 @@ coderAI.egg-info/dependency_links.txt
 coderAI.egg-info/entry_points.txt
 coderAI.egg-info/requires.txt
 coderAI.egg-info/top_level.txt
-coderAI/llm/__init__.py
 coderAI/llm/anthropic.py
 coderAI/llm/base.py
 coderAI/llm/lmstudio.py
