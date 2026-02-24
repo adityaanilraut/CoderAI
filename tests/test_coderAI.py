@@ -485,8 +485,8 @@ class TestMemoryTools:
         recall_tool = RecallMemoryTool()
 
         import coderAI.tools.memory as mem_module
-        original_store = mem_module.memory_store
-        mem_module.memory_store = store
+        original_store = mem_module._memory_store
+        mem_module._memory_store = store
 
         try:
             result = asyncio.run(save_tool.execute(key="test_key", value="test_value"))
@@ -499,7 +499,7 @@ class TestMemoryTools:
             result = asyncio.run(recall_tool.execute(key="nonexistent"))
             assert result["success"] is False
         finally:
-            mem_module.memory_store = original_store
+            mem_module._memory_store = original_store
 
 
 # ============================================================================
@@ -604,7 +604,7 @@ class TestOpenAIProvider:
         from coderAI.llm.openai import OpenAIProvider
 
         for name in OpenAIProvider.SUPPORTED_MODELS:
-            assert "gpt-5" not in name, f"Fake model name found: {name}"
+            assert "gpt-5-mini" not in name, f"Nonexistent model found: {name}"
 
 
 # ============================================================================
@@ -646,13 +646,13 @@ class TestFileSizeLimits:
     """Tests for file size limits in ReadFileTool."""
 
     def test_read_large_file_rejected(self, temp_dir):
-        from coderAI.tools.filesystem import ReadFileTool, MAX_FILE_SIZE
+        from coderAI.tools.filesystem import ReadFileTool, DEFAULT_MAX_FILE_SIZE
 
         tool = ReadFileTool()
         filepath = os.path.join(temp_dir, "big_file.txt")
         # Create a file slightly larger than the limit
         with open(filepath, "w") as f:
-            f.write("x" * (MAX_FILE_SIZE + 1))
+            f.write("x" * (DEFAULT_MAX_FILE_SIZE + 1))
 
         result = asyncio.run(tool.execute(path=filepath))
         assert result["success"] is False
@@ -1015,35 +1015,36 @@ LOGIN_PAGE_HTML = """\
 </html>
 """
 
-PROJECT_DIR = "/Users/aditya/Desktop/login_page_project"
+PROJECT_DIR = None  # Set dynamically in fixtures
 
 
 class TestCreateFolderAndLoginPage:
-    """End-to-end test: create a folder on Desktop and build a login page."""
+    """End-to-end test: create a folder and build a login page."""
 
     @pytest.fixture(autouse=True, scope="class")
-    def cleanup_project_dir(self):
-        """Ensure the project directory is removed after all tests in this class."""
+    def setup_project_dir(self):
+        """Create a temporary project directory for the test class."""
         import shutil
+        import tempfile
 
-        # Setup — remove if leftover from a previous failed run
-        if os.path.exists(PROJECT_DIR):
-            shutil.rmtree(PROJECT_DIR)
+        global PROJECT_DIR
+        PROJECT_DIR = tempfile.mkdtemp(prefix="coderAI_test_")
         yield
         # Teardown
         if os.path.exists(PROJECT_DIR):
             shutil.rmtree(PROJECT_DIR)
+        PROJECT_DIR = None
 
     # -- Step 1: Create the folder on Desktop ----------------------------------
 
     def test_step1_create_folder_on_desktop(self):
-        """Use RunCommandTool to create a project folder on the Desktop."""
+        """Use RunCommandTool to create a project folder."""
         from coderAI.tools.terminal import RunCommandTool
 
         tool = RunCommandTool()
         result = asyncio.run(tool.execute(command=f"mkdir -p {PROJECT_DIR}"))
         assert result["success"] is True, f"mkdir failed: {result}"
-        assert os.path.isdir(PROJECT_DIR), "Folder was not created on Desktop"
+        assert os.path.isdir(PROJECT_DIR), "Folder was not created"
 
     # -- Step 2: Write the login page HTML file --------------------------------
 

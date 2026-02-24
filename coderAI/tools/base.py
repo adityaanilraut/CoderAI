@@ -1,7 +1,9 @@
 """Base tool interface and registry."""
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Type
+
+from pydantic import BaseModel, ValidationError
 
 
 class Tool(ABC):
@@ -9,6 +11,7 @@ class Tool(ABC):
 
     name: str = ""
     description: str = ""
+    parameters_model: Optional[Type[BaseModel]] = None
 
     @abstractmethod
     async def execute(self, **kwargs) -> Dict[str, Any]:
@@ -37,14 +40,20 @@ class Tool(ABC):
             },
         }
 
-    @abstractmethod
     def get_parameters(self) -> Dict[str, Any]:
         """Get the parameters schema for this tool.
 
         Returns:
             JSON Schema for parameters
         """
-        pass
+        if self.parameters_model:
+            # Generate JSON schema and simplify for LLMs
+            schema = self.parameters_model.model_json_schema()
+            # Pydantic puts things in $defs sometimes, but LLMs handle flat mostly.
+            # model_json_schema is usually fine.
+            return schema
+            
+        return {"type": "object", "properties": {}}
 
 
 class ToolRegistry:
@@ -105,5 +114,19 @@ class ToolRegistry:
         tool = self.get(name)
         if tool is None:
             raise ValueError(f"Tool not found: {name}")
+            
+        if tool.parameters_model:
+            try:
+                # Validate and parse arguments using Pydantic
+                parsed_args = tool.parameters_model(**kwargs)
+                return await tool.execute(**parsed_args.model_dump())
+            except ValidationError as e:
+                # Return validation errors as friendly tool response
+                return {
+                    "success": False,
+                    "error": f"Validation error for tool '{name}':\\n{str(e)}",
+                    "error_code": "validation_error"
+                }
+                
         return await tool.execute(**kwargs)
 

@@ -5,6 +5,8 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from pydantic import BaseModel, Field
+
 from .base import Tool
 
 logger = logging.getLogger(__name__)
@@ -33,6 +35,10 @@ PROJECT_INDICATORS = {
 }
 
 
+class ProjectContextParams(BaseModel):
+    path: str = Field(".", description="Project root directory (default: current directory)")
+
+
 class ProjectContextTool(Tool):
     """Tool for auto-detecting and loading project context."""
 
@@ -41,18 +47,7 @@ class ProjectContextTool(Tool):
         "Auto-detect project type and load relevant context "
         "(config files, directory structure, dependencies)"
     )
-
-    def get_parameters(self) -> Dict[str, Any]:
-        """Get parameters schema."""
-        return {
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Project root directory (default: current directory)",
-                },
-            },
-        }
+    parameters_model = ProjectContextParams
 
     async def execute(self, path: str = ".") -> Dict[str, Any]:
         """Detect project type and load context."""

@@ -1,6 +1,7 @@
 """Conversation history management for CoderAI."""
 
 import json
+import re
 import time
 import uuid
 from datetime import datetime
@@ -52,6 +53,10 @@ class Session(BaseModel):
         return api_messages
 
 
+# Valid session ID pattern: session_<timestamp>_<hex8>
+_SESSION_ID_PATTERN = re.compile(r"^session_\d+_[a-f0-9]{8}$")
+
+
 class HistoryManager:
     """Manages conversation history."""
 
@@ -69,6 +74,9 @@ class HistoryManager:
 
     def load_session(self, session_id: str) -> Optional[Session]:
         """Load a session from disk."""
+        if not _SESSION_ID_PATTERN.match(session_id):
+            return None
+
         session_file = self.history_dir / f"{session_id}.json"
         if not session_file.exists():
             return None
@@ -124,6 +132,9 @@ class HistoryManager:
 
     def delete_session(self, session_id: str) -> bool:
         """Delete a specific session."""
+        if not _SESSION_ID_PATTERN.match(session_id):
+            return False
+
         session_file = self.history_dir / f"{session_id}.json"
         if session_file.exists():
             session_file.unlink()

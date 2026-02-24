@@ -31,7 +31,9 @@ class StreamingHandler:
         """
         self.current_content = initial_content
         self.tool_calls = []
-        current_tool_call = None
+        self.in_reasoning = False
+        self.reasoning_type = None
+        self._tag_buffer = ""
 
         # Start live display
         with Live(
@@ -47,9 +49,86 @@ class StreamingHandler:
                     continue  # Skip chunks with no choices (e.g. usage-only chunks)
                 delta = choices[0].get("delta", {})
 
-                # Handle content
-                if "content" in delta and delta["content"]:
-                    self.current_content += delta["content"]
+                # Handle reasoning content from API explicitly
+                reasoning_delta = delta.get("reasoning_content", "")
+                if reasoning_delta:
+                    if not self.in_reasoning:
+                        self.in_reasoning = True
+                        self.reasoning_type = "field"
+                        if self.current_content and not self.current_content.endswith("\n"):
+                            self.current_content += "\n\n"
+                        self.current_content += "> _Thinking..._\n> \n> "
+                    
+                    self.current_content += reasoning_delta.replace("\n", "\n> ")
+                    live.update(Markdown(self.current_content))
+
+                # Handle regular content (which might contain <think> tags)
+                content_chunk = delta.get("content", "")
+                if content_chunk:
+                    # If field-based reasoning transitions to content
+                    if self.in_reasoning and self.reasoning_type == "field":
+                        self.current_content += "\n\n"
+                        self.in_reasoning = False
+                        self.reasoning_type = None
+
+                    self._tag_buffer += content_chunk
+                    
+                    # Process the buffer for complete tags
+                    while True:
+                        if not self.in_reasoning:
+                            if "<think>" in self._tag_buffer:
+                                before, after = self._tag_buffer.split("<think>", 1)
+                                self.current_content += before
+                                
+                                self.in_reasoning = True
+                                self.reasoning_type = "tag"
+                                if self.current_content and not self.current_content.endswith("\n"):
+                                    self.current_content += "\n\n"
+                                self.current_content += "> _Thinking..._\n> \n> "
+                                self._tag_buffer = after
+                            else:
+                                break
+                        else:
+                            if "</think>" in self._tag_buffer:
+                                before, after = self._tag_buffer.split("</think>", 1)
+                                self.current_content += before.replace("\n", "\n> ")
+                                
+                                self.in_reasoning = False
+                                self.reasoning_type = None
+                                self.current_content += "\n\n"
+                                self._tag_buffer = after
+                            else:
+                                break
+
+                    # Flush safe parts of the buffer
+                    # If buffer looks like it might be forming a tag, hold it.
+                    # Max tag length we care about is len("</think>") == 8
+                    if not self.in_reasoning:
+                        # Look for incomplete '<think>' starting tag
+                        last_open = self._tag_buffer.rfind("<")
+                        if last_open != -1 and "<think>".startswith(self._tag_buffer[last_open:]):
+                            flush_part = self._tag_buffer[:last_open]
+                            self._tag_buffer = self._tag_buffer[last_open:]
+                        else:
+                            flush_part = self._tag_buffer
+                            self._tag_buffer = ""
+                        if flush_part:
+                            self.current_content += flush_part
+                    else:
+                        # Look for incomplete '</think>' ending tag
+                        last_open = self._tag_buffer.rfind("</")
+                        if last_open == -1:
+                            last_open = self._tag_buffer.rfind("<")
+                            
+                        if last_open != -1 and "</think>".startswith(self._tag_buffer[last_open:]):
+                            flush_part = self._tag_buffer[:last_open]
+                            self._tag_buffer = self._tag_buffer[last_open:]
+                        else:
+                            flush_part = self._tag_buffer
+                            self._tag_buffer = ""
+                        if flush_part:
+                            self.current_content += flush_part.replace("\n", "\n> ")
+
                     live.update(Markdown(self.current_content))
 
                 # Handle tool calls

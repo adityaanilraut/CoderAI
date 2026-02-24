@@ -1,15 +1,48 @@
 """Interactive chat interface with Rich UI."""
 
 import sys
-from typing import Callable, Optional
+import os
+from pathlib import Path
+from typing import Callable, Optional, List, Set
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.styles import Style
+from prompt_toolkit.completion import WordCompleter
 from rich.panel import Panel
 
 from .display import display
 from ..config import config_manager
+from ..events import event_emitter
+
+
+def _setup_event_listeners():
+    """Subscribe display handlers to agent events."""
+    event_emitter.on("tool_call", lambda tool_name, arguments: display.print_tool_call(tool_name, arguments))
+    event_emitter.on("tool_error", lambda tool_name, error: display.print_error(f"Tool '{tool_name}' error: {error}"))
+    event_emitter.on("tool_result", lambda tool_name, result: display.print_tool_result(tool_name, result))
+    event_emitter.on("agent_status", lambda message: display.print(message))
+    event_emitter.on("agent_error", lambda message: display.print_error(message))
+    event_emitter.on("agent_warning", lambda message: display.print_warning(message))
+    
+    # State for the active loading spinner
+    status_state = {"active": None}
+    
+    def handle_status_start(message):
+        if status_state["active"]:
+            status_state["active"].stop()
+        status_state["active"] = display.status(message)
+        status_state["active"].start()
+        
+    def handle_status_stop(*args, **kwargs):
+        if status_state["active"]:
+            status_state["active"].stop()
+            status_state["active"] = None
+            
+    event_emitter.on("status_start", handle_status_start)
+    event_emitter.on("status_stop", handle_status_stop)
+
+_setup_event_listeners()
 
 
 class InteractiveChat:
@@ -18,7 +51,21 @@ class InteractiveChat:
     def __init__(self):
         """Initialize interactive chat."""
         self.history = InMemoryHistory()
-        self.session = PromptSession(history=self.history)
+
+        # Available commands for auto-completion
+        self.commands = [
+            "/help", "/clear", "/clear-context", "/history", "/model",
+            "/change-model", "/reasoning", "/config", "/tools", "/save", "/sessions", 
+            "/resume", "/tokens", "/export", "/status", "/providers", 
+            "/plan", "/exit", "/quit"
+        ]
+        self.completer = WordCompleter(self.commands, ignore_case=True)
+
+        self.session = PromptSession(
+            history=self.history,
+            completer=self.completer,
+            complete_while_typing=True
+        )
 
         # Custom style for prompt
         self.style = Style.from_dict(
@@ -26,6 +73,73 @@ class InteractiveChat:
                 "prompt": "#00aa00 bold",
             }
         )
+
+
+    def _get_project_structure(self, max_depth: int = 2, max_files: int = 50) -> str:
+        """Get a string representation of the project structure.
+        
+        Args:
+            max_depth: Maximum recursion depth
+            max_files: Maximum number of files to list
+            
+        Returns:
+            String with file tree
+        """
+        start_path = Path(".")
+        output = ["Project Structure:"]
+        file_count = 0
+        
+        # Directories to ignore
+        ignore_dirs = {
+            ".git", "__pycache__", "node_modules", "venv", ".venv", 
+            ".idea", ".vscode", "dist", "build", ".egg-info",
+            "coverage", ".pytest_cache", ".mypy_cache"
+        }
+        
+        # Files to ignore
+        ignore_files = {
+            ".DS_Store", "package-lock.json", "yarn.lock", "poetry.lock"
+        }
+
+        def _add_dir(path: Path, prefix: str = "", current_depth: int = 0):
+            nonlocal file_count
+            if current_depth > max_depth or file_count >= max_files:
+                return
+
+            try:
+                # Sort contents: directories first, then files
+                entries = sorted(path.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))
+                
+                # Filter entries
+                entries = [
+                    e for e in entries 
+                    if e.name not in ignore_dirs and e.name not in ignore_files
+                    and not e.name.startswith(".")
+                ]
+
+                for i, entry in enumerate(entries):
+                    if file_count >= max_files:
+                        if file_count == max_files:
+                            output.append(f"{prefix}  ... (limit reached)")
+                            file_count += 1
+                        return
+
+                    is_last = (i == len(entries) - 1)
+                    connector = "└── " if is_last else "├── "
+                    
+                    if entry.is_dir():
+                        output.append(f"{prefix}{connector}{entry.name}/")
+                        new_prefix = prefix + ("    " if is_last else "│   ")
+                        _add_dir(entry, new_prefix, current_depth + 1)
+                    else:
+                        output.append(f"{prefix}{connector}{entry.name}")
+                        file_count += 1
+                        
+            except PermissionError:
+                output.append(f"{prefix}└── [Permission Denied]")
+
+        _add_dir(start_path)
+        return "\n".join(output)
 
     def print_welcome(self, model: str):
         """Print welcome message."""
@@ -42,13 +156,17 @@ Type your message or command. Press Ctrl+C or type 'exit' to quit.
   /history        - Show conversation history
   /model          - Show current model info
   /change-model   - Change model/provider
+  /reasoning      - Change reasoning effort (for o1, claude 3.7)
   /config         - Show current configuration
   /tools          - List available tools
   /save           - Manually save current session
+  /sessions       - List saved conversation sessions
+  /resume <id>    - Resume a saved session
   /tokens         - Show token usage info
   /export         - Export conversation to file
   /status         - Show current session status
   /providers      - Show available LLM providers
+  /plan           - Plan a task step-by-step before executing
   /exit           - Exit the chat[/dim]
         """
         display.print_panel(welcome_text.strip(), title="Welcome", border_style="cyan")
@@ -142,13 +260,29 @@ Type your message or command. Press Ctrl+C or type 'exit' to quit.
         elif command == "/change-model":
             # Change model/provider
             from ..llm.openai import OpenAIProvider
+            from ..llm.anthropic import AnthropicProvider
             
             display.print_header("Available Models")
             for model_name in OpenAIProvider.SUPPORTED_MODELS:
-                display.print(f"  • [cyan]{model_name}[/cyan]")
+                display.print(f"  • [cyan]{model_name}[/cyan] (OpenAI)")
+            for model_name in AnthropicProvider.SUPPORTED_MODELS:
+                display.print(f"  • [cyan]{model_name}[/cyan] (Anthropic)")
             display.print(f"  • [cyan]lmstudio[/cyan] - Local LM Studio model")
+            display.print(f"  • [cyan]ollama[/cyan] - Local Ollama model")
             display.print("\nType the model name in your next message to switch (or 'cancel' to cancel)")
             context["awaiting_model_change"] = True
+            return False
+
+        elif command == "/reasoning":
+            # Change reasoning effort
+            display.print_header("Reasoning Effort")
+            display.print("How much thinking reasoning models (e.g. o1, claude-3.7-sonnet) should use.")
+            display.print("  • [cyan]high[/cyan]   - Max reasoning tokens")
+            display.print("  • [cyan]medium[/cyan] - Default balanced reasoning")
+            display.print("  • [cyan]low[/cyan]    - Fast/cheap reasoning")
+            display.print("  • [cyan]none[/cyan]   - Disabled (where supported)")
+            display.print("\nType the effort level in your next message to switch (or 'cancel' to cancel)")
+            context["awaiting_reasoning_change"] = True
             return False
 
         elif command == "/config":
@@ -182,7 +316,19 @@ Type your message or command. Press Ctrl+C or type 'exit' to quit.
 
         elif command == "/tokens":
             # Show token usage info
-            if context.get("messages"):
+            agent = context.get("agent")
+            if agent and hasattr(agent, "total_tokens") and agent.total_tokens > 0:
+                # Use real token counts from the provider
+                display.print_header("Token Usage (from LLM provider)")
+                display.print(f"Prompt tokens:     [yellow]{agent.total_prompt_tokens:,}[/yellow]")
+                display.print(f"Completion tokens: [yellow]{agent.total_completion_tokens:,}[/yellow]")
+                display.print(f"Total tokens:      [yellow]{agent.total_tokens:,}[/yellow]")
+                # Show cost if available
+                model_info = agent.provider.get_model_info()
+                cost = model_info.get("cost", {})
+                if cost.get("total_cost"):
+                    display.print(f"Estimated cost:    [green]${cost['total_cost']:.4f}[/green]")
+            elif context.get("messages"):
                 total_messages = len(context["messages"])
                 
                 # Handle both dict and Message object types
@@ -202,6 +348,53 @@ Type your message or command. Press Ctrl+C or type 'exit' to quit.
                 display.print(f"\n[dim]Note: This is a rough approximation. Actual token count may vary.[/dim]")
             else:
                 display.print_info("No messages yet")
+            return False
+
+        elif command == "/sessions":
+            # List all saved sessions
+            from ..history import history_manager
+            sessions = history_manager.list_sessions()
+            if not sessions:
+                display.print_info("No saved sessions found.")
+                return False
+                
+            display.print_header("Saved Sessions")
+            for summary in sessions[:20]:  # Show up to 20 recent sessions
+                from datetime import datetime
+                created_dt = datetime.fromtimestamp(summary["created_at"]).strftime("%Y-%m-%d %H:%M:%S")
+                display.print(f"[cyan]• {summary['id']}[/cyan] ({created_dt})")
+                display.print(f"  Model: [yellow]{summary['model']}[/yellow]")
+                display.print(f"  Messages: {summary['message_count']}")
+                display.print()
+            
+            display.print("[dim]Use /resume <session_id> to load a session[/dim]")
+            return False
+
+        elif command.startswith("/resume"):
+            parts = command.split(" ", 1)
+            if len(parts) < 2:
+                display.print_warning("Please provide a session ID (e.g., /resume abc-123)")
+                return False
+            
+            session_id = parts[1].strip()
+            if not context.get("agent"):
+                display.print_warning("No agent context available to load session into.")
+                return False
+                
+            try:
+                session = context["agent"].load_session(session_id)
+                if session:
+                    context["messages"] = session.get_messages_for_api()
+                    context["model"] = session.model
+                    display.print_success(f"Successfully loaded session: {session_id}")
+                    # Re-instantiate provider if the model changed
+                    context["agent"].model = session.model
+                    context["agent"].provider = context["agent"]._create_provider()
+                else:
+                    display.print_warning(f"Session not found or invalid: {session_id}")
+            except Exception as e:
+                display.print_error(f"Failed to load session: {str(e)}")
+            
             return False
 
         elif command == "/export":
@@ -264,12 +457,20 @@ Type your message or command. Press Ctrl+C or type 'exit' to quit.
 
         elif command == "/providers":
             # Show available providers
+            from ..llm.openai import OpenAIProvider
+            from ..llm.anthropic import AnthropicProvider
+
             display.print_header("Available LLM Providers")
             
             display.print("\n[bold cyan]OpenAI Provider[/bold cyan]")
-            display.print("  Models: gpt-5, gpt-5-mini, gpt-4-turbo, gpt-4, gpt-3.5-turbo, o1, o1-mini, o3-mini")
+            display.print(f"  Models: {', '.join(OpenAIProvider.SUPPORTED_MODELS)}")
             display.print("  Features: Function calling, streaming")
             display.print("  Requires: OpenAI API key")
+            
+            display.print("\n[bold cyan]Anthropic Provider[/bold cyan]")
+            display.print(f"  Models: {', '.join(AnthropicProvider.SUPPORTED_MODELS)}")
+            display.print("  Features: Function calling, streaming")
+            display.print("  Requires: Anthropic API key")
             
             display.print("\n[bold cyan]LM Studio Provider[/bold cyan]")
             display.print("  Models: Local models via LM Studio")
@@ -278,6 +479,15 @@ Type your message or command. Press Ctrl+C or type 'exit' to quit.
             
             display.print("\n[dim]Use /change-model to switch between providers[/dim]")
             display.print()
+            return False
+
+        elif command == "/plan":
+            display.print_header("Task Planning Mode")
+            display.print(
+                "[cyan]Describe the task you'd like me to plan in your next message.\n"
+                "I'll create a step-by-step plan for your approval before executing.[/cyan]"
+            )
+            context["plan_mode"] = True
             return False
 
         elif command in ["/exit", "/quit"]:
@@ -337,6 +547,48 @@ Type your message or command. Press Ctrl+C or type 'exit' to quit.
 
                 # Process user message
                 try:
+                    # Handle plan mode: wrap the user input with planning
+                    # instructions so the LLM generates a plan instead of
+                    # executing directly.
+                    if context.get("plan_mode"):
+                        context["plan_mode"] = False
+                        plan_prompt = (
+                            "The user wants you to PLAN the following task "
+                            "step-by-step WITHOUT executing anything yet. "
+                            "Output a numbered list of concrete steps you would "
+                            "take (including which tools you'd use). Do NOT call "
+                            "any tools — only describe the plan.\n\n"
+                            f"Task: {user_input}\n\n"
+                            f"{self._get_project_structure()}"
+                        )
+                        response = await message_handler(plan_prompt, context)
+
+                        if response:
+                            if "messages" in response:
+                                context["messages"] = response["messages"]
+                            if "model_info" in response:
+                                context["model_info"] = response["model_info"]
+
+                        # Ask user whether to execute the plan
+                        display.print(
+                            "\n[bold cyan]Execute this plan? "
+                            "(y/yes to execute, anything else to skip)[/bold cyan]"
+                        )
+                        context["awaiting_plan_confirmation"] = user_input
+                        continue
+
+                    # Handle plan confirmation
+                    if context.get("awaiting_plan_confirmation"):
+                        original_task = context.pop("awaiting_plan_confirmation")
+                        if user_input.lower() in ("y", "yes"):
+                            user_input = (
+                                f"Execute the following task step by step, using "
+                                f"the plan you just created: {original_task}"
+                            )
+                        else:
+                            display.print_info("Plan discarded.")
+                            continue
+
                     response = await message_handler(user_input, context)
 
                     if response:
@@ -345,6 +597,11 @@ Type your message or command. Press Ctrl+C or type 'exit' to quit.
                             context["messages"] = response["messages"]
                         if "model_info" in response:
                             context["model_info"] = response["model_info"]
+
+                        if context.get("agent"):
+                            used, limit = context["agent"].get_context_usage()
+                            pct = (used / limit) * 100 if limit > 0 else 0
+                            display.print(f"\n[dim]Context usage: {used:,}/{limit:,} tokens ({pct:.1f}%)[/dim]\n")
 
                 except Exception as e:
                     display.print_error(f"Failed to process message: {str(e)}")

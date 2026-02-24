@@ -5,6 +5,8 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
+from pydantic import BaseModel, Field
+
 from .base import Tool
 
 logger = logging.getLogger(__name__)
@@ -66,7 +68,7 @@ class MCPClient:
 
         Args:
             server_name: Friendly name for this server connection
-            command: Server command to run (e.g., 'npx', 'python')
+            command: Server command to run (e.g., 'npx', 'python3')
             args: Command line arguments for the server
 
         Returns:
@@ -300,33 +302,18 @@ class MCPClient:
 mcp_client = MCPClient()
 
 
+class MCPConnectParams(BaseModel):
+    server_name: str = Field(..., description="Friendly name for this server connection")
+    command: str = Field(..., description="Command to start the MCP server (e.g., 'npx')")
+    args: Optional[List[str]] = Field(None, description="Arguments for the server command")
+
+
 class MCPConnectTool(Tool):
     """Tool for connecting to MCP servers."""
 
     name = "mcp_connect"
     description = "Connect to an MCP (Model Context Protocol) server to discover and use its tools"
-
-    def get_parameters(self) -> Dict[str, Any]:
-        """Get parameters schema."""
-        return {
-            "type": "object",
-            "properties": {
-                "server_name": {
-                    "type": "string",
-                    "description": "Friendly name for this server connection",
-                },
-                "command": {
-                    "type": "string",
-                    "description": "Command to start the MCP server (e.g., 'npx')",
-                },
-                "args": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Arguments for the server command",
-                },
-            },
-            "required": ["server_name", "command"],
-        }
+    parameters_model = MCPConnectParams
 
     async def execute(
         self, server_name: str, command: str, args: list = None
@@ -335,32 +322,18 @@ class MCPConnectTool(Tool):
         return await mcp_client.connect_stdio(server_name, command, args)
 
 
+class MCPCallToolParams(BaseModel):
+    server_name: str = Field(..., description="Name of the connected MCP server")
+    tool_name: str = Field(..., description="Name of the tool to call on the server")
+    arguments: Optional[Dict[str, Any]] = Field(None, description="Arguments to pass to the tool")
+
+
 class MCPCallTool(Tool):
     """Tool for calling tools on connected MCP servers."""
 
     name = "mcp_call_tool"
     description = "Call a tool on a connected MCP server"
-
-    def get_parameters(self) -> Dict[str, Any]:
-        """Get parameters schema."""
-        return {
-            "type": "object",
-            "properties": {
-                "server_name": {
-                    "type": "string",
-                    "description": "Name of the connected MCP server",
-                },
-                "tool_name": {
-                    "type": "string",
-                    "description": "Name of the tool to call on the server",
-                },
-                "arguments": {
-                    "type": "object",
-                    "description": "Arguments to pass to the tool",
-                },
-            },
-            "required": ["server_name", "tool_name"],
-        }
+    parameters_model = MCPCallToolParams
 
     async def execute(
         self, server_name: str, tool_name: str, arguments: dict = None
@@ -369,18 +342,16 @@ class MCPCallTool(Tool):
         return await mcp_client.call_tool(server_name, tool_name, arguments or {})
 
 
+class MCPListParams(BaseModel):
+    pass
+
+
 class MCPListTool(Tool):
     """Tool for listing connected MCP servers and their tools."""
 
     name = "mcp_list"
     description = "List all connected MCP servers and discovered tools"
-
-    def get_parameters(self) -> Dict[str, Any]:
-        """Get parameters schema."""
-        return {
-            "type": "object",
-            "properties": {},
-        }
+    parameters_model = MCPListParams
 
     async def execute(self) -> Dict[str, Any]:
         """List MCP servers and tools."""

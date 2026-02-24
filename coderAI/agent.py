@@ -6,11 +6,13 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from .config import config_manager
+from .context import ContextManager
 from .history import Message, Session, history_manager
-from .llm import LMStudioProvider, OpenAIProvider, AnthropicProvider
+from .llm import LMStudioProvider, OpenAIProvider, AnthropicProvider, OllamaProvider
 from .system_prompt import SYSTEM_PROMPT
 from .tools import (
     TextSearchTool,
+    GitAddTool,
     GitCommitTool,
     GitDiffTool,
     GitLogTool,
@@ -33,8 +35,9 @@ from .tools import (
     UndoTool,
     UndoHistoryTool,
     ProjectContextTool,
+    ManageContextTool,
 )
-from .ui.display import display
+from .events import event_emitter
 from .ui.streaming import StreamingHandler
 
 logger = logging.getLogger(__name__)
@@ -42,6 +45,32 @@ logger = logging.getLogger(__name__)
 # Reserve tokens for the response and tool overhead
 RESPONSE_TOKEN_RESERVE = 4096
 TOOL_OVERHEAD_TOKENS = 2000
+
+# Retry configuration for transient errors
+MAX_RETRIES_PER_ITERATION = 3
+RETRY_BASE_DELAY = 1  # seconds
+MAX_CONSECUTIVE_ERRORS = 3
+
+# Patterns that indicate transient (retryable) errors
+_TRANSIENT_PATTERNS = (
+    "timeout",
+    "timed out",
+    "rate limit",
+    "rate_limit",
+    "429",
+    "500",
+    "502",
+    "503",
+    "504",
+    "server error",
+    "internal server error",
+    "connection reset",
+    "connection error",
+    "connect timeout",
+    "overloaded",
+    "capacity",
+    "temporarily unavailable",
+)
 
 
 class Agent:
@@ -55,6 +84,7 @@ class Agent:
             streaming: Enable streaming responses
         """
         self.config = config_manager.load()
+        self.config = config_manager.load_project_config(".")
         self.model = model or self.config.default_model
         self.streaming = streaming and self.config.streaming
 
@@ -63,6 +93,9 @@ class Agent:
             level=getattr(logging, self.config.log_level, logging.WARNING),
             format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         )
+
+        # Initialize context manager
+        self.context_manager = ContextManager()
 
         # Initialize LLM provider
         self.provider = self._create_provider()
@@ -76,9 +109,21 @@ class Agent:
         # Session management
         self.session: Optional[Session] = None
 
+        # Cumulative token usage tracking (#13)
+        self.total_prompt_tokens: int = 0
+        self.total_completion_tokens: int = 0
+        self.total_tokens: int = 0
+
     def _create_provider(self):
         """Create LLM provider based on model."""
-        if self.model == "lmstudio":
+        if self.model == "ollama":
+            return OllamaProvider(
+                model=self.config.ollama_model,
+                endpoint=self.config.ollama_endpoint,
+                temperature=self.config.temperature,
+                max_tokens=self.config.max_tokens,
+            )
+        elif self.model == "lmstudio":
             return LMStudioProvider(
                 model=self.config.lmstudio_model,
                 endpoint=self.config.lmstudio_endpoint,
@@ -91,6 +136,7 @@ class Agent:
                 api_key=self.config.anthropic_api_key,
                 temperature=self.config.temperature,
                 max_tokens=self.config.max_tokens,
+                reasoning_effort=self.config.reasoning_effort,
             )
         else:
             return OpenAIProvider(
@@ -98,6 +144,7 @@ class Agent:
                 api_key=self.config.openai_api_key,
                 temperature=self.config.temperature,
                 max_tokens=self.config.max_tokens,
+                reasoning_effort=self.config.reasoning_effort,
             )
 
     def _create_tool_registry(self) -> ToolRegistry:
@@ -116,6 +163,7 @@ class Agent:
         registry.register(RunBackgroundTool())
 
         # Register git tools
+        registry.register(GitAddTool())
         registry.register(GitStatusTool())
         registry.register(GitDiffTool())
         registry.register(GitCommitTool())
@@ -144,6 +192,9 @@ class Agent:
         # Register project context tool
         registry.register(ProjectContextTool())
 
+        # Register context management tool
+        registry.register(ManageContextTool(self.context_manager))
+
         return registry
 
     def create_session(self) -> Session:
@@ -163,24 +214,35 @@ class Agent:
         if self.session and self.config.save_history:
             history_manager.save_session(self.session)
 
+    def get_context_usage(self) -> tuple[int, int]:
+        """Get the current context window usage and limit."""
+        messages = self.session.get_messages_for_api() if self.session else []
+        
+        # Inject system message if exists to get an accurate count
+        context_msg = self.context_manager.get_system_message()
+        if context_msg:
+            # Insert after the main system prompt (index 0)
+            messages.insert(1, {"role": "system", "content": context_msg})
+            
+        used_tokens = self._estimate_message_tokens(messages)
+        limit = self.config.context_window
+        return used_tokens, limit
+
     def _truncate_messages_to_fit(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Truncate old messages to fit within the context window.
 
-        Keeps the system prompt and the most recent messages,
-        removing older messages from the middle when the context is too large.
-        Preserves atomic tool_call <-> tool_result message groups to avoid API errors.
-
-        Args:
-            messages: Full list of messages
-
-        Returns:
-            Truncated list that fits within context window
+        Keeps the system prompt, pinned context, and the most recent messages.
+        Note: Pinned context is already injected into messages as a system
+        message before this method is called, so its tokens are accounted for
+        via the system_tokens calculation below — no separate deduction needed.
         """
         context_limit = self.config.context_window
+
         max_content_tokens = context_limit - RESPONSE_TOKEN_RESERVE - TOOL_OVERHEAD_TOKENS
 
         if max_content_tokens <= 0:
             max_content_tokens = context_limit // 2
+
 
         # Estimate total tokens
         total_tokens = self._estimate_message_tokens(messages)
@@ -300,6 +362,18 @@ class Agent:
         # Get messages for API
         messages = self.session.get_messages_for_api()
 
+        # Inject pinned context / project instructions
+        # We insert this as a system message right after the main system prompt
+        context_msg = self.context_manager.get_system_message()
+        if context_msg:
+            # Find index of last system message or insert at 1
+            insert_idx = 0
+            for i, msg in enumerate(messages):
+                if msg.get("role") == "system":
+                    insert_idx = i + 1
+            
+            messages.insert(insert_idx, {"role": "system", "content": context_msg})
+
         # Truncate messages to fit context window
         messages = self._truncate_messages_to_fit(messages)
 
@@ -307,20 +381,18 @@ class Agent:
         tool_schemas = self.tools.get_schemas() if self.provider.supports_tools() else None
 
         # Process with LLM (potentially multiple rounds for tool calls)
-        max_iterations = 10
+        max_iterations = self.config.max_iterations
         iteration = 0
+        consecutive_errors = 0
 
         while iteration < max_iterations:
             iteration += 1
 
             try:
-                if self.streaming:
-                    # Stream response (works with or without tools)
-                    response_data = await self._stream_response(messages, tool_schemas)
-                else:
-                    # Non-streaming
-                    response_data = await self.provider.chat(messages, tools=tool_schemas)
-                    response_data = self._extract_response_data(response_data)
+                response_data = await self._call_llm_with_retry(
+                    messages, tool_schemas
+                )
+                consecutive_errors = 0  # reset on success
 
                 # Handle response
                 content = response_data.get("content")
@@ -371,12 +443,20 @@ class Agent:
                 # Display all tool calls
                 for pc in parsed_calls:
                     if pc["arguments"] is not None:
-                        display.print_tool_call(pc["tool_name"], pc["arguments"])
+                        event_emitter.emit("tool_call", tool_name=pc["tool_name"], arguments=pc["arguments"])
                     else:
-                        display.print_error(f"Tool {pc['tool_name']}: {pc['parse_error']}")
+                        event_emitter.emit("tool_error", tool_name=pc["tool_name"], error=pc["parse_error"])
 
-                # Execute tool calls sequentially to avoid write-races
-                # (e.g. write_file + search_replace on the same file)
+                # Execute tool calls — parallelize read-only tools, keep
+                # mutating tools sequential to avoid write races (#9)
+                READ_ONLY_TOOLS = frozenset([
+                    "read_file", "list_directory", "glob_search",
+                    "text_search", "grep", "git_status", "git_diff",
+                    "git_log", "recall_memory", "project_context",
+                    "manage_context", "mcp_list", "web_search",
+                    "undo_history",
+                ])
+
                 async def _execute_single_tool(pc):
                     if pc["parse_error"]:
                         return {"success": False, "error": pc["parse_error"]}
@@ -385,14 +465,38 @@ class Agent:
                     except Exception as e:
                         return {"success": False, "error": str(e)}
 
-                results = []
-                for pc in parsed_calls:
-                    results.append(await _execute_single_tool(pc))
+                # Split calls into read-only and mutating groups,
+                # keeping track of original indices for ordered reassembly
+                ro_indices = []
+                mut_indices = []
+                for i, pc in enumerate(parsed_calls):
+                    if pc["tool_name"] in READ_ONLY_TOOLS:
+                        ro_indices.append(i)
+                    else:
+                        mut_indices.append(i)
+
+                results: list = [None] * len(parsed_calls)
+                
+                event_emitter.emit("status_start", message="[bold cyan]Executing tools...[/bold cyan]")
+
+                # Run all read-only tools in parallel
+                if ro_indices:
+                    ro_results = await asyncio.gather(
+                        *(_execute_single_tool(parsed_calls[i]) for i in ro_indices)
+                    )
+                    for idx, res in zip(ro_indices, ro_results):
+                        results[idx] = res
+
+                # Run mutating tools sequentially (order matters)
+                for idx in mut_indices:
+                    results[idx] = await _execute_single_tool(parsed_calls[idx])
+                    
+                event_emitter.emit("status_stop")
 
                 # Process results and add to session
                 for pc, result in zip(parsed_calls, results):
                     result = self._summarize_tool_result(result)
-                    display.print_tool_result(pc["tool_name"], result)
+                    event_emitter.emit("tool_result", tool_name=pc["tool_name"], result=result)
 
                     self.session.add_message(
                         "tool",
@@ -408,20 +512,43 @@ class Agent:
                 messages = self._truncate_messages_to_fit(messages)
 
                 # Continue loop to get next response
-                display.print("\n[dim]Processing results...[/dim]\n")
+                event_emitter.emit("agent_status", message="\n[dim]Processing results...[/dim]")
 
             except Exception as e:
                 logger.error(f"Error during processing: {e}", exc_info=True)
-                display.print_error(f"Error during processing: {str(e)}")
-                self.save_session()
-                return {
-                    "content": f"I encountered an error: {str(e)}",
-                    "messages": self.session.messages,
-                    "model_info": self.provider.get_model_info(),
-                }
+                consecutive_errors += 1
+
+                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                    event_emitter.emit(
+                        "agent_error",
+                        message=f"Too many consecutive errors ({consecutive_errors}). Last error: {e}"
+                    )
+                    self.save_session()
+                    return {
+                        "content": (
+                            f"I encountered {consecutive_errors} consecutive errors. "
+                            f"Last error: {str(e)}. Please try again."
+                        ),
+                        "messages": self.session.messages,
+                        "model_info": self.provider.get_model_info(),
+                    }
+
+                # Non-fatal: feed the error back to the LLM so it can
+                # self-correct (e.g. fix bad tool arguments)
+                event_emitter.emit(
+                    "agent_error",
+                    message=f"Error (attempt {consecutive_errors}/{MAX_CONSECUTIVE_ERRORS}): {e}"
+                )
+                self.session.add_message(
+                    "assistant",
+                    f"I encountered an error: {str(e)}. Let me try a different approach.",
+                )
+                messages = self.session.get_messages_for_api()
+                messages = self._truncate_messages_to_fit(messages)
+                continue
 
         # Max iterations reached
-        display.print_warning("Maximum iteration limit reached")
+        event_emitter.emit("agent_warning", message="Maximum iteration limit reached")
         self.save_session()
         return {
             "content": "I've reached the maximum number of iterations. Please try again.",
@@ -429,8 +556,49 @@ class Agent:
             "model_info": self.provider.get_model_info(),
         }
 
-    # Maximum size (in characters) of a single tool result before summarization
-    MAX_TOOL_RESULT_CHARS = 8000
+    async def _call_llm_with_retry(
+        self,
+        messages: List[Dict[str, Any]],
+        tool_schemas: Optional[List[Dict[str, Any]]],
+    ) -> Dict[str, Any]:
+        """Call the LLM with retry logic for transient errors.
+
+        Retries up to MAX_RETRIES_PER_ITERATION times with exponential backoff
+        for transient failures (timeouts, rate limits, server errors).
+        Non-transient errors are raised immediately.
+        """
+        last_error: Optional[Exception] = None
+
+        for attempt in range(1, MAX_RETRIES_PER_ITERATION + 1):
+            try:
+                if self.streaming:
+                    return await self._stream_response(messages, tool_schemas)
+                else:
+                    raw = await self.provider.chat(messages, tools=tool_schemas)
+                    return self._extract_response_data(raw)
+            except Exception as e:
+                last_error = e
+                if not self._is_transient_error(e) or attempt == MAX_RETRIES_PER_ITERATION:
+                    raise
+                delay = RETRY_BASE_DELAY * (2 ** (attempt - 1))
+                logger.warning(
+                    f"Transient error (attempt {attempt}/{MAX_RETRIES_PER_ITERATION}): "
+                    f"{e}. Retrying in {delay}s…"
+                )
+                event_emitter.emit(
+                    "agent_warning",
+                    message=f"Transient error, retrying in {delay}s… ({attempt}/{MAX_RETRIES_PER_ITERATION})"
+                )
+                await asyncio.sleep(delay)
+
+        # Should not reach here, but just in case
+        raise last_error  # type: ignore[misc]
+
+    @staticmethod
+    def _is_transient_error(exc: Exception) -> bool:
+        """Determine if an exception is transient and worth retrying."""
+        msg = str(exc).lower()
+        return any(pattern in msg for pattern in _TRANSIENT_PATTERNS)
 
     def _summarize_tool_result(self, result: Dict[str, Any]) -> Dict[str, Any]:
         """Summarize large tool results to prevent context overflow.
@@ -442,14 +610,14 @@ class Agent:
             Original or summarized result
         """
         result_str = json.dumps(result)
-        if len(result_str) <= self.MAX_TOOL_RESULT_CHARS:
+        if len(result_str) <= self.config.max_tool_output:
             return result
 
         # Truncate large string values in the result
         summarized = {}
         for key, value in result.items():
-            if isinstance(value, str) and len(value) > self.MAX_TOOL_RESULT_CHARS // 2:
-                half = self.MAX_TOOL_RESULT_CHARS // 4
+            if isinstance(value, str) and len(value) > self.config.max_tool_output // 2:
+                half = self.config.max_tool_output // 4
                 summarized[key] = (
                     value[:half]
                     + f"\n\n... [truncated {len(value) - 2 * half} chars] ...\n\n"

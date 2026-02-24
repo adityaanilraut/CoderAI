@@ -3,9 +3,18 @@
 import asyncio
 import re
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel, Field
 
 from .base import Tool
+
+
+class TextSearchParams(BaseModel):
+    query: str = Field(..., description="Search query")
+    base_path: str = Field(".", description="Base path to search from (default: current directory)")
+    file_pattern: str = Field("*", description="File pattern to include (e.g., '*.py', '*.js')")
+    max_results: int = Field(20, description="Maximum number of results (default: 20)")
 
 
 class TextSearchTool(Tool):
@@ -13,31 +22,7 @@ class TextSearchTool(Tool):
 
     name = "text_search"
     description = "Search the codebase for text patterns or code snippets"
-
-    def get_parameters(self) -> Dict[str, Any]:
-        """Get parameters schema."""
-        return {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Search query",
-                },
-                "base_path": {
-                    "type": "string",
-                    "description": "Base path to search from (default: current directory)",
-                },
-                "file_pattern": {
-                    "type": "string",
-                    "description": "File pattern to include (e.g., '*.py', '*.js')",
-                },
-                "max_results": {
-                    "type": "integer",
-                    "description": "Maximum number of results (default: 20)",
-                },
-            },
-            "required": ["query"],
-        }
+    parameters_model = TextSearchParams
 
     async def execute(
         self,
@@ -108,36 +93,20 @@ class TextSearchTool(Tool):
             return {"success": False, "error": str(e)}
 
 
+class GrepParams(BaseModel):
+    pattern: str = Field(..., description="Pattern to search for (supports regex)")
+    path: str = Field(..., description="Path to search in (file or directory)")
+    case_insensitive: bool = Field(False, description="Case insensitive search (default: false)")
+    recursive: bool = Field(True, description="Search recursively in directories (default: true)")
+    max_results: int = Field(50, description="Maximum number of matches to return (default: 50)")
+
+
 class GrepTool(Tool):
     """Tool for pattern matching in files using grep."""
 
     name = "grep"
     description = "Search for patterns in files using grep"
-
-    def get_parameters(self) -> Dict[str, Any]:
-        """Get parameters schema."""
-        return {
-            "type": "object",
-            "properties": {
-                "pattern": {
-                    "type": "string",
-                    "description": "Pattern to search for (supports regex)",
-                },
-                "path": {
-                    "type": "string",
-                    "description": "Path to search in (file or directory)",
-                },
-                "case_insensitive": {
-                    "type": "boolean",
-                    "description": "Case insensitive search (default: false)",
-                },
-                "recursive": {
-                    "type": "boolean",
-                    "description": "Search recursively in directories (default: true)",
-                },
-            },
-            "required": ["pattern", "path"],
-        }
+    parameters_model = GrepParams
 
     async def execute(
         self,
@@ -145,10 +114,11 @@ class GrepTool(Tool):
         path: str,
         case_insensitive: bool = False,
         recursive: bool = True,
+        max_results: int = 50,
     ) -> Dict[str, Any]:
         """Execute grep search using create_subprocess_exec to avoid shell injection."""
         try:
-            cmd = ["grep", "-n"]
+            cmd = ["grep", "-n", f"--max-count={max_results}"]
             if case_insensitive:
                 cmd.append("-i")
             if recursive:

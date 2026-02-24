@@ -1,14 +1,32 @@
 """Web search tool using DuckDuckGo."""
 
 import logging
+import re
 from typing import Any, Dict
 from urllib.parse import quote_plus
 
 import aiohttp
+from pydantic import BaseModel, Field
 
 from .base import Tool
 
 logger = logging.getLogger(__name__)
+
+# Module-level session for reuse across requests (#8)
+_web_session: aiohttp.ClientSession | None = None
+
+
+async def _get_web_session() -> aiohttp.ClientSession:
+    """Get or create a shared aiohttp session."""
+    global _web_session
+    if _web_session is None or _web_session.closed:
+        _web_session = aiohttp.ClientSession()
+    return _web_session
+
+
+class WebSearchParams(BaseModel):
+    query: str = Field(..., description="Search query string")
+    num_results: int = Field(5, description="Number of results to return (default: 5, max: 10)")
 
 
 class WebSearchTool(Tool):
@@ -21,23 +39,7 @@ class WebSearchTool(Tool):
     DDG_API_URL = "https://api.duckduckgo.com/"
     # DuckDuckGo HTML search (more comprehensive but needs parsing)
     DDG_HTML_URL = "https://html.duckduckgo.com/html/"
-
-    def get_parameters(self) -> Dict[str, Any]:
-        """Get parameters schema."""
-        return {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Search query string",
-                },
-                "num_results": {
-                    "type": "integer",
-                    "description": "Number of results to return (default: 5, max: 10)",
-                },
-            },
-            "required": ["query"],
-        }
+    parameters_model = WebSearchParams
 
     async def execute(self, query: str, num_results: int = 5) -> Dict[str, Any]:
         """Execute web search.
@@ -183,8 +185,24 @@ class WebSearchTool(Tool):
     def _parse_html_results(self, html: str, max_results: int) -> list:
         """Parse DuckDuckGo HTML search results.
 
-        Uses simple string parsing — no lxml/bs4 dependency needed.
+        Uses simple string parsing with a regex fallback.
         """
+        try:
+            results = self._parse_html_split(html, max_results)
+            if results:
+                return results
+        except Exception as e:
+            logger.debug(f"Primary HTML parser failed: {e}")
+
+        # Fallback: regex-based extraction
+        try:
+            return self._parse_html_regex(html, max_results)
+        except Exception as e:
+            logger.warning(f"All HTML parsers failed: {e}")
+            return []
+
+    def _parse_html_split(self, html: str, max_results: int) -> list:
+        """Primary parser using string splitting."""
         results = []
 
         # Look for result blocks: class="result__body"
@@ -217,7 +235,6 @@ class WebSearchTool(Tool):
                     snip_end = part.index("</", snip_tag_end)
                     snippet = part[snip_tag_end:snip_end].strip()
                     # Remove HTML tags from snippet
-                    import re
                     snippet = re.sub(r"<[^>]+>", "", snippet)
                     result["snippet"] = snippet
 
@@ -226,5 +243,32 @@ class WebSearchTool(Tool):
 
             except (ValueError, IndexError):
                 continue
+
+        return results
+
+    def _parse_html_regex(self, html: str, max_results: int) -> list:
+        """Fallback regex-based parser for when the split approach fails."""
+        results = []
+
+        # Match title + URL from anchor tags in result blocks
+        link_pattern = re.compile(
+            r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>',
+            re.DOTALL,
+        )
+        snippet_pattern = re.compile(
+            r'class="result__snippet"[^>]*>(.*?)</(?:td|div|span)',
+            re.DOTALL,
+        )
+
+        links = link_pattern.findall(html)
+        snippets = snippet_pattern.findall(html)
+
+        for i, (url, title) in enumerate(links[:max_results]):
+            title_clean = re.sub(r"<[^>]+>", "", title).strip()
+            url = ("https:" + url) if url.startswith("//") else url
+            result = {"url": url, "title": title_clean}
+            if i < len(snippets):
+                result["snippet"] = re.sub(r"<[^>]+>", "", snippets[i]).strip()
+            results.append(result)
 
         return results

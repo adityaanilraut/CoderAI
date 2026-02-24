@@ -19,12 +19,21 @@ class Config(BaseModel):
     max_tokens: Optional[int] = Field(default=4096)
     lmstudio_endpoint: str = Field(default="http://localhost:1234/v1")
     lmstudio_model: str = Field(default="local-model")
+    ollama_endpoint: str = Field(default="http://localhost:11434/v1")
+    ollama_model: str = Field(default="llama3")
     web_search_api_key: Optional[str] = Field(default=None)
     web_search_engine: str = Field(default="duckduckgo")  # or 'google', 'bing'
     streaming: bool = Field(default=True)
+    reasoning_effort: str = Field(default="medium")  # high, medium, low, none
     save_history: bool = Field(default=True)
     context_window: int = Field(default=128000)
+    max_iterations: int = Field(default=50)
+    max_tool_output: int = Field(default=8000)
     log_level: str = Field(default="WARNING")  # DEBUG, INFO, WARNING, ERROR
+    project_instruction_file: str = Field(default="CODERAI.md")
+    max_file_size: int = Field(default=1_048_576)  # 1 MB
+    max_glob_results: int = Field(default=200)
+    max_command_output: int = Field(default=10_000)  # chars
 
     class Config:
         """Pydantic config."""
@@ -61,8 +70,13 @@ class ConfigManager:
             "CODERAI_TEMPERATURE": "temperature",
             "CODERAI_MAX_TOKENS": "max_tokens",
             "LMSTUDIO_ENDPOINT": "lmstudio_endpoint",
+            "OLLAMA_ENDPOINT": "ollama_endpoint",
             "WEB_SEARCH_API_KEY": "web_search_api_key",
             "CODERAI_LOG_LEVEL": "log_level",
+            "CODERAI_REASONING_EFFORT": "reasoning_effort",
+            "CODERAI_MAX_ITERATIONS": "max_iterations",
+            "CODERAI_MAX_TOOL_OUTPUT": "max_tool_output",
+            "CODERAI_PROJECT_INSTRUCTION_FILE": "project_instruction_file",
         }
 
         for env_var, config_key in env_mappings.items():
@@ -71,7 +85,7 @@ class ConfigManager:
                 # Convert types if needed
                 if config_key == "temperature":
                     value = float(value)
-                elif config_key == "max_tokens":
+                elif config_key in ["max_tokens", "max_iterations", "max_tool_output"]:
                     value = int(value)
                 config_data[config_key] = value
 
@@ -122,6 +136,67 @@ class ConfigManager:
         self._config = Config()
         if self.config_file.exists():
             self.config_file.unlink()
+
+    def load_project_config(self, project_root: str = ".") -> Config:
+        """Load per-project config and merge with global config.
+
+        Looks for ``.coderAI/config.json`` in *project_root* and overlays
+        the allowed keys on top of the already-loaded global configuration.
+
+        Args:
+            project_root: Path to the project root directory.
+
+        Returns:
+            The updated Config instance.
+        """
+        config = self.load()
+        project_config_path = Path(project_root).resolve() / ".coderAI" / "config.json"
+
+        if not project_config_path.is_file():
+            return config
+
+        # Only these keys may be overridden at the project level.
+        # API keys are intentionally excluded for security.
+        ALLOWED_PROJECT_KEYS = {
+            "default_model",
+            "temperature",
+            "max_tokens",
+            "max_iterations",
+            "context_window",
+            "max_tool_output",
+            "max_file_size",
+            "max_glob_results",
+            "max_command_output",
+            "project_instruction_file",
+            "streaming",
+            "reasoning_effort",
+            "log_level",
+        }
+
+        try:
+            with open(project_config_path, "r") as f:
+                project_data = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return config
+
+        for key, value in project_data.items():
+            if key not in ALLOWED_PROJECT_KEYS:
+                continue
+            # Type coercion for numeric / boolean fields
+            if key == "temperature":
+                value = float(value)
+            elif key in {
+                "max_tokens", "max_iterations", "context_window",
+                "max_tool_output", "max_file_size", "max_glob_results",
+                "max_command_output",
+            }:
+                value = int(value)
+            elif key == "streaming":
+                value = bool(value)
+            setattr(config, key, value)
+
+        self._config = config
+        return config
 
 
 # Global config manager instance

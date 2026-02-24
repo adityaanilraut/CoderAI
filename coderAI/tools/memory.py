@@ -2,7 +2,9 @@
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel, Field
 
 from .base import Tool
 
@@ -62,8 +64,21 @@ class MemoryStore:
         return False
 
 
-# Global memory store instance
-memory_store = MemoryStore()
+# Lazy-initialized memory store to avoid side effects on import
+_memory_store: "MemoryStore | None" = None
+
+
+def get_memory_store() -> MemoryStore:
+    """Get or create the global memory store (lazy init)."""
+    global _memory_store
+    if _memory_store is None:
+        _memory_store = MemoryStore()
+    return _memory_store
+
+
+class SaveMemoryParams(BaseModel):
+    key: str = Field(..., description="Memory key/identifier")
+    value: str = Field(..., description="Information to save")
 
 
 class SaveMemoryTool(Tool):
@@ -71,28 +86,12 @@ class SaveMemoryTool(Tool):
 
     name = "save_memory"
     description = "Save information to persistent memory for later recall"
-
-    def get_parameters(self) -> Dict[str, Any]:
-        """Get parameters schema."""
-        return {
-            "type": "object",
-            "properties": {
-                "key": {
-                    "type": "string",
-                    "description": "Memory key/identifier",
-                },
-                "value": {
-                    "type": "string",
-                    "description": "Information to save",
-                },
-            },
-            "required": ["key", "value"],
-        }
+    parameters_model = SaveMemoryParams
 
     async def execute(self, key: str, value: str) -> Dict[str, Any]:
         """Save memory."""
         try:
-            memory_store.add(key, value)
+            get_memory_store().add(key, value)
             return {
                 "success": True,
                 "key": key,
@@ -102,35 +101,25 @@ class SaveMemoryTool(Tool):
             return {"success": False, "error": str(e)}
 
 
+class RecallMemoryParams(BaseModel):
+    key: Optional[str] = Field(None, description="Memory key to recall (optional, omit to search)")
+    query: Optional[str] = Field(None, description="Search query to find related memories")
+
+
 class RecallMemoryTool(Tool):
     """Tool for recalling information from memory."""
 
     name = "recall_memory"
     description = "Recall previously saved information from memory"
-
-    def get_parameters(self) -> Dict[str, Any]:
-        """Get parameters schema."""
-        return {
-            "type": "object",
-            "properties": {
-                "key": {
-                    "type": "string",
-                    "description": "Memory key to recall (optional, omit to search)",
-                },
-                "query": {
-                    "type": "string",
-                    "description": "Search query to find related memories",
-                },
-            },
-            "required": [],
-        }
+    parameters_model = RecallMemoryParams
 
     async def execute(self, key: str = None, query: str = None) -> Dict[str, Any]:
         """Recall memory."""
         try:
+            store = get_memory_store()
             if key:
                 # Get specific memory
-                value = memory_store.get(key)
+                value = store.get(key)
                 if value is None:
                     return {
                         "success": False,
@@ -143,7 +132,7 @@ class RecallMemoryTool(Tool):
                 }
             elif query:
                 # Search memories
-                results = memory_store.search(query)
+                results = store.search(query)
                 return {
                     "success": True,
                     "query": query,
@@ -152,7 +141,7 @@ class RecallMemoryTool(Tool):
                 }
             else:
                 # List all memories
-                memories = memory_store.list_all()
+                memories = store.list_all()
                 return {
                     "success": True,
                     "memories": memories,

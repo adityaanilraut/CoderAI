@@ -38,7 +38,6 @@ class OpenAIProvider(LLMProvider):
     # Supported models with their actual API names
     SUPPORTED_MODELS = {
         "gpt-5": "gpt-5",
-        "gpt-5-mini": "gpt-5-mini",
         "gpt-4-turbo": "gpt-4-turbo",
         "gpt-4": "gpt-4",
         "gpt-3.5-turbo": "gpt-3.5-turbo",
@@ -66,6 +65,7 @@ class OpenAIProvider(LLMProvider):
         # Extract common parameters
         self.temperature = kwargs.get("temperature", 0.7)
         self.max_tokens = kwargs.get("max_tokens", 4096)
+        self.reasoning_effort = kwargs.get("reasoning_effort", "medium")
 
         # Initialize tokenizer
         try:
@@ -102,6 +102,8 @@ class OpenAIProvider(LLMProvider):
         # Some models don't support the temperature parameter
         if self.actual_model not in NO_TEMPERATURE_MODELS:
             params["temperature"] = kwargs.get("temperature", self.temperature)
+        elif self.reasoning_effort and self.reasoning_effort != "none":
+            params["reasoning_effort"] = self.reasoning_effort
 
         if tools:
             params["tools"] = tools
@@ -159,6 +161,8 @@ class OpenAIProvider(LLMProvider):
         # Some models don't support the temperature parameter
         if self.actual_model not in NO_TEMPERATURE_MODELS:
             params["temperature"] = kwargs.get("temperature", self.temperature)
+        elif self.reasoning_effort and self.reasoning_effort != "none":
+            params["reasoning_effort"] = self.reasoning_effort
 
         if tools:
             params["tools"] = tools

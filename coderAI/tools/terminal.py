@@ -3,9 +3,13 @@
 import asyncio
 import logging
 import shlex
-from typing import Any, Dict
+import shutil
+from typing import Any, Dict, Optional
+
+from pydantic import BaseModel, Field
 
 from .base import Tool
+from ..config import config_manager
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +27,6 @@ BLOCKED_PATTERNS = [
     "reboot",
     "halt",
     "format c:",
-    "/dev/null",
     "wget|sh",
     "curl|sh",
     "curl|bash",
@@ -55,6 +58,13 @@ DANGEROUS_PREFIXES = [
     "docker rmi",
 ]
 
+# Common command aliases: (original, replacement)
+# Applied when the original is not found on PATH but the replacement is.
+_COMMAND_ALIASES = [
+    ("python", "python3"),
+    ("pip", "pip3"),
+]
+
 
 def is_command_blocked(command: str) -> bool:
     """Check if a command is in the blocklist."""
@@ -68,32 +78,37 @@ def is_command_dangerous(command: str) -> bool:
     return any(cmd_lower.startswith(prefix) for prefix in DANGEROUS_PREFIXES)
 
 
+def _rewrite_command_aliases(command: str) -> str:
+    """Rewrite common command aliases when the original isn't on PATH.
+
+    For example, on macOS and newer Linux distros ``python`` often doesn't
+    exist but ``python3`` does.  This helper transparently rewrites the
+    command so that the LLM-generated commands work out of the box.
+    """
+    for original, replacement in _COMMAND_ALIASES:
+        # Only rewrite if the command *starts* with the original token
+        # (e.g. "python foo.py", "python -m pytest") and `original` is
+        # missing from PATH while `replacement` is available.
+        if command == original or command.startswith(original + " "):
+            if shutil.which(original) is None and shutil.which(replacement) is not None:
+                command = replacement + command[len(original):]
+                logger.debug(f"Rewrote '{original}' → '{replacement}' in command")
+                break
+    return command
+
+
+class RunCommandParams(BaseModel):
+    command: str = Field(..., description="Shell command to execute")
+    working_dir: str = Field(".", description="Working directory for the command (default: current)")
+    timeout: int = Field(60, description="Timeout in seconds (default: 60)")
+
+
 class RunCommandTool(Tool):
     """Tool for executing shell commands with safety checks."""
 
     name = "run_command"
     description = "Execute a shell command and return its output. Dangerous commands require confirmation."
-
-    def get_parameters(self) -> Dict[str, Any]:
-        """Get parameters schema."""
-        return {
-            "type": "object",
-            "properties": {
-                "command": {
-                    "type": "string",
-                    "description": "Shell command to execute",
-                },
-                "working_dir": {
-                    "type": "string",
-                    "description": "Working directory for the command (default: current)",
-                },
-                "timeout": {
-                    "type": "integer",
-                    "description": "Timeout in seconds (default: 60)",
-                },
-            },
-            "required": ["command"],
-        }
+    parameters_model = RunCommandParams
 
     async def execute(
         self, command: str, working_dir: str = ".", timeout: int = 60
@@ -109,6 +124,7 @@ class RunCommandTool(Tool):
                 return {
                     "success": False,
                     "error": f"Command blocked for safety: {command}",
+                    "error_code": "blocked",
                     "blocked": True,
                 }
 
@@ -122,12 +138,16 @@ class RunCommandTool(Tool):
                         "This command involves file deletion, system changes, or "
                         "package management. Please confirm with the user first."
                     ),
+                    "error_code": "dangerous",
                     "dangerous": True,
                     "hint": "Ask the user to confirm they want to run this command.",
                 }
 
+            # Rewrite common aliases (e.g. python -> python3 on macOS)
+            command = _rewrite_command_aliases(command)
+
             # Try to use exec (no shell) for simple commands
-            needs_shell = any(c in command for c in ['|', '>', '<', '&&', '||', ';', '`', '$', '*', '?', '~'])
+            needs_shell = any(c in command for c in ['|', '>', '<', '&&', '||', ';', '`', '$', '*', '?', '~', '&'])
 
             if needs_shell:
                 process = await asyncio.create_subprocess_shell(
@@ -159,18 +179,21 @@ class RunCommandTool(Tool):
                 stdout, stderr = await asyncio.wait_for(
                     process.communicate(), timeout=timeout
                 )
+                if process.returncode is None:
+                    await process.wait()
             except asyncio.TimeoutError:
                 process.kill()
                 return {
                     "success": False,
                     "error": f"Command timed out after {timeout} seconds",
+                    "error_code": "timeout",
                 }
 
             # Truncate very large output to prevent context overflow
             stdout_str = stdout.decode("utf-8", errors="replace")
             stderr_str = stderr.decode("utf-8", errors="replace")
 
-            max_output = 10000
+            max_output = config_manager.load().max_command_output
             if len(stdout_str) > max_output:
                 stdout_str = (
                     stdout_str[:max_output // 2]
@@ -191,31 +214,17 @@ class RunCommandTool(Tool):
             return {"success": False, "error": str(e)}
 
 
+class RunBackgroundParams(BaseModel):
+    command: str = Field(..., description="Shell command to execute in background")
+    working_dir: str = Field(".", description="Working directory for the command (default: current)")
+
+
 class RunBackgroundTool(Tool):
     """Tool for starting background processes."""
 
     name = "run_background"
     description = "Start a command in the background (for long-running processes like servers)"
-
-    # Track background processes so they can be checked/killed later
-    _processes: Dict[int, asyncio.subprocess.Process] = {}
-
-    def get_parameters(self) -> Dict[str, Any]:
-        """Get parameters schema."""
-        return {
-            "type": "object",
-            "properties": {
-                "command": {
-                    "type": "string",
-                    "description": "Shell command to execute in background",
-                },
-                "working_dir": {
-                    "type": "string",
-                    "description": "Working directory for the command (default: current)",
-                },
-            },
-            "required": ["command"],
-        }
+    parameters_model = RunBackgroundParams
 
     async def execute(self, command: str, working_dir: str = ".") -> Dict[str, Any]:
         """Start background process with tracking."""

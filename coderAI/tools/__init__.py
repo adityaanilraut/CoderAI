@@ -27,7 +27,7 @@ from .filesystem import (
 from .terminal import RunCommandTool, RunBackgroundTool
 
 # Git tools
-from .git import GitStatusTool, GitDiffTool, GitCommitTool, GitLogTool
+from .git import GitAddTool, GitStatusTool, GitDiffTool, GitCommitTool, GitLogTool
 
 # Search tools
 from .search import TextSearchTool, GrepTool
@@ -47,6 +47,9 @@ from .undo import UndoTool, UndoHistoryTool, backup_store
 # Project context
 from .project import ProjectContextTool
 
+# Context management
+from .context_manage import ManageContextTool
+
 __all__ = [
     # Base
     "Tool",
@@ -61,6 +64,7 @@ __all__ = [
     "RunCommandTool",
     "RunBackgroundTool",
     # Git
+    "GitAddTool",
     "GitStatusTool",
     "GitDiffTool",
     "GitCommitTool",
@@ -84,4 +88,6 @@ __all__ = [
     "backup_store",
     # Project
     "ProjectContextTool",
+    # Context
+    "ManageContextTool",
 ]

@@ -6,6 +6,10 @@ import sys
 from pathlib import Path
 
 import click
+from dotenv import load_dotenv
+
+# Load .env file before anything else reads environment variables
+load_dotenv()
 
 from . import __version__
 from .agent import Agent
@@ -16,7 +20,7 @@ from .ui.interactive import interactive_chat
 
 
 @click.group(invoke_without_command=True)
-@click.option("--model", "-m", help="Model to use (gpt-5, gpt-5-mini, claude-4-sonnet, lmstudio)")
+@click.option("--model", "-m", help="Model to use (gpt-5, gpt-5-mini, claude-4-sonnet, lmstudio, ollama)")
 @click.option("--resume", "-r", help="Resume a previous session by ID")
 @click.option("--version", "-v", is_flag=True, help="Show version")
 @click.option("--verbose", is_flag=True, help="Enable verbose/debug logging")
@@ -49,16 +53,18 @@ def cli(ctx, model, resume, version, verbose):
 @cli.command()
 @click.option("--model", "-m", help="Model to use")
 @click.option("--resume", "-r", help="Resume a previous session by ID")
-def chat(model, resume):
+@click.option("--no-stream", is_flag=True, help="Disable streaming responses")
+def chat(model, resume, no_stream):
     """Start an interactive chat session."""
-    asyncio.run(_run_chat(model, resume))
+    asyncio.run(_run_chat(model, resume, no_stream))
 
 
-async def _run_chat(model, resume):
+async def _run_chat(model, resume, no_stream=False):
     """Run interactive chat."""
     try:
         # Create agent
-        agent = Agent(model=model, streaming=True)
+        streaming = not no_stream
+        agent = Agent(model=model, streaming=streaming)
 
         # Load or create session
         if resume:
@@ -86,7 +92,7 @@ async def _run_chat(model, resume):
                 
                 # Validate model name
                 valid_models = list(agent.provider.SUPPORTED_MODELS.keys()) if hasattr(agent.provider, 'SUPPORTED_MODELS') else []
-                valid_models.extend(["lmstudio", "claude-4-sonnet", "claude-3.5-sonnet", "claude-3.5-haiku", "claude-3-opus"])
+                valid_models.extend(["lmstudio", "ollama", "claude-4-sonnet", "claude-3.5-sonnet", "claude-3.5-haiku", "claude-3-opus"])
                 
                 if user_input not in valid_models:
                     display.print_error(f"Invalid model: {user_input}")
@@ -102,10 +108,35 @@ async def _run_chat(model, resume):
                 display.print_success(f"Model changed from {old_model} to {user_input}")
                 return {}
             
+            # Check if awaiting reasoning change
+            if context.get("awaiting_reasoning_change"):
+                context["awaiting_reasoning_change"] = False
+                
+                if user_input.lower() == "cancel":
+                    display.print_info("Reasoning change cancelled")
+                    return {}
+                    
+                valid_efforts = ["high", "medium", "low", "none"]
+                
+                if user_input.lower() not in valid_efforts:
+                    display.print_error(f"Invalid reasoning effort: {user_input}")
+                    display.print_info(f"Valid options: {', '.join(valid_efforts)}")
+                    return {}
+                    
+                # Change reasoning effort
+                old_effort = getattr(agent.config, "reasoning_effort", "medium")
+                config_manager.set("reasoning_effort", user_input.lower())
+                agent.config = config_manager.load()
+                agent.provider = agent._create_provider()  # Re-init provider with new config
+                context["reasoning_effort"] = user_input.lower()
+                
+                display.print_success(f"Reasoning effort changed from {old_effort} to {user_input.lower()}")
+                return {}
+            
             response = await agent.process_message(user_input)
             
-            # Display assistant response
-            if response.get("content"):
+            # Display assistant response only if we didn't already stream it
+            if response.get("content") and not getattr(agent, "streaming", True):
                 display.print("\n[bold blue]Assistant:[/bold blue]")
                 display.print_markdown(response["content"])
                 display.print()
@@ -174,7 +205,7 @@ def config_set(key, value):
         # Convert value types
         if key in ["temperature"]:
             value = float(value)
-        elif key in ["max_tokens", "context_window"]:
+        elif key in ["max_tokens", "context_window", "max_iterations", "max_tool_output"]:
             value = int(value)
         elif key in ["streaming", "save_history"]:
             value = value.lower() in ["true", "1", "yes"]
@@ -278,14 +309,23 @@ def setup():
     
     # Default Model
     display.print("[bold]3. Default Model[/bold]")
-    display.print("   Available: gpt-5, gpt-5-mini, claude-4-sonnet, claude-3.5-sonnet, lmstudio")
+    display.print("   Available: gpt-5, gpt-5-mini, claude-4-sonnet, claude-3.5-sonnet, lmstudio, ollama")
     model = click.prompt("   Enter default model", default="gpt-5-mini")
     config_manager.set("default_model", model)
     display.print_success(f"   Default model set to {model}")
     display.print()
     
+    # Reasoning Effort
+    display.print("[bold]4. Reasoning Effort[/bold]")
+    display.print("   How much thinking reasoning models (e.g. o1, o3-mini, claude-3.7-sonnet) should use.")
+    display.print("   Available: high, medium, low, none")
+    effort = click.prompt("   Enter reasoning effort", default="medium")
+    config_manager.set("reasoning_effort", effort.lower())
+    display.print_success(f"   Reasoning effort set to {effort.lower()}")
+    display.print()
+    
     # LM Studio (optional)
-    display.print("[bold]4. LM Studio Configuration (Optional)[/bold]")
+    display.print("[bold]5. LM Studio Configuration (Optional)[/bold]")
     display.print("   For using local models with LM Studio")
     use_lmstudio = click.confirm("   Configure LM Studio?", default=False)
     if use_lmstudio:
@@ -294,6 +334,18 @@ def setup():
         model = click.prompt("   LM Studio model name (optional)", default="local-model", show_default=True)
         config_manager.set("lmstudio_model", model)
         display.print_success("   LM Studio configuration saved")
+    display.print()
+
+    # Ollama (optional)
+    display.print("[bold]6. Ollama Configuration (Optional)[/bold]")
+    display.print("   For using local models with Ollama")
+    use_ollama = click.confirm("   Configure Ollama?", default=False)
+    if use_ollama:
+        endpoint = click.prompt("   Ollama server URL", default="http://localhost:11434/v1")
+        config_manager.set("ollama_endpoint", endpoint)
+        model = click.prompt("   Ollama model name", default="llama3", show_default=True)
+        config_manager.set("ollama_model", model)
+        display.print_success("   Ollama configuration saved")
     display.print()
     
     display.print_success("Setup complete! Run 'coderAI chat' to start.")
@@ -325,6 +377,10 @@ def models():
     display.print("\n[bold cyan]LM Studio Provider[/bold cyan]")
     display.print("  • [yellow]lmstudio[/yellow] - Use any local model")
     display.print("\n  [dim]Requires: LM Studio running locally[/dim]")
+
+    display.print("\n[bold cyan]Ollama Provider[/bold cyan]")
+    display.print("  • [yellow]ollama[/yellow] - Use any local model hosted via Ollama")
+    display.print("\n  [dim]Requires: Ollama running locally[/dim]")
     
     config = config_manager.load()
     display.print(f"\n[bold]Current default:[/bold] [yellow]{config.default_model}[/yellow]")
@@ -338,7 +394,7 @@ def set_model(model_name):
     from .llm.openai import OpenAIProvider
     from .llm.anthropic import MODEL_ALIASES
     
-    valid_models = list(OpenAIProvider.SUPPORTED_MODELS.keys()) + list(MODEL_ALIASES.keys()) + ["lmstudio"]
+    valid_models = list(OpenAIProvider.SUPPORTED_MODELS.keys()) + list(MODEL_ALIASES.keys()) + ["lmstudio", "ollama"]
     
     if model_name not in valid_models:
         display.print_error(f"Invalid model: {model_name}")
@@ -363,6 +419,7 @@ def cost():
     display.print("  [yellow]claude-4-sonnet[/yellow]: $0.003 input / $0.015 output")
     display.print("  [yellow]claude-3.5-sonnet[/yellow]: $0.003 input / $0.015 output")
     display.print("  [yellow]lmstudio[/yellow]:       Free (local)")
+    display.print("  [yellow]ollama[/yellow]:         Free (local)")
     display.print()
 
 
@@ -400,6 +457,11 @@ def status():
     display.print("\n[bold cyan]LM Studio Provider:[/bold cyan]")
     display.print(f"  Endpoint: {config.lmstudio_endpoint}")
     display.print(f"  Model: {config.lmstudio_model}")
+    
+    # Check Ollama
+    display.print("\n[bold cyan]Ollama Provider:[/bold cyan]")
+    display.print(f"  Endpoint: {config.ollama_endpoint}")
+    display.print(f"  Model: {config.ollama_model}")
     
     # Check history
     from .history import history_manager

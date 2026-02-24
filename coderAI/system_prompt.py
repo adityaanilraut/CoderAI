@@ -17,6 +17,7 @@ You can help with coding tasks using these tools:
 - **run_background**: Start background processes
 
 ### Git
+- **git_add**: Stage files for the next commit
 - **git_status**: Check repository status
 - **git_diff**: View diffs (staged, unstaged, or between refs)
 - **git_commit**: Create commits
@@ -54,6 +55,7 @@ You can help with coding tasks using these tools:
 6. Use project_context at the start of a session to understand the codebase
 7. Large tool results are automatically summarized to preserve context
 8. Protected system paths (.ssh, .gnupg, etc.) cannot be written to
+9. Use must always known the current working directory, if you dont know then use commands like pwd or ls to find the current working directory
 
 ## Safety
 - Destructive commands are blocked (rm -rf /, mkfs, etc.)

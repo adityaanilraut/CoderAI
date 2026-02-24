@@ -5,7 +5,9 @@ import logging
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel, Field
 
 from .base import Tool
 
@@ -13,6 +15,9 @@ logger = logging.getLogger(__name__)
 
 # Maximum number of backups to keep per file
 MAX_BACKUPS_PER_FILE = 10
+
+# Maximum total backups across all files
+MAX_TOTAL_BACKUPS = 50
 
 
 class FileBackupStore:
@@ -92,8 +97,9 @@ class FileBackupStore:
         self.index.append(entry)
         self._save_index()
 
-        # Clean up old backups for this file
+        # Clean up old backups for this file and globally
         self._cleanup_old_backups(str(source))
+        self._cleanup_global_backups()
 
         return entry
 
@@ -152,6 +158,60 @@ class FileBackupStore:
 
         return {"success": False, "error": "Unknown operation type"}
 
+    def undo_specific(self, index: int) -> Dict[str, Any]:
+        """Undo a specific operation by its index in the history.
+
+        Args:
+            index: 0-based index into the history (0 = most recent)
+
+        Returns:
+            Result of the undo operation
+        """
+        if not self.index:
+            return {"success": False, "error": "No operations to undo"}
+
+        if index < 0 or index >= len(self.index):
+            return {
+                "success": False,
+                "error": f"Invalid index {index}. Valid range: 0-{len(self.index) - 1}",
+            }
+
+        # Convert 0=most-recent to actual list index
+        actual_idx = len(self.index) - 1 - index
+        entry = self.index.pop(actual_idx)
+        self._save_index()
+
+        filepath = Path(entry["filepath"])
+        operation = entry["operation"]
+
+        try:
+            if operation == "create":
+                if filepath.exists():
+                    filepath.unlink()
+                return {
+                    "success": True,
+                    "action": "deleted",
+                    "filepath": str(filepath),
+                    "message": f"Removed newly created file: {filepath.name}",
+                }
+            elif operation in ("modify", "delete"):
+                backup_path = Path(entry["backup_path"])
+                if not backup_path.exists():
+                    return {"success": False, "error": f"Backup file not found: {backup_path}"}
+                filepath.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(backup_path, filepath)
+                backup_path.unlink()
+                return {
+                    "success": True,
+                    "action": "restored",
+                    "filepath": str(filepath),
+                    "message": f"Restored {filepath.name} to version from {entry['timestamp']}",
+                }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+        return {"success": False, "error": "Unknown operation type"}
+
     def get_history(self, limit: int = 10) -> List[Dict[str, Any]]:
         """Get recent backup history.
 
@@ -176,27 +236,41 @@ class FileBackupStore:
                 self.index.remove(entry)
             self._save_index()
 
+    def _cleanup_global_backups(self):
+        """Prune oldest backups when total exceeds MAX_TOTAL_BACKUPS."""
+        while len(self.index) > MAX_TOTAL_BACKUPS:
+            entry = self.index.pop(0)  # Remove oldest
+            if entry.get("backup_path"):
+                backup = Path(entry["backup_path"])
+                if backup.exists():
+                    backup.unlink()
+        self._save_index()
+
 
 # Global backup store
 backup_store = FileBackupStore()
 
 
+class UndoParams(BaseModel):
+    index: Optional[int] = Field(None, description="Index of the operation to undo (0 = most recent). Use undo_history to see available indices.")
+
+
 class UndoTool(Tool):
-    """Tool for undoing the last file operation."""
+    """Tool for undoing file operations."""
 
     name = "undo"
-    description = "Undo the last file modification (restores previous version)"
+    description = "Undo a file modification (restores previous version). Optionally specify an index from undo_history."
+    parameters_model = UndoParams
 
-    def get_parameters(self) -> Dict[str, Any]:
-        """Get parameters schema."""
-        return {
-            "type": "object",
-            "properties": {},
-        }
-
-    async def execute(self) -> Dict[str, Any]:
-        """Undo the last file operation."""
+    async def execute(self, index: int = None) -> Dict[str, Any]:
+        """Undo a file operation."""
+        if index is not None:
+            return backup_store.undo_specific(index)
         return backup_store.undo_last()
+
+
+class UndoHistoryParams(BaseModel):
+    limit: int = Field(10, description="Number of entries to show (default: 10)")
 
 
 class UndoHistoryTool(Tool):
@@ -204,18 +278,7 @@ class UndoHistoryTool(Tool):
 
     name = "undo_history"
     description = "View recent file modification history for undo"
-
-    def get_parameters(self) -> Dict[str, Any]:
-        """Get parameters schema."""
-        return {
-            "type": "object",
-            "properties": {
-                "limit": {
-                    "type": "integer",
-                    "description": "Number of entries to show (default: 10)",
-                },
-            },
-        }
+    parameters_model = UndoHistoryParams
 
     async def execute(self, limit: int = 10) -> Dict[str, Any]:
         """Get undo history."""
