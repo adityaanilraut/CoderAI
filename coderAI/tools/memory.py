@@ -112,6 +112,7 @@ class RecallMemoryTool(Tool):
     name = "recall_memory"
     description = "Recall previously saved information from memory"
     parameters_model = RecallMemoryParams
+    is_read_only = True
 
     async def execute(self, key: str = None, query: str = None) -> Dict[str, Any]:
         """Recall memory."""

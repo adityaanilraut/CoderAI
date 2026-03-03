@@ -1,9 +1,10 @@
 """Filesystem tools for file operations."""
 
 import os
+import re
 from glob import glob
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -70,6 +71,7 @@ class ReadFileTool(Tool):
     name = "read_file"
     description = "Read the contents of a file"
     parameters_model = ReadFileParams
+    is_read_only = True
 
     async def execute(self, path: str, start_line: int = None, end_line: int = None) -> Dict[str, Any]:
         """Read file contents with size limit."""
@@ -139,6 +141,7 @@ class WriteFileTool(Tool):
     name = "write_file"
     description = "Write content to a file (creates, overwrites, or appends). Protected system paths are blocked."
     parameters_model = WriteFileParams
+    requires_confirmation = True
 
     async def execute(self, path: str, content: str, append: bool = False) -> Dict[str, Any]:
         """Write content to file with path protection."""
@@ -189,6 +192,7 @@ class SearchReplaceTool(Tool):
     name = "search_replace"
     description = "Search for text in a file and replace it"
     parameters_model = SearchReplaceParams
+    requires_confirmation = True
 
     async def execute(
         self, path: str, search: str, replace: str, replace_all: bool = False
@@ -251,6 +255,7 @@ class ListDirectoryTool(Tool):
     name = "list_directory"
     description = "List files and directories in a path"
     parameters_model = ListDirectoryParams
+    is_read_only = True
 
     async def execute(self, path: str) -> Dict[str, Any]:
         """List directory contents."""
@@ -301,6 +306,7 @@ class GlobSearchTool(Tool):
     name = "glob_search"
     description = "Find files matching a glob pattern"
     parameters_model = GlobSearchParams
+    is_read_only = True
 
     async def execute(self, pattern: str, base_path: str = ".") -> Dict[str, Any]:
         """Find files matching pattern with result limit."""
@@ -347,3 +353,150 @@ class GlobSearchTool(Tool):
             return result
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+
+# --- Apply Diff Tool (F2) ---
+
+class ApplyDiffParams(BaseModel):
+    path: str = Field(..., description="Path to the file to patch")
+    diff: str = Field(
+        ...,
+        description=(
+            "Unified diff to apply. Lines starting with '-' are removed, "
+            "'+' are added, ' ' (space) are context. Include @@ hunk headers."
+        ),
+    )
+
+
+class ApplyDiffTool(Tool):
+    """Tool for applying unified diffs to files."""
+
+    name = "apply_diff"
+    description = (
+        "Apply a unified diff (patch) to a file. More precise than search_replace "
+        "for multi-line edits. Creates a backup for undo support."
+    )
+    parameters_model = ApplyDiffParams
+    requires_confirmation = True
+
+    async def execute(self, path: str, diff: str) -> Dict[str, Any]:
+        """Apply a unified diff to a file."""
+        try:
+            path_obj = Path(path).expanduser()
+            if not path_obj.exists():
+                return {
+                    "success": False,
+                    "error": f"File not found: {path}",
+                    "hint": "Use read_file to verify file contents before creating a diff.",
+                }
+
+            if _is_path_protected(path_obj):
+                return {
+                    "success": False,
+                    "error": f"Cannot modify protected path: {path}",
+                }
+
+            with open(path_obj, "r", encoding="utf-8") as f:
+                original_lines = f.readlines()
+
+            # Parse hunks from the diff
+            hunks = self._parse_hunks(diff)
+            if not hunks:
+                return {
+                    "success": False,
+                    "error": "No valid hunks found in diff. Use @@ -start,count +start,count @@ format.",
+                }
+
+            # Apply hunks in reverse order to preserve line numbers
+            result_lines = list(original_lines)
+            hunks_applied = 0
+
+            for hunk in reversed(hunks):
+                start = hunk["start"] - 1  # Convert to 0-indexed
+                old_lines = hunk["old_lines"]
+                new_lines = hunk["new_lines"]
+
+                # Validate context — check that old lines match
+                file_slice = result_lines[start : start + len(old_lines)]
+                file_slice_stripped = [l.rstrip("\n") for l in file_slice]
+                old_stripped = [l.rstrip("\n") for l in old_lines]
+
+                if file_slice_stripped != old_stripped:
+                    return {
+                        "success": False,
+                        "error": (
+                            f"Hunk at line {hunk['start']} does not match file contents. "
+                            f"Expected:\n{''.join(old_lines[:3])}...\n"
+                            f"Found:\n{''.join(file_slice[:3])}..."
+                        ),
+                        "hint": "Read the file first and create the diff based on actual content.",
+                    }
+
+                # Replace old lines with new lines
+                result_lines[start : start + len(old_lines)] = [
+                    l if l.endswith("\n") else l + "\n" for l in new_lines
+                ]
+                hunks_applied += 1
+
+            # Create backup and write
+            backup_store.backup_file(str(path_obj), "modify")
+
+            with open(path_obj, "w", encoding="utf-8") as f:
+                f.writelines(result_lines)
+
+            return {
+                "success": True,
+                "path": str(path_obj),
+                "hunks_applied": hunks_applied,
+                "lines_before": len(original_lines),
+                "lines_after": len(result_lines),
+            }
+
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    @staticmethod
+    def _parse_hunks(diff_text: str) -> List[Dict[str, Any]]:
+        """Parse unified diff text into hunks."""
+        hunks = []
+        hunk_header_re = re.compile(r"^@@\s*-(\d+)(?:,\d+)?\s*\+\d+(?:,\d+)?\s*@@")
+
+        lines = diff_text.split("\n")
+        i = 0
+        while i < len(lines):
+            match = hunk_header_re.match(lines[i])
+            if match:
+                start_line = int(match.group(1))
+                old_lines = []
+                new_lines = []
+                i += 1
+
+                while i < len(lines):
+                    line = lines[i]
+                    if line.startswith("@@") or (not line and i == len(lines) - 1):
+                        break
+                    elif line.startswith("-"):
+                        old_lines.append(line[1:])
+                    elif line.startswith("+"):
+                        new_lines.append(line[1:])
+                    elif line.startswith(" "):
+                        old_lines.append(line[1:])
+                        new_lines.append(line[1:])
+                    elif line == "\\ No newline at end of file":
+                        pass  # skip
+                    else:
+                        # Treat as context line (no prefix)
+                        old_lines.append(line)
+                        new_lines.append(line)
+                    i += 1
+
+                hunks.append({
+                    "start": start_line,
+                    "old_lines": old_lines,
+                    "new_lines": new_lines,
+                })
+            else:
+                i += 1
+
+        return hunks
+

@@ -48,6 +48,7 @@ class ProjectContextTool(Tool):
         "(config files, directory structure, dependencies)"
     )
     parameters_model = ProjectContextParams
+    is_read_only = True
 
     async def execute(self, path: str = ".") -> Dict[str, Any]:
         """Detect project type and load context."""

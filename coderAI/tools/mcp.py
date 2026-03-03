@@ -352,6 +352,7 @@ class MCPListTool(Tool):
     name = "mcp_list"
     description = "List all connected MCP servers and discovered tools"
     parameters_model = MCPListParams
+    is_read_only = True
 
     async def execute(self) -> Dict[str, Any]:
         """List MCP servers and tools."""

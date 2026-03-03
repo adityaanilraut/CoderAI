@@ -27,6 +27,7 @@ coderAI/tools/base.py
 coderAI/tools/context_manage.py
 coderAI/tools/filesystem.py
 coderAI/tools/git.py
+coderAI/tools/lint.py
 coderAI/tools/mcp.py
 coderAI/tools/memory.py
 coderAI/tools/project.py

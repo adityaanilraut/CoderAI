@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import time as _time
 from typing import Any, Dict, List, Optional
 
 from .config import config_manager
@@ -36,6 +37,8 @@ from .tools import (
     UndoHistoryTool,
     ProjectContextTool,
     ManageContextTool,
+    ApplyDiffTool,
+    LintTool,
 )
 from .events import event_emitter
 from .ui.streaming import StreamingHandler
@@ -76,17 +79,19 @@ _TRANSIENT_PATTERNS = (
 class Agent:
     """Main agent orchestrator that coordinates LLM and tools."""
 
-    def __init__(self, model: str = None, streaming: bool = True):
+    def __init__(self, model: str = None, streaming: bool = True, auto_approve: bool = False):
         """Initialize the agent.
 
         Args:
             model: Model name to use
             streaming: Enable streaming responses
+            auto_approve: Skip tool confirmation prompts (--auto-approve / --yolo)
         """
         self.config = config_manager.load()
         self.config = config_manager.load_project_config(".")
         self.model = model or self.config.default_model
         self.streaming = streaming and self.config.streaming
+        self.auto_approve = auto_approve
 
         # Set up logging
         logging.basicConfig(
@@ -194,6 +199,12 @@ class Agent:
 
         # Register context management tool
         registry.register(ManageContextTool(self.context_manager))
+
+        # Register diff-based editing tool (F2)
+        registry.register(ApplyDiffTool())
+
+        # Register linter tool (F18)
+        registry.register(LintTool())
 
         return registry
 
@@ -449,19 +460,17 @@ class Agent:
 
                 # Execute tool calls — parallelize read-only tools, keep
                 # mutating tools sequential to avoid write races (#9)
-                READ_ONLY_TOOLS = frozenset([
-                    "read_file", "list_directory", "glob_search",
-                    "text_search", "grep", "git_status", "git_diff",
-                    "git_log", "recall_memory", "project_context",
-                    "manage_context", "mcp_list", "web_search",
-                    "undo_history",
-                ])
+                # Uses the is_read_only flag on each Tool (F8)
 
                 async def _execute_single_tool(pc):
                     if pc["parse_error"]:
                         return {"success": False, "error": pc["parse_error"]}
                     try:
-                        return await self.tools.execute(pc["tool_name"], **pc["arguments"])
+                        return await self.tools.execute(
+                            pc["tool_name"],
+                            confirmation_callback=self._confirmation_callback if not self.auto_approve else None,
+                            **pc["arguments"],
+                        )
                     except Exception as e:
                         return {"success": False, "error": str(e)}
 
@@ -470,12 +479,15 @@ class Agent:
                 ro_indices = []
                 mut_indices = []
                 for i, pc in enumerate(parsed_calls):
-                    if pc["tool_name"] in READ_ONLY_TOOLS:
+                    tool_obj = self.tools.get(pc["tool_name"])
+                    if tool_obj and tool_obj.is_read_only:
                         ro_indices.append(i)
                     else:
                         mut_indices.append(i)
 
                 results: list = [None] * len(parsed_calls)
+                total_tools = len(parsed_calls)
+                tools_done = 0
                 
                 event_emitter.emit("status_start", message="[bold cyan]Executing tools...[/bold cyan]")
 
@@ -486,10 +498,27 @@ class Agent:
                     )
                     for idx, res in zip(ro_indices, ro_results):
                         results[idx] = res
+                        tools_done += 1
+                        event_emitter.emit(
+                            "tool_progress",
+                            step=tools_done,
+                            total=total_tools,
+                            tool_name=parsed_calls[idx]["tool_name"],
+                        )
 
                 # Run mutating tools sequentially (order matters)
                 for idx in mut_indices:
+                    t0 = _time.time()
                     results[idx] = await _execute_single_tool(parsed_calls[idx])
+                    elapsed = _time.time() - t0
+                    tools_done += 1
+                    event_emitter.emit(
+                        "tool_progress",
+                        step=tools_done,
+                        total=total_tools,
+                        tool_name=parsed_calls[idx]["tool_name"],
+                        elapsed=round(elapsed, 2),
+                    )
                     
                 event_emitter.emit("status_stop")
 
@@ -665,3 +694,26 @@ class Agent:
     def get_model_info(self) -> Dict[str, Any]:
         """Get information about current model."""
         return self.provider.get_model_info()
+
+    def _confirmation_callback(self, tool_name: str, arguments: Dict[str, Any]) -> bool:
+        """Ask the user to confirm a tool execution.
+
+        Emits a 'tool_confirmation' event. The UI layer is expected to
+        register a listener that prompts the user and stores the answer
+        in ``self._confirmation_result``.
+
+        Returns:
+            True if the user approved, False otherwise.
+        """
+        self._confirmation_result: Optional[bool] = None
+        event_emitter.emit(
+            "tool_confirmation",
+            tool_name=tool_name,
+            arguments=arguments,
+            agent=self,
+        )
+        # The event listener sets self._confirmation_result synchronously
+        if self._confirmation_result is None:
+            # No UI listener registered — default to allow
+            return True
+        return self._confirmation_result

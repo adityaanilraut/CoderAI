@@ -31,6 +31,7 @@ class Session(BaseModel):
     messages: List[Message] = Field(default_factory=list)
     model: str = "gpt-5-mini"
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    checkpoints: Dict[str, Any] = Field(default_factory=dict)
 
     def add_message(self, role: str, content: str, **kwargs) -> None:
         """Add a message to the session."""
@@ -51,6 +52,54 @@ class Session(BaseModel):
                 msg_dict["name"] = msg.name
             api_messages.append(msg_dict)
         return api_messages
+
+    def create_checkpoint(self, label: str = None) -> str:
+        """Create a checkpoint of the current conversation state.
+
+        Args:
+            label: Optional human-readable label
+
+        Returns:
+            Checkpoint ID
+        """
+        cp_id = f"cp_{int(time.time())}_{uuid.uuid4().hex[:4]}"
+        self.checkpoints[cp_id] = {
+            "messages": [msg.model_dump() for msg in self.messages],
+            "label": label or f"Checkpoint at {len(self.messages)} messages",
+            "created_at": time.time(),
+            "message_count": len(self.messages),
+        }
+        self.updated_at = time.time()
+        return cp_id
+
+    def rollback(self, checkpoint_id: str) -> bool:
+        """Rollback the session to a checkpoint.
+
+        Args:
+            checkpoint_id: ID of the checkpoint to rollback to
+
+        Returns:
+            True if rollback succeeded
+        """
+        if checkpoint_id not in self.checkpoints:
+            return False
+        cp = self.checkpoints[checkpoint_id]
+        self.messages = [Message(**m) for m in cp["messages"]]
+        self.updated_at = time.time()
+        return True
+
+    def list_checkpoints(self) -> List[Dict[str, Any]]:
+        """List all available checkpoints."""
+        result = []
+        for cp_id, cp in self.checkpoints.items():
+            result.append({
+                "id": cp_id,
+                "label": cp["label"],
+                "message_count": cp["message_count"],
+                "created_at": datetime.fromtimestamp(cp["created_at"]).strftime("%H:%M:%S"),
+            })
+        return result
+
 
 
 # Valid session ID pattern: session_<timestamp>_<hex8>

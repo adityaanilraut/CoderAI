@@ -279,6 +279,7 @@ class UndoHistoryTool(Tool):
     name = "undo_history"
     description = "View recent file modification history for undo"
     parameters_model = UndoHistoryParams
+    is_read_only = True
 
     async def execute(self, limit: int = 10) -> Dict[str, Any]:
         """Get undo history."""

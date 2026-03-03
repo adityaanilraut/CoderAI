@@ -1,7 +1,7 @@
 """Base tool interface and registry."""
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Type
+from typing import Any, Callable, Dict, List, Optional, Type
 
 from pydantic import BaseModel, ValidationError
 
@@ -12,6 +12,12 @@ class Tool(ABC):
     name: str = ""
     description: str = ""
     parameters_model: Optional[Type[BaseModel]] = None
+
+    # Safety: if True, the agent will ask the user to confirm before executing.
+    requires_confirmation: bool = False
+
+    # Parallelism: read-only tools can be executed concurrently.
+    is_read_only: bool = False
 
     @abstractmethod
     async def execute(self, **kwargs) -> Dict[str, Any]:
@@ -98,11 +104,19 @@ class ToolRegistry:
         """
         return [tool.get_schema() for tool in self.tools.values()]
 
-    async def execute(self, name: str, **kwargs) -> Dict[str, Any]:
+    async def execute(
+        self,
+        name: str,
+        confirmation_callback: Optional[Callable] = None,
+        **kwargs,
+    ) -> Dict[str, Any]:
         """Execute a tool by name.
 
         Args:
             name: Tool name
+            confirmation_callback: Optional async/sync callable that receives
+                (tool_name, arguments) and returns True to allow execution.
+                When None, all tools execute without confirmation.
             **kwargs: Tool parameters
 
         Returns:
@@ -114,7 +128,17 @@ class ToolRegistry:
         tool = self.get(name)
         if tool is None:
             raise ValueError(f"Tool not found: {name}")
-            
+
+        # Confirmation gate
+        if tool.requires_confirmation and confirmation_callback is not None:
+            approved = confirmation_callback(name, kwargs)
+            if not approved:
+                return {
+                    "success": False,
+                    "error": f"Tool '{name}' was denied by the user.",
+                    "error_code": "denied",
+                }
+
         if tool.parameters_model:
             try:
                 # Validate and parse arguments using Pydantic

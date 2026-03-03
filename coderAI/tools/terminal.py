@@ -109,6 +109,7 @@ class RunCommandTool(Tool):
     name = "run_command"
     description = "Execute a shell command and return its output. Dangerous commands require confirmation."
     parameters_model = RunCommandParams
+    requires_confirmation = True
 
     async def execute(
         self, command: str, working_dir: str = ".", timeout: int = 60
@@ -225,6 +226,7 @@ class RunBackgroundTool(Tool):
     name = "run_background"
     description = "Start a command in the background (for long-running processes like servers)"
     parameters_model = RunBackgroundParams
+    requires_confirmation = True
 
     async def execute(self, command: str, working_dir: str = ".") -> Dict[str, Any]:
         """Start background process with tracking."""

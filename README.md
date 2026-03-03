@@ -15,7 +15,7 @@ A powerful coding agent CLI tool similar to Claude Code and Gemini CLI, featurin
   - Web search for documentation
   - Knowledge base and memory
 - **Dual Modes**: Interactive chat and single-shot commands
-- **Advanced Session Management**: 
+- **Advanced Session Management**:
   - Persistent conversation history
   - Context clearing and resetting
   - Session export to JSON
@@ -27,7 +27,7 @@ A powerful coding agent CLI tool similar to Claude Code and Gemini CLI, featurin
 ## Installation
 
 ```bash
-pip install -e .
+pip3 install -e .
 ```
 
 ## Quick Start
@@ -176,4 +176,3 @@ $ coderAI --model lmstudio chat
 ## License
 
 MIT License
-

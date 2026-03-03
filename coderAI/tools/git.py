@@ -19,6 +19,7 @@ class GitAddTool(Tool):
     name = "git_add"
     description = "Stage files for the next git commit"
     parameters_model = GitAddParams
+    requires_confirmation = True
 
     async def execute(self, files: list, repo_path: str = ".") -> Dict[str, Any]:
         """Stage files for git commit."""
@@ -57,6 +58,7 @@ class GitStatusTool(Tool):
     name = "git_status"
     description = "Get the status of a git repository"
     parameters_model = GitStatusParams
+    is_read_only = True
 
     async def execute(self, repo_path: str = ".") -> Dict[str, Any]:
         """Get git status."""
@@ -97,6 +99,7 @@ class GitDiffTool(Tool):
     name = "git_diff"
     description = "View git diff for changes"
     parameters_model = GitDiffParams
+    is_read_only = True
 
     async def execute(
         self, repo_path: str = ".", file_path: str = None, staged: bool = False
@@ -144,6 +147,7 @@ class GitCommitTool(Tool):
     name = "git_commit"
     description = "Create a git commit with staged changes"
     parameters_model = GitCommitParams
+    requires_confirmation = True
 
     async def execute(self, message: str, repo_path: str = ".") -> Dict[str, Any]:
         """Create git commit."""
@@ -179,6 +183,7 @@ class GitLogTool(Tool):
     name = "git_log"
     description = "View git commit history"
     parameters_model = GitLogParams
+    is_read_only = True
 
     async def execute(self, repo_path: str = ".", limit: int = 10) -> Dict[str, Any]:
         """Get git log."""

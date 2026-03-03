@@ -23,6 +23,7 @@ class TextSearchTool(Tool):
     name = "text_search"
     description = "Search the codebase for text patterns or code snippets"
     parameters_model = TextSearchParams
+    is_read_only = True
 
     async def execute(
         self,
@@ -107,6 +108,7 @@ class GrepTool(Tool):
     name = "grep"
     description = "Search for patterns in files using grep"
     parameters_model = GrepParams
+    is_read_only = True
 
     async def execute(
         self,

@@ -21,6 +21,7 @@ from .filesystem import (
     SearchReplaceTool,
     ListDirectoryTool,
     GlobSearchTool,
+    ApplyDiffTool,
 )
 
 # Terminal tools
@@ -44,6 +45,9 @@ from .mcp import MCPConnectTool, MCPCallTool, MCPListTool, mcp_client
 # Undo / rollback tools
 from .undo import UndoTool, UndoHistoryTool, backup_store
 
+# Linter
+from .lint import LintTool
+
 # Project context
 from .project import ProjectContextTool
 
@@ -60,6 +64,7 @@ __all__ = [
     "SearchReplaceTool",
     "ListDirectoryTool",
     "GlobSearchTool",
+    "ApplyDiffTool",
     # Terminal
     "RunCommandTool",
     "RunBackgroundTool",
@@ -86,6 +91,8 @@ __all__ = [
     "UndoTool",
     "UndoHistoryTool",
     "backup_store",
+    # Linter
+    "LintTool",
     # Project
     "ProjectContextTool",
     # Context

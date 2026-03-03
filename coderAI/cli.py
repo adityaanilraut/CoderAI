@@ -54,17 +54,18 @@ def cli(ctx, model, resume, version, verbose):
 @click.option("--model", "-m", help="Model to use")
 @click.option("--resume", "-r", help="Resume a previous session by ID")
 @click.option("--no-stream", is_flag=True, help="Disable streaming responses")
-def chat(model, resume, no_stream):
+@click.option("--auto-approve", "--yolo", is_flag=True, help="Skip tool confirmation prompts")
+def chat(model, resume, no_stream, auto_approve):
     """Start an interactive chat session."""
-    asyncio.run(_run_chat(model, resume, no_stream))
+    asyncio.run(_run_chat(model, resume, no_stream, auto_approve))
 
 
-async def _run_chat(model, resume, no_stream=False):
+async def _run_chat(model, resume, no_stream=False, auto_approve=False):
     """Run interactive chat."""
     try:
         # Create agent
         streaming = not no_stream
-        agent = Agent(model=model, streaming=streaming)
+        agent = Agent(model=model, streaming=streaming, auto_approve=auto_approve)
 
         # Load or create session
         if resume:
@@ -78,6 +79,28 @@ async def _run_chat(model, resume, no_stream=False):
                 agent.create_session()
         else:
             agent.create_session()
+
+        # Auto-context: detect project type and inject summary (F7)
+        project_summary = ""
+        try:
+            from .tools.project import ProjectContextTool
+            ctx_tool = ProjectContextTool()
+            ctx_result = await ctx_tool.execute(path=".")
+            if ctx_result.get("success"):
+                proj_type = ctx_result.get("project_type", "unknown")
+                file_count = ctx_result.get("file_count", 0)
+                deps = ctx_result.get("key_dependencies", [])
+                deps_str = ", ".join(deps[:8]) if deps else "none detected"
+                project_summary = f"📁 {proj_type} project | {file_count} files | {deps_str}"
+                # Inject a lightweight context note into the system prompt
+                if agent.session and agent.session.messages:
+                    agent.session.add_message(
+                        "system",
+                        f"[Project context] Type: {proj_type}. "
+                        f"Key deps: {deps_str}. Files: {file_count}.",
+                    )
+        except Exception:
+            pass  # Non-critical — don't block startup
 
         # Message handler for interactive chat
         async def handle_message(user_input: str, context: dict) -> dict:

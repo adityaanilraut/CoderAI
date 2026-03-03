@@ -34,7 +34,7 @@ class WebSearchTool(Tool):
 
     name = "web_search"
     description = "Search the web for information using DuckDuckGo"
-
+    is_read_only = True
     # DuckDuckGo Instant Answer API (light JSON endpoint)
     DDG_API_URL = "https://api.duckduckgo.com/"
     # DuckDuckGo HTML search (more comprehensive but needs parsing)
