@@ -1,6 +1,5 @@
 """Anthropic/Claude LLM provider implementation."""
 
-import asyncio
 import json
 import logging
 from typing import Any, AsyncIterator, Dict, List, Optional
@@ -10,10 +9,6 @@ import aiohttp
 from .base import LLMProvider
 
 logger = logging.getLogger(__name__)
-
-# Retry configuration
-MAX_RETRIES = 3
-RETRY_DELAY_BASE = 1.0
 
 # Cost per 1K tokens (approximate)
 MODEL_COSTS = {
@@ -69,6 +64,18 @@ class AnthropicProvider(LLMProvider):
         """Close the HTTP session."""
         if self._session and not self._session.closed:
             await self._session.close()
+
+    def __del__(self):
+        """Best-effort cleanup of the HTTP session on garbage collection."""
+        if self._session and not self._session.closed:
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    loop.create_task(self._session.close())
+                else:
+                    loop.run_until_complete(self._session.close())
+            except Exception:
+                pass
 
     def _get_headers(self) -> Dict[str, str]:
         """Get API headers."""
@@ -206,8 +213,7 @@ class AnthropicProvider(LLMProvider):
             "messages": anthropic_messages,
         }
         
-        # Add thinking for Claude 3.7 models if requested
-        if "claude-3-7" in self.actual_model and self.reasoning_effort and self.reasoning_effort != "none":
+        if self._supports_thinking() and self.reasoning_effort and self.reasoning_effort != "none":
             budget = {"low": 1024, "medium": 4096, "high": 16384}.get(self.reasoning_effort, 4096)
             payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
             
@@ -216,41 +222,26 @@ class AnthropicProvider(LLMProvider):
         if anthropic_tools:
             payload["tools"] = anthropic_tools
 
-        last_error = None
-        for attempt in range(MAX_RETRIES):
-            try:
-                session = await self._get_session()
-                async with session.post(
-                    self.API_URL,
-                    headers=self._get_headers(),
-                    json=payload,
-                    timeout=aiohttp.ClientTimeout(total=120),
-                ) as response:
-                    if response.status != 200:
-                        error_body = await response.text()
-                        raise RuntimeError(
-                            f"Anthropic API error {response.status}: {error_body}"
-                        )
-                    result = await response.json()
+        session = await self._get_session()
+        async with session.post(
+            self.API_URL,
+            headers=self._get_headers(),
+            json=payload,
+            timeout=aiohttp.ClientTimeout(total=120),
+        ) as response:
+            if response.status != 200:
+                error_body = await response.text()
+                raise RuntimeError(
+                    f"Anthropic API error {response.status}: {error_body}"
+                )
+            result = await response.json()
 
-                    # Track usage
-                    usage = result.get("usage", {})
-                    self.total_input_tokens += usage.get("input_tokens", 0)
-                    self.total_output_tokens += usage.get("output_tokens", 0)
+            # Track usage
+            usage = result.get("usage", {})
+            self.total_input_tokens += usage.get("input_tokens", 0)
+            self.total_output_tokens += usage.get("output_tokens", 0)
 
-                    return self._convert_response(result)
-            except (aiohttp.ClientError, RuntimeError) as e:
-                last_error = e
-                if attempt < MAX_RETRIES - 1:
-                    delay = RETRY_DELAY_BASE * (2 ** attempt)
-                    logger.warning(
-                        f"Anthropic API attempt {attempt + 1} failed: {e}. Retrying in {delay}s..."
-                    )
-                    await asyncio.sleep(delay)
-                else:
-                    raise RuntimeError(
-                        f"Anthropic API error after {MAX_RETRIES} attempts: {str(last_error)}"
-                    ) from last_error
+            return self._convert_response(result)
 
     async def stream(
         self,
@@ -269,8 +260,7 @@ class AnthropicProvider(LLMProvider):
             "stream": True,
         }
         
-        # Add thinking for Claude 3.7 models if requested
-        if "claude-3-7" in self.actual_model and self.reasoning_effort and self.reasoning_effort != "none":
+        if self._supports_thinking() and self.reasoning_effort and self.reasoning_effort != "none":
             budget = {"low": 1024, "medium": 4096, "high": 16384}.get(self.reasoning_effort, 4096)
             payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
             
@@ -279,124 +269,114 @@ class AnthropicProvider(LLMProvider):
         if anthropic_tools:
             payload["tools"] = anthropic_tools
 
-        last_error = None
-        for attempt in range(MAX_RETRIES):
-            try:
-                session = await self._get_session()
-                async with session.post(
-                    self.API_URL,
-                    headers=self._get_headers(),
-                    json=payload,
-                    timeout=aiohttp.ClientTimeout(total=120),
-                ) as response:
-                    if response.status != 200:
-                        error_body = await response.text()
-                        raise RuntimeError(
-                            f"Anthropic API error {response.status}: {error_body}"
-                        )
+        session = await self._get_session()
+        async with session.post(
+            self.API_URL,
+            headers=self._get_headers(),
+            json=payload,
+            timeout=aiohttp.ClientTimeout(total=120),
+        ) as response:
+            if response.status != 200:
+                error_body = await response.text()
+                raise RuntimeError(
+                    f"Anthropic API error {response.status}: {error_body}"
+                )
 
-                    buffer = ""
-                    current_event = ""
-                    # State for reconstructing tool calls from streaming events
-                    tool_call_blocks: Dict[int, Dict[str, Any]] = {}  # index -> {id, name, arguments}
-                    async for raw_chunk in response.content:
-                        buffer += raw_chunk.decode("utf-8")
-                        while "\n" in buffer:
-                            line, buffer = buffer.split("\n", 1)
-                            line = line.strip()
-                            if not line:
-                                continue
-                            if line.startswith("event: "):
-                                current_event = line[7:]
-                            elif line.startswith("data: "):
-                                data = line[6:]
-                                try:
-                                    parsed = json.loads(data)
-                                except json.JSONDecodeError:
-                                    continue
+            buffer = ""
+            current_event = ""
+            # State for reconstructing tool calls from streaming events
+            tool_call_blocks: Dict[int, Dict[str, Any]] = {}  # index -> {id, name, arguments}
+            async for raw_chunk in response.content:
+                buffer += raw_chunk.decode("utf-8")
+                while "\n" in buffer:
+                    line, buffer = buffer.split("\n", 1)
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if line.startswith("event: "):
+                        current_event = line[7:]
+                    elif line.startswith("data: "):
+                        data = line[6:]
+                        try:
+                            parsed = json.loads(data)
+                        except json.JSONDecodeError:
+                            continue
 
-                                # Convert Anthropic streaming events to OpenAI chunk format
-                                if current_event == "content_block_start":
-                                    block = parsed.get("content_block", {})
-                                    index = parsed.get("index", 0)
-                                    if block.get("type") == "tool_use":
-                                        tool_call_blocks[index] = {
-                                            "id": block.get("id", ""),
-                                            "name": block.get("name", ""),
-                                            "arguments": "",
-                                        }
-                                        # Emit the tool call start in OpenAI format
-                                        yield {
-                                            "choices": [{
-                                                "delta": {
-                                                    "tool_calls": [{
-                                                        "index": index,
-                                                        "id": block.get("id", ""),
-                                                        "type": "function",
-                                                        "function": {
-                                                            "name": block.get("name", ""),
-                                                            "arguments": "",
-                                                        },
-                                                    }]
+                        # Convert Anthropic streaming events to OpenAI chunk format
+                        if current_event == "content_block_start":
+                            block = parsed.get("content_block", {})
+                            index = parsed.get("index", 0)
+                            if block.get("type") == "tool_use":
+                                tool_call_blocks[index] = {
+                                    "id": block.get("id", ""),
+                                    "name": block.get("name", ""),
+                                    "arguments": "",
+                                }
+                                # Emit the tool call start in OpenAI format
+                                yield {
+                                    "choices": [{
+                                        "delta": {
+                                            "tool_calls": [{
+                                                "index": index,
+                                                "id": block.get("id", ""),
+                                                "type": "function",
+                                                "function": {
+                                                    "name": block.get("name", ""),
+                                                    "arguments": "",
                                                 },
-                                                "finish_reason": None,
                                             }]
-                                        }
-                                elif current_event == "content_block_delta":
-                                    delta = parsed.get("delta", {})
-                                    index = parsed.get("index", 0)
-                                    if delta.get("type") == "text_delta":
-                                        yield {
-                                            "choices": [{
-                                                "delta": {"content": delta.get("text", "")},
-                                                "finish_reason": None,
-                                            }]
-                                        }
-                                    elif delta.get("type") == "thinking_delta":
-                                        yield {
-                                            "choices": [{
-                                                "delta": {"reasoning_content": delta.get("thinking", "")},
-                                                "finish_reason": None,
-                                            }]
-                                        }
-                                    elif delta.get("type") == "input_json_delta":
-                                        partial_json = delta.get("partial_json", "")
-                                        if index in tool_call_blocks:
-                                            tool_call_blocks[index]["arguments"] += partial_json
-                                        # Emit the argument chunk in OpenAI format
-                                        yield {
-                                            "choices": [{
-                                                "delta": {
-                                                    "tool_calls": [{
-                                                        "index": index,
-                                                        "function": {
-                                                            "arguments": partial_json,
-                                                        },
-                                                    }]
+                                        },
+                                        "finish_reason": None,
+                                    }]
+                                }
+                        elif current_event == "content_block_delta":
+                            delta = parsed.get("delta", {})
+                            index = parsed.get("index", 0)
+                            if delta.get("type") == "text_delta":
+                                yield {
+                                    "choices": [{
+                                        "delta": {"content": delta.get("text", "")},
+                                        "finish_reason": None,
+                                    }]
+                                }
+                            elif delta.get("type") == "thinking_delta":
+                                yield {
+                                    "choices": [{
+                                        "delta": {"reasoning_content": delta.get("thinking", "")},
+                                        "finish_reason": None,
+                                    }]
+                                }
+                            elif delta.get("type") == "input_json_delta":
+                                partial_json = delta.get("partial_json", "")
+                                if index in tool_call_blocks:
+                                    tool_call_blocks[index]["arguments"] += partial_json
+                                # Emit the argument chunk in OpenAI format
+                                yield {
+                                    "choices": [{
+                                        "delta": {
+                                            "tool_calls": [{
+                                                "index": index,
+                                                "function": {
+                                                    "arguments": partial_json,
                                                 },
-                                                "finish_reason": None,
                                             }]
-                                        }
-                                elif current_event == "message_stop":
-                                    yield {
-                                        "choices": [{
-                                            "delta": {},
-                                            "finish_reason": "stop",
-                                        }]
-                                    }
-                return  # Success
-            except (aiohttp.ClientError, RuntimeError) as e:
-                last_error = e
-                if attempt < MAX_RETRIES - 1:
-                    delay = RETRY_DELAY_BASE * (2 ** attempt)
-                    logger.warning(
-                        f"Anthropic stream attempt {attempt + 1} failed: {e}. Retrying in {delay}s..."
-                    )
-                    await asyncio.sleep(delay)
-                else:
-                    raise RuntimeError(
-                        f"Anthropic streaming error after {MAX_RETRIES} attempts: {str(last_error)}"
-                    ) from last_error
+                                        },
+                                        "finish_reason": None,
+                                    }]
+                                }
+                        elif current_event == "message_stop":
+                            yield {
+                                "choices": [{
+                                    "delta": {},
+                                    "finish_reason": "stop",
+                                }]
+                            }
+
+    def _supports_thinking(self) -> bool:
+        """Check if the current model supports extended thinking."""
+        # Claude 3.7+ and Claude 4+ models support extended thinking
+        model = self.actual_model
+        return any(tag in model for tag in ("claude-3-7", "claude-4", "claude-sonnet-4"))
 
     def count_tokens(self, text: str) -> int:
         """Approximate token count for Claude models.
@@ -431,4 +411,7 @@ class AnthropicProvider(LLMProvider):
         info = super().get_model_info()
         info["provider"] = "anthropic"
         info["cost"] = self.get_cost()
+        info["total_input_tokens"] = self.total_input_tokens
+        info["total_output_tokens"] = self.total_output_tokens
+        info["total_tokens"] = self.total_input_tokens + self.total_output_tokens
         return info

@@ -1,5 +1,7 @@
 """Base tool interface and registry."""
 
+import asyncio
+import inspect
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, List, Optional, Type
 
@@ -129,9 +131,15 @@ class ToolRegistry:
         if tool is None:
             raise ValueError(f"Tool not found: {name}")
 
-        # Confirmation gate
+        # Confirmation gate — supports both sync and async callbacks
         if tool.requires_confirmation and confirmation_callback is not None:
-            approved = confirmation_callback(name, kwargs)
+            if asyncio.iscoroutinefunction(confirmation_callback) or (
+                hasattr(confirmation_callback, "__call__")
+                and asyncio.iscoroutinefunction(confirmation_callback.__call__)
+            ):
+                approved = await confirmation_callback(name, kwargs)
+            else:
+                approved = confirmation_callback(name, kwargs)
             if not approved:
                 return {
                     "success": False,

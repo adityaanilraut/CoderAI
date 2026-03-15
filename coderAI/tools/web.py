@@ -1,9 +1,12 @@
-"""Web search tool using DuckDuckGo."""
+"""Web and URL tools for search and content fetching."""
 
+import asyncio
+import html as html_lib
 import logging
 import re
-from typing import Any, Dict
-from urllib.parse import quote_plus
+import ssl
+from typing import Any, Dict, List, Optional
+from urllib.parse import quote_plus, unquote, urlparse, parse_qs
 
 import aiohttp
 from pydantic import BaseModel, Field
@@ -12,60 +15,229 @@ from .base import Tool
 
 logger = logging.getLogger(__name__)
 
-# Module-level session for reuse across requests (#8)
-_web_session: aiohttp.ClientSession | None = None
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+_HEADERS_CHROME = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+_HEADERS_FIREFOX = {
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) "
+        "Gecko/20100101 Firefox/128.0"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
+}
+
+_ssl_ctx: Optional[ssl.SSLContext] = None
 
 
-async def _get_web_session() -> aiohttp.ClientSession:
-    """Get or create a shared aiohttp session."""
-    global _web_session
-    if _web_session is None or _web_session.closed:
-        _web_session = aiohttp.ClientSession()
-    return _web_session
+def _get_ssl_ctx() -> ssl.SSLContext:
+    global _ssl_ctx
+    if _ssl_ctx is not None:
+        return _ssl_ctx
+
+    try:
+        import certifi
+        _ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+        return _ssl_ctx
+    except ImportError:
+        pass
+    try:
+        ctx = ssl.create_default_context()
+        _ssl_ctx = ctx
+        return _ssl_ctx
+    except Exception:
+        pass
+
+    logger.warning(
+        "SSL cert verification disabled — install certifi "
+        "(`pip install certifi`) to fix."
+    )
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    _ssl_ctx = ctx
+    return _ssl_ctx
+
+
+def _connector() -> aiohttp.TCPConnector:
+    return aiohttp.TCPConnector(ssl=_get_ssl_ctx())
+
+
+def _strip_tags(raw: str) -> str:
+    """Strip HTML tags and unescape entities."""
+    return html_lib.unescape(re.sub(r"<[^>]+>", "", raw)).strip()
+
+
+def _resolve_ddg_url(url: str) -> str:
+    """Decode DuckDuckGo redirect URLs (//duckduckgo.com/l/?uddg=…) to the real URL."""
+    url = url.replace("&amp;", "&")
+    if "duckduckgo.com/l/" in url or "duckduckgo.com/y.js" in url:
+        full = url if url.startswith("http") else ("https:" + url)
+        qs = parse_qs(urlparse(full).query)
+        if "uddg" in qs:
+            return unquote(qs["uddg"][0])
+    if url.startswith("//"):
+        return "https:" + url
+    return url
+
+
+# ---------------------------------------------------------------------------
+# HTML → readable text
+# ---------------------------------------------------------------------------
+
+_STRIP_BLOCKS = {"script", "style", "noscript", "svg", "head", "nav", "footer", "header"}
+_TAG_RE = re.compile(r"<[^>]+>", re.DOTALL)
+_MULTI_NL = re.compile(r"\n{3,}")
+_MULTI_SP = re.compile(r"[ \t]{2,}")
+
+
+def _html_to_text(html: str) -> str:
+    """Convert HTML to readable plain text with structure preservation."""
+    for tag in _STRIP_BLOCKS:
+        html = re.sub(
+            rf"<{tag}[^>]*>.*?</{tag}>", "", html, flags=re.DOTALL | re.IGNORECASE
+        )
+    html = re.sub(r"<!--.*?-->", "", html, flags=re.DOTALL)
+
+    # Headings → markdown-style markers
+    for lvl in range(1, 7):
+        html = re.sub(
+            rf"<h{lvl}[^>]*>(.*?)</h{lvl}>",
+            lambda m, l=lvl: f"\n\n{'#' * l} {_strip_tags(m.group(1))}\n",
+            html,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+
+    # List items
+    html = re.sub(
+        r"<li[^>]*>(.*?)</li>",
+        lambda m: f"\n• {_strip_tags(m.group(1))}",
+        html,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+
+    # Links → "text (url)" when the href looks useful
+    def _link_repl(m):
+        href, text = m.group(1), _strip_tags(m.group(2))
+        if href.startswith(("http://", "https://")) and text and text != href:
+            return f"{text} ({href})"
+        return text
+
+    html = re.sub(
+        r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>',
+        _link_repl, html, flags=re.DOTALL | re.IGNORECASE,
+    )
+
+    # Code blocks
+    html = re.sub(
+        r"<pre[^>]*>(.*?)</pre>",
+        lambda m: f"\n```\n{_strip_tags(m.group(1))}\n```\n",
+        html, flags=re.DOTALL | re.IGNORECASE,
+    )
+
+    # Block-level breaks
+    html = re.sub(
+        r"<(?:br|/p|/div|/li|/tr|/blockquote|/section|/article)[^>]*>",
+        "\n", html, flags=re.IGNORECASE,
+    )
+    html = re.sub(
+        r"<(?:p|div|tr|blockquote|section|article)\b[^>]*>",
+        "\n", html, flags=re.IGNORECASE,
+    )
+    html = re.sub(r"<(?:td|th)[^>]*>", "\t", html, flags=re.IGNORECASE)
+
+    text = _TAG_RE.sub("", html)
+    text = html_lib.unescape(text)
+    text = _MULTI_SP.sub(" ", text)
+    text = _MULTI_NL.sub("\n\n", text)
+    return text.strip()
+
+
+# ---------------------------------------------------------------------------
+# WebSearchTool
+# ---------------------------------------------------------------------------
 
 
 class WebSearchParams(BaseModel):
     query: str = Field(..., description="Search query string")
-    num_results: int = Field(5, description="Number of results to return (default: 5, max: 10)")
+    num_results: int = Field(
+        5, description="Number of results to return (default 5, max 10)"
+    )
+    fetch_content: bool = Field(
+        False,
+        description=(
+            "If true, automatically fetch and include the text content of the "
+            "top search results (up to 3). Use this when you need to read the "
+            "actual page content, not just titles and snippets."
+        ),
+    )
+    max_content_length: int = Field(
+        15000,
+        description="Max characters of page content per result when fetch_content=true",
+    )
 
 
 class WebSearchTool(Tool):
-    """Tool for searching the web using DuckDuckGo."""
+    """Search the web using DuckDuckGo and optionally read page content."""
 
     name = "web_search"
-    description = "Search the web for information using DuckDuckGo"
+    description = (
+        "Search the web for information using DuckDuckGo. Returns titles, URLs, "
+        "and snippets. Set fetch_content=true to also read the full text of the "
+        "top 3 results (saves you from needing separate read_url calls)."
+    )
     is_read_only = True
-    # DuckDuckGo Instant Answer API (light JSON endpoint)
-    DDG_API_URL = "https://api.duckduckgo.com/"
-    # DuckDuckGo HTML search (more comprehensive but needs parsing)
-    DDG_HTML_URL = "https://html.duckduckgo.com/html/"
     parameters_model = WebSearchParams
 
-    async def execute(self, query: str, num_results: int = 5) -> Dict[str, Any]:
-        """Execute web search.
+    DDG_URL = "https://html.duckduckgo.com/html/"
 
-        Uses DuckDuckGo Instant Answer API first, falls back to HTML search.
-        """
-        num_results = min(num_results, 10)
+    # ---- public entry point --------------------------------------------------
+
+    async def execute(
+        self,
+        query: str,
+        num_results: int = 5,
+        fetch_content: bool = False,
+        max_content_length: int = 15000,
+    ) -> Dict[str, Any]:
+        num_results = max(1, min(num_results, 10))
 
         try:
-            # Try Instant Answer API first (structured JSON, very reliable)
-            instant_result = await self._search_instant_answer(query)
-            if instant_result and instant_result.get("results"):
-                return instant_result
+            results = await self._search(query, num_results)
 
-            # Fall back to HTML search (broader but less structured)
-            html_result = await self._search_html(query, num_results)
-            if html_result and html_result.get("results"):
-                return html_result
+            if not results:
+                return {
+                    "success": True,
+                    "results": [],
+                    "query": query,
+                    "note": (
+                        "No results found. Try rephrasing the query or use "
+                        "read_url with a known URL."
+                    ),
+                    "search_url": f"https://duckduckgo.com/?q={quote_plus(query)}",
+                }
 
-            # If both failed, return a fallback
+            if fetch_content:
+                results = await self._fetch_top_results(
+                    results, min(3, len(results)), max_content_length
+                )
+
             return {
                 "success": True,
-                "results": [],
+                "results": results,
                 "query": query,
-                "note": "No results found. Try a different query.",
-                "search_url": f"https://duckduckgo.com/?q={quote_plus(query)}",
+                "result_count": len(results),
             }
 
         except Exception as e:
@@ -73,202 +245,212 @@ class WebSearchTool(Tool):
             return {
                 "success": False,
                 "error": str(e),
-                "hint": "Web search failed. You can still help the user based on your training data.",
+                "hint": "Search failed. Try read_url with a direct URL instead.",
                 "search_url": f"https://duckduckgo.com/?q={quote_plus(query)}",
             }
 
-    async def _search_instant_answer(self, query: str) -> Dict[str, Any]:
-        """Search using DuckDuckGo Instant Answer API (JSON, reliable)."""
-        try:
-            params = {
-                "q": query,
-                "format": "json",
-                "no_html": "1",
-                "skip_disambig": "1",
-            }
+    # ---- DuckDuckGo HTML search with retries ---------------------------------
 
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    self.DDG_API_URL,
-                    params=params,
-                    timeout=aiohttp.ClientTimeout(total=10),
-                    headers={"User-Agent": "CoderAI/0.1"},
-                ) as response:
-                    if response.status != 200:
-                        return None
+    async def _search(
+        self, query: str, num_results: int
+    ) -> List[Dict[str, str]]:
+        """Search DDG HTML endpoint with retries and header rotation."""
+        header_sets = [_HEADERS_CHROME, _HEADERS_FIREFOX]
 
-                    data = await response.json(content_type=None)
-
-            results = []
-
-            # Abstract (Wikipedia-style summary)
-            if data.get("Abstract"):
-                results.append({
-                    "title": data.get("Heading", "Summary"),
-                    "snippet": data["Abstract"],
-                    "url": data.get("AbstractURL", ""),
-                    "source": data.get("AbstractSource", ""),
-                })
-
-            # Answer (calculator, definitions, etc.)
-            if data.get("Answer"):
-                results.append({
-                    "title": "Answer",
-                    "snippet": str(data["Answer"]),
-                    "url": "",
-                    "source": "DuckDuckGo",
-                })
-
-            # Related topics
-            for topic in data.get("RelatedTopics", [])[:5]:
-                if isinstance(topic, dict) and topic.get("Text"):
-                    results.append({
-                        "title": topic.get("Text", "")[:80],
-                        "snippet": topic.get("Text", ""),
-                        "url": topic.get("FirstURL", ""),
-                        "source": "DuckDuckGo",
-                    })
-
-            if results:
-                return {
-                    "success": True,
-                    "results": results,
-                    "query": query,
-                    "source": "DuckDuckGo Instant Answers",
-                }
-
-            return None
-
-        except Exception as e:
-            logger.debug(f"Instant answer search failed: {e}")
-            return None
-
-    async def _search_html(self, query: str, num_results: int) -> Dict[str, Any]:
-        """Search using DuckDuckGo HTML endpoint.
-
-        Parses the HTML response to extract search results.
-        This is more fragile than the API but provides broader results.
-        """
-        try:
-            data = {"q": query}
-
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    self.DDG_HTML_URL,
-                    data=data,
-                    timeout=aiohttp.ClientTimeout(total=10),
-                    headers={
-                        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-                    },
-                ) as response:
-                    if response.status != 200:
-                        return None
-
-                    html = await response.text()
-
-            results = self._parse_html_results(html, num_results)
-
-            if results:
-                return {
-                    "success": True,
-                    "results": results,
-                    "query": query,
-                    "source": "DuckDuckGo HTML",
-                }
-
-            return None
-
-        except Exception as e:
-            logger.debug(f"HTML search failed: {e}")
-            return None
-
-    def _parse_html_results(self, html: str, max_results: int) -> list:
-        """Parse DuckDuckGo HTML search results.
-
-        Uses simple string parsing with a regex fallback.
-        """
-        try:
-            results = self._parse_html_split(html, max_results)
-            if results:
-                return results
-        except Exception as e:
-            logger.debug(f"Primary HTML parser failed: {e}")
-
-        # Fallback: regex-based extraction
-        try:
-            return self._parse_html_regex(html, max_results)
-        except Exception as e:
-            logger.warning(f"All HTML parsers failed: {e}")
-            return []
-
-    def _parse_html_split(self, html: str, max_results: int) -> list:
-        """Primary parser using string splitting."""
-        results = []
-
-        # Look for result blocks: class="result__body"
-        parts = html.split('class="result__body"')
-
-        for part in parts[1 : max_results + 1]:
+        for attempt, headers in enumerate(header_sets):
             try:
-                result = {}
+                async with aiohttp.ClientSession(connector=_connector()) as session:
+                    async with session.post(
+                        self.DDG_URL,
+                        data={"q": query},
+                        headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=15),
+                    ) as resp:
+                        if resp.status != 200:
+                            logger.debug(
+                                f"DDG attempt {attempt + 1}: HTTP {resp.status}"
+                            )
+                            await asyncio.sleep(1)
+                            continue
+                        html_text = await resp.text()
 
-                # Extract URL
-                if 'class="result__url"' in part:
-                    url_start = part.index('href="') + 6
-                    url_end = part.index('"', url_start)
-                    url = part[url_start:url_end]
-                    if url.startswith("//"):
-                        url = "https:" + url
-                    result["url"] = url
+                results = self._parse_results(html_text, num_results)
+                if results:
+                    return results
+                # Empty results → try next header set
+                await asyncio.sleep(0.5)
+            except Exception as e:
+                logger.debug(f"DDG attempt {attempt + 1}: {e}")
+                await asyncio.sleep(1)
 
-                # Extract title
-                if 'class="result__a"' in part:
-                    title_start = part.index('class="result__a"')
-                    title_tag_end = part.index(">", title_start) + 1
-                    title_end = part.index("<", title_tag_end)
-                    result["title"] = part[title_tag_end:title_end].strip()
+        return []
 
-                # Extract snippet
-                if 'class="result__snippet"' in part:
-                    snip_start = part.index('class="result__snippet"')
-                    snip_tag_end = part.index(">", snip_start) + 1
-                    snip_end = part.index("</", snip_tag_end)
-                    snippet = part[snip_tag_end:snip_end].strip()
-                    # Remove HTML tags from snippet
-                    snippet = re.sub(r"<[^>]+>", "", snippet)
-                    result["snippet"] = snippet
+    def _parse_results(
+        self, html_text: str, max_results: int
+    ) -> List[Dict[str, str]]:
+        """Parse search results from DuckDuckGo HTML page."""
+        results: List[Dict[str, str]] = []
+        blocks = re.split(
+            r'<div class="[^"]*result__body[^"]*">', html_text
+        )[1:]
 
-                if result.get("title") or result.get("snippet"):
-                    results.append(result)
+        for block in blocks:
+            if len(results) >= max_results:
+                break
 
-            except (ValueError, IndexError):
+            title_match = re.search(
+                r'<a[^>]+class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
+                block,
+                re.IGNORECASE | re.DOTALL,
+            )
+            if not title_match:
                 continue
 
-        return results
+            raw_url = html_lib.unescape(title_match.group(1))
+            url = _resolve_ddg_url(raw_url)
+            title = _strip_tags(title_match.group(2))
 
-    def _parse_html_regex(self, html: str, max_results: int) -> list:
-        """Fallback regex-based parser for when the split approach fails."""
-        results = []
+            if not url.startswith("http"):
+                continue
 
-        # Match title + URL from anchor tags in result blocks
-        link_pattern = re.compile(
-            r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>',
-            re.DOTALL,
-        )
-        snippet_pattern = re.compile(
-            r'class="result__snippet"[^>]*>(.*?)</(?:td|div|span)',
-            re.DOTALL,
-        )
+            snippet_match = re.search(
+                r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>',
+                block,
+                re.IGNORECASE | re.DOTALL,
+            )
+            snippet = _strip_tags(snippet_match.group(1)) if snippet_match else ""
 
-        links = link_pattern.findall(html)
-        snippets = snippet_pattern.findall(html)
-
-        for i, (url, title) in enumerate(links[:max_results]):
-            title_clean = re.sub(r"<[^>]+>", "", title).strip()
-            url = ("https:" + url) if url.startswith("//") else url
-            result = {"url": url, "title": title_clean}
-            if i < len(snippets):
-                result["snippet"] = re.sub(r"<[^>]+>", "", snippets[i]).strip()
-            results.append(result)
+            results.append({
+                "title": title,
+                "url": url,
+                "snippet": snippet,
+            })
 
         return results
+
+    # ---- auto-fetch page content for top results -----------------------------
+
+    async def _fetch_top_results(
+        self,
+        results: List[Dict[str, str]],
+        count: int,
+        max_length: int,
+    ) -> List[Dict[str, str]]:
+        """Fetch page content for the top N results in parallel."""
+
+        async def _fetch_one(result: Dict[str, str]) -> Dict[str, str]:
+            url = result.get("url", "")
+            try:
+                text = await _fetch_page_text(url, max_length)
+                if text:
+                    result["page_content"] = text
+                    result["page_content_length"] = len(text)
+            except Exception as e:
+                logger.debug(f"Auto-fetch failed for {url}: {e}")
+                result["page_content_error"] = str(e)
+            return result
+
+        fetched = await asyncio.gather(*[_fetch_one(r) for r in results[:count]])
+        return list(fetched) + results[count:]
+
+
+# ---------------------------------------------------------------------------
+# Shared page-fetcher (used by both WebSearchTool and ReadURLTool)
+# ---------------------------------------------------------------------------
+
+
+async def _fetch_page_text(url: str, max_length: int) -> Optional[str]:
+    """Fetch a single URL and return cleaned text, or None on failure."""
+    try:
+        async with aiohttp.ClientSession(connector=_connector()) as session:
+            async with session.get(
+                url,
+                headers=_HEADERS_CHROME,
+                timeout=aiohttp.ClientTimeout(total=15),
+                allow_redirects=True,
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                content_type = resp.headers.get("Content-Type", "")
+                raw = await resp.text(errors="replace")
+
+        if "html" in content_type.lower() or raw.lstrip().startswith("<"):
+            text = _html_to_text(raw)
+        else:
+            text = raw
+
+        if len(text) > max_length:
+            text = text[:max_length] + "\n\n[...truncated...]"
+        return text if len(text) > 50 else None
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# ReadURLTool
+# ---------------------------------------------------------------------------
+
+
+class ReadURLParams(BaseModel):
+    url: str = Field(..., description="URL to fetch and read")
+    max_length: int = Field(
+        20000,
+        description="Maximum characters of page text to return (default 20000)",
+    )
+
+
+class ReadURLTool(Tool):
+    """Fetch a web page and return its text content."""
+
+    name = "read_url"
+    description = (
+        "Fetch a web page URL and return its text content. "
+        "Useful for reading documentation, articles, API references, or any web page."
+    )
+    is_read_only = True
+    parameters_model = ReadURLParams
+
+    async def execute(self, url: str, max_length: int = 20000) -> Dict[str, Any]:
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+
+        try:
+            async with aiohttp.ClientSession(connector=_connector()) as session:
+                async with session.get(
+                    url,
+                    timeout=aiohttp.ClientTimeout(total=25),
+                    headers=_HEADERS_CHROME,
+                    allow_redirects=True,
+                ) as response:
+                    if response.status != 200:
+                        return {
+                            "success": False,
+                            "error": f"HTTP {response.status} for {url}",
+                        }
+
+                    final_url = str(response.url)
+                    content_type = response.headers.get("Content-Type", "")
+                    raw = await response.text(errors="replace")
+
+            if "html" in content_type.lower() or raw.lstrip().startswith("<"):
+                text = _html_to_text(raw)
+            else:
+                text = raw
+
+            truncated = False
+            if len(text) > max_length:
+                text = text[:max_length]
+                truncated = True
+
+            return {
+                "success": True,
+                "url": final_url,
+                "content": text,
+                "length": len(text),
+                "truncated": truncated,
+            }
+
+        except asyncio.TimeoutError:
+            return {"success": False, "error": f"Timeout fetching {url}"}
+        except Exception as e:
+            return {"success": False, "error": f"Failed to fetch {url}: {e}"}

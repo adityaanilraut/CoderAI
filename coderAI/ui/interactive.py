@@ -14,6 +14,7 @@ from rich.panel import Panel
 from .display import display
 from ..config import config_manager
 from ..events import event_emitter
+from ..agent_tracker import agent_tracker
 
 
 def _setup_event_listeners():
@@ -38,18 +39,30 @@ def _setup_event_listeners():
         if status_state["active"]:
             status_state["active"].stop()
             status_state["active"] = None
-            
+
+    def handle_agent_lifecycle(action, info):
+        if action == "finished":
+            display.print_agent_completion(info)
+
     event_emitter.on("status_start", handle_status_start)
     event_emitter.on("status_stop", handle_status_stop)
+    event_emitter.on("agent_lifecycle", handle_agent_lifecycle)
 
-_setup_event_listeners()
+# NOTE: _setup_event_listeners() is called lazily from InteractiveChat.__init__
+# to avoid side effects on import.
 
 
 class InteractiveChat:
     """Interactive chat interface."""
+    _listeners_initialized = False
 
     def __init__(self):
         """Initialize interactive chat."""
+        # Lazily initialize event listeners (once per process, not at import time)
+        if not InteractiveChat._listeners_initialized:
+            _setup_event_listeners()
+            InteractiveChat._listeners_initialized = True
+
         self.history = InMemoryHistory()
 
         # Available commands for auto-completion
@@ -57,7 +70,8 @@ class InteractiveChat:
             "/help", "/clear", "/clear-context", "/history", "/model",
             "/change-model", "/reasoning", "/config", "/tools", "/save", "/sessions", 
             "/resume", "/tokens", "/export", "/status", "/providers", 
-            "/plan", "/exit", "/quit"
+            "/plan", "/compact", "/auto-approve", "/skills", "/skill", "/agent",
+            "/agents", "/stop", "/exit", "/quit"
         ]
         self.completer = WordCompleter(self.commands, ignore_case=True)
 
@@ -167,6 +181,13 @@ Type your message or command. Press Ctrl+C or type 'exit' to quit.
   /status         - Show current session status
   /providers      - Show available LLM providers
   /plan           - Plan a task step-by-step before executing
+  /compact        - Manually compact/summarize context history
+  /auto-approve   - Toggle auto-approve for tool execution
+  /skills         - List available skills in .coderAI/skills/
+  /skill <name>   - Load and execute a specific skill
+  /agent [name]   - Switch to a specific agent persona, or list them
+  /agents         - Show all active/recent agents and their status
+  /stop [id]      - Stop a running agent (or all if no id given)
   /exit           - Exit the chat[/dim]
         """
         display.print_panel(welcome_text.strip(), title="Welcome", border_style="cyan")
@@ -216,10 +237,16 @@ Type your message or command. Press Ctrl+C or type 'exit' to quit.
             return False
 
         elif command == "/clear-context":
-            # Clear conversation context
+            # Clear conversation context — full reset
             if context.get("agent"):
-                context["agent"].session = None
-                context["agent"].create_session()
+                agent = context["agent"]
+                agent.session = None
+                agent.create_session()
+                agent.context_manager.clear()
+                agent.total_prompt_tokens = 0
+                agent.total_completion_tokens = 0
+                agent.total_tokens = 0
+                agent.cost_tracker = agent.cost_tracker.__class__()
                 context["messages"] = []
                 display.print_success("Conversation context cleared. Starting fresh!")
             else:
@@ -261,12 +288,15 @@ Type your message or command. Press Ctrl+C or type 'exit' to quit.
             # Change model/provider
             from ..llm.openai import OpenAIProvider
             from ..llm.anthropic import AnthropicProvider
+            from ..llm.groq import GroqProvider
             
             display.print_header("Available Models")
             for model_name in OpenAIProvider.SUPPORTED_MODELS:
                 display.print(f"  • [cyan]{model_name}[/cyan] (OpenAI)")
             for model_name in AnthropicProvider.SUPPORTED_MODELS:
                 display.print(f"  • [cyan]{model_name}[/cyan] (Anthropic)")
+            for model_name in GroqProvider.SUPPORTED_MODELS:
+                display.print(f"  • [cyan]{model_name}[/cyan] (Groq)")
             display.print(f"  • [cyan]lmstudio[/cyan] - Local LM Studio model")
             display.print(f"  • [cyan]ollama[/cyan] - Local Ollama model")
             display.print("\nType the model name in your next message to switch (or 'cancel' to cancel)")
@@ -323,11 +353,13 @@ Type your message or command. Press Ctrl+C or type 'exit' to quit.
                 display.print(f"Prompt tokens:     [yellow]{agent.total_prompt_tokens:,}[/yellow]")
                 display.print(f"Completion tokens: [yellow]{agent.total_completion_tokens:,}[/yellow]")
                 display.print(f"Total tokens:      [yellow]{agent.total_tokens:,}[/yellow]")
-                # Show cost if available
-                model_info = agent.provider.get_model_info()
-                cost = model_info.get("cost", {})
-                if cost.get("total_cost"):
-                    display.print(f"Estimated cost:    [green]${cost['total_cost']:.4f}[/green]")
+                
+                # Show exact dollar cost and budget
+                from ..cost import CostTracker
+                cost_usd = agent.cost_tracker.get_total_cost()
+                display.print(f"Session Cost:      [green]{CostTracker.format_cost(cost_usd)}[/green]")
+                if agent.config.budget_limit > 0:
+                    display.print(f"Budget Limit:      [blue]{CostTracker.format_cost(agent.config.budget_limit)}[/blue]")
             elif context.get("messages"):
                 total_messages = len(context["messages"])
                 
@@ -360,11 +392,9 @@ Type your message or command. Press Ctrl+C or type 'exit' to quit.
                 
             display.print_header("Saved Sessions")
             for summary in sessions[:20]:  # Show up to 20 recent sessions
-                from datetime import datetime
-                created_dt = datetime.fromtimestamp(summary["created_at"]).strftime("%Y-%m-%d %H:%M:%S")
-                display.print(f"[cyan]• {summary['id']}[/cyan] ({created_dt})")
+                display.print(f"[cyan]• {summary['session_id']}[/cyan] ({summary['created_at']})")
                 display.print(f"  Model: [yellow]{summary['model']}[/yellow]")
-                display.print(f"  Messages: {summary['message_count']}")
+                display.print(f"  Messages: {summary['messages']}")
                 display.print()
             
             display.print("[dim]Use /resume <session_id> to load a session[/dim]")
@@ -443,7 +473,20 @@ Type your message or command. Press Ctrl+C or type 'exit' to quit.
                 display.print(f"Provider: [yellow]{agent.provider.__class__.__name__}[/yellow]")
                 display.print(f"Messages: [cyan]{len(context.get('messages', []))}[/cyan]")
                 display.print(f"Streaming: [cyan]{agent.streaming}[/cyan]")
+                display.print(f"Auto-approve: [cyan]{agent.auto_approve}[/cyan]")
                 display.print(f"Save History: [cyan]{agent.config.save_history}[/cyan]")
+                
+                # Show token usage and cost
+                if hasattr(agent, "total_tokens") and agent.total_tokens > 0:
+                    display.print(f"\n[bold]Token Usage:[/bold]")
+                    display.print(f"  Prompt tokens:     [yellow]{agent.total_prompt_tokens:,}[/yellow]")
+                    display.print(f"  Completion tokens: [yellow]{agent.total_completion_tokens:,}[/yellow]")
+                    display.print(f"  Total tokens:      [yellow]{agent.total_tokens:,}[/yellow]")
+                    from ..cost import CostTracker
+                    cost_usd = agent.cost_tracker.get_total_cost()
+                    display.print(f"  Session Cost:      [green]{CostTracker.format_cost(cost_usd)}[/green]")
+                    if agent.config.budget_limit > 0:
+                        display.print(f"  Budget Limit:      [blue]{CostTracker.format_cost(agent.config.budget_limit)}[/blue]")
                 
                 if session:
                     from datetime import datetime
@@ -453,6 +496,16 @@ Type your message or command. Press Ctrl+C or type 'exit' to quit.
                     display.print(f"[dim]Last updated: {updated_str}[/dim]")
             else:
                 display.print_warning("No agent context available")
+            return False
+
+        elif command.startswith("/plan"):
+            parts = command.split(" ", 1)
+            context["plan_mode"] = True
+            if len(parts) > 1 and parts[1].strip():
+                display.print_info("Plan mode enabled.")
+                context["_pending_prompt"] = parts[1].strip()
+            else:
+                display.print_info("Plan mode enabled. Enter your task in the next message.")
             return False
 
         elif command == "/providers":
@@ -481,13 +534,159 @@ Type your message or command. Press Ctrl+C or type 'exit' to quit.
             display.print()
             return False
 
-        elif command == "/plan":
-            display.print_header("Task Planning Mode")
-            display.print(
-                "[cyan]Describe the task you'd like me to plan in your next message.\n"
-                "I'll create a step-by-step plan for your approval before executing.[/cyan]"
-            )
-            context["plan_mode"] = True
+        elif command == "/compact":
+            if context.get("agent"):
+                agent = context["agent"]
+                display.print_info("Compacting context...")
+                try:
+                    messages = agent.session.get_messages_for_api() if agent.session else []
+                    if len(messages) <= 2:
+                        display.print_info("Context is already small, nothing to compact.")
+                        return False
+
+                    context["_pending_compact"] = True
+                except Exception as e:
+                    display.print_error(f"Failed to compact context: {e}")
+            else:
+                display.print_warning("No agent context available")
+            return False
+
+        elif command == "/auto-approve":
+            # Toggle auto-approve mode
+            if context.get("agent"):
+                agent = context["agent"]
+                agent.auto_approve = not agent.auto_approve
+                state = "[bold green]ON[/bold green]" if agent.auto_approve else "[bold red]OFF[/bold red]"
+                display.print(f"Auto-approve is now {state}")
+                if agent.auto_approve:
+                    display.print_warning(
+                        "Tools will execute without confirmation. "
+                        "Use /auto-approve again to disable."
+                    )
+            else:
+                display.print_warning("No agent context available")
+            return False
+
+        elif command == "/skills":
+            skills_dir = Path(".coderAI/skills")
+            if not skills_dir.exists():
+                display.print_info("No .coderAI/skills/ directory found. Create one and add .md files to use skills.")
+                return False
+                
+            skills = list(skills_dir.glob("*.md"))
+            if not skills:
+                display.print_info("No skills found in .coderAI/skills/.")
+                return False
+                
+            display.print_header("Available Skills")
+            for skill in skills:
+                display.print(f"  • [cyan]{skill.stem}[/cyan]")
+            display.print("\n[dim]Use /skill <name> to load a skill[/dim]")
+            return False
+
+        elif command.startswith("/skill "):
+            parts = command.split(" ", 2)
+            if len(parts) < 2:
+                display.print_warning("Please provide a skill name (e.g., /skill tdd-workflow)")
+                return False
+                
+            skill_name = parts[1].strip()
+            additional_context = parts[2].strip() if len(parts) > 2 else "Please execute this skill."
+            skills_dir = Path(".coderAI/skills")
+            
+            # Check for name.md or exact match
+            skill_file = skills_dir / f"{skill_name}.md"
+            if not skill_file.exists():
+                # Allow referencing deeply nested SKILL.md files like in everything-claude-code
+                skill_file = skills_dir / skill_name / "SKILL.md"
+                if not skill_file.exists():
+                    display.print_error(f"Skill '{skill_name}' not found. Searched for '{skill_name}.md' and '{skill_name}/SKILL.md'")
+                    return False
+            
+            try:
+                skill_content = skill_file.read_text()
+                display.print_success(f"Loaded skill: {skill_name}")
+                
+                # Push the skill into context as an instruction to execute
+                context["execute_skill"] = skill_content
+                context["_pending_prompt"] = additional_context
+            except Exception as e:
+                display.print_error(f"Failed to read skill file: {e}")
+                
+            return False
+
+        elif command.startswith("/agent"):
+            parts = command.split(" ", 1)
+            from ..agents import get_available_personas, load_agent_persona
+            
+            if len(parts) < 2 or not parts[1].strip():
+                # List available agents
+                display.print_header("Available Agent Personas")
+                personas = get_available_personas()
+                if not personas:
+                    display.print_info("No agent personas found in .coderAI/agents/")
+                else:
+                    for p in personas:
+                        display.print(f"  • [cyan]{p}[/cyan]")
+                display.print("\n[dim]Use /agent <name> to switch persona[/dim]")
+                return False
+                
+            persona_name = parts[1].strip()
+            if not context.get("agent"):
+                display.print_warning("No agent context available")
+                return False
+                
+            persona = load_agent_persona(persona_name)
+            if persona:
+                context["agent"].persona = persona
+                display.print_success(f"Switched to agent persona: {persona.name}")
+                display.print_info(persona.description)
+                
+                # Update the LLM model if the persona specifies one and we want to auto-switch
+                if persona.model and context["agent"].model != persona.model:
+                    # Depending on provider setup, this might require a fresh provider instance
+                    old_model = context["agent"].model
+                    context["agent"].model = persona.model
+                    context["agent"].provider = context["agent"]._create_provider()
+                    display.print_info(f"Model switched from {old_model} to {persona.model}")
+            else:
+                display.print_error(f"Persona '{persona_name}' not found. Searched in .coderAI/agents/")
+            return False
+
+        elif command == "/agents":
+            summary = agent_tracker.get_summary()
+            if not summary["agents"]:
+                display.print_info("No agents have been tracked this session.")
+            else:
+                display.print_agent_panel(summary["agents"])
+                from ..cost import CostTracker
+                display.print(
+                    f"\n[dim]Totals — Active: {summary['active_count']} | "
+                    f"Tokens: {summary['total_tokens']:,} | "
+                    f"Cost: {CostTracker.format_cost(summary['total_cost_usd'])}[/dim]"
+                )
+            return False
+
+        elif command.startswith("/stop"):
+            parts = command.split(" ", 1)
+            if len(parts) >= 2 and parts[1].strip():
+                agent_id_fragment = parts[1].strip()
+                found = False
+                for info in agent_tracker.get_active():
+                    if agent_id_fragment in info.agent_id:
+                        agent_tracker.cancel(info.agent_id)
+                        display.print_success(f"Cancellation requested for agent '{info.name}' ({info.agent_id[-8:]})")
+                        found = True
+                        break
+                if not found:
+                    display.print_warning(f"No active agent matching '{agent_id_fragment}'")
+            else:
+                active = agent_tracker.get_active()
+                if active:
+                    agent_tracker.cancel_all()
+                    display.print_success(f"Cancellation requested for {len(active)} active agent(s)")
+                else:
+                    display.print_info("No active agents to stop.")
             return False
 
         elif command in ["/exit", "/quit"]:
@@ -543,7 +742,18 @@ Type your message or command. Press Ctrl+C or type 'exit' to quit.
                     if should_exit:
                         display.print("\n[dim]Goodbye![/dim]")
                         break
-                    continue
+                    # Handle async operations requested by commands
+                    if context.pop("_pending_compact", False):
+                        try:
+                            await context["agent"].compact_context()
+                        except Exception as e:
+                            display.print_error(f"Failed to compact context: {e}")
+                    
+                    if "_pending_prompt" in context:
+                        user_input = context.pop("_pending_prompt")
+                        # Fall through to process the message
+                    else:
+                        continue
 
                 # Process user message
                 try:
@@ -589,6 +799,15 @@ Type your message or command. Press Ctrl+C or type 'exit' to quit.
                             display.print_info("Plan discarded.")
                             continue
 
+                    # Handle executing an injected skill
+                    if context.get("execute_skill"):
+                        skill_content = context.pop("execute_skill")
+                        user_input = (
+                            f"Please execute the following skill workflow:\n\n"
+                            f"<skill>\n{skill_content}\n</skill>\n\n"
+                            f"Additional context from user: {user_input}"
+                        )
+
                     response = await message_handler(user_input, context)
 
                     if response:
@@ -608,7 +827,15 @@ Type your message or command. Press Ctrl+C or type 'exit' to quit.
                     continue
 
             except KeyboardInterrupt:
-                display.print("\n[dim]Interrupted. Type /exit to quit.[/dim]")
+                active = agent_tracker.get_active()
+                if active:
+                    agent_tracker.cancel_all()
+                    display.print(
+                        f"\n[bold yellow]Stopping {len(active)} active agent(s)...[/bold yellow] "
+                        "[dim]Press Ctrl+C again to force quit.[/dim]"
+                    )
+                else:
+                    display.print("\n[dim]Interrupted. Type /exit to quit.[/dim]")
                 continue
 
 

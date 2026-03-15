@@ -1,6 +1,5 @@
 """Ollama local LLM provider implementation."""
 
-import asyncio
 import json
 import logging
 from typing import Any, AsyncIterator, Dict, List, Optional
@@ -10,10 +9,6 @@ import aiohttp
 from .base import LLMProvider
 
 logger = logging.getLogger(__name__)
-
-# Retry configuration
-MAX_RETRIES = 3
-RETRY_DELAY_BASE = 1.0  # seconds
 
 
 class OllamaProvider(LLMProvider):
@@ -63,57 +58,35 @@ class OllamaProvider(LLMProvider):
             "temperature": kwargs.get("temperature", self.temperature),
             "max_tokens": kwargs.get("max_tokens", self.max_tokens),
         }
-        
-        # Add reasoning explicitly for Ollama models (if enabled)
-        effort = kwargs.get("reasoning_effort", "medium")
-        payload["reasoning"] = {
-            "enabled": effort != "none"
-        }
 
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = kwargs.get("tool_choice", "auto")
 
-        last_error = None
-        for attempt in range(MAX_RETRIES):
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(
-                        url, json=payload, timeout=aiohttp.ClientTimeout(total=120)
-                    ) as response:
-                        response.raise_for_status()
-                        result = await response.json()
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url, json=payload, timeout=aiohttp.ClientTimeout(total=120)
+            ) as response:
+                response.raise_for_status()
+                result = await response.json()
 
-                        # Track usage
-                        usage = result.get("usage", {})
-                        self.total_input_tokens += usage.get("prompt_tokens", 0)
-                        self.total_output_tokens += usage.get("completion_tokens", 0)
+                # Track usage
+                usage = result.get("usage", {})
+                self.total_input_tokens += usage.get("prompt_tokens", 0)
+                self.total_output_tokens += usage.get("completion_tokens", 0)
 
-                        # Inject reasoning back into the content if it exists
-                        # This standardizes Ollama's format to our expected <think> tags or reasoning_content format
-                        choices = result.get("choices", [])
-                        if choices:
-                            message = choices[0].get("message", {})
-                            reasoning = message.get("reasoning", "")
-                            if reasoning:
-                                content = message.get("content", "")
-                                message["content"] = f"<think>\n{reasoning}\n</think>\n\n{content}"
+                # If the model returned reasoning content, inject it into
+                # the response as <think> tags so the streaming handler
+                # can display it consistently.
+                choices = result.get("choices", [])
+                if choices:
+                    message = choices[0].get("message", {})
+                    reasoning = message.pop("reasoning", "")
+                    if reasoning:
+                        content = message.get("content", "")
+                        message["content"] = f"<think>\n{reasoning}\n</think>\n\n{content}"
 
-                        return result
-            except aiohttp.ClientError as e:
-                last_error = e
-                if attempt < MAX_RETRIES - 1:
-                    delay = RETRY_DELAY_BASE * (2 ** attempt)
-                    logger.warning(
-                        f"Ollama API attempt {attempt + 1} failed: {e}. Retrying in {delay}s..."
-                    )
-                    await asyncio.sleep(delay)
-                else:
-                    raise RuntimeError(
-                        f"Ollama API error after {MAX_RETRIES} attempts: {str(last_error)}"
-                    ) from last_error
-            except Exception as e:
-                raise RuntimeError(f"Unexpected error: {str(e)}") from e
+                return result
 
     async def stream(
         self,
@@ -139,67 +112,43 @@ class OllamaProvider(LLMProvider):
             "max_tokens": kwargs.get("max_tokens", self.max_tokens),
             "stream": True,
         }
-        
-        # Add reasoning explicitly for Ollama models (if enabled)
-        effort = kwargs.get("reasoning_effort", "medium")
-        payload["reasoning"] = {
-            "enabled": effort != "none"
-        }
 
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = kwargs.get("tool_choice", "auto")
 
-        last_error = None
-        for attempt in range(MAX_RETRIES):
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(
-                        url, json=payload, timeout=aiohttp.ClientTimeout(total=120)
-                    ) as response:
-                        response.raise_for_status()
-                        # Buffer for handling multi-line SSE events
-                        buffer = ""
-                        async for raw_chunk in response.content:
-                            buffer += raw_chunk.decode("utf-8")
-                            # Process complete lines from the buffer
-                            while "\n" in buffer:
-                                line, buffer = buffer.split("\n", 1)
-                                line = line.strip()
-                                if not line:
-                                    continue
-                                if line.startswith("data: "):
-                                    data = line[6:]
-                                    if data == "[DONE]":
-                                        return
-                                    try:
-                                        chunk = json.loads(data)
-                                        # Transform reasoning into standard reasoning_content delta
-                                        choices = chunk.get("choices", [])
-                                        if choices:
-                                            delta = choices[0].get("delta", {})
-                                            reasoning = delta.pop("reasoning", None)
-                                            if reasoning:
-                                                delta["reasoning_content"] = reasoning
-                                        yield chunk
-                                    except json.JSONDecodeError:
-                                        logger.debug(f"Failed to parse SSE data: {data}")
-                                        continue
-                return  # Success, exit retry loop
-            except aiohttp.ClientError as e:
-                last_error = e
-                if attempt < MAX_RETRIES - 1:
-                    delay = RETRY_DELAY_BASE * (2 ** attempt)
-                    logger.warning(
-                        f"Ollama stream attempt {attempt + 1} failed: {e}. Retrying in {delay}s..."
-                    )
-                    await asyncio.sleep(delay)
-                else:
-                    raise RuntimeError(
-                        f"Ollama API streaming error after {MAX_RETRIES} attempts: {str(last_error)}"
-                    ) from last_error
-            except Exception as e:
-                raise RuntimeError(f"Unexpected error: {str(e)}") from e
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url, json=payload, timeout=aiohttp.ClientTimeout(total=120)
+            ) as response:
+                response.raise_for_status()
+                # Buffer for handling multi-line SSE events
+                buffer = ""
+                async for raw_chunk in response.content:
+                    buffer += raw_chunk.decode("utf-8")
+                    # Process complete lines from the buffer
+                    while "\n" in buffer:
+                        line, buffer = buffer.split("\n", 1)
+                        line = line.strip()
+                        if not line:
+                            continue
+                        if line.startswith("data: "):
+                            data = line[6:]
+                            if data == "[DONE]":
+                                return
+                            try:
+                                chunk = json.loads(data)
+                                # Transform reasoning into standard reasoning_content delta
+                                choices = chunk.get("choices", [])
+                                if choices:
+                                    delta = choices[0].get("delta", {})
+                                    reasoning = delta.pop("reasoning", None)
+                                    if reasoning:
+                                        delta["reasoning_content"] = reasoning
+                                yield chunk
+                            except json.JSONDecodeError:
+                                logger.debug(f"Failed to parse SSE data: {data}")
+                                continue
 
     def count_tokens(self, text: str) -> int:
         """Approximate token count for local models.
@@ -244,4 +193,7 @@ class OllamaProvider(LLMProvider):
         info = super().get_model_info()
         info["endpoint"] = self.endpoint
         info["cost"] = self.get_cost()
+        info["total_input_tokens"] = self.total_input_tokens
+        info["total_output_tokens"] = self.total_output_tokens
+        info["total_tokens"] = self.total_input_tokens + self.total_output_tokens
         return info

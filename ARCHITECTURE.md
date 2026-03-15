@@ -5,7 +5,7 @@ This document describes the architecture and design of CoderAI.
 ## Overview
 
 CoderAI is a sophisticated coding agent CLI tool built with Python, featuring:
-- Multiple LLM backend support (OpenAI GPT-5 variants and LM Studio)
+- Multiple LLM backend support (OpenAI, Anthropic Claude, LM Studio, Ollama)
 - MCP (Model Context Protocol) tools for various operations
 - Rich terminal UI with syntax highlighting
 - Both interactive and single-shot modes
@@ -42,7 +42,7 @@ CoderAI is a sophisticated coding agent CLI tool built with Python, featuring:
 
 **Components:**
 - Click-based command structure
-- Command groups: chat, config, history, info, setup
+- Command groups: chat, ask, config, history, info, setup, models, set-model, status, cost, tasks
 - Argument parsing and validation
 - Entry point management
 
@@ -83,8 +83,10 @@ User Message → Agent → LLM → Tool Calls → Execute Tools →
 ```
 llm/
 ├── base.py         # Abstract LLMProvider
-├── openai.py       # OpenAI GPT-5 variants
-└── lmstudio.py     # LM Studio local models
+├── openai.py       # OpenAI GPT-5, o1, o3-mini variants
+├── anthropic.py    # Anthropic Claude models
+├── lmstudio.py     # LM Studio local models
+└── ollama.py       # Ollama local models
 ```
 
 **Base Interface:**
@@ -97,8 +99,10 @@ class LLMProvider:
 ```
 
 **Implementations:**
-- `OpenAIProvider` - Uses OpenAI API with tiktoken
+- `OpenAIProvider` - OpenAI API with tiktoken (GPT-5, o1, o3-mini)
+- `AnthropicProvider` - Anthropic API (Claude models)
 - `LMStudioProvider` - OpenAI-compatible local API
+- `OllamaProvider` - Ollama local API
 
 ### 4. Tools (`coderAI/tools/`)
 
@@ -108,12 +112,20 @@ class LLMProvider:
 ```
 tools/
 ├── base.py         # Tool interface and registry
-├── filesystem.py   # File operations
+├── filesystem.py   # File operations (read, write, search_replace, apply_diff)
 ├── terminal.py     # Command execution
 ├── git.py          # Git operations
-├── search.py       # Code search
-├── web.py          # Web search
-└── memory.py       # Knowledge base
+├── search.py       # Text search and grep
+├── web.py          # Web search and URL reading
+├── memory.py       # Knowledge base
+├── mcp.py          # MCP server integration
+├── undo.py         # File backup and rollback
+├── project.py      # Project context detection
+├── context_manage.py  # Context pinning
+├── tasks.py        # Task/TODO management
+├── subagent.py     # Sub-agent delegation
+├── lint.py         # Linter integration
+└── vision.py       # Image reading
 ```
 
 **Tool Interface:**
@@ -138,6 +150,7 @@ class Tool:
 - `read_file` - Read file contents
 - `write_file` - Create/overwrite files
 - `search_replace` - Edit files
+- `apply_diff` - Apply unified diff patches
 - `list_directory` - List directory contents
 - `glob_search` - Find files by pattern
 
@@ -146,21 +159,33 @@ class Tool:
 - `run_background` - Start background processes
 
 *Git:*
+- `git_add` - Stage files
 - `git_status` - Repository status
 - `git_diff` - View changes
 - `git_commit` - Create commits
 - `git_log` - View history
 
 *Search:*
-- `codebase_search` - Semantic search
-- `grep` - Pattern matching
+- `text_search` - Text-based codebase search
+- `grep` - Pattern matching with regex
 
 *Web:*
 - `web_search` - Internet search
+- `read_url` - Fetch URL content
 
 *Memory:*
 - `save_memory` - Store information
 - `recall_memory` - Retrieve information
+
+*Additional:*
+- `project_context` - Auto-detect project type and structure
+- `manage_context` - Pin files to context
+- `manage_tasks` - Task/TODO tracking
+- `delegate_task` - Spawn sub-agent for isolated tasks
+- `lint` - Run project linter
+- `read_image` - Read and analyze images
+- `undo` / `undo_history` - File rollback
+- `mcp_connect` / `mcp_call_tool` / `mcp_list` - MCP integration
 
 ### 5. UI Components (`coderAI/ui/`)
 
@@ -204,10 +229,10 @@ ui/
 - Sensitive data masking
 
 **Settings:**
-- API keys
+- API keys (OpenAI, Anthropic)
 - Model preferences
-- Temperature, max_tokens
-- LM Studio endpoint
+- Temperature, max_tokens, reasoning_effort
+- LM Studio and Ollama endpoints
 - Streaming, history options
 
 ### 7. History (`coderAI/history.py`)
@@ -277,7 +302,7 @@ ui/
 
 ### 1. Abstract Factory Pattern
 - `LLMProvider` base class
-- Different implementations for OpenAI, LM Studio
+- Different implementations: OpenAI, Anthropic, LM Studio, Ollama
 
 ### 2. Registry Pattern
 - `ToolRegistry` manages tools
@@ -302,9 +327,9 @@ ui/
 - asyncio for concurrency
 
 **LLM Integration:**
-- OpenAI Python SDK
-- aiohttp for LM Studio
-- tiktoken for token counting
+- OpenAI Python SDK (OpenAI provider)
+- aiohttp for Anthropic, LM Studio, and Ollama APIs
+- tiktoken for token counting (OpenAI)
 
 **CLI:**
 - Click for command structure
@@ -422,7 +447,7 @@ def my_command(...):
 
 1. **LLM Errors:**
    - API failures caught and reported
-   - Retry logic (planned)
+   - Retry logic implemented for transient errors (timeouts, rate limits, 5xx)
    - Fallback messages
 
 2. **Tool Errors:**

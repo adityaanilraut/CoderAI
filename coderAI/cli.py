@@ -28,7 +28,7 @@ from .ui.interactive import interactive_chat
 def cli(ctx, model, resume, version, verbose):
     """CoderAI - Intelligent Coding Agent CLI Tool.
 
-    Run 'coderAI chat' for interactive mode or provide a prompt directly.
+    Run 'coderAI chat' for interactive mode.
     """
     if version:
         click.echo(f"CoderAI version {__version__}")
@@ -115,7 +115,7 @@ async def _run_chat(model, resume, no_stream=False, auto_approve=False):
                 
                 # Validate model name
                 valid_models = list(agent.provider.SUPPORTED_MODELS.keys()) if hasattr(agent.provider, 'SUPPORTED_MODELS') else []
-                valid_models.extend(["lmstudio", "ollama", "claude-4-sonnet", "claude-3.5-sonnet", "claude-3.5-haiku", "claude-3-opus"])
+                valid_models.extend(["lmstudio", "ollama", "claude-4-sonnet", "claude-3.5-sonnet", "claude-3.5-haiku", "claude-3-opus", "openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama3-70b-8192", "llama3-8b-8192"])
                 
                 if user_input not in valid_models:
                     display.print_error(f"Invalid model: {user_input}")
@@ -179,31 +179,12 @@ async def _run_chat(model, resume, no_stream=False, auto_approve=False):
     except Exception as e:
         display.print_error(f"Fatal error: {str(e)}")
         sys.exit(1)
+    finally:
+        try:
+            await agent.close()
+        except NameError:
+            pass  # agent was never assigned
 
-
-@cli.command()
-@click.argument("prompt")
-@click.option("--model", "-m", help="Model to use")
-def ask(prompt, model):
-    """Ask a single question (single-shot mode)."""
-    asyncio.run(_run_single_shot(prompt, model))
-
-
-async def _run_single_shot(prompt, model):
-    """Run single-shot mode."""
-    try:
-        agent = Agent(model=model, streaming=False)
-        
-        with display.status("[bold blue]Thinking...[/bold blue]"):
-            response = await agent.process_single_shot(prompt)
-        
-        display.print("\n[bold blue]Response:[/bold blue]")
-        display.print_markdown(response)
-        display.print()
-
-    except Exception as e:
-        display.print_error(f"Error: {str(e)}")
-        sys.exit(1)
 
 
 @cli.group()
@@ -330,9 +311,18 @@ def setup():
         display.print_success("   Anthropic API key saved")
     display.print()
     
+    # Groq API Key
+    display.print("[bold]3. Groq API Key[/bold]")
+    display.print("   Required for using Groq models (including openai/gpt-oss-120b and openai/gpt-oss-20b)")
+    groq_key = click.prompt("   Enter your Groq API key (or press Enter to skip)", default="", show_default=False)
+    if groq_key:
+        config_manager.set("groq_api_key", groq_key)
+        display.print_success("   Groq API key saved")
+    display.print()
+    
     # Default Model
-    display.print("[bold]3. Default Model[/bold]")
-    display.print("   Available: gpt-5, gpt-5-mini, claude-4-sonnet, claude-3.5-sonnet, lmstudio, ollama")
+    display.print("[bold]4. Default Model[/bold]")
+    display.print("   Available: gpt-5, gpt-5-mini, claude-4-sonnet, claude-3.5-sonnet, lmstudio, ollama, openai/gpt-oss-120b, openai/gpt-oss-20b")
     model = click.prompt("   Enter default model", default="gpt-5-mini")
     config_manager.set("default_model", model)
     display.print_success(f"   Default model set to {model}")
@@ -380,11 +370,9 @@ def models():
     display.print_header("Available Models and Providers")
     
     display.print("\n[bold cyan]OpenAI Provider[/bold cyan]")
-    display.print("  • [yellow]gpt-5[/yellow] - GPT-5 (most capable, multimodal)")
-    display.print("  • [yellow]gpt-5-mini[/yellow] - GPT-5 Mini (balanced performance and cost)")
-    display.print("  • [yellow]gpt-4-turbo[/yellow] - GPT-4 Turbo (fast, 128k context)")
-    display.print("  • [yellow]gpt-4[/yellow] - GPT-4 (original)")
-    display.print("  • [yellow]gpt-3.5-turbo[/yellow] - GPT-3.5 Turbo (fastest, cheapest)")
+    display.print("  • [yellow]gpt-5[/yellow] - GPT-5 (multimodal)")
+    display.print("  • [yellow]gpt-5-mini[/yellow] - GPT-5 Mini (fastest and most affordable GPT-5 option)")
+    display.print("  • [yellow]gpt-5-nano[/yellow] - GPT-5 Nano (lowest cost, quickest)")
     display.print("  • [yellow]o1[/yellow] - o1 (reasoning model)")
     display.print("  • [yellow]o1-mini[/yellow] - o1 Mini (fast reasoning)")
     display.print("  • [yellow]o3-mini[/yellow] - o3 Mini (latest reasoning)")
@@ -396,6 +384,13 @@ def models():
     display.print("  • [yellow]claude-3.5-haiku[/yellow] - Claude 3.5 Haiku (fast, affordable)")
     display.print("  • [yellow]claude-3-opus[/yellow] - Claude 3 Opus (most creative)")
     display.print("\n  [dim]Requires: Anthropic API key[/dim]")
+    
+    display.print("\n[bold cyan]Groq Provider[/bold cyan]")
+    display.print("  • [yellow]openai/gpt-oss-120b[/yellow] - GPT OSS 120B (via Groq router)")
+    display.print("  • [yellow]openai/gpt-oss-20b[/yellow] - GPT OSS 20B (via Groq router)")
+    display.print("  • [yellow]llama3-70b-8192[/yellow] - Llama 3 70B")
+    display.print("  • [yellow]llama3-8b-8192[/yellow] - Llama 3 8B")
+    display.print("\n  [dim]Requires: Groq API key[/dim]")
     
     display.print("\n[bold cyan]LM Studio Provider[/bold cyan]")
     display.print("  • [yellow]lmstudio[/yellow] - Use any local model")
@@ -416,8 +411,9 @@ def set_model(model_name):
     """Set default model for new sessions."""
     from .llm.openai import OpenAIProvider
     from .llm.anthropic import MODEL_ALIASES
+    from .llm.groq import GroqProvider
     
-    valid_models = list(OpenAIProvider.SUPPORTED_MODELS.keys()) + list(MODEL_ALIASES.keys()) + ["lmstudio", "ollama"]
+    valid_models = list(OpenAIProvider.SUPPORTED_MODELS.keys()) + list(MODEL_ALIASES.keys()) + list(GroqProvider.SUPPORTED_MODELS.keys()) + ["lmstudio", "ollama"]
     
     if model_name not in valid_models:
         display.print_error(f"Invalid model: {model_name}")
@@ -431,18 +427,25 @@ def set_model(model_name):
 
 @cli.command()
 def cost():
-    """Show API cost tracking for the current session."""
+    """Show API cost tracking and pricing info."""
+    from .cost import MODEL_PRICING, CostTracker
+    
     display.print_header("API Cost Tracking")
     display.print_info("Cost tracking is available during active chat sessions.")
     display.print_info("Use '/tokens' in chat to see current session costs.")
-    display.print()
-    display.print("[dim]Per-model pricing (per 1K tokens):[/dim]")
-    display.print("  [yellow]gpt-5[/yellow]:         $0.0025 input / $0.01 output")
-    display.print("  [yellow]gpt-5-mini[/yellow]:    $0.00015 input / $0.0006 output")
-    display.print("  [yellow]claude-4-sonnet[/yellow]: $0.003 input / $0.015 output")
-    display.print("  [yellow]claude-3.5-sonnet[/yellow]: $0.003 input / $0.015 output")
-    display.print("  [yellow]lmstudio[/yellow]:       Free (local)")
-    display.print("  [yellow]ollama[/yellow]:         Free (local)")
+    
+    config = config_manager.load()
+    if config.budget_limit > 0:
+        display.print(f"\n[bold blue]Active Budget Limit:[/bold blue] {CostTracker.format_cost(config.budget_limit)}")
+    
+    display.print("\n[dim]Per-model pricing (per 1M tokens):[/dim]")
+    for model, pricing in MODEL_PRICING.items():
+        if pricing["input"] == 0 and pricing["output"] == 0:
+            display.print(f"  [yellow]{model}[/yellow]: Free (local)")
+        else:
+            display.print(f"  [yellow]{model}[/yellow]: "
+                          f"{CostTracker.format_cost(pricing['input'])} input / "
+                          f"{CostTracker.format_cost(pricing['output'])} output")
     display.print()
 
 
@@ -475,6 +478,14 @@ def status():
     else:
         display.print("  ✗ API key not configured")
         display.print("    [dim]Run 'coderAI setup' or 'coderAI config set anthropic_api_key YOUR_KEY'[/dim]")
+        
+    # Check Groq
+    display.print("\n[bold cyan]Groq Provider:[/bold cyan]")
+    if config.groq_api_key:
+        display.print("  ✓ API key configured")
+    else:
+        display.print("  ✗ API key not configured")
+        display.print("    [dim]Run 'coderAI setup' or 'coderAI config set groq_api_key YOUR_KEY'[/dim]")
     
     # Check LM Studio
     display.print("\n[bold cyan]LM Studio Provider:[/bold cyan]")
@@ -496,17 +507,40 @@ def status():
     display.print()
 
 
+@cli.group()
+def tasks():
+    """Manage project tasks and TODOs."""
+    pass
+
+
+@tasks.command("list")
+def tasks_list():
+    """List all tasks."""
+    from .tools.tasks import ManageTasksTool
+    import asyncio
+    
+    tool = ManageTasksTool()
+    result = asyncio.run(tool.execute("list"))
+    if not result.get("success"):
+        from .ui.display import display
+        display.print_error(result.get("error", "Unknown error"))
+        return
+        
+    from .ui.display import display
+    display.print_header(result.get("summary", "Tasks"))
+    
+    for status, color in [("pending", "yellow"), ("completed", "green")]:
+        task_list = result.get(status, [])
+        if task_list:
+            display.print(f"\n[bold {color}]{status.title()} Tasks:[/bold {color}]")
+            for t in task_list:
+                desc = f" - {t['description']}" if t.get("description") else ""
+                display.print(f"  [{t['id']}] {t['title']}{desc}")
+
+
 def main():
     """Main entry point."""
-    # Check if a prompt was provided as a positional argument (not a subcommand)
-    if len(sys.argv) > 1 and not sys.argv[1].startswith("-") and sys.argv[1] not in [
-        "chat", "ask", "config", "history", "info", "setup", "models", "set-model", "status", "cost"
-    ]:
-        # Treat as a single-shot prompt
-        prompt = " ".join(sys.argv[1:])
-        asyncio.run(_run_single_shot(prompt, None))
-    else:
-        cli()
+    cli()
 
 
 if __name__ == "__main__":

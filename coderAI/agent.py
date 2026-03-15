@@ -8,8 +8,9 @@ from typing import Any, Dict, List, Optional
 
 from .config import config_manager
 from .context import ContextManager
+from .cost import CostTracker
 from .history import Message, Session, history_manager
-from .llm import LMStudioProvider, OpenAIProvider, AnthropicProvider, OllamaProvider
+from .llm import LMStudioProvider, OpenAIProvider, AnthropicProvider, OllamaProvider, GroqProvider
 from .system_prompt import SYSTEM_PROMPT
 from .tools import (
     TextSearchTool,
@@ -29,6 +30,7 @@ from .tools import (
     SearchReplaceTool,
     ToolRegistry,
     WebSearchTool,
+    ReadURLTool,
     WriteFileTool,
     MCPConnectTool,
     MCPCallTool,
@@ -39,15 +41,20 @@ from .tools import (
     ManageContextTool,
     ApplyDiffTool,
     LintTool,
+    ManageTasksTool,
+    DelegateTaskTool,
+    ReadImageTool,
 )
 from .events import event_emitter
 from .ui.streaming import StreamingHandler
+from .agents import load_agent_persona, AgentPersona
+from .agent_tracker import agent_tracker, AgentStatus, AgentInfo
 
 logger = logging.getLogger(__name__)
 
 # Reserve tokens for the response and tool overhead
-RESPONSE_TOKEN_RESERVE = 4096
-TOOL_OVERHEAD_TOKENS = 2000
+RESPONSE_TOKEN_RESERVE = 1024  # Further reduced for better context utilization
+TOOL_OVERHEAD_TOKENS = 512  # Further reduced for better context utilization
 
 # Retry configuration for transient errors
 MAX_RETRIES_PER_ITERATION = 3
@@ -79,16 +86,30 @@ _TRANSIENT_PATTERNS = (
 class Agent:
     """Main agent orchestrator that coordinates LLM and tools."""
 
-    def __init__(self, model: str = None, streaming: bool = True, auto_approve: bool = False):
+    def __init__(
+        self,
+        model: str = None,
+        streaming: bool = True,
+        auto_approve: bool = False,
+        persona_name: str = None,
+    ):
         """Initialize the agent.
 
         Args:
             model: Model name to use
             streaming: Enable streaming responses
             auto_approve: Skip tool confirmation prompts (--auto-approve / --yolo)
+            persona_name: Name of a specific persona to load from .coderAI/agents/
         """
-        self.config = config_manager.load()
         self.config = config_manager.load_project_config(".")
+
+        # Load custom persona if requested
+        self.persona: Optional[AgentPersona] = None
+        if persona_name:
+            self.persona = load_agent_persona(persona_name, self.config.project_root)
+            if self.persona and self.persona.model:
+                model = self.persona.model
+
         self.model = model or self.config.default_model
         self.streaming = streaming and self.config.streaming
         self.auto_approve = auto_approve
@@ -102,11 +123,22 @@ class Agent:
         # Initialize context manager
         self.context_manager = ContextManager()
 
+        # Initialize hook approval tracking
+        self._hooks_approved = None
+
         # Initialize LLM provider
         self.provider = self._create_provider()
 
-        # Initialize tool registry
+        # Initialize tool registry (optionally filtered by persona tools)
         self.tools = self._create_tool_registry()
+        if self.persona and self.persona.tools:
+            self._filter_tools_for_persona(self.persona.tools)
+
+        # Token accounting snapshot for the current tracking step
+        self._tracker_start_prompt = 0
+        self._tracker_start_completion = 0
+        self._tracker_start_tokens = 0
+        self._tracker_start_cost = 0.0
 
         # Initialize streaming handler
         self.streaming_handler = StreamingHandler()
@@ -118,6 +150,10 @@ class Agent:
         self.total_prompt_tokens: int = 0
         self.total_completion_tokens: int = 0
         self.total_tokens: int = 0
+        self.cost_tracker = CostTracker()
+
+        # Register with global agent tracker for observability / cancellation
+        self.tracker_info: Optional[AgentInfo] = None
 
     def _create_provider(self):
         """Create LLM provider based on model."""
@@ -142,6 +178,15 @@ class Agent:
                 temperature=self.config.temperature,
                 max_tokens=self.config.max_tokens,
                 reasoning_effort=self.config.reasoning_effort,
+            )
+        elif self.model in GroqProvider.SUPPORTED_MODELS or self.model.startswith("groq/"):
+            actual_model = self.model.replace("groq/", "") if self.model.startswith("groq/") else self.model
+            # the requested models openai/gpt-oss-120b and openai/gpt-oss-20b will match SUPPORTED_MODELS
+            return GroqProvider(
+                model=actual_model,
+                api_key=self.config.groq_api_key,
+                temperature=self.config.temperature,
+                max_tokens=self.config.max_tokens,
             )
         else:
             return OpenAIProvider(
@@ -178,8 +223,9 @@ class Agent:
         registry.register(TextSearchTool())
         registry.register(GrepTool())
 
-        # Register web search
+        # Register web search & URL tools
         registry.register(WebSearchTool())
+        registry.register(ReadURLTool())
 
         # Register memory tools
         registry.register(SaveMemoryTool())
@@ -206,13 +252,67 @@ class Agent:
         # Register linter tool (F18)
         registry.register(LintTool())
 
+        # Register task management tool
+        registry.register(ManageTasksTool())
+
+        # Register sub-agent delegation tool
+        registry.register(DelegateTaskTool())
+
+        # Register vision tool
+        registry.register(ReadImageTool())
+
         return registry
+
+    def _filter_tools_for_persona(self, allowed_tools: list) -> None:
+        """Remove tools not listed in the persona's tools whitelist.
+
+        Always keeps read-only tools so the agent can still explore the codebase.
+        """
+        allowed_set = set(allowed_tools)
+        to_remove = [
+            name
+            for name, tool in self.tools.tools.items()
+            if name not in allowed_set and not tool.is_read_only
+        ]
+        for name in to_remove:
+            del self.tools.tools[name]
+
+    def _get_system_prompt(self) -> str:
+        """Get the base system prompt (or persona) and append any rules from .coderAI/rules/."""
+        # Use persona instructions if loaded, else default
+        prompt = self.persona.instructions if self.persona else SYSTEM_PROMPT
+
+        # Look for project rules and append them
+        try:
+            from pathlib import Path
+
+            rules_dir = Path(self.config.project_root, ".coderAI", "rules")
+            if rules_dir.exists() and rules_dir.is_dir():
+                rules = []
+                for rule_file in sorted(rules_dir.glob("*.md")):
+                    try:
+                        content = rule_file.read_text().strip()
+                        if content:
+                            rules.append(f"### Rule: {rule_file.name}\n{content}")
+                    except Exception as e:
+                        logger.warning(f"Failed to read rule file {rule_file.name}: {e}")
+
+                if rules:
+                    prompt += "\n\n## Project Specific Rules\n\n"
+                    prompt += (
+                        "The following rules are specific to this project and MUST be followed:\n\n"
+                    )
+                    prompt += "\n\n".join(rules)
+        except Exception as e:
+            logger.warning(f"Error loading project rules: {e}")
+
+        return prompt
 
     def create_session(self) -> Session:
         """Create a new conversation session."""
         self.session = history_manager.create_session(model=self.model)
         # Add system prompt as the first message
-        self.session.add_message("system", SYSTEM_PROMPT)
+        self.session.add_message("system", self._get_system_prompt())
         return self.session
 
     def load_session(self, session_id: str) -> Optional[Session]:
@@ -228,32 +328,94 @@ class Agent:
     def get_context_usage(self) -> tuple[int, int]:
         """Get the current context window usage and limit."""
         messages = self.session.get_messages_for_api() if self.session else []
-        
+
         # Inject system message if exists to get an accurate count
         context_msg = self.context_manager.get_system_message()
         if context_msg:
             # Insert after the main system prompt (index 0)
             messages.insert(1, {"role": "system", "content": context_msg})
-            
+
         used_tokens = self._estimate_message_tokens(messages)
         limit = self.config.context_window
         return used_tokens, limit
 
-    def _truncate_messages_to_fit(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Truncate old messages to fit within the context window.
+    async def compact_context(self) -> bool:
+        """Manually force the context to be compacted by summarizing the history."""
+        if not self.session:
+            return False
+
+        event_emitter.emit(
+            "agent_status", message="[bold cyan]Force compacting context...[/bold cyan]"
+        )
+
+        # Use a local override instead of mutating the shared config object
+        compact_limit = RESPONSE_TOKEN_RESERVE + TOOL_OVERHEAD_TOKENS + 1500
+
+        try:
+            messages = self.session.get_messages_for_api()
+
+            compacted_messages = await self._manage_context_window(
+                messages, context_limit_override=compact_limit
+            )
+
+            for msg in compacted_messages:
+                if (
+                    msg.get("role") == "system"
+                    and isinstance(msg.get("content"), str)
+                    and (
+                        "[Prior Conversation Summary]:" in msg.get("content")
+                        or "were removed to fit" in msg.get("content")
+                    )
+                ):
+                    from .history import Message
+
+                    new_messages = []
+                    for i, m in enumerate(compacted_messages):
+                        msg_args = {
+                            k: v
+                            for k, v in m.items()
+                            if k in ["role", "content", "tool_calls", "tool_call_id", "name"]
+                        }
+                        # Preserve original timestamp if we have a corresponding message
+                        if i < len(self.session.messages):
+                            msg_args["timestamp"] = self.session.messages[i].timestamp
+                        new_messages.append(Message(**msg_args))
+                    self.session.messages = new_messages
+                    self.session.updated_at = _time.time()
+                    event_emitter.emit(
+                        "agent_status",
+                        message="[bold green]Context compacted successfully![/bold green]",
+                    )
+                    return True
+
+            event_emitter.emit(
+                "agent_status",
+                message="[dim]Context already compact or could not be compacted.[/dim]",
+            )
+            return False
+
+        except Exception as e:
+            logger.error(f"Error during manual context compaction: {e}")
+            return False
+
+    async def _manage_context_window(
+        self,
+        messages: List[Dict[str, Any]],
+        context_limit_override: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Manage context window by summarizing old messages to fit.
 
         Keeps the system prompt, pinned context, and the most recent messages.
         Note: Pinned context is already injected into messages as a system
         message before this method is called, so its tokens are accounted for
         via the system_tokens calculation below — no separate deduction needed.
         """
-        context_limit = self.config.context_window
+        context_limit = context_limit_override or self.config.context_window
 
         max_content_tokens = context_limit - RESPONSE_TOKEN_RESERVE - TOOL_OVERHEAD_TOKENS
 
         if max_content_tokens <= 0:
             max_content_tokens = context_limit // 2
-
 
         # Estimate total tokens
         total_tokens = self._estimate_message_tokens(messages)
@@ -291,12 +453,58 @@ class Agent:
         # Flatten kept groups back to messages
         kept_messages = [msg for group in kept_groups for msg in group]
 
-        # Add a truncation notice if we removed messages
+        # Summarize older messages if we had to remove them
         if len(kept_messages) < len(non_system):
-            removed_count = len(non_system) - len(kept_messages)
+            removed_messages = non_system[: -len(kept_messages)] if kept_messages else non_system
+
+            # Extract text to summarize
+            text_to_summarize = ""
+            for msg in removed_messages:
+                role = msg.get("role", "unknown")
+                content = msg.get("content")
+                if content and isinstance(content, str):
+                    text_to_summarize += f"{role.upper()}: {content}\n"
+
+            if text_to_summarize:
+                event_emitter.emit(
+                    "agent_status",
+                    message="\n[dim]Context window filling up. Summarizing older conversations...[/dim]",
+                )
+                prompt = (
+                    "Summarize the following conversation history. This summary will replace "
+                    "these messages in our memory, so preserve ALL of the following:\n"
+                    "- Tool calls made and their outcomes (file paths, commands run, results)\n"
+                    "- Files read, created, or modified (with paths)\n"
+                    "- Key decisions made and their rationale\n"
+                    "- Errors encountered and how they were resolved\n"
+                    "- User preferences or constraints stated\n"
+                    "- Current task status and next steps\n"
+                    "Be concise but factually complete.\n\n"
+                    f"{text_to_summarize}"
+                )
+                try:
+                    response = await self.provider.chat(
+                        [{"role": "user", "content": prompt}], tools=None
+                    )
+                    summary_content = ""
+                    if "choices" in response and response["choices"]:
+                        summary_content = (
+                            response["choices"][0].get("message", {}).get("content", "")
+                        )
+
+                    if summary_content:
+                        summary_notice = {
+                            "role": "system",
+                            "content": f"[Prior Conversation Summary]: {summary_content}",
+                        }
+                        return system_messages + [summary_notice] + kept_messages
+                except Exception as e:
+                    logger.warning(f"Failed to summarize context: {e}")
+
+            # Fallback to simple truncation
             truncation_notice = {
                 "role": "system",
-                "content": f"[Note: {removed_count} earlier messages were removed to fit the context window. The conversation continues from here.]",
+                "content": f"[Note: {len(removed_messages)} earlier messages were removed to fit the context window. The conversation continues from here.]",
             }
             return system_messages + [truncation_notice] + kept_messages
 
@@ -354,6 +562,62 @@ class Agent:
         total += 3  # reply priming
         return total
 
+    def _register_tracker(self, task: str, role: str = None, parent_id: str = None) -> AgentInfo:
+        """Register this agent with the global tracker."""
+        self.tracker_info = agent_tracker.register(
+            name=self.persona.name if self.persona else "main",
+            role=role or (self.persona.description if self.persona else None),
+            model=self.model,
+            parent_id=parent_id,
+            context_limit=self.config.context_window,
+        )
+
+        # Snapshot token baseline so `_sync_tracker` records only this turn's usage
+        self._tracker_start_prompt = self.total_prompt_tokens
+        self._tracker_start_completion = self.total_completion_tokens
+        self._tracker_start_tokens = self.total_tokens
+        self._tracker_start_cost = self.cost_tracker.get_total_cost()
+        self.tracker_info.current_task = task
+        self.tracker_info.status = AgentStatus.THINKING
+        event_emitter.emit("agent_lifecycle", action="started", info=self.tracker_info)
+
+        # Keep DelegateTaskTool aware of who the parent agent is so
+        # sub-agents inherit the model and link correctly in the tracker.
+        delegate_tool = self.tools.get("delegate_task")
+        if delegate_tool is not None:
+            delegate_tool._parent_model = self.model
+            delegate_tool._parent_agent_id = self.tracker_info.agent_id
+            delegate_tool._parent_context_manager = self.context_manager
+
+        return self.tracker_info
+
+    def _sync_tracker(self):
+        """Sync internal token counters to the tracker info."""
+        info = self.tracker_info
+        if not info:
+            return
+        info.prompt_tokens = self.total_prompt_tokens - self._tracker_start_prompt
+        info.completion_tokens = self.total_completion_tokens - self._tracker_start_completion
+        info.total_tokens = self.total_tokens - self._tracker_start_tokens
+        info.cost_usd = self.cost_tracker.get_total_cost() - self._tracker_start_cost
+        if self.session:
+            msgs = self.session.get_messages_for_api()
+            info.context_used_tokens = self._estimate_message_tokens(msgs)
+
+    def _finish_tracker(self, error: bool = False):
+        """Mark this agent as done in the tracker and emit completion event."""
+        info = self.tracker_info
+        if not info:
+            return
+        self._sync_tracker()
+        # Preserve CANCELLED status if it was already set by request_cancel()
+        if info.status != AgentStatus.CANCELLED:
+            info.status = AgentStatus.ERROR if error else AgentStatus.DONE
+        import time as _t
+
+        info.finished_at = _t.time()
+        event_emitter.emit("agent_lifecycle", action="finished", info=info)
+
     async def process_message(self, user_message: str) -> Dict[str, Any]:
         """Process a user message and return response.
 
@@ -367,29 +631,75 @@ class Agent:
         if self.session is None:
             self.create_session()
 
+        # Register with tracker for observability
+        if not self.tracker_info or self.tracker_info.status in (
+            AgentStatus.DONE,
+            AgentStatus.ERROR,
+        ):
+            self._register_tracker(task=user_message[:120])
+        else:
+            self.tracker_info.current_task = user_message[:120]
+            self.tracker_info.status = AgentStatus.THINKING
+
+        # Check budget limit before processing
+        if (
+            self.config.budget_limit > 0
+            and self.cost_tracker.get_total_cost() > self.config.budget_limit
+        ):
+            from .cost import CostTracker
+
+            msg = f"Budget limit of {CostTracker.format_cost(self.config.budget_limit)} exceeded."
+            event_emitter.emit("agent_error", message=msg)
+            self._finish_tracker(error=True)
+            return {
+                "content": f"Blocked: {msg}",
+                "messages": self.session.messages if self.session else [],
+                "model_info": self.provider.get_model_info(),
+            }
+
         # Add user message to session
         self.session.add_message("user", user_message)
 
         # Get messages for API
         messages = self.session.get_messages_for_api()
 
-        # Inject pinned context / project instructions
-        # We insert this as a system message right after the main system prompt
-        context_msg = self.context_manager.get_system_message()
+        # Inject pinned context / project instructions — filtered by relevance
+        # to the current user message so agents only see what they need.
+        context_msg = self.context_manager.get_system_message(
+            query=user_message,
+            messages=messages,
+        )
         if context_msg:
             # Find index of last system message or insert at 1
             insert_idx = 0
             for i, msg in enumerate(messages):
                 if msg.get("role") == "system":
                     insert_idx = i + 1
-            
+
             messages.insert(insert_idx, {"role": "system", "content": context_msg})
 
-        # Truncate messages to fit context window
-        messages = self._truncate_messages_to_fit(messages)
+        # Proactive context management: summarize older messages when context
+        # usage exceeds 70% so we never slam into the hard limit mid-turn.
+        # A single pass with the proactive limit avoids redundant LLM calls.
+        proactive_limit = int(
+            (self.config.context_window - RESPONSE_TOKEN_RESERVE - TOOL_OVERHEAD_TOKENS) * 0.70
+        )
+        effective_limit = proactive_limit + RESPONSE_TOKEN_RESERVE + TOOL_OVERHEAD_TOKENS
+        messages = await self._manage_context_window(
+            messages, context_limit_override=effective_limit
+        )
 
-        # Get tool schemas
+        # Get tool schemas — include MCP discovered tools alongside built-in tools
         tool_schemas = self.tools.get_schemas() if self.provider.supports_tools() else None
+        if tool_schemas is not None:
+            try:
+                from .tools.mcp import mcp_client
+
+                mcp_schemas = mcp_client.get_tools_as_openai_format()
+                if mcp_schemas:
+                    tool_schemas = tool_schemas + mcp_schemas
+            except Exception:
+                pass  # MCP not available or no servers connected
 
         # Process with LLM (potentially multiple rounds for tool calls)
         max_iterations = self.config.max_iterations
@@ -399,10 +709,22 @@ class Agent:
         while iteration < max_iterations:
             iteration += 1
 
+            # ── Cancellation check ──
+            if self.tracker_info and self.tracker_info.is_cancelled:
+                self._finish_tracker()
+                self.save_session()
+                return {
+                    "content": "Agent stopped by user.",
+                    "messages": self.session.messages,
+                    "model_info": self.provider.get_model_info(),
+                }
+
             try:
-                response_data = await self._call_llm_with_retry(
-                    messages, tool_schemas
-                )
+                if self.tracker_info:
+                    self.tracker_info.status = AgentStatus.THINKING
+                    self._sync_tracker()
+
+                response_data = await self._call_llm_with_retry(messages, tool_schemas)
                 consecutive_errors = 0  # reset on success
 
                 # Handle response
@@ -418,6 +740,7 @@ class Agent:
 
                 # If no tool calls, we're done
                 if not tool_calls:
+                    self._finish_tracker()
                     self.save_session()
                     return {
                         "content": content or "",
@@ -436,41 +759,207 @@ class Agent:
                         arguments = json.loads(function.get("arguments", "{}"))
                     except json.JSONDecodeError as e:
                         # Return a clear error to the LLM instead of silently swallowing
-                        parsed_calls.append({
-                            "tool_id": tool_id,
-                            "tool_name": tool_name,
-                            "arguments": None,
-                            "parse_error": f"Invalid JSON arguments: {e}",
-                        })
+                        parsed_calls.append(
+                            {
+                                "tool_id": tool_id,
+                                "tool_name": tool_name,
+                                "arguments": None,
+                                "parse_error": f"Invalid JSON arguments: {e}",
+                            }
+                        )
                         continue
 
-                    parsed_calls.append({
-                        "tool_id": tool_id,
-                        "tool_name": tool_name,
-                        "arguments": arguments,
-                        "parse_error": None,
-                    })
+                    parsed_calls.append(
+                        {
+                            "tool_id": tool_id,
+                            "tool_name": tool_name,
+                            "arguments": arguments,
+                            "parse_error": None,
+                        }
+                    )
+
+                # Update tracker status to tool execution
+                if self.tracker_info:
+                    tool_names = [
+                        pc["tool_name"] for pc in parsed_calls if pc["arguments"] is not None
+                    ]
+                    self.tracker_info.status = AgentStatus.TOOL_CALL
+                    self.tracker_info.current_tool = ", ".join(tool_names) if tool_names else None
 
                 # Display all tool calls
                 for pc in parsed_calls:
                     if pc["arguments"] is not None:
-                        event_emitter.emit("tool_call", tool_name=pc["tool_name"], arguments=pc["arguments"])
+                        event_emitter.emit(
+                            "tool_call", tool_name=pc["tool_name"], arguments=pc["arguments"]
+                        )
                     else:
-                        event_emitter.emit("tool_error", tool_name=pc["tool_name"], error=pc["parse_error"])
+                        event_emitter.emit(
+                            "tool_error", tool_name=pc["tool_name"], error=pc["parse_error"]
+                        )
 
                 # Execute tool calls — parallelize read-only tools, keep
                 # mutating tools sequential to avoid write races (#9)
                 # Uses the is_read_only flag on each Tool (F8)
 
+                async def _run_hooks(tool_name: str, hook_type: str, arguments: dict) -> list:
+                    """Run hooks defined in .coderAI/hooks.json for a specific tool and stage.
+                    hook_type is either 'PreToolUse' or 'PostToolUse'.
+
+                    Security: hooks require one-time user confirmation per session
+                    (unless auto_approve is on) and are checked against the
+                    command blocklist.
+                    """
+                    hooks_results = []
+                    try:
+                        from pathlib import Path
+                        from .tools.terminal import is_command_blocked
+
+                        hooks_file = Path(self.config.project_root, ".coderAI", "hooks.json")
+                        if not hooks_file.exists():
+                            return hooks_results
+
+                        with open(hooks_file, "r") as f:
+                            hooks_data = json.load(f)
+
+                        # Look for commands matching our tool and hook type
+                        matching_hooks = []
+                        for hook in hooks_data.get("hooks", []):
+                            if hook.get("type") == hook_type and (
+                                hook.get("tool") == "*" or hook.get("tool") == tool_name
+                            ):
+                                matching_hooks.append(hook)
+
+                        if matching_hooks:
+                            import os
+
+                            # One-time confirmation per session (skip if auto-approve)
+                            if not self.auto_approve and self._hooks_approved is None:
+                                cmds_preview = ", ".join(
+                                    h.get("command", "?")[:60] for h in matching_hooks
+                                )
+                                event_emitter.emit(
+                                    "agent_status",
+                                    message=(
+                                        f"\n[bold yellow]⚠ Project hooks detected in .coderAI/hooks.json[/bold yellow]"
+                                        f"\n[dim]Commands: {cmds_preview}[/dim]"
+                                    ),
+                                )
+                                try:
+                                    from prompt_toolkit import PromptSession
+
+                                    ps = PromptSession()
+                                    answer = await ps.prompt_async(
+                                        "Allow project hooks to run? (y/n) > "
+                                    )
+                                except (ImportError, EOFError, KeyboardInterrupt):
+                                    try:
+                                        loop = asyncio.get_running_loop()
+                                        answer = await loop.run_in_executor(
+                                            None,
+                                            lambda: input("Allow project hooks to run? (y/n) > "),
+                                        )
+                                    except (EOFError, KeyboardInterrupt):
+                                        answer = "n"
+
+                                if answer.strip().lower() not in ("y", "yes"):
+                                    event_emitter.emit(
+                                        "agent_status", message="[dim]Hooks denied by user.[/dim]"
+                                    )
+                                    self._hooks_approved = False
+                                    return hooks_results
+                                self._hooks_approved = True
+
+                            # Set up env variables for the hook
+                            env = os.environ.copy()
+                            env["CODERAI_TOOL_NAME"] = tool_name
+
+                            for i, arg_val in enumerate(arguments.values()):
+                                env[f"CODERAI_ARG_{i}"] = str(arg_val)
+
+                            for hook in matching_hooks:
+                                cmd = hook.get("command")
+                                if not cmd:
+                                    continue
+
+                                # Safety: check hook commands against blocklist
+                                if is_command_blocked(cmd):
+                                    logger.warning(f"Hook command blocked for safety: {cmd}")
+                                    hooks_results.append(f"[{hook_type} Hook BLOCKED]: {cmd}")
+                                    continue
+
+                                event_emitter.emit(
+                                    "agent_status",
+                                    message=f"[dim]Running {hook_type} hook for {tool_name}...[/dim]",
+                                )
+                                process = await asyncio.create_subprocess_shell(
+                                    cmd,
+                                    stdout=asyncio.subprocess.PIPE,
+                                    stderr=asyncio.subprocess.PIPE,
+                                    env=env,
+                                )
+                                stdout, stderr = await process.communicate()
+
+                                # If it failed, we log it but don't stop the tool
+                                if process.returncode != 0:
+                                    logger.warning(
+                                        f"{hook_type} hook '{cmd}' failed. Exit code: {process.returncode}, Stderr: {stderr.decode('utf-8')}"
+                                    )
+                                else:
+                                    out_str = stdout.decode("utf-8").strip()
+                                    if out_str:
+                                        hooks_results.append(
+                                            f"[{hook_type} Hook Output]: {out_str}"
+                                        )
+
+                    except Exception as e:
+                        logger.error(f"Error running hooks: {e}")
+
+                    return hooks_results
+
                 async def _execute_single_tool(pc):
                     if pc["parse_error"]:
                         return {"success": False, "error": pc["parse_error"]}
                     try:
-                        return await self.tools.execute(
-                            pc["tool_name"],
-                            confirmation_callback=self._confirmation_callback if not self.auto_approve else None,
-                            **pc["arguments"],
-                        )
+                        tool_name = pc["tool_name"]
+                        arguments = pc["arguments"]
+
+                        # Pre-hooks
+                        pre_hooks_out = await _run_hooks(tool_name, "PreToolUse", arguments)
+
+                        # Route MCP discovered tools (mcp_<server>_<toolname>)
+                        # to mcp_client.call_tool() instead of the local registry.
+                        if tool_name.startswith("mcp_") and self.tools.get(tool_name) is None:
+                            from .tools.mcp import mcp_client
+
+                            # Parse: mcp_<server>_<name> → server, name
+                            parts = tool_name.split("_", 2)  # ["mcp", server, name]
+                            if len(parts) >= 3:
+                                server = parts[1]
+                                remote_tool = parts[2]
+                                result = await mcp_client.call_tool(server, remote_tool, arguments)
+                            else:
+                                result = {
+                                    "success": False,
+                                    "error": f"Malformed MCP tool name: {tool_name}",
+                                }
+                        else:
+                            # Actual Tool Execution (local registry)
+                            result = await self.tools.execute(
+                                tool_name,
+                                confirmation_callback=self._confirmation_callback
+                                if not self.auto_approve
+                                else None,
+                                **arguments,
+                            )
+
+                        # Post-hooks
+                        post_hooks_out = await _run_hooks(tool_name, "PostToolUse", arguments)
+
+                        # Attach hook output to result if it's a dict
+                        if isinstance(result, dict) and (pre_hooks_out or post_hooks_out):
+                            result["_hooks"] = {"pre": pre_hooks_out, "post": post_hooks_out}
+
+                        return result
                     except Exception as e:
                         return {"success": False, "error": str(e)}
 
@@ -488,8 +977,10 @@ class Agent:
                 results: list = [None] * len(parsed_calls)
                 total_tools = len(parsed_calls)
                 tools_done = 0
-                
-                event_emitter.emit("status_start", message="[bold cyan]Executing tools...[/bold cyan]")
+
+                event_emitter.emit(
+                    "status_start", message="[bold cyan]Executing tools...[/bold cyan]"
+                )
 
                 # Run all read-only tools in parallel
                 if ro_indices:
@@ -519,7 +1010,7 @@ class Agent:
                         tool_name=parsed_calls[idx]["tool_name"],
                         elapsed=round(elapsed, 2),
                     )
-                    
+
                 event_emitter.emit("status_stop")
 
                 # Process results and add to session
@@ -534,11 +1025,16 @@ class Agent:
                         name=pc["tool_name"],
                     )
 
+                # Clear current tool in tracker
+                if self.tracker_info:
+                    self.tracker_info.current_tool = None
+                    self._sync_tracker()
+
                 # Rebuild messages from session (single source of truth)
                 messages = self.session.get_messages_for_api()
 
-                # Truncate again before next iteration (tool results can be large)
-                messages = self._truncate_messages_to_fit(messages)
+                # Manage context again before next iteration (tool results can be large)
+                messages = await self._manage_context_window(messages)
 
                 # Continue loop to get next response
                 event_emitter.emit("agent_status", message="\n[dim]Processing results...[/dim]")
@@ -550,8 +1046,9 @@ class Agent:
                 if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
                     event_emitter.emit(
                         "agent_error",
-                        message=f"Too many consecutive errors ({consecutive_errors}). Last error: {e}"
+                        message=f"Too many consecutive errors ({consecutive_errors}). Last error: {e}",
                     )
+                    self._finish_tracker(error=True)
                     self.save_session()
                     return {
                         "content": (
@@ -563,21 +1060,29 @@ class Agent:
                     }
 
                 # Non-fatal: feed the error back to the LLM so it can
-                # self-correct (e.g. fix bad tool arguments)
+                # self-correct (e.g. fix bad tool arguments).
+                # NOTE: We inject into the transient messages list, NOT the
+                # session, to avoid accumulating system messages across turns.
                 event_emitter.emit(
                     "agent_error",
-                    message=f"Error (attempt {consecutive_errors}/{MAX_CONSECUTIVE_ERRORS}): {e}"
-                )
-                self.session.add_message(
-                    "assistant",
-                    f"I encountered an error: {str(e)}. Let me try a different approach.",
+                    message=f"Error (attempt {consecutive_errors}/{MAX_CONSECUTIVE_ERRORS}): {e}",
                 )
                 messages = self.session.get_messages_for_api()
-                messages = self._truncate_messages_to_fit(messages)
+                messages.append(
+                    {
+                        "role": "system",
+                        "content": (
+                            f"[Error in previous step: {str(e)}. The assistant should acknowledge this "
+                            f"error and try a different approach.]"
+                        ),
+                    }
+                )
+                messages = await self._manage_context_window(messages)
                 continue
 
         # Max iterations reached
         event_emitter.emit("agent_warning", message="Maximum iteration limit reached")
+        self._finish_tracker(error=True)
         self.save_session()
         return {
             "content": "I've reached the maximum number of iterations. Please try again.",
@@ -601,10 +1106,34 @@ class Agent:
         for attempt in range(1, MAX_RETRIES_PER_ITERATION + 1):
             try:
                 if self.streaming:
-                    return await self._stream_response(messages, tool_schemas)
+                    result = await self._stream_response(messages, tool_schemas)
                 else:
                     raw = await self.provider.chat(messages, tools=tool_schemas)
-                    return self._extract_response_data(raw)
+                    result = self._extract_response_data(raw)
+
+                # Update tokens and cost
+                model_info = self.provider.get_model_info()
+                new_in = model_info.get("total_input_tokens", 0) - self.total_prompt_tokens
+                new_out = model_info.get("total_output_tokens", 0) - self.total_completion_tokens
+
+                if new_in > 0 or new_out > 0:
+                    self.total_prompt_tokens = model_info.get("total_input_tokens", 0)
+                    self.total_completion_tokens = model_info.get("total_output_tokens", 0)
+                    self.total_tokens = model_info.get("total_tokens", 0)
+                    self.cost_tracker.add_cost(self.model, new_in, new_out)
+
+                    if (
+                        self.config.budget_limit > 0
+                        and self.cost_tracker.get_total_cost() > self.config.budget_limit
+                    ):
+                        event_emitter.emit(
+                            "agent_warning",
+                            message=f"[bold red]BUDGET LIMIT EXCEEDED![/bold red] "
+                            f"Limit: {CostTracker.format_cost(self.config.budget_limit)} > "
+                            f"Current: {CostTracker.format_cost(self.cost_tracker.get_total_cost())}",
+                        )
+
+                return result
             except Exception as e:
                 last_error = e
                 if not self._is_transient_error(e) or attempt == MAX_RETRIES_PER_ITERATION:
@@ -616,7 +1145,7 @@ class Agent:
                 )
                 event_emitter.emit(
                     "agent_warning",
-                    message=f"Transient error, retrying in {delay}s… ({attempt}/{MAX_RETRIES_PER_ITERATION})"
+                    message=f"Transient error, retrying in {delay}s… ({attempt}/{MAX_RETRIES_PER_ITERATION})",
                 )
                 await asyncio.sleep(delay)
 
@@ -629,34 +1158,56 @@ class Agent:
         msg = str(exc).lower()
         return any(pattern in msg for pattern in _TRANSIENT_PATTERNS)
 
-    def _summarize_tool_result(self, result: Dict[str, Any]) -> Dict[str, Any]:
+    def _summarize_tool_result(self, result) -> Dict[str, Any]:
         """Summarize large tool results to prevent context overflow.
 
         Args:
-            result: Tool execution result
+            result: Tool execution result (should be a dict, but may be None or other types)
 
         Returns:
             Original or summarized result
         """
+        # Guard against non-dict results (e.g. None from unexpected exceptions)
+        if not isinstance(result, dict):
+            result = {
+                "success": False,
+                "error": str(result) if result is not None else "No result returned",
+            }
+
         result_str = json.dumps(result)
         if len(result_str) <= self.config.max_tool_output:
             return result
 
-        # Truncate large string values in the result
-        summarized = {}
-        for key, value in result.items():
-            if isinstance(value, str) and len(value) > self.config.max_tool_output // 2:
-                half = self.config.max_tool_output // 4
-                summarized[key] = (
-                    value[:half]
-                    + f"\n\n... [truncated {len(value) - 2 * half} chars] ...\n\n"
-                    + value[-half:]
-                )
-            elif isinstance(value, list) and len(value) > 50:
-                summarized[key] = value[:50]
-                summarized[f"{key}_note"] = f"Showing first 50 of {len(value)} items"
-            else:
-                summarized[key] = value
+        def truncate_recursive(val, max_len):
+            if isinstance(val, str):
+                if len(val) > max_len:
+                    half = max_len // 2
+                    return (
+                        val[:half]
+                        + f"\n... [{len(val) - 2 * half} chars truncated] ...\n"
+                        + val[-half:]
+                    )
+                return val
+            elif isinstance(val, list):
+                if len(val) > 50:
+                    return [truncate_recursive(v, max_len) for v in val[:50]] + [
+                        {"_note": f"Showing 50 of {len(val)} items"}
+                    ]
+                return [truncate_recursive(v, max_len) for v in val]
+            elif isinstance(val, dict):
+                return {k: truncate_recursive(v, max_len) for k, v in val.items()}
+            return val
+
+        # Truncate strings larger than max_tool_output // 2
+        summarized = truncate_recursive(result, self.config.max_tool_output // 2)
+
+        # If still too large, forcefully truncate at top level
+        final_str = json.dumps(summarized)
+        if len(final_str) > self.config.max_tool_output * 2:
+            return {
+                "error": "Tool output was extremely large and could not be successfully summarized. Consider narrowing your search."
+            }
+
         return summarized
 
     async def _stream_response(
@@ -695,25 +1246,52 @@ class Agent:
         """Get information about current model."""
         return self.provider.get_model_info()
 
-    def _confirmation_callback(self, tool_name: str, arguments: Dict[str, Any]) -> bool:
+    async def close(self) -> None:
+        """Clean up resources (HTTP sessions, background processes, etc.)."""
+        if hasattr(self.provider, "close"):
+            await self.provider.close()
+
+    async def _confirmation_callback(self, tool_name: str, arguments: Dict[str, Any]) -> bool:
         """Ask the user to confirm a tool execution.
 
-        Emits a 'tool_confirmation' event. The UI layer is expected to
-        register a listener that prompts the user and stores the answer
-        in ``self._confirmation_result``.
+        This is an async method that directly prompts the user in the
+        terminal, working correctly within the running event loop.
 
         Returns:
             True if the user approved, False otherwise.
         """
-        self._confirmation_result: Optional[bool] = None
+        import sys
+
+        # Display the confirmation request
+        args_preview = json.dumps(arguments, indent=2)
+        if len(args_preview) > 300:
+            args_preview = args_preview[:300] + "\n  ... (truncated)"
+
         event_emitter.emit(
-            "tool_confirmation",
-            tool_name=tool_name,
-            arguments=arguments,
-            agent=self,
+            "agent_status",
+            message=(
+                f"\n[bold yellow]⚠ Tool '{tool_name}' requires confirmation.[/bold yellow]"
+                f"\n[dim]{args_preview}[/dim]"
+            ),
         )
-        # The event listener sets self._confirmation_result synchronously
-        if self._confirmation_result is None:
-            # No UI listener registered — default to allow
-            return True
-        return self._confirmation_result
+
+        # Use prompt_toolkit for async-safe input if available, fall back
+        # to a simple thread-based input to avoid blocking the event loop.
+        try:
+            from prompt_toolkit import PromptSession
+
+            prompt_session = PromptSession()
+            answer = await prompt_session.prompt_async(
+                "Allow this tool? (y/n) > ",
+            )
+        except (ImportError, EOFError, KeyboardInterrupt):
+            # Fallback: run blocking input() in a thread
+            try:
+                loop = asyncio.get_running_loop()
+                answer = await loop.run_in_executor(
+                    None, lambda: input("Allow this tool? (y/n) > ")
+                )
+            except (EOFError, KeyboardInterrupt):
+                answer = "n"
+
+        return answer.strip().lower() in ("y", "yes")

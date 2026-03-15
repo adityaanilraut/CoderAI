@@ -79,12 +79,12 @@ class TestSummarizeToolResult:
         agent = self._make_agent()
         result = {"success": True, "items": list(range(100))}
         summarized = agent._summarize_tool_result(result)
-        assert len(summarized["items"]) == 50
-        assert "items_note" in summarized
+        assert len(summarized["items"]) == 51
+        assert "_note" in summarized["items"][-1]
 
 
 class TestTruncateMessages:
-    """Tests for Agent._truncate_messages_to_fit."""
+    """Tests for Agent._manage_context_window."""
 
     def _make_agent(self):
         with patch("coderAI.agent.config_manager") as cm:
@@ -100,6 +100,7 @@ class TestTruncateMessages:
             # Mock provider.count_tokens as simple char/4
             agent.provider = MagicMock()
             agent.provider.count_tokens = lambda text: len(text) // 4
+            agent.provider.chat = AsyncMock(return_value={"choices": [{"message": {"content": "summary"}}]})
             return agent
 
     def test_preserves_system_messages(self):
@@ -110,15 +111,12 @@ class TestTruncateMessages:
             {"role": "assistant", "content": "y" * 2000},
             {"role": "user", "content": "recent question"},
         ]
-        result = agent._truncate_messages_to_fit(messages)
+        result = asyncio.run(agent._manage_context_window(messages))
         # System message must always be present
         system_msgs = [m for m in result if m["role"] == "system"]
         assert len(system_msgs) >= 1
         assert system_msgs[0]["content"] == "You are a bot."
 
-
-class TestProjectConfigInAgent:
-    """Tests for per-project config loading at init."""
 
     def test_project_config_is_loaded(self):
         with patch("coderAI.agent.config_manager") as cm:
@@ -136,3 +134,71 @@ class TestProjectConfigInAgent:
                 agent = Agent(model="gpt-5-mini", streaming=False)
                 # load_project_config should have been called
                 cm.load_project_config.assert_called_once_with(".")
+
+
+class TestAgentsPersonas:
+    """Tests for the Agents module personas."""
+    
+    def test_load_agent_persona_no_dir(self):
+        from coderAI.agents import load_agent_persona
+        with patch("pathlib.Path.exists", return_value=False):
+            persona = load_agent_persona("planner")
+            assert persona is None
+
+    def test_load_agent_persona_success(self):
+        from coderAI.agents import load_agent_persona
+        
+        mock_md = """---
+name: Planner Agent
+description: Plans tasks
+tools: [manage_tasks]
+model: claude-3-5-sonnet-20241022
+---
+You are a planner."""
+        
+        with patch("pathlib.Path.exists", return_value=True):
+            with patch("pathlib.Path.read_text", return_value=mock_md):
+                persona = load_agent_persona("planner")
+                assert persona is not None
+                assert persona.name == "Planner Agent"
+                assert persona.model == "claude-3-5-sonnet-20241022"
+                assert "You are a planner." in persona.instructions
+
+
+class TestAgentProjectRules:
+    """Tests for rule injection in Agent system prompt."""
+
+    def _make_agent(self):
+        with patch("coderAI.agent.config_manager") as cm:
+            from coderAI.config import Config
+            cfg = Config()
+            cm.load.return_value = cfg
+            cm.load_project_config.return_value = cfg
+            from coderAI.agent import Agent
+
+            with patch.object(Agent, "_create_provider", return_value=MagicMock()):
+                agent = Agent(model="gpt-5-mini", streaming=False)
+                # Mock registry
+                agent.tools = MagicMock()
+                return agent
+
+    def test_get_system_prompt_with_rules(self):
+        agent = self._make_agent()
+        
+        mock_rule_file = MagicMock()
+        mock_rule_file.name = "testing.md"
+        mock_rule_file.read_text.return_value = "Always write pytest tests."
+        
+        mock_rules_dir = MagicMock()
+        mock_rules_dir.exists.return_value = True
+        mock_rules_dir.is_dir.return_value = True
+        mock_rules_dir.glob.return_value = [mock_rule_file]
+
+        from coderAI.system_prompt import SYSTEM_PROMPT
+
+        with patch("pathlib.Path", side_effect=lambda *args: mock_rules_dir if ".coderAI" in args else MagicMock()):
+            prompt = agent._get_system_prompt()
+            assert SYSTEM_PROMPT in prompt
+            assert "## Project Specific Rules" in prompt
+            assert "### Rule: testing.md" in prompt
+            assert "Always write pytest tests." in prompt

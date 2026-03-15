@@ -29,15 +29,6 @@ class TestWebSearchToolSchema:
 class TestWebSearchExecution:
     """Execution tests with mocked HTTP."""
 
-    @pytest.fixture(autouse=True)
-    def _reset_session(self):
-        """Ensure the module-level session is reset between tests."""
-        import coderAI.tools.web as web_mod
-
-        web_mod._web_session = None
-        yield
-        web_mod._web_session = None
-
     def test_empty_query_returns_no_results(self):
         from coderAI.tools.web import WebSearchTool
 
@@ -65,15 +56,16 @@ class TestWebSearchExecution:
             assert result["success"] is True
             assert result["results"] == []
 
-    @patch("coderAI.tools.web._get_web_session")
-    def test_successful_search(self, mock_get_session):
+    @patch("coderAI.tools.web.aiohttp.ClientSession")
+    def test_successful_search(self, MockSession):
         from coderAI.tools.web import WebSearchTool
 
-        # Build a fake aiohttp response
         html_body = (
             '<html><body>'
+            '<div class="result__body">'
             '<a class="result__a" href="https://example.com">Example</a>'
             '<a class="result__snippet">A test snippet.</a>'
+            '</div>'
             '</body></html>'
         )
 
@@ -83,9 +75,13 @@ class TestWebSearchExecution:
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_resp.__aexit__ = AsyncMock(return_value=False)
 
-        mock_session = AsyncMock()
-        mock_session.get = MagicMock(return_value=mock_resp)
-        mock_get_session.return_value = mock_session
+        mock_ctx = MagicMock()
+        mock_ctx.post = MagicMock(return_value=mock_resp)
+
+        mock_session = MagicMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_ctx)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+        MockSession.return_value = mock_session
 
         tool = WebSearchTool()
         result = asyncio.run(tool.execute(query="test query"))
@@ -116,12 +112,9 @@ class TestWebSearchExecution:
 
         tool = WebSearchTool()
         with patch.object(
-            tool, "_search_instant_answer", side_effect=Exception("boom")
+            tool, "_search", side_effect=Exception("boom")
         ):
-            with patch.object(
-                tool, "_search_html", side_effect=Exception("boom")
-            ):
-                result = asyncio.run(tool.execute(query="test"))
-                # The first exception propagates to the outer try/except
-                assert result["success"] is False
-                assert "error" in result
+            result = asyncio.run(tool.execute(query="test"))
+            # The exception propagates to the outer try/except
+            assert result["success"] is False
+            assert "error" in result

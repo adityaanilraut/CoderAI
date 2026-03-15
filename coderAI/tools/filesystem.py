@@ -32,6 +32,7 @@ def _get_max_glob_results() -> int:
     except Exception:
         return DEFAULT_MAX_GLOB_RESULTS
 
+
 # Paths that tools should never write to
 PROTECTED_PATHS = [
     ".ssh",
@@ -73,7 +74,9 @@ class ReadFileTool(Tool):
     parameters_model = ReadFileParams
     is_read_only = True
 
-    async def execute(self, path: str, start_line: int = None, end_line: int = None) -> Dict[str, Any]:
+    async def execute(
+        self, path: str, start_line: int = None, end_line: int = None
+    ) -> Dict[str, Any]:
         """Read file contents with size limit."""
         try:
             path_obj = Path(path).expanduser()
@@ -132,7 +135,9 @@ class ReadFileTool(Tool):
 class WriteFileParams(BaseModel):
     path: str = Field(..., description="Path to the file to write")
     content: str = Field(..., description="Content to write to the file")
-    append: bool = Field(False, description="Append to file instead of overwriting (default: false)")
+    append: bool = Field(
+        False, description="Append to file instead of overwriting (default: false)"
+    )
 
 
 class WriteFileTool(Tool):
@@ -231,7 +236,7 @@ class SearchReplaceTool(Tool):
                 count = content.count(search)
             else:
                 new_content = content.replace(search, replace, 1)
-                count = 1
+                count = content.count(search) if search in content else 0
 
             with open(path_obj, "w", encoding="utf-8") as f:
                 f.write(new_content)
@@ -357,6 +362,7 @@ class GlobSearchTool(Tool):
 
 # --- Apply Diff Tool (F2) ---
 
+
 class ApplyDiffParams(BaseModel):
     path: str = Field(..., description="Path to the file to patch")
     diff: str = Field(
@@ -379,6 +385,9 @@ class ApplyDiffTool(Tool):
     parameters_model = ApplyDiffParams
     requires_confirmation = True
 
+    # How far from the stated line number to search for a matching hunk
+    SEARCH_WINDOW = 50
+
     async def execute(self, path: str, diff: str) -> Dict[str, Any]:
         """Apply a unified diff to a file."""
         try:
@@ -399,46 +408,71 @@ class ApplyDiffTool(Tool):
             with open(path_obj, "r", encoding="utf-8") as f:
                 original_lines = f.readlines()
 
-            # Parse hunks from the diff
-            hunks = self._parse_hunks(diff)
+            # Clean up markdown code blocks if the LLM provided them
+            diff = diff.strip()
+            if diff.startswith("```"):
+                parts = diff.split("\n", 1)
+                if len(parts) == 2:
+                    diff = parts[1]
+                if diff.endswith("```"):
+                    diff = diff[:-3].rstrip()
+
+            # Normalize CRLF / stray \r before parsing
+            normalized_diff = diff.replace("\r\n", "\n").replace("\r", "\n")
+
+            hunks = self._parse_hunks(normalized_diff)
             if not hunks:
                 return {
                     "success": False,
                     "error": "No valid hunks found in diff. Use @@ -start,count +start,count @@ format.",
                 }
 
-            # Apply hunks in reverse order to preserve line numbers
             result_lines = list(original_lines)
             hunks_applied = 0
 
             for hunk in reversed(hunks):
-                start = hunk["start"] - 1  # Convert to 0-indexed
+                expected_start = hunk["start"] - 1  # 0-indexed
                 old_lines = hunk["old_lines"]
                 new_lines = hunk["new_lines"]
 
-                # Validate context — check that old lines match
-                file_slice = result_lines[start : start + len(old_lines)]
-                file_slice_stripped = [l.rstrip("\n") for l in file_slice]
-                old_stripped = [l.rstrip("\n") for l in old_lines]
+                # Pure insertion (no old lines) — just insert at the position
+                if not old_lines:
+                    insert_pos = min(expected_start, len(result_lines))
+                    result_lines[insert_pos:insert_pos] = [
+                        l if l.endswith("\n") else l + "\n" for l in new_lines
+                    ]
+                    hunks_applied += 1
+                    continue
 
-                if file_slice_stripped != old_stripped:
+                # Search for the matching position (exact first, then nearby)
+                match_pos = self._find_hunk_position(
+                    result_lines, old_lines, expected_start, self.SEARCH_WINDOW
+                )
+
+                if match_pos is None:
+                    file_slice = result_lines[expected_start : expected_start + len(old_lines)]
+                    expected_preview = "\n".join(f"  {l}" for l in old_lines[:6])
+                    actual_preview = "\n".join(f"  {l.rstrip(chr(10))}" for l in file_slice[:6])
+                    if len(old_lines) > 6:
+                        expected_preview += "\n  ..."
+                    if len(file_slice) > 6:
+                        actual_preview += "\n  ..."
                     return {
                         "success": False,
                         "error": (
-                            f"Hunk at line {hunk['start']} does not match file contents. "
-                            f"Expected:\n{''.join(old_lines[:3])}...\n"
-                            f"Found:\n{''.join(file_slice[:3])}..."
+                            f"Hunk at line {hunk['start']} does not match file contents "
+                            f"(searched ±{self.SEARCH_WINDOW} lines).\n"
+                            f"Expected:\n{expected_preview}\n"
+                            f"Found at line {hunk['start']}:\n{actual_preview}"
                         ),
                         "hint": "Read the file first and create the diff based on actual content.",
                     }
 
-                # Replace old lines with new lines
-                result_lines[start : start + len(old_lines)] = [
+                result_lines[match_pos : match_pos + len(old_lines)] = [
                     l if l.endswith("\n") else l + "\n" for l in new_lines
                 ]
                 hunks_applied += 1
 
-            # Create backup and write
             backup_store.backup_file(str(path_obj), "modify")
 
             with open(path_obj, "w", encoding="utf-8") as f:
@@ -456,26 +490,73 @@ class ApplyDiffTool(Tool):
             return {"success": False, "error": str(e)}
 
     @staticmethod
+    def _find_hunk_position(
+        file_lines: List[str],
+        old_lines: List[str],
+        expected_start: int,
+        search_window: int,
+    ) -> Optional[int]:
+        """Find where a hunk's old_lines match in the file.
+
+        Tries the expected position first, then searches within ±search_window.
+        Comparison strips trailing whitespace so minor trailing-space
+        differences between the diff and the file don't cause failures.
+
+        Returns the 0-indexed start position, or None if no match.
+        """
+        old_normalized = [l.rstrip() for l in old_lines]
+        n_old = len(old_normalized)
+
+        def _matches_at(pos: int) -> bool:
+            if pos < 0 or pos + n_old > len(file_lines):
+                return False
+            for file_line, old_line in zip(file_lines[pos : pos + n_old], old_normalized):
+                if file_line.rstrip() != old_line:
+                    return False
+            return True
+
+        if _matches_at(expected_start):
+            return expected_start
+
+        for offset in range(1, search_window + 1):
+            if _matches_at(expected_start - offset):
+                return expected_start - offset
+            if _matches_at(expected_start + offset):
+                return expected_start + offset
+
+        return None
+
+    @staticmethod
     def _parse_hunks(diff_text: str) -> List[Dict[str, Any]]:
-        """Parse unified diff text into hunks."""
-        hunks = []
+        """Parse unified diff text into hunks.
+
+        Handles common LLM quirks:
+        - Missing space prefix on context lines
+        - Trailing blank lines from JSON serialization
+        - ``---`` / ``+++`` file headers (skipped outside hunks)
+        """
+        hunks: List[Dict[str, Any]] = []
         hunk_header_re = re.compile(r"^@@\s*-(\d+)(?:,\d+)?\s*\+\d+(?:,\d+)?\s*@@")
 
+        # Strip trailing blank lines that result from split() on trailing \n
         lines = diff_text.split("\n")
+        while lines and lines[-1] == "":
+            lines.pop()
+
         i = 0
         while i < len(lines):
             match = hunk_header_re.match(lines[i])
             if match:
                 start_line = int(match.group(1))
-                old_lines = []
-                new_lines = []
+                old_lines: List[str] = []
+                new_lines: List[str] = []
                 i += 1
 
                 while i < len(lines):
                     line = lines[i]
-                    if line.startswith("@@") or (not line and i == len(lines) - 1):
+                    if hunk_header_re.match(line):
                         break
-                    elif line.startswith("-"):
+                    if line.startswith("-"):
                         old_lines.append(line[1:])
                     elif line.startswith("+"):
                         new_lines.append(line[1:])
@@ -483,20 +564,22 @@ class ApplyDiffTool(Tool):
                         old_lines.append(line[1:])
                         new_lines.append(line[1:])
                     elif line == "\\ No newline at end of file":
-                        pass  # skip
+                        pass
                     else:
-                        # Treat as context line (no prefix)
+                        # Unprefixed line — treat as context (common LLM omission)
                         old_lines.append(line)
                         new_lines.append(line)
                     i += 1
 
-                hunks.append({
-                    "start": start_line,
-                    "old_lines": old_lines,
-                    "new_lines": new_lines,
-                })
+                if old_lines or new_lines:
+                    hunks.append(
+                        {
+                            "start": start_line,
+                            "old_lines": old_lines,
+                            "new_lines": new_lines,
+                        }
+                    )
             else:
                 i += 1
 
         return hunks
-

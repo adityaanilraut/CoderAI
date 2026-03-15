@@ -51,15 +51,21 @@ def detect_linter(project_root: str = ".") -> Optional[str]:
     Returns:
         Name of the detected linter, or None
     """
-    root = Path(project_root).resolve()
+    start_path = Path(project_root).resolve()
+    if start_path.is_file():
+        start_path = start_path.parent
 
-    for linter_name, config in LINTERS.items():
-        # Check if project indicator files exist
-        for detect_file in config["detect_files"]:
-            if (root / detect_file).exists():
-                # Check if the linter binary is available
-                if shutil.which(config["cmd"]):
-                    return linter_name
+    for current_dir in [start_path] + list(start_path.parents):
+        for linter_name, config in LINTERS.items():
+            # Check if project indicator files exist
+            for detect_file in config["detect_files"]:
+                if (current_dir / detect_file).exists():
+                    # Check if the linter binary is available
+                    if shutil.which(config["cmd"]):
+                        return linter_name
+        if (current_dir / ".git").exists():
+            break
+
     return None
 
 
@@ -123,7 +129,7 @@ class LintTool(Tool):
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                cwd=path if Path(path).is_dir() else ".",
+                cwd=".",
             )
 
             try:

@@ -519,12 +519,27 @@ class TestSystemPrompt:
     def test_system_prompt_mentions_tools(self):
         from coderAI.system_prompt import SYSTEM_PROMPT
 
+        # Original tools
         assert "read_file" in SYSTEM_PROMPT
         assert "write_file" in SYSTEM_PROMPT
         assert "run_command" in SYSTEM_PROMPT
         assert "git_status" in SYSTEM_PROMPT
         assert "text_search" in SYSTEM_PROMPT
         assert "web_search" in SYSTEM_PROMPT
+        # New tools added in prompt rewrite
+        assert "delegate_task" in SYSTEM_PROMPT
+        assert "lint" in SYSTEM_PROMPT
+        assert "read_image" in SYSTEM_PROMPT
+        assert "manage_tasks" in SYSTEM_PROMPT
+
+    def test_system_prompt_has_agentic_guidance(self):
+        from coderAI.system_prompt import SYSTEM_PROMPT
+
+        # Agentic reasoning / planning keywords
+        assert "step-by-step" in SYSTEM_PROMPT.lower()
+        assert "Search before" in SYSTEM_PROMPT or "search before" in SYSTEM_PROMPT.lower()
+        assert "Verify after" in SYSTEM_PROMPT or "verify after" in SYSTEM_PROMPT.lower()
+        assert "delegate" in SYSTEM_PROMPT.lower()
 
 
 # ============================================================================
@@ -603,8 +618,11 @@ class TestOpenAIProvider:
     def test_supported_models_are_real(self):
         from coderAI.llm.openai import OpenAIProvider
 
-        for name in OpenAIProvider.SUPPORTED_MODELS:
-            assert "gpt-5-mini" not in name, f"Nonexistent model found: {name}"
+        assert "gpt-5-mini" in OpenAIProvider.SUPPORTED_MODELS
+        assert "gpt-5-nano" in OpenAIProvider.SUPPORTED_MODELS
+        assert "gpt-4" not in OpenAIProvider.SUPPORTED_MODELS
+        assert "gpt-4-turbo" not in OpenAIProvider.SUPPORTED_MODELS
+        assert "gpt-3.5-turbo" not in OpenAIProvider.SUPPORTED_MODELS
 
 
 # ============================================================================
@@ -713,14 +731,24 @@ class TestGlobLimits:
 class TestDangerousCommands:
     """Tests for dangerous command confirmation."""
 
-    def test_dangerous_command_returns_error(self):
+    def test_dangerous_command_executes_when_confirmed(self):
+        """Dangerous commands should execute (confirmation is handled by ToolRegistry, not execute)."""
         from coderAI.tools.terminal import RunCommandTool
 
         tool = RunCommandTool()
+        # rm on a non-existent file will fail with returncode != 0, but the
+        # tool should let it through (not hard-reject it)
         result = asyncio.run(tool.execute(command="rm some_file.txt"))
+        assert "blocked" not in result
+        assert "dangerous" not in result
+
+    def test_blocked_command_rejected(self):
+        from coderAI.tools.terminal import RunCommandTool
+
+        tool = RunCommandTool()
+        result = asyncio.run(tool.execute(command="rm -rf /"))
         assert result["success"] is False
-        assert result.get("dangerous") is True
-        assert "hint" in result
+        assert result.get("blocked") is True
 
 
 # ============================================================================

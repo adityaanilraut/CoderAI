@@ -120,7 +120,7 @@ class GrepTool(Tool):
     ) -> Dict[str, Any]:
         """Execute grep search using create_subprocess_exec to avoid shell injection."""
         try:
-            cmd = ["grep", "-n", f"--max-count={max_results}"]
+            cmd = ["grep", "-n"]
             if case_insensitive:
                 cmd.append("-i")
             if recursive:
@@ -140,7 +140,6 @@ class GrepTool(Tool):
 
             for line in output.strip().split("\n"):
                 if line:
-                    # Parse grep output: filename:line_number:content
                     parts = line.split(":", 2)
                     if len(parts) >= 3:
                         matches.append(
@@ -150,12 +149,18 @@ class GrepTool(Tool):
                                 "content": parts[2].strip(),
                             }
                         )
+                        if len(matches) >= max_results:
+                            break
 
-            return {
+            truncated = len(output.strip().split("\n")) > len(matches)
+            result = {
                 "success": True,
                 "pattern": pattern,
                 "matches": matches,
                 "count": len(matches),
             }
+            if truncated:
+                result["note"] = f"Results capped at {max_results}. Use a more specific pattern to narrow results."
+            return result
         except Exception as e:
             return {"success": False, "error": str(e)}

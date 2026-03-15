@@ -1,6 +1,6 @@
 """Rich display utilities for beautiful terminal output."""
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, TYPE_CHECKING
 
 from rich.console import Console
 from rich.markdown import Markdown
@@ -8,6 +8,9 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
 from rich.tree import Tree
+
+if TYPE_CHECKING:
+    from ..agent_tracker import AgentInfo
 
 
 class Display:
@@ -136,6 +139,77 @@ class Display:
     def clear(self):
         """Clear the console."""
         self.console.clear()
+
+    # ── Agent observability helpers ──────────────────────────────
+
+    def print_agent_panel(self, agents: List[Dict[str, Any]]):
+        """Render a live-status table of all tracked agents."""
+        if not agents:
+            self.print_info("No agents are currently tracked.")
+            return
+
+        table = Table(
+            title="Agent Dashboard",
+            show_header=True,
+            header_style="bold magenta",
+            expand=True,
+        )
+        table.add_column("ID", style="dim", max_width=14)
+        table.add_column("Name")
+        table.add_column("Role", style="cyan")
+        table.add_column("Status")
+        table.add_column("Task", max_width=40)
+        table.add_column("Tool", style="yellow")
+        table.add_column("Tokens", justify="right")
+        table.add_column("Context", justify="right")
+        table.add_column("Elapsed", justify="right")
+        table.add_column("Cost", justify="right", style="green")
+
+        status_styles = {
+            "idle": "[dim]idle[/dim]",
+            "thinking": "[bold cyan]thinking[/bold cyan]",
+            "tool_call": "[bold yellow]tool[/bold yellow]",
+            "waiting_for_user": "[blue]waiting[/blue]",
+            "cancelled": "[bold red]cancelled[/bold red]",
+            "done": "[bold green]done[/bold green]",
+            "error": "[bold red]error[/bold red]",
+        }
+
+        for a in agents:
+            status_str = status_styles.get(a["status"], a["status"])
+            cost_str = f"${a['cost']:.4f}" if a["cost"] else "-"
+            table.add_row(
+                a["id"][-8:],
+                a["name"],
+                a["role"],
+                status_str,
+                a["task"],
+                a.get("tool") or "-",
+                f"{a['tokens']:,}" if a["tokens"] else "-",
+                a["context"],
+                a["elapsed"],
+                cost_str,
+            )
+
+        self.console.print(table)
+
+    def print_agent_completion(self, info: "AgentInfo"):
+        """Print a concise completion summary when an agent finishes."""
+        from ..cost import CostTracker
+
+        elapsed = f"{info.elapsed_seconds:.1f}s"
+        cost = CostTracker.format_cost(info.cost_usd)
+        tokens = f"{info.total_tokens:,}"
+        ctx = f"{info.context_usage_pct:.0f}%"
+        name = info.name
+        role = f" ({info.role})" if info.role else ""
+
+        status_color = "green" if info.status.value == "done" else "red"
+        self.console.print(
+            f"\n[bold {status_color}]Agent '{name}'{role} finished[/bold {status_color}] — "
+            f"[dim]Tokens: {tokens} | Context peak: {ctx} | "
+            f"Cost: {cost} | Time: {elapsed}[/dim]\n"
+        )
 
 
 # Global display instance

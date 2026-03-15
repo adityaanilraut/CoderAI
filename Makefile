@@ -64,7 +64,7 @@ quickstart: clean dev test
 
 # Build distribution
 dist: clean
-	python setup.py sdist bdist_wheel
+	python -m build
 	@echo "Distribution built in dist/"
 
 # Install dev dependencies

@@ -78,10 +78,14 @@ class GitStatusTool(Tool):
                 }
 
             output = stdout.decode("utf-8", errors="replace")
+            # The first line from --porcelain -b is the branch header (## main...);
+            # actual changes are on subsequent lines.
+            lines = output.strip().split("\n")
+            change_lines = [l for l in lines if l and not l.startswith("##")]
             return {
                 "success": True,
                 "status": output,
-                "has_changes": bool(output.strip()),
+                "has_changes": bool(change_lines),
             }
         except Exception as e:
             return {"success": False, "error": str(e)}

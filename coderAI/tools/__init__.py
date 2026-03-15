@@ -36,8 +36,8 @@ from .search import TextSearchTool, GrepTool
 # Memory tools
 from .memory import SaveMemoryTool, RecallMemoryTool
 
-# Web search
-from .web import WebSearchTool
+# Web search & URL reading
+from .web import WebSearchTool, ReadURLTool
 
 # MCP tools
 from .mcp import MCPConnectTool, MCPCallTool, MCPListTool, mcp_client
@@ -51,8 +51,17 @@ from .lint import LintTool
 # Project context
 from .project import ProjectContextTool
 
+# Vision
+from .vision import ReadImageTool
+
 # Context management
 from .context_manage import ManageContextTool
+
+# Task management
+from .tasks import ManageTasksTool
+
+# Multi-Agent Sub-agent
+from .subagent import DelegateTaskTool
 
 __all__ = [
     # Base
@@ -82,6 +91,7 @@ __all__ = [
     "RecallMemoryTool",
     # Web
     "WebSearchTool",
+    "ReadURLTool",
     # MCP
     "MCPConnectTool",
     "MCPCallTool",
@@ -97,4 +107,10 @@ __all__ = [
     "ProjectContextTool",
     # Context
     "ManageContextTool",
+    # Tasks
+    "ManageTasksTool",
+    # Subagent
+    "DelegateTaskTool",
+    # Vision
+    "ReadImageTool",
 ]

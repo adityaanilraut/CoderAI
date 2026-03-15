@@ -38,10 +38,11 @@ class TestContextManager:
             config_manager.set("project_instruction_file", "CODERAI_TEST.md")
             
             cm = ContextManager()
-            assert cm.project_instructions == "Unique instruction content"
             
-            # Check system message inclusion
+            # Check system message inclusion (this triggers lazy load)
             msg = cm.get_system_message()
+            
+            assert cm.project_instructions == "Unique instruction content"
             assert "## Project Instructions" in msg
             assert "Unique instruction content" in msg
             

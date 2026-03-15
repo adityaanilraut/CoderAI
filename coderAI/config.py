@@ -6,14 +6,17 @@ import stat
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class Config(BaseModel):
     """Configuration model for CoderAI."""
 
+    model_config = ConfigDict(extra="allow")
+
     openai_api_key: Optional[str] = Field(default=None)
     anthropic_api_key: Optional[str] = Field(default=None)
+    groq_api_key: Optional[str] = Field(default=None)
     default_model: str = Field(default="lmstudio")
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: Optional[int] = Field(default=4096)
@@ -25,6 +28,7 @@ class Config(BaseModel):
     web_search_engine: str = Field(default="duckduckgo")  # or 'google', 'bing'
     streaming: bool = Field(default=True)
     reasoning_effort: str = Field(default="medium")  # high, medium, low, none
+    budget_limit: float = Field(default=0.0)  # max USD per session, 0 = unlimited
     save_history: bool = Field(default=True)
     context_window: int = Field(default=128000)
     max_iterations: int = Field(default=50)
@@ -34,11 +38,7 @@ class Config(BaseModel):
     max_file_size: int = Field(default=1_048_576)  # 1 MB
     max_glob_results: int = Field(default=200)
     max_command_output: int = Field(default=10_000)  # chars
-
-    class Config:
-        """Pydantic config."""
-
-        extra = "allow"
+    project_root: str = Field(default=".")
 
 
 class ConfigManager:
@@ -66,6 +66,7 @@ class ConfigManager:
         env_mappings = {
             "OPENAI_API_KEY": "openai_api_key",
             "ANTHROPIC_API_KEY": "anthropic_api_key",
+            "GROQ_API_KEY": "groq_api_key",
             "CODERAI_DEFAULT_MODEL": "default_model",
             "CODERAI_TEMPERATURE": "temperature",
             "CODERAI_MAX_TOKENS": "max_tokens",
@@ -73,6 +74,7 @@ class ConfigManager:
             "OLLAMA_ENDPOINT": "ollama_endpoint",
             "WEB_SEARCH_API_KEY": "web_search_api_key",
             "CODERAI_LOG_LEVEL": "log_level",
+            "CODERAI_BUDGET_LIMIT": "budget_limit",
             "CODERAI_REASONING_EFFORT": "reasoning_effort",
             "CODERAI_MAX_ITERATIONS": "max_iterations",
             "CODERAI_MAX_TOOL_OUTPUT": "max_tool_output",
@@ -83,7 +85,7 @@ class ConfigManager:
             value = os.getenv(env_var)
             if value is not None:
                 # Convert types if needed
-                if config_key == "temperature":
+                if config_key in ("temperature", "budget_limit"):
                     value = float(value)
                 elif config_key in ["max_tokens", "max_iterations", "max_tool_output"]:
                     value = int(value)
@@ -126,7 +128,7 @@ class ConfigManager:
         config = self.load()
         data = config.model_dump(exclude_none=True)
         # Mask sensitive data
-        for key in ["openai_api_key", "anthropic_api_key", "web_search_api_key"]:
+        for key in ["openai_api_key", "anthropic_api_key", "groq_api_key", "web_search_api_key"]:
             if key in data and data[key]:
                 data[key] = f"{data[key][:8]}...{data[key][-4:]}"
         return data
@@ -138,18 +140,22 @@ class ConfigManager:
             self.config_file.unlink()
 
     def load_project_config(self, project_root: str = ".") -> Config:
-        """Load per-project config and merge with global config.
+        """Load per-project config and overlay on a COPY of global config.
 
         Looks for ``.coderAI/config.json`` in *project_root* and overlays
-        the allowed keys on top of the already-loaded global configuration.
+        the allowed keys on top of a copy of the global configuration.
+        The global cached config is NOT mutated.
 
         Args:
             project_root: Path to the project root directory.
 
         Returns:
-            The updated Config instance.
+            A new Config instance with project-level overrides applied.
         """
-        config = self.load()
+        base = self.load()
+        # Work on a deep copy so the global cached config stays pristine
+        config = base.model_copy(deep=True)
+        config.project_root = str(Path(project_root).resolve())
         project_config_path = Path(project_root).resolve() / ".coderAI" / "config.json"
 
         if not project_config_path.is_file():
@@ -167,6 +173,7 @@ class ConfigManager:
             "max_file_size",
             "max_glob_results",
             "max_command_output",
+            "budget_limit",
             "project_instruction_file",
             "streaming",
             "reasoning_effort",
@@ -191,11 +198,12 @@ class ConfigManager:
                 "max_command_output",
             }:
                 value = int(value)
+            elif key == "budget_limit":
+                value = float(value)
             elif key == "streaming":
                 value = bool(value)
             setattr(config, key, value)
 
-        self._config = config
         return config
 
 

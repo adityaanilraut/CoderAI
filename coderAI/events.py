@@ -47,12 +47,30 @@ class EventEmitter:
         for callback in self._listeners[event]:
             try:
                 if asyncio.iscoroutinefunction(callback):
-                    # For coroutines, create a task so it doesn't block
-                    asyncio.create_task(callback(*args, **kwargs))
+                    try:
+                        loop = asyncio.get_running_loop()
+                        task = loop.create_task(callback(*args, **kwargs))
+
+                        # Log exceptions from fire-and-forget tasks so they
+                        # don't vanish silently.
+                        def _on_task_done(t, _event=event, _cb=callback):
+                            if t.cancelled():
+                                return
+                            exc = t.exception()
+                            if exc is not None:
+                                import logging
+                                _logger = logging.getLogger(__name__)
+                                _logger.error(
+                                    "Unhandled error in async listener for '%s' (%s): %s",
+                                    _event, _cb, exc,
+                                )
+                        task.add_done_callback(_on_task_done)
+                    except RuntimeError:
+                        # No running event loop — run the coroutine synchronously
+                        asyncio.run(callback(*args, **kwargs))
                 else:
                     callback(*args, **kwargs)
             except Exception as e:
-                # Log or handle callback errors without breaking the emitter
                 import logging
                 logger = logging.getLogger(__name__)
                 logger.error(f"Error in event listener for '{event}': {e}")

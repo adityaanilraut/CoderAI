@@ -1,5 +1,6 @@
 """MCP (Model Context Protocol) client for connecting to external MCP servers."""
 
+import atexit
 import asyncio
 import json
 import logging
@@ -74,6 +75,7 @@ class MCPClient:
         Returns:
             Connection result with discovered tools
         """
+        process = None
         try:
             full_args = [command] + (args or [])
             process = await asyncio.create_subprocess_exec(
@@ -108,7 +110,6 @@ class MCPClient:
                     process.stdout, init_id, timeout=10
                 )
             except asyncio.TimeoutError:
-                process.kill()
                 return {
                     "success": False,
                     "error": f"Server '{server_name}' did not respond to initialize within 10s",
@@ -137,7 +138,6 @@ class MCPClient:
                     process.stdout, tools_id, timeout=10
                 )
             except asyncio.TimeoutError:
-                process.kill()
                 return {
                     "success": False,
                     "error": f"Server '{server_name}' did not respond to tools/list",
@@ -175,6 +175,14 @@ class MCPClient:
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
+        finally:
+            # Kill the process if it was spawned but not successfully stored
+            if process is not None and server_name not in self.servers:
+                try:
+                    process.kill()
+                    await process.wait()
+                except Exception:
+                    pass
 
     async def call_tool(
         self, server_name: str, tool_name: str, arguments: Dict[str, Any]
@@ -300,6 +308,20 @@ class MCPClient:
 
 # Global MCP client instance
 mcp_client = MCPClient()
+
+def _cleanup_mcp_servers():
+    """Synchronous cleanup of MCP servers on exit."""
+    import time
+    for name, info in list(mcp_client.servers.items()):
+        try:
+            proc = info["process"]
+            if proc.returncode is None:
+                proc.kill()
+        except Exception:
+            pass
+    mcp_client.servers.clear()
+
+atexit.register(_cleanup_mcp_servers)
 
 
 class MCPConnectParams(BaseModel):

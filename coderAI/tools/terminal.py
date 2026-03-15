@@ -4,6 +4,7 @@ import asyncio
 import logging
 import shlex
 import shutil
+import atexit
 from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, Field
@@ -66,16 +67,61 @@ _COMMAND_ALIASES = [
 ]
 
 
+def _normalize_command(command: str) -> str:
+    """Normalize command for safety checks: strip, collapse whitespace, lowercase."""
+    import re as _re
+    return _re.sub(r'\s+', ' ', command.strip()).lower()
+
+
+# Shells that can wrap arbitrary commands — we extract the inner command
+# and re-check it against the blocklist/dangerous prefixes.
+_SHELL_WRAPPERS = ("bash -c ", "sh -c ", "zsh -c ", "/bin/bash -c ", "/bin/sh -c ", "/bin/zsh -c ")
+
+
+def _extract_inner_command(cmd_lower: str) -> str | None:
+    """If the command invokes a shell wrapper, extract and return the inner command."""
+    for prefix in _SHELL_WRAPPERS:
+        if cmd_lower.startswith(prefix):
+            inner = cmd_lower[len(prefix):].strip()
+            # Strip surrounding quotes if present
+            if len(inner) >= 2 and inner[0] in ('"', "'") and inner[-1] == inner[0]:
+                inner = inner[1:-1]
+            return inner
+    return None
+
+
 def is_command_blocked(command: str) -> bool:
-    """Check if a command is in the blocklist."""
-    cmd_lower = command.strip().lower()
-    return any(blocked in cmd_lower for blocked in BLOCKED_PATTERNS)
+    """Check if a command is in the blocklist.
+
+    Normalizes whitespace, lowercases, and recursively checks commands
+    wrapped in shell invocations like ``bash -c '...'``.
+    """
+    cmd_lower = _normalize_command(command)
+
+    if any(blocked in cmd_lower for blocked in BLOCKED_PATTERNS):
+        return True
+
+    # Check inner command for shell wrappers
+    inner = _extract_inner_command(cmd_lower)
+    if inner is not None:
+        return is_command_blocked(inner)
+
+    return False
 
 
 def is_command_dangerous(command: str) -> bool:
     """Check if a command should require confirmation."""
-    cmd_lower = command.strip().lower()
-    return any(cmd_lower.startswith(prefix) for prefix in DANGEROUS_PREFIXES)
+    cmd_lower = _normalize_command(command)
+
+    if any(cmd_lower.startswith(prefix) for prefix in DANGEROUS_PREFIXES):
+        return True
+
+    # Also check inner command of shell wrappers
+    inner = _extract_inner_command(cmd_lower)
+    if inner is not None:
+        return is_command_dangerous(inner)
+
+    return False
 
 
 def _rewrite_command_aliases(command: str) -> str:
@@ -120,7 +166,7 @@ class RunCommandTool(Tool):
         falls back to create_subprocess_shell for complex shell syntax.
         """
         try:
-            # Block known destructive commands
+            # Block known destructive commands (these are never allowed)
             if is_command_blocked(command):
                 return {
                     "success": False,
@@ -129,20 +175,10 @@ class RunCommandTool(Tool):
                     "blocked": True,
                 }
 
-            # Flag dangerous commands (logged as warning)
+            # Log dangerous commands (actual confirmation is handled by
+            # requires_confirmation + the confirmation callback in ToolRegistry)
             if is_command_dangerous(command):
                 logger.warning(f"Executing potentially dangerous command: {command}")
-                return {
-                    "success": False,
-                    "error": (
-                        f"Command '{command}' is flagged as potentially dangerous. "
-                        "This command involves file deletion, system changes, or "
-                        "package management. Please confirm with the user first."
-                    ),
-                    "error_code": "dangerous",
-                    "dangerous": True,
-                    "hint": "Ask the user to confirm they want to run this command.",
-                }
 
             # Rewrite common aliases (e.g. python -> python3 on macOS)
             command = _rewrite_command_aliases(command)
@@ -228,6 +264,16 @@ class RunBackgroundTool(Tool):
     parameters_model = RunBackgroundParams
     requires_confirmation = True
 
+    # Track spawned background processes for cleanup / status queries
+    # NOTE: This is now per-instance; a module-level set tracks all instances
+    # so atexit cleanup still works.
+    _all_instances = set()
+
+    def __init__(self):
+        super().__init__()
+        self._processes: Dict[int, asyncio.subprocess.Process] = {}
+        RunBackgroundTool._all_instances.add(self)
+
     async def execute(self, command: str, working_dir: str = ".") -> Dict[str, Any]:
         """Start background process with tracking."""
         try:
@@ -239,14 +285,7 @@ class RunBackgroundTool(Tool):
                 }
 
             if is_command_dangerous(command):
-                return {
-                    "success": False,
-                    "error": (
-                        f"Command '{command}' is flagged as potentially dangerous. "
-                        "Please confirm with the user first."
-                    ),
-                    "dangerous": True,
-                }
+                logger.warning(f"Executing potentially dangerous background command: {command}")
 
             # Start process, redirect to DEVNULL to prevent pipe deadlocks
             process = await asyncio.create_subprocess_shell(
@@ -268,15 +307,35 @@ class RunBackgroundTool(Tool):
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    @classmethod
-    def get_tracked_processes(cls) -> Dict[int, asyncio.subprocess.Process]:
-        """Get all tracked background processes."""
-        return cls._processes
+    def get_tracked_processes(self) -> Dict[int, asyncio.subprocess.Process]:
+        """Get all tracked background processes for this instance."""
+        return self._processes
 
-    @classmethod
-    def cleanup_finished(cls) -> int:
+    def cleanup_finished(self) -> int:
         """Clean up finished processes from tracking. Returns count removed."""
-        finished = [pid for pid, proc in cls._processes.items() if proc.returncode is not None]
+        finished = [pid for pid, proc in self._processes.items() if proc.returncode is not None]
         for pid in finished:
-            del cls._processes[pid]
+            del self._processes[pid]
         return len(finished)
+
+    def terminate_all(self) -> int:
+        """Forcefully terminate all remaining tracked processes."""
+        terminated = 0
+        for pid, proc in dict(self._processes).items():
+            if proc.returncode is None:
+                try:
+                    proc.kill()
+                    terminated += 1
+                except Exception:
+                    pass
+        self._processes.clear()
+        return terminated
+
+
+def _cleanup_all_background():
+    """Terminate background processes from ALL RunBackgroundTool instances."""
+    for instance in list(RunBackgroundTool._all_instances):
+        instance.terminate_all()
+
+# Register cleanup on exit to prevent process leaks
+atexit.register(_cleanup_all_background)

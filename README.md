@@ -5,16 +5,15 @@ A powerful coding agent CLI tool similar to Claude Code and Gemini CLI, featurin
 ## Features
 
 - **Rich Terminal UI**: Beautiful syntax highlighting, progress indicators, tables, and panels
-- **Multiple LLM Support**: GPT-5, GPT-5-mini, GPT-5-nano, and LM Studio local models
+- **Multiple LLM Support**: OpenAI (GPT-5, o1, o3-mini), Anthropic Claude, LM Studio, and Ollama local models
 - **Dynamic Model Switching**: Change models mid-conversation without losing context
 - **Comprehensive MCP Tools**:
   - File operations (read, write, search, replace)
   - Terminal command execution
   - Git operations (status, diff, commit, log)
-  - Codebase search (semantic and grep)
+  - Codebase search (text search and grep)
   - Web search for documentation
   - Knowledge base and memory
-- **Dual Modes**: Interactive chat and single-shot commands
 - **Advanced Session Management**:
   - Persistent conversation history
   - Context clearing and resetting
@@ -33,11 +32,8 @@ pip3 install -e .
 ## Quick Start
 
 ```bash
-# Interactive mode (default)
+# Interactive mode
 coderAI chat
-
-# Single-shot mode
-coderAI "fix the bug in app.py"
 
 # Use specific model
 coderAI --model gpt-5-mini chat
@@ -54,8 +50,9 @@ coderAI --resume SESSION_ID
 Configure API keys and preferences:
 
 ```bash
-# Set OpenAI API key
+# Set API keys (as needed for your providers)
 coderAI config set openai_api_key YOUR_API_KEY
+coderAI config set anthropic_api_key YOUR_ANTHROPIC_KEY
 
 # Show current configuration
 coderAI config show
@@ -73,7 +70,9 @@ coderAI config set lmstudio_model your-model-name
 Configuration is stored at `~/.coderAI/config.json`. You can also use environment variables:
 
 - `OPENAI_API_KEY`: OpenAI API key
+- `ANTHROPIC_API_KEY`: Anthropic API key (for Claude models)
 - `LMSTUDIO_ENDPOINT`: LM Studio API endpoint (e.g., http://localhost:1234/v1)
+- `OLLAMA_ENDPOINT`: Ollama API endpoint (e.g., http://localhost:11434/v1)
 - `CODERAI_DEFAULT_MODEL`: Default model to use
 
 ## Commands
@@ -83,7 +82,6 @@ Configuration is stored at `~/.coderAI/config.json`. You can also use environmen
 ```bash
 # Basic Usage
 coderAI chat                    # Interactive mode
-coderAI "your prompt"           # Single-shot mode
 coderAI --model MODEL chat      # Use specific model
 
 # Model Management
@@ -104,6 +102,8 @@ coderAI history clear           # Clear all history
 coderAI status                  # Show system status
 coderAI info                    # Show agent info
 coderAI setup                   # Run setup wizard
+coderAI cost                    # Show API cost tracking
+coderAI tasks list               # List project tasks
 coderAI --version               # Show version
 coderAI --help                  # Show help
 ```
@@ -133,10 +133,11 @@ Inside a chat session, use these commands (starting with `/`):
 
 ## Available Models
 
-- `gpt-5`: GPT-5 (most capable)
-- `gpt-5-mini`: GPT-5 Mini (balanced)
-- `gpt-5-nano`: GPT-5 Nano (fastest)
-- `lmstudio`: Local LM Studio model
+**OpenAI:** `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `o1`, `o1-mini`, `o3-mini`  
+**Anthropic:** `claude-4-sonnet`, `claude-3.5-sonnet`, `claude-3.5-haiku`, `claude-3-opus`  
+**Local:** `lmstudio`, `ollama`  
+
+Run `coderAI models` to see the full list with descriptions.
 
 ## Examples
 
@@ -147,13 +148,6 @@ $ coderAI chat
 CoderAI> Create a Python web server using Flask
 
 [Agent proceeds to create files, install dependencies, etc.]
-```
-
-### Single-shot Mode
-
-```bash
-$ coderAI "analyze the performance of my app"
-[Analysis results displayed with Rich formatting]
 ```
 
 ### Using Local Models (LM Studio)
@@ -171,7 +165,18 @@ $ coderAI config set lmstudio_model your-model-name
 $ coderAI --model lmstudio chat
 ```
 
-**Note:** Replace `YOUR_SERVER_URL:PORT` with your actual LM Studio server address. The default is `http://localhost:1234/v1`.
+### Using Local Models (Ollama)
+
+```bash
+# 1. Install and start Ollama, then pull a model: ollama pull llama3
+
+# 2. (Optional) Configure if not using defaults:
+$ coderAI config set ollama_endpoint http://localhost:11434/v1
+$ coderAI config set ollama_model llama3
+
+# 3. Start using Ollama:
+$ coderAI --model ollama chat
+```
 
 ## License
 

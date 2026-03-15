@@ -15,7 +15,8 @@ This guide will help you install and set up CoderAI on your system.
 1. **Clone or navigate to the repository:**
 
    ```bash
-   cd /Users/aditya/Desktop/vibe/coderAI
+   git clone https://github.com/your-username/coderAI.git
+   cd coderAI
    ```
 
 2. **Create a virtual environment (recommended):**
@@ -37,7 +38,7 @@ This guide will help you install and set up CoderAI on your system.
 
 ```bash
 pip install -r requirements.txt
-python setup.py install
+pip install .
 ```
 
 ### Method 3: Direct Dependency Installation
@@ -309,8 +310,8 @@ If LM Studio isn't working:
 If you installed from source:
 
 ```bash
-cd /Users/aditya/Desktop/vibe/coderAI
-git pull  # If using git
+cd coderAI
+git pull
 pip install -e . --upgrade
 ```
 
