@@ -115,7 +115,7 @@ async def _run_chat(model, resume, no_stream=False, auto_approve=False):
                 
                 # Validate model name
                 valid_models = list(agent.provider.SUPPORTED_MODELS.keys()) if hasattr(agent.provider, 'SUPPORTED_MODELS') else []
-                valid_models.extend(["lmstudio", "ollama", "claude-4-sonnet", "claude-3.5-sonnet", "claude-3.5-haiku", "claude-3-opus", "openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama3-70b-8192", "llama3-8b-8192"])
+                valid_models.extend(["lmstudio", "ollama", "claude-4-sonnet", "claude-3.5-sonnet", "claude-3.5-haiku", "claude-3-opus", "openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama3-70b-8192", "llama3-8b-8192", "deepseek-v3", "deepseek-v3.2", "deepseek-r1", "deepseek-chat", "deepseek-reasoner"])
                 
                 if user_input not in valid_models:
                     display.print_error(f"Invalid model: {user_input}")
@@ -320,16 +320,25 @@ def setup():
         display.print_success("   Groq API key saved")
     display.print()
     
+    # DeepSeek API Key
+    display.print("[bold]4. DeepSeek API Key[/bold]")
+    display.print("   Required for using DeepSeek models")
+    deepseek_key = click.prompt("   Enter your DeepSeek API key (or press Enter to skip)", default="", show_default=False)
+    if deepseek_key:
+        config_manager.set("deepseek_api_key", deepseek_key)
+        display.print_success("   DeepSeek API key saved")
+    display.print()
+    
     # Default Model
-    display.print("[bold]4. Default Model[/bold]")
-    display.print("   Available: gpt-5, gpt-5-mini, claude-4-sonnet, claude-3.5-sonnet, lmstudio, ollama, openai/gpt-oss-120b, openai/gpt-oss-20b")
+    display.print("[bold]5. Default Model[/bold]")
+    display.print("   Available: gpt-5, gpt-5-mini, claude-4-sonnet, claude-3.5-sonnet, lmstudio, ollama, openai/gpt-oss-120b, openai/gpt-oss-20b, deepseek-v3.2")
     model = click.prompt("   Enter default model", default="gpt-5-mini")
     config_manager.set("default_model", model)
     display.print_success(f"   Default model set to {model}")
     display.print()
     
     # Reasoning Effort
-    display.print("[bold]4. Reasoning Effort[/bold]")
+    display.print("[bold]6. Reasoning Effort[/bold]")
     display.print("   How much thinking reasoning models (e.g. o1, o3-mini, claude-3.7-sonnet) should use.")
     display.print("   Available: high, medium, low, none")
     effort = click.prompt("   Enter reasoning effort", default="medium")
@@ -338,7 +347,7 @@ def setup():
     display.print()
     
     # LM Studio (optional)
-    display.print("[bold]5. LM Studio Configuration (Optional)[/bold]")
+    display.print("[bold]7. LM Studio Configuration (Optional)[/bold]")
     display.print("   For using local models with LM Studio")
     use_lmstudio = click.confirm("   Configure LM Studio?", default=False)
     if use_lmstudio:
@@ -350,7 +359,7 @@ def setup():
     display.print()
 
     # Ollama (optional)
-    display.print("[bold]6. Ollama Configuration (Optional)[/bold]")
+    display.print("[bold]8. Ollama Configuration (Optional)[/bold]")
     display.print("   For using local models with Ollama")
     use_ollama = click.confirm("   Configure Ollama?", default=False)
     if use_ollama:
@@ -392,6 +401,11 @@ def models():
     display.print("  • [yellow]llama3-8b-8192[/yellow] - Llama 3 8B")
     display.print("\n  [dim]Requires: Groq API key[/dim]")
     
+    display.print("\n[bold cyan]DeepSeek Provider[/bold cyan]")
+    display.print("  • [yellow]deepseek-v3.2[/yellow] - DeepSeek-V3.2 / Chat")
+    display.print("  • [yellow]deepseek-r1[/yellow] - DeepSeek-R1 / Reasoner")
+    display.print("\n  [dim]Requires: DeepSeek API key[/dim]")
+    
     display.print("\n[bold cyan]LM Studio Provider[/bold cyan]")
     display.print("  • [yellow]lmstudio[/yellow] - Use any local model")
     display.print("\n  [dim]Requires: LM Studio running locally[/dim]")
@@ -412,8 +426,9 @@ def set_model(model_name):
     from .llm.openai import OpenAIProvider
     from .llm.anthropic import MODEL_ALIASES
     from .llm.groq import GroqProvider
+    from .llm.deepseek import DeepSeekProvider
     
-    valid_models = list(OpenAIProvider.SUPPORTED_MODELS.keys()) + list(MODEL_ALIASES.keys()) + list(GroqProvider.SUPPORTED_MODELS.keys()) + ["lmstudio", "ollama"]
+    valid_models = list(OpenAIProvider.SUPPORTED_MODELS.keys()) + list(MODEL_ALIASES.keys()) + list(GroqProvider.SUPPORTED_MODELS.keys()) + list(DeepSeekProvider.SUPPORTED_MODELS.keys()) + ["lmstudio", "ollama"]
     
     if model_name not in valid_models:
         display.print_error(f"Invalid model: {model_name}")
@@ -486,6 +501,14 @@ def status():
     else:
         display.print("  ✗ API key not configured")
         display.print("    [dim]Run 'coderAI setup' or 'coderAI config set groq_api_key YOUR_KEY'[/dim]")
+
+    # Check DeepSeek
+    display.print("\n[bold cyan]DeepSeek Provider:[/bold cyan]")
+    if config.deepseek_api_key:
+        display.print("  ✓ API key configured")
+    else:
+        display.print("  ✗ API key not configured")
+        display.print("    [dim]Run 'coderAI setup' or 'coderAI config set deepseek_api_key YOUR_KEY'[/dim]")
     
     # Check LM Studio
     display.print("\n[bold cyan]LM Studio Provider:[/bold cyan]")

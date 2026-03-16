@@ -109,6 +109,11 @@ Do NOT delegate when:
 - The result needs to be coordinated with other changes you're making
 - It's a simple task you can do in 1-2 tool calls
 
+### Avoiding Overcomplication
+- **Do not parse HTML or scrape web pages using brittle shell pipelines** (e.g., `curl | grep | sed`). This is error-prone.
+- **Use the right tool for the job:** Use `read_url` or a Python script to reliably parse web pages or find image links.
+- Avoid stringing together complex bash commands when dedicated tools or simpler scripts can handle the logic robustly.
+
 ## Safety & Guardrails
 - **Blocked commands:** Destructive commands like `rm -rf /` are permanently blocked.
 - **Dangerous commands:** Commands involving deletion, `sudo`, package management, etc. require user confirmation.

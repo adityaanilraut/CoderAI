@@ -289,6 +289,7 @@ Type your message or command. Press Ctrl+C or type 'exit' to quit.
             from ..llm.openai import OpenAIProvider
             from ..llm.anthropic import AnthropicProvider
             from ..llm.groq import GroqProvider
+            from ..llm.deepseek import DeepSeekProvider
             
             display.print_header("Available Models")
             for model_name in OpenAIProvider.SUPPORTED_MODELS:
@@ -297,6 +298,8 @@ Type your message or command. Press Ctrl+C or type 'exit' to quit.
                 display.print(f"  • [cyan]{model_name}[/cyan] (Anthropic)")
             for model_name in GroqProvider.SUPPORTED_MODELS:
                 display.print(f"  • [cyan]{model_name}[/cyan] (Groq)")
+            for model_name in DeepSeekProvider.SUPPORTED_MODELS:
+                display.print(f"  • [cyan]{model_name}[/cyan] (DeepSeek)")
             display.print(f"  • [cyan]lmstudio[/cyan] - Local LM Studio model")
             display.print(f"  • [cyan]ollama[/cyan] - Local Ollama model")
             display.print("\nType the model name in your next message to switch (or 'cancel' to cancel)")
@@ -512,6 +515,7 @@ Type your message or command. Press Ctrl+C or type 'exit' to quit.
             # Show available providers
             from ..llm.openai import OpenAIProvider
             from ..llm.anthropic import AnthropicProvider
+            from ..llm.deepseek import DeepSeekProvider
 
             display.print_header("Available LLM Providers")
             
@@ -524,6 +528,11 @@ Type your message or command. Press Ctrl+C or type 'exit' to quit.
             display.print(f"  Models: {', '.join(AnthropicProvider.SUPPORTED_MODELS)}")
             display.print("  Features: Function calling, streaming")
             display.print("  Requires: Anthropic API key")
+            
+            display.print("\n[bold cyan]DeepSeek Provider[/bold cyan]")
+            display.print(f"  Models: {', '.join(DeepSeekProvider.SUPPORTED_MODELS)}")
+            display.print("  Features: Function calling, streaming, reasoning")
+            display.print("  Requires: DeepSeek API key")
             
             display.print("\n[bold cyan]LM Studio Provider[/bold cyan]")
             display.print("  Models: Local models via LM Studio")
@@ -619,10 +628,15 @@ Type your message or command. Press Ctrl+C or type 'exit' to quit.
             parts = command.split(" ", 1)
             from ..agents import get_available_personas, load_agent_persona
             
+            # Use the agent's project root so personas are found correctly
+            project_root = "."
+            if context.get("agent") and hasattr(context["agent"], "config"):
+                project_root = getattr(context["agent"].config, "project_root", ".")
+            
             if len(parts) < 2 or not parts[1].strip():
                 # List available agents
                 display.print_header("Available Agent Personas")
-                personas = get_available_personas()
+                personas = get_available_personas(project_root)
                 if not personas:
                     display.print_info("No agent personas found in .coderAI/agents/")
                 else:
@@ -636,7 +650,7 @@ Type your message or command. Press Ctrl+C or type 'exit' to quit.
                 display.print_warning("No agent context available")
                 return False
                 
-            persona = load_agent_persona(persona_name)
+            persona = load_agent_persona(persona_name, project_root)
             if persona:
                 context["agent"].persona = persona
                 display.print_success(f"Switched to agent persona: {persona.name}")
@@ -650,7 +664,7 @@ Type your message or command. Press Ctrl+C or type 'exit' to quit.
                     context["agent"].provider = context["agent"]._create_provider()
                     display.print_info(f"Model switched from {old_model} to {persona.model}")
             else:
-                display.print_error(f"Persona '{persona_name}' not found. Searched in .coderAI/agents/")
+                display.print_error(f"Persona '{persona_name}' not found. Searched in .coderAI/agents/ (project_root={project_root})")
             return False
 
         elif command == "/agents":

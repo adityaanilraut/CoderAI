@@ -165,7 +165,7 @@ class DelegateTaskTool(Tool):
             effective_model = model or self._parent_model
 
             # Create a new Agent instance with the same project config
-            sub_agent = Agent(model=effective_model, auto_approve=True)
+            sub_agent = Agent(model=effective_model, auto_approve=True, is_subagent=True)
 
             # Inherit parent's pinned context so the sub-agent shares
             # the same context awareness without manual context_hints.
@@ -208,6 +208,7 @@ class DelegateTaskTool(Tool):
                 "- Structure your report with clear sections: Summary, Findings, Recommendations.",
                 "- Be specific: cite file paths, line numbers, and code snippets.",
                 "- Do NOT ask questions — make reasonable assumptions and note them.",
+                "- Do NOT parse HTML or scrape web pages using complex shell pipelines (`curl | grep | sed`). Use proper tools (`read_url`, `web_search`) or Python scripts instead.",
             ]
 
             if role_instructions:

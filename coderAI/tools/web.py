@@ -454,3 +454,89 @@ class ReadURLTool(Tool):
             return {"success": False, "error": f"Timeout fetching {url}"}
         except Exception as e:
             return {"success": False, "error": f"Failed to fetch {url}: {e}"}
+
+
+# ---------------------------------------------------------------------------
+# DownloadFileTool
+# ---------------------------------------------------------------------------
+
+
+class DownloadFileParams(BaseModel):
+    url: str = Field(..., description="URL of the file to download")
+    destination_path: Optional[str] = Field(
+        None,
+        description=(
+            "Absolute path where the file should be saved. "
+            "If omitted, a temporary file in the current working directory will be created."
+        ),
+    )
+
+
+class DownloadFileTool(Tool):
+    """Download a file (binary or text) from a URL to the local filesystem."""
+
+    name = "download_file"
+    description = (
+        "Download a file (like a ZIP, image, or raw code snippet) from a given URL to a "
+        "local destination. Returns the absolute path to the downloaded file."
+    )
+    is_read_only = False
+    parameters_model = DownloadFileParams
+
+    async def execute(
+        self, url: str, destination_path: Optional[str] = None
+    ) -> Dict[str, Any]:
+        import os
+        import time
+        from pathlib import Path
+
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+
+        try:
+            async with aiohttp.ClientSession(connector=_connector()) as session:
+                async with session.get(
+                    url,
+                    timeout=aiohttp.ClientTimeout(total=60),
+                    headers=_HEADERS_CHROME,
+                    allow_redirects=True,
+                ) as response:
+                    if response.status != 200:
+                        return {
+                            "success": False,
+                            "error": f"HTTP {response.status} for {url}",
+                        }
+                    
+                    content = await response.read()
+
+            if destination_path:
+                dest = Path(destination_path).expanduser().resolve()
+            else:
+                # generate a reasonable filename based on url or timestamp
+                parsed = urlparse(url)
+                filename = os.path.basename(parsed.path)
+                if not filename:
+                    filename = f"download_{int(time.time())}.tmp"
+                dest = Path(os.getcwd()) / filename
+
+            # Ensure the parent directory exists
+            dest.parent.mkdir(parents=True, exist_ok=True)
+
+            def _write_file():
+                with open(dest, "wb") as f:
+                    f.write(content)
+
+            await asyncio.to_thread(_write_file)
+
+            return {
+                "success": True,
+                "url": url,
+                "destination_path": str(dest),
+                "bytes_downloaded": len(content),
+            }
+
+        except asyncio.TimeoutError:
+            return {"success": False, "error": f"Timeout downloading {url}"}
+        except Exception as e:
+            return {"success": False, "error": f"Failed to download {url}: {e}"}
+

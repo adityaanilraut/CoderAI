@@ -10,7 +10,7 @@ from .config import config_manager
 from .context import ContextManager
 from .cost import CostTracker
 from .history import Message, Session, history_manager
-from .llm import LMStudioProvider, OpenAIProvider, AnthropicProvider, OllamaProvider, GroqProvider
+from .llm import LMStudioProvider, OpenAIProvider, AnthropicProvider, OllamaProvider, GroqProvider, DeepSeekProvider
 from .system_prompt import SYSTEM_PROMPT
 from .tools import (
     TextSearchTool,
@@ -32,6 +32,7 @@ from .tools import (
     WebSearchTool,
     ReadURLTool,
     WriteFileTool,
+    DownloadFileTool,
     MCPConnectTool,
     MCPCallTool,
     MCPListTool,
@@ -92,6 +93,7 @@ class Agent:
         streaming: bool = True,
         auto_approve: bool = False,
         persona_name: str = None,
+        is_subagent: bool = False,
     ):
         """Initialize the agent.
 
@@ -113,6 +115,7 @@ class Agent:
         self.model = model or self.config.default_model
         self.streaming = streaming and self.config.streaming
         self.auto_approve = auto_approve
+        self.is_subagent = is_subagent
 
         # Set up logging
         logging.basicConfig(
@@ -188,6 +191,14 @@ class Agent:
                 temperature=self.config.temperature,
                 max_tokens=self.config.max_tokens,
             )
+        elif self.model in DeepSeekProvider.SUPPORTED_MODELS or self.model.startswith("deepseek/"):
+            actual_model = self.model.replace("deepseek/", "") if self.model.startswith("deepseek/") else self.model
+            return DeepSeekProvider(
+                model=actual_model,
+                api_key=self.config.deepseek_api_key,
+                temperature=self.config.temperature,
+                max_tokens=self.config.max_tokens,
+            )
         else:
             return OpenAIProvider(
                 model=self.model,
@@ -223,9 +234,11 @@ class Agent:
         registry.register(TextSearchTool())
         registry.register(GrepTool())
 
-        # Register web search & URL tools
-        registry.register(WebSearchTool())
-        registry.register(ReadURLTool())
+        # Register web search & URL tools (only for subagents to prevent main context bloat)
+        if self.is_subagent:
+            registry.register(WebSearchTool())
+            registry.register(ReadURLTool())
+            registry.register(DownloadFileTool())
 
         # Register memory tools
         registry.register(SaveMemoryTool())

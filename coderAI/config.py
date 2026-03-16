@@ -17,6 +17,7 @@ class Config(BaseModel):
     openai_api_key: Optional[str] = Field(default=None)
     anthropic_api_key: Optional[str] = Field(default=None)
     groq_api_key: Optional[str] = Field(default=None)
+    deepseek_api_key: Optional[str] = Field(default=None)
     default_model: str = Field(default="lmstudio")
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: Optional[int] = Field(default=4096)
@@ -67,6 +68,7 @@ class ConfigManager:
             "OPENAI_API_KEY": "openai_api_key",
             "ANTHROPIC_API_KEY": "anthropic_api_key",
             "GROQ_API_KEY": "groq_api_key",
+            "DEEPSEEK_API_KEY": "deepseek_api_key",
             "CODERAI_DEFAULT_MODEL": "default_model",
             "CODERAI_TEMPERATURE": "temperature",
             "CODERAI_MAX_TOKENS": "max_tokens",
@@ -128,7 +130,7 @@ class ConfigManager:
         config = self.load()
         data = config.model_dump(exclude_none=True)
         # Mask sensitive data
-        for key in ["openai_api_key", "anthropic_api_key", "groq_api_key", "web_search_api_key"]:
+        for key in ["openai_api_key", "anthropic_api_key", "groq_api_key", "deepseek_api_key", "web_search_api_key"]:
             if key in data and data[key]:
                 data[key] = f"{data[key][:8]}...{data[key][-4:]}"
         return data

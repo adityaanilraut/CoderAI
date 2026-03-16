@@ -18,14 +18,41 @@ class AgentPersona:
         self.instructions = instructions
 
 
+def _find_agents_dir(project_root: str = ".") -> Optional[Path]:
+    """Search several candidate locations for the .coderAI/agents/ directory.
+    
+    Checks (in order):
+      1. The given project_root
+      2. The current working directory
+      3. The CoderAI package source directory (parent of this file)
+    
+    Returns the first existing agents directory, or None.
+    """
+    candidates = [
+        Path(project_root).resolve(),
+        Path.cwd(),
+        Path(__file__).resolve().parent.parent,  # repo root when running from source
+    ]
+    seen: set = set()
+    for base in candidates:
+        base_str = str(base)
+        if base_str in seen:
+            continue
+        seen.add(base_str)
+        agents_dir = base / ".coderAI" / "agents"
+        if agents_dir.is_dir():
+            return agents_dir
+    return None
+
+
 def load_agent_persona(persona_name: str, project_root: str = ".") -> Optional[AgentPersona]:
     """Load an agent persona from .coderAI/agents/<persona_name>.md.
     
     Parses YAML frontmatter for metadata (name, description, tools, model) 
     and uses the rest of the markdown as the system instructions.
     """
-    agents_dir = Path(project_root) / ".coderAI" / "agents"
-    if not agents_dir.exists():
+    agents_dir = _find_agents_dir(project_root)
+    if agents_dir is None:
         return None
         
     file_path = agents_dir / f"{persona_name}.md"
@@ -71,8 +98,8 @@ def load_agent_persona(persona_name: str, project_root: str = ".") -> Optional[A
 
 def get_available_personas(project_root: str = ".") -> List[str]:
     """Return a list of available persona names."""
-    agents_dir = Path(project_root) / ".coderAI" / "agents"
-    if not agents_dir.exists():
+    agents_dir = _find_agents_dir(project_root)
+    if agents_dir is None:
         return []
     
     return [f.stem for f in agents_dir.glob("*.md")]

@@ -36,8 +36,8 @@ from .search import TextSearchTool, GrepTool
 # Memory tools
 from .memory import SaveMemoryTool, RecallMemoryTool
 
-# Web search & URL reading
-from .web import WebSearchTool, ReadURLTool
+# Web search & URL reading & Download
+from .web import WebSearchTool, ReadURLTool, DownloadFileTool
 
 # MCP tools
 from .mcp import MCPConnectTool, MCPCallTool, MCPListTool, mcp_client
@@ -92,6 +92,7 @@ __all__ = [
     # Web
     "WebSearchTool",
     "ReadURLTool",
+    "DownloadFileTool",
     # MCP
     "MCPConnectTool",
     "MCPCallTool",

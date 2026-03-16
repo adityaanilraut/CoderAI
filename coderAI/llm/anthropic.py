@@ -2,6 +2,7 @@
 
 import json
 import logging
+import ssl
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 import aiohttp
@@ -9,6 +10,20 @@ import aiohttp
 from .base import LLMProvider
 
 logger = logging.getLogger(__name__)
+
+
+def _create_ssl_context() -> ssl.SSLContext:
+    """Create an SSL context using certifi's CA bundle.
+
+    This is required on macOS with Python 3.13 where the system SSL
+    certificates are often not configured for the framework Python install.
+    Falls back to the default context if certifi is unavailable.
+    """
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        return ssl.create_default_context()
 
 # Cost per 1K tokens (approximate)
 MODEL_COSTS = {
@@ -57,7 +72,9 @@ class AnthropicProvider(LLMProvider):
     async def _get_session(self) -> aiohttp.ClientSession:
         """Get or create a reusable aiohttp session."""
         if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession()
+            ssl_ctx = _create_ssl_context()
+            connector = aiohttp.TCPConnector(ssl=ssl_ctx)
+            self._session = aiohttp.ClientSession(connector=connector)
         return self._session
 
     async def close(self) -> None:
