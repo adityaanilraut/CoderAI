@@ -1,5 +1,6 @@
 """Sub-agent delegation tool for multi-agent capabilities."""
 
+import asyncio
 import logging
 import os
 from pathlib import Path
@@ -109,6 +110,14 @@ class DelegateTaskParams(BaseModel):
             "the model unless explicitly requested by the user."
         ),
     )
+    inherit_project_context: bool = Field(
+        True,
+        description=(
+            "If true, the sub-agent inherits all currently pinned project context "
+            "files and project instructions. Set to false for lightweight web research "
+            "or tasks that don't need access to the local codebase to save tokens."
+        ),
+    )
 
 
 class DelegateTaskTool(Tool):
@@ -124,7 +133,7 @@ class DelegateTaskTool(Tool):
         "specific file paths and expected output format for best results."
     )
     parameters_model = DelegateTaskParams
-    is_read_only = False
+    is_read_only = True
 
     # Set by the parent Agent after registration so the sub-agent can
     # inherit the model and link to the correct parent in the tracker.
@@ -139,6 +148,7 @@ class DelegateTaskTool(Tool):
         agent_role: Optional[str] = None,
         context_hints: Optional[List[str]] = None,
         model: Optional[str] = None,
+        inherit_project_context: bool = True,
     ) -> Dict[str, Any]:
         """Execute the sub-agent delegation."""
         # Guard against infinite recursion
@@ -169,7 +179,7 @@ class DelegateTaskTool(Tool):
 
             # Inherit parent's pinned context so the sub-agent shares
             # the same context awareness without manual context_hints.
-            if hasattr(self, '_parent_context_manager') and self._parent_context_manager:
+            if inherit_project_context and hasattr(self, '_parent_context_manager') and self._parent_context_manager:
                 sub_agent.context_manager.pinned_files = dict(self._parent_context_manager.pinned_files)
                 sub_agent.context_manager._pinned_mtimes = dict(self._parent_context_manager._pinned_mtimes)
                 if self._parent_context_manager.project_instructions:
@@ -227,30 +237,86 @@ class DelegateTaskTool(Tool):
             if context_hints:
                 context_parts.extend(["CONTEXT PROVIDED BY PARENT AGENT:"])
                 keywords = extract_keywords(task_description)
-                for hint in context_hints:
+
+                async def _load_hint(hint: str) -> str:
                     hint_path = Path(hint)
                     if hint_path.is_file():
                         try:
-                            content = hint_path.read_text(encoding="utf-8", errors="replace")
+                            content = await asyncio.to_thread(
+                                hint_path.read_text, encoding="utf-8", errors="replace"
+                            )
                             snippet = extract_relevant_snippets(content, keywords, max_lines=80)
-                            context_parts.append(f"\n### File: {hint}")
-                            context_parts.append(f"```\n{snippet}\n```")
+                            return f"\n### File: {hint}\n```\n{snippet}\n```"
                         except Exception:
-                            context_parts.append(f"  - {hint}")
-                    else:
-                        context_parts.append(f"  - {hint}")
+                            return f"  - {hint}"
+                    return f"  - {hint}"
+
+                hint_parts = await asyncio.gather(*(_load_hint(h) for h in context_hints))
+                context_parts.extend(hint_parts)
 
             if context_parts:
                 task_description = "\n".join(context_parts) + "\n\n---\n\nTASK DESCRIPTION:\n" + task_description
 
-            # Process the task
-            truncated_desc = task_description[:80] + ("..." if len(task_description) > 80 else "")
-            event_emitter.emit(
-                "agent_status",
-                message=f"[dim]Sub-Agent working on: {truncated_desc}[/dim]",
-            )
+            # Process the task with retry logic
+            max_retries = 2
+            last_error = None
+            final_report = None
 
-            final_report = await sub_agent.process_single_shot(task_description)
+            for attempt in range(1, max_retries + 2):  # 1 initial + 2 retries
+                try:
+                    truncated_desc = task_description[:80] + ("..." if len(task_description) > 80 else "")
+                    attempt_label = f" (attempt {attempt})" if attempt > 1 else ""
+                    event_emitter.emit(
+                        "agent_status",
+                        message=f"[dim]Sub-Agent working on{attempt_label}: {truncated_desc}[/dim]",
+                    )
+
+                    final_report = await sub_agent.process_single_shot(task_description)
+                    last_error = None
+                    break  # Success — exit retry loop
+
+                except Exception as retry_err:
+                    last_error = retry_err
+                    if attempt <= max_retries:
+                        wait_time = 2 ** attempt  # Exponential backoff: 2s, 4s
+                        event_emitter.emit(
+                            "agent_status",
+                            message=(
+                                f"[yellow]Sub-Agent attempt {attempt} failed: {str(retry_err)[:80]}. "
+                                f"Retrying in {wait_time}s...[/yellow]"
+                            ),
+                        )
+                        await asyncio.sleep(wait_time)
+
+                        # Create a fresh sub-agent for retry
+                        try:
+                            await sub_agent.close()
+                        except Exception:
+                            pass
+                        sub_agent = Agent(model=effective_model, auto_approve=True, is_subagent=True)
+                        if inherit_project_context and hasattr(self, '_parent_context_manager') and self._parent_context_manager:
+                            sub_agent.context_manager.pinned_files = dict(self._parent_context_manager.pinned_files)
+                            sub_agent.context_manager._pinned_mtimes = dict(self._parent_context_manager._pinned_mtimes)
+                            if self._parent_context_manager.project_instructions:
+                                sub_agent.context_manager.project_instructions = self._parent_context_manager.project_instructions
+                                sub_agent.context_manager._instructions_loaded = True
+                        sub_agent.create_session()
+                        sub_agent._register_tracker(
+                            task=task_description[:120], role=agent_role, parent_id=self._parent_agent_id,
+                        )
+                        child_delegate = sub_agent.tools.get("delegate_task")
+                        if child_delegate is not None:
+                            child_delegate._current_depth = self._current_depth + 1
+                        for msg in sub_agent.session.messages:
+                            if msg.role == "system":
+                                msg.content = f"{system_preamble}\n\n---\n\n{msg.content}"
+                                break
+                    else:
+                        logger.error(f"Sub-agent failed after {max_retries + 1} attempts: {retry_err}")
+
+            # If all retries failed
+            if last_error is not None:
+                raise last_error
 
             tokens_used = sub_agent.total_tokens
             cost_usd = sub_agent.cost_tracker.get_total_cost()
@@ -287,3 +353,4 @@ class DelegateTaskTool(Tool):
                     await sub_agent.close()
                 except Exception:
                     pass
+

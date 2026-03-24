@@ -116,14 +116,16 @@ class AgentTracker:
 
     def get_active(self) -> List[AgentInfo]:
         """Return all agents that are not yet done, cancelled, or errored."""
-        return [
-            a
-            for a in self._agents.values()
-            if a.status not in (AgentStatus.DONE, AgentStatus.ERROR, AgentStatus.CANCELLED)
-        ]
+        with self._lock:
+            return [
+                a
+                for a in list(self._agents.values())
+                if a.status not in (AgentStatus.DONE, AgentStatus.ERROR, AgentStatus.CANCELLED)
+            ]
 
     def get_all(self) -> List[AgentInfo]:
-        return list(self._agents.values())
+        with self._lock:
+            return list(self._agents.values())
 
     def cancel_all(self):
         """Request cancellation for every active agent."""
@@ -131,19 +133,23 @@ class AgentTracker:
             info.request_cancel()
 
     def cancel(self, agent_id: str) -> bool:
-        info = self._agents.get(agent_id)
-        if info:
-            info.request_cancel()
-            # Recursively cancel all children
-            children = [
-                child for child in self._agents.values()
-                if child.parent_id == agent_id
-                and child.status not in (AgentStatus.DONE, AgentStatus.ERROR, AgentStatus.CANCELLED)
-            ]
-            for child in children:
-                self.cancel(child.agent_id)
-            return True
-        return False
+        with self._lock:
+            info = self._agents.get(agent_id)
+            if info:
+                info.request_cancel()
+                # Recursively cancel all children
+                children = [
+                    child for child in list(self._agents.values())
+                    if child.parent_id == agent_id
+                    and child.status not in (AgentStatus.DONE, AgentStatus.ERROR, AgentStatus.CANCELLED)
+                ]
+            else:
+                return False
+        
+        # Call cancel outside of lock to avoid recursive lock issues if not RLock
+        for child in children:
+            self.cancel(child.agent_id)
+        return True
 
     def get_summary(self) -> Dict[str, Any]:
         """Return a summary suitable for display."""

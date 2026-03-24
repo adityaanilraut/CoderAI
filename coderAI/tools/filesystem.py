@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from .base import Tool
 from .undo import backup_store
 from ..config import config_manager
+from ..locks import resource_manager
 
 # Defaults (overridden by config if set)
 DEFAULT_MAX_FILE_SIZE = 1_048_576
@@ -152,34 +153,37 @@ class WriteFileTool(Tool):
         """Write content to file with path protection."""
         try:
             path_obj = Path(path).expanduser()
+            
+            # Acquire lock for this specific file
+            lock = await resource_manager.get_file_lock(str(path_obj))
+            async with lock:
+                # Check path protection
+                if _is_path_protected(path_obj):
+                    return {
+                        "success": False,
+                        "error": f"Cannot write to protected path: {path}",
+                        "error_code": "permission_denied",
+                        "hint": "This path is protected for security. Choose a different location.",
+                    }
 
-            # Check path protection
-            if _is_path_protected(path_obj):
+                path_obj.parent.mkdir(parents=True, exist_ok=True)
+
+                # Create backup for undo support
+                if path_obj.exists():
+                    backup_store.backup_file(str(path_obj), "modify")
+                else:
+                    backup_store.backup_file(str(path_obj), "create")
+
+                mode = "a" if append else "w"
+                with open(path_obj, mode, encoding="utf-8") as f:
+                    f.write(content)
+
                 return {
-                    "success": False,
-                    "error": f"Cannot write to protected path: {path}",
-                    "error_code": "permission_denied",
-                    "hint": "This path is protected for security. Choose a different location.",
+                    "success": True,
+                    "path": str(path_obj),
+                    "bytes_written": len(content.encode("utf-8")),
+                    "mode": "append" if append else "write",
                 }
-
-            path_obj.parent.mkdir(parents=True, exist_ok=True)
-
-            # Create backup for undo support
-            if path_obj.exists():
-                backup_store.backup_file(str(path_obj), "modify")
-            else:
-                backup_store.backup_file(str(path_obj), "create")
-
-            mode = "a" if append else "w"
-            with open(path_obj, mode, encoding="utf-8") as f:
-                f.write(content)
-
-            return {
-                "success": True,
-                "path": str(path_obj),
-                "bytes_written": len(content.encode("utf-8")),
-                "mode": "append" if append else "write",
-            }
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -205,47 +209,50 @@ class SearchReplaceTool(Tool):
         """Search and replace in file with protection."""
         try:
             path_obj = Path(path).expanduser()
-            if not path_obj.exists():
+            
+            lock = await resource_manager.get_file_lock(str(path_obj))
+            async with lock:
+                if not path_obj.exists():
+                    return {
+                        "success": False,
+                        "error": f"File not found: {path}",
+                        "hint": "Check the path with list_directory or glob_search.",
+                    }
+
+                if _is_path_protected(path_obj):
+                    return {
+                        "success": False,
+                        "error": f"Cannot modify protected path: {path}",
+                    }
+
+                with open(path_obj, "r", encoding="utf-8") as f:
+                    content = f.read()
+
+                if search not in content:
+                    return {
+                        "success": False,
+                        "error": "Search text not found in file",
+                        "hint": "Use text_search or grep to verify the exact text in the file.",
+                    }
+
+                # Create backup for undo support
+                backup_store.backup_file(str(path_obj), "modify")
+
+                if replace_all:
+                    new_content = content.replace(search, replace)
+                    count = content.count(search)
+                else:
+                    new_content = content.replace(search, replace, 1)
+                    count = content.count(search) if search in content else 0
+
+                with open(path_obj, "w", encoding="utf-8") as f:
+                    f.write(new_content)
+
                 return {
-                    "success": False,
-                    "error": f"File not found: {path}",
-                    "hint": "Check the path with list_directory or glob_search.",
+                    "success": True,
+                    "path": str(path_obj),
+                    "replacements": count,
                 }
-
-            if _is_path_protected(path_obj):
-                return {
-                    "success": False,
-                    "error": f"Cannot modify protected path: {path}",
-                }
-
-            with open(path_obj, "r", encoding="utf-8") as f:
-                content = f.read()
-
-            if search not in content:
-                return {
-                    "success": False,
-                    "error": "Search text not found in file",
-                    "hint": "Use text_search or grep to verify the exact text in the file.",
-                }
-
-            # Create backup for undo support
-            backup_store.backup_file(str(path_obj), "modify")
-
-            if replace_all:
-                new_content = content.replace(search, replace)
-                count = content.count(search)
-            else:
-                new_content = content.replace(search, replace, 1)
-                count = content.count(search) if search in content else 0
-
-            with open(path_obj, "w", encoding="utf-8") as f:
-                f.write(new_content)
-
-            return {
-                "success": True,
-                "path": str(path_obj),
-                "replacements": count,
-            }
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -392,99 +399,102 @@ class ApplyDiffTool(Tool):
         """Apply a unified diff to a file."""
         try:
             path_obj = Path(path).expanduser()
-            if not path_obj.exists():
-                return {
-                    "success": False,
-                    "error": f"File not found: {path}",
-                    "hint": "Use read_file to verify file contents before creating a diff.",
-                }
+            
+            lock = await resource_manager.get_file_lock(str(path_obj))
+            async with lock:
+                if not path_obj.exists():
+                    return {
+                        "success": False,
+                        "error": f"File not found: {path}",
+                        "hint": "Use read_file to verify file contents before creating a diff.",
+                    }
 
-            if _is_path_protected(path_obj):
-                return {
-                    "success": False,
-                    "error": f"Cannot modify protected path: {path}",
-                }
+                if _is_path_protected(path_obj):
+                    return {
+                        "success": False,
+                        "error": f"Cannot modify protected path: {path}",
+                    }
 
-            with open(path_obj, "r", encoding="utf-8") as f:
-                original_lines = f.readlines()
+                with open(path_obj, "r", encoding="utf-8") as f:
+                    original_lines = f.readlines()
 
-            # Clean up markdown code blocks if the LLM provided them
-            diff = diff.strip()
-            if diff.startswith("```"):
-                parts = diff.split("\n", 1)
-                if len(parts) == 2:
-                    diff = parts[1]
-                if diff.endswith("```"):
-                    diff = diff[:-3].rstrip()
+                # Clean up markdown code blocks if the LLM provided them
+                diff = diff.strip()
+                if diff.startswith("```"):
+                    parts = diff.split("\n", 1)
+                    if len(parts) == 2:
+                        diff = parts[1]
+                    if diff.endswith("```"):
+                        diff = diff[:-3].rstrip()
 
-            # Normalize CRLF / stray \r before parsing
-            normalized_diff = diff.replace("\r\n", "\n").replace("\r", "\n")
+                # Normalize CRLF / stray \r before parsing
+                normalized_diff = diff.replace("\r\n", "\n").replace("\r", "\n")
 
-            hunks = self._parse_hunks(normalized_diff)
-            if not hunks:
-                return {
-                    "success": False,
-                    "error": "No valid hunks found in diff. Use @@ -start,count +start,count @@ format.",
-                }
+                hunks = self._parse_hunks(normalized_diff)
+                if not hunks:
+                    return {
+                        "success": False,
+                        "error": "No valid hunks found in diff. Use @@ -start,count +start,count @@ format.",
+                    }
 
-            result_lines = list(original_lines)
-            hunks_applied = 0
+                result_lines = list(original_lines)
+                hunks_applied = 0
 
-            for hunk in reversed(hunks):
-                expected_start = hunk["start"] - 1  # 0-indexed
-                old_lines = hunk["old_lines"]
-                new_lines = hunk["new_lines"]
+                for hunk in reversed(hunks):
+                    expected_start = hunk["start"] - 1  # 0-indexed
+                    old_lines = hunk["old_lines"]
+                    new_lines = hunk["new_lines"]
 
-                # Pure insertion (no old lines) — just insert at the position
-                if not old_lines:
-                    insert_pos = min(expected_start, len(result_lines))
-                    result_lines[insert_pos:insert_pos] = [
+                    # Pure insertion (no old lines) — just insert at the position
+                    if not old_lines:
+                        insert_pos = min(expected_start, len(result_lines))
+                        result_lines[insert_pos:insert_pos] = [
+                            l if l.endswith("\n") else l + "\n" for l in new_lines
+                        ]
+                        hunks_applied += 1
+                        continue
+
+                    # Search for the matching position (exact first, then nearby)
+                    match_pos = self._find_hunk_position(
+                        result_lines, old_lines, expected_start, self.SEARCH_WINDOW
+                    )
+
+                    if match_pos is None:
+                        file_slice = result_lines[expected_start : expected_start + len(old_lines)]
+                        expected_preview = "\n".join(f"  {l}" for l in old_lines[:6])
+                        actual_preview = "\n".join(f"  {l.rstrip(chr(10))}" for l in file_slice[:6])
+                        if len(old_lines) > 6:
+                            expected_preview += "\n  ..."
+                        if len(file_slice) > 6:
+                            actual_preview += "\n  ..."
+                        return {
+                            "success": False,
+                            "error": (
+                                f"Hunk at line {hunk['start']} does not match file contents "
+                                f"(searched ±{self.SEARCH_WINDOW} lines).\n"
+                                f"Expected:\n{expected_preview}\n"
+                                f"Found at line {hunk['start']}:\n{actual_preview}"
+                            ),
+                            "hint": "Read the file first and create the diff based on actual content.",
+                        }
+
+                    result_lines[match_pos : match_pos + len(old_lines)] = [
                         l if l.endswith("\n") else l + "\n" for l in new_lines
                     ]
                     hunks_applied += 1
-                    continue
 
-                # Search for the matching position (exact first, then nearby)
-                match_pos = self._find_hunk_position(
-                    result_lines, old_lines, expected_start, self.SEARCH_WINDOW
-                )
+                backup_store.backup_file(str(path_obj), "modify")
 
-                if match_pos is None:
-                    file_slice = result_lines[expected_start : expected_start + len(old_lines)]
-                    expected_preview = "\n".join(f"  {l}" for l in old_lines[:6])
-                    actual_preview = "\n".join(f"  {l.rstrip(chr(10))}" for l in file_slice[:6])
-                    if len(old_lines) > 6:
-                        expected_preview += "\n  ..."
-                    if len(file_slice) > 6:
-                        actual_preview += "\n  ..."
-                    return {
-                        "success": False,
-                        "error": (
-                            f"Hunk at line {hunk['start']} does not match file contents "
-                            f"(searched ±{self.SEARCH_WINDOW} lines).\n"
-                            f"Expected:\n{expected_preview}\n"
-                            f"Found at line {hunk['start']}:\n{actual_preview}"
-                        ),
-                        "hint": "Read the file first and create the diff based on actual content.",
-                    }
+                with open(path_obj, "w", encoding="utf-8") as f:
+                    f.writelines(result_lines)
 
-                result_lines[match_pos : match_pos + len(old_lines)] = [
-                    l if l.endswith("\n") else l + "\n" for l in new_lines
-                ]
-                hunks_applied += 1
-
-            backup_store.backup_file(str(path_obj), "modify")
-
-            with open(path_obj, "w", encoding="utf-8") as f:
-                f.writelines(result_lines)
-
-            return {
-                "success": True,
-                "path": str(path_obj),
-                "hunks_applied": hunks_applied,
-                "lines_before": len(original_lines),
-                "lines_after": len(result_lines),
-            }
+                return {
+                    "success": True,
+                    "path": str(path_obj),
+                    "hunks_applied": hunks_applied,
+                    "lines_before": len(original_lines),
+                    "lines_after": len(result_lines),
+                }
 
         except Exception as e:
             return {"success": False, "error": str(e)}

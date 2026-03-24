@@ -114,8 +114,16 @@ async def _run_chat(model, resume, no_stream=False, auto_approve=False):
                     return {}
                 
                 # Validate model name
-                valid_models = list(agent.provider.SUPPORTED_MODELS.keys()) if hasattr(agent.provider, 'SUPPORTED_MODELS') else []
-                valid_models.extend(["lmstudio", "ollama", "claude-4-sonnet", "claude-3.5-sonnet", "claude-3.5-haiku", "claude-3-opus", "openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama3-70b-8192", "llama3-8b-8192", "deepseek-v3", "deepseek-v3.2", "deepseek-r1", "deepseek-chat", "deepseek-reasoner"])
+                # Build the valid model list dynamically from all providers
+                from coderAI.llm.openai import OpenAIProvider
+                from coderAI.llm.anthropic import AnthropicProvider
+                from coderAI.llm.groq import GroqProvider
+                from coderAI.llm.deepseek import DeepSeekProvider
+                valid_models = list(OpenAIProvider.SUPPORTED_MODELS.keys())
+                valid_models.extend(AnthropicProvider.SUPPORTED_MODELS)
+                valid_models.extend(GroqProvider.SUPPORTED_MODELS.keys())
+                valid_models.extend(DeepSeekProvider.SUPPORTED_MODELS.keys())
+                valid_models.extend(["lmstudio", "ollama"])
                 
                 if user_input not in valid_models:
                     display.print_error(f"Invalid model: {user_input}")
@@ -331,7 +339,7 @@ def setup():
     
     # Default Model
     display.print("[bold]5. Default Model[/bold]")
-    display.print("   Available: gpt-5, gpt-5-mini, claude-4-sonnet, claude-3.5-sonnet, lmstudio, ollama, openai/gpt-oss-120b, openai/gpt-oss-20b, deepseek-v3.2")
+    display.print("   Available: gpt-5, gpt-5-mini, gpt-5-nano, claude-4-sonnet, claude-4.5-haiku, claude-4.6-opus, claude-3.5-sonnet, lmstudio, ollama, openai/gpt-oss-120b, openai/gpt-oss-20b, deepseek-v3.2, deepseek-r1")
     model = click.prompt("   Enter default model", default="gpt-5-mini")
     config_manager.set("default_model", model)
     display.print_success(f"   Default model set to {model}")
@@ -339,7 +347,7 @@ def setup():
     
     # Reasoning Effort
     display.print("[bold]6. Reasoning Effort[/bold]")
-    display.print("   How much thinking reasoning models (e.g. o1, o3-mini, claude-3.7-sonnet) should use.")
+    display.print("   How much thinking reasoning models (e.g. o1, o3-mini, gpt-5, claude-3.7-sonnet, claude-4-sonnet) should use.")
     display.print("   Available: high, medium, low, none")
     effort = click.prompt("   Enter reasoning effort", default="medium")
     config_manager.set("reasoning_effort", effort.lower())

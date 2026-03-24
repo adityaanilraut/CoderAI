@@ -39,6 +39,7 @@ class Config(BaseModel):
     max_file_size: int = Field(default=1_048_576)  # 1 MB
     max_glob_results: int = Field(default=200)
     max_command_output: int = Field(default=10_000)  # chars
+    web_tools_in_main: bool = Field(default=False)  # Allow web tools in main agent
     project_root: str = Field(default=".")
 
 

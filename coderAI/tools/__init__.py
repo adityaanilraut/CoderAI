@@ -1,15 +1,24 @@
 """CoderAI Tools Package.
 
 Provides all available tools for the coding agent, including:
-- Filesystem: read, write, search/replace, directory listing, glob
+- Filesystem: read, write, search/replace, apply diff, directory listing, glob
 - Terminal: command execution, background processes
-- Git: status, diff, commit, log
+- Git: status, diff, commit, log, branch, checkout, stash
 - Search: text search, grep with regex
 - Memory: save and recall persistent memories
-- Web: DuckDuckGo web search
+- Web: DuckDuckGo web search, URL reading, file download
 - MCP: connect to external MCP servers
 - Undo: file backup and rollback
 - Project: auto-detect project context
+- Context: pin files to context
+- Lint: auto-detect and run project linter
+- Tasks: persistent task/TODO list management
+- Vision: image reading and analysis
+- Sub-agent: delegate tasks to isolated sub-agents
+- Skills: load predefined skill workflows
+- Python REPL: execute Python code in isolated subprocess
+- Planning: structured plan-and-execute workflows
+- Notepad: shared inter-agent communication notepad
 """
 
 from .base import Tool, ToolRegistry
@@ -28,7 +37,10 @@ from .filesystem import (
 from .terminal import RunCommandTool, RunBackgroundTool
 
 # Git tools
-from .git import GitAddTool, GitStatusTool, GitDiffTool, GitCommitTool, GitLogTool
+from .git import (
+    GitAddTool, GitStatusTool, GitDiffTool, GitCommitTool, GitLogTool,
+    GitBranchTool, GitCheckoutTool, GitStashTool,
+)
 
 # Search tools
 from .search import TextSearchTool, GrepTool
@@ -63,6 +75,18 @@ from .tasks import ManageTasksTool
 # Multi-Agent Sub-agent
 from .subagent import DelegateTaskTool
 
+# Skills
+from .skills import UseSkillTool
+
+# Python REPL
+from .repl import PythonREPLTool
+
+# Planning
+from .planning import CreatePlanTool
+
+# Notepad (inter-agent communication)
+from .notepad import NotepadTool
+
 __all__ = [
     # Base
     "Tool",
@@ -83,6 +107,9 @@ __all__ = [
     "GitDiffTool",
     "GitCommitTool",
     "GitLogTool",
+    "GitBranchTool",
+    "GitCheckoutTool",
+    "GitStashTool",
     # Search
     "TextSearchTool",
     "GrepTool",
@@ -114,4 +141,12 @@ __all__ = [
     "DelegateTaskTool",
     # Vision
     "ReadImageTool",
+    # Skills
+    "UseSkillTool",
+    # REPL
+    "PythonREPLTool",
+    # Planning
+    "CreatePlanTool",
+    # Notepad
+    "NotepadTool",
 ]

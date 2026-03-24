@@ -2,7 +2,7 @@
 
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 from .config import config_manager
 from .context_selector import build_focused_context, summarize_conversation_focus
@@ -152,7 +152,7 @@ class ContextManager:
                 return focused
 
         # ---- Fallback: include everything (original behaviour) ----
-        parts: list[str] = []
+        parts: List[str] = []
 
         if self.project_instructions:
             parts.append("## Project Instructions")

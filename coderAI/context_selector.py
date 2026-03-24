@@ -7,7 +7,7 @@ they need for the current task instead of everything available.
 import re
 import logging
 from collections import Counter
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +118,7 @@ def extract_relevant_snippets(
     keywords_lower = {kw.lower() for kw in keywords}
 
     # Identify lines that match any keyword
-    relevant_lines: set[int] = set()
+    relevant_lines: Set[int] = set()
     for i, line in enumerate(lines):
         line_lower = line.lower()
         if any(kw in line_lower for kw in keywords_lower):
@@ -141,7 +141,7 @@ def extract_relevant_snippets(
     ]
 
     # Expand each relevant line to include its enclosing block
-    expanded: set[int] = set()
+    expanded: Set[int] = set()
     for rel in sorted(relevant_lines):
         enclosing_start = 0
         for bs in block_starts:

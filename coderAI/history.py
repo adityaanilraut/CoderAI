@@ -190,6 +190,48 @@ class HistoryManager:
             return True
         return False
 
+    def save_session_summary(self, session_id: str, summary: str) -> None:
+        """Save a session summary for quick lookup."""
+        if not _SESSION_ID_PATTERN.match(session_id):
+            return
+
+        summary_file = self.history_dir / f"{session_id}_summary.json"
+        data = {
+            "session_id": session_id,
+            "summary": summary,
+            "saved_at": datetime.now().isoformat(),
+        }
+        with open(summary_file, "w") as f:
+            json.dump(data, f, indent=2)
+
+    def search_summaries(self, query: str) -> List[Dict[str, Any]]:
+        """Search session summaries by keyword."""
+        query_lower = query.lower()
+        results = []
+        for summary_file in self.history_dir.glob("*_summary.json"):
+            try:
+                with open(summary_file, "r") as f:
+                    data = json.load(f)
+                if query_lower in data.get("summary", "").lower():
+                    results.append(data)
+            except Exception:
+                continue
+        return results
+
+    def get_session_summary(self, session_id: str) -> Optional[str]:
+        """Get a session's summary, if one was saved."""
+        if not _SESSION_ID_PATTERN.match(session_id):
+            return None
+        summary_file = self.history_dir / f"{session_id}_summary.json"
+        if summary_file.exists():
+            try:
+                with open(summary_file, "r") as f:
+                    data = json.load(f)
+                return data.get("summary")
+            except Exception:
+                return None
+        return None
+
 
 # Global history manager instance
 history_manager = HistoryManager()

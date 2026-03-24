@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import time as _time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .config import config_manager
 from .context import ContextManager
@@ -19,6 +19,9 @@ from .tools import (
     GitDiffTool,
     GitLogTool,
     GitStatusTool,
+    GitBranchTool,
+    GitCheckoutTool,
+    GitStashTool,
     GlobSearchTool,
     GrepTool,
     ListDirectoryTool,
@@ -45,6 +48,10 @@ from .tools import (
     ManageTasksTool,
     DelegateTaskTool,
     ReadImageTool,
+    UseSkillTool,
+    PythonREPLTool,
+    CreatePlanTool,
+    NotepadTool,
 )
 from .events import event_emitter
 from .ui.streaming import StreamingHandler
@@ -91,7 +98,7 @@ class Agent:
         self,
         model: str = None,
         streaming: bool = True,
-        auto_approve: bool = False,
+        auto_approve: bool = True,
         persona_name: str = None,
         is_subagent: bool = False,
     ):
@@ -114,7 +121,7 @@ class Agent:
 
         self.model = model or self.config.default_model
         self.streaming = streaming and self.config.streaming
-        self.auto_approve = auto_approve
+        self.auto_approve = True  # Default to auto-approve; can be toggled via /auto-approve
         self.is_subagent = is_subagent
 
         # Set up logging
@@ -229,13 +236,17 @@ class Agent:
         registry.register(GitDiffTool())
         registry.register(GitCommitTool())
         registry.register(GitLogTool())
+        registry.register(GitBranchTool())
+        registry.register(GitCheckoutTool())
+        registry.register(GitStashTool())
 
         # Register search tools
         registry.register(TextSearchTool())
         registry.register(GrepTool())
 
-        # Register web search & URL tools (only for subagents to prevent main context bloat)
-        if self.is_subagent:
+        # Register web search & URL tools (subagents always get them;
+        # main agent gets them when web_tools_in_main is enabled)
+        if self.is_subagent or self.config.web_tools_in_main:
             registry.register(WebSearchTool())
             registry.register(ReadURLTool())
             registry.register(DownloadFileTool())
@@ -273,6 +284,18 @@ class Agent:
 
         # Register vision tool
         registry.register(ReadImageTool())
+
+        # Register skills tool
+        registry.register(UseSkillTool())
+
+        # Register Python REPL tool
+        registry.register(PythonREPLTool())
+
+        # Register planning tool
+        registry.register(CreatePlanTool())
+
+        # Register notepad tool (inter-agent communication)
+        registry.register(NotepadTool())
 
         return registry
 
@@ -321,6 +344,27 @@ class Agent:
 
         return prompt
 
+    def _inject_context_message(
+        self, messages: List[Dict[str, Any]], query: str
+    ) -> List[Dict[str, Any]]:
+        """Inject the pinned-context system message after the last system message.
+
+        Extracted so the main loop can call it both before the while loop and
+        after every tool-result rebuild (where the transient injection is lost).
+        """
+        context_msg = self.context_manager.get_system_message(
+            query=query,
+            messages=messages,
+        )
+        if not context_msg:
+            return messages
+        insert_idx = 0
+        for i, msg in enumerate(messages):
+            if msg.get("role") == "system":
+                insert_idx = i + 1
+        messages.insert(insert_idx, {"role": "system", "content": context_msg})
+        return messages
+
     def create_session(self) -> Session:
         """Create a new conversation session."""
         self.session = history_manager.create_session(model=self.model)
@@ -338,7 +382,7 @@ class Agent:
         if self.session and self.config.save_history:
             history_manager.save_session(self.session)
 
-    def get_context_usage(self) -> tuple[int, int]:
+    def get_context_usage(self) -> Tuple[int, int]:
         """Get the current context window usage and limit."""
         messages = self.session.get_messages_for_api() if self.session else []
 
@@ -678,18 +722,7 @@ class Agent:
 
         # Inject pinned context / project instructions — filtered by relevance
         # to the current user message so agents only see what they need.
-        context_msg = self.context_manager.get_system_message(
-            query=user_message,
-            messages=messages,
-        )
-        if context_msg:
-            # Find index of last system message or insert at 1
-            insert_idx = 0
-            for i, msg in enumerate(messages):
-                if msg.get("role") == "system":
-                    insert_idx = i + 1
-
-            messages.insert(insert_idx, {"role": "system", "content": context_msg})
+        messages = self._inject_context_message(messages, user_message)
 
         # Proactive context management: summarize older messages when context
         # usage exceeds 70% so we never slam into the hard limit mid-turn.
@@ -713,6 +746,161 @@ class Agent:
                     tool_schemas = tool_schemas + mcp_schemas
             except Exception:
                 pass  # MCP not available or no servers connected
+
+        # Load hooks data once per turn — avoids repeated disk reads per tool call.
+        _hooks_data: Optional[Dict[str, Any]] = None
+        try:
+            from pathlib import Path as _HPath
+            _hfile = _HPath(self.config.project_root, ".coderAI", "hooks.json")
+            if _hfile.exists():
+                with open(_hfile, "r") as _hf:
+                    _hooks_data = json.load(_hf)
+        except Exception:
+            pass
+
+        async def _run_hooks(tool_name: str, hook_type: str, arguments: dict) -> list:
+            """Run hooks for a tool stage using cached data; parallel-executes multiple hooks."""
+            hooks_results: List[str] = []
+            if _hooks_data is None:
+                return hooks_results
+            try:
+                import os
+                from .tools.terminal import is_command_blocked
+
+                matching_hooks = [
+                    h for h in _hooks_data.get("hooks", [])
+                    if h.get("type") == hook_type and (
+                        h.get("tool") == "*" or h.get("tool") == tool_name
+                    )
+                ]
+                if not matching_hooks:
+                    return hooks_results
+
+                if not self.auto_approve and self._hooks_approved is False:
+                    return hooks_results
+
+                if not self.auto_approve and self._hooks_approved is None:
+                    cmds_preview = ", ".join(
+                        h.get("command", "?")[:60] for h in matching_hooks
+                    )
+                    event_emitter.emit(
+                        "agent_status",
+                        message=(
+                            f"\n[bold yellow]⚠ Project hooks detected in .coderAI/hooks.json[/bold yellow]"
+                            f"\n[dim]Commands: {cmds_preview}[/dim]"
+                        ),
+                    )
+                    try:
+                        from prompt_toolkit import PromptSession
+                        ps = PromptSession()
+                        answer = await ps.prompt_async("Allow project hooks to run? (y/n) > ")
+                    except (ImportError, EOFError, KeyboardInterrupt):
+                        try:
+                            loop = asyncio.get_running_loop()
+                            answer = await loop.run_in_executor(
+                                None,
+                                lambda: input("Allow project hooks to run? (y/n) > "),
+                            )
+                        except (EOFError, KeyboardInterrupt):
+                            answer = "n"
+                    if answer.strip().lower() not in ("y", "yes"):
+                        event_emitter.emit(
+                            "agent_status", message="[dim]Hooks denied by user.[/dim]"
+                        )
+                        self._hooks_approved = False
+                        return hooks_results
+                    self._hooks_approved = True
+
+                env = os.environ.copy()
+                env["CODERAI_TOOL_NAME"] = tool_name
+                for i, arg_val in enumerate(arguments.values()):
+                    env[f"CODERAI_ARG_{i}"] = str(arg_val)
+
+                # Separate blocked from runnable
+                runnable: List[str] = []
+                for hook in matching_hooks:
+                    cmd = hook.get("command")
+                    if not cmd:
+                        continue
+                    if is_command_blocked(cmd):
+                        logger.warning(f"Hook command blocked for safety: {cmd}")
+                        hooks_results.append(f"[{hook_type} Hook BLOCKED]: {cmd}")
+                    else:
+                        runnable.append(cmd)
+
+                # Run all hooks for this stage in parallel
+                async def _exec_hook(cmd: str) -> Optional[str]:
+                    event_emitter.emit(
+                        "agent_status",
+                        message=f"[dim]Running {hook_type} hook for {tool_name}...[/dim]",
+                    )
+                    proc = await asyncio.create_subprocess_shell(
+                        cmd,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                        env=env,
+                    )
+                    stdout, stderr = await proc.communicate()
+                    if proc.returncode != 0:
+                        logger.warning(
+                            f"{hook_type} hook '{cmd}' failed. "
+                            f"Exit code: {proc.returncode}, Stderr: {stderr.decode('utf-8')}"
+                        )
+                        return None
+                    out = stdout.decode("utf-8").strip()
+                    return out if out else None
+
+                if runnable:
+                    hook_outputs = await asyncio.gather(
+                        *(_exec_hook(cmd) for cmd in runnable), return_exceptions=True
+                    )
+                    for out in hook_outputs:
+                        if isinstance(out, Exception):
+                            logger.error(f"Hook execution error: {out}")
+                        elif out:
+                            hooks_results.append(f"[{hook_type} Hook Output]: {out}")
+            except Exception as e:
+                logger.error(f"Error running hooks: {e}")
+            return hooks_results
+
+        async def _execute_single_tool(pc: Dict[str, Any]) -> Dict[str, Any]:
+            if pc["parse_error"]:
+                return {"success": False, "error": pc["parse_error"]}
+            try:
+                tool_name = pc["tool_name"]
+                arguments = pc["arguments"]
+
+                pre_hooks_out = await _run_hooks(tool_name, "PreToolUse", arguments)
+
+                if tool_name.startswith("mcp__") and self.tools.get(tool_name) is None:
+                    from .tools.mcp import mcp_client
+                    parts = tool_name.split("__", 2)  # ["mcp", server, name]
+                    if len(parts) >= 3:
+                        server = parts[1]
+                        remote_tool = parts[2]
+                        result = await mcp_client.call_tool(server, remote_tool, arguments)
+                    else:
+                        result = {
+                            "success": False,
+                            "error": f"Malformed MCP tool name: {tool_name}",
+                        }
+                else:
+                    result = await self.tools.execute(
+                        tool_name,
+                        confirmation_callback=self._confirmation_callback
+                        if not self.auto_approve
+                        else None,
+                        **arguments,
+                    )
+
+                post_hooks_out = await _run_hooks(tool_name, "PostToolUse", arguments)
+
+                if isinstance(result, dict) and (pre_hooks_out or post_hooks_out):
+                    result["_hooks"] = {"pre": pre_hooks_out, "post": post_hooks_out}
+
+                return result
+            except Exception as e:
+                return {"success": False, "error": str(e)}
 
         # Process with LLM (potentially multiple rounds for tool calls)
         max_iterations = self.config.max_iterations
@@ -811,170 +999,8 @@ class Agent:
                         )
 
                 # Execute tool calls — parallelize read-only tools, keep
-                # mutating tools sequential to avoid write races (#9)
-                # Uses the is_read_only flag on each Tool (F8)
-
-                async def _run_hooks(tool_name: str, hook_type: str, arguments: dict) -> list:
-                    """Run hooks defined in .coderAI/hooks.json for a specific tool and stage.
-                    hook_type is either 'PreToolUse' or 'PostToolUse'.
-
-                    Security: hooks require one-time user confirmation per session
-                    (unless auto_approve is on) and are checked against the
-                    command blocklist.
-                    """
-                    hooks_results = []
-                    try:
-                        from pathlib import Path
-                        from .tools.terminal import is_command_blocked
-
-                        hooks_file = Path(self.config.project_root, ".coderAI", "hooks.json")
-                        if not hooks_file.exists():
-                            return hooks_results
-
-                        with open(hooks_file, "r") as f:
-                            hooks_data = json.load(f)
-
-                        # Look for commands matching our tool and hook type
-                        matching_hooks = []
-                        for hook in hooks_data.get("hooks", []):
-                            if hook.get("type") == hook_type and (
-                                hook.get("tool") == "*" or hook.get("tool") == tool_name
-                            ):
-                                matching_hooks.append(hook)
-
-                        if matching_hooks:
-                            import os
-
-                            # One-time confirmation per session (skip if auto-approve)
-                            if not self.auto_approve and self._hooks_approved is None:
-                                cmds_preview = ", ".join(
-                                    h.get("command", "?")[:60] for h in matching_hooks
-                                )
-                                event_emitter.emit(
-                                    "agent_status",
-                                    message=(
-                                        f"\n[bold yellow]⚠ Project hooks detected in .coderAI/hooks.json[/bold yellow]"
-                                        f"\n[dim]Commands: {cmds_preview}[/dim]"
-                                    ),
-                                )
-                                try:
-                                    from prompt_toolkit import PromptSession
-
-                                    ps = PromptSession()
-                                    answer = await ps.prompt_async(
-                                        "Allow project hooks to run? (y/n) > "
-                                    )
-                                except (ImportError, EOFError, KeyboardInterrupt):
-                                    try:
-                                        loop = asyncio.get_running_loop()
-                                        answer = await loop.run_in_executor(
-                                            None,
-                                            lambda: input("Allow project hooks to run? (y/n) > "),
-                                        )
-                                    except (EOFError, KeyboardInterrupt):
-                                        answer = "n"
-
-                                if answer.strip().lower() not in ("y", "yes"):
-                                    event_emitter.emit(
-                                        "agent_status", message="[dim]Hooks denied by user.[/dim]"
-                                    )
-                                    self._hooks_approved = False
-                                    return hooks_results
-                                self._hooks_approved = True
-
-                            # Set up env variables for the hook
-                            env = os.environ.copy()
-                            env["CODERAI_TOOL_NAME"] = tool_name
-
-                            for i, arg_val in enumerate(arguments.values()):
-                                env[f"CODERAI_ARG_{i}"] = str(arg_val)
-
-                            for hook in matching_hooks:
-                                cmd = hook.get("command")
-                                if not cmd:
-                                    continue
-
-                                # Safety: check hook commands against blocklist
-                                if is_command_blocked(cmd):
-                                    logger.warning(f"Hook command blocked for safety: {cmd}")
-                                    hooks_results.append(f"[{hook_type} Hook BLOCKED]: {cmd}")
-                                    continue
-
-                                event_emitter.emit(
-                                    "agent_status",
-                                    message=f"[dim]Running {hook_type} hook for {tool_name}...[/dim]",
-                                )
-                                process = await asyncio.create_subprocess_shell(
-                                    cmd,
-                                    stdout=asyncio.subprocess.PIPE,
-                                    stderr=asyncio.subprocess.PIPE,
-                                    env=env,
-                                )
-                                stdout, stderr = await process.communicate()
-
-                                # If it failed, we log it but don't stop the tool
-                                if process.returncode != 0:
-                                    logger.warning(
-                                        f"{hook_type} hook '{cmd}' failed. Exit code: {process.returncode}, Stderr: {stderr.decode('utf-8')}"
-                                    )
-                                else:
-                                    out_str = stdout.decode("utf-8").strip()
-                                    if out_str:
-                                        hooks_results.append(
-                                            f"[{hook_type} Hook Output]: {out_str}"
-                                        )
-
-                    except Exception as e:
-                        logger.error(f"Error running hooks: {e}")
-
-                    return hooks_results
-
-                async def _execute_single_tool(pc):
-                    if pc["parse_error"]:
-                        return {"success": False, "error": pc["parse_error"]}
-                    try:
-                        tool_name = pc["tool_name"]
-                        arguments = pc["arguments"]
-
-                        # Pre-hooks
-                        pre_hooks_out = await _run_hooks(tool_name, "PreToolUse", arguments)
-
-                        # Route MCP discovered tools (mcp_<server>_<toolname>)
-                        # to mcp_client.call_tool() instead of the local registry.
-                        if tool_name.startswith("mcp_") and self.tools.get(tool_name) is None:
-                            from .tools.mcp import mcp_client
-
-                            # Parse: mcp_<server>_<name> → server, name
-                            parts = tool_name.split("_", 2)  # ["mcp", server, name]
-                            if len(parts) >= 3:
-                                server = parts[1]
-                                remote_tool = parts[2]
-                                result = await mcp_client.call_tool(server, remote_tool, arguments)
-                            else:
-                                result = {
-                                    "success": False,
-                                    "error": f"Malformed MCP tool name: {tool_name}",
-                                }
-                        else:
-                            # Actual Tool Execution (local registry)
-                            result = await self.tools.execute(
-                                tool_name,
-                                confirmation_callback=self._confirmation_callback
-                                if not self.auto_approve
-                                else None,
-                                **arguments,
-                            )
-
-                        # Post-hooks
-                        post_hooks_out = await _run_hooks(tool_name, "PostToolUse", arguments)
-
-                        # Attach hook output to result if it's a dict
-                        if isinstance(result, dict) and (pre_hooks_out or post_hooks_out):
-                            result["_hooks"] = {"pre": pre_hooks_out, "post": post_hooks_out}
-
-                        return result
-                    except Exception as e:
-                        return {"success": False, "error": str(e)}
+                # mutating tools sequential to avoid write races.
+                # (_run_hooks and _execute_single_tool are defined before this loop)
 
                 # Split calls into read-only and mutating groups,
                 # keeping track of original indices for ordered reassembly
@@ -1046,6 +1072,11 @@ class Agent:
                 # Rebuild messages from session (single source of truth)
                 messages = self.session.get_messages_for_api()
 
+                # Re-inject pinned context — the earlier injection was into a
+                # transient list and is not persisted in the session, so it must
+                # be re-applied every time we rebuild from session history.
+                messages = self._inject_context_message(messages, user_message)
+
                 # Manage context again before next iteration (tool results can be large)
                 messages = await self._manage_context_window(messages)
 
@@ -1081,6 +1112,7 @@ class Agent:
                     message=f"Error (attempt {consecutive_errors}/{MAX_CONSECUTIVE_ERRORS}): {e}",
                 )
                 messages = self.session.get_messages_for_api()
+                messages = self._inject_context_message(messages, user_message)
                 messages.append(
                     {
                         "role": "system",
@@ -1217,8 +1249,10 @@ class Agent:
         # If still too large, forcefully truncate at top level
         final_str = json.dumps(summarized)
         if len(final_str) > self.config.max_tool_output * 2:
+            truncate_len = self.config.max_tool_output * 2
             return {
-                "error": "Tool output was extremely large and could not be successfully summarized. Consider narrowing your search."
+                "warning": "Tool output was extremely large and was forcefully truncated.",
+                "output": final_str[:truncate_len] + "\n... [HARD TRUNCATED]"
             }
 
         return summarized

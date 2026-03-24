@@ -78,7 +78,7 @@ def _normalize_command(command: str) -> str:
 _SHELL_WRAPPERS = ("bash -c ", "sh -c ", "zsh -c ", "/bin/bash -c ", "/bin/sh -c ", "/bin/zsh -c ")
 
 
-def _extract_inner_command(cmd_lower: str) -> str | None:
+def _extract_inner_command(cmd_lower: str) -> Optional[str]:
     """If the command invokes a shell wrapper, extract and return the inner command."""
     for prefix in _SHELL_WRAPPERS:
         if cmd_lower.startswith(prefix):

@@ -156,7 +156,7 @@ class ToolRegistry:
                 # Return validation errors as friendly tool response
                 return {
                     "success": False,
-                    "error": f"Validation error for tool '{name}':\\n{str(e)}",
+                    "error": f"Validation error for tool '{name}':\n{str(e)}",
                     "error_code": "validation_error"
                 }
                 

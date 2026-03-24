@@ -298,7 +298,7 @@ class MCPClient:
             tools.append({
                 "type": "function",
                 "function": {
-                    "name": f"mcp_{tool['server']}_{tool['name']}",
+                    "name": f"mcp__{tool['server']}__{tool['name']}",
                     "description": f"[MCP: {tool['server']}] {tool['description']}",
                     "parameters": tool.get("input_schema", {"type": "object", "properties": {}}),
                 },

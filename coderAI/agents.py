@@ -76,14 +76,13 @@ def load_agent_persona(persona_name: str, project_root: str = ".") -> Optional[A
                     logger.warning(f"Failed to parse YAML frontmatter in {file_path.name}: {e}")
         model_name = metadata.get("model", config_manager.load().default_model)
         
-        # Map common aliases from everything-claude-code
-        model_aliases = {
-            "opus": "claude-3-opus-20240229",
-            "sonnet": "claude-sonnet-4-20250514",
-            "haiku": "claude-3-5-haiku-20241022",
-        }
+        # Map common aliases using the authoritative MODEL_ALIASES from anthropic.py
         if isinstance(model_name, str):
-            model_name = model_aliases.get(model_name.lower(), model_name)
+            try:
+                from .llm.anthropic import MODEL_ALIASES as _anthropic_aliases
+                model_name = _anthropic_aliases.get(model_name.lower(), model_name)
+            except ImportError:
+                pass
                     
         return AgentPersona(
             name=metadata.get("name", persona_name),

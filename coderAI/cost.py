@@ -6,8 +6,9 @@ from typing import Dict
 logger = logging.getLogger(__name__)
 
 # Prices per 1,000,000 tokens (USD)
-# Source: Public pricing pages as of mid-2024
+# Source: Public pricing pages as of early 2026
 MODEL_PRICING: Dict[str, Dict[str, float]] = {
+    # OpenAI
     "gpt-5": {"input": 2.50, "output": 10.00},
     "gpt-5-mini": {"input": 0.15, "output": 0.60},
     "gpt-5-nano": {"input": 0.05, "output": 0.40},
@@ -15,14 +16,35 @@ MODEL_PRICING: Dict[str, Dict[str, float]] = {
     "o1-preview": {"input": 15.00, "output": 60.00},
     "o1-mini": {"input": 3.00, "output": 12.00},
     "o3-mini": {"input": 1.10, "output": 4.40},
+    # Anthropic
     "claude-4-sonnet": {"input": 3.00, "output": 15.00},
+    "claude-4.6-opus": {"input": 15.00, "output": 75.00},
+    "claude-4.5-haiku": {"input": 0.80, "output": 4.00},
     "claude-3.7-sonnet": {"input": 3.00, "output": 15.00},
     "claude-3.5-sonnet": {"input": 3.00, "output": 15.00},
     "claude-3.5-haiku": {"input": 0.80, "output": 4.00},
     "claude-3-opus": {"input": 15.00, "output": 75.00},
+    "sonnet": {"input": 3.00, "output": 15.00},
+    "haiku": {"input": 0.80, "output": 4.00},
+    "opus": {"input": 15.00, "output": 75.00},
+    # Groq
+    "openai/gpt-oss-120b": {"input": 0.0, "output": 0.0},
+    "openai/gpt-oss-20b": {"input": 0.0, "output": 0.0},
+    "llama3-70b-8192": {"input": 0.59, "output": 0.79},
+    "llama3-8b-8192": {"input": 0.05, "output": 0.08},
+    "mixtral-8x7b-32768": {"input": 0.24, "output": 0.24},
+    "gemma-7b-it": {"input": 0.07, "output": 0.07},
+    # DeepSeek
+    "deepseek-chat": {"input": 0.14, "output": 0.28},
+    "deepseek-reasoner": {"input": 0.55, "output": 2.19},
+    "deepseek-v3": {"input": 0.14, "output": 0.28},
+    "deepseek-v3.2": {"input": 0.14, "output": 0.28},
+    "deepseek-r1": {"input": 0.55, "output": 2.19},
+    # Local
     "lmstudio": {"input": 0.0, "output": 0.0},
     "ollama": {"input": 0.0, "output": 0.0},
 }
+
 
 
 class CostTracker:

@@ -170,7 +170,7 @@ Type your message or command. Press Ctrl+C or type 'exit' to quit.
   /history        - Show conversation history
   /model          - Show current model info
   /change-model   - Change model/provider
-  /reasoning      - Change reasoning effort (for o1, claude 3.7)
+  /reasoning      - Change reasoning effort (for o1, gpt-5, claude 3.7+/4)
   /config         - Show current configuration
   /tools          - List available tools
   /save           - Manually save current session
@@ -309,7 +309,7 @@ Type your message or command. Press Ctrl+C or type 'exit' to quit.
         elif command == "/reasoning":
             # Change reasoning effort
             display.print_header("Reasoning Effort")
-            display.print("How much thinking reasoning models (e.g. o1, claude-3.7-sonnet) should use.")
+            display.print("How much thinking reasoning models (e.g. o1, gpt-5, claude-3.7-sonnet, claude-4-sonnet) should use.")
             display.print("  • [cyan]high[/cyan]   - Max reasoning tokens")
             display.print("  • [cyan]medium[/cyan] - Default balanced reasoning")
             display.print("  • [cyan]low[/cyan]    - Fast/cheap reasoning")
@@ -515,19 +515,25 @@ Type your message or command. Press Ctrl+C or type 'exit' to quit.
             # Show available providers
             from ..llm.openai import OpenAIProvider
             from ..llm.anthropic import AnthropicProvider
+            from ..llm.groq import GroqProvider
             from ..llm.deepseek import DeepSeekProvider
 
             display.print_header("Available LLM Providers")
             
             display.print("\n[bold cyan]OpenAI Provider[/bold cyan]")
             display.print(f"  Models: {', '.join(OpenAIProvider.SUPPORTED_MODELS)}")
-            display.print("  Features: Function calling, streaming")
+            display.print("  Features: Function calling, streaming, reasoning")
             display.print("  Requires: OpenAI API key")
             
             display.print("\n[bold cyan]Anthropic Provider[/bold cyan]")
             display.print(f"  Models: {', '.join(AnthropicProvider.SUPPORTED_MODELS)}")
-            display.print("  Features: Function calling, streaming")
+            display.print("  Features: Function calling, streaming, extended thinking")
             display.print("  Requires: Anthropic API key")
+            
+            display.print("\n[bold cyan]Groq Provider[/bold cyan]")
+            display.print(f"  Models: {', '.join(GroqProvider.SUPPORTED_MODELS)}")
+            display.print("  Features: Function calling, streaming, fast inference")
+            display.print("  Requires: Groq API key")
             
             display.print("\n[bold cyan]DeepSeek Provider[/bold cyan]")
             display.print(f"  Models: {', '.join(DeepSeekProvider.SUPPORTED_MODELS)}")
@@ -538,6 +544,11 @@ Type your message or command. Press Ctrl+C or type 'exit' to quit.
             display.print("  Models: Local models via LM Studio")
             display.print("  Features: Local inference, privacy")
             display.print("  Requires: LM Studio running locally")
+            
+            display.print("\n[bold cyan]Ollama Provider[/bold cyan]")
+            display.print("  Models: Local models via Ollama")
+            display.print("  Features: Local inference, privacy, easy model management")
+            display.print("  Requires: Ollama running locally")
             
             display.print("\n[dim]Use /change-model to switch between providers[/dim]")
             display.print()

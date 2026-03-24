@@ -1,5 +1,6 @@
 """Anthropic/Claude LLM provider implementation."""
 
+import asyncio
 import json
 import logging
 import ssl
@@ -27,7 +28,10 @@ def _create_ssl_context() -> ssl.SSLContext:
 
 # Cost per 1K tokens (approximate)
 MODEL_COSTS = {
-    "claude-sonnet-4-20250514": {"input": 0.003, "output": 0.015},
+    "claude-4-sonnet-20250514": {"input": 0.003, "output": 0.015},
+    "claude-4-6-opus-20250601": {"input": 0.015, "output": 0.075},
+    "claude-4-5-haiku-20250520": {"input": 0.0008, "output": 0.004},
+    "claude-3-7-sonnet-20250219": {"input": 0.003, "output": 0.015},
     "claude-3-5-sonnet-20241022": {"input": 0.003, "output": 0.015},
     "claude-3-5-haiku-20241022": {"input": 0.0008, "output": 0.004},
     "claude-3-opus-20240229": {"input": 0.015, "output": 0.075},
@@ -35,11 +39,19 @@ MODEL_COSTS = {
 
 # Map friendly names to API model names
 MODEL_ALIASES = {
-    "claude-4-sonnet": "claude-sonnet-4-20250514",
+    "claude-4-sonnet": "claude-4-sonnet-20250514",
+    "claude-4.6-opus": "claude-4-6-opus-20250601",
+    "claude-4.5-haiku": "claude-4-5-haiku-20250520",
+    "claude-3.7-sonnet": "claude-3-7-sonnet-20250219",
     "claude-3.5-sonnet": "claude-3-5-sonnet-20241022",
     "claude-3.5-haiku": "claude-3-5-haiku-20241022",
     "claude-3-opus": "claude-3-opus-20240229",
+    "sonnet": "claude-4-sonnet-20250514",
+    "haiku": "claude-4-5-haiku-20250520",
+    "opus": "claude-4-6-opus-20250601",
 }
+
+
 
 
 class AnthropicProvider(LLMProvider):
