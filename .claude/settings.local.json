@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"from coderAI.locks import resource_manager; print\\(''locks OK''\\)\")",
+      "Bash(python -c \"from coderAI.agent import Agent; print\\(''agent import OK''\\)\")",
+      "Bash(python -c \"from coderAI.context import ContextManager; print\\(''context OK''\\)\")",
+      "Bash(python3 -c \"from coderAI.locks import resource_manager; print\\(''locks OK''\\)\")",
+      "Bash(python3 -c \"from coderAI.agent import Agent; print\\(''agent import OK''\\)\")",
+      "Bash(python3 -c \"from coderAI.context import ContextManager; print\\(''context OK''\\)\")",
+      "Bash(python3:*)",
+      "Bash(grep -r 'raise NotImplementedError' /Users/aditya/Documents/CoderAI-main/coderAI --include=*.py)",
+      "Bash(ls -1 /Users/aditya/Documents/CoderAI-main/tests/test_*.py)",
+      "Bash(xargs -I {} basename {})",
+      "Bash(grep -rn \"class Test\" /Users/aditya/Documents/CoderAI-main/tests/*.py)"
+    ]
+  }
+}

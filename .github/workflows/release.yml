@@ -1,0 +1,160 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version tag to release (e.g. v0.2.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-ui:
+    name: Build UI (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: darwin-arm64
+            bun-target: bun-darwin-arm64
+            runner: macos-14
+          - platform: darwin-x64
+            bun-target: bun-darwin-x64
+            runner: macos-13
+          - platform: linux-x64
+            bun-target: bun-linux-x64
+            runner: ubuntu-latest
+          - platform: linux-arm64
+            bun-target: bun-linux-arm64
+            runner: ubuntu-24.04-arm
+          - platform: windows-x64
+            bun-target: bun-windows-x64
+            runner: windows-latest
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install UI deps
+        working-directory: ui
+        run: bun install --frozen-lockfile || bun install
+
+      - name: Compile binary
+        working-directory: ui
+        env:
+          BUN_TARGET: ${{ matrix.bun-target }}
+          PLATFORM: ${{ matrix.platform }}
+        shell: bash
+        run: |
+          bun run compile
+          ls -la dist
+
+      - name: Compute SHA256
+        working-directory: ui/dist
+        shell: bash
+        run: |
+          for f in coderai-ui-*; do
+            case "$f" in
+              *.sha256) continue ;;
+            esac
+            if command -v shasum >/dev/null 2>&1; then
+              shasum -a 256 "$f" > "${f}.sha256"
+            else
+              sha256sum "$f" > "${f}.sha256"
+            fi
+            cat "${f}.sha256"
+          done
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coderai-ui-${{ matrix.platform }}
+          path: |
+            ui/dist/coderai-ui-${{ matrix.platform }}*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-github-release:
+    name: Publish GitHub Release
+    needs: build-ui
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List assets
+        run: ls -la dist
+
+      - name: Resolve tag
+        id: tag
+        shell: bash
+        run: |
+          if [[ -n "${{ inputs.version }}" ]]; then
+            echo "tag=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create / update release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.tag }}
+          files: |
+            dist/coderai-ui-*
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: true
+          body: |
+            Prebuilt coderAI Ink UI binaries. These are auto-downloaded by
+            `coderAI chat` on first run.
+
+            Verify a download manually:
+            ```bash
+            shasum -a 256 -c coderai-ui-<platform>.sha256
+            ```
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: publish-github-release
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+    permissions:
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install build tooling
+        run: python -m pip install --upgrade build
+
+      - name: Build wheel + sdist
+        run: python -m build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
