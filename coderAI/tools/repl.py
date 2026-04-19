@@ -4,7 +4,7 @@ import asyncio
 import logging
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from pydantic import BaseModel, Field
 

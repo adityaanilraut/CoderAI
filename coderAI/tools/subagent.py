@@ -122,11 +122,18 @@ class DelegateTaskTool(Tool):
         "or gathering specific information without filling up your own context window. "
         "The sub-agent has access to all the same tools, runs in an isolated session, "
         "and returns a comprehensive report. Provide a detailed task_description with "
-        "specific file paths and expected output format for best results."
+        "specific file paths and expected output format for best results. "
+        "Up to five delegate_task calls in the same turn run in parallel — use this "
+        "to split independent work (e.g. one sub-agent for web research, another to "
+        "read and summarize specific files). Avoid parallel delegations that edit the "
+        "same files or perform conflicting git operations."
     )
+    # Run up to this many sub-agents concurrently within one tool-execution wave.
+    max_parallel_invocations = 5
     parameters_model = DelegateTaskParams
-    # Sub-agents may run mutating tools; never run delegations in parallel with
-    # other tools (avoids branch-restore races and shared tracker/cost churn).
+    # Sub-agents may run mutating tools; parallel runs can race on the same files
+    # or git state — the model must avoid conflicting parallel delegations.
+    # Parallelism is enabled via max_parallel_invocations (see Agent tool loop).
     is_read_only = False
 
     # Set by the parent Agent after registration so the sub-agent can
@@ -268,6 +275,11 @@ class DelegateTaskTool(Tool):
                 "- Do NOT ask questions — make reasonable assumptions and note them.",
                 "- Do NOT parse HTML or scrape web pages using complex shell pipelines (`curl | grep | sed`). Use proper tools (`read_url`, `web_search`) or Python scripts instead.",
                 f"- IMPORTANT: You are on branch '{branch_before or 'unknown'}'. Do NOT switch branches unless explicitly required by the task.",
+                "- CRITICAL: Your FINAL turn MUST be a plain-text assistant message "
+                "containing the full report. Do NOT end the conversation on a "
+                "tool call — after you have gathered enough information, stop "
+                "calling tools and write the report as text. An empty or "
+                "tool-call-only final turn is considered a failure.",
             ]
 
             if role_instructions:
@@ -321,6 +333,43 @@ class DelegateTaskTool(Tool):
                     )
 
                     final_report = await sub_agent.process_single_shot(task_description)
+
+                    # Guard: the LLM sometimes ends its turn with no textual
+                    # content after a long tool-call chain (seen especially
+                    # with research-heavy tasks that burn thousands of tokens
+                    # on tool results). Before giving up on this attempt,
+                    # reuse the SAME sub-agent (so its gathered context is
+                    # preserved) and explicitly ask it to write the report
+                    # now without making more tool calls.
+                    if not (final_report and final_report.strip()):
+                        event_emitter.emit(
+                            "agent_status",
+                            message=(
+                                "[yellow]Sub-Agent returned empty report; "
+                                "nudging it to produce the final output...[/yellow]"
+                            ),
+                        )
+                        nudge = (
+                            "Your previous response contained no text output. "
+                            "Based on ALL the information you have gathered so far "
+                            "in this session, produce your complete final report NOW "
+                            "as a single assistant message. Do NOT call any more tools. "
+                            "Structure the report with clear sections (Summary, "
+                            "Findings, Recommendations) and cite specific sources / "
+                            "file paths where relevant. If some information is still "
+                            "missing, note the gap explicitly but still deliver the "
+                            "report using what you have."
+                        )
+                        final_report = await sub_agent.process_single_shot(nudge)
+
+                    if not (final_report and final_report.strip()):
+                        # Treat a persistently empty report as a soft failure
+                        # so the outer retry loop rebuilds a fresh sub-agent.
+                        raise RuntimeError(
+                            "Sub-agent produced no final report even after an "
+                            "explicit nudge to write one."
+                        )
+
                     last_error = None
                     break  # Success — exit retry loop
 
@@ -361,9 +410,38 @@ class DelegateTaskTool(Tool):
                     else:
                         logger.error(f"Sub-agent failed after {max_retries + 1} attempts: {retry_err}")
 
-            # If all retries failed
+            # If all retries failed, surface an explicit error to the parent
+            # (including the cost already burned) instead of silently
+            # returning an empty report.
             if last_error is not None:
-                raise last_error
+                wasted_tokens = getattr(sub_agent, "total_tokens", 0) if sub_agent else 0
+                wasted_cost = 0.0
+                if sub_agent is not None and getattr(sub_agent, "cost_tracker", None):
+                    try:
+                        wasted_cost = (
+                            sub_agent.cost_tracker.get_total_cost() - parent_cost_before
+                        )
+                    except Exception:
+                        wasted_cost = 0.0
+                from ..cost import CostTracker
+                event_emitter.emit(
+                    "agent_error",
+                    message=(
+                        f"Sub-Agent{role_label} failed after {max_retries + 1} attempts: "
+                        f"{last_error}. Tokens burned: {wasted_tokens:,} | "
+                        f"Cost: {CostTracker.format_cost(wasted_cost)}"
+                    ),
+                )
+                return {
+                    "success": False,
+                    "error": (
+                        f"Sub-agent failed after {max_retries + 1} attempts: "
+                        f"{last_error}"
+                    ),
+                    "sub_agent_role": agent_role or "General Assistant",
+                    "tokens_used": wasted_tokens,
+                    "cost_usd": wasted_cost,
+                }
 
             tokens_used = sub_agent.total_tokens
             # Report only the delta attributable to this sub-agent. The cost

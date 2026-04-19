@@ -1,7 +1,7 @@
 """Skill usage tool for loading and applying skill instructions."""
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, Field
 

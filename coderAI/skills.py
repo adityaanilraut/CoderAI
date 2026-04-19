@@ -6,7 +6,6 @@ from typing import Dict, List, Optional
 
 import yaml
 
-from .config import config_manager
 
 logger = logging.getLogger(__name__)
 

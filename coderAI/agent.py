@@ -1148,18 +1148,26 @@ class Agent:
                             "tool_error", tool_name=pc["tool_name"], error=pc["parse_error"]
                         )
 
-                # Execute tool calls — parallelize read-only tools, keep
-                # mutating tools sequential to avoid write races.
+                # Execute tool calls — parallelize read-only tools; parallelize
+                # capped tools (e.g. delegate_task, up to N at a time); keep
+                # other mutating tools sequential to avoid write races.
                 # (_run_hooks and _execute_single_tool are defined before this loop)
 
-                # Split calls into read-only and mutating groups,
-                # keeping track of original indices for ordered reassembly
-                ro_indices = []
-                mut_indices = []
+                unlimited_ro_indices: list = []
+                capped_parallel_indices: list = []
+                mut_indices: list = []
                 for i, pc in enumerate(parsed_calls):
                     tool_obj = self.tools.get(pc["tool_name"])
-                    if tool_obj and tool_obj.is_read_only:
-                        ro_indices.append(i)
+                    if not tool_obj:
+                        mut_indices.append(i)
+                        continue
+                    max_par = int(
+                        getattr(tool_obj, "max_parallel_invocations", 0) or 0
+                    )
+                    if max_par > 0:
+                        capped_parallel_indices.append(i)
+                    elif tool_obj.is_read_only:
+                        unlimited_ro_indices.append(i)
                     else:
                         mut_indices.append(i)
 
@@ -1201,11 +1209,11 @@ class Agent:
                         "error_code": "cancelled",
                     }
 
-                if ro_indices:
+                if unlimited_ro_indices:
                     ro_results = await asyncio.gather(
-                        *(_run_with_cancel(parsed_calls[i]) for i in ro_indices)
+                        *(_run_with_cancel(parsed_calls[i]) for i in unlimited_ro_indices)
                     )
-                    for idx, res in zip(ro_indices, ro_results):
+                    for idx, res in zip(unlimited_ro_indices, ro_results):
                         results[idx] = res
                         tools_done += 1
                         event_emitter.emit(
@@ -1214,6 +1222,39 @@ class Agent:
                             total=total_tools,
                             tool_name=parsed_calls[idx]["tool_name"],
                         )
+
+                # Capped parallel tools (e.g. delegate_task): run up to N at a
+                # time; if the model requests more than N, process in chunks.
+                if capped_parallel_indices:
+                    first_pc = parsed_calls[capped_parallel_indices[0]]
+                    cap_tool = self.tools.get(first_pc["tool_name"])
+                    chunk_size = int(
+                        getattr(cap_tool, "max_parallel_invocations", 1) or 1
+                    )
+                    chunk_size = max(1, chunk_size)
+                    for chunk_start in range(0, len(capped_parallel_indices), chunk_size):
+                        chunk = capped_parallel_indices[chunk_start : chunk_start + chunk_size]
+                        if cancel_event is not None and cancel_event.is_set():
+                            for idx in chunk:
+                                results[idx] = {
+                                    "success": False,
+                                    "error": "Tool execution cancelled by user.",
+                                    "error_code": "cancelled",
+                                }
+                                tools_done += 1
+                            continue
+                        cap_results = await asyncio.gather(
+                            *(_run_with_cancel(parsed_calls[i]) for i in chunk)
+                        )
+                        for idx, res in zip(chunk, cap_results):
+                            results[idx] = res
+                            tools_done += 1
+                            event_emitter.emit(
+                                "tool_progress",
+                                step=tools_done,
+                                total=total_tools,
+                                tool_name=parsed_calls[idx]["tool_name"],
+                            )
 
                 # Run mutating tools sequentially (order matters). Check the
                 # cancel flag between calls and race each call against it.
@@ -1512,7 +1553,6 @@ class Agent:
         Returns:
             True if the user approved, False otherwise.
         """
-        import sys
 
         # Display the confirmation request
         args_preview = json.dumps(arguments, indent=2)

@@ -10,7 +10,6 @@ make dev          # or: pip install -e .
 
 # Run
 coderAI chat      # launches the Ink UI (downloads a prebuilt binary if missing)
-coderAI "your prompt"
 make run          # alias for coderAI chat
 
 # Ink UI (TypeScript + React) — only needed when contributing to the UI
@@ -25,7 +24,8 @@ make test         # or: pytest
 pytest tests/test_agent.py::TestClassName::test_method_name   # single test
 
 # Lint & format
-make lint         # ruff check + mypy
+make lint         # ruff check (required; same as CI)
+make typecheck    # mypy coderAI/ (optional; not fully clean yet)
 make format       # black coderAI/ (line length: 100)
 
 # Setup & utilities
@@ -47,7 +47,7 @@ The main execution loop lives in `coderAI/agent.py` (`Agent.process_message()`):
 1. User input → inject pinned context → proactive context compression if >70% full
 2. LLM call with retry logic (max 3 retries, exponential backoff for transient errors)
 3. If tool calls returned → read-only tools run in parallel (`asyncio.gather`), mutating tools run sequentially
-4. Tool results fed back to LLM → loop continues until final text response (max 50 iterations)
+4. Tool results fed back to LLM → loop continues until final text response (max 50 iterations). Read-only tools run in parallel; `delegate_task` runs in parallel up to **5** concurrent sub-agents per turn (additional delegations are queued in batches of 5); other mutating tools run one at a time.
 5. Session saved to `~/.coderAI/history/`
 
 **Runtime shape of `coderAI chat`:**
@@ -80,6 +80,7 @@ The main execution loop lives in `coderAI/agent.py` (`Agent.process_message()`):
 - `coderAI/history.py` — `Session` + `HistoryManager`; sessions in `~/.coderAI/history/`.
 - `coderAI/notepad.py` — Shared in-memory notepad for inter-agent communication.
 - `ui/` — TypeScript + Ink UI source. `ui/src/App.tsx` is the root component; `ui/src/rpc/agentClient.ts` spawns the Python agent; `ui/scripts/compile.ts` drives `bun build --compile` honoring `BUN_TARGET` / `PLATFORM` env vars.
+- `.github/workflows/ci.yml` — On push/PR: installs `pip install -e ".[dev]"`, runs `ruff check coderAI/`, `pytest`, `test_installation.py`, and `coderAI --version`.
 - `.github/workflows/release.yml` — Cross-compiles the Ink binary for darwin-arm64/x64, linux-x64/arm64, windows-x64 on tagged releases, publishes GitHub Release assets with SHA256 sidecars, and uploads the pure-Python wheel to PyPI.
 
 **Tool categories** (`coderAI/tools/`):

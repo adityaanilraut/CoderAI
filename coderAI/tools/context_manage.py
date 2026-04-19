@@ -1,7 +1,7 @@
 """Tool for managing context."""
 
 import logging
-from typing import Any, Dict, List, Optional, Literal
+from typing import Any, Dict, Optional, Literal
 
 from pydantic import BaseModel, Field
 

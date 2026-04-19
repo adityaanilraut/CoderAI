@@ -22,7 +22,6 @@ import logging
 import os
 import re
 import sys
-import time
 import uuid
 from typing import Any, Awaitable, Callable, Dict, Optional
 
@@ -154,16 +153,6 @@ class IPCServer:
     def emit_hello(self) -> None:
         config = self.agent.config
         project_summary = None
-        try:
-            # Best-effort — this is what `cli.py` prints at startup.
-            from ..tools.project import ProjectContextTool  # local import
-            ctx_tool = ProjectContextTool()
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # Can't block the loop synchronously here; skip.
-                pass
-        except Exception:
-            pass
 
         session_id = None
         message_count = 0

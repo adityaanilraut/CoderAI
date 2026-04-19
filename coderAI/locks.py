@@ -3,7 +3,7 @@
 import asyncio
 from collections import OrderedDict
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Optional
 
 # Cap the file-lock table so long-running sessions don't leak entries for
 # every file ever touched. When exceeded we evict the least-recently-used

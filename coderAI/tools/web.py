@@ -115,7 +115,7 @@ def _html_to_text(html: str) -> str:
     for lvl in range(1, 7):
         html = re.sub(
             rf"<h{lvl}[^>]*>(.*?)</h{lvl}>",
-            lambda m, l=lvl: f"\n\n{'#' * l} {_strip_tags(m.group(1))}\n",
+            lambda m, level=lvl: f"\n\n{'#' * level} {_strip_tags(m.group(1))}\n",
             html,
             flags=re.DOTALL | re.IGNORECASE,
         )

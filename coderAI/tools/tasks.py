@@ -8,7 +8,6 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 from .base import Tool
-from ..config import config_manager
 
 
 def get_tasks_file(project_root: str = ".") -> Path:

@@ -2,6 +2,9 @@
   <h1 align="center">🤖 CoderAI</h1>
   <p align="center"><strong>An autonomous, multi-agent coding assistant that lives in your terminal.</strong></p>
   <p align="center">
+    <a href="https://github.com/adityaanilraut/CoderAI/actions/workflows/ci.yml"><img src="https://github.com/adityaanilraut/CoderAI/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  </p>
+  <p align="center">
     <a href="#installation">Install</a> · <a href="#quick-start">Quick Start</a> · <a href="#architecture">Architecture</a> · <a href="#tools-reference">Tools</a> · <a href="#agent-system">Agents</a> · <a href="#workflows--skills">Workflows</a>
   </p>
 </p>
@@ -18,7 +21,8 @@ CoderAI is a Python CLI tool that pairs an LLM with **35+ built-in tools** to re
 | **35+ Tools** | File I/O, Git, terminal, web search, linting, image reading, MCP, and more |
 | **Multi-Agent System** | Spawn isolated sub-agents for code review, security audit, research, etc. |
 | **Planning & Tasks** | Structured plan-and-execute workflows with persistent task tracking |
-| **Rich Terminal UI** | Syntax-highlighted streaming with markdown rendering via [Rich](https://github.com/Textualize/rich) |
+| **Ink interactive UI** | `coderAI chat` uses a React + [Ink](https://github.com/vadimdemedes/ink) terminal UI; NDJSON IPC to the Python agent ([`ui/PROTOCOL.md`](ui/PROTOCOL.md)) |
+| **Rich CLI output** | Non-interactive commands (`status`, `config`, `history`, …) use [Rich](https://github.com/Textualize/rich) for tables and formatting |
 | **Context Management** | Pin files, auto-detect project type, smart context compaction |
 | **Persistent Memory** | Key-value store that survives across sessions |
 | **Undo / Rollback** | Revert any file modification instantly |
@@ -107,9 +111,9 @@ coderAI status
 └───────┬──────────────┬───────────────┬──────────────┬────────────┘
         │              │               │              │
    ┌────┴────┐   ┌─────┴──────┐  ┌────┴─────┐  ┌────┴────────┐
-   │   LLM   │   │   Tools    │  │    UI    │  │  Sub-Agent  │
-   │Providers│   │  Registry  │  │Components│  │  Delegation │
-   │ (6)     │   │  (35+)     │  │  (Rich)  │  │  (Isolated) │
+   │   LLM   │   │   Tools    │  │Ink UI +  │  │  Sub-Agent  │
+   │Providers│   │  Registry  │  │IPC/Rich  │  │  Delegation │
+   │ (6)     │   │  (35+)     │  │          │  │  (Isolated) │
    └─────────┘   └────────────┘  └──────────┘  └─────────────┘
 ```
 
@@ -147,6 +151,11 @@ CoderAI-main/
 │   ├── skills.py               # Skill loader from .coderAI/skills/*.md
 │   ├── system_prompt.py        # Default system prompt with tool docs & strategies
 │   │
+│   ├── ipc/                    # ─── NDJSON bridge for Ink UI (stdio) ───
+│   │   ├── entry.py            #   python -m coderAI.ipc.entry (spawned by UI binary)
+│   │   ├── jsonrpc_server.py   #   Event/command protocol
+│   │   └── streaming.py        #   IPCStreamingHandler → stream_delta events
+│   │
 │   ├── llm/                    # ─── LLM Provider Backends ───
 │   │   ├── base.py             #   Abstract LLMProvider interface
 │   │   ├── openai.py           #   OpenAI (GPT-5, o1, o3-mini)
@@ -177,10 +186,12 @@ CoderAI-main/
 │   │   ├── planning.py         #   plan (create/show/advance/update/clear)
 │   │   └── notepad.py          #   notepad (shared inter-agent notepad)
 │   │
-│   └── ui/                     # ─── Terminal UI (Rich) ───
-│       ├── display.py          #   Markdown, syntax, tables, trees, panels
-│       ├── interactive.py      #   Interactive chat loop with prompt-toolkit
-│       └── streaming.py        #   Live streaming display handler
+│   └── ui/                     # ─── Rich helpers (one-shot CLI only) ───
+│       └── display.py          #   Tables, markdown, panels for config/history/status
+│
+├── ui/                         # ─── Ink + React interactive chat (TypeScript) ───
+│   ├── src/                    #   App, components, agent RPC client
+│   └── PROTOCOL.md             #   NDJSON event/command schema
 │
 ├── .coderAI/                   # ─── Project Configuration ───
 │   ├── agents/                 #   17 agent personas (YAML frontmatter + markdown)
@@ -557,13 +568,21 @@ Configuration is stored in `~/.coderAI/config.json` and managed via `coderAI con
 
 ---
 
-## 🧪 Testing
+## 🧪 Testing & CI
+
+Pull requests run **Ruff** and **pytest** on GitHub Actions (see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
 
 ```bash
+# Install dev dependencies (pytest, ruff, mypy, …)
+pip install -e ".[dev]"
+
+# Lint (same as CI)
+python -m ruff check coderAI/
+
 # Run the full test suite
 pytest
 
-# Or use the standard project test target
+# Or use the Makefile (also runs install + CLI smoke checks)
 make test
 
 # Run specific test categories
@@ -572,6 +591,9 @@ pytest tests/test_web.py
 
 # Validate installation
 python test_installation.py
+
+# Optional: static typing (the codebase is not fully mypy-clean yet)
+make typecheck
 
 # Run manual sub-agent integration harnesses
 python manual_subagent_delegation.py

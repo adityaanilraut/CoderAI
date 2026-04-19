@@ -306,7 +306,6 @@ mcp_client = MCPClient()
 
 def _cleanup_mcp_servers():
     """Synchronous cleanup of MCP servers on exit."""
-    import time
     for name, info in list(mcp_client.servers.items()):
         try:
             proc = info["process"]

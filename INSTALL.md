@@ -40,8 +40,8 @@ and launches it. Subsequent runs skip the download.
 ### Method 2: Install from source (for contributors)
 
 ```bash
-git clone https://github.com/coderAI/coderAI.git
-cd coderAI
+git clone https://github.com/adityaanilraut/CoderAI.git
+cd CoderAI
 python3 -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
 pip install -e .
@@ -62,8 +62,8 @@ download, so an editable checkout always runs the code you just built.
 - `CODERAI_UI_BINARY=/path/to/binary coderAI chat` — bypass the cache and
   use your own build (useful when testing local changes, running on an
   unsupported platform, or running from an air-gapped environment).
-- `CODERAI_UI_REPO=owner/repo` — pull binaries from a fork or staging
-  release instead of `coderAI/coderAI`.
+- `CODERAI_UI_REPO=owner/repo` — pull UI binaries from a different GitHub
+  repo (default: `coderAI/coderAI`, where release assets are published).
 - Offline fallback: run `make ui-compile` in a checkout and either copy
   the resulting binary into `~/.coderAI/bin/` or point
   `$CODERAI_UI_BINARY` at it.

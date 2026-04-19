@@ -162,7 +162,7 @@ class GitStatusTool(Tool):
             # The first line from --porcelain -b is the branch header (## main...);
             # actual changes are on subsequent lines.
             lines = output.strip().split("\n")
-            change_lines = [l for l in lines if l and not l.startswith("##")]
+            change_lines = [line for line in lines if line and not line.startswith("##")]
             return {
                 "success": True,
                 "status": output,

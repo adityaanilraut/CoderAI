@@ -16,7 +16,8 @@ help:
 	@echo "make ui-compile  - Bundle Ink UI to standalone binary (needs Bun)"
 	@echo "                   Optional: TARGET=bun-linux-x64 for cross-compile"
 	@echo "make ui-compile-all - Cross-compile for all supported platforms"
-	@echo "make lint        - Run linter"
+	@echo "make lint        - Run ruff (required for CI)"
+	@echo "make typecheck   - Run mypy (optional; package not fully typed yet)"
 	@echo "make format      - Format code with black"
 	@echo "make setup       - Run setup wizard"
 
@@ -52,10 +53,11 @@ run:
 
 lint:
 	@echo "Running ruff..."
-	ruff check coderAI/ || true
-	@echo ""
+	python3 -m ruff check coderAI/
+
+typecheck:
 	@echo "Running mypy..."
-	mypy coderAI/ || true
+	python3 -m mypy coderAI/
 
 format:
 	black coderAI/
@@ -79,8 +81,7 @@ dist: clean
 # Install dev dependencies
 install-dev:
 	pip install -r requirements.txt
-	pip install pytest pytest-asyncio black ruff mypy
-	pip install -e .
+	pip install -e ".[dev]"
 
 # ---- Ink (TypeScript) UI targets ------------------------------------------
 

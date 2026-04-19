@@ -20,6 +20,14 @@ class Tool(ABC):
     # Parallelism: read-only tools can be executed concurrently.
     is_read_only: bool = False
 
+    # If >0, multiple invocations of this tool in one LLM turn may run
+    # concurrently, at most this many at a time (extra calls are queued in
+    # additional batches). Used for delegate_task so several sub-agents can
+    # run in parallel (e.g. web research vs codebase reads). Standard
+    # read-only tools use is_read_only=True with max_parallel_invocations=0
+    # (unlimited concurrency among themselves).
+    max_parallel_invocations: int = 0
+
     @abstractmethod
     async def execute(self, **kwargs) -> Dict[str, Any]:
         """Execute the tool with given parameters.

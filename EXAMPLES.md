@@ -33,12 +33,12 @@ Or with a specific model:
 coderAI --model gpt-5 chat
 ```
 
-### 3. Single-shot Mode
+### 3. Ask in the chat UI
 
-Ask a quick question:
+There is no separate “one-shot” CLI argument: start the Ink UI, then type your question at the prompt:
 
 ```bash
-coderAI "What's wrong with my code in app.py?"
+coderAI chat
 ```
 
 ## Example Use Cases

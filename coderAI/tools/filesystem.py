@@ -1,9 +1,7 @@
 """Filesystem tools for file operations."""
 
 import difflib
-import os
 import re
-from glob import glob
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -483,7 +481,7 @@ class ApplyDiffTool(Tool):
                     if not old_lines:
                         insert_pos = min(expected_start, len(result_lines))
                         result_lines[insert_pos:insert_pos] = [
-                            l if l.endswith("\n") else l + "\n" for l in new_lines
+                            line if line.endswith("\n") else line + "\n" for line in new_lines
                         ]
                         hunks_applied += 1
                         continue
@@ -495,8 +493,10 @@ class ApplyDiffTool(Tool):
 
                     if match_pos is None:
                         file_slice = result_lines[expected_start : expected_start + len(old_lines)]
-                        expected_preview = "\n".join(f"  {l}" for l in old_lines[:6])
-                        actual_preview = "\n".join(f"  {l.rstrip(chr(10))}" for l in file_slice[:6])
+                        expected_preview = "\n".join(f"  {line}" for line in old_lines[:6])
+                        actual_preview = "\n".join(
+                            f"  {line.rstrip(chr(10))}" for line in file_slice[:6]
+                        )
                         if len(old_lines) > 6:
                             expected_preview += "\n  ..."
                         if len(file_slice) > 6:
@@ -513,7 +513,7 @@ class ApplyDiffTool(Tool):
                         }
 
                     result_lines[match_pos : match_pos + len(old_lines)] = [
-                        l if l.endswith("\n") else l + "\n" for l in new_lines
+                        line if line.endswith("\n") else line + "\n" for line in new_lines
                     ]
                     hunks_applied += 1
 
@@ -554,7 +554,7 @@ class ApplyDiffTool(Tool):
 
         Returns the 0-indexed start position, or None if no match.
         """
-        old_normalized = [l.rstrip() for l in old_lines]
+        old_normalized = [line.rstrip() for line in old_lines]
         n_old = len(old_normalized)
 
         def _matches_at(pos: int) -> bool:

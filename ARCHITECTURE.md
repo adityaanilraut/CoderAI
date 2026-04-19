@@ -1,25 +1,21 @@
 # CoderAI Architecture
 
-> **Status:** This document is **partially stale** and kept for historical
-> reference. It still describes the Rich-based interactive chat loop
-> (`coderAI/ui/interactive.py`) that was removed when the Ink (TypeScript +
-> React) UI became the sole interactive frontend. The Ink binary talks to
-> the Python agent over NDJSON on stdio via `coderAI/ipc/jsonrpc_server.py`.
->
-> For the authoritative, up-to-date architecture, see
-> [`CLAUDE.md`](./CLAUDE.md) and [`ui/PROTOCOL.md`](./ui/PROTOCOL.md).
-> Sections below marked *(legacy)* no longer reflect the current code.
-
-This document describes the architecture and design of CoderAI.
+This document describes the architecture and design of CoderAI. For the IPC
+wire format between the Ink UI and Python, see [`ui/PROTOCOL.md`](./ui/PROTOCOL.md).
+For contributor-oriented notes, see [`CLAUDE.md`](./CLAUDE.md).
 
 ## Overview
 
-CoderAI is a sophisticated coding agent CLI tool built with Python, featuring:
-- Multiple LLM backend support (OpenAI, Anthropic Claude, LM Studio, Ollama)
-- MCP (Model Context Protocol) tools for various operations
-- Rich terminal UI with syntax highlighting
-- Interactive chat plus supporting CLI utility commands
-- Persistent conversation history and configuration
+CoderAI is a coding agent CLI built in Python, paired with a separate **Ink
+(TypeScript + React)** interactive UI binary. The two processes communicate
+over **NDJSON on stdio** (`coderAI/ipc/`). One-shot CLI commands (`config`,
+`history`, `models`, `status`, …) use **Rich** helpers in `coderAI/ui/display.py`.
+
+Core capabilities:
+- Multiple LLM backends (OpenAI, Anthropic, Groq, DeepSeek, LM Studio, Ollama)
+- 35+ tools (filesystem, git, terminal, web, MCP, …)
+- Ink UI for `coderAI chat`; Rich for non-interactive CLI output
+- Persistent sessions and configuration under `~/.coderAI/`
 
 ## Architecture Diagram
 
@@ -52,16 +48,14 @@ CoderAI is a sophisticated coding agent CLI tool built with Python, featuring:
 
 **Components:**
 - Click-based command structure
-- Command groups: chat, ask, config, history, info, setup, models, set-model, status, cost, tasks
+- Commands include: `chat` (launches Ink binary), `config`, `history`, `info`, `setup`, `models`, `set-model`, `status`, `cost`, `tasks`, …
 - Argument parsing and validation
 - Entry point management
 
 **Key Functions:**
-- `main()` - Entry point
-- `chat()` - Interactive mode
-- `ask()` - Single-shot mode
-- `config()` - Configuration management
-- `history()` - Session management
+- `main()` — Entry point
+- `chat()` — Spawns the Ink UI binary, which runs `python -m coderAI.ipc.entry`
+- `config()` / `history()` — Configuration and session management
 
 ### 2. Agent Layer (`coderAI/agent.py`)
 
@@ -198,41 +192,25 @@ class Tool:
 - `undo` / `undo_history` - File rollback
 - `mcp_connect` / `mcp_call_tool` / `mcp_list` - MCP integration
 
-### 5. UI Components (`coderAI/ui/`) *(legacy)*
+### 5. Rich CLI display (`coderAI/ui/display.py`)
 
-> **Note:** The interactive Rich chat loop and its streaming handler have
-> been removed. Only `display.py` remains, and it is used exclusively by
-> one-shot CLI commands (`config`, `history`, `models`, `status`, etc.).
-> The interactive `coderAI chat` experience is served by the Ink binary
-> under [`ui/`](./ui) (TypeScript + React) which communicates with the
-> Python agent via [`coderAI/ipc/jsonrpc_server.py`](./coderAI/ipc/jsonrpc_server.py).
-
-**Responsibility:** Rich helpers for one-shot CLI commands
+**Responsibility:** Formatting for **non-interactive** CLI commands only.
 
 **Structure:**
 ```
 coderAI/ui/
-└── display.py      # Rich display utilities for one-shot commands
+└── display.py      # Rich tables, trees, markdown for config/history/status/…
 ```
 
-**Display Features:**
-- Markdown rendering
-- Syntax-highlighted code
-- Colored messages (info, success, error, warning)
-- Tables and trees
-- Panels and separators
-- Progress indicators
+**Display features:** Markdown, syntax-highlighted code, colored status lines,
+tables, panels, progress indicators.
 
-**Interactive Chat:**
-- Prompt with history
-- Command handling (/help, /clear, etc.)
-- Session context management
-- Error handling
+### 5b. Interactive Ink UI (`ui/`)
 
-**Streaming:**
-- Live updating display
-- Token-by-token rendering
-- Tool call accumulation
+The **interactive** experience is the standalone Ink binary (built with Bun from
+`ui/`). It spawns the Python agent and exchanges NDJSON events and commands per
+[`ui/PROTOCOL.md`](./ui/PROTOCOL.md). Streaming assistant output is forwarded as
+`stream_delta` events via `coderAI/ipc/streaming.py`.
 
 ### 6. Configuration (`coderAI/config.py`)
 
@@ -324,8 +302,7 @@ coderAI/ui/
 - Dynamic tool registration
 
 ### 3. Strategy Pattern
-- Different streaming strategies
-- Interactive chat vs utility command flows
+- Different streaming strategies (LLM providers; IPC streaming for Ink)
 
 ### 4. Command Pattern
 - CLI commands as discrete operations
@@ -348,11 +325,13 @@ coderAI/ui/
 
 **CLI:**
 - Click for command structure
-- prompt-toolkit for interactive input
 
-**UI:**
-- Rich for terminal formatting
-- Live display for streaming
+**Interactive UI:**
+- Ink + React (`ui/`), compiled to a per-platform binary (Bun)
+- NDJSON IPC with the Python agent (`coderAI/ipc/`)
+
+**Terminal output (non-interactive CLI):**
+- Rich for tables, markdown, and panels (`coderAI/ui/display.py`)
 
 **Data:**
 - Pydantic for validation

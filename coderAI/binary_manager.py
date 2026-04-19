@@ -24,7 +24,6 @@ import logging
 import os
 import platform
 import stat
-import sys
 import urllib.error
 import urllib.request
 from pathlib import Path

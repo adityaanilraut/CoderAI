@@ -6,7 +6,6 @@ Mirrors the contract of ``coderAI.ui.streaming.StreamingHandler`` but writes
 
 from __future__ import annotations
 
-import json
 import uuid
 from typing import Any, Dict, List, Optional
 
