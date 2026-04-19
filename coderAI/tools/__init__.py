@@ -60,6 +60,9 @@ from .undo import UndoTool, UndoHistoryTool, backup_store
 # Linter
 from .lint import LintTool
 
+# Formatter
+from .format import FormatTool
+
 # Project context
 from .project import ProjectContextTool
 
@@ -131,6 +134,8 @@ __all__ = [
     "backup_store",
     # Linter
     "LintTool",
+    # Formatter
+    "FormatTool",
     # Project
     "ProjectContextTool",
     # Context

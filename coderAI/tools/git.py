@@ -1,6 +1,8 @@
 """Git tools for version control operations."""
 
 import asyncio
+import logging
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
@@ -8,9 +10,43 @@ from pydantic import BaseModel, Field
 from .base import Tool
 from ..locks import resource_manager
 
+logger = logging.getLogger(__name__)
+
+
+async def _validate_git_scope(repo_path: str) -> Optional[Dict[str, Any]]:
+    """Validate that the git root matches the intended repo_path.
+
+    Returns an error dict if scope is mismatched, or None if valid.
+    Mutating git operations should call this before proceeding.
+    """
+    from ..safeguards import resolve_git_root
+    result = await resolve_git_root(repo_path)
+
+    if result["git_root"] is None:
+        return {
+            "success": False,
+            "error": f"Not a git repository: {repo_path}",
+            "error_code": "not_git_repo",
+        }
+
+    if not result["matches_expected"]:
+        return {
+            "success": False,
+            "error": (
+                f"Git scope mismatch: intended repo_path={str(Path(repo_path).resolve())} "
+                f"but git root={result['git_root']}. "
+                "Refusing to operate to prevent affecting files outside the intended project."
+            ),
+            "error_code": "scope_mismatch",
+            "git_root": result["git_root"],
+        }
+
+    logger.debug(f"Git scope validated: root={result['git_root']}")
+    return None
+
 
 class GitAddParams(BaseModel):
-    files: List[str] = Field(..., description="List of file paths to stage (use ['.'] to stage all changes)")
+    files: List[str] = Field(..., description="List of explicit file paths to stage. Do NOT use ['.'] — specify individual files.")
     repo_path: str = Field(".", description="Path to the git repository (default: current directory)")
 
 
@@ -18,15 +54,51 @@ class GitAddTool(Tool):
     """Tool for staging files in git."""
 
     name = "git_add"
-    description = "Stage files for the next git commit"
+    description = "Stage specific files for the next git commit. You MUST list individual file paths — 'git add .' is not allowed."
     parameters_model = GitAddParams
     requires_confirmation = True
 
     async def execute(self, files: list, repo_path: str = ".") -> Dict[str, Any]:
-        """Stage files for git commit."""
+        """Stage files for git commit with safety checks."""
         try:
+            # Reject 'git add .'
+            if files == ["."] or files == ["*"]:
+                return {
+                    "success": False,
+                    "error": (
+                        "Refusing to stage all files ('git add .'). "
+                        "Please specify explicit file paths to stage only "
+                        "the files you intentionally created or modified."
+                    ),
+                    "error_code": "unsafe_staging",
+                }
+
+            # Validate git scope
+            scope_error = await _validate_git_scope(repo_path)
+            if scope_error:
+                return scope_error
+
+            # Filter out junk files
+            from ..safeguards import filter_stageable_files
+            allowed, rejected = filter_stageable_files(files, repo_path)
+
+            if rejected:
+                logger.info(
+                    f"git_add: filtered {len(rejected)} junk file(s): {rejected}"
+                )
+
+            if not allowed:
+                return {
+                    "success": False,
+                    "error": (
+                        f"All requested files were filtered as junk/internal artifacts: "
+                        f"{rejected}. No files staged."
+                    ),
+                    "error_code": "all_filtered",
+                }
+
             async with resource_manager.git_lock():
-                cmd = ["git", "add"] + files
+                cmd = ["git", "add"] + allowed
                 process = await asyncio.create_subprocess_exec(
                     *cmd,
                     stdout=asyncio.subprocess.PIPE,
@@ -41,11 +113,18 @@ class GitAddTool(Tool):
                     "error": stderr.decode("utf-8", errors="replace"),
                 }
 
-            return {
+            result = {
                 "success": True,
-                "files": files,
-                "message": f"Staged {len(files)} path(s)",
+                "files_staged": allowed,
+                "message": f"Staged {len(allowed)} file(s)",
             }
+            if rejected:
+                result["files_filtered"] = rejected
+                result["filter_note"] = (
+                    f"{len(rejected)} file(s) auto-filtered (junk/internal artifacts)"
+                )
+            logger.info(f"git_add: staged {allowed}")
+            return result
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -156,8 +235,13 @@ class GitCommitTool(Tool):
     requires_confirmation = True
 
     async def execute(self, message: str, repo_path: str = ".") -> Dict[str, Any]:
-        """Create git commit."""
+        """Create git commit with scope validation."""
         try:
+            # Validate git scope before committing
+            scope_error = await _validate_git_scope(repo_path)
+            if scope_error:
+                return scope_error
+
             async with resource_manager.git_lock():
                 # Use create_subprocess_exec to avoid shell injection
                 process = await asyncio.create_subprocess_exec(
@@ -170,6 +254,7 @@ class GitCommitTool(Tool):
 
             output = stdout.decode("utf-8", errors="replace")
             error = stderr.decode("utf-8", errors="replace")
+            logger.info(f"git_commit: repo={repo_path} message={message!r}")
 
             return {
                 "success": process.returncode == 0,
@@ -316,7 +401,20 @@ class GitCheckoutTool(Tool):
         self, branch: str, create: bool = False, repo_path: str = "."
     ) -> Dict[str, Any]:
         try:
+            # Validate git scope before checkout
+            scope_error = await _validate_git_scope(repo_path)
+            if scope_error:
+                return scope_error
+
             async with resource_manager.git_lock():
+                # Log branch before switching
+                from ..safeguards import get_current_branch
+                branch_before = await get_current_branch(repo_path)
+                logger.info(
+                    f"git_checkout: branch_before={branch_before} "
+                    f"target={branch} create={create} repo={repo_path}"
+                )
+
                 cmd = ["git", "checkout"]
                 if create:
                     cmd.append("-b")

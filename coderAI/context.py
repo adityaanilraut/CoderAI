@@ -13,13 +13,19 @@ logger = logging.getLogger(__name__)
 class ContextManager:
     """Manages project context and pinned files."""
 
-    def __init__(self):
+    def __init__(self, config=None):
         """Initialize context manager."""
-        self.config = config_manager.load()
+        self.config = config.model_copy(deep=True) if config is not None else config_manager.load()
         self.pinned_files: Dict[str, str] = {}
         self._pinned_mtimes: Dict[str, float] = {}  # path -> last known mtime
         self.project_instructions: Optional[str] = None
         self._instructions_loaded: bool = False
+
+    def set_config(self, config) -> None:
+        """Update the active config without losing pinned context."""
+        self.config = config.model_copy(deep=True)
+        self.project_instructions = None
+        self._instructions_loaded = False
 
     def _load_instructions(self):
         """Load project-specific instructions from file."""
@@ -128,8 +134,6 @@ class ContextManager:
         # config.project_root is already set by load_project_config().
         if not self._instructions_loaded:
             self._instructions_loaded = True
-            # Re-read config in case project config was loaded after our __init__
-            self.config = config_manager.load()
             self._load_instructions()
 
         self.refresh_pinned_files()
@@ -164,7 +168,18 @@ class ContextManager:
             parts.append(
                 "The following files are pinned to the context and should be used as reference:"
             )
+            total_chars = 0
+            MAX_FALLBACK_CHARS = 20_000
             for path, content in self.pinned_files.items():
+                if len(content) > 10_000:
+                    content = content[:10_000] + f"\n... [{len(content) - 10_000} chars truncated to save context]"
+                
+                if total_chars + len(content) > MAX_FALLBACK_CHARS:
+                    parts.append(f"\n### File: {path}")
+                    parts.append("```\n... [File omitted to save context. Ask specific questions to view this file.]\n```")
+                    continue
+
+                total_chars += len(content)
                 parts.append(f"\n### File: {path}")
                 parts.append("```")
                 parts.append(content)

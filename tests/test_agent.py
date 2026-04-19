@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -163,6 +164,65 @@ You are a planner."""
                 assert persona.name == "Planner Agent"
                 assert persona.model == "claude-3-5-sonnet-20241022"
                 assert "You are a planner." in persona.instructions
+
+    def test_resolve_persona_name_alias(self):
+        from coderAI.agents import resolve_persona_name
+
+        with patch("coderAI.agents._find_agents_dir", return_value=Path("/tmp")):
+            with patch(
+                "coderAI.agents.get_available_personas",
+                return_value=["code-reviewer", "planner"],
+            ):
+                assert resolve_persona_name("Code Reviewer") == "code-reviewer"
+
+    def test_expand_persona_tools_aliases(self):
+        from coderAI.agents import expand_persona_tools
+
+        expanded = expand_persona_tools(["Read", "Edit", "Bash"])
+
+        assert "read_file" in expanded
+        assert "search_replace" in expanded
+        assert "apply_diff" in expanded
+        assert "run_command" in expanded
+        assert "run_background" in expanded
+
+
+class TestAgentPersonaSwitching:
+    """Tests for live persona switching on an existing agent session."""
+
+    def _make_agent(self):
+        with patch("coderAI.agent.config_manager") as cm:
+            from coderAI.config import Config
+
+            cfg = Config()
+            cm.load.return_value = cfg
+            cm.load_project_config.return_value = cfg
+            from coderAI.agent import Agent
+
+            with patch.object(Agent, "_create_provider", return_value=MagicMock()):
+                return Agent(model="gpt-5-mini", streaming=False)
+
+    def test_set_persona_updates_live_prompt_and_tools(self):
+        from coderAI.agents import AgentPersona
+
+        agent = self._make_agent()
+        agent.create_session()
+
+        persona = AgentPersona(
+            name="Reviewer",
+            description="Reviews code",
+            tools=["Read"],
+            model=None,
+            instructions="You are a reviewer.",
+        )
+
+        with patch("coderAI.agent.load_agent_persona", return_value=persona):
+            applied = agent.set_persona("reviewer")
+
+        assert applied is persona
+        assert agent.session.messages[0].content.startswith("You are a reviewer.")
+        assert "read_file" in agent.tools.tools
+        assert "write_file" not in agent.tools.tools
 
 
 class TestAgentProjectRules:

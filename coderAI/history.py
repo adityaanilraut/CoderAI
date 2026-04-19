@@ -146,29 +146,88 @@ class HistoryManager:
         session_file = self.history_dir / f"{session.session_id}.json"
         with open(session_file, "w") as f:
             json.dump(session.model_dump(), f, indent=2)
+            
+        self._update_index(session)
+
+    def _update_index(self, session: Session) -> None:
+        """Update the fast-lookup index for a session."""
+        index_file = self.history_dir / "index.json"
+        index = {}
+        if index_file.exists():
+            try:
+                with open(index_file, "r") as f:
+                    index = json.load(f)
+            except Exception:
+                pass
+                
+        index[session.session_id] = {
+            "session_id": session.session_id,
+            "created_at": datetime.fromtimestamp(session.created_at).strftime("%Y-%m-%d %H:%M:%S"),
+            "updated_at": datetime.fromtimestamp(session.updated_at).strftime("%Y-%m-%d %H:%M:%S"),
+            "messages": len(session.messages),
+            "model": session.model,
+        }
+        try:
+            tmp_file = index_file.with_suffix('.json.tmp')
+            with open(tmp_file, "w") as f:
+                json.dump(index, f)
+            import os
+            os.replace(tmp_file, index_file)
+        except Exception as e:
+            logger.warning(f"Failed to update session index: {e}")
 
     def list_sessions(self) -> List[Dict[str, Any]]:
-        """List all available sessions."""
-        sessions = []
-        for session_file in sorted(self.history_dir.glob("session_*.json"), reverse=True):
+        """List all available sessions using index.json cache."""
+        index_file = self.history_dir / "index.json"
+        index = {}
+        if index_file.exists():
             try:
-                with open(session_file, "r") as f:
-                    data = json.load(f)
-                    sessions.append(
-                        {
-                            "session_id": data["session_id"],
-                            "created_at": datetime.fromtimestamp(
-                                data["created_at"]
-                            ).strftime("%Y-%m-%d %H:%M:%S"),
-                            "updated_at": datetime.fromtimestamp(
-                                data["updated_at"]
-                            ).strftime("%Y-%m-%d %H:%M:%S"),
-                            "messages": len(data["messages"]),
-                            "model": data["model"],
+                with open(index_file, "r") as f:
+                    index = json.load(f)
+            except Exception as e:
+                logger.warning(f"Failed to read session index, rebuilding: {e}")
+                
+        session_files = list(self.history_dir.glob("session_*.json"))
+        valid_ids = {f.stem for f in session_files}
+        
+        needs_save = False
+        
+        # Clean deleted
+        for sid in list(index.keys()):
+            if sid not in valid_ids:
+                del index[sid]
+                needs_save = True
+                
+        # Rebuild missing
+        for session_file in session_files:
+            sid = session_file.stem
+            if sid not in index:
+                try:
+                    with open(session_file, "r") as f:
+                        data = json.load(f)
+                        index[sid] = {
+                            "session_id": data.get("session_id", sid),
+                            "created_at": datetime.fromtimestamp(data.get("created_at", time.time())).strftime("%Y-%m-%d %H:%M:%S"),
+                            "updated_at": datetime.fromtimestamp(data.get("updated_at", time.time())).strftime("%Y-%m-%d %H:%M:%S"),
+                            "messages": len(data.get("messages", [])),
+                            "model": data.get("model", "unknown"),
                         }
-                    )
+                        needs_save = True
+                except Exception:
+                    continue
+                    
+        if needs_save:
+            try:
+                tmp_file = index_file.with_suffix('.json.tmp')
+                with open(tmp_file, "w") as f:
+                    json.dump(index, f)
+                import os
+                os.replace(tmp_file, index_file)
             except Exception:
-                continue
+                pass
+
+        sessions = list(index.values())
+        sessions.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
         return sessions
 
     def clear_history(self) -> int:

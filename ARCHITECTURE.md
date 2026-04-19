@@ -8,7 +8,7 @@ CoderAI is a sophisticated coding agent CLI tool built with Python, featuring:
 - Multiple LLM backend support (OpenAI, Anthropic Claude, LM Studio, Ollama)
 - MCP (Model Context Protocol) tools for various operations
 - Rich terminal UI with syntax highlighting
-- Both interactive and single-shot modes
+- Interactive chat plus supporting CLI utility commands
 - Persistent conversation history and configuration
 
 ## Architecture Diagram
@@ -182,6 +182,7 @@ class Tool:
 - `manage_context` - Pin files to context
 - `manage_tasks` - Task/TODO tracking
 - `delegate_task` - Spawn sub-agent for isolated tasks
+- Persona frontmatter uses high-level tool labels like `Read`, `Edit`, and `Bash`; these expand to concrete tool IDs, while read-only tools remain available across personas
 - `lint` - Run project linter
 - `read_image` - Read and analyze images
 - `undo` / `undo_history` - File rollback
@@ -273,14 +274,13 @@ ui/
 5. User exits
 ```
 
-### Single-shot Mode
+### Utility Commands
 
 ```
-1. User runs: coderAI "prompt"
-2. Agent creates session
-3. Agent processes message
-4. Display response
-5. Exit
+1. User runs a CLI utility command (for example `coderAI info`)
+2. CLI creates any required agent/config state
+3. Command prints structured output
+4. Process exits
 ```
 
 ### Tool Execution Flow
@@ -310,7 +310,7 @@ ui/
 
 ### 3. Strategy Pattern
 - Different streaming strategies
-- Interactive vs single-shot modes
+- Interactive chat vs utility command flows
 
 ### 4. Command Pattern
 - CLI commands as discrete operations
@@ -476,11 +476,16 @@ def my_command(...):
    - End-to-end flows
    - Tool execution
    - Session persistence
+   - Manual live-provider harnesses in `manual_subagent_delegation.py` and `manual_parallel_subagents.py`
 
 3. **Installation Test:**
    - `test_installation.py` validates setup
    - Checks all imports
    - Verifies components
+
+4. **Automated Entry Point:**
+   - `pytest` is the supported automated test runner
+   - `make test` wraps `pytest`, the installation smoke test, and a basic CLI version check
 
 ## Future Enhancements
 

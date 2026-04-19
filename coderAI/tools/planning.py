@@ -78,6 +78,20 @@ class CreatePlanTool(Tool):
                 if not steps or len(steps) == 0:
                     return {"success": False, "error": "steps list is required for 'create'."}
 
+                # Preflight: verify the target directory is a real project
+                from ..safeguards import project_sanity_check
+                check = project_sanity_check(config.project_root)
+                if not check["is_valid_project"]:
+                    reasons = "; ".join(check["reasons"])
+                    return {
+                        "success": False,
+                        "error": (
+                            f"Cannot create plan: target directory does not "
+                            f"appear to be a valid project. {reasons}"
+                        ),
+                        "error_code": "empty_project",
+                    }
+
                 plan = {
                     "title": title,
                     "created_at": datetime.now().isoformat(),

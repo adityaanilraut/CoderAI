@@ -124,6 +124,25 @@ class Display:
                     value_str = value_str[:200] + "..."
                 self.console.print(f"  [dim]{key}:[/dim] {value_str}")
 
+    def print_diff(self, diff_text: str, path: str = ""):
+        """Print a unified diff with colour-coded lines (like Claude Code)."""
+        if not diff_text.strip():
+            return
+        label = f" [bold]{path}[/bold]" if path else ""
+        self.console.print(f"\n[dim]──{label} ──[/dim]")
+        for line in diff_text.splitlines():
+            if line.startswith(("--- ", "+++ ")):
+                self.console.print(f"[dim]{line}[/dim]")
+            elif line.startswith("+"):
+                self.console.print(f"[green]{line}[/green]")
+            elif line.startswith("-"):
+                self.console.print(f"[red]{line}[/red]")
+            elif line.startswith("@@"):
+                self.console.print(f"[cyan]{line}[/cyan]")
+            else:
+                self.console.print(f"[dim]{line}[/dim]")
+        self.console.print()
+
     def print_header(self, text: str):
         """Print a header."""
         self.console.rule(f"[bold blue]{text}[/bold blue]")

@@ -45,6 +45,7 @@ from .tools import (
     ManageContextTool,
     ApplyDiffTool,
     LintTool,
+    FormatTool,
     ManageTasksTool,
     DelegateTaskTool,
     ReadImageTool,
@@ -55,7 +56,7 @@ from .tools import (
 )
 from .events import event_emitter
 from .ui.streaming import StreamingHandler
-from .agents import load_agent_persona, AgentPersona
+from .agents import load_agent_persona, AgentPersona, expand_persona_tools
 from .agent_tracker import agent_tracker, AgentStatus, AgentInfo
 
 logger = logging.getLogger(__name__)
@@ -121,7 +122,7 @@ class Agent:
 
         self.model = model or self.config.default_model
         self.streaming = streaming and self.config.streaming
-        self.auto_approve = True  # Default to auto-approve; can be toggled via /auto-approve
+        self.auto_approve = auto_approve  # Can be toggled via /auto-approve
         self.is_subagent = is_subagent
 
         # Set up logging
@@ -131,7 +132,7 @@ class Agent:
         )
 
         # Initialize context manager
-        self.context_manager = ContextManager()
+        self.context_manager = ContextManager(config=self.config)
 
         # Initialize hook approval tracking
         self._hooks_approved = None
@@ -140,9 +141,9 @@ class Agent:
         self.provider = self._create_provider()
 
         # Initialize tool registry (optionally filtered by persona tools)
-        self.tools = self._create_tool_registry()
-        if self.persona and self.persona.tools:
-            self._filter_tools_for_persona(self.persona.tools)
+        self.tools = ToolRegistry()
+        self.cost_tracker = CostTracker()
+        self._rebuild_tool_registry()
 
         # Token accounting snapshot for the current tracking step
         self._tracker_start_prompt = 0
@@ -160,7 +161,6 @@ class Agent:
         self.total_prompt_tokens: int = 0
         self.total_completion_tokens: int = 0
         self.total_tokens: int = 0
-        self.cost_tracker = CostTracker()
 
         # Register with global agent tracker for observability / cancellation
         self.tracker_info: Optional[AgentInfo] = None
@@ -222,7 +222,6 @@ class Agent:
         # Register filesystem tools
         registry.register(ReadFileTool())
         registry.register(WriteFileTool())
-        registry.register(SearchReplaceTool())
         registry.register(ListDirectoryTool())
         registry.register(GlobSearchTool())
 
@@ -241,7 +240,6 @@ class Agent:
         registry.register(GitStashTool())
 
         # Register search tools
-        registry.register(TextSearchTool())
         registry.register(GrepTool())
 
         # Register web search & URL tools (subagents always get them;
@@ -276,6 +274,9 @@ class Agent:
         # Register linter tool (F18)
         registry.register(LintTool())
 
+        # Register formatter tool (F19)
+        registry.register(FormatTool())
+
         # Register task management tool
         registry.register(ManageTasksTool())
 
@@ -299,12 +300,82 @@ class Agent:
 
         return registry
 
-    def _filter_tools_for_persona(self, allowed_tools: list) -> None:
-        """Remove tools not listed in the persona's tools whitelist.
+    def _configure_delegate_tool_context(self) -> None:
+        """Keep the delegation tool aligned with the current agent state."""
+        delegate_tool = self.tools.get("delegate_task")
+        if delegate_tool is None:
+            return
+        tracker_info = getattr(self, "tracker_info", None)
+        delegate_tool._parent_model = self.model
+        delegate_tool._parent_context_manager = self.context_manager
+        delegate_tool._parent_cost_tracker = self.cost_tracker
+        delegate_tool._parent_agent_id = tracker_info.agent_id if tracker_info else None
 
-        Always keeps read-only tools so the agent can still explore the codebase.
+    def _rebuild_tool_registry(self) -> None:
+        """Rebuild the registry so persona changes take effect immediately."""
+        self.tools = self._create_tool_registry()
+        if self.persona and self.persona.tools:
+            self._filter_tools_for_persona(self.persona.tools)
+        self._configure_delegate_tool_context()
+
+    def _refresh_session_system_prompt(self) -> None:
+        """Update the live session's primary system prompt after persona changes."""
+        if not self.session:
+            return
+
+        prompt = self._get_system_prompt()
+        if self.session.messages and self.session.messages[0].role == "system":
+            self.session.messages[0].content = prompt
+        else:
+            self.session.messages.insert(0, Message(role="system", content=prompt))
+        self.session.updated_at = _time.time()
+
+    def apply_persona(
+        self, persona: Optional[AgentPersona], update_model: bool = True
+    ) -> Optional[str]:
+        """Apply a persona and refresh model, tools, and session prompt."""
+        old_model = self.model
+        self.persona = persona
+
+        if persona and persona.model and update_model:
+            self.model = persona.model
+
+        if self.model != old_model:
+            self.provider = self._create_provider()
+            if self.session:
+                self.session.model = self.model
+
+        self._rebuild_tool_registry()
+        self._refresh_session_system_prompt()
+
+        if self.tracker_info:
+            self.tracker_info.name = self.persona.name if self.persona else "main"
+            self.tracker_info.role = (
+                self.persona.description if self.persona else None
+            )
+
+        return old_model if self.model != old_model else None
+
+    def set_persona(
+        self, persona_name: Optional[str], update_model: bool = True
+    ) -> Optional[AgentPersona]:
+        """Load and apply a persona by name. Pass None to return to default mode."""
+        persona = None
+        if persona_name:
+            persona = load_agent_persona(persona_name, self.config.project_root)
+            if persona is None:
+                return None
+        self.apply_persona(persona, update_model=update_model)
+        return persona
+
+    def _filter_tools_for_persona(self, allowed_tools: list) -> None:
+        """Apply the persona's mutating-tool policy.
+
+        Persona frontmatter uses high-level tool labels like `Read` and `Edit`.
+        These are expanded into concrete tool IDs, but read-only tools remain
+        available so specialist personas can still inspect the codebase.
         """
-        allowed_set = set(allowed_tools)
+        allowed_set = expand_persona_tools(allowed_tools)
         to_remove = [
             name
             for name, tool in self.tools.tools.items()
@@ -489,8 +560,17 @@ class Agent:
         system_messages = [m for m in messages if m.get("role") == "system"]
         non_system = [m for m in messages if m.get("role") != "system"]
 
+        # Always preserve the very first user message (the initial prompt / main task)
+        first_task_message = None
+        if non_system and non_system[0].get("role") == "user":
+            first_task_message = non_system.pop(0)
+
         # Always keep the system prompt + last N messages
-        system_tokens = self._estimate_message_tokens(system_messages)
+        if first_task_message:
+            system_tokens = self._estimate_message_tokens(system_messages + [first_task_message])
+        else:
+            system_tokens = self._estimate_message_tokens(system_messages)
+            
         remaining_budget = max_content_tokens - system_tokens
 
         # Group messages into atomic units: an assistant message with tool_calls
@@ -554,6 +634,8 @@ class Agent:
                             "role": "system",
                             "content": f"[Prior Conversation Summary]: {summary_content}",
                         }
+                        if first_task_message:
+                            return system_messages + [first_task_message, summary_notice] + kept_messages
                         return system_messages + [summary_notice] + kept_messages
                 except Exception as e:
                     logger.warning(f"Failed to summarize context: {e}")
@@ -563,8 +645,12 @@ class Agent:
                 "role": "system",
                 "content": f"[Note: {len(removed_messages)} earlier messages were removed to fit the context window. The conversation continues from here.]",
             }
+            if first_task_message:
+                return system_messages + [first_task_message, truncation_notice] + kept_messages
             return system_messages + [truncation_notice] + kept_messages
 
+        if first_task_message:
+            return system_messages + [first_task_message] + kept_messages
         return system_messages + kept_messages
 
     def _group_messages_for_truncation(
@@ -640,11 +726,7 @@ class Agent:
 
         # Keep DelegateTaskTool aware of who the parent agent is so
         # sub-agents inherit the model and link correctly in the tracker.
-        delegate_tool = self.tools.get("delegate_task")
-        if delegate_tool is not None:
-            delegate_tool._parent_model = self.model
-            delegate_tool._parent_agent_id = self.tracker_info.agent_id
-            delegate_tool._parent_context_manager = self.context_manager
+        self._configure_delegate_tool_context()
 
         return self.tracker_info
 
@@ -744,8 +826,8 @@ class Agent:
                 mcp_schemas = mcp_client.get_tools_as_openai_format()
                 if mcp_schemas:
                     tool_schemas = tool_schemas + mcp_schemas
-            except Exception:
-                pass  # MCP not available or no servers connected
+            except Exception as mcp_err:
+                logger.debug(f"MCP tool discovery skipped: {mcp_err}")  # MCP not available or no servers connected
 
         # Load hooks data once per turn — avoids repeated disk reads per tool call.
         _hooks_data: Optional[Dict[str, Any]] = None
@@ -951,6 +1033,7 @@ class Agent:
 
                 # Parse all tool calls first
                 parsed_calls = []
+                parse_failures = 0
                 for tool_call in tool_calls:
                     tool_id = tool_call.get("id", "")
                     function = tool_call.get("function", {})
@@ -960,6 +1043,11 @@ class Agent:
                         arguments = json.loads(function.get("arguments", "{}"))
                     except json.JSONDecodeError as e:
                         # Return a clear error to the LLM instead of silently swallowing
+                        logger.error(
+                            f"Malformed tool-call JSON for '{tool_name}': {e}. "
+                            f"Raw payload: {function.get('arguments', '')[:200]}"
+                        )
+                        parse_failures += 1
                         parsed_calls.append(
                             {
                                 "tool_id": tool_id,
@@ -978,6 +1066,38 @@ class Agent:
                             "parse_error": None,
                         }
                     )
+
+                # If ALL tool calls failed to parse, skip execution entirely
+                # and feed a clear error back to the LLM
+                if parse_failures == len(parsed_calls):
+                    consecutive_errors += 1
+                    error_msg = (
+                        "All tool calls had malformed JSON arguments. "
+                        "Please re-emit valid tool calls with proper JSON."
+                    )
+                    logger.error(error_msg)
+                    for pc in parsed_calls:
+                        self.session.add_message(
+                            "tool",
+                            json.dumps({"success": False, "error": pc["parse_error"]}),
+                            tool_call_id=pc["tool_id"],
+                            name=pc["tool_name"],
+                        )
+                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                        self._finish_tracker(error=True)
+                        self.save_session()
+                        return {
+                            "content": (
+                                f"I encountered {consecutive_errors} consecutive parse errors "
+                                "and could not recover. Please try rephrasing your request."
+                            ),
+                            "session_id": self.session.session_id,
+                        }
+                    # Rebuild messages and continue loop for LLM to retry
+                    messages = self.session.get_messages_for_api()
+                    messages = self._inject_context_message(messages, user_message)
+                    messages = await self._manage_context_window(messages)
+                    continue
 
                 # Update tracker status to tool execution
                 if self.tracker_info:
@@ -1251,7 +1371,8 @@ class Agent:
         if len(final_str) > self.config.max_tool_output * 2:
             truncate_len = self.config.max_tool_output * 2
             return {
-                "warning": "Tool output was extremely large and was forcefully truncated.",
+                "error": "TOOL OUTPUT TOO LARGE",
+                "warning": "Tool output was extremely large and was forcefully truncated. DO NOT repeat the exact same tool call. Use a more specific method to extract the data (like grep or specific search keywords).",
                 "output": final_str[:truncate_len] + "\n... [HARD TRUNCATED]"
             }
 

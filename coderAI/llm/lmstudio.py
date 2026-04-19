@@ -1,5 +1,6 @@
 """LM Studio local LLM provider implementation."""
 
+import asyncio
 import json
 import logging
 from typing import Any, AsyncIterator, Dict, List, Optional
@@ -33,22 +34,34 @@ class LMStudioProvider(LLMProvider):
         self.total_input_tokens = 0
         self.total_output_tokens = 0
 
+        self._session: Optional[aiohttp.ClientSession] = None
+
+    def _get_session(self) -> aiohttp.ClientSession:
+        """Get or create a persistent HTTP session."""
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession()
+        return self._session
+
+    async def close(self) -> None:
+        """Close the HTTP session."""
+        if self._session and not self._session.closed:
+            await self._session.close()
+
+    def __del__(self):
+        if self._session and not self._session.closed:
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(self._session.close())
+            except RuntimeError:
+                pass
+
     async def chat(
         self,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
         **kwargs,
     ) -> Dict[str, Any]:
-        """Send a chat completion request to LM Studio with retry logic.
-
-        Args:
-            messages: List of message dictionaries
-            tools: Optional list of tool definitions
-            **kwargs: Additional request parameters
-
-        Returns:
-            Response dictionary
-        """
+        """Send a chat completion request to LM Studio."""
         url = f"{self.endpoint}/chat/completions"
         payload = {
             "model": self.model,
@@ -61,19 +74,18 @@ class LMStudioProvider(LLMProvider):
             payload["tools"] = tools
             payload["tool_choice"] = kwargs.get("tool_choice", "auto")
 
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                url, json=payload, timeout=aiohttp.ClientTimeout(total=120)
-            ) as response:
-                response.raise_for_status()
-                result = await response.json()
+        async with self._get_session().post(
+            url, json=payload, timeout=aiohttp.ClientTimeout(total=120)
+        ) as response:
+            response.raise_for_status()
+            result = await response.json()
 
-                # Track usage
-                usage = result.get("usage", {})
-                self.total_input_tokens += usage.get("prompt_tokens", 0)
-                self.total_output_tokens += usage.get("completion_tokens", 0)
+            # Track usage
+            usage = result.get("usage", {})
+            self.total_input_tokens += usage.get("prompt_tokens", 0)
+            self.total_output_tokens += usage.get("completion_tokens", 0)
 
-                return result
+            return result
 
     async def stream(
         self,
@@ -81,16 +93,7 @@ class LMStudioProvider(LLMProvider):
         tools: Optional[List[Dict[str, Any]]] = None,
         **kwargs,
     ) -> AsyncIterator[Dict[str, Any]]:
-        """Send a streaming chat completion request to LM Studio with retry logic.
-
-        Args:
-            messages: List of message dictionaries
-            tools: Optional list of tool definitions
-            **kwargs: Additional request parameters
-
-        Yields:
-            Response chunks
-        """
+        """Send a streaming chat completion request to LM Studio."""
         url = f"{self.endpoint}/chat/completions"
         payload = {
             "model": self.model,
@@ -104,58 +107,36 @@ class LMStudioProvider(LLMProvider):
             payload["tools"] = tools
             payload["tool_choice"] = kwargs.get("tool_choice", "auto")
 
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                url, json=payload, timeout=aiohttp.ClientTimeout(total=120)
-            ) as response:
-                response.raise_for_status()
-                # Buffer for handling multi-line SSE events
-                buffer = ""
-                async for raw_chunk in response.content:
-                    buffer += raw_chunk.decode("utf-8")
-                    # Process complete lines from the buffer
-                    while "\n" in buffer:
-                        line, buffer = buffer.split("\n", 1)
-                        line = line.strip()
-                        if not line:
+        async with self._get_session().post(
+            url, json=payload, timeout=aiohttp.ClientTimeout(total=120)
+        ) as response:
+            response.raise_for_status()
+            buffer = ""
+            async for raw_chunk in response.content:
+                buffer += raw_chunk.decode("utf-8")
+                while "\n" in buffer:
+                    line, buffer = buffer.split("\n", 1)
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if line.startswith("data: "):
+                        data = line[6:]
+                        if data == "[DONE]":
+                            return
+                        try:
+                            yield json.loads(data)
+                        except json.JSONDecodeError:
+                            logger.debug(f"Failed to parse SSE data: {data}")
                             continue
-                        if line.startswith("data: "):
-                            data = line[6:]
-                            if data == "[DONE]":
-                                return
-                            try:
-                                yield json.loads(data)
-                            except json.JSONDecodeError:
-                                logger.debug(f"Failed to parse SSE data: {data}")
-                                continue
 
     def count_tokens(self, text: str) -> int:
-        """Approximate token count for local models.
-
-        Args:
-            text: Text to count tokens for
-
-        Returns:
-            Approximate number of tokens
-        """
-        # Rough approximation: 1 token ≈ 4 characters
+        """Approximate token count for local models."""
         return len(text) // 4
 
     def supports_tools(self) -> bool:
-        """Check if tools are supported.
-
-        Returns:
-            True - LM Studio with compatible models supports tool calling
-        """
-        # LM Studio supports tool calling with compatible models like Qwen
         return True
 
     def get_cost(self) -> Dict[str, Any]:
-        """Get token usage (no cost for local models).
-
-        Returns:
-            Dictionary with usage info
-        """
         return {
             "input_tokens": self.total_input_tokens,
             "output_tokens": self.total_output_tokens,
@@ -169,7 +150,6 @@ class LMStudioProvider(LLMProvider):
         }
 
     def get_model_info(self) -> Dict[str, Any]:
-        """Get information about the current model."""
         info = super().get_model_info()
         info["endpoint"] = self.endpoint
         info["cost"] = self.get_cost()

@@ -32,6 +32,14 @@ BLOCKED_PATTERNS = [
     "curl|sh",
     "curl|bash",
     "wget|bash",
+    "eval ",
+    "base64 -d",
+    "base64 --decode",
+    "sh -c",
+    "bash -c",
+    "zsh -c",
+    "$(",
+    "`",
 ]
 
 # Commands that require user confirmation
@@ -173,6 +181,20 @@ class RunCommandTool(Tool):
                     "error": f"Command blocked for safety: {command}",
                     "error_code": "blocked",
                     "blocked": True,
+                }
+
+            # Block interactive commands that would hang without a TTY
+            from ..safeguards import is_interactive_command
+            if is_interactive_command(command):
+                logger.warning(f"Blocked interactive command: {command}")
+                return {
+                    "success": False,
+                    "error": (
+                        "Command appears interactive (requires TTY/user input): "
+                        f"{command!r}. Use an interactive terminal session instead."
+                    ),
+                    "error_code": "interactive",
+                    "interactive": True,
                 }
 
             # Log dangerous commands (actual confirmation is handled by

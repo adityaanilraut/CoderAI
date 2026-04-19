@@ -51,20 +51,12 @@ _ROLE_INSTRUCTIONS: Dict[str, str] = {
 
 def _get_role_instructions(role: Optional[str]) -> str:
     """Get role-specific instructions.
-    
-    Tries to load a custom persona from `.coderAI/agents/` first. If not found,
-    falls back to the hardcoded `_ROLE_INSTRUCTIONS`, or a generic prompt.
+
+    Falls back to the hardcoded `_ROLE_INSTRUCTIONS`, or a generic prompt.
+    File-backed personas are applied directly to the sub-agent elsewhere.
     """
     if not role:
         return ""
-
-    # Try loading custom persona
-    from ..agents import load_agent_persona
-    from ..config import config_manager
-    config = config_manager.load_project_config(".")
-    persona = load_agent_persona(role, config.project_root)
-    if persona and persona.instructions:
-        return persona.instructions
 
     # Fallback to hardcoded roles
     role_lower = role.lower().strip()
@@ -90,9 +82,10 @@ class DelegateTaskParams(BaseModel):
     agent_role: Optional[str] = Field(
         None,
         description=(
-            "Optional role/persona for the sub-agent (e.g., 'Code Reviewer', "
-            "'Security Expert', 'Senior QA Engineer', 'DevOps Engineer'). "
-            "This focuses the agent's analysis on role-specific concerns."
+            "Optional role/persona for the sub-agent. You can use a persona file "
+            "name like 'code-reviewer' or a natural alias like 'Code Reviewer'. "
+            "If no matching persona exists, the role falls back to generic "
+            "role-specific guidance."
         ),
     )
     context_hints: Optional[List[str]] = Field(
@@ -162,8 +155,18 @@ class DelegateTaskTool(Tool):
             }
 
         sub_agent = None
+        branch_before: Optional[str] = None
         try:
             from ..agent import Agent
+
+            # Capture current branch for restoration after sub-agent completes
+            from ..safeguards import get_current_branch
+            cwd = os.getcwd()
+            branch_before = await get_current_branch(cwd)
+            logger.info(
+                f"Sub-agent delegation: branch_before={branch_before} "
+                f"depth={self._current_depth + 1}/{MAX_DELEGATION_DEPTH}"
+            )
 
             role_label = f" ({agent_role})" if agent_role else ""
             event_emitter.emit(
@@ -176,6 +179,15 @@ class DelegateTaskTool(Tool):
 
             # Create a new Agent instance with the same project config
             sub_agent = Agent(model=effective_model, auto_approve=True, is_subagent=True)
+            if hasattr(self, '_parent_cost_tracker') and self._parent_cost_tracker:
+                sub_agent.cost_tracker = self._parent_cost_tracker
+
+            applied_persona = None
+            if agent_role:
+                applied_persona = sub_agent.set_persona(
+                    agent_role,
+                    update_model=model is None,
+                )
 
             # Inherit parent's pinned context so the sub-agent shares
             # the same context awareness without manual context_hints.
@@ -204,8 +216,7 @@ class DelegateTaskTool(Tool):
                 child_delegate._current_depth = self._current_depth + 1
 
             # Build a rich system prompt overlay for the sub-agent
-            cwd = os.getcwd()
-            role_instructions = _get_role_instructions(agent_role)
+            role_instructions = "" if applied_persona else _get_role_instructions(agent_role)
 
             system_preamble_parts = [
                 "You are a specialized sub-agent spawned by a parent CoderAI agent.",
@@ -219,6 +230,7 @@ class DelegateTaskTool(Tool):
                 "- Be specific: cite file paths, line numbers, and code snippets.",
                 "- Do NOT ask questions — make reasonable assumptions and note them.",
                 "- Do NOT parse HTML or scrape web pages using complex shell pipelines (`curl | grep | sed`). Use proper tools (`read_url`, `web_search`) or Python scripts instead.",
+                f"- IMPORTANT: You are on branch '{branch_before or 'unknown'}'. Do NOT switch branches unless explicitly required by the task.",
             ]
 
             if role_instructions:
@@ -291,9 +303,17 @@ class DelegateTaskTool(Tool):
                         # Create a fresh sub-agent for retry
                         try:
                             await sub_agent.close()
-                        except Exception:
-                            pass
+                        except Exception as close_err:
+                            logger.warning(f"Error closing sub-agent during retry cleanup: {close_err}")
                         sub_agent = Agent(model=effective_model, auto_approve=True, is_subagent=True)
+                        if hasattr(self, '_parent_cost_tracker') and self._parent_cost_tracker:
+                            sub_agent.cost_tracker = self._parent_cost_tracker
+                        applied_persona = None
+                        if agent_role:
+                            applied_persona = sub_agent.set_persona(
+                                agent_role,
+                                update_model=model is None,
+                            )
                         if inherit_project_context and hasattr(self, '_parent_context_manager') and self._parent_context_manager:
                             sub_agent.context_manager.pinned_files = dict(self._parent_context_manager.pinned_files)
                             sub_agent.context_manager._pinned_mtimes = dict(self._parent_context_manager._pinned_mtimes)
@@ -353,4 +373,31 @@ class DelegateTaskTool(Tool):
                     await sub_agent.close()
                 except Exception:
                     pass
+
+            # Restore original branch if the sub-agent changed it
+            if branch_before is not None:
+                try:
+                    from ..safeguards import get_current_branch
+                    branch_after = await get_current_branch(os.getcwd())
+                    if branch_after != branch_before:
+                        logger.warning(
+                            f"Sub-agent changed branch from '{branch_before}' to "
+                            f"'{branch_after}'. Restoring original branch."
+                        )
+                        process = await asyncio.create_subprocess_exec(
+                            "git", "checkout", branch_before,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE,
+                            cwd=os.getcwd(),
+                        )
+                        await process.communicate()
+                        if process.returncode == 0:
+                            logger.info(f"Restored branch to '{branch_before}'")
+                        else:
+                            logger.error(
+                                f"Failed to restore branch to '{branch_before}'"
+                            )
+                except Exception as branch_err:
+                    logger.error(f"Error restoring branch: {branch_err}")
+
 

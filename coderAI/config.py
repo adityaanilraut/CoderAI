@@ -111,8 +111,8 @@ class ConfigManager:
         # This protects API keys from being read by other users
         try:
             self.config_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
-        except OSError:
-            pass  # May fail on some filesystems, not critical
+        except OSError as e:
+            logger.warning(f"Could not restrict config file permissions (API keys may be exposed): {e}")
 
     def set(self, key: str, value: Any) -> None:
         """Set a configuration value."""

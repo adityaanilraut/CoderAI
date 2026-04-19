@@ -58,7 +58,7 @@ coderAI
 # or explicitly
 coderAI chat
 
-# Single-shot mode
+# Interactive chat with a specific model
 coderAI chat -m claude-4-sonnet
 
 # Resume a previous session
@@ -81,7 +81,6 @@ coderAI status
 | `/context` | Show pinned context files |
 | `/compact` | Force-compress conversation history |
 | `/agents` | Show active agents and sub-agents |
-| `/auto-approve` | Toggle tool confirmation prompts |
 | `/clear` | Clear conversation history |
 | `/exit` | End the session |
 
@@ -390,9 +389,9 @@ CoderAI registers **35+ tools** that the LLM can call. Each tool follows the `To
 
 CoderAI supports **17 specialist agent personas** defined as Markdown files with YAML frontmatter in `.coderAI/agents/`. Each persona has:
 
-- **`name`** — Identifier used for delegation
+- **`name`** — Identifier used for `/agent` or delegated persona selection
 - **`description`** — What the agent specializes in
-- **`tools`** — Whitelist of allowed tools (read-only tools are always available)
+- **`tools`** — High-level tool labels (for example `Read`, `Edit`, `Bash`) that expand into concrete runtime tools; read-only tools remain available for codebase inspection
 - **`model`** — Preferred LLM model
 - **Instructions** — Full system prompt in markdown body
 
@@ -418,7 +417,7 @@ CoderAI supports **17 specialist agent personas** defined as Markdown files with
 
 ### Sub-Agent Delegation
 
-The `delegate_task` tool spawns **isolated sub-agents** in their own sessions:
+The `delegate_task` tool spawns **isolated sub-agents** in their own sessions. The `agent_role` can be an exact persona file name such as `security-reviewer` or a natural alias such as `Code Reviewer`; when it resolves to a persona, the sub-agent inherits that persona's prompt and mutating-tool policy.
 
 ```
 Parent Agent
@@ -564,12 +563,19 @@ Configuration is stored in `~/.coderAI/config.json` and managed via `coderAI con
 # Run the full test suite
 pytest
 
+# Or use the standard project test target
+make test
+
 # Run specific test categories
 pytest tests/test_agent.py
 pytest tests/test_web.py
 
 # Validate installation
 python test_installation.py
+
+# Run manual sub-agent integration harnesses
+python manual_subagent_delegation.py
+python manual_parallel_subagents.py
 ```
 
 ---

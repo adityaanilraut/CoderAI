@@ -26,11 +26,8 @@ coderAI chat -m gpt-5
 # Resume previous session
 coderAI chat -r SESSION_ID
 
-# Ask a single question (single-shot mode)
-coderAI ask "How do I create a Python virtual environment?"
-
-# Quick prompt (shorthand)
-coderAI "explain this code"
+# Inspect the current model and tool configuration
+coderAI info
 ```
 
 ### Model Management

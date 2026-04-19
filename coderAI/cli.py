@@ -99,8 +99,8 @@ async def _run_chat(model, resume, no_stream=False, auto_approve=False):
                         f"[Project context] Type: {proj_type}. "
                         f"Key deps: {deps_str}. Files: {file_count}.",
                     )
-        except Exception:
-            pass  # Non-critical — don't block startup
+        except Exception as e:
+            logger.debug(f"Project context detection failed (non-critical): {e}")
 
         # Message handler for interactive chat
         async def handle_message(user_input: str, context: dict) -> dict:
@@ -167,10 +167,14 @@ async def _run_chat(model, resume, no_stream=False, auto_approve=False):
             response = await agent.process_message(user_input)
             
             # Display assistant response only if we didn't already stream it
-            if response.get("content") and not getattr(agent, "streaming", True):
-                display.print("\n[bold blue]Assistant:[/bold blue]")
-                display.print_markdown(response["content"])
-                display.print()
+            if not getattr(agent, "streaming", True):
+                content = response.get("content") or ""
+                if content:
+                    display.print("\n[bold blue]Assistant:[/bold blue]")
+                    display.print_markdown(content)
+                    display.print()
+                else:
+                    display.print_warning("(No response from model)")
             
             return response
 

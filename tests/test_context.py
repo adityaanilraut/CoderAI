@@ -17,11 +17,14 @@ class TestContextManager:
         
         # Override config manager to not look at real home dir
         original_config_dir = config_manager.config_dir
+        original_config_file = config_manager.config_file
         config_manager.config_dir = self.test_dir
+        config_manager.config_file = self.test_dir / "config.json"
         
         yield
         
         config_manager.config_dir = original_config_dir
+        config_manager.config_file = original_config_file
         self.test_dir_obj.cleanup()
 
     def test_load_instructions(self):
@@ -49,6 +52,25 @@ class TestContextManager:
         finally:
             if instruction_file.exists():
                 instruction_file.unlink()
+
+    def test_load_instructions_from_injected_project_config(self):
+        """Injected project config should control where instructions load from."""
+        instruction_file = self.test_dir / "PROJECT.md"
+        instruction_file.write_text("Project-scoped instructions", encoding="utf-8")
+
+        from coderAI.config import Config
+
+        cm = ContextManager(
+            config=Config(
+                project_root=str(self.test_dir),
+                project_instruction_file="PROJECT.md",
+            )
+        )
+
+        msg = cm.get_system_message()
+
+        assert cm.project_instructions == "Project-scoped instructions"
+        assert "Project-scoped instructions" in msg
 
     def test_pin_file(self):
         """Test pinning and unpinning files."""

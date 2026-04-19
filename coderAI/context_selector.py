@@ -26,9 +26,7 @@ _STOP_WORDS = frozenset({
     "he", "him", "his", "she", "her", "they", "them", "their", "what",
     "which", "who", "whom", "make", "please", "help", "want", "need",
     "look", "like", "use", "get", "let", "put", "take", "give", "go",
-    "come", "see", "know", "think", "say", "tell", "show", "try", "ask",
-    "work", "call", "keep", "find", "change", "write", "read", "run",
-    "file", "code", "add", "update", "create", "delete", "check",
+    "come", "see", "know", "think", "say", "tell", "show", "try", "ask"
 })
 
 # Regex for block-starting statements across common languages
@@ -92,11 +90,15 @@ def score_relevance(
 
     for kw, count in keyword_counts.items():
         if kw in path_lower:
-            matched_weight += count * 2.0
+            if len(kw) > 4:
+                matched_weight += count * 4.0
+            else:
+                matched_weight += count * 2.0
         elif kw in content_lower:
             matched_weight += count * 1.0
-
-    raw = matched_weight / (total_weight * 2) if total_weight else 0.0
+            
+    # Guarantee highly specific paths pass the threshold naturally
+    raw = matched_weight / (total_weight * 1.5) if total_weight else 0.0
     return min(1.0, raw)
 
 
@@ -265,6 +267,14 @@ def summarize_conversation_focus(
     """
     recent = messages[-recent_count:] if len(messages) > recent_count else messages
     parts: List[str] = []
+    
+    # Always include the very first user message to preserve the main task context
+    if len(messages) > recent_count:
+        first_msg = next((m for m in messages if m.get("role") == "user"), None)
+        if first_msg and first_msg not in recent:
+            if first_content := first_msg.get("content"):
+                parts.append(first_content[:300])
+
     for msg in recent:
         role = msg.get("role", "")
         content = msg.get("content") or ""

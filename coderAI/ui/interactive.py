@@ -1,7 +1,12 @@
 """Interactive chat interface with Rich UI."""
 
-import sys
+import json
 import os
+import select
+import sys
+import termios
+import threading
+import tty
 from pathlib import Path
 from typing import Callable, Optional, List, Set
 
@@ -47,9 +52,60 @@ def _setup_event_listeners():
     event_emitter.on("status_start", handle_status_start)
     event_emitter.on("status_stop", handle_status_stop)
     event_emitter.on("agent_lifecycle", handle_agent_lifecycle)
+    event_emitter.on("file_diff", lambda path, diff: display.print_diff(diff, path))
 
 # NOTE: _setup_event_listeners() is called lazily from InteractiveChat.__init__
 # to avoid side effects on import.
+
+
+class EscapeMonitor:
+    """Watches stdin for an Esc keypress in a daemon thread.
+
+    While the agent is running, pressing Esc triggers cooperative cancellation
+    of all active agents — the same effect as the Ctrl+C interrupt but without
+    killing the process.  The terminal is restored to its previous state when
+    the monitor stops.
+    """
+
+    def __init__(self):
+        self._thread: Optional[threading.Thread] = None
+        self._stop_flag = threading.Event()
+
+    def start(self, on_esc) -> None:
+        """Start monitoring.  *on_esc* is called (once) when Esc is detected."""
+        self._stop_flag.clear()
+        self._thread = threading.Thread(
+            target=self._monitor, args=(on_esc,), daemon=True
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        """Stop monitoring and join the thread (max 0.3 s)."""
+        self._stop_flag.set()
+        if self._thread:
+            self._thread.join(timeout=0.3)
+            self._thread = None
+
+    def _monitor(self, on_esc) -> None:
+        try:
+            fd = sys.stdin.fileno()
+            if not os.isatty(fd):
+                return  # not a real terminal (e.g. in tests); bail out
+            old_settings = termios.tcgetattr(fd)
+            try:
+                tty.setraw(fd, termios.TCSANOW)
+                while not self._stop_flag.is_set():
+                    r, _, _ = select.select([fd], [], [], 0.05)
+                    if r:
+                        ch = os.read(fd, 1)
+                        if ch == b"\x1b":
+                            on_esc()
+                            break
+            finally:
+                # TCSAFLUSH discards any buffered raw-mode input
+                termios.tcsetattr(fd, termios.TCSAFLUSH, old_settings)
+        except Exception:
+            pass  # non-TTY environments (CI, piped input) — silently skip
 
 
 class InteractiveChat:
@@ -161,7 +217,7 @@ class InteractiveChat:
 [bold cyan]CoderAI - Intelligent Coding Agent[/bold cyan]
 
 Model: [yellow]{model}[/yellow]
-Type your message or command. Press Ctrl+C or type 'exit' to quit.
+Type your message or use a command below. Press Esc during a run to interrupt, Ctrl+C twice to quit.
 
 [dim]Available commands:
   /help           - Show this help message
@@ -637,7 +693,7 @@ Type your message or command. Press Ctrl+C or type 'exit' to quit.
 
         elif command.startswith("/agent"):
             parts = command.split(" ", 1)
-            from ..agents import get_available_personas, load_agent_persona
+            from ..agents import get_available_personas
             
             # Use the agent's project root so personas are found correctly
             project_root = "."
@@ -660,20 +716,20 @@ Type your message or command. Press Ctrl+C or type 'exit' to quit.
             if not context.get("agent"):
                 display.print_warning("No agent context available")
                 return False
-                
-            persona = load_agent_persona(persona_name, project_root)
+
+            if persona_name.lower() in {"default", "none", "base"}:
+                old_model = context["agent"].apply_persona(None)
+                display.print_success("Switched to the default agent persona")
+                if old_model:
+                    display.print_info(f"Model remains {context['agent'].model}")
+                return False
+
+            persona = context["agent"].set_persona(persona_name)
             if persona:
-                context["agent"].persona = persona
                 display.print_success(f"Switched to agent persona: {persona.name}")
                 display.print_info(persona.description)
-                
-                # Update the LLM model if the persona specifies one and we want to auto-switch
-                if persona.model and context["agent"].model != persona.model:
-                    # Depending on provider setup, this might require a fresh provider instance
-                    old_model = context["agent"].model
-                    context["agent"].model = persona.model
-                    context["agent"].provider = context["agent"]._create_provider()
-                    display.print_info(f"Model switched from {old_model} to {persona.model}")
+                if persona.model:
+                    display.print_info(f"Active model: {context['agent'].model}")
             else:
                 display.print_error(f"Persona '{persona_name}' not found. Searched in .coderAI/agents/ (project_root={project_root})")
             return False
@@ -746,13 +802,34 @@ Type your message or command. Press Ctrl+C or type 'exit' to quit.
             "model_info": {},
         }
 
+        _ctrl_c_count = 0  # track consecutive Ctrl+C presses for force-quit
+
+        _esc_monitor = EscapeMonitor()
+
         while True:
             try:
-                # Update prompt with current model
-                prompt_text = f"You [{context.get('model', 'unknown')}]"
-                
+                # Build prompt — include in-progress task count when available
+                task_hint = ""
+                try:
+                    from ..tools.tasks import get_tasks_file
+                    tasks_file = get_tasks_file(".")
+                    if tasks_file.exists():
+                        _tasks = json.loads(tasks_file.read_text())
+                        _active = sum(1 for t in _tasks if t.get("status") == "in_progress")
+                        _pending = sum(1 for t in _tasks if t.get("status") == "pending")
+                        if _active:
+                            task_hint = f" [{_active} active]"
+                        elif _pending:
+                            task_hint = f" [{_pending} pending]"
+                except Exception:
+                    pass
+
+                prompt_text = f"You [{context.get('model', 'unknown')}]{task_hint}"
+
                 # Get user input
                 user_input = await self.get_input(prompt_text)
+
+                _ctrl_c_count = 0  # reset after any successful input
 
                 if user_input is None:
                     display.print("\n[dim]Goodbye![/dim]")
@@ -833,7 +910,18 @@ Type your message or command. Press Ctrl+C or type 'exit' to quit.
                             f"Additional context from user: {user_input}"
                         )
 
-                    response = await message_handler(user_input, context)
+                    def _on_esc():
+                        agent_tracker.cancel_all()
+                        display.print(
+                            "\n[bold yellow]⚡ Interrupted — finishing current step...[/bold yellow]"
+                            " [dim](Esc)[/dim]"
+                        )
+
+                    _esc_monitor.start(_on_esc)
+                    try:
+                        response = await message_handler(user_input, context)
+                    finally:
+                        _esc_monitor.stop()
 
                     if response:
                         # Update context
@@ -843,24 +931,33 @@ Type your message or command. Press Ctrl+C or type 'exit' to quit.
                             context["model_info"] = response["model_info"]
 
                         if context.get("agent"):
-                            used, limit = context["agent"].get_context_usage()
+                            agent = context["agent"]
+                            used, limit = agent.get_context_usage()
                             pct = (used / limit) * 100 if limit > 0 else 0
-                            display.print(f"\n[dim]Context usage: {used:,}/{limit:,} tokens ({pct:.1f}%)[/dim]\n")
+                            from ..cost import CostTracker
+                            turn_cost = agent.cost_tracker.get_total_cost()
+                            cost_str = CostTracker.format_cost(turn_cost) if turn_cost > 0 else ""
+                            cost_part = f" · [dim]{cost_str}[/dim]" if cost_str else ""
+                            display.print(f"\n[dim]Context: {used:,}/{limit:,} tokens ({pct:.1f}%){cost_part}[/dim]\n")
 
                 except Exception as e:
                     display.print_error(f"Failed to process message: {str(e)}")
                     continue
 
             except KeyboardInterrupt:
+                _ctrl_c_count += 1
                 active = agent_tracker.get_active()
                 if active:
                     agent_tracker.cancel_all()
                     display.print(
                         f"\n[bold yellow]Stopping {len(active)} active agent(s)...[/bold yellow] "
-                        "[dim]Press Ctrl+C again to force quit.[/dim]"
+                        "[dim]Press Ctrl+C again to exit.[/dim]"
                     )
+                elif _ctrl_c_count >= 2:
+                    display.print("\n[dim]Goodbye![/dim]")
+                    break
                 else:
-                    display.print("\n[dim]Interrupted. Type /exit to quit.[/dim]")
+                    display.print("\n[dim]Interrupted. Press Ctrl+C again to exit.[/dim]")
                 continue
 
 

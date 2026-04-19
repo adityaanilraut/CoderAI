@@ -30,6 +30,8 @@ Thumbs.db
 htmlcov/
 .tox/
 .mypy_cache/
+.ruff_cache/
+.pyre/
 
 # Distribution
 *.tar.gz
@@ -38,3 +40,9 @@ htmlcov/
 # Environment
 .env
 .env.local
+
+# Local agent/tooling state
+.claude/settings.local.json
+.coderAI/current_plan.json
+subagent_out_*.txt
+

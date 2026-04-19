@@ -98,13 +98,10 @@ class AnthropicProvider(LLMProvider):
         """Best-effort cleanup of the HTTP session on garbage collection."""
         if self._session and not self._session.closed:
             try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    loop.create_task(self._session.close())
-                else:
-                    loop.run_until_complete(self._session.close())
-            except Exception:
-                pass
+                loop = asyncio.get_running_loop()
+                loop.create_task(self._session.close())
+            except RuntimeError:
+                pass  # No running loop at GC time; session will be cleaned up by the OS
 
     def _get_headers(self) -> Dict[str, str]:
         """Get API headers."""

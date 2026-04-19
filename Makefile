@@ -23,9 +23,12 @@ dev:
 	pip install -e .
 
 test:
+	pytest
+	@echo ""
+	@echo "Running installation smoke test..."
 	python test_installation.py
 	@echo ""
-	@echo "Running basic functionality test..."
+	@echo "Running basic CLI smoke test..."
 	coderAI --version
 
 clean:

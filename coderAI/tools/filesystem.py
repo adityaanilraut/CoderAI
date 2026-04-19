@@ -1,5 +1,6 @@
 """Filesystem tools for file operations."""
 
+import difflib
 import os
 import re
 from glob import glob
@@ -11,7 +12,25 @@ from pydantic import BaseModel, Field
 from .base import Tool
 from .undo import backup_store
 from ..config import config_manager
+from ..events import event_emitter
 from ..locks import resource_manager
+
+
+def _emit_diff(path_obj: Path, before: str, after: str) -> None:
+    """Compute and emit a unified diff event if the content changed."""
+    if before == after:
+        return
+    diff = "".join(
+        difflib.unified_diff(
+            before.splitlines(keepends=True),
+            after.splitlines(keepends=True),
+            fromfile=f"a/{path_obj.name}",
+            tofile=f"b/{path_obj.name}",
+            n=3,
+        )
+    )
+    if diff:
+        event_emitter.emit("file_diff", path=str(path_obj), diff=diff)
 
 # Defaults (overridden by config if set)
 DEFAULT_MAX_FILE_SIZE = 1_048_576
@@ -168,15 +187,28 @@ class WriteFileTool(Tool):
 
                 path_obj.parent.mkdir(parents=True, exist_ok=True)
 
-                # Create backup for undo support
-                if path_obj.exists():
-                    backup_store.backup_file(str(path_obj), "modify")
+                # Read before-content for diff (skip binary / append mode)
+                before_content: Optional[str] = None
+                if not append:
+                    if path_obj.exists():
+                        backup_store.backup_file(str(path_obj), "modify")
+                        try:
+                            before_content = path_obj.read_text(encoding="utf-8")
+                        except Exception:
+                            before_content = None
+                    else:
+                        backup_store.backup_file(str(path_obj), "create")
+                        before_content = ""
                 else:
-                    backup_store.backup_file(str(path_obj), "create")
+                    backup_store.backup_file(str(path_obj), "modify") if path_obj.exists() else backup_store.backup_file(str(path_obj), "create")
 
                 mode = "a" if append else "w"
                 with open(path_obj, mode, encoding="utf-8") as f:
                     f.write(content)
+
+                # Emit diff for non-append text writes
+                if before_content is not None:
+                    _emit_diff(path_obj, before_content, content)
 
                 return {
                     "success": True,
@@ -243,10 +275,12 @@ class SearchReplaceTool(Tool):
                     count = content.count(search)
                 else:
                     new_content = content.replace(search, replace, 1)
-                    count = content.count(search) if search in content else 0
+                    count = 1
 
                 with open(path_obj, "w", encoding="utf-8") as f:
                     f.write(new_content)
+
+                _emit_diff(path_obj, content, new_content)
 
                 return {
                     "success": True,
@@ -487,6 +521,12 @@ class ApplyDiffTool(Tool):
 
                 with open(path_obj, "w", encoding="utf-8") as f:
                     f.writelines(result_lines)
+
+                _emit_diff(
+                    path_obj,
+                    "".join(original_lines),
+                    "".join(result_lines),
+                )
 
                 return {
                     "success": True,

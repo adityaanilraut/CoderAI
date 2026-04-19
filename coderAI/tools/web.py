@@ -7,6 +7,9 @@ import re
 import ssl
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote_plus, unquote, urlparse, parse_qs
+import ipaddress
+import socket
+import os
 
 import aiohttp
 from pydantic import BaseModel, Field
@@ -60,12 +63,10 @@ def _get_ssl_ctx() -> ssl.SSLContext:
         pass
 
     logger.warning(
-        "SSL cert verification disabled — install certifi "
-        "(`pip install certifi`) to fix."
+        "Strict SSL checking is enforced. If requests fail, install certifi "
+        "(`pip install certifi`) or verify local CA roots."
     )
     ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
     _ssl_ctx = ctx
     return _ssl_ctx
 
@@ -183,7 +184,7 @@ class WebSearchParams(BaseModel):
         ),
     )
     max_content_length: int = Field(
-        15000,
+        8000,
         description="Max characters of page content per result when fetch_content=true",
     )
 
@@ -209,7 +210,7 @@ class WebSearchTool(Tool):
         query: str,
         num_results: int = 5,
         fetch_content: bool = False,
-        max_content_length: int = 15000,
+        max_content_length: int = 8000,
     ) -> Dict[str, Any]:
         num_results = max(1, min(num_results, 10))
 
@@ -359,8 +360,33 @@ class WebSearchTool(Tool):
 # ---------------------------------------------------------------------------
 
 
+def _is_safe_url(url: str) -> bool:
+    """Check if the URL resolves to a public IP, preventing SSRF on local networks."""
+    if os.getenv("CODERAI_ALLOW_LOCAL_URLS") == "1":
+        return True
+    try:
+        parsed = urlparse(url)
+        hostname = parsed.hostname
+        if not hostname:
+            return False
+            
+        ip_addr = socket.gethostbyname(hostname)
+        ip = ipaddress.ip_address(ip_addr)
+        
+        if (ip.is_loopback or ip.is_private or ip.is_link_local or 
+            ip.is_multicast or ip.is_reserved or ip.is_unspecified):
+            return False
+    except Exception as e:
+        logger.warning(f"URL resolution failed or blocked for {url}: {e}")
+        return False
+    return True
+
+
 async def _fetch_page_text(url: str, max_length: int) -> Optional[str]:
     """Fetch a single URL and return cleaned text, or None on failure."""
+    if not _is_safe_url(url):
+        logger.warning(f"SSRF Protection blocked request to: {url}")
+        return None
     try:
         async with aiohttp.ClientSession(connector=_connector()) as session:
             async with session.get(
@@ -394,8 +420,8 @@ async def _fetch_page_text(url: str, max_length: int) -> Optional[str]:
 class ReadURLParams(BaseModel):
     url: str = Field(..., description="URL to fetch and read")
     max_length: int = Field(
-        20000,
-        description="Maximum characters of page text to return (default 20000)",
+        8000,
+        description="Maximum characters of page text to return (default 8000)",
     )
 
 
@@ -410,9 +436,15 @@ class ReadURLTool(Tool):
     is_read_only = True
     parameters_model = ReadURLParams
 
-    async def execute(self, url: str, max_length: int = 20000) -> Dict[str, Any]:
+    async def execute(self, url: str, max_length: int = 8000) -> Dict[str, Any]:
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
+
+        if not _is_safe_url(url):
+            return {
+                "success": False,
+                "error": f"SSRF Protection triggered. Blocked request to local/internal IP for {url}.",
+            }
 
         try:
             async with aiohttp.ClientSession(connector=_connector()) as session:
@@ -492,6 +524,12 @@ class DownloadFileTool(Tool):
 
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
+
+        if not _is_safe_url(url):
+            return {
+                "success": False,
+                "error": f"SSRF Protection triggered. Blocked request to local/internal IP for {url}.",
+            }
 
         try:
             async with aiohttp.ClientSession(connector=_connector()) as session:
