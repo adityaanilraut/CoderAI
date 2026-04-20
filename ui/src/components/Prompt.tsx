@@ -28,6 +28,7 @@ export function Prompt({onSubmit, disabled, placeholder, exitHint}: PromptProps)
   const draftRef = useRef<string>("");
 
   const submit = (text: string) => {
+    if (disabled) return;
     const trimmed = text.trim();
     if (!trimmed) return;
 
@@ -79,26 +80,27 @@ export function Prompt({onSubmit, disabled, placeholder, exitHint}: PromptProps)
         <Text color={disabled ? theme.muted : theme.accent} bold>
           {"❯ "}
         </Text>
-        {disabled ? (
-          <Text color={theme.muted} italic>
-            {placeholder ?? "waiting for agent…"}
-          </Text>
-        ) : (
-          <TextInput
-            value={value}
-            onChange={(next) => {
-              // Typing invalidates history navigation: snap back to "draft".
-              if (history.current.length > 0) {
-                cursor.current = history.current.length;
-              }
-              draftRef.current = next;
-              setValue(next);
-            }}
-            onSubmit={submit}
-            placeholder={placeholder ?? "Ask anything, or type / for commands"}
-            showCursor
-          />
-        )}
+        <TextInput
+          value={value}
+          onChange={(next) => {
+            if (disabled) return;
+            // Typing invalidates history navigation: snap back to "draft".
+            if (history.current.length > 0) {
+              cursor.current = history.current.length;
+            }
+            draftRef.current = next;
+            setValue(next);
+          }}
+          onSubmit={submit}
+          placeholder={
+            placeholder ??
+            (disabled
+              ? "waiting for agent…"
+              : "Ask anything, or type / for commands")
+          }
+          focus={!disabled}
+          showCursor={!disabled}
+        />
       </Box>
       <Box marginTop={0}>
         {exitHint ? (

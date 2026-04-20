@@ -51,8 +51,8 @@ def _get_max_glob_results() -> int:
         return DEFAULT_MAX_GLOB_RESULTS
 
 
-# Paths that tools should never write to
-PROTECTED_PATHS = [
+# Paths under $HOME that tools should never write to.
+PROTECTED_HOME_PATHS = [
     ".ssh",
     ".gnupg",
     ".aws",
@@ -63,15 +63,43 @@ PROTECTED_PATHS = [
     ".zsh_history",
 ]
 
+# Absolute system paths that tools should never write to. If the process
+# happens to run with elevated privileges, the OS-level write permission is
+# NOT a safety net — we refuse these up front.
+PROTECTED_SYSTEM_PATHS = [
+    "/etc",
+    "/usr",
+    "/bin",
+    "/sbin",
+    "/boot",
+    "/System",   # macOS system dir
+    "/Library",  # macOS shared library dir
+    "/private/etc",
+    "/var/log",
+    "/root",
+]
+
+# Back-compat alias for any external callers still importing this name.
+PROTECTED_PATHS = PROTECTED_HOME_PATHS
+
 
 def _is_path_protected(path: Path) -> bool:
-    """Check if a path targets a protected location."""
+    """Check if a path targets a protected location (home or system)."""
     resolved = path.resolve()
     home = Path.home()
-    for protected in PROTECTED_PATHS:
+    for protected in PROTECTED_HOME_PATHS:
         protected_path = (home / protected).resolve()
         try:
             resolved.relative_to(protected_path)
+            return True
+        except ValueError:
+            continue
+    for system in PROTECTED_SYSTEM_PATHS:
+        system_path = Path(system)
+        if not system_path.exists():
+            continue
+        try:
+            resolved.relative_to(system_path.resolve())
             return True
         except ValueError:
             continue
@@ -238,10 +266,27 @@ class SearchReplaceTool(Tool):
     ) -> Dict[str, Any]:
         """Search and replace in file with protection."""
         try:
+            if not path or not str(path).strip():
+                return {
+                    "success": False,
+                    "error": "path is required and must be a non-empty file path.",
+                }
+            if search == "":
+                return {
+                    "success": False,
+                    "error": "search text must be non-empty.",
+                }
+
             path_obj = Path(path).expanduser()
-            
+
             lock = await resource_manager.get_file_lock(str(path_obj))
             async with lock:
+                if path_obj.is_dir():
+                    return {
+                        "success": False,
+                        "error": f"Path is a directory, not a file: {path}",
+                    }
+
                 if not path_obj.exists():
                     return {
                         "success": False,

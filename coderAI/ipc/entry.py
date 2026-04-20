@@ -29,6 +29,11 @@ def _configure_logging() -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
+    # Redirect stdout to stderr to prevent rogue print() statements
+    # in third-party libraries or internal tools from corrupting the IPC stream.
+    # The JSON-RPC server writes directly to sys.__stdout__.
+    sys.stdout = sys.stderr
+
 
 async def _main() -> None:
     _configure_logging()
@@ -62,6 +67,7 @@ async def _main() -> None:
         agent.create_session()
 
     server = IPCServer(agent=agent)
+    agent.ipc_server = server
 
     # Redirect the streaming handler so token deltas become NDJSON events
     # instead of Rich console prints.

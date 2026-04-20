@@ -4,506 +4,208 @@ This document describes the architecture and design of CoderAI. For the IPC
 wire format between the Ink UI and Python, see [`ui/PROTOCOL.md`](./ui/PROTOCOL.md).
 For contributor-oriented notes, see [`CLAUDE.md`](./CLAUDE.md).
 
-## Overview
+## Workflow Overview
 
 CoderAI is a coding agent CLI built in Python, paired with a separate **Ink
 (TypeScript + React)** interactive UI binary. The two processes communicate
 over **NDJSON on stdio** (`coderAI/ipc/`). One-shot CLI commands (`config`,
 `history`, `models`, `status`, …) use **Rich** helpers in `coderAI/ui/display.py`.
 
-Core capabilities:
-- Multiple LLM backends (OpenAI, Anthropic, Groq, DeepSeek, LM Studio, Ollama)
-- 35+ tools (filesystem, git, terminal, web, MCP, …)
-- Ink UI for `coderAI chat`; Rich for non-interactive CLI output
-- Persistent sessions and configuration under `~/.coderAI/`
+### Communication Flow
 
-## Architecture Diagram
+The following diagram illustrates the interaction between the interactive UI, the Python IPC server, the Agent core, and external services (LLMs and Tools).
 
+```mermaid
+sequenceDiagram
+    participant User
+    participant UI as Ink UI (TypeScript/React)
+    participant IPC as IPC Server (Python)
+    participant Agent as Agent (Python)
+    participant LLM as LLM Provider
+    participant Tools as Tool Executor
+
+    User->>UI: Input Message
+    UI->>IPC: {"cmd": "send_message", "text": "..."}
+    IPC->>Agent: process_message("...")
+    Agent->>LLM: chat(messages, tools)
+    LLM-->>Agent: delta/content or tool_calls
+    
+    rect rgb(240, 240, 240)
+        Note over Agent, Tools: If Tool Calls received
+        Agent->>IPC: tool_approval_req (via events)
+        IPC-->>UI: {"event": "tool_approval_req", ...}
+        UI-->>User: Show Approval Dialog
+        User->>UI: Approve/Deny
+        UI->>IPC: {"cmd": "tool_approval_resp", ...}
+        IPC->>Agent: Approval Result
+        Agent->>Tools: execute(tool_name, args)
+        Tools-->>Agent: Result
+        Agent->>LLM: chat(with tool_result)
+    end
+
+    Agent->>IPC: stream_delta / assistant_end (via events)
+    IPC-->>UI: {"event": "stream_delta", ...}
+    UI-->>User: Render content
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                         CLI Layer                            │
-│  (coderAI/cli.py - Click commands, argument parsing)        │
-└────────────────────────┬────────────────────────────────────┘
-                         │
-┌────────────────────────┴────────────────────────────────────┐
-│                      Agent Layer                             │
-│  (coderAI/agent.py - Orchestrates LLM and tools)           │
-│  - Message handling                                          │
-│  - Tool call execution                                       │
-│  - Session management                                        │
-└─────┬─────────────────┬────────────────────┬────────────────┘
-      │                 │                    │
-      │                 │                    │
-┌─────┴────┐     ┌──────┴───────┐    ┌──────┴─────────┐
-│   LLM    │     │    Tools     │    │      UI        │
-│ Providers│     │   Registry   │    │   Components   │
-└──────────┘     └──────────────┘    └────────────────┘
+
+## Project Structure
+
+A comprehensive map of the CoderAI repository:
+
+```text
+.
+├── ARCHITECTURE.md          # Architectural overview (this file)
+├── CLAUDE.md                # Development guidelines and common commands
+├── COMMANDS.md              # Detailed CLI command documentation
+├── EXAMPLES.md              # Example usage scenarios
+├── INSTALL.md               # Installation and setup instructions
+├── LICENSE                  # MIT License
+├── Makefile                 # Build and test shortcuts
+├── README.md                # Project home and quickstart
+├── pyproject.toml           # Python project configuration
+├── pytest.ini               # Test runner configuration
+├── requirements.txt         # Core dependencies
+├── requirements-dev.txt     # Development dependencies
+├── test_installation.py     # Installation smoke test
+├── manual_parallel_subagents.py # sub-agent stress test
+├── manual_subagent_delegation.py # sub-agent stress test
+├── coderAI/                 # Core Python package
+│   ├── __init__.py
+│   ├── agent.py             # Main Agent orchestration logic
+│   ├── agent_loop.py        # Execution loop for complex tasks
+│   ├── agent_tracker.py     # Tracking active agents and their status
+│   ├── agents.py            # Agent factories and variations
+│   ├── binary_manager.py    # Manages UI binary downloads/versioning
+│   ├── cli.py               # Click commands for the CLI
+│   ├── config.py            # Pydantic configuration management
+│   ├── context.py           # Context window and history management
+│   ├── context_controller.py # Token estimates, compaction, tool-result sizing
+│   ├── project_layout.py    # Resolve .coderAI/skills, .coderAI/agents, etc.
+│   ├── context_selector.py  # Logic for picking relevant context
+│   ├── cost.py              # Token and USD cost tracking
+│   ├── events.py            # Global EventEmitter for internal signals
+│   ├── history.py           # Session persistence logic
+│   ├── locks.py             # Concurrency primitives
+│   ├── notepad.py           # Shared data storage for agent
+│   ├── py.typed             # PEP 561 marker
+│   ├── safeguards.py        # Safety and limit checks
+│   ├── skills.py            # Skill-based tool grouping
+│   ├── system_prompt.py     # Dynamic system prompt generation
+│   ├── tool_executor.py     # Logic for running tool calls
+│   ├── ipc/                 # IPC communication bridge
+│   │   ├── __init__.py
+│   │   ├── entry.py         # Entry point for the Ink UI
+│   │   ├── jsonrpc_server.py # NDJSON/JSONRPC server implementation
+│   │   └── streaming.py     # Redirects deltas to IPC events
+│   ├── llm/                 # LLM backend implementations
+│   │   ├── __init__.py
+│   │   ├── base.py          # Abstract LLMProvider interface
+│   │   ├── factory.py       # Provider instantiation logic
+│   │   ├── anthropic.py     # Anthropic Claude support
+│   │   ├── deepseek.py      # DeepSeek support
+│   │   ├── groq.py          # Groq support
+│   │   ├── lmstudio.py      # LM Studio support
+│   │   ├── ollama.py        # Ollama support
+│   │   └── openai.py        # OpenAI support
+│   ├── tools/               # Tool implementations
+│   │   ├── __init__.py
+│   │   ├── base.py          # Tool registry and base class
+│   │   ├── filesystem.py    # File read/write/list/glob
+│   │   ├── git.py           # Git status/log/diff/commit
+│   │   ├── web.py           # Search and URL content
+│   │   ├── search.py        # Text search and grep
+│   │   ├── terminal.py      # Command execution
+│   │   ├── subagent.py      # Delegation to sub-agents
+│   │   ├── tasks.py         # Task tracking
+│   │   ├── memory.py        # Persistence for context
+│   │   ├── mcp.py           # Model Context Protocol support
+│   │   ├── vision.py        # Image analysis
+│   │   ├── undo.py          # File history and rollback
+│   │   ├── lint.py          # Code quality checks
+│   │   ├── context_manage.py # Manual context pinning
+│   │   ├── planning.py      # Agent planning tools
+│   │   └── format.py        # Data formatting
+│   └── ui/                  # Rich implementation for non-interactive CLI
+│       ├── __init__.py
+│       └── display.py       # Rich tables, markdown, and trees
+├── tests/                   # Extensive test suite
+└── ui/                      # Ink/React based interactive UI
+    ├── PROTOCOL.md          # Wire format specification
+    ├── package.json         # Node.js dependencies
+    ├── bun.lock             # Bun lockfile
+    ├── tsconfig.json        # TypeScript configuration
+    ├── scripts/             # Build and compilation scripts
+    └── src/                 # Application source code
+        ├── App.tsx          # Main entry component
+        ├── cli.tsx          # In-terminal UI logic
+        ├── protocol.ts      # Client-side IPC protocol implementation
+        ├── theme.ts         # Visual styling definitions
+        ├── components/      # Reusable Ink components
+        ├── hooks/           # State management hooks
+        └── rpc/             # Client-side RPC messaging
 ```
 
 ## Component Details
 
 ### 1. CLI Layer (`coderAI/cli.py`)
 
-**Responsibility:** Command-line interface and user interaction
-
-**Components:**
-- Click-based command structure
-- Commands include: `chat` (launches Ink binary), `config`, `history`, `info`, `setup`, `models`, `set-model`, `status`, `cost`, `tasks`, …
-- Argument parsing and validation
-- Entry point management
+**Responsibility:** Command-line interface and user interaction.
 
 **Key Functions:**
-- `main()` — Entry point
-- `chat()` — Spawns the Ink UI binary, which runs `python -m coderAI.ipc.entry`
-- `config()` / `history()` — Configuration and session management
+- `main()` — Entry point.
+- `chat()` — Spawns the Ink UI binary, which runs `python -m coderAI.ipc.entry`.
+- `config()` / `history()` — Configuration and session management.
 
-### 2. Agent Layer (`coderAI/agent.py`)
+### 2. Agent Layer (`coderAI/agent.py` & `coderAI/agent_loop.py`)
 
-**Responsibility:** Core orchestration logic
+**Responsibility:** Core orchestration logic.
 
-**Components:**
-- `Agent` class - Main orchestrator
-- Message loop management
-- Tool call handling
-- LLM provider integration
-
-**Key Methods:**
-- `process_message()` - Handle user messages
-- `_stream_response()` - Stream LLM responses
-- `_execute_tool()` - Execute tool calls
-- Session management
-
-**Flow:**
-```
-User Message → Agent → LLM → Tool Calls → Execute Tools → 
-→ Tool Results → LLM → Final Response → User
-```
+**Key Components:**
+- `Agent` class (`agent.py`) - Main excavating orchestrator.
+- `ExecutionLoop` (`agent_loop.py`) - Handles multi-step reasoning and tool execution cycles.
+- `ToolExecutor` (`tool_executor.py`) - User confirmation / approval for gated tools (execution goes through `ToolRegistry` in `agent_loop`).
 
 ### 3. LLM Providers (`coderAI/llm/`)
 
-**Responsibility:** Abstract different LLM backends
-
-**Structure:**
-```
-llm/
-├── base.py         # Abstract LLMProvider
-├── openai.py       # OpenAI GPT-5, o1, o3-mini variants
-├── anthropic.py    # Anthropic Claude models
-├── lmstudio.py     # LM Studio local models
-└── ollama.py       # Ollama local models
-```
-
-**Base Interface:**
-```python
-class LLMProvider:
-    async def chat(messages, tools) -> Response
-    async def stream(messages, tools) -> AsyncIterator
-    def count_tokens(text) -> int
-    def supports_tools() -> bool
-```
+**Responsibility:** Abstract different LLM backends.
 
 **Implementations:**
-- `OpenAIProvider` - OpenAI API with tiktoken (GPT-5, o1, o3-mini)
-- `AnthropicProvider` - Anthropic API (Claude models)
-- `LMStudioProvider` - OpenAI-compatible local API
-- `OllamaProvider` - Ollama local API
+- `OpenAIProvider` - OpenAI API (GPT-4o, o1, o3-mini).
+- `AnthropicProvider` - Anthropic API (Claude 3.5 Sonnet/Opus).
+- `DeepSeekProvider` - DeepSeek API (v3, R1).
+- `GroqProvider` - Groq Llama/Mixtral models.
+- `LMStudioProvider` / `OllamaProvider` - Local model support.
 
-### 4. Tools (`coderAI/tools/`)
+### 4. IPC Bridge (`coderAI/ipc/`)
 
-**Responsibility:** MCP tool implementations
+**Responsibility:** NDJSON communication between Python and the Ink UI.
 
-**Structure:**
-```
-tools/
-├── base.py         # Tool interface and registry
-├── filesystem.py   # File operations (read, write, search_replace, apply_diff)
-├── terminal.py     # Command execution
-├── git.py          # Git operations
-├── search.py       # Text search and grep
-├── web.py          # Web search and URL reading
-├── memory.py       # Knowledge base
-├── mcp.py          # MCP server integration
-├── undo.py         # File backup and rollback
-├── project.py      # Project context detection
-├── context_manage.py  # Context pinning
-├── tasks.py        # Task/TODO management
-├── subagent.py     # Sub-agent delegation
-├── lint.py         # Linter integration
-└── vision.py       # Image reading
-```
+**Key Components:**
+- `entry.py` - Sets up the `Agent` and `IPCServer`.
+- `jsonrpc_server.py` - Manages the stdio pipe, JSONRPC dispatch, and event emitting.
+- `streaming.py` - Intercepts LLM token deltas and converts them to IPC `stream_delta` events.
 
-**Tool Interface:**
-```python
-class Tool:
-    name: str
-    description: str
-    
-    async def execute(**kwargs) -> Dict
-    def get_schema() -> Dict
-    def get_parameters() -> Dict
-```
+### 5. Interactive UI (`ui/`)
 
-**Tool Registry:**
-- Registers all available tools
-- Provides schemas for LLM function calling
-- Routes tool executions
+**Responsibility:** Standalone React/Ink binary providing a modern terminal experience.
 
-**Available Tools:**
-
-*Filesystem:*
-- `read_file` - Read file contents
-- `write_file` - Create/overwrite files
-- `search_replace` - Edit files
-- `apply_diff` - Apply unified diff patches
-- `list_directory` - List directory contents
-- `glob_search` - Find files by pattern
-
-*Terminal:*
-- `run_command` - Execute shell commands
-- `run_background` - Start background processes
-
-*Git:*
-- `git_add` - Stage files
-- `git_status` - Repository status
-- `git_diff` - View changes
-- `git_commit` - Create commits
-- `git_log` - View history
-
-*Search:*
-- `text_search` - Text-based codebase search
-- `grep` - Pattern matching with regex
-
-*Web:*
-- `web_search` - Internet search
-- `read_url` - Fetch URL content
-
-*Memory:*
-- `save_memory` - Store information
-- `recall_memory` - Retrieve information
-
-*Additional:*
-- `project_context` - Auto-detect project type and structure
-- `manage_context` - Pin files to context
-- `manage_tasks` - Task/TODO tracking
-- `delegate_task` - Spawn sub-agent for isolated tasks
-- Persona frontmatter uses high-level tool labels like `Read`, `Edit`, and `Bash`; these expand to concrete tool IDs, while read-only tools remain available across personas
-- `lint` - Run project linter
-- `read_image` - Read and analyze images
-- `undo` / `undo_history` - File rollback
-- `mcp_connect` / `mcp_call_tool` / `mcp_list` - MCP integration
-
-### 5. Rich CLI display (`coderAI/ui/display.py`)
-
-**Responsibility:** Formatting for **non-interactive** CLI commands only.
-
-**Structure:**
-```
-coderAI/ui/
-└── display.py      # Rich tables, trees, markdown for config/history/status/…
-```
-
-**Display features:** Markdown, syntax-highlighted code, colored status lines,
-tables, panels, progress indicators.
-
-### 5b. Interactive Ink UI (`ui/`)
-
-The **interactive** experience is the standalone Ink binary (built with Bun from
-`ui/`). It spawns the Python agent and exchanges NDJSON events and commands per
-[`ui/PROTOCOL.md`](./ui/PROTOCOL.md). Streaming assistant output is forwarded as
-`stream_delta` events via `coderAI/ipc/streaming.py`.
-
-### 6. Configuration (`coderAI/config.py`)
-
-**Responsibility:** Configuration management
-
-**Features:**
-- JSON-based config file (`~/.coderAI/config.json`)
-- Environment variable support
-- Pydantic validation
-- Sensitive data masking
-
-**Settings:**
-- API keys (OpenAI, Anthropic)
-- Model preferences
-- Temperature, max_tokens, reasoning_effort
-- LM Studio and Ollama endpoints
-- Streaming, history options
-
-### 7. History (`coderAI/history.py`)
-
-**Responsibility:** Conversation persistence
-
-**Features:**
-- Session-based storage
-- JSON serialization
-- Message history
-- Session metadata
-
-**Structure:**
-```
-~/.coderAI/history/
-└── session_TIMESTAMP_ID.json
-```
-
-## Data Flow
-
-### Interactive Mode
-
-```
-1. User launches: coderAI chat
-2. Agent creates/loads session
-3. Interactive UI displays welcome
-4. Loop:
-   a. User enters message
-   b. Agent processes message
-   c. LLM generates response (streaming)
-   d. If tool calls needed:
-      - Display tool calls
-      - Execute tools
-      - Display results
-      - Loop back to LLM
-   e. Display final response
-   f. Save session
-5. User exits
-```
-
-### Utility Commands
-
-```
-1. User runs a CLI utility command (for example `coderAI info`)
-2. CLI creates any required agent/config state
-3. Command prints structured output
-4. Process exits
-```
-
-### Tool Execution Flow
-
-```
-1. LLM returns tool_calls in response
-2. Agent parses tool calls
-3. For each tool:
-   a. Extract name and arguments
-   b. Display tool call info
-   c. Execute via ToolRegistry
-   d. Display result
-   e. Add result to message history
-4. Send results back to LLM
-5. Get final response
-```
+**Key Features:**
+- Markdown rendering in terminal.
+- Interactive tool approval prompts.
+- Syntax highlighting for code samples.
+- Live status bars (cost, tokens, context).
 
 ## Design Patterns
 
-### 1. Abstract Factory Pattern
-- `LLMProvider` base class
-- Different implementations: OpenAI, Anthropic, LM Studio, Ollama
+1. **Abstract Factory**: `LLMProvider` factory for backend switching.
+2. **Registry Pattern**: `ToolRegistry` for dynamic tool discovery.
+3. **Observer Pattern**: `EventEmitter` for decoupling agent logic from UI updates.
+4. **Command Pattern**: Encapsulated actions for tools and CLI operations.
 
-### 2. Registry Pattern
-- `ToolRegistry` manages tools
-- Dynamic tool registration
+## Security & Performance
 
-### 3. Strategy Pattern
-- Different streaming strategies (LLM providers; IPC streaming for Ink)
-
-### 4. Command Pattern
-- CLI commands as discrete operations
-- Tool executions as commands
-
-### 5. Observer Pattern
-- Streaming responses with live updates
-- Display updates based on events
-
-## Technology Stack
-
-**Core:**
-- Python 3.9+
-- asyncio for concurrency
-
-**LLM Integration:**
-- OpenAI Python SDK (OpenAI provider)
-- aiohttp for Anthropic, LM Studio, and Ollama APIs
-- tiktoken for token counting (OpenAI)
-
-**CLI:**
-- Click for command structure
-
-**Interactive UI:**
-- Ink + React (`ui/`), compiled to a per-platform binary (Bun)
-- NDJSON IPC with the Python agent (`coderAI/ipc/`)
-
-**Terminal output (non-interactive CLI):**
-- Rich for tables, markdown, and panels (`coderAI/ui/display.py`)
-
-**Data:**
-- Pydantic for validation
-- JSON for persistence
-
-**Tools:**
-- subprocess for commands
-- pathlib for file operations
-- aiohttp for web requests
-
-## Security Considerations
-
-1. **API Key Storage:** 
-   - Stored in config file with restricted permissions
-   - Can use environment variables
-   - Masked in display
-
-2. **Command Execution:**
-   - Shell commands run with user permissions
-   - No privilege escalation
-   - Timeout limits
-
-3. **File Operations:**
-   - Respect user permissions
-   - No automatic deletion
-   - Path validation
-
-4. **Network Requests:**
-   - Timeout limits
-   - Error handling
-   - No credential leakage
-
-## Performance Optimizations
-
-1. **Async/Await:**
-   - Non-blocking I/O
-   - Concurrent tool execution (potential)
-
-2. **Streaming:**
-   - Real-time response display
-   - Reduced perceived latency
-
-3. **Token Management:**
-   - Token counting to avoid limits
-   - Context window management
-
-4. **Caching:**
-   - Config loaded once
-   - Tool registry created once
-
-## Extensibility
-
-### Adding New Tools
-
-```python
-from coderAI.tools.base import Tool
-
-class MyTool(Tool):
-    name = "my_tool"
-    description = "Does something"
-    
-    def get_parameters(self):
-        return {
-            "type": "object",
-            "properties": {...},
-            "required": [...]
-        }
-    
-    async def execute(self, **kwargs):
-        # Implementation
-        return {"success": True, ...}
-
-# Register in agent.py
-registry.register(MyTool())
-```
-
-### Adding New LLM Provider
-
-```python
-from coderAI.llm.base import LLMProvider
-
-class MyProvider(LLMProvider):
-    async def chat(self, messages, tools, **kwargs):
-        # Implementation
-        pass
-    
-    async def stream(self, messages, tools, **kwargs):
-        # Implementation
-        pass
-    
-    def count_tokens(self, text):
-        # Implementation
-        pass
-```
-
-### Adding New Commands
-
-```python
-@cli.command()
-@click.option(...)
-def my_command(...):
-    """My command description."""
-    # Implementation
-```
-
-## Error Handling
-
-1. **LLM Errors:**
-   - API failures caught and reported
-   - Retry logic implemented for transient errors (timeouts, rate limits, 5xx)
-   - Fallback messages
-
-2. **Tool Errors:**
-   - Each tool execution wrapped in try/except
-   - Error details in result
-   - Displayed to user
-
-3. **Configuration Errors:**
-   - Validation with Pydantic
-   - Default values provided
-   - Clear error messages
-
-4. **User Errors:**
-   - Input validation
-   - Helpful error messages
-   - Recovery suggestions
-
-## Testing Strategy
-
-1. **Unit Tests:**
-   - Individual tool testing
-   - Provider mocking
-   - Configuration testing
-
-2. **Integration Tests:**
-   - End-to-end flows
-   - Tool execution
-   - Session persistence
-   - Manual live-provider harnesses in `manual_subagent_delegation.py` and `manual_parallel_subagents.py`
-
-3. **Installation Test:**
-   - `test_installation.py` validates setup
-   - Checks all imports
-   - Verifies components
-
-4. **Automated Entry Point:**
-   - `pytest` is the supported automated test runner
-   - `make test` wraps `pytest`, the installation smoke test, and a basic CLI version check
-
-## Future Enhancements
-
-1. **Enhanced Tool Support:**
-   - Database operations
-   - API integrations
-   - Image generation
-
-2. **Multi-Agent:**
-   - Specialized agents
-   - Agent collaboration
-   - Task delegation
-
-3. **Plugin System:**
-   - External tool plugins
-   - Custom provider plugins
-
-4. **Advanced Features:**
-   - Code execution sandbox
-   - Notebook integration
-   - IDE plugins
-
-5. **Performance:**
-   - Parallel tool execution
-   - Response caching
-   - Smart context pruning
+- **Safeguards**: Rate limiting, budget tracking, and confirmation prompts for high-risk actions.
+- **Async I/O**: `asyncio` throughout for non-blocking network and tool calls.
+- **Context Management**: Smart pruning and compaction to stay within LLM token limits.
+- **Persistence**: Session-based history stored in `~/.coderAI/history/`.
 

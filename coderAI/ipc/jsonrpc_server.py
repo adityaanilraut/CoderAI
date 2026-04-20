@@ -20,12 +20,15 @@ import asyncio
 import json
 import logging
 import os
+from pathlib import Path
 import re
 import sys
+import time as _time
 import uuid
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 from ..agent_tracker import AgentInfo, AgentStatus, agent_tracker
+from ..config import config_manager
 from ..events import event_emitter
 
 logger = logging.getLogger(__name__)
@@ -47,8 +50,13 @@ def _strip_rich_markup(text: Any) -> str:
 
 
 # --- Tool category inference ------------------------------------------------
+#
+# Primary source of truth is the ``category`` attribute on each ``Tool``
+# subclass (see ``coderAI/tools/base.py``). The fallback map below covers
+# MCP-proxy tools and anything that hasn't been tagged yet; tools looked
+# up in the registry override the map.
 
-_TOOL_CATEGORIES = {
+_TOOL_CATEGORY_FALLBACK = {
     # filesystem
     "read_file": "fs", "write_file": "fs", "search_replace": "fs",
     "apply_diff": "fs", "list_directory": "fs", "glob_search": "fs",
@@ -73,8 +81,20 @@ _HIGH_RISK = {"run_command", "run_background", "write_file", "search_replace",
 _MEDIUM_RISK = {"delegate_task", "download_file", "mcp_call"}
 
 
-def _tool_category(name: str) -> str:
-    return _TOOL_CATEGORIES.get(name, "other")
+def _tool_category(name: str, registry: Optional[Any] = None) -> str:
+    """Determine the UI category for ``name``.
+
+    Prefers the ``category`` attribute on the tool instance (if the registry
+    is supplied and the tool is registered). Falls back to the hardcoded
+    map for tools that haven't been tagged or for MCP-proxy names.
+    """
+    if registry is not None:
+        tool = registry.get(name)
+        if tool is not None:
+            cat = getattr(tool, "category", None)
+            if cat and cat != "other":
+                return cat
+    return _TOOL_CATEGORY_FALLBACK.get(name, "other")
 
 
 def _tool_risk(name: str) -> str:
@@ -83,6 +103,17 @@ def _tool_risk(name: str) -> str:
     if name in _MEDIUM_RISK:
         return "medium"
     return "low"
+
+
+def _preview_args_for_approval(arguments: Dict[str, Any], max_str: int = 800) -> Dict[str, Any]:
+    """Shrink large string values (e.g. write_file content) for the UI payload."""
+    out: Dict[str, Any] = {}
+    for k, v in arguments.items():
+        if isinstance(v, str) and len(v) > max_str:
+            out[k] = f"{v[:max_str]}… ({len(v)} chars total)"
+        else:
+            out[k] = v
+    return out
 
 
 # --- AgentInfo serialization -------------------------------------------------
@@ -129,6 +160,9 @@ class IPCServer:
         self._send_lock = asyncio.Lock()
         self._exit = asyncio.Event()
         self._approval_waiters: Dict[str, asyncio.Future] = {}
+        # Timestamp (ms since epoch) when the last ``status_start`` event fired.
+        # Used to compute the real elapsed time for ``thinking_end``.
+        self._thinking_start_ms: int = 0
 
         # Bind event_emitter listeners once.
         self._wire_event_listeners()
@@ -138,8 +172,8 @@ class IPCServer:
     def _write(self, payload: Dict[str, Any]) -> None:
         """Write one NDJSON line synchronously. Safe to call from any context."""
         try:
-            sys.stdout.write(json.dumps(payload, default=str) + "\n")
-            sys.stdout.flush()
+            sys.__stdout__.write(json.dumps(payload, default=str) + "\n")
+            sys.__stdout__.flush()
         except (BrokenPipeError, ValueError):
             # UI closed the pipe; stop emitting.
             self._exit.set()
@@ -148,20 +182,40 @@ class IPCServer:
         """Emit one protocol event."""
         self._write({"v": 1, "kind": "event", "event": event, **data})
 
+    async def request_tool_approval(
+        self,
+        tool_id: str,
+        tool_name: str,
+        arguments: Dict[str, Any],
+    ) -> bool:
+        """Block until the UI sends ``tool_approval_resp`` for this tool call."""
+        if not tool_id:
+            tool_id = str(uuid.uuid4())
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future = loop.create_future()
+        self._approval_waiters[tool_id] = fut
+        self.emit(
+            "tool_approval_req",
+            id=tool_id,
+            tool=tool_name,
+            args=_preview_args_for_approval(arguments),
+            risk=_tool_risk(tool_name),
+        )
+        try:
+            return bool(await fut)
+        except asyncio.CancelledError:
+            if not fut.done():
+                fut.cancel()
+            raise
+        finally:
+            # Drop any leftover waiter (handler normally pops on approve/deny).
+            self._approval_waiters.pop(tool_id, None)
+
     # -- lifecycle helpers ----------------------------------------------------
 
     def emit_hello(self) -> None:
         config = self.agent.config
         project_summary = None
-
-        session_id = None
-        message_count = 0
-        try:
-            if self.agent.session is not None:
-                session_id = getattr(self.agent.session, "id", None)
-                message_count = len(getattr(self.agent.session, "messages", []) or [])
-        except Exception:
-            pass
 
         self.emit(
             "hello",
@@ -173,8 +227,6 @@ class IPCServer:
             contextLimit=getattr(config, "context_window", 200000),
             budgetLimit=getattr(config, "budget_limit", 0.0) or 0.0,
             autoApprove=bool(getattr(self.agent, "auto_approve", False)),
-            sessionId=session_id,
-            resumedMessageCount=message_count,
         )
 
     def emit_ready(self) -> None:
@@ -220,27 +272,28 @@ class IPCServer:
               self.emit("warning", message=_strip_rich_markup(message)))
         em.on("file_diff", lambda path, diff:
               self.emit("file_diff", path=str(path), diff=str(diff)))
-        em.on("status_start", lambda message=None:
-              self.emit("thinking_start"))
-        em.on("status_stop", lambda *a, **kw:
-              self.emit("thinking_end", elapsedMs=0))
+        em.on("status_start", self._on_thinking_start)
+        em.on("status_stop", self._on_thinking_stop)
         em.on("agent_lifecycle", self._on_agent_lifecycle)
+        em.on("agent_tracker_sync", self._on_agent_tracker_sync)
 
-    def _on_tool_call(self, tool_name: str, arguments: Dict[str, Any]) -> None:
-        # Generate a stable-ish id so we can match the subsequent tool_result.
-        tool_id = f"t_{uuid.uuid4().hex[:12]}"
-        self._last_tool_id = tool_id  # naive: assumes serial tool calls
+    def _on_tool_call(self, tool_name: str, arguments: Dict[str, Any], tool_id: str = None) -> None:
+        # Use provided tool_id if available, otherwise generate one
+        if not tool_id:
+            tool_id = f"t_{uuid.uuid4().hex[:12]}"
+        self._last_tool_id = tool_id  # fallback for callers not providing tool_id
         self.emit(
             "tool_call",
             id=tool_id,
             name=tool_name,
-            category=_tool_category(tool_name),
+            category=_tool_category(tool_name, getattr(self.agent, "tools", None)),
             args=_redact_args(arguments),
             risk=_tool_risk(tool_name),
         )
 
-    def _on_tool_result(self, tool_name: str, result: Dict[str, Any]) -> None:
-        tool_id = getattr(self, "_last_tool_id", f"t_{uuid.uuid4().hex[:12]}")
+    def _on_tool_result(self, tool_name: str, result: Dict[str, Any], tool_id: str = None) -> None:
+        if not tool_id:
+            tool_id = getattr(self, "_last_tool_id", f"t_{uuid.uuid4().hex[:12]}")
         ok = bool(result.get("success", True))
         error = result.get("error") if not ok else None
         preview = _result_preview(result)
@@ -260,6 +313,23 @@ class IPCServer:
             agent=_agent_info_dict(info),
         )
 
+    def _on_agent_tracker_sync(self, info: AgentInfo) -> None:
+        """Push live token/cost/task updates for main + sub-agents to the UI."""
+        self.emit("agent_update", agent=_agent_info_dict(info))
+
+    def _on_thinking_start(self, message: str = None) -> None:
+        """Record start timestamp and emit ``thinking_start``."""
+        self._thinking_start_ms = int(_time.time() * 1000)
+        self.emit("thinking_start")
+
+    def _on_thinking_stop(self, *args: Any, **kwargs: Any) -> None:
+        """Compute real elapsed time and emit ``thinking_end`` with it."""
+        elapsed = 0
+        if self._thinking_start_ms:
+            elapsed = int(_time.time() * 1000) - self._thinking_start_ms
+            self._thinking_start_ms = 0
+        self.emit("thinking_end", elapsedMs=elapsed)
+
     # -- inbound (stdin) ------------------------------------------------------
 
     async def _read_commands(self) -> None:
@@ -274,6 +344,11 @@ class IPCServer:
             logger.error("Failed to hook stdin: %s", e)
             return
 
+        # Commands must dispatch concurrently: ``send_message`` holds the
+        # coroutine open for the entire agentic turn (including awaiting
+        # ``tool_approval_resp``), so if we awaited dispatch serially the
+        # approval reply would never be read and the turn would deadlock.
+        pending: set[asyncio.Task] = set()
         while not self._exit.is_set():
             try:
                 line = await reader.readline()
@@ -290,7 +365,9 @@ class IPCServer:
                 continue
             if msg.get("kind") != "cmd":
                 continue
-            await self._dispatch(msg)
+            task = asyncio.create_task(self._dispatch(msg))
+            pending.add(task)
+            task.add_done_callback(pending.discard)
 
     async def _dispatch(self, msg: Dict[str, Any]) -> None:
         cmd = msg.get("cmd")
@@ -437,12 +514,16 @@ async def _cmd_set_reasoning(server: IPCServer, msg: Dict[str, Any]) -> None:
             message=f"Invalid reasoning effort: {effort!r}. Use high|medium|low|none.",
         )
         return
-    # The agent may or may not have a reasoning attribute depending on the
-    # active provider; set it if present, otherwise just acknowledge.
-    try:
-        setattr(server.agent, "reasoning_effort", effort)
-    except Exception:
-        pass
+    # Persist in config so the next provider creation inherits the value.
+    server.agent.config.reasoning_effort = effort
+    # Also patch the live provider directly so the change takes effect on the
+    # very next LLM call without requiring a model switch or restart.
+    provider = getattr(server.agent, "provider", None)
+    if provider is not None:
+        try:
+            setattr(provider, "reasoning_effort", effort)
+        except Exception:
+            pass
     server.emit("reasoning_changed", effort=effort)
     server.emit("info", message=f"Reasoning effort → {effort}")
 
@@ -482,6 +563,123 @@ async def _cmd_get_state(server: IPCServer, msg: Dict[str, Any]) -> None:
         server.emit("agent_update", agent=_agent_info_dict(info))
 
 
+def _format_plan_message(plan: Dict[str, Any]) -> str:
+    """Plain-text summary for UI toast (matches `plan` tool show semantics)."""
+    title = plan.get("title") or "Untitled"
+    steps = plan.get("steps") or []
+    total = len(steps)
+    try:
+        current = int(plan.get("current_step", 0))
+    except (TypeError, ValueError):
+        current = 0
+    completed = sum(1 for s in steps if s.get("status") == "done")
+    cur_desc = (
+        steps[current]["description"]
+        if current < total
+        else "All steps completed"
+    )
+    lines = [
+        f"Plan: {title}",
+        f"Progress: {completed}/{total} steps · current: {cur_desc}",
+        "",
+    ]
+    for i, s in enumerate(steps):
+        mark = "✓" if s.get("status") == "done" else "○"
+        prefix = "→" if i == current and i < total else " "
+        desc = s.get("description", "")
+        lines.append(f"  {prefix}{mark} {i + 1}. {desc}")
+    return "\n".join(lines)
+
+
+async def _cmd_get_plan(server: IPCServer, msg: Dict[str, Any]) -> None:
+    pr = getattr(server.agent.config, "project_root", None) or "."
+    config = config_manager.load_project_config(pr)
+    plan_path = Path(config.project_root).resolve() / ".coderAI" / "current_plan.json"
+    if not plan_path.exists():
+        server.emit(
+            "info",
+            message="No active execution plan. The agent can create one with the plan tool.",
+        )
+        return
+    try:
+        with open(plan_path, "r", encoding="utf-8") as f:
+            plan = json.load(f)
+    except Exception as e:
+        server.emit("warning", message=f"Could not read plan: {e}")
+        return
+    if not isinstance(plan, dict):
+        server.emit("warning", message="Invalid plan file.")
+        return
+    server.emit("info", message=_format_plan_message(plan))
+
+
+async def _cmd_reference(server: IPCServer, msg: Dict[str, Any]) -> None:
+    """Emit long-form help text (models, cost, system status, config, info, tasks)."""
+    from .chat_reference import build_tasks_text, resolve_reference_text
+
+    topic = str(msg.get("topic", "")).strip()
+    if not topic:
+        server.emit(
+            "warning",
+            message="Missing topic. Try /version, /models, /cost, /system, /config, /info, /tasks.",
+        )
+        return
+    t = topic.lower()
+    if t in ("tasks", "todos", "task"):
+        pr = getattr(server.agent.config, "project_root", None) or "."
+        try:
+            text = await build_tasks_text(pr)
+        except Exception as e:
+            server.emit("warning", message=f"Tasks: {e}")
+            return
+        server.emit("info", message=text)
+        return
+    try:
+        text = resolve_reference_text(t, server.agent)
+    except ValueError as e:
+        server.emit("warning", message=str(e))
+        return
+    except Exception as e:
+        server.emit("warning", message=f"Reference failed: {e}")
+        return
+    server.emit("info", message=text)
+
+
+async def _cmd_set_default_model(server: IPCServer, msg: Dict[str, Any]) -> None:
+    """Persist default_model in global config (like ``coderAI set-model``)."""
+    from ..llm.anthropic import MODEL_ALIASES
+    from ..llm.deepseek import DeepSeekProvider
+    from ..llm.groq import GroqProvider
+    from ..llm.openai import OpenAIProvider
+
+    model_name = str(msg.get("model") or "").strip()
+    if not model_name:
+        server.emit("warning", message="Usage: /default <model>")
+        return
+
+    valid_models = (
+        list(OpenAIProvider.SUPPORTED_MODELS.keys())
+        + list(MODEL_ALIASES.keys())
+        + list(GroqProvider.SUPPORTED_MODELS.keys())
+        + list(DeepSeekProvider.SUPPORTED_MODELS.keys())
+        + ["lmstudio", "ollama"]
+    )
+    if model_name not in valid_models:
+        server.emit(
+            "warning",
+            message=(
+                f"Invalid model name: {model_name}. "
+                "Use /models for groups; names must match provider IDs exactly."
+            ),
+        )
+        return
+    config_manager.set("default_model", model_name)
+    server.emit(
+        "info",
+        message=f"Saved default model → {model_name} (applies to new chat sessions)",
+    )
+
+
 async def _cmd_exit(server: IPCServer, msg: Dict[str, Any]) -> None:
     server.emit("goodbye", reason="user")
     server._said_goodbye = True
@@ -498,5 +696,8 @@ _COMMAND_HANDLERS: Dict[str, Callable[[IPCServer, Dict[str, Any]], Awaitable[Non
     "clear_context": _cmd_clear_context,
     "compact_context": _cmd_compact_context,
     "get_state": _cmd_get_state,
+    "get_plan": _cmd_get_plan,
+    "reference": _cmd_reference,
+    "set_default_model": _cmd_set_default_model,
     "exit": _cmd_exit,
 }

@@ -115,6 +115,18 @@ export class AgentClient extends EventEmitter {
     return this.send({cmd: "get_state"});
   }
 
+  getPlan(): string {
+    return this.send({cmd: "get_plan"});
+  }
+
+  reference(topic: string): string {
+    return this.send({cmd: "reference", topic});
+  }
+
+  setDefaultModel(model: string): string {
+    return this.send({cmd: "set_default_model", model});
+  }
+
   compactContext(): string {
     return this.send({cmd: "compact_context"});
   }
@@ -129,17 +141,24 @@ export class AgentClient extends EventEmitter {
 
   async stop(): Promise<void> {
     if (!this.child) return;
-    this.exit();
-    await new Promise<void>((resolve) => {
+    // Register the exit listener BEFORE sending the exit command so we cannot
+    // miss the event if the child exits very quickly after receiving it.
+    const exitPromise = new Promise<void>((resolve) => {
       const timeout = setTimeout(() => {
         this.child?.kill("SIGKILL");
         resolve();
       }, 2000);
-      this.child?.once("exit", () => {
+      this.child!.once("exit", () => {
         clearTimeout(timeout);
         resolve();
       });
     });
+    try {
+      this.exit();
+    } catch {
+      // Child may have already exited; best effort.
+    }
+    await exitPromise;
     this.child = null;
     this.rl?.close();
     this.rl = null;

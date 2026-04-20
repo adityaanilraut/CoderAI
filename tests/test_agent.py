@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -220,7 +221,10 @@ class TestAgentPersonaSwitching:
             applied = agent.set_persona("reviewer")
 
         assert applied is persona
-        assert agent.session.messages[0].content.startswith("You are a reviewer.")
+        content = agent.session.messages[0].content
+        assert "You are a reviewer." in content
+        assert "## Available Tools" in content
+        assert "## Strategy for Common Tasks" in content
         assert "read_file" in agent.tools.tools
         assert "write_file" not in agent.tools.tools
 
@@ -237,10 +241,7 @@ class TestAgentProjectRules:
             from coderAI.agent import Agent
 
             with patch.object(Agent, "_create_provider", return_value=MagicMock()):
-                agent = Agent(model="gpt-5-mini", streaming=False)
-                # Mock registry
-                agent.tools = MagicMock()
-                return agent
+                return Agent(model="gpt-5-mini", streaming=False)
 
     def test_get_system_prompt_with_rules(self):
         agent = self._make_agent()
@@ -254,14 +255,117 @@ class TestAgentProjectRules:
         mock_rules_dir.is_dir.return_value = True
         mock_rules_dir.glob.return_value = [mock_rule_file]
 
-        from coderAI.system_prompt import SYSTEM_PROMPT
+        from coderAI.system_prompt import SYSTEM_PROMPT_INTRO
 
         with patch("pathlib.Path", side_effect=lambda *args: mock_rules_dir if ".coderAI" in args else MagicMock()):
             prompt = agent._get_system_prompt()
-            assert SYSTEM_PROMPT in prompt
+            assert SYSTEM_PROMPT_INTRO in prompt
+            assert "## Available Tools" in prompt
             assert "## Project Specific Rules" in prompt
             assert "### Rule: testing.md" in prompt
             assert "Always write pytest tests." in prompt
+
+    def test_get_system_prompt_omits_web_tools_when_disabled(self):
+        with patch("coderAI.agent.config_manager") as cm:
+            from coderAI.config import Config
+
+            cfg = Config(web_tools_in_main=False)
+            cm.load.return_value = cfg
+            cm.load_project_config.return_value = cfg
+            from coderAI.agent import Agent
+
+            with patch.object(Agent, "_create_provider", return_value=MagicMock()):
+                agent = Agent(model="gpt-5-mini", streaming=False)
+                prompt = agent._get_system_prompt()
+        assert "web_search" not in prompt
+        assert "read_url" not in prompt
+        assert "## Available Tools" in prompt
+        assert "available to you right now" not in prompt
+        assert "If web tools are listed under **Available Tools**" in prompt
+
+    def test_get_system_prompt_includes_web_tools_when_enabled(self):
+        with patch("coderAI.agent.config_manager") as cm:
+            from coderAI.config import Config
+
+            cfg = Config(web_tools_in_main=True)
+            cm.load.return_value = cfg
+            cm.load_project_config.return_value = cfg
+            from coderAI.agent import Agent
+
+            with patch.object(Agent, "_create_provider", return_value=MagicMock()):
+                agent = Agent(model="gpt-5-mini", streaming=False)
+                prompt = agent._get_system_prompt()
+        assert "web_search" in prompt
+        assert "read_url" in prompt
+
+    def test_get_system_prompt_includes_web_tools_for_subagent_when_main_config_off(self):
+        with patch("coderAI.agent.config_manager") as cm:
+            from coderAI.config import Config
+
+            cfg = Config(web_tools_in_main=False)
+            cm.load.return_value = cfg
+            cm.load_project_config.return_value = cfg
+            from coderAI.agent import Agent
+
+            with patch.object(Agent, "_create_provider", return_value=MagicMock()):
+                agent = Agent(model="gpt-5-mini", streaming=False, is_subagent=True)
+                prompt = agent._get_system_prompt()
+        assert "web_search" in prompt
+
+
+class TestRepositoryPromptHygiene:
+    """Regression checks for repo-local personas and prompt content."""
+
+    def test_persona_files_do_not_reference_stale_product_specific_commands(self):
+        root = Path(__file__).resolve().parents[1]
+        agents_dir = root / ".coderAI" / "agents"
+
+        banned_markers = [
+            ".claude/rules",
+            "claude /mail",
+            "claude /slack",
+            "claude /today",
+            "claude /schedule-reply",
+            "/harness-audit",
+            "/update-codemaps",
+            "/update-docs",
+            "gmail send",
+            "conversations_add_message",
+            "gog gmail",
+            "gog calendar",
+            "calendar-suggest.js",
+        ]
+
+        for path in agents_dir.glob("*.md"):
+            text = path.read_text(encoding="utf-8").lower()
+            for marker in banned_markers:
+                assert marker not in text, f"{path.name} still references '{marker}'"
+
+    def test_persona_skill_references_resolve_to_real_project_skills(self):
+        root = Path(__file__).resolve().parents[1]
+        agents_dir = root / ".coderAI" / "agents"
+        skills_dir = root / ".coderAI" / "skills"
+        available_skills = {path.stem for path in skills_dir.glob("*.md")}
+
+        pattern = r"skill:\s*`([^`]+)`"
+
+        for path in agents_dir.glob("*.md"):
+            text = path.read_text(encoding="utf-8")
+            refs = set(re.findall(pattern, text, flags=re.IGNORECASE))
+            missing = sorted(ref for ref in refs if ref not in available_skills)
+            assert not missing, f"{path.name} references missing skills: {missing}"
+
+    def test_persona_descriptions_do_not_claim_automatic_activation(self):
+        root = Path(__file__).resolve().parents[1]
+        agents_dir = root / ".coderAI" / "agents"
+
+        for path in agents_dir.glob("*.md"):
+            text = path.read_text(encoding="utf-8")
+            if not text.startswith("---"):
+                continue
+            frontmatter = text.split("---", 2)[1].lower()
+            assert "must be used" not in frontmatter, f"{path.name} description overpromises routing"
+            assert "automatically activated" not in frontmatter, f"{path.name} description overpromises routing"
 
 
 class TestProcessMessageAfterCancel:

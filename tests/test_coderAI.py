@@ -121,6 +121,26 @@ class TestSearchReplaceTool:
         )
         assert result["success"] is False
 
+    def test_empty_path_rejected(self):
+        from coderAI.tools.filesystem import SearchReplaceTool
+
+        tool = SearchReplaceTool()
+        result = asyncio.run(
+            tool.execute(path="", search="x", replace="y")
+        )
+        assert result["success"] is False
+        assert "path is required" in result["error"].lower()
+
+    def test_empty_search_rejected(self, sample_file):
+        from coderAI.tools.filesystem import SearchReplaceTool
+
+        tool = SearchReplaceTool()
+        result = asyncio.run(
+            tool.execute(path=sample_file, search="", replace="y")
+        )
+        assert result["success"] is False
+        assert "search text" in result["error"].lower()
+
 
 class TestListDirectoryTool:
     """Tests for ListDirectoryTool."""
@@ -339,7 +359,7 @@ class TestConfig:
         from coderAI.config import Config
 
         config = Config()
-        assert config.default_model == "lmstudio"
+        assert config.default_model == "claude-4-sonnet"
         assert config.temperature == 0.7
         assert config.streaming is True
         assert config.save_history is True
@@ -510,6 +530,19 @@ class TestMemoryTools:
 class TestSystemPrompt:
     """Tests for the system prompt."""
 
+    @staticmethod
+    def _full_tool_registry():
+        """Registry with every discoverable tool plus ``manage_context``."""
+        from coderAI.context import ContextManager
+        from coderAI.tools.base import ToolRegistry
+        from coderAI.tools.context_manage import ManageContextTool
+        from coderAI.tools.discovery import discover_tools
+
+        reg = ToolRegistry()
+        discover_tools(reg)
+        reg.register(ManageContextTool(ContextManager()))
+        return reg
+
     def test_system_prompt_exists(self):
         from coderAI.system_prompt import SYSTEM_PROMPT
 
@@ -517,25 +550,24 @@ class TestSystemPrompt:
         assert len(SYSTEM_PROMPT) > 100
 
     def test_system_prompt_mentions_tools(self):
-        from coderAI.system_prompt import SYSTEM_PROMPT
+        from coderAI.system_prompt import compose_default_system_prompt
 
-        # Original tools
-        assert "read_file" in SYSTEM_PROMPT
-        assert "write_file" in SYSTEM_PROMPT
-        assert "run_command" in SYSTEM_PROMPT
-        assert "git_status" in SYSTEM_PROMPT
-        assert "text_search" in SYSTEM_PROMPT
-        assert "web_search" in SYSTEM_PROMPT
-        # New tools added in prompt rewrite
-        assert "delegate_task" in SYSTEM_PROMPT
-        assert "lint" in SYSTEM_PROMPT
-        assert "read_image" in SYSTEM_PROMPT
-        assert "manage_tasks" in SYSTEM_PROMPT
+        text = compose_default_system_prompt(self._full_tool_registry())
+        assert "read_file" in text
+        assert "write_file" in text
+        assert "run_command" in text
+        assert "git_status" in text
+        assert "text_search" in text
+        assert "web_search" in text
+        assert "delegate_task" in text
+        assert "lint" in text
+        assert "read_image" in text
+        assert "manage_tasks" in text
 
     def test_system_prompt_has_agentic_guidance(self):
         from coderAI.system_prompt import SYSTEM_PROMPT
 
-        # Agentic reasoning / planning keywords
+        # Agentic reasoning / planning keywords (static narrative tail)
         assert "step-by-step" in SYSTEM_PROMPT.lower()
         assert "Search before" in SYSTEM_PROMPT or "search before" in SYSTEM_PROMPT.lower()
         assert "Verify after" in SYSTEM_PROMPT or "verify after" in SYSTEM_PROMPT.lower()
@@ -925,14 +957,15 @@ class TestMCPTools:
 
 
 class TestUpdatedSystemPrompt:
-    """Tests that the system prompt mentions all new tools."""
+    """Tests that composed prompt mentions tools registered in the full registry."""
 
     def test_system_prompt_mentions_new_tools(self):
-        from coderAI.system_prompt import SYSTEM_PROMPT
+        from coderAI.system_prompt import compose_default_system_prompt
 
-        assert "mcp_connect" in SYSTEM_PROMPT
-        assert "undo" in SYSTEM_PROMPT
-        assert "project_context" in SYSTEM_PROMPT
+        text = compose_default_system_prompt(TestSystemPrompt._full_tool_registry())
+        assert "mcp_connect" in text
+        assert "undo" in text
+        assert "project_context" in text
 
 
 # ============================================================================

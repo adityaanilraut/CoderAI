@@ -201,7 +201,7 @@ class WebSearchTool(Tool):
     is_read_only = True
     parameters_model = WebSearchParams
 
-    DDG_URL = "https://html.duckduckgo.com/html/"
+    DDG_URL = "https://html.duckduckgo.com/lite/"
 
     # ---- public entry point --------------------------------------------------
 
@@ -289,37 +289,22 @@ class WebSearchTool(Tool):
     def _parse_results(
         self, html_text: str, max_results: int
     ) -> List[Dict[str, str]]:
-        """Parse search results from DuckDuckGo HTML page."""
+        """Parse search results from DuckDuckGo Lite page."""
         results: List[Dict[str, str]] = []
-        blocks = re.split(
-            r'<div class="[^"]*result__body[^"]*">', html_text
-        )[1:]
-
-        for block in blocks:
+        
+        pattern = r"<a[^>]+href=[\'\"]([^\'\"]+)[\'\"][^>]*class=[\'\"]result-link[\'\"][^>]*>(.*?)</a>(.*?)(?:<td class=[\'\"]result-snippet[\'\"]>|<a class=[\'\"]result-snippet)(.*?)(?:</td>|</a>)"
+        
+        for m in re.finditer(pattern, html_text, re.IGNORECASE | re.DOTALL):
             if len(results) >= max_results:
                 break
 
-            title_match = re.search(
-                r'<a[^>]+class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
-                block,
-                re.IGNORECASE | re.DOTALL,
-            )
-            if not title_match:
-                continue
-
-            raw_url = html_lib.unescape(title_match.group(1))
+            raw_url = html_lib.unescape(m.group(1))
             url = _resolve_ddg_url(raw_url)
-            title = _strip_tags(title_match.group(2))
+            title = _strip_tags(m.group(2))
+            snippet = _strip_tags(m.group(4))
 
             if not url.startswith("http"):
                 continue
-
-            snippet_match = re.search(
-                r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>',
-                block,
-                re.IGNORECASE | re.DOTALL,
-            )
-            snippet = _strip_tags(snippet_match.group(1)) if snippet_match else ""
 
             results.append({
                 "title": title,

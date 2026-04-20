@@ -1,6 +1,5 @@
 """Anthropic/Claude LLM provider implementation."""
 
-import asyncio
 import json
 import logging
 import ssl
@@ -93,15 +92,6 @@ class AnthropicProvider(LLMProvider):
         """Close the HTTP session."""
         if self._session and not self._session.closed:
             await self._session.close()
-
-    def __del__(self):
-        """Best-effort cleanup of the HTTP session on garbage collection."""
-        if self._session and not self._session.closed:
-            try:
-                loop = asyncio.get_running_loop()
-                loop.create_task(self._session.close())
-            except RuntimeError:
-                pass  # No running loop at GC time; session will be cleaned up by the OS
 
     def _get_headers(self) -> Dict[str, str]:
         """Get API headers."""

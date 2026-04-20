@@ -56,7 +56,7 @@ export function AgentTable({agents}: {agents: AgentInfo[]}) {
         <AgentNode
           key={r.id}
           agent={r}
-          childrenList={childrenOf(r.id)}
+          allAgents={active}
           depth={0}
           isLast={idx === roots.length - 1}
         />
@@ -67,15 +67,16 @@ export function AgentTable({agents}: {agents: AgentInfo[]}) {
 
 function AgentNode({
   agent,
-  childrenList,
+  allAgents,
   depth,
   isLast,
 }: {
   agent: AgentInfo;
-  childrenList: AgentInfo[];
+  allAgents: AgentInfo[];
   depth: number;
   isLast: boolean;
 }) {
+  const childrenList = allAgents.filter((a) => a.parentId === agent.id);
   const indent = "  ".repeat(depth);
   const prefix = depth === 0 ? "◆" : isLast ? "└─" : "├─";
   return (
@@ -102,7 +103,7 @@ function AgentNode({
         <AgentNode
           key={c.id}
           agent={c}
-          childrenList={[]}
+          allAgents={allAgents}
           depth={depth + 1}
           isLast={i === childrenList.length - 1}
         />

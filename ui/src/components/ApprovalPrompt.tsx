@@ -25,10 +25,18 @@ export function ApprovalPrompt({
   active,
   onDecide,
 }: ApprovalPromptProps) {
+  // 0 = Approve, 1 = Deny
+  const [focus, setFocus] = React.useState(0);
+
   useInput(
-    (input) => {
+    (input, key) => {
       if (input === "y" || input === "Y") onDecide(true);
       else if (input === "n" || input === "N") onDecide(false);
+      else if (key.leftArrow || key.rightArrow || key.tab) {
+        setFocus((f) => (f === 0 ? 1 : 0));
+      } else if (key.return) {
+        onDecide(focus === 0);
+      }
     },
     {isActive: active && decided === "pending"},
   );
@@ -70,17 +78,50 @@ export function ApprovalPrompt({
           ) : null}
         </Text>
       </Box>
+
       {decided === "pending" ? (
-        <Box marginTop={0}>
-          <Text color={theme.accent}>
-            Press <Text bold>y</Text> to approve ·{" "}
-            <Text bold>n</Text> to deny
-          </Text>
+        <Box marginTop={1}>
+          {/* Approve Button */}
+          <Box paddingX={1}>
+            <Text
+              backgroundColor={focus === 0 ? theme.success : undefined}
+              color={focus === 0 ? "black" : theme.success}
+              bold={focus === 0}
+            >
+              {" Accept [y] "}
+            </Text>
+          </Box>
+
+          <Box marginX={2}>
+            <Text color={theme.muted}>|</Text>
+          </Box>
+
+          {/* Deny Button */}
+          <Box paddingX={1}>
+            <Text
+              backgroundColor={focus === 1 ? theme.danger : undefined}
+              color={focus === 1 ? "black" : theme.danger}
+              bold={focus === 1}
+            >
+              {" Deny [n] "}
+            </Text>
+          </Box>
+
+          <Box marginX={2}>
+            <Text color={theme.muted}>
+              (use arrows/tab to navigate, enter to confirm)
+            </Text>
+          </Box>
         </Box>
       ) : (
-        <Box marginTop={0}>
-          <Text color={decided === "approved" ? theme.success : theme.danger}>
-            {decided === "approved" ? "✓ approved" : "✗ denied"}
+        <Box marginTop={1}>
+          <Text
+            color={decided === "approved" ? theme.success : theme.danger}
+            bold
+          >
+            {decided === "approved" 
+              ? "✓ Approved and executing..." 
+              : "✗ Denied and skipped"}
           </Text>
         </Box>
       )}

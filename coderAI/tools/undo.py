@@ -247,8 +247,21 @@ class FileBackupStore:
         self._save_index()
 
 
-# Global backup store
-backup_store = FileBackupStore()
+# Lazy-initialized backup store to avoid side effects on import
+_backup_store: "FileBackupStore | None" = None
+
+
+def get_backup_store() -> FileBackupStore:
+    """Get or create the global backup store (lazy init)."""
+    global _backup_store
+    if _backup_store is None:
+        _backup_store = FileBackupStore()
+    return _backup_store
+
+
+# Backward-compat alias — prefer get_backup_store() for new code
+# (module-level @property is not valid; use the getter directly)
+backup_store = get_backup_store
 
 
 class UndoParams(BaseModel):
@@ -265,8 +278,8 @@ class UndoTool(Tool):
     async def execute(self, index: int = None) -> Dict[str, Any]:
         """Undo a file operation."""
         if index is not None:
-            return backup_store.undo_specific(index)
-        return backup_store.undo_last()
+            return get_backup_store().undo_specific(index)
+        return get_backup_store().undo_last()
 
 
 class UndoHistoryParams(BaseModel):
@@ -283,7 +296,7 @@ class UndoHistoryTool(Tool):
 
     async def execute(self, limit: int = 10) -> Dict[str, Any]:
         """Get undo history."""
-        history = backup_store.get_history(limit)
+        history = get_backup_store().get_history(limit)
         return {
             "success": True,
             "entries": history,

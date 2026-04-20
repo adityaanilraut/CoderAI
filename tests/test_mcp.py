@@ -36,6 +36,25 @@ class TestMCPClient:
         assert tools[0]["function"]["name"] == "mcp__myserver__mytool"
         assert "myserver" in tools[0]["function"]["description"]
 
+    def test_get_tools_normalizes_string_root_schema(self):
+        self.client.discovered_tools = [
+            {
+                "server": "s",
+                "name": "t",
+                "description": "d",
+                "input_schema": {"type": "string"},
+            }
+        ]
+        tools = self.client.get_tools_as_openai_format()
+        p = tools[0]["function"]["parameters"]
+        assert p.get("type") == "object"
+        assert "value" in p.get("properties", {})
+
+    def test_connect_rejects_server_name_with_reserved_separator(self):
+        result = asyncio.run(self.client.connect_stdio("bad__srv", "echo", []))
+        assert not result["success"]
+        assert "server_name" in result["error"].lower() or "__" in result["error"]
+
     def test_call_tool_not_connected(self):
         result = asyncio.run(
             self.client.call_tool("notconnected", "sometool", {})

@@ -17,11 +17,15 @@ export function Toast({
         : theme.info;
   const icon =
     level === "success" ? "✓" : level === "warning" ? "⚠" : "ℹ";
+  const lines = message.split("\n");
   return (
-    <Box marginBottom={0}>
-      <Text color={color}>
-        {icon} {message}
-      </Text>
+    <Box marginBottom={0} flexDirection="column">
+      {lines.map((line, i) => (
+        <Text key={i} color={color}>
+          {i === 0 ? `${icon} ` : "   "}
+          {line}
+        </Text>
+      ))}
     </Box>
   );
 }

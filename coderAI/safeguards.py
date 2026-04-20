@@ -67,7 +67,17 @@ _NON_INTERACTIVE_INDICATORS = (
     " --help", " -h",
     " --check", " --dry-run",
     " -f ",                   # psql -f script.sql
+    "<<",                     # shell heredoc (finite script)
 )
+
+
+def _token_is_shell_dash_c(token: str) -> bool:
+    """True if a shell argv token runs a -c script (incl. combined flags like -lc)."""
+    if token in ("-c",) or token.startswith("--command"):
+        return True
+    if token.startswith("-") and not token.startswith("--") and len(token) > 1:
+        return "c" in token[1:]
+    return False
 
 
 def is_interactive_command(command: str) -> bool:
@@ -125,18 +135,21 @@ def is_interactive_command(command: str) -> bool:
     # (e.g. a filename) → non-interactive for interpreters
     first_arg = remaining_args[0]
 
-    # For shells (bash, zsh, sh) without -c flag, bare invocation is interactive
+    # For shells: -c / -lc / bash script.sh vs interactive shell
     if binary in ("bash", "zsh", "sh", "fish", "csh", "tcsh"):
-        # bash script.sh → non-interactive
-        if not first_arg.startswith("-"):
+        if any(_token_is_shell_dash_c(a) for a in remaining_args):
             return False
+        if not first_arg.startswith("-"):
+            return False  # bash script.sh
         return True
 
-    # For interpreters: a positional file argument → non-interactive
+    # For interpreters: stdin (-), script file, or flags
     if binary in ("python", "python3", "python2", "node", "bun", "lua",
                    "luajit", "julia", "ruby", "irb", "R", "r", "scala"):
+        if first_arg == "-":
+            return False  # read script from stdin (incl. heredoc after shell expansion)
         if not first_arg.startswith("-"):
-            return False  # Has a script filename
+            return False  # script filename
         return True
 
     # Editors / TUIs / monitors are always interactive regardless of args

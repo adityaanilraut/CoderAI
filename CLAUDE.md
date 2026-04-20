@@ -42,7 +42,15 @@ package implements the agent and one-shot utility commands, and the
 interactive chat UI is a TypeScript + React (Ink) app compiled to a
 standalone per-platform binary. The two halves talk over NDJSON on stdio.
 
-The main execution loop lives in `coderAI/agent.py` (`Agent.process_message()`):
+The orchestration is split across four modules so each concern is independently testable:
+
+- `coderAI/agent.py` — `Agent` class: lifecycle, persona loading, provider wiring, session state, sub-agent spawning.
+- `coderAI/agent_loop.py` — the per-turn execution loop (retry/backoff for transient LLM errors, JSON-arg coercion, iteration cap). Constants: `MAX_RETRIES_PER_ITERATION=3`, `MAX_CONSECUTIVE_ERRORS=3`, transient-error regex for 429/5xx.
+- `coderAI/tool_executor.py` — `ToolExecutor`: confirmation UX for gated tools. Routes through the IPC server when the Ink UI is attached, otherwise prompts in the terminal.
+- `coderAI/tool_routing.py` — dispatches a tool-call `function.name` to either `ToolRegistry` or an MCP server. MCP functions use the wire format `mcp__<server>__<tool>` (server must not contain `__`; tool may).
+- `coderAI/context_controller.py` — token estimation, truncation, summarization. Reserves `RESPONSE_TOKEN_RESERVE=1024` and `TOOL_OVERHEAD_TOKENS=512` when budgeting.
+
+Per-turn flow (`Agent.process_message()` → `agent_loop`):
 
 1. User input → inject pinned context → proactive context compression if >70% full
 2. LLM call with retry logic (max 3 retries, exponential backoff for transient errors)
@@ -69,8 +77,11 @@ The main execution loop lives in `coderAI/agent.py` (`Agent.process_message()`):
 - `coderAI/ipc/jsonrpc_server.py` — NDJSON event/command bridge between the Python agent and the Ink UI. See [`ui/PROTOCOL.md`](ui/PROTOCOL.md).
 - `coderAI/ipc/streaming.py` — `IPCStreamingHandler`: mirrors the old Rich streaming-handler contract but emits `stream_delta` events over the bridge.
 - `coderAI/ipc/entry.py` — `python -m coderAI.ipc.entry` entry point invoked by the Ink binary. Honors `CODERAI_MODEL`, `CODERAI_RESUME`, `CODERAI_AUTO_APPROVE`.
-- `coderAI/llm/` — LLM providers (openai, anthropic, groq, deepseek, lmstudio, ollama), all extending `base.LLMProvider`.
-- `coderAI/tools/` — 35+ tools extending `tools/base.Tool`, registered in `ToolRegistry`.
+- `coderAI/llm/` — LLM providers (openai, anthropic, groq, deepseek, lmstudio, ollama), all extending `base.LLMProvider`. Instantiation goes through `llm/factory.py::create_provider(model, config)` — do not construct providers directly from `agent.py`.
+- `coderAI/tools/` — 35+ tools extending `tools/base.Tool`. Registration is automatic via `tools/discovery.py::discover_tools()`, which walks the `coderAI.tools` package and instantiates every `Tool` subclass whose `__init__` takes no required args. Tools requiring constructor args (e.g. `ManageContextTool`, which needs the `Agent`) are registered manually in `Agent`.
+- `coderAI/safeguards.py` — reusable validators that run before dangerous actions: interactive-command detection (blocks REPLs invoked via non-interactive pipes), project-directory validation, git-scope guards (prevent operations leaking to a parent repo), staging blocklist for junk files (`.DS_Store`, `__pycache__`, `.coderAI/`, …).
+- `coderAI/project_layout.py` — `find_dot_coderai_subdir()` resolves `.coderAI/<subdir>` across project root, cwd, and the package dir (for dev installs). Use this instead of hardcoding `.coderAI/` paths.
+- `coderAI/ipc/chat_reference.py` — plain-text renderings of `models`, `cost`, `status`, `config show`, `info`, `tasks list` for the Ink UI slash commands (keeps Ink free of Rich dependencies).
 - `coderAI/ui/` — Rich helpers for one-shot CLI commands only (`display.py`). The interactive Rich chat loop was removed when Ink became the sole interactive UI.
 - `coderAI/config.py` — Pydantic-based `ConfigManager` reading from `~/.coderAI/config.json` then env vars.
 - `coderAI/agents.py` — `AgentPersona` loader for `.coderAI/agents/*.md` files with YAML frontmatter.
@@ -90,8 +101,13 @@ The main execution loop lives in `coderAI/agent.py` (`Agent.process_message()`):
 - `search.py` — text_search, grep
 - `web.py` — web_search (DuckDuckGo), read_url, download_file
 - `subagent.py` — delegate_task (max depth 3, retried 2×)
-- `mcp.py` — mcp_connect, mcp_call, mcp_list
+- `mcp.py` — mcp_connect, mcp_call, mcp_list (connected servers expose functions as `mcp__<server>__<tool>`)
 - `undo.py` — undo, undo_history
+- `context_manage.py` — pin/unpin files into the pinned-context manager (takes `Agent` at construction → registered manually)
+- `planning.py`, `tasks.py` — in-session plan + task list management
+- `memory.py`, `notepad.py` — persistent memory + shared inter-agent notepad
+- `skills.py` — `use_skill` loads a workflow from `.coderAI/skills/*.md`
+- `project.py`, `format.py`, `lint.py`, `repl.py`, `vision.py` — project-info, code formatting, linting, Python REPL, image/vision helpers
 
 **Agent personas** are `.md` files in `.coderAI/agents/` with YAML frontmatter (`name`, `description`, `tools`, `model`). Built-in personas: planner, code-reviewer, architect, security-reviewer, tdd-guide, and others. The `delegate_task` tool spawns these as isolated sub-agents.
 
@@ -107,9 +123,11 @@ The main execution loop lives in `coderAI/agent.py` (`Agent.process_message()`):
 ## Interactive chat commands
 
 Inside `coderAI chat` (the Ink UI), slash commands are available:
-`/help`, `/model <name>`, `/tokens`, `/context`, `/compact`, `/agents`, `/clear`, `/exit`.
+`/help`, `/model <name>`, `/tokens`, `/context`, `/compact`, `/agents`, `/auto-approve`, `/clear`, `/exit`.
 These are dispatched by the Ink frontend and map to commands in the
-NDJSON protocol at [`ui/PROTOCOL.md`](ui/PROTOCOL.md).
+NDJSON protocol at [`ui/PROTOCOL.md`](ui/PROTOCOL.md). Read-only reference output
+(`/models`, `/cost`, `/status`, `/info`, `/tasks`, `/config show`) is rendered
+by `coderAI/ipc/chat_reference.py` so Ink never imports Rich.
 
 ## Model Aliases
 
@@ -121,10 +139,11 @@ Current Claude model aliases in `coderAI/agents.py` (and Anthropic provider):
 ## Adding a New LLM Provider
 
 1. Create `coderAI/llm/newprovider.py` implementing `LLMProvider` from `base.py`
-2. Register it in `coderAI/llm/__init__.py` and `coderAI/config.py`
+2. Add a branch in `coderAI/llm/factory.py::create_provider` that matches on model name (or a prefix/SUPPORTED_MODELS set on the class)
+3. Expose config fields in `coderAI/config.py` (API key, endpoint, default model)
 
 ## Adding a New Tool
 
-1. Create a class extending `Tool` in `coderAI/tools/`
-2. Register it in `coderAI/tools/__init__.py` via `ToolRegistry`
-3. Set `is_read_only = True` if safe to run in parallel; set `requires_confirmation = True` for dangerous ops
+1. Create a class extending `Tool` in `coderAI/tools/` with a no-arg `__init__` — `tools/discovery.py` will pick it up automatically
+2. Set `is_read_only = True` if safe to run in parallel; set `requires_confirmation = True` for dangerous ops
+3. If the tool needs the `Agent` (e.g. for pinned context), register it manually in `Agent.__init__` after `discover_tools()` — the discovery walker skips classes whose `__init__` has required args

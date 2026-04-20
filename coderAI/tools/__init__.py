@@ -55,7 +55,7 @@ from .web import WebSearchTool, ReadURLTool, DownloadFileTool
 from .mcp import MCPConnectTool, MCPCallTool, MCPListTool, mcp_client
 
 # Undo / rollback tools
-from .undo import UndoTool, UndoHistoryTool, backup_store
+from .undo import UndoTool, UndoHistoryTool, get_backup_store, backup_store
 
 # Linter
 from .lint import LintTool
@@ -132,6 +132,7 @@ __all__ = [
     "UndoTool",
     "UndoHistoryTool",
     "backup_store",
+    "get_backup_store",
     # Linter
     "LintTool",
     # Formatter
@@ -154,4 +155,7 @@ __all__ = [
     "CreatePlanTool",
     # Notepad
     "NotepadTool",
+    # Factory imports (optional for external consumers)
 ]
+
+

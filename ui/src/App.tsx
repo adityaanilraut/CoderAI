@@ -12,6 +12,7 @@ import {ErrorPanel} from "./components/ErrorPanel.js";
 import {AgentTable} from "./components/AgentTable.js";
 import {Thinking} from "./components/Thinking.js";
 import {Toast} from "./components/Toast.js";
+import {HelpMenu} from "./components/HelpMenu.js";
 import {ApprovalPrompt} from "./components/ApprovalPrompt.js";
 import {theme} from "./theme.js";
 
@@ -24,7 +25,7 @@ const CTRL_C_WINDOW_MS = 1500;
 const NARROW_COLUMNS = 72;
 
 export function App({python, cwd}: AppProps) {
-  const {session, timeline, actions} = useAgent({python, cwd});
+  const {session, timeline, actions, helpMenuOpen} = useAgent({python, cwd});
   const {exit} = useApp();
   const columns = useTerminalColumns();
   const narrow = columns < NARROW_COLUMNS;
@@ -45,9 +46,13 @@ export function App({python, cwd}: AppProps) {
   }, [exitArmed]);
 
   const promptBusy =
-    !session.connected || session.thinking || session.streaming;
+    !session.connected ||
+    session.thinking ||
+    session.streaming ||
+    helpMenuOpen;
 
-  useInput((input, key) => {
+  useInput(
+    (input, key) => {
     if (key.escape && (session.thinking || session.streaming)) {
       actions.cancel();
       return;
@@ -65,7 +70,9 @@ export function App({python, cwd}: AppProps) {
       setExitArmed(true);
       if (session.thinking || session.streaming) actions.cancel();
     }
-  });
+  },
+    {isActive: !helpMenuOpen},
+  );
 
   const agentList = useMemo(
     () => Object.values(session.agents),
@@ -170,6 +177,17 @@ export function App({python, cwd}: AppProps) {
         {session.thinking ? <Thinking active /> : null}
 
         {agentList.length > 0 ? <AgentTable agents={agentList} /> : null}
+
+        {helpMenuOpen ? (
+          <HelpMenu
+            maxWidth={columns}
+            onClose={actions.closeHelpMenu}
+            onPick={(slash) => {
+              actions.closeHelpMenu();
+              actions.send(slash);
+            }}
+          />
+        ) : null}
       </Box>
 
       <Box marginTop={1}>
@@ -177,13 +195,15 @@ export function App({python, cwd}: AppProps) {
           onSubmit={actions.send}
           disabled={promptBusy}
           placeholder={
-            !session.connected
-              ? "starting agent…"
-              : session.thinking
-                ? "thinking…"
-                : session.streaming
-                  ? "streaming…"
-                  : undefined
+            helpMenuOpen
+              ? "Esc closes command menu"
+              : !session.connected
+                ? "starting agent…"
+                : session.thinking
+                  ? "thinking…"
+                  : session.streaming
+                    ? "streaming…"
+                    : undefined
           }
           exitHint={exitArmed}
         />
@@ -260,16 +280,27 @@ function ConnectingSplash() {
   );
 }
 
+const TERMINAL_RESIZE_DEBOUNCE_MS = 80;
+
 function useTerminalColumns(): number {
   const {stdout} = useStdout();
   const [cols, setCols] = useState<number>(stdout?.columns ?? 100);
+  const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (!stdout) return;
-    const onResize = () => setCols(stdout.columns ?? 100);
+    const onResize = () => {
+      const next = stdout.columns ?? 100;
+      if (debounceTimer.current !== null) clearTimeout(debounceTimer.current);
+      debounceTimer.current = setTimeout(() => {
+        debounceTimer.current = null;
+        setCols(next);
+      }, TERMINAL_RESIZE_DEBOUNCE_MS);
+    };
     stdout.on("resize", onResize);
     return () => {
       stdout.off("resize", onResize);
+      if (debounceTimer.current !== null) clearTimeout(debounceTimer.current);
     };
   }, [stdout]);
 

@@ -33,11 +33,9 @@ export function Assistant({
         </Box>
       ) : null}
 
-      {content ? (
-        <Box marginTop={0}>
-          <Text>{content}</Text>
-        </Box>
-      ) : null}
+      <Box marginTop={0}>
+        <Text>{content}</Text>
+      </Box>
     </Box>
   );
 }

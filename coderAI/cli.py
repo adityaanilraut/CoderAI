@@ -34,13 +34,20 @@ def cli(ctx, model, resume, version, verbose):
         click.echo(f"CoderAI version {__version__}")
         sys.exit(0)
 
-    # Set up logging if verbose
-    if verbose:
+    # Set up logging once at the CLI entry point. Level comes from --verbose
+    # when set, otherwise from the loaded config (default: WARNING). We only
+    # configure if no handler is installed yet so embedders can pre-configure.
+    if not logging.getLogger().handlers:
+        if verbose:
+            level = logging.DEBUG
+        else:
+            cfg_level = getattr(config_manager.load(), "log_level", "WARNING")
+            level = getattr(logging, cfg_level, logging.WARNING)
         logging.basicConfig(
-            level=logging.DEBUG,
+            level=level,
             format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         )
-    
+
     # Store options in context for subcommands
     ctx.ensure_object(dict)
     ctx.obj["verbose"] = verbose

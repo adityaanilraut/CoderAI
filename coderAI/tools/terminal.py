@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import re
 import shlex
 import shutil
 import atexit
@@ -16,33 +17,34 @@ logger = logging.getLogger(__name__)
 
 # Commands that are blocked by default for safety.
 #
+# NOTE: Blocklists are a *speed bump*, not real security — the actual safety
+# comes from ``requires_confirmation`` plus the approval UX. We match against
+# normalised tokens so things like ``echo "$(date)"`` are no longer blocked
+# purely because they contain a ``$(`` substring.
+#
 # The shell-wrapper forms (``bash -c``, ``sh -c``, ``zsh -c``) are NOT in
-# this list — they are peeled off by ``_extract_inner_command`` so the
-# inner command gets the same blocklist treatment. Listing them here would
-# make that recursion dead code.
+# this list — ``_extract_inner_command`` peels them off and re-checks the
+# inner command.
 BLOCKED_PATTERNS = [
     "rm -rf /",
     "rm -rf ~",
     "rm -rf /*",
     "mkfs",
     "dd if=",
-    ":(){:|:&};:",
+    ":(){:|:&};:",       # fork bomb
     "> /dev/sda",
     "chmod -R 777 /",
     "shutdown",
     "reboot",
     "halt",
     "format c:",
-    "wget|sh",
-    "curl|sh",
-    "curl|bash",
-    "wget|bash",
-    "eval ",
     "base64 -d",
     "base64 --decode",
-    "$(",
-    "`",
 ]
+
+# Patterns that indicate piping a network fetch straight into a shell.
+# Matched against a whitespace-normalised lowercase command.
+_PIPE_TO_SHELL_RE = re.compile(r"\b(curl|wget)\b[^|]*\|\s*(sh|bash|zsh|fish|python[23]?|node)\b")
 
 # Commands that require user confirmation
 DANGEROUS_PREFIXES = [
@@ -79,8 +81,7 @@ _COMMAND_ALIASES = [
 
 def _normalize_command(command: str) -> str:
     """Normalize command for safety checks: strip, collapse whitespace, lowercase."""
-    import re as _re
-    return _re.sub(r'\s+', ' ', command.strip()).lower()
+    return re.sub(r'\s+', ' ', command.strip()).lower()
 
 
 # Shells that can wrap arbitrary commands — we extract the inner command
@@ -109,6 +110,9 @@ def is_command_blocked(command: str) -> bool:
     cmd_lower = _normalize_command(command)
 
     if any(blocked in cmd_lower for blocked in BLOCKED_PATTERNS):
+        return True
+
+    if _PIPE_TO_SHELL_RE.search(cmd_lower):
         return True
 
     # Check inner command for shell wrappers
@@ -299,7 +303,12 @@ class RunBackgroundTool(Tool):
         RunBackgroundTool._all_instances.add(self)
 
     async def execute(self, command: str, working_dir: str = ".") -> Dict[str, Any]:
-        """Start background process with tracking."""
+        """Start background process with tracking.
+
+        Uses the same exec-vs-shell heuristic as ``run_command`` — plain
+        commands go through ``create_subprocess_exec`` (no shell interpretation),
+        only commands with shell metacharacters fall back to the shell.
+        """
         try:
             if is_command_blocked(command):
                 return {
@@ -311,13 +320,32 @@ class RunBackgroundTool(Tool):
             if is_command_dangerous(command):
                 logger.warning(f"Executing potentially dangerous background command: {command}")
 
-            # Start process, redirect to DEVNULL to prevent pipe deadlocks
-            process = await asyncio.create_subprocess_shell(
-                command,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-                cwd=working_dir,
-            )
+            command = _rewrite_command_aliases(command)
+            needs_shell = any(c in command for c in ['|', '>', '<', '&&', '||', ';', '`', '$', '*', '?', '~', '&'])
+
+            if needs_shell:
+                process = await asyncio.create_subprocess_shell(
+                    command,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                    cwd=working_dir,
+                )
+            else:
+                try:
+                    args = shlex.split(command)
+                    process = await asyncio.create_subprocess_exec(
+                        *args,
+                        stdout=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.DEVNULL,
+                        cwd=working_dir,
+                    )
+                except ValueError:
+                    process = await asyncio.create_subprocess_shell(
+                        command,
+                        stdout=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.DEVNULL,
+                        cwd=working_dir,
+                    )
 
             # Track the process
             self._processes[process.pid] = process

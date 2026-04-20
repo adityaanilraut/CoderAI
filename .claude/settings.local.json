@@ -11,7 +11,26 @@
       "Bash(grep -r 'raise NotImplementedError' /Users/aditya/Documents/CoderAI-main/coderAI --include=*.py)",
       "Bash(ls -1 /Users/aditya/Documents/CoderAI-main/tests/test_*.py)",
       "Bash(xargs -I {} basename {})",
-      "Bash(grep -rn \"class Test\" /Users/aditya/Documents/CoderAI-main/tests/*.py)"
+      "Bash(grep -rn \"class Test\" /Users/aditya/Documents/CoderAI-main/tests/*.py)",
+      "Bash(git -C /Users/adityaraut/Desktop/CoderAI-main status)",
+      "Bash(git -C /Users/adityaraut/Desktop/CoderAI-main diff --stat)",
+      "Bash(git -C /Users/adityaraut/Desktop/CoderAI-main diff coderAI/tools/__init__.py coderAI/llm/__init__.py coderAI/ipc/entry.py coderAI/agent_tracker.py coderAI/config.py)",
+      "Bash(git -C /Users/adityaraut/Desktop/CoderAI-main diff coderAI/ipc/jsonrpc_server.py)",
+      "Bash(git -C /Users/adityaraut/Desktop/CoderAI-main diff ui/src/hooks/useAgent.ts ui/src/components/ApprovalPrompt.tsx ui/src/rpc/agentClient.ts)",
+      "Bash(python *)",
+      "Bash(npx tsc *)",
+      "Bash(./node_modules/.bin/tsc --noEmit)",
+      "Bash(echo \"exit=$?\")",
+      "Bash(bun run *)",
+      "Bash(ruff check *)",
+      "WebFetch(domain:api.anthropic.com)",
+      "Bash(mkdir -p /tmp/design-pkg)",
+      "Read(//tmp/**)",
+      "Bash(gunzip -c /Users/adityaraut/.claude/projects/-Users-adityaraut-Desktop-CoderAI-main/1e7e8eeb-062d-41ba-8a4f-1c8765504a7d/tool-results/webfetch-1776643612239-7bmliu.bin)",
+      "Read(//private/tmp/design-pkg/**)",
+      "Bash(tar -xf design.tar)",
+      "Bash(git *)",
+      "Bash(make lint *)"
     ]
   }
 }

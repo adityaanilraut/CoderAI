@@ -13,15 +13,20 @@ logger = logging.getLogger(__name__)
 
 
 class Config(BaseModel):
-    """Configuration model for CoderAI."""
+    """Configuration model for CoderAI.
 
-    model_config = ConfigDict(extra="allow")
+    Unknown keys are silently ignored (with a warning log) so that stale
+    keys in a user's ``~/.coderAI/config.json`` don't break loading after
+    a schema change.
+    """
+
+    model_config = ConfigDict(extra="ignore")
 
     openai_api_key: Optional[str] = Field(default=None)
     anthropic_api_key: Optional[str] = Field(default=None)
     groq_api_key: Optional[str] = Field(default=None)
     deepseek_api_key: Optional[str] = Field(default=None)
-    default_model: str = Field(default="lmstudio")
+    default_model: str = Field(default="claude-4-sonnet")
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: Optional[int] = Field(default=4096)
     lmstudio_endpoint: str = Field(default="http://localhost:1234/v1")
@@ -40,8 +45,9 @@ class Config(BaseModel):
     max_file_size: int = Field(default=1_048_576)  # 1 MB
     max_glob_results: int = Field(default=200)
     max_command_output: int = Field(default=10_000)  # chars
-    web_tools_in_main: bool = Field(default=False)  # Allow web tools in main agent
+    web_tools_in_main: bool = Field(default=True)  # Allow web tools in main agent
     project_root: str = Field(default=".")
+
 
 
 class ConfigManager:
@@ -93,6 +99,15 @@ class ConfigManager:
                 elif config_key in ["max_tokens", "max_iterations", "max_tool_output"]:
                     value = int(value)
                 config_data[config_key] = value
+
+        # Warn about unknown keys (they'll be dropped by extra="ignore")
+        known_keys = set(Config.model_fields.keys())
+        unknown = set(config_data) - known_keys
+        if unknown:
+            logger.warning(
+                "Ignoring unknown config keys (schema drift?): %s",
+                ", ".join(sorted(unknown)),
+            )
 
         self._config = Config(**config_data)
         return self._config

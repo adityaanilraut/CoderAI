@@ -63,9 +63,14 @@ class TestIsInteractiveCommand:
             "ls -la",
             "cat file.txt",
             "bash script.sh",
+            "bash -c 'echo 1'",
+            "bash -lc 'echo 1'",
+            "zsh -c 'echo 1'",
             "python -m http.server",
             "psql -f script.sql",
             "python3 --help",
+            "python -",
+            "node -",
         ],
     )
     def test_non_interactive_commands_allowed(self, cmd):
@@ -82,6 +87,15 @@ class TestIsInteractiveCommand:
     def test_env_prefix_handled(self):
         assert is_interactive_command("env python")
         assert not is_interactive_command("env python script.py")
+
+    def test_shell_combined_dash_c_non_interactive(self):
+        assert not is_interactive_command("bash -lc 'echo ok'")
+
+    def test_shell_login_without_c_still_interactive(self):
+        assert is_interactive_command("bash -l")
+
+    def test_heredoc_not_interactive(self):
+        assert not is_interactive_command("python - <<'PY'\nprint(1)\nPY")
 
 
 # ============================================================================

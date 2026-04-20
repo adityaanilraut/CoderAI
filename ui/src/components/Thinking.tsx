@@ -13,7 +13,7 @@ export function Thinking({active}: {active: boolean}) {
       return;
     }
     const start = Date.now();
-    const interval = setInterval(() => setMs(Date.now() - start), 100);
+    const interval = setInterval(() => setMs(Date.now() - start), 250);
     return () => clearInterval(interval);
   }, [active]);
 

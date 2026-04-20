@@ -36,7 +36,6 @@ class AgentInfo:
     model: str = ""
 
     # Token / cost accounting
-    prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
     cost_usd: float = 0.0
@@ -66,19 +65,23 @@ class AgentInfo:
         self._cancel_event.set()
         self.status = AgentStatus.CANCELLED
 
-    @property
-    def context_usage_pct(self) -> float:
-        if self.context_limit_tokens <= 0:
-            return 0.0
-        return (self.context_used_tokens / self.context_limit_tokens) * 100
-
 
 class AgentTracker:
-    """Singleton registry that tracks every active agent."""
+    """Singleton registry that tracks every active agent.
+
+    Finished agents remain in ``_agents`` for the process lifetime so UIs can
+    show last-known state; long sessions with many sub-agents will grow this
+    map (only the dict size, not worker threads).
+    """
 
     def __init__(self):
         self._agents: Dict[str, AgentInfo] = {}
-        self._lock = threading.Lock()
+        # threading.Lock is intentionally used here rather than asyncio.Lock.
+        # The critical sections only perform dict lookups/insertions which take
+        # microseconds, so the event loop is never blocked for any meaningful
+        # duration.  Do NOT add any ``await`` inside a ``with self._lock`` block
+        # or call any coroutine that might block; that would stall the loop.
+        self._lock = threading.RLock()
 
     def register(
         self,
@@ -135,13 +138,12 @@ class AgentTracker:
                     if child.parent_id == agent_id
                     and child.status not in (AgentStatus.DONE, AgentStatus.ERROR, AgentStatus.CANCELLED)
                 ]
+                
+                for child in children:
+                    self.cancel(child.agent_id)
+                return True
             else:
                 return False
-        
-        # Call cancel outside of lock to avoid recursive lock issues if not RLock
-        for child in children:
-            self.cancel(child.agent_id)
-        return True
 
 
 # Global singleton

@@ -75,6 +75,17 @@ class MCPClient:
         Returns:
             Connection result with discovered tools
         """
+        # ``mcp__<server>__<tool>`` routing uses the first ``__`` after the prefix;
+        # disallow ``__`` in the server segment so names stay unambiguous.
+        if "__" in server_name:
+            return {
+                "success": False,
+                "error": (
+                    "server_name must not contain '__' — it is reserved for MCP tool "
+                    f"id encoding (got {server_name!r}). Use a name like 'my_server'."
+                ),
+            }
+
         process = None
         try:
             full_args = [command] + (args or [])
@@ -290,15 +301,34 @@ class MCPClient:
         """
         tools = []
         for tool in self.discovered_tools:
-            tools.append({
-                "type": "function",
-                "function": {
-                    "name": f"mcp__{tool['server']}__{tool['name']}",
-                    "description": f"[MCP: {tool['server']}] {tool['description']}",
-                    "parameters": tool.get("input_schema", {"type": "object", "properties": {}}),
-                },
-            })
+            params = tool.get("input_schema")
+            params = _normalize_parameters_schema(params)
+            tools.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": f"mcp__{tool['server']}__{tool['name']}",
+                        "description": f"[MCP: {tool['server']}] {tool.get('description', '')}",
+                        "parameters": params,
+                    },
+                }
+            )
         return tools
+
+
+def _normalize_parameters_schema(schema: Any) -> Dict[str, Any]:
+    """Ensure JSON Schema is OpenAI-tool friendly (object root with properties)."""
+    if not isinstance(schema, dict):
+        return {"type": "object", "properties": {}}
+    out = dict(schema)
+    if out.get("type") is None and "properties" in out:
+        out["type"] = "object"
+    if out.get("type") != "object":
+        # Non-object roots (e.g. union) — wrap for providers expecting object args
+        return {"type": "object", "properties": {"value": out}}
+    if "properties" not in out:
+        out["properties"] = {}
+    return out
 
 
 # Global MCP client instance

@@ -1,7 +1,8 @@
-"""Streaming handler that emits protocol events instead of Rich output.
+"""Streaming handler that forwards LLM token deltas to the IPC server.
 
-Mirrors the contract of ``coderAI.ui.streaming.StreamingHandler`` but writes
-``stream_delta`` NDJSON lines so the Ink UI can render deltas in React.
+Emits ``stream_delta`` (and related) NDJSON events so the Ink UI can render
+streaming output in React. Used when ``agent.streaming_handler`` is set from
+``coderAI.ipc.entry`` (interactive mode).
 """
 
 from __future__ import annotations

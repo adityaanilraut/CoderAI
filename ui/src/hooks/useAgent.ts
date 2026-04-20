@@ -96,10 +96,17 @@ const INITIAL: SessionState = {
 const MAX_TIMELINE = 500;
 const TRIM_TO = 400;
 
+/** Coalesce stream_delta IPC into fewer Ink redraws (~40fps cap). */
+const STREAM_FLUSH_MS = 24;
+/** Cap status bar updates while tokens/context churn. */
+const STATUS_THROTTLE_MS = 100;
+
 export interface UseAgentResult {
   session: SessionState;
   timeline: TimelineItem[];
   stderr: string;
+  /** When true, the interactive /help menu is open (prompt should be inactive). */
+  helpMenuOpen: boolean;
   actions: {
     send: (text: string) => void;
     cancel: () => void;
@@ -112,6 +119,7 @@ export interface UseAgentResult {
     approveTool: (toolId: string, approve: boolean) => void;
     exit: () => void;
     showHelp: () => void;
+    closeHelpMenu: () => void;
   };
 }
 
@@ -120,14 +128,32 @@ export function useAgent(opts: {python?: string; cwd?: string} = {}): UseAgentRe
   const [session, setSession] = useState<SessionState>(INITIAL);
   const [timeline, setTimeline] = useState<TimelineItem[]>([]);
   const [stderr, setStderr] = useState<string>("");
+  const [helpMenuOpen, setHelpMenuOpen] = useState(false);
 
   // Refs to avoid closure staleness inside event handlers.
   const readyRef = useRef(false);
   const goodbyeRef = useRef(false);
   const stderrRef = useRef("");
-  // Tracks the index of the currently-streaming assistant item so
-  // stream_delta doesn't have to scan the whole timeline.
-  const currentAssistantIdx = useRef<number | null>(null);
+  // Tracks the id of the currently-streaming assistant item so
+  // stream_delta doesn't have to scan the whole timeline (just the end).
+  const currentAssistantId = useRef<string | null>(null);
+  const streamPendingContentRef = useRef("");
+  const streamPendingReasoningRef = useRef("");
+  const streamFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const statusPendingRef = useRef<{
+    ctxUsed: number;
+    ctxLimit: number;
+    costUsd: number;
+    budgetUsd: number;
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+  } | null>(null);
+  const statusThrottleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
 
   // Monotonic id generator shared across event handlers AND the synchronous
   // actions below. Kept on a ref so it survives re-renders.
@@ -140,6 +166,69 @@ export function useAgent(opts: {python?: string; cwd?: string} = {}): UseAgentRe
   useEffect(() => {
     const client = new AgentClient({python: opts.python, cwd: opts.cwd});
     clientRef.current = client;
+
+    const resetStreamFlushState = () => {
+      streamPendingContentRef.current = "";
+      streamPendingReasoningRef.current = "";
+      if (streamFlushTimerRef.current !== null) {
+        clearTimeout(streamFlushTimerRef.current);
+        streamFlushTimerRef.current = null;
+      }
+    };
+
+    const flushStreamBuffers = () => {
+      const addC = streamPendingContentRef.current;
+      const addR = streamPendingReasoningRef.current;
+      if (!addC && !addR) return;
+      streamPendingContentRef.current = "";
+      streamPendingReasoningRef.current = "";
+      const id = currentAssistantId.current;
+      if (!id) return;
+      setTimeline((prev) => {
+        for (let i = prev.length - 1; i >= 0; i--) {
+          if (prev[i].id === id && prev[i].kind === "assistant") {
+            const item = prev[i] as Extract<TimelineItem, {kind: "assistant"}>;
+            const copy = [...prev];
+            copy[i] = {
+              ...item,
+              content: item.content + addC,
+              reasoning: item.reasoning + addR,
+            };
+            return copy;
+          }
+        }
+        return prev;
+      });
+    };
+
+    const scheduleStreamFlush = () => {
+      if (streamFlushTimerRef.current !== null) return;
+      streamFlushTimerRef.current = setTimeout(() => {
+        streamFlushTimerRef.current = null;
+        flushStreamBuffers();
+      }, STREAM_FLUSH_MS);
+    };
+
+    const applyStatusPayload = (m: {
+      ctxUsed: number;
+      ctxLimit: number;
+      costUsd: number;
+      budgetUsd: number;
+      promptTokens: number;
+      completionTokens: number;
+      totalTokens: number;
+    }) => {
+      setSession((s) => ({
+        ...s,
+        ctxUsed: m.ctxUsed,
+        ctxLimit: m.ctxLimit,
+        costUsd: m.costUsd,
+        budgetUsd: m.budgetUsd,
+        promptTokens: m.promptTokens,
+        completionTokens: m.completionTokens,
+        totalTokens: m.totalTokens,
+      }));
+    };
 
     client.on("hello", (m) => {
       setSession((s) => ({
@@ -180,6 +269,7 @@ export function useAgent(opts: {python?: string; cwd?: string} = {}): UseAgentRe
     });
 
     client.on("assistant_start", () => {
+      resetStreamFlushState();
       setSession((s) => ({...s, streaming: true, thinking: false}));
       setTimeline((prev) => {
         const item: TimelineItem = {
@@ -190,40 +280,57 @@ export function useAgent(opts: {python?: string; cwd?: string} = {}): UseAgentRe
           reasoning: "",
         };
         const next = appendCapped(prev, item);
-        currentAssistantIdx.current = next.length - 1;
+        currentAssistantId.current = item.id;
         return next;
       });
     });
 
     client.on("stream_delta", (m) => {
-      setTimeline((prev) => {
-        const idx = currentAssistantIdx.current;
-        if (idx == null || idx >= prev.length) return prev;
-        const item = prev[idx];
-        if (item.kind !== "assistant") return prev;
-        const copy = [...prev];
-        copy[idx] = m.reasoning
-          ? {...item, reasoning: item.reasoning + m.content}
-          : {...item, content: item.content + m.content};
-        return copy;
-      });
+      if (m.reasoning) {
+        streamPendingReasoningRef.current += m.content;
+      } else {
+        streamPendingContentRef.current += m.content;
+      }
+      scheduleStreamFlush();
     });
 
     client.on("assistant_end", (m) => {
+      if (streamFlushTimerRef.current !== null) {
+        clearTimeout(streamFlushTimerRef.current);
+        streamFlushTimerRef.current = null;
+      }
+      const pendingC = streamPendingContentRef.current;
+      const pendingR = streamPendingReasoningRef.current;
+      streamPendingContentRef.current = "";
+      streamPendingReasoningRef.current = "";
+
       setTimeline((prev) => {
-        const idx = currentAssistantIdx.current;
-        if (idx == null || idx >= prev.length) return prev;
-        const item = prev[idx];
-        if (item.kind !== "assistant") return prev;
-        const copy = [...prev];
-        copy[idx] = {
-          ...item,
-          content: m.content || item.content,
-          streaming: false,
-        };
-        return copy;
+        const id = currentAssistantId.current;
+        if (!id) return prev;
+        for (let i = prev.length - 1; i >= 0; i--) {
+          if (prev[i].id === id && prev[i].kind === "assistant") {
+            const item = prev[i] as Extract<TimelineItem, {kind: "assistant"}>;
+            const mergedContent = item.content + pendingC;
+            const mergedReasoning = item.reasoning + pendingR;
+            const fromServer = (m.content ?? "").trim();
+            // Prefer the server's final string when non-empty: after tool loops
+            // it carries every assistant turn joined (see agent_loop). Fall
+            // back to merged stream buffers if the server sent nothing.
+            const finalContent =
+              fromServer.length > 0 ? m.content : mergedContent;
+            const copy = [...prev];
+            copy[i] = {
+              ...item,
+              content: finalContent,
+              reasoning: mergedReasoning,
+              streaming: false,
+            };
+            return copy;
+          }
+        }
+        return prev;
       });
-      currentAssistantIdx.current = null;
+      currentAssistantId.current = null;
       setSession((s) => ({...s, streaming: false}));
     });
 
@@ -273,9 +380,8 @@ export function useAgent(opts: {python?: string; cwd?: string} = {}): UseAgentRe
       push({kind: "diff", id: nextId(), path: m.path, diff: m.diff}),
     );
 
-    client.on("status", (m) =>
-      setSession((s) => ({
-        ...s,
+    client.on("status", (m) => {
+      statusPendingRef.current = {
         ctxUsed: m.ctxUsed,
         ctxLimit: m.ctxLimit,
         costUsd: m.costUsd,
@@ -283,8 +389,15 @@ export function useAgent(opts: {python?: string; cwd?: string} = {}): UseAgentRe
         promptTokens: m.promptTokens,
         completionTokens: m.completionTokens,
         totalTokens: m.totalTokens,
-      })),
-    );
+      };
+      if (statusThrottleTimerRef.current !== null) return;
+      applyStatusPayload(m);
+      statusThrottleTimerRef.current = setTimeout(() => {
+        statusThrottleTimerRef.current = null;
+        const p = statusPendingRef.current;
+        if (p) applyStatusPayload(p);
+      }, STATUS_THROTTLE_MS);
+    });
 
     client.on("agent_update", (m) =>
       setSession((s) => ({
@@ -371,19 +484,31 @@ export function useAgent(opts: {python?: string; cwd?: string} = {}): UseAgentRe
     client.start();
 
     return () => {
+      resetStreamFlushState();
+      if (statusThrottleTimerRef.current !== null) {
+        clearTimeout(statusThrottleTimerRef.current);
+        statusThrottleTimerRef.current = null;
+      }
       void client.stop();
       clientRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [opts.python, opts.cwd]);
 
-  const showHelp = () => {
-    push({
-      kind: "toast",
-      id: nextId(),
-      level: "info",
-      message: SLASH_HELP,
-    });
+  const showHelp = () => setHelpMenuOpen(true);
+  const closeHelpMenu = () => setHelpMenuOpen(false);
+
+  const clearContext = () => {
+    setHelpMenuOpen(false);
+    if (streamFlushTimerRef.current !== null) {
+      clearTimeout(streamFlushTimerRef.current);
+      streamFlushTimerRef.current = null;
+    }
+    streamPendingContentRef.current = "";
+    streamPendingReasoningRef.current = "";
+    clientRef.current?.clearContext();
+    setTimeline([]);
+    currentAssistantId.current = null;
   };
 
   const actions = useMemo<UseAgentResult["actions"]>(
@@ -406,7 +531,14 @@ export function useAgent(opts: {python?: string; cwd?: string} = {}): UseAgentRe
         );
 
         if (trimmed.startsWith("/")) {
-          handleSlashCommand(trimmed, client, push, nextId, showHelp);
+          handleSlashCommand(
+            trimmed,
+            client,
+            push,
+            nextId,
+            showHelp,
+            clearContext,
+          );
           return;
         }
 
@@ -416,11 +548,7 @@ export function useAgent(opts: {python?: string; cwd?: string} = {}): UseAgentRe
       setModel: (m: string) => clientRef.current?.setModel(m),
       setReasoning: (e: ReasoningEffort) => clientRef.current?.setReasoning(e),
       toggleAutoApprove: () => clientRef.current?.toggleAutoApprove(),
-      clearContext: () => {
-        clientRef.current?.clearContext();
-        setTimeline([]);
-        currentAssistantIdx.current = null;
-      },
+      clearContext,
       compactContext: () => clientRef.current?.compactContext(),
       getState: () => clientRef.current?.getState(),
       approveTool: (toolId: string, approve: boolean) => {
@@ -435,12 +563,13 @@ export function useAgent(opts: {python?: string; cwd?: string} = {}): UseAgentRe
       },
       exit: () => clientRef.current?.exit(),
       showHelp,
+      closeHelpMenu,
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );
 
-  return {session, timeline, actions, stderr};
+  return {session, timeline, stderr, helpMenuOpen, actions};
 }
 
 function appendCapped(prev: TimelineItem[], item: TimelineItem): TimelineItem[] {
@@ -455,27 +584,13 @@ function appendCapped(prev: TimelineItem[], item: TimelineItem): TimelineItem[] 
   return [marker, ...prev.slice(-TRIM_TO + 1), item];
 }
 
-// -- Slash commands ---------------------------------------------------------
-
-const SLASH_HELP = [
-  "Slash commands:",
-  "  /help                  Show this help",
-  "  /clear                 Wipe conversation & context",
-  "  /compact               Summarize long context",
-  "  /model [name]          Show or switch model (aliases: opus, sonnet, haiku)",
-  "  /reasoning <effort>    Set thinking effort (none|low|medium|high)",
-  "  /yolo | /auto-approve  Toggle auto-approve for high-risk tools",
-  "  /status | /tokens      Re-emit session status",
-  "  /agents                Show active agents (see table)",
-  "  /exit | /quit          Shut down the agent",
-].join("\n");
-
 function handleSlashCommand(
   raw: string,
   client: AgentClient,
   push: (item: TimelineItem) => void,
   nextId: () => string,
   showHelp: () => void,
+  clearContext: () => void,
 ): void {
   const [head, ...rest] = raw.slice(1).split(/\s+/);
   const arg = rest.join(" ").trim();
@@ -492,7 +607,7 @@ function handleSlashCommand(
       showHelp();
       return;
     case "clear":
-      client.clearContext();
+      clearContext();
       return;
     case "compact":
       client.compactContext();
@@ -507,12 +622,28 @@ function handleSlashCommand(
         toast("info", `Switching to model ${arg}…`);
       }
       return;
-    case "reasoning": {
+    case "change-model":
+    case "changemodel":
+    case "switch-model":
+      if (arg) {
+        client.setModel(arg);
+        toast("info", `Switching to model ${arg}…`);
+      } else {
+        client.getState();
+        client.reference("models");
+        toast(
+          "info",
+          "To switch: type /model <name> or /change-model <name> (names listed above)",
+        );
+      }
+      return;
+    case "reasoning":
+    case "thinking": {
       const normalized = arg.toLowerCase() as ReasoningEffort;
       if (!["high", "medium", "low", "none"].includes(normalized)) {
         toast(
           "warning",
-          "Usage: /reasoning <high|medium|low|none>",
+          "Usage: /reasoning <high|medium|low|none>  (alias: /thinking)",
         );
         return;
       }
@@ -531,7 +662,51 @@ function handleSlashCommand(
       client.getState();
       return;
     case "agents":
-      toast("info", "Active agents shown in the table above.");
+      toast(
+        "info",
+        "Agents table (above): main + sub-agents from delegate_task. Rows update live; /status refreshes session bar.",
+      );
+      return;
+    case "version":
+    case "v":
+      client.reference("version");
+      return;
+    case "models":
+    case "providers":
+      client.reference("models");
+      return;
+    case "cost":
+    case "pricing":
+      client.reference("cost");
+      return;
+    case "system":
+    case "diag":
+    case "diagnostics":
+      client.reference("system");
+      return;
+    case "config":
+      client.reference("config");
+      return;
+    case "info":
+      client.reference("info");
+      return;
+    case "tasks":
+    case "todos":
+    case "task":
+      client.reference("tasks");
+      return;
+    case "default":
+      if (!arg) {
+        toast(
+          "warning",
+          "Usage: /default <model> — saves default for new sessions (see /models)",
+        );
+        return;
+      }
+      client.setDefaultModel(arg);
+      return;
+    case "plan":
+      client.getPlan();
       return;
     case "exit":
     case "quit":

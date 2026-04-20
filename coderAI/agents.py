@@ -5,26 +5,22 @@ from typing import Dict, Optional, List, Set
 import yaml
 
 from .config import config_manager
+from .project_layout import find_dot_coderai_subdir
 
 logger = logging.getLogger(__name__)
 
 
 PERSONA_NAME_ALIASES: Dict[str, str] = {
-    "code-reviewer": "code-reviewer",
+    # Alternate names → canonical file stem (self-maps removed: they're redundant)
     "code-review": "code-reviewer",
     "code-review-specialist": "code-reviewer",
-    "security-reviewer": "security-reviewer",
     "security-review": "security-reviewer",
     "security-expert": "security-reviewer",
-    "architect": "architect",
     "architecture": "architect",
-    "planner": "planner",
     "plan": "planner",
-    "doc-updater": "doc-updater",
     "documentation": "doc-updater",
     "documentation-updater": "doc-updater",
     "e2e": "e2e-runner",
-    "e2e-runner": "e2e-runner",
 }
 
 PERSONA_TOOL_ALIASES: Dict[str, Set[str]] = {
@@ -58,30 +54,8 @@ def _normalize_tool_name(name: str) -> str:
 
 
 def _find_agents_dir(project_root: str = ".") -> Optional[Path]:
-    """Search several candidate locations for the .coderAI/agents/ directory.
-    
-    Checks (in order):
-      1. The given project_root
-      2. The current working directory
-      3. The CoderAI package source directory (parent of this file)
-    
-    Returns the first existing agents directory, or None.
-    """
-    candidates = [
-        Path(project_root).resolve(),
-        Path.cwd(),
-        Path(__file__).resolve().parent.parent,  # repo root when running from source
-    ]
-    seen: set = set()
-    for base in candidates:
-        base_str = str(base)
-        if base_str in seen:
-            continue
-        seen.add(base_str)
-        agents_dir = base / ".coderAI" / "agents"
-        if agents_dir.is_dir():
-            return agents_dir
-    return None
+    """Search several candidate locations for the .coderAI/agents/ directory."""
+    return find_dot_coderai_subdir("agents", project_root)
 
 
 def resolve_persona_name(persona_name: str, project_root: str = ".") -> Optional[str]:

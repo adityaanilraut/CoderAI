@@ -10,60 +10,16 @@ from pydantic import BaseModel, Field
 
 from .base import Tool
 from ..events import event_emitter
-from ..context_selector import extract_keywords, extract_relevant_snippets
 
 logger = logging.getLogger(__name__)
 
 # Maximum depth for nested sub-agent delegation to prevent infinite recursion
 MAX_DELEGATION_DEPTH = 3
 
-# Role-specific system prompt fragments that give concrete guidance per specialty.
-_ROLE_INSTRUCTIONS: Dict[str, str] = {
-    "code reviewer": (
-        "Focus on: code correctness, edge cases, error handling, naming clarity, "
-        "performance pitfalls, and adherence to project conventions. "
-        "Structure your report as: Summary → Critical Issues → Suggestions → Verdict."
-    ),
-    "security expert": (
-        "Focus on: injection vulnerabilities, authentication/authorization flaws, "
-        "secrets exposure, dependency vulnerabilities, and insecure defaults. "
-        "Rate each finding by severity (Critical / High / Medium / Low)."
-    ),
-    "senior qa engineer": (
-        "Focus on: test coverage gaps, missing edge-case tests, flaky test patterns, "
-        "and test architecture improvements. Suggest concrete test cases to add."
-    ),
-    "data scientist": (
-        "Focus on: data pipeline correctness, statistical validity, performance of "
-        "data transformations, and visualization clarity."
-    ),
-    "devops engineer": (
-        "Focus on: CI/CD configuration, deployment safety, infrastructure-as-code "
-        "correctness, container best practices, and monitoring gaps."
-    ),
-    "technical writer": (
-        "Focus on: documentation accuracy, completeness, clarity, and consistency. "
-        "Check docstrings, README, API docs, and inline comments."
-    ),
-}
-
-
 def _get_role_instructions(role: Optional[str]) -> str:
-    """Get role-specific instructions.
-
-    Falls back to the hardcoded `_ROLE_INSTRUCTIONS`, or a generic prompt.
-    File-backed personas are applied directly to the sub-agent elsewhere.
-    """
+    """Get role-specific instructions."""
     if not role:
         return ""
-
-    # Fallback to hardcoded roles
-    role_lower = role.lower().strip()
-    for key, instructions in _ROLE_INSTRUCTIONS.items():
-        if key in role_lower:
-            return instructions
-
-    # Generic fallback for unknown roles
     return (
         f"You are acting as a specialist with the role: {role}. "
         "Apply your domain expertise to the task. Be thorough and precise."
@@ -123,17 +79,14 @@ class DelegateTaskTool(Tool):
         "The sub-agent has access to all the same tools, runs in an isolated session, "
         "and returns a comprehensive report. Provide a detailed task_description with "
         "specific file paths and expected output format for best results. "
-        "Up to five delegate_task calls in the same turn run in parallel — use this "
-        "to split independent work (e.g. one sub-agent for web research, another to "
-        "read and summarize specific files). Avoid parallel delegations that edit the "
-        "same files or perform conflicting git operations."
+        "Sub-agents run sequentially to prevent conflicts during branch switching "
+        "or file modifications."
     )
-    # Run up to this many sub-agents concurrently within one tool-execution wave.
-    max_parallel_invocations = 5
+    # Sequential execution to avoid workspace state conflicts (branch switching, etc.)
+    max_parallel_invocations = 1
     parameters_model = DelegateTaskParams
     # Sub-agents may run mutating tools; parallel runs can race on the same files
-    # or git state — the model must avoid conflicting parallel delegations.
-    # Parallelism is enabled via max_parallel_invocations (see Agent tool loop).
+    # or git state.
     is_read_only = False
 
     # Set by the parent Agent after registration so the sub-agent can
@@ -142,6 +95,7 @@ class DelegateTaskTool(Tool):
     _parent_agent_id: Optional[str] = None
     _parent_context_manager: Optional[Any] = None  # parent's ContextManager
     _parent_cost_tracker: Optional[Any] = None  # parent's CostTracker (shared)
+    _parent_auto_approve: bool = False  # Default to False for sub-agents for safety
     _current_depth: int = 0  # incremented on each delegation
 
     async def execute(
@@ -164,16 +118,12 @@ class DelegateTaskTool(Tool):
             }
 
         sub_agent = None
-        branch_before: Optional[str] = None
         try:
             from ..agent import Agent
 
-            # Capture current branch for restoration after sub-agent completes
-            from ..safeguards import get_current_branch
             cwd = os.getcwd()
-            branch_before = await get_current_branch(cwd)
             logger.info(
-                f"Sub-agent delegation: branch_before={branch_before} "
+                f"Sub-agent delegation: "
                 f"depth={self._current_depth + 1}/{MAX_DELEGATION_DEPTH}"
             )
 
@@ -202,7 +152,9 @@ class DelegateTaskTool(Tool):
                 implementation. Returns ``(agent, persona)``.
                 """
                 new_agent = Agent(
-                    model=effective_model, auto_approve=True, is_subagent=True
+                    model=effective_model,
+                    auto_approve=self._parent_auto_approve,
+                    is_subagent=True,
                 )
 
                 # Share parent's cost tracker BEFORE reconfiguring delegate
@@ -240,6 +192,11 @@ class DelegateTaskTool(Tool):
                             self._parent_context_manager.project_instructions
                         )
                         new_agent.context_manager._instructions_loaded = True
+                else:
+                    # Explicitly mark as loaded with no content to prevent
+                    # the sub-agent from lazily loading them from disk.
+                    new_agent.context_manager.project_instructions = None
+                    new_agent.context_manager._instructions_loaded = True
 
                 new_agent.create_session()
 
@@ -273,8 +230,12 @@ class DelegateTaskTool(Tool):
                 "- Structure your report with clear sections: Summary, Findings, Recommendations.",
                 "- Be specific: cite file paths, line numbers, and code snippets.",
                 "- Do NOT ask questions — make reasonable assumptions and note them.",
-                "- Do NOT parse HTML or scrape web pages using complex shell pipelines (`curl | grep | sed`). Use proper tools (`read_url`, `web_search`) or Python scripts instead.",
-                f"- IMPORTANT: You are on branch '{branch_before or 'unknown'}'. Do NOT switch branches unless explicitly required by the task.",
+                "- WEB SEARCH: If `web_search` or `read_url` appear under **Available Tools** in your system prompt, "
+                "call them directly to retrieve web content — NEVER tell the parent agent or user to run curl/wget "
+                "themselves. Include the fetched content directly in your report.",
+                "- Do NOT parse HTML or scrape web pages with shell pipelines (`curl | grep | sed`). "
+                "Use `web_search`/`read_url` if available, otherwise a short Python script.",
+                "- Do NOT switch branches unless explicitly required by the task.",
                 "- CRITICAL: Your FINAL turn MUST be a plain-text assistant message "
                 "containing the full report. Do NOT end the conversation on a "
                 "tool call — after you have gathered enough information, stop "
@@ -293,160 +254,52 @@ class DelegateTaskTool(Tool):
                     msg.content = f"{system_preamble}\n\n---\n\n{msg.content}"
                     break
 
-            # Add context hints to the task description instead of the system prompt
-            context_parts = []
+            # Add context hints to the task description directly
             if context_hints:
-                context_parts.extend(["CONTEXT PROVIDED BY PARENT AGENT:"])
-                keywords = extract_keywords(task_description)
+                hint_parts = ["CONTEXT PROVIDED BY PARENT AGENT:"]
+                for hint in context_hints:
+                    hint_parts.append(f"  - {hint}")
+                task_description = "\n".join(hint_parts) + "\n\n---\n\nTASK DESCRIPTION:\n" + task_description
 
-                async def _load_hint(hint: str) -> str:
-                    hint_path = Path(hint)
-                    if hint_path.is_file():
-                        try:
-                            content = await asyncio.to_thread(
-                                hint_path.read_text, encoding="utf-8", errors="replace"
-                            )
-                            snippet = extract_relevant_snippets(content, keywords, max_lines=80)
-                            return f"\n### File: {hint}\n```\n{snippet}\n```"
-                        except Exception:
-                            return f"  - {hint}"
-                    return f"  - {hint}"
+            truncated_desc = task_description[:80] + ("..." if len(task_description) > 80 else "")
+            event_emitter.emit(
+                "agent_status",
+                message=f"[dim]Sub-Agent working on: {truncated_desc}[/dim]",
+            )
 
-                hint_parts = await asyncio.gather(*(_load_hint(h) for h in context_hints))
-                context_parts.extend(hint_parts)
+            # Process the task
+            try:
+                final_report = await sub_agent.process_single_shot(task_description)
 
-            if context_parts:
-                task_description = "\n".join(context_parts) + "\n\n---\n\nTASK DESCRIPTION:\n" + task_description
+                if not (final_report and final_report.strip()):
+                    raise RuntimeError("Sub-agent produced no final report text.")
 
-            # Process the task with retry logic
-            max_retries = 2
-            last_error = None
-            final_report = None
-
-            for attempt in range(1, max_retries + 2):  # 1 initial + 2 retries
-                try:
-                    truncated_desc = task_description[:80] + ("..." if len(task_description) > 80 else "")
-                    attempt_label = f" (attempt {attempt})" if attempt > 1 else ""
-                    event_emitter.emit(
-                        "agent_status",
-                        message=f"[dim]Sub-Agent working on{attempt_label}: {truncated_desc}[/dim]",
-                    )
-
-                    final_report = await sub_agent.process_single_shot(task_description)
-
-                    # Guard: the LLM sometimes ends its turn with no textual
-                    # content after a long tool-call chain (seen especially
-                    # with research-heavy tasks that burn thousands of tokens
-                    # on tool results). Before giving up on this attempt,
-                    # reuse the SAME sub-agent (so its gathered context is
-                    # preserved) and explicitly ask it to write the report
-                    # now without making more tool calls.
-                    if not (final_report and final_report.strip()):
-                        event_emitter.emit(
-                            "agent_status",
-                            message=(
-                                "[yellow]Sub-Agent returned empty report; "
-                                "nudging it to produce the final output...[/yellow]"
-                            ),
-                        )
-                        nudge = (
-                            "Your previous response contained no text output. "
-                            "Based on ALL the information you have gathered so far "
-                            "in this session, produce your complete final report NOW "
-                            "as a single assistant message. Do NOT call any more tools. "
-                            "Structure the report with clear sections (Summary, "
-                            "Findings, Recommendations) and cite specific sources / "
-                            "file paths where relevant. If some information is still "
-                            "missing, note the gap explicitly but still deliver the "
-                            "report using what you have."
-                        )
-                        final_report = await sub_agent.process_single_shot(nudge)
-
-                    if not (final_report and final_report.strip()):
-                        # Treat a persistently empty report as a soft failure
-                        # so the outer retry loop rebuilds a fresh sub-agent.
-                        raise RuntimeError(
-                            "Sub-agent produced no final report even after an "
-                            "explicit nudge to write one."
-                        )
-
-                    last_error = None
-                    break  # Success — exit retry loop
-
-                except Exception as retry_err:
-                    last_error = retry_err
-                    if attempt <= max_retries:
-                        wait_time = 2 ** attempt  # Exponential backoff: 2s, 4s
-                        event_emitter.emit(
-                            "agent_status",
-                            message=(
-                                f"[yellow]Sub-Agent attempt {attempt} failed: {str(retry_err)[:80]}. "
-                                f"Retrying in {wait_time}s...[/yellow]"
-                            ),
-                        )
-                        await asyncio.sleep(wait_time)
-
-                        # Tear down the failed sub-agent: mark its tracker
-                        # entry as errored (so `agent_tracker.get_active()`
-                        # doesn't report phantom "thinking" agents) and
-                        # release HTTP/subprocess resources.
-                        try:
-                            sub_agent._finish_tracker(error=True)
-                        except Exception as tracker_err:
-                            logger.warning(
-                                f"Error finishing stale sub-agent tracker: {tracker_err}"
-                            )
-                        try:
-                            await sub_agent.close()
-                        except Exception as close_err:
-                            logger.warning(f"Error closing sub-agent during retry cleanup: {close_err}")
-
-                        # Rebuild a fresh sub-agent through the same helper
-                        sub_agent, applied_persona = _build_sub_agent()
-                        for msg in sub_agent.session.messages:
-                            if msg.role == "system":
-                                msg.content = f"{system_preamble}\n\n---\n\n{msg.content}"
-                                break
-                    else:
-                        logger.error(f"Sub-agent failed after {max_retries + 1} attempts: {retry_err}")
-
-            # If all retries failed, surface an explicit error to the parent
-            # (including the cost already burned) instead of silently
-            # returning an empty report.
-            if last_error is not None:
+            except Exception as e:
+                logger.error(f"Sub-agent failed: {e}")
                 wasted_tokens = getattr(sub_agent, "total_tokens", 0) if sub_agent else 0
                 wasted_cost = 0.0
                 if sub_agent is not None and getattr(sub_agent, "cost_tracker", None):
                     try:
-                        wasted_cost = (
-                            sub_agent.cost_tracker.get_total_cost() - parent_cost_before
-                        )
+                        wasted_cost = sub_agent.cost_tracker.get_total_cost() - parent_cost_before
                     except Exception:
-                        wasted_cost = 0.0
+                        pass
                 from ..cost import CostTracker
                 event_emitter.emit(
                     "agent_error",
                     message=(
-                        f"Sub-Agent{role_label} failed after {max_retries + 1} attempts: "
-                        f"{last_error}. Tokens burned: {wasted_tokens:,} | "
+                        f"Sub-Agent{role_label} failed: {e}. Tokens burned: {wasted_tokens:,} | "
                         f"Cost: {CostTracker.format_cost(wasted_cost)}"
                     ),
                 )
                 return {
                     "success": False,
-                    "error": (
-                        f"Sub-agent failed after {max_retries + 1} attempts: "
-                        f"{last_error}"
-                    ),
+                    "error": f"Sub-agent failed: {e}",
                     "sub_agent_role": agent_role or "General Assistant",
                     "tokens_used": wasted_tokens,
                     "cost_usd": wasted_cost,
                 }
 
             tokens_used = sub_agent.total_tokens
-            # Report only the delta attributable to this sub-agent. The cost
-            # tracker is shared with the parent, so subtracting the pre-spawn
-            # snapshot gives the sub-agent's incremental spend.
             cost_usd = sub_agent.cost_tracker.get_total_cost() - parent_cost_before
 
             sub_agent._finish_tracker()
@@ -481,31 +334,4 @@ class DelegateTaskTool(Tool):
                     await sub_agent.close()
                 except Exception:
                     pass
-
-            # Restore original branch if the sub-agent changed it
-            if branch_before is not None:
-                try:
-                    from ..safeguards import get_current_branch
-                    branch_after = await get_current_branch(os.getcwd())
-                    if branch_after != branch_before:
-                        logger.warning(
-                            f"Sub-agent changed branch from '{branch_before}' to "
-                            f"'{branch_after}'. Restoring original branch."
-                        )
-                        process = await asyncio.create_subprocess_exec(
-                            "git", "checkout", branch_before,
-                            stdout=asyncio.subprocess.PIPE,
-                            stderr=asyncio.subprocess.PIPE,
-                            cwd=os.getcwd(),
-                        )
-                        await process.communicate()
-                        if process.returncode == 0:
-                            logger.info(f"Restored branch to '{branch_before}'")
-                        else:
-                            logger.error(
-                                f"Failed to restore branch to '{branch_before}'"
-                            )
-                except Exception as branch_err:
-                    logger.error(f"Error restoring branch: {branch_err}")
-
 

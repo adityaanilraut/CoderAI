@@ -20,6 +20,11 @@ class Tool(ABC):
     # Parallelism: read-only tools can be executed concurrently.
     is_read_only: bool = False
 
+    # UI grouping. Used by the Ink UI to categorize tools (filesystem,
+    # search, git, terminal, web, memory, agent, mcp, other). Subclasses
+    # override to set their category; unset means "other".
+    category: str = "other"
+
     # If >0, multiple invocations of this tool in one LLM turn may run
     # concurrently, at most this many at a time (extra calls are queued in
     # additional batches). Used for delegate_task so several sub-agents can
