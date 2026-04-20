@@ -38,8 +38,5 @@ jobs:
       - name: Pytest
         run: pytest -q
 
-      - name: Installation smoke test
-        run: python test_installation.py
-
       - name: CLI smoke test
         run: coderAI --version
