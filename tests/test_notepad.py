@@ -3,8 +3,7 @@
 import asyncio
 import pytest
 
-from coderAI.notepad import SharedNotepad
-from coderAI.tools.notepad import NotepadTool
+from coderAI.tools.notepad import NotepadTool, SharedNotepad
 
 
 class TestSharedNotepad:

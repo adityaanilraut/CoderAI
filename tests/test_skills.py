@@ -5,8 +5,7 @@ import tempfile
 from pathlib import Path
 import pytest
 
-from coderAI.skills import load_skill, get_available_skills
-from coderAI.tools.skills import UseSkillTool
+from coderAI.tools.skills import UseSkillTool, load_skill, get_available_skills
 
 
 @pytest.fixture
