@@ -31,6 +31,20 @@ from .agent_tracker import agent_tracker, AgentStatus, AgentInfo
 logger = logging.getLogger(__name__)
 
 
+def _freeze(value: Any) -> Any:
+    """Return a hashable snapshot of ``value`` for identity comparison.
+
+    Used by ``compact_context`` to look up preserved messages by content and
+    tool-call identity across re-ordering. ``tool_calls`` is a list of dicts
+    (unhashable), so convert nested lists/dicts into tuples.
+    """
+    if isinstance(value, dict):
+        return tuple(sorted((k, _freeze(v)) for k, v in value.items()))
+    if isinstance(value, list):
+        return tuple(_freeze(v) for v in value)
+    return value
+
+
 class Agent:
     """Main agent orchestrator that coordinates LLM and tools."""
 
@@ -47,15 +61,19 @@ class Agent:
         Args:
             model: Model name to use
             streaming: Enable streaming responses
-            auto_approve: Skip tool confirmation prompts (--auto-approve / --yolo)
-            persona_name: Name of a specific persona to load from .coderAI/agents/
+            auto_approve: Skip tool confirmation prompts
+                (--auto-approve / --yolo)
+            persona_name: Name of a specific persona to load from
+                .coderAI/agents/
         """
         self.config = config_manager.load_project_config(".")
 
         # Load custom persona if requested
         self.persona: Optional[AgentPersona] = None
         if persona_name:
-            self.persona = load_agent_persona(persona_name, self.config.project_root)
+            self.persona = load_agent_persona(
+                persona_name, self.config.project_root
+            )
             if self.persona and self.persona.model:
                 model = self.persona.model
 
@@ -70,10 +88,14 @@ class Agent:
         # Initialize LLM provider
         self.provider = self._create_provider()
 
-        # Initialize context controller (via private attribute to support lazy property)
-        self._context_controller = ContextController(config=self.config, provider=self.provider)
+        # Initialize context controller
+        # (via private attribute to support lazy property)
+        self._context_controller = ContextController(
+            config=self.config, provider=self.provider
+        )
 
-        # Initialize tool registry (optionally filtered by persona tools)
+        # Initialize tool registry
+        # (optionally filtered by persona tools)
         self.tools = ToolRegistry()
         self.cost_tracker = CostTracker()
         self._rebuild_tool_registry()
@@ -128,7 +150,8 @@ class Agent:
         # Discover all tools in the tools package
         discover_tools(registry)
 
-        # Manually register tools that require specific initialization arguments
+        # Manually register tools that require specific initialization
+        # arguments
         registry.register(ManageContextTool(self.context_manager))
 
         # Filter web tools if not allowed for main agent
@@ -145,24 +168,26 @@ class Agent:
         delegate_tool = self.tools.get("delegate_task")
         if delegate_tool is None:
             return
+        from .tools.subagent import SubagentContext
         tracker_info = getattr(self, "tracker_info", None)
-        delegate_tool._parent_model = self.model
-        delegate_tool._parent_context_manager = self.context_manager
-        delegate_tool._parent_cost_tracker = self.cost_tracker
-        # Sub-agents should ALWAYS default to False for security, unless explicitly
-        # overridden in the delegate_task parameters (though currently not exposed).
-        delegate_tool._parent_auto_approve = False
-        delegate_tool._parent_agent_id = tracker_info.agent_id if tracker_info else None
+        delegate_tool.context = SubagentContext(
+            parent_agent_id=tracker_info.agent_id if tracker_info else None,
+            parent_model=self.model,
+            parent_context_manager=self.context_manager,
+            parent_cost_tracker=self.cost_tracker,
+            parent_auto_approve=self.auto_approve,
+            parent_ipc_server=getattr(self, "ipc_server", None),
+        )
 
     def _rebuild_tool_registry(self) -> None:
-        """Rebuild the registry so persona changes take effect immediately."""
+        """Rebuild registry so persona changes take effect immediately."""
         self.tools = self._create_tool_registry()
         if self.persona and self.persona.tools:
             self._filter_tools_for_persona(self.persona.tools)
         self._configure_delegate_tool_context()
 
     def _refresh_session_system_prompt(self) -> None:
-        """Update the live session's primary system prompt after persona changes."""
+        """Update live session system prompt after persona changes."""
         if not self.session:
             return
 
@@ -170,7 +195,9 @@ class Agent:
         if self.session.messages and self.session.messages[0].role == "system":
             self.session.messages[0].content = prompt
         else:
-            self.session.messages.insert(0, Message(role="system", content=prompt))
+            self.session.messages.insert(
+                0, Message(role="system", content=prompt)
+            )
         self.session.updated_at = _time.time()
 
     def apply_persona(
@@ -192,7 +219,9 @@ class Agent:
         self._refresh_session_system_prompt()
 
         if self.tracker_info:
-            self.tracker_info.name = self.persona.name if self.persona else "main"
+            self.tracker_info.name = (
+                self.persona.name if self.persona else "main"
+            )
             self.tracker_info.role = (
                 self.persona.description if self.persona else None
             )
@@ -202,10 +231,14 @@ class Agent:
     def set_persona(
         self, persona_name: Optional[str], update_model: bool = True
     ) -> Optional[AgentPersona]:
-        """Load and apply a persona by name. Pass None to return to default mode."""
+        """Load and apply a persona by name.
+        Pass None to return to default mode.
+        """
         persona = None
         if persona_name:
-            persona = load_agent_persona(persona_name, self.config.project_root)
+            persona = load_agent_persona(
+                persona_name, self.config.project_root
+            )
             if persona is None:
                 return None
         self.apply_persona(persona, update_model=update_model)
@@ -236,9 +269,10 @@ class Agent:
             del self.tools.tools[name]
 
     def _get_system_prompt(self) -> str:
-        """Get the base system prompt (or persona) and append any rules from .coderAI/rules/."""
+        """Get base prompt and append rules from .coderAI/rules/."""
         if self.persona:
-            # Keep core principles, strategy, and safety — not only persona text + tool names.
+            # Keep core principles, strategy, and safety — not only persona
+            # text + tool names.
             prompt = (
                 f"{SYSTEM_PROMPT_INTRO}\n\n"
                 f"{self.persona.instructions}\n\n"
@@ -259,14 +293,19 @@ class Agent:
                     try:
                         content = rule_file.read_text().strip()
                         if content:
-                            rules.append(f"### Rule: {rule_file.name}\n{content}")
+                            rules.append(
+                                f"### Rule: {rule_file.name}\n{content}"
+                            )
                     except Exception as e:
-                        logger.warning(f"Failed to read rule file {rule_file.name}: {e}")
+                        logger.warning(
+                            f"Failed to read rule file {rule_file.name}: {e}"
+                        )
 
                 if rules:
                     prompt += "\n\n## Project Specific Rules\n\n"
                     prompt += (
-                        "The following rules are specific to this project and MUST be followed:\n\n"
+                        "The following rules are specific to this project "
+                        "and MUST be followed:\n\n"
                     )
                     prompt += "\n\n".join(rules)
         except Exception as e:
@@ -306,19 +345,22 @@ class Agent:
         messages = self.session.get_messages_for_api() if self.session else []
 
         # Inject system message if exists to get an accurate count
-        messages = self.context_controller.inject_context(messages, self.context_manager)
+        messages = self.context_controller.inject_context(
+            messages, self.context_manager
+        )
 
         used_tokens = self.context_controller.estimate_tokens(messages)
         limit = self.config.context_window
         return used_tokens, limit
 
     async def compact_context(self) -> bool:
-        """Manually force the context to be compacted by summarizing the history."""
+        """Force the context to be compacted by summarizing history."""
         if not self.session:
             return False
 
         event_emitter.emit(
-            "agent_status", message="[bold cyan]Force compacting context...[/bold cyan]"
+            "agent_status",
+            message="[bold cyan]Force compacting context...[/bold cyan]",
         )
 
         # Use a local override instead of mutating the shared config object
@@ -327,8 +369,10 @@ class Agent:
         try:
             messages = self.session.get_messages_for_api()
 
-            compacted_messages = await self.context_controller.manage_context_window(
-                messages, context_limit_override=compact_limit
+            compacted_messages = (
+                await self.context_controller.manage_context_window(
+                    messages, context_limit_override=compact_limit
+                )
             )
 
             for msg in compacted_messages:
@@ -340,19 +384,48 @@ class Agent:
                         or "were removed to fit" in msg.get("content")
                     )
                 ):
+                    # Compaction reorders messages (inserts a summary, drops
+                    # old turns), so matching timestamps by positional index
+                    # mis-stamps every survivor. Build a lookup of original
+                    # messages by identity (role + content + tool_calls) and
+                    # copy each survivor's original timestamp across. The new
+                    # summary message stamps with the current time.
+                    now = _time.time()
+                    originals_by_identity: Dict[tuple, List[float]] = {}
+                    for orig in self.session.messages:
+                        key = (
+                            orig.role,
+                            orig.content,
+                            _freeze(orig.tool_calls),
+                            orig.tool_call_id,
+                            orig.name,
+                        )
+                        originals_by_identity.setdefault(key, []).append(
+                            orig.timestamp
+                        )
+
                     new_messages = []
-                    for i, m in enumerate(compacted_messages):
+                    for m in compacted_messages:
                         msg_args = {
                             k: v
                             for k, v in m.items()
                             if k in ["role", "content", "tool_calls", "tool_call_id", "name"]
                         }
-                        # Preserve original timestamp if we have a corresponding message
-                        if i < len(self.session.messages):
-                            msg_args["timestamp"] = self.session.messages[i].timestamp
+                        key = (
+                            msg_args.get("role"),
+                            msg_args.get("content"),
+                            _freeze(msg_args.get("tool_calls")),
+                            msg_args.get("tool_call_id"),
+                            msg_args.get("name"),
+                        )
+                        stamps = originals_by_identity.get(key)
+                        if stamps:
+                            msg_args["timestamp"] = stamps.pop(0)
+                        else:
+                            msg_args["timestamp"] = now
                         new_messages.append(Message(**msg_args))
                     self.session.messages = new_messages
-                    self.session.updated_at = _time.time()
+                    self.session.updated_at = now
                     event_emitter.emit(
                         "agent_status",
                         message="[bold green]Context compacted successfully![/bold green]",
@@ -420,6 +493,34 @@ class Agent:
         event_emitter.emit("agent_lifecycle", action="finished", info=info)
 
 
+    def _is_transient_error(self, exc: Exception) -> bool:
+        """Thin delegator for backward compatibility and testing."""
+        from .error_policy import is_transient_error
+        return is_transient_error(exc)
+
+    def _summarize_tool_result(self, result: Any) -> Dict[str, Any]:
+        """Thin delegator for backward compatibility and testing."""
+        return self.context_controller.summarize_tool_result(result)
+
+    async def _manage_context_window(
+        self,
+        messages: List[Dict[str, Any]],
+        context_limit_override: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Thin delegator for backward compatibility and testing."""
+        return await self.context_controller.manage_context_window(
+            messages, context_limit_override=context_limit_override
+        )
+
+    async def _call_llm_with_retry(
+        self,
+        messages: List[Dict[str, Any]],
+        tool_schemas: Optional[List[Dict[str, Any]]],
+    ) -> Dict[str, Any]:
+        """Thin delegator for backward compatibility and testing."""
+        from .agent_loop import ExecutionLoop
+        return await ExecutionLoop(self)._call_llm_with_retry(messages, tool_schemas)
+
     async def process_message(self, user_message: str) -> Dict[str, Any]:
         """Process a user message using ExecutionLoop."""
         from .agent_loop import ExecutionLoop
@@ -439,4 +540,3 @@ class Agent:
         """Clean up resources (HTTP sessions, background processes, etc.)."""
         if hasattr(self.provider, "close"):
             await self.provider.close()
-

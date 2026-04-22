@@ -19,7 +19,13 @@ export function Toast({
     level === "success" ? "✓" : level === "warning" ? "⚠" : "ℹ";
   const lines = message.split("\n");
   return (
-    <Box marginBottom={0} flexDirection="column">
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor={color}
+      paddingX={1}
+      marginBottom={1}
+    >
       {lines.map((line, i) => (
         <Text key={i} color={color}>
           {i === 0 ? `${icon} ` : "   "}

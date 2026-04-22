@@ -11,25 +11,49 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 
+def _partial_tag_suffix_len(buffer: str, tag: str) -> int:
+    """Return the length of the longest suffix of ``buffer`` that is a strict
+    (non-empty, non-full) prefix of ``tag``.
+
+    Used to decide how many trailing characters to hold back while we wait to
+    see whether a ``<think>`` / ``</think>`` tag is forming. Capped at
+    ``len(tag) - 1`` so a literal ``<`` followed by content that obviously
+    doesn't lead into ``tag`` is flushed immediately rather than buffered.
+    """
+    max_prefix = min(len(buffer), len(tag) - 1)
+    for n in range(max_prefix, 0, -1):
+        if tag.startswith(buffer[-n:]):
+            return n
+    return 0
+
+
 class IPCStreamingHandler:
     """Consume an LLM stream and relay deltas through an ``IPCServer``."""
 
     def __init__(self, server) -> None:
         self.server = server
         self.current_content = ""
+        self.current_reasoning = ""
         self.tool_calls: List[Dict[str, Any]] = []
         self._in_reasoning = False
         self._reasoning_type: Optional[str] = None
         self._tag_buffer = ""
+        self._raw_content = ""
+        self._raw_reasoning = ""
 
     async def handle_stream(
         self, stream, initial_content: str = ""
     ) -> Dict[str, Any]:
         self.current_content = initial_content
+        self.current_reasoning = ""
         self.tool_calls = []
         self._in_reasoning = False
         self._reasoning_type = None
         self._tag_buffer = ""
+        self._raw_content = initial_content
+        self._raw_reasoning = ""
+
+        self.server.emit("assistant_start")
 
         if initial_content:
             self._emit(initial_content, reasoning=False)
@@ -41,24 +65,22 @@ class IPCStreamingHandler:
             delta = choices[0].get("delta", {})
 
             # Reasoning field (Anthropic / OpenAI o-series extensions)
-            reasoning_delta = delta.get("reasoning_content", "") or ""
+            reasoning_delta = self._coalesce_chunk(
+                delta.get("reasoning_content", "") or "",
+                attr="_raw_reasoning",
+            )
             if reasoning_delta:
                 if not self._in_reasoning:
                     self._in_reasoning = True
                     self._reasoning_type = "field"
-                self.current_content += reasoning_delta
+                self.current_reasoning += reasoning_delta
                 self._emit(reasoning_delta, reasoning=True)
 
             # Regular content (may contain <think> tags inline)
-            content_chunk = delta.get("content", "") or ""
-
-            if (
-                content_chunk
-                and self.current_content
-                and len(content_chunk) > len(self.current_content)
-                and content_chunk.startswith(self.current_content)
-            ):
-                content_chunk = content_chunk[len(self.current_content):]
+            content_chunk = self._coalesce_chunk(
+                delta.get("content", "") or "",
+                attr="_raw_content",
+            )
 
             if content_chunk:
                 if self._in_reasoning and self._reasoning_type == "field":
@@ -82,7 +104,7 @@ class IPCStreamingHandler:
                     else:
                         if "</think>" in self._tag_buffer:
                             before, after = self._tag_buffer.split("</think>", 1)
-                            self.current_content += before
+                            self.current_reasoning += before
                             self._emit(before, reasoning=True)
                             self._in_reasoning = False
                             self._reasoning_type = None
@@ -91,12 +113,10 @@ class IPCStreamingHandler:
                             break
 
                 if not self._in_reasoning:
-                    last_open = self._tag_buffer.rfind("<")
-                    if last_open != -1 and "<think>".startswith(
-                        self._tag_buffer[last_open:]
-                    ):
-                        flush = self._tag_buffer[:last_open]
-                        self._tag_buffer = self._tag_buffer[last_open:]
+                    hold = _partial_tag_suffix_len(self._tag_buffer, "<think>")
+                    if hold:
+                        flush = self._tag_buffer[:-hold]
+                        self._tag_buffer = self._tag_buffer[-hold:]
                     else:
                         flush = self._tag_buffer
                         self._tag_buffer = ""
@@ -104,19 +124,15 @@ class IPCStreamingHandler:
                         self.current_content += flush
                         self._emit(flush, reasoning=False)
                 else:
-                    last_open = self._tag_buffer.rfind("</")
-                    if last_open == -1:
-                        last_open = self._tag_buffer.rfind("<")
-                    if last_open != -1 and "</think>".startswith(
-                        self._tag_buffer[last_open:]
-                    ):
-                        flush = self._tag_buffer[:last_open]
-                        self._tag_buffer = self._tag_buffer[last_open:]
+                    hold = _partial_tag_suffix_len(self._tag_buffer, "</think>")
+                    if hold:
+                        flush = self._tag_buffer[:-hold]
+                        self._tag_buffer = self._tag_buffer[-hold:]
                     else:
                         flush = self._tag_buffer
                         self._tag_buffer = ""
                     if flush:
-                        self.current_content += flush
+                        self.current_reasoning += flush
                         self._emit(flush, reasoning=True)
 
             # Accumulate tool calls (emitted via event_emitter when executed)
@@ -138,6 +154,8 @@ class IPCStreamingHandler:
                         if fn.get("arguments"):
                             self.tool_calls[idx]["function"]["arguments"] += fn["arguments"]
 
+        self.server.emit("assistant_end", content=self.current_content)
+
         return {
             "content": self.current_content,
             "tool_calls": self.tool_calls if self.tool_calls else None,
@@ -147,3 +165,16 @@ class IPCStreamingHandler:
         if not text:
             return
         self.server.emit("stream_delta", content=text, reasoning=reasoning)
+
+    def _coalesce_chunk(self, chunk: str, *, attr: str) -> str:
+        """Trim provider-specific cumulative chunks down to only unseen text."""
+        if not chunk:
+            return ""
+
+        previous = getattr(self, attr)
+        if previous and len(chunk) > len(previous) and chunk.startswith(previous):
+            setattr(self, attr, chunk)
+            return chunk[len(previous):]
+
+        setattr(self, attr, previous + chunk)
+        return chunk

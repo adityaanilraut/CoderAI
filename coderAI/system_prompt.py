@@ -74,15 +74,19 @@ _TOOL_HELP: Dict[str, str] = {
         "Auto-detect project type and load config, dependencies, and directory structure"
     ),
     "manage_context": (
-        "Pin important files to context, list pinned files, or clear context"
+        "Pin or unpin files in context, list currently pinned files, or clear all pinned context. "
+        "Actions: 'add' (pin a file path), 'remove' (unpin), 'list' (show pinned files), 'clear' (unpin all)."
     ),
     "manage_tasks": (
         "Track a persistent task/TODO list with priorities (add, list, complete, update, delete, clear)"
     ),
     "delegate_task": (
-        "Spawn an isolated sub-agent for complex, self-contained tasks (research, code review, data gathering). "
-        "The sub-agent has the same tool policy as configured for delegation; runs in its own session "
-        "to avoid filling your context window."
+        "Spawn an isolated sub-agent for complex, self-contained tasks (research, code review, security audit, "
+        "data gathering, or refactoring analysis). Sub-agents run sequentially (one at a time) to avoid "
+        "workspace conflicts. Each sub-agent has access to all the same tools, runs in its own isolated session, "
+        "and returns a comprehensive structured report. Use agent_role to apply a specialist persona "
+        "(e.g. 'code-reviewer', 'security-reviewer', 'planner'). Provide specific file paths and "
+        "expected output format for best results. Max delegation depth: 3."
     ),
     "use_skill": (
         "Load predefined skill workflows from `.coderAI/skills/`. Use action='list' to see available skills, "

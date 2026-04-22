@@ -53,7 +53,7 @@ export function HelpMenu({
   return (
     <Box
       flexDirection="column"
-      borderStyle="round"
+      borderStyle="double"
       borderColor={theme.accentDim}
       paddingX={1}
       marginBottom={1}
@@ -64,7 +64,7 @@ export function HelpMenu({
         </Text>
         <Text color={theme.muted}>
           {" "}
-          · ↑↓ select · Enter run · Esc close
+          · command palette · ↑↓ select · Enter run · Esc close
         </Text>
       </Box>
       {items.map((row, i) => (
@@ -102,7 +102,11 @@ function HelpRow({
   return (
     <Box>
       <Text color={selected ? theme.accent : theme.muted}>{mark}</Text>
-      <Text bold={selected} color={selected ? theme.accent : theme.info}>
+      <Text
+        bold={selected}
+        color={selected ? theme.focus : theme.info}
+        backgroundColor={selected ? theme.accentDim : undefined}
+      >
         {lab.padEnd(labelW)}
       </Text>
       <Text color={theme.muted}> {rest}</Text>

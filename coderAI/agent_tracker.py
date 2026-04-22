@@ -17,6 +17,8 @@ class AgentStatus(str, Enum):
     IDLE = "idle"
     THINKING = "thinking"
     TOOL_CALL = "tool_call"
+    # Kept in sync with `ui/src/protocol.ts` `AgentStatus` for agent cards / NDJSON.
+    WAITING_FOR_USER = "waiting_for_user"
     CANCELLED = "cancelled"
     DONE = "done"
     ERROR = "error"
@@ -66,12 +68,19 @@ class AgentInfo:
         self.status = AgentStatus.CANCELLED
 
 
+# Upper bound on how many finished agent records we retain in memory.
+# Long-running interactive chats with many delegations would otherwise grow
+# ``_agents`` without bound. Active agents are never pruned.
+_MAX_FINISHED_AGENTS = 200
+
+
 class AgentTracker:
     """Singleton registry that tracks every active agent.
 
-    Finished agents remain in ``_agents`` for the process lifetime so UIs can
-    show last-known state; long sessions with many sub-agents will grow this
-    map (only the dict size, not worker threads).
+    Finished agents are retained in ``_agents`` so UIs can show last-known
+    state, but the number of retained *finished* entries is capped at
+    ``_MAX_FINISHED_AGENTS`` (LRU by ``finished_at``); active entries are
+    never evicted.
     """
 
     def __init__(self):
@@ -103,7 +112,37 @@ class AgentTracker:
         )
         with self._lock:
             self._agents[agent_id] = info
+            self._prune_finished_locked()
         return info
+
+    def _prune_finished_locked(self) -> None:
+        """Evict the oldest finished agents when we exceed the retention cap.
+
+        Caller must hold ``self._lock``. Children reference parents via
+        ``parent_id`` for the UI tree view, so a parent is only evicted once
+        it has no living children still in the map.
+        """
+        finished = [
+            a for a in self._agents.values()
+            if a.status in (AgentStatus.DONE, AgentStatus.ERROR, AgentStatus.CANCELLED)
+        ]
+        if len(finished) <= _MAX_FINISHED_AGENTS:
+            return
+        # Oldest first; tolerate ``finished_at=None`` by treating it as 0.
+        finished.sort(key=lambda a: a.finished_at or 0.0)
+        to_evict = len(finished) - _MAX_FINISHED_AGENTS
+        live_parent_ids = {
+            a.parent_id for a in self._agents.values()
+            if a.parent_id and a.status not in
+                (AgentStatus.DONE, AgentStatus.ERROR, AgentStatus.CANCELLED)
+        }
+        for a in finished:
+            if to_evict <= 0:
+                break
+            if a.agent_id in live_parent_ids:
+                continue
+            self._agents.pop(a.agent_id, None)
+            to_evict -= 1
 
     def get(self, agent_id: str) -> Optional[AgentInfo]:
         with self._lock:
@@ -138,7 +177,7 @@ class AgentTracker:
                     if child.parent_id == agent_id
                     and child.status not in (AgentStatus.DONE, AgentStatus.ERROR, AgentStatus.CANCELLED)
                 ]
-                
+
                 for child in children:
                     self.cancel(child.agent_id)
                 return True

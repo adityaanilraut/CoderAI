@@ -8,12 +8,13 @@ export interface ErrorPanelProps {
   hint?: string;
   details?: string;
   /**
-   * When true, the component listens for `d`/`D` to toggle details.
+   * When true, the component listens for its detail-toggle shortcut.
    * The parent should set this only for the most recently-emitted
-   * error AND only when the prompt is not accepting text input, so
-   * typing "d" in a user message doesn't spuriously toggle panels.
+   * error so multiple panels do not compete for the same keys.
    */
   canExpand?: boolean;
+  /** When true, require Ctrl+D so the compose box can stay focused safely. */
+  promptActive?: boolean;
 }
 
 /**
@@ -26,12 +27,16 @@ export function ErrorPanel({
   hint,
   details,
   canExpand = false,
+  promptActive = false,
 }: ErrorPanelProps) {
   const [expanded, setExpanded] = useState(false);
 
   useInput(
-    (input) => {
-      if (input === "d" || input === "D") setExpanded((e) => !e);
+    (input, key) => {
+      const wantsToggle = promptActive
+        ? key.ctrl && (input === "d" || input === "D")
+        : input === "d" || input === "D" || (key.ctrl && input === "d");
+      if (wantsToggle) setExpanded((e) => !e);
     },
     {isActive: canExpand && Boolean(details)},
   );
@@ -56,29 +61,39 @@ export function ErrorPanel({
       flexDirection="column"
       marginBottom={1}
     >
-      <Box>
+      <Box justifyContent="space-between">
         <Text color={theme.danger} bold>
           ⚠ {title}
         </Text>
+        <Text color={theme.muted}>{category}</Text>
       </Box>
-      <Box marginTop={0}>
-        <Text>{message}</Text>
+      <Box marginTop={1}>
+        <Text color={theme.text}>{message}</Text>
       </Box>
-      <Box marginTop={0}>
+      <Box>
         <Text color={theme.warning}>▸ {resolvedHint}</Text>
       </Box>
       {details ? (
         <>
           {canExpand ? (
-            <Box marginTop={0}>
+            <Box>
               <Text color={theme.muted}>
-                Press <Text color={theme.accent}>d</Text> to{" "}
+                Press <Text color={theme.accent}>
+                  {promptActive ? "Ctrl+D" : "d"}
+                </Text>{" "}
+                to{" "}
                 {expanded ? "hide" : "show"} details
               </Text>
             </Box>
           ) : null}
           {expanded ? (
-            <Box marginTop={0} flexDirection="column">
+            <Box
+              flexDirection="column"
+              marginTop={1}
+              borderStyle="single"
+              borderColor={theme.borderSoft}
+              paddingX={1}
+            >
               <Text color={theme.muted}>{details}</Text>
             </Box>
           ) : null}

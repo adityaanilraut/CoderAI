@@ -13,20 +13,25 @@ export function Thinking({active}: {active: boolean}) {
       return;
     }
     const start = Date.now();
-    const interval = setInterval(() => setMs(Date.now() - start), 250);
+    const interval = setInterval(() => setMs(Date.now() - start), 1000);
     return () => clearInterval(interval);
   }, [active]);
 
   if (!active) return null;
 
   return (
-    <Box>
+    <Box
+      borderStyle="round"
+      borderColor={theme.borderSoft}
+      paddingX={1}
+      marginBottom={1}
+    >
       <Text color={theme.accent}>
         <Spinner type="dots" />
       </Text>
       <Text color={theme.muted}>
         {" "}
-        thinking… {(ms / 1000).toFixed(1)}s{" "}
+        reasoning in progress · {(ms / 1000).toFixed(1)}s{" "}
         <Text dimColor>(Esc to interrupt)</Text>
       </Text>
     </Box>

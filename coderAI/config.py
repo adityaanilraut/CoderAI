@@ -49,7 +49,6 @@ class Config(BaseModel):
     project_root: str = Field(default=".")
 
 
-
 class ConfigManager:
     """Manages configuration for CoderAI."""
 

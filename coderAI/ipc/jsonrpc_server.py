@@ -72,13 +72,13 @@ _TOOL_CATEGORY_FALLBACK = {
     "web_search": "web", "read_url": "web", "download_file": "web",
     # subagent
     "delegate_task": "agent",
-    # mcp
-    "mcp_connect": "mcp", "mcp_call": "mcp", "mcp_list": "mcp",
+    # mcp — tool is registered as ``mcp_call_tool`` in ``coderAI/tools/mcp.py``
+    "mcp_connect": "mcp", "mcp_call_tool": "mcp", "mcp_list": "mcp",
 }
 
 _HIGH_RISK = {"run_command", "run_background", "write_file", "search_replace",
               "apply_diff", "git_commit", "git_checkout", "git_stash"}
-_MEDIUM_RISK = {"delegate_task", "download_file", "mcp_call"}
+_MEDIUM_RISK = {"delegate_task", "download_file", "mcp_call_tool"}
 
 
 def _tool_category(name: str, registry: Optional[Any] = None) -> str:
@@ -450,11 +450,8 @@ def _result_preview(result: Dict[str, Any]) -> str:
 
 async def _cmd_send_message(server: IPCServer, msg: Dict[str, Any]) -> None:
     text = msg.get("text", "")
-    server.emit("assistant_start")
     try:
-        response = await server.agent.process_message(text)
-        content = response.get("content") or ""
-        server.emit("assistant_end", content=content)
+        await server.agent.process_message(text)
     except Exception as e:
         server.emit(
             "error",
@@ -492,6 +489,11 @@ async def _cmd_set_model(server: IPCServer, msg: Dict[str, Any]) -> None:
         server.emit("error", category="provider",
                     message=f"Could not switch to {model}: {e}")
         return
+    # Persist the hot-switch on the active session so replays from
+    # ``~/.coderAI/history/`` report the model that was actually used for
+    # each turn from this point forward.
+    if server.agent.session is not None:
+        server.agent.session.model = model
     server.emit("model_changed", model=model,
                 provider=server.agent.provider.__class__.__name__)
     server.emit("success", message=f"Model → {model}")
@@ -499,6 +501,7 @@ async def _cmd_set_model(server: IPCServer, msg: Dict[str, Any]) -> None:
 
 async def _cmd_toggle_auto_approve(server: IPCServer, msg: Dict[str, Any]) -> None:
     server.agent.auto_approve = not server.agent.auto_approve
+    server.agent._configure_delegate_tool_context()
     state = "ON" if server.agent.auto_approve else "OFF"
     # Emit a structured event so the UI can update its "safe"/"YOLO" badge
     # synchronously, in addition to the user-visible toast.
@@ -543,6 +546,9 @@ async def _cmd_clear_context(server: IPCServer, msg: Dict[str, Any]) -> None:
     server.agent.total_prompt_tokens = 0
     server.agent.total_completion_tokens = 0
     server.agent.total_tokens = 0
+    # Reset cumulative cost alongside the token counters so ``/cost`` and the
+    # UI status badge stay coherent after ``/clear``.
+    server.agent.cost_tracker.total_cost_usd = 0.0
     server.emit("success", message="Context cleared")
     server.emit_status()
 
@@ -674,10 +680,21 @@ async def _cmd_set_default_model(server: IPCServer, msg: Dict[str, Any]) -> None
         )
         return
     config_manager.set("default_model", model_name)
-    server.emit(
-        "info",
-        message=f"Saved default model → {model_name} (applies to new chat sessions)",
-    )
+    current = server.agent.model
+    if current != model_name:
+        server.emit(
+            "info",
+            message=(
+                f"Saved default model → {model_name}. "
+                f"Current session is still using {current}; "
+                f"use /model {model_name} to switch now."
+            ),
+        )
+    else:
+        server.emit(
+            "info",
+            message=f"Saved default model → {model_name} (already active).",
+        )
 
 
 async def _cmd_exit(server: IPCServer, msg: Dict[str, Any]) -> None:

@@ -2,6 +2,17 @@
 
 import re
 
+
+class BudgetExceededError(RuntimeError):
+    """Raised when the configured budget has been exhausted.
+
+    Distinct from transient errors so the retry loop never swallows it:
+    burning retries on a hard stop is pure waste and produces misleading
+    "transient error" logs. Caught at the iteration boundary where it is
+    turned into a terminal user-facing message.
+    """
+
+
 # Retry configuration for transient errors
 MAX_RETRIES_PER_ITERATION = 3
 RETRY_BASE_DELAY = 1  # seconds

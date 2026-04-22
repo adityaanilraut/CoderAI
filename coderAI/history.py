@@ -25,6 +25,25 @@ class Message(BaseModel):
     name: Optional[str] = None  # Tool name for tool messages
 
 
+def _default_session_model() -> str:
+    """Resolve the configured default model lazily.
+
+    Imported inside the function to avoid a circular import during module
+    load (``config`` imports pydantic, and ``history`` is imported early by
+    ``agent``).
+    """
+    try:
+        from .config import config_manager
+        return config_manager.load().default_model
+    except Exception:
+        # Fall back to the Config field default rather than an invalid literal.
+        try:
+            from .config import Config
+            return Config.model_fields["default_model"].default
+        except Exception:
+            return "claude-4-sonnet"
+
+
 class Session(BaseModel):
     """A conversation session."""
 
@@ -32,7 +51,7 @@ class Session(BaseModel):
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
     messages: List[Message] = Field(default_factory=list)
-    model: str = "gpt-5-mini"
+    model: str = Field(default_factory=_default_session_model)
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
     def add_message(self, role: str, content: str, **kwargs) -> None:
@@ -69,9 +88,11 @@ class HistoryManager:
         self.history_dir.mkdir(parents=True, exist_ok=True)
         self.current_session: Optional[Session] = None
 
-    def create_session(self, model: str = "gpt-5-mini") -> Session:
-        """Create a new session."""
+    def create_session(self, model: Optional[str] = None) -> Session:
+        """Create a new session, defaulting to the configured model."""
         session_id = f"session_{int(time.time())}_{uuid.uuid4().hex[:8]}"
+        if model is None:
+            model = _default_session_model()
         self.current_session = Session(session_id=session_id, model=model)
         return self.current_session
 

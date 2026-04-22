@@ -4,40 +4,42 @@
  */
 
 export const theme = {
-  // Accent / brand
-  accent: "#7aa2f7",
-  accentDim: "#3d59a1",
-  success: "#9ece6a",
-  warning: "#e0af68",
-  danger: "#f7768e",
-  info: "#7dcfff",
-  muted: "#565f89",
+  // Brand palette for the terminal UI: warm editorial accent + cool operator tones.
+  accent: "#d97757",
+  accentDim: "#8f4d39",
+  accentSoft: "#f2c4b4",
+  success: "#81b29a",
+  warning: "#d9a441",
+  danger: "#d16d5b",
+  info: "#6ea8c7",
+  muted: "#7f8a96",
+  text: "#e7dccf",
+  border: "#73574d",
+  borderSoft: "#4c5660",
+  focus: "#edd4ae",
 
   // Tool category colors (match Python `_TOOL_CATEGORIES`)
   tool: {
-    fs: "#7dcfff",
-    git: "#e0af68",
-    shell: "#f7768e",
-    web: "#bb9af7",
-    search: "#7aa2f7",
-    agent: "#9ece6a",
-    mcp: "#ff9e64",
-    other: "#a9b1d6",
+    fs: "#6ea8c7",
+    git: "#d9a441",
+    shell: "#d16d5b",
+    web: "#d97757",
+    search: "#8ab6a2",
+    agent: "#81b29a",
+    mcp: "#c99054",
+    other: "#a5adb8",
   },
 
   // Risk badges
   risk: {
-    low: "#9ece6a",
-    medium: "#e0af68",
-    high: "#f7768e",
+    low: "#81b29a",
+    medium: "#d9a441",
+    high: "#d16d5b",
   },
 
   // Backgrounds for diff viewer
   diff: {
-    addBg: "#1d3a1d",
-    delBg: "#3a1d1d",
-    hunkBg: "#1a1b26",
+    addBg: "#183126",
+    delBg: "#3a221f",
   },
 } as const;
-
-export type ToolCategoryColor = keyof typeof theme.tool;

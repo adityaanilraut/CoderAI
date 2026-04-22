@@ -258,11 +258,17 @@ class MCPClient:
                 if part.get("type") == "text":
                     text_content += part.get("text", "")
 
-            return {
-                "success": True,
+            # MCP spec: isError=true means the tool itself encountered an error
+            # (distinct from a JSON-RPC protocol error above).
+            is_error = bool(result.get("isError"))
+            out: Dict[str, Any] = {
+                "success": not is_error,
                 "content": text_content,
                 "raw": result,
             }
+            if is_error:
+                out["error"] = text_content or "MCP tool returned an error."
+            return out
 
         except Exception as e:
             return {"success": False, "error": str(e)}

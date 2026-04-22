@@ -27,43 +27,48 @@ export function ToolCard(props: ToolCardProps) {
 
   return (
     <Box
-      borderStyle="single"
+      borderStyle="round"
       borderColor={status === "error" ? theme.danger : color}
       paddingX={1}
       flexDirection="column"
       marginBottom={1}
     >
       <Box justifyContent="space-between">
-        <Box>
+        <Box flexDirection="column">
+          <Box>
+            <Text color={color} bold>
+              {iconFor(status)} {props.name}
+            </Text>
+            <Text color={theme.muted}>  {props.category}</Text>
+          </Box>
           <Text color={color} bold>
-            {iconFor(status)} {props.name}
+            {summary || "no arguments"}
           </Text>
-          {summary ? (
-            <Text color={theme.muted}>  {summary}</Text>
-          ) : null}
         </Box>
         <Box>
           <RiskBadge risk={props.risk} />
-          <Text color={theme.muted}> · {props.category}</Text>
         </Box>
       </Box>
 
       {props.ok === null ? (
-        <Box marginTop={0}>
-          <Text color={theme.muted}>
-            <Spinner type="dots" />
-            <Text> running…</Text>
-          </Text>
+        <Box marginTop={1}>
+          <Text color={theme.accent}><Spinner type="dots" /></Text>
+          <Text color={theme.muted}> running…</Text>
         </Box>
       ) : props.ok ? (
         <>
           {props.preview ? (
-            <Box marginTop={0}>
+            <Box
+              marginTop={1}
+              borderStyle="single"
+              borderColor={theme.borderSoft}
+              paddingX={1}
+            >
               <Text color={theme.muted}>{props.preview}</Text>
             </Box>
           ) : null}
           {props.fullAvailable ? (
-            <Box marginTop={0}>
+            <Box marginTop={1}>
               <Text color={theme.muted} italic>
                 (output truncated — full result kept in the session log)
               </Text>
@@ -71,7 +76,7 @@ export function ToolCard(props: ToolCardProps) {
           ) : null}
         </>
       ) : (
-        <Box marginTop={0}>
+        <Box marginTop={1}>
           <Text color={theme.danger}>✗ {props.error ?? "tool failed"}</Text>
         </Box>
       )}
@@ -85,8 +90,12 @@ function iconFor(status: "running" | "ok" | "error"): string {
 
 function RiskBadge({risk}: {risk: ToolRisk}) {
   const color = theme.risk[risk];
-  const label = risk === "high" ? "⚠ high" : risk === "medium" ? "· med" : "· low";
-  return <Text color={color}>{label}</Text>;
+  const label = risk === "high" ? " HIGH " : risk === "medium" ? " MED " : " LOW ";
+  return (
+    <Text backgroundColor={color} color="black" bold>
+      {label}
+    </Text>
+  );
 }
 
 /**

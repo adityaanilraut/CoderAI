@@ -2,6 +2,7 @@
 
 import logging
 import os
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
@@ -13,6 +14,23 @@ logger = logging.getLogger(__name__)
 
 # Maximum depth for nested sub-agent delegation to prevent infinite recursion
 MAX_DELEGATION_DEPTH = 3
+
+
+@dataclass
+class SubagentContext:
+    """Everything a ``DelegateTaskTool`` needs from its parent ``Agent``.
+
+    Passed as a single attribute on the tool so the wiring is legible and
+    tests can construct a realistic context without monkey-patching a
+    handful of private attributes.
+    """
+
+    parent_agent_id: Optional[str] = None
+    parent_model: Optional[str] = None
+    parent_context_manager: Optional[Any] = None  # ContextManager
+    parent_cost_tracker: Optional[Any] = None  # CostTracker (shared)
+    parent_auto_approve: bool = False
+    parent_ipc_server: Optional[Any] = None
 
 def _get_role_instructions(role: Optional[str]) -> str:
     """Get role-specific instructions."""
@@ -87,14 +105,14 @@ class DelegateTaskTool(Tool):
     # or git state.
     is_read_only = False
 
-    # Set by the parent Agent after registration so the sub-agent can
-    # inherit the model and link to the correct parent in the tracker.
-    _parent_model: Optional[str] = None
-    _parent_agent_id: Optional[str] = None
-    _parent_context_manager: Optional[Any] = None  # parent's ContextManager
-    _parent_cost_tracker: Optional[Any] = None  # parent's CostTracker (shared)
-    _parent_auto_approve: bool = False  # Default to False for sub-agents for safety
-    _current_depth: int = 0  # incremented on each delegation
+    # Depth (root agent = 0) — incremented on each delegation hop.
+    _current_depth: int = 0
+
+    def __init__(self) -> None:
+        super().__init__()
+        # ``context`` is populated by ``Agent._configure_delegate_tool_context``
+        # once the parent agent is fully constructed.
+        self.context: SubagentContext = SubagentContext()
 
     async def execute(
         self,
@@ -131,15 +149,17 @@ class DelegateTaskTool(Tool):
                 message=f"[bold purple]Spawning Sub-Agent{role_label} (depth {self._current_depth + 1}/{MAX_DELEGATION_DEPTH})...[/bold purple]",
             )
 
+            ctx = self.context
+
             # Inherit the parent agent's model when no explicit override is given
-            effective_model = model or self._parent_model
+            effective_model = model or ctx.parent_model
 
             # Snapshot the parent's cost so we can report only the sub-agent's
             # incremental spend later (the cost tracker is shared, so a raw read
             # of get_total_cost() would include everything the parent spent).
             parent_cost_before = (
-                self._parent_cost_tracker.get_total_cost()
-                if getattr(self, "_parent_cost_tracker", None)
+                ctx.parent_cost_tracker.get_total_cost()
+                if ctx.parent_cost_tracker is not None
                 else 0.0
             )
 
@@ -151,15 +171,16 @@ class DelegateTaskTool(Tool):
                 """
                 new_agent = Agent(
                     model=effective_model,
-                    auto_approve=self._parent_auto_approve,
+                    auto_approve=ctx.parent_auto_approve,
                     is_subagent=True,
                 )
+                new_agent.ipc_server = ctx.parent_ipc_server
 
                 # Share parent's cost tracker BEFORE reconfiguring delegate
                 # tool context — otherwise nested delegations (grand-children)
                 # would account against an orphan tracker.
-                if self._parent_cost_tracker is not None:
-                    new_agent.cost_tracker = self._parent_cost_tracker
+                if ctx.parent_cost_tracker is not None:
+                    new_agent.cost_tracker = ctx.parent_cost_tracker
 
                 persona = None
                 if agent_role:
@@ -169,25 +190,25 @@ class DelegateTaskTool(Tool):
                     )
 
                 # Re-wire the child's delegate_task tool so its
-                # _parent_cost_tracker / _parent_model reflect the
-                # post-override state. ``set_persona`` already does this
-                # when a persona is applied, but not otherwise.
+                # ``context`` reflects the post-override state. ``set_persona``
+                # already does this when a persona is applied, but not
+                # otherwise.
                 new_agent._configure_delegate_tool_context()
 
                 # Inherit parent's pinned context.
                 if (
                     inherit_project_context
-                    and self._parent_context_manager is not None
+                    and ctx.parent_context_manager is not None
                 ):
                     new_agent.context_manager.pinned_files = dict(
-                        self._parent_context_manager.pinned_files
+                        ctx.parent_context_manager.pinned_files
                     )
                     new_agent.context_manager._pinned_mtimes = dict(
-                        self._parent_context_manager._pinned_mtimes
+                        ctx.parent_context_manager._pinned_mtimes
                     )
-                    if self._parent_context_manager.project_instructions:
+                    if ctx.parent_context_manager.project_instructions:
                         new_agent.context_manager.project_instructions = (
-                            self._parent_context_manager.project_instructions
+                            ctx.parent_context_manager.project_instructions
                         )
                         new_agent.context_manager._instructions_loaded = True
                 else:
@@ -201,7 +222,7 @@ class DelegateTaskTool(Tool):
                 new_agent._register_tracker(
                     task=task_description[:120],
                     role=agent_role,
-                    parent_id=self._parent_agent_id,
+                    parent_id=ctx.parent_agent_id,
                 )
 
                 # Propagate delegation depth so the sub-agent's
@@ -332,4 +353,3 @@ class DelegateTaskTool(Tool):
                     await sub_agent.close()
                 except Exception:
                     pass
-

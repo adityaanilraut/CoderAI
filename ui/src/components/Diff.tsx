@@ -47,7 +47,7 @@ export function Diff({
   return (
     <Box
       borderStyle="round"
-      borderColor={theme.accentDim}
+      borderColor={theme.border}
       flexDirection="column"
       paddingX={1}
       marginBottom={1}
@@ -63,7 +63,13 @@ export function Diff({
         </Box>
       </Box>
 
-      <Box flexDirection="column" marginTop={0}>
+      <Box
+        flexDirection="column"
+        marginTop={1}
+        borderStyle="single"
+        borderColor={theme.borderSoft}
+        paddingX={1}
+      >
         {rows.map((row, i) => {
           if (row.kind === "elision") {
             return (

@@ -30,7 +30,18 @@
       "Read(//private/tmp/design-pkg/**)",
       "Bash(tar -xf design.tar)",
       "Bash(git *)",
-      "Bash(make lint *)"
+      "Bash(make lint *)",
+      "Bash(coderAI --help)",
+      "Bash(coderAI status *)",
+      "Bash(coderAI config *)",
+      "Bash(make ui-install *)",
+      "Bash(make ui-compile *)",
+      "Bash(make dev *)",
+      "Bash(pip3 install *)",
+      "Bash(bunx tsc *)",
+      "Bash(echo \"---exit $?---\")",
+      "Bash(bun pm *)",
+      "Bash(node_modules/.bin/tsc --noEmit)"
     ]
   }
 }

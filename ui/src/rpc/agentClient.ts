@@ -6,7 +6,15 @@
 import {spawn, type ChildProcessWithoutNullStreams} from "node:child_process";
 import {EventEmitter} from "node:events";
 import readline from "node:readline";
-import type {AgentEvent, CmdEnvelope, UIEnvelope} from "../protocol.js";
+import {
+  AGENT_EVENT_NAMES,
+  type AgentEvent,
+  type ReasoningEffort,
+  type UIEnvelope,
+} from "../protocol.js";
+
+const DEBUG_IPC =
+  process.env.CODERAI_DEBUG === "1" || process.env.CODERAI_DEBUG === "true";
 
 export interface AgentClientOptions {
   /** Python executable, defaults to `python3`. */
@@ -69,10 +77,28 @@ export class AgentClient extends EventEmitter {
     try {
       msg = JSON.parse(line) as UIEnvelope;
     } catch {
+      if (DEBUG_IPC) {
+        process.stderr.write(
+          `[coderai-ui] stdout line is not JSON (ignored as IPC event): ${line.slice(0, 220)}${line.length > 220 ? "…" : ""}\n`,
+        );
+      }
       this.emit("raw", line);
       return;
     }
-    if (!msg || msg.kind !== "event") return;
+    if (!msg || msg.kind !== "event") {
+      if (DEBUG_IPC) {
+        process.stderr.write(
+          `[coderai-ui] line is not a UI event (kind !== \"event\"), dropped: ${line.slice(0, 220)}${line.length > 220 ? "…" : ""}\n`,
+        );
+      }
+      return;
+    }
+    const en = (msg as UIEnvelope & {event: string}).event;
+    if (DEBUG_IPC && !AGENT_EVENT_NAMES.includes(en)) {
+      process.stderr.write(
+        `[coderai-ui] unknown event name ${JSON.stringify(en)} (listeners may still handle it)\n`,
+      );
+    }
     this.emit(msg.event, msg);
     this.emit("raw", msg);
   }
@@ -103,7 +129,7 @@ export class AgentClient extends EventEmitter {
     return this.send({cmd: "toggle_auto_approve"});
   }
 
-  setReasoning(effort: "high" | "medium" | "low" | "none"): string {
+  setReasoning(effort: ReasoningEffort): string {
     return this.send({cmd: "set_reasoning", effort});
   }
 

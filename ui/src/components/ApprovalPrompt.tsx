@@ -61,22 +61,19 @@ export function ApprovalPrompt({
       flexDirection="column"
       marginBottom={1}
     >
-      <Box>
+      <Box justifyContent="space-between">
         <Text color={theme.warning} bold>
           ⚠ Approval required
         </Text>
-        <Text color={theme.muted}>  ·  risk: </Text>
-        <Text color={theme.risk[risk]} bold>
-          {risk}
+        <Text backgroundColor={theme.risk[risk]} color="black" bold>
+          {" " + risk.toUpperCase() + " "}
         </Text>
       </Box>
-      <Box marginTop={0}>
-        <Text>
-          <Text bold>{tool}</Text>
-          {summary ? (
-            <Text color={theme.muted}>  {summary}</Text>
-          ) : null}
-        </Text>
+      <Box marginTop={1} flexDirection="column">
+        <Text bold color={theme.text}>{tool}</Text>
+        {summary ? (
+          <Text color={theme.muted}>{summary}</Text>
+        ) : null}
       </Box>
 
       {decided === "pending" ? (
@@ -109,7 +106,7 @@ export function ApprovalPrompt({
 
           <Box marginX={2}>
             <Text color={theme.muted}>
-              (use arrows/tab to navigate, enter to confirm)
+              use arrows/tab to navigate, enter to confirm
             </Text>
           </Box>
         </Box>

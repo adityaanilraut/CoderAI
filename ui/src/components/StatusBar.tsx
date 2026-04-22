@@ -38,11 +38,16 @@ export function StatusBar({
   // Segments so we can either join them with pipes (wide) or stack them
   // in a column (narrow terminals) without duplicating JSX.
   const left = (
-    <Box>
-      <Text color={theme.accent} bold>
-        {session.model || "…"}
+    <Box flexDirection="column">
+      <Box>
+        <Text color={theme.accent} bold>
+          {session.model || "…"}
+        </Text>
+        <Text color={theme.muted}> · {session.provider || "not connected"}</Text>
+      </Box>
+      <Text color={theme.muted}>
+        {session.cwd ? session.cwd : "waiting for workspace"}
       </Text>
-      <Text color={theme.muted}> · {session.provider || "not connected"}</Text>
     </Box>
   );
 
@@ -86,12 +91,12 @@ export function StatusBar({
     return (
       <Box
         borderStyle="round"
-        borderColor={theme.accentDim}
+        borderColor={theme.border}
         paddingX={1}
         flexDirection="column"
       >
         {left}
-        <Box>
+        <Box marginTop={1}>
           {ctxSeg}
           <Text color={theme.muted}>  ·  </Text>
           {costSeg}
@@ -100,6 +105,8 @@ export function StatusBar({
           {agentsSeg}
           <Text color={theme.muted}>  ·  </Text>
           {modeSeg}
+          <Text color={theme.muted}>  ·  </Text>
+          <Text color={theme.info}>{session.reasoning}</Text>
         </Box>
       </Box>
     );
@@ -107,8 +114,8 @@ export function StatusBar({
 
   return (
     <Box
-      borderStyle="round"
-      borderColor={theme.accentDim}
+      borderStyle="double"
+      borderColor={theme.border}
       paddingX={1}
       justifyContent="space-between"
     >
@@ -121,6 +128,8 @@ export function StatusBar({
         {agentsSeg}
         <Text color={theme.muted}>  │  </Text>
         {modeSeg}
+        <Text color={theme.muted}>  │  </Text>
+        <Text color={theme.info}>{session.reasoning}</Text>
       </Box>
     </Box>
   );

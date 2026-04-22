@@ -79,9 +79,6 @@ PROTECTED_SYSTEM_PATHS = [
     "/root",
 ]
 
-# Back-compat alias for any external callers still importing this name.
-PROTECTED_PATHS = PROTECTED_HOME_PATHS
-
 
 def _is_path_protected(path: Path) -> bool:
     """Check if a path targets a protected location (home or system)."""

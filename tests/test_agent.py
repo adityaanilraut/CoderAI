@@ -229,6 +229,38 @@ class TestAgentPersonaSwitching:
         assert "write_file" not in agent.tools.tools
 
 
+class TestDelegateToolContext:
+    """Tests for delegate_task inheriting live parent agent state."""
+
+    def _make_agent(self, *, auto_approve: bool = True):
+        with patch("coderAI.agent.config_manager") as cm:
+            from coderAI.config import Config
+
+            cfg = Config()
+            cm.load.return_value = cfg
+            cm.load_project_config.return_value = cfg
+            from coderAI.agent import Agent
+
+            with patch.object(Agent, "_create_provider", return_value=MagicMock()):
+                return Agent(
+                    model="gpt-5-mini",
+                    streaming=False,
+                    auto_approve=auto_approve,
+                )
+
+    def test_delegate_tool_tracks_auto_approve_and_ipc_server(self):
+        agent = self._make_agent(auto_approve=True)
+        ipc_server = MagicMock()
+
+        agent.ipc_server = ipc_server
+        agent._configure_delegate_tool_context()
+
+        delegate_tool = agent.tools.get("delegate_task")
+        assert delegate_tool is not None
+        assert delegate_tool.context.parent_auto_approve is True
+        assert delegate_tool.context.parent_ipc_server is ipc_server
+
+
 class TestAgentProjectRules:
     """Tests for rule injection in Agent system prompt."""
 

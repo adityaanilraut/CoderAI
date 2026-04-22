@@ -5,7 +5,7 @@ import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from coderAI.tools.mcp import MCPClient, MCPListTool, MCPCallTool, MCPConnectTool
+from coderAI.tools.mcp import MCPClient, MCPListTool, MCPCallTool, MCPConnectTool, _normalize_parameters_schema
 
 
 class TestMCPClient:
@@ -61,6 +61,66 @@ class TestMCPClient:
         )
         assert not result["success"]
         assert "not connected" in result["error"]
+
+    def test_call_tool_is_error_true(self):
+        """MCP isError:true must propagate as success=False."""
+        client = MCPClient()
+        fake_process = MagicMock()
+        fake_process.returncode = None
+        fake_process.stdin = MagicMock()
+        fake_process.stdin.write = MagicMock()
+        fake_process.stdin.drain = AsyncMock()
+
+        error_response = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "content": [{"type": "text", "text": "something went wrong"}],
+                "isError": True,
+            },
+        }
+
+        async def fake_read_response(stdout, expected_id, timeout=10):
+            return error_response
+
+        client.servers["srv"] = {"process": fake_process, "tools": []}
+        client._next_id = 1
+
+        with patch.object(client, "_read_response", side_effect=fake_read_response):
+            result = asyncio.run(client.call_tool("srv", "bad_tool", {}))
+
+        assert result["success"] is False
+        assert "error" in result
+        assert "something went wrong" in result["error"]
+
+    def test_call_tool_is_error_false_still_succeeds(self):
+        """Normal MCP responses (isError absent or false) return success=True."""
+        client = MCPClient()
+        fake_process = MagicMock()
+        fake_process.returncode = None
+        fake_process.stdin = MagicMock()
+        fake_process.stdin.write = MagicMock()
+        fake_process.stdin.drain = AsyncMock()
+
+        ok_response = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "content": [{"type": "text", "text": "all good"}],
+            },
+        }
+
+        async def fake_read_response(stdout, expected_id, timeout=10):
+            return ok_response
+
+        client.servers["srv"] = {"process": fake_process, "tools": []}
+        client._next_id = 1
+
+        with patch.object(client, "_read_response", side_effect=fake_read_response):
+            result = asyncio.run(client.call_tool("srv", "ok_tool", {}))
+
+        assert result["success"] is True
+        assert result["content"] == "all good"
 
     def test_connect_command_not_found(self):
         result = asyncio.run(

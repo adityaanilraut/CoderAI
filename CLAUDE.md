@@ -45,7 +45,7 @@ standalone per-platform binary. The two halves talk over NDJSON on stdio.
 The orchestration is split across four modules so each concern is independently testable:
 
 - `coderAI/agent.py` — `Agent` class: lifecycle, persona loading, provider wiring, session state, sub-agent spawning.
-- `coderAI/agent_loop.py` — the per-turn execution loop (retry/backoff for transient LLM errors, JSON-arg coercion, iteration cap). Constants: `MAX_RETRIES_PER_ITERATION=3`, `MAX_CONSECUTIVE_ERRORS=3`, transient-error regex for 429/5xx.
+- `coderAI/agent_loop.py` — the per-turn execution loop (retry/backoff for transient LLM errors, JSON-arg coercion, iteration cap). Retry/error constants (`MAX_RETRIES_PER_ITERATION=3`, `MAX_CONSECUTIVE_ERRORS=5`, transient-error regex for 429/5xx) live in `coderAI/error_policy.py` and are imported from there.
 - `coderAI/tool_executor.py` — `ToolExecutor`: confirmation UX for gated tools. Routes through the IPC server when the Ink UI is attached, otherwise prompts in the terminal.
 - `coderAI/tool_routing.py` — dispatches a tool-call `function.name` to either `ToolRegistry` or an MCP server. MCP functions use the wire format `mcp__<server>__<tool>` (server must not contain `__`; tool may).
 - `coderAI/context_controller.py` — token estimation, truncation, summarization. Reserves `RESPONSE_TOKEN_RESERVE=1024` and `TOOL_OVERHEAD_TOKENS=512` when budgeting.
@@ -55,7 +55,7 @@ Per-turn flow (`Agent.process_message()` → `agent_loop`):
 1. User input → inject pinned context → proactive context compression if >70% full
 2. LLM call with retry logic (max 3 retries, exponential backoff for transient errors)
 3. If tool calls returned → read-only tools run in parallel (`asyncio.gather`), mutating tools run sequentially
-4. Tool results fed back to LLM → loop continues until final text response (max 50 iterations). Read-only tools run in parallel; `delegate_task` runs in parallel up to **5** concurrent sub-agents per turn (additional delegations are queued in batches of 5); other mutating tools run one at a time.
+4. Tool results fed back to LLM → loop continues until final text response (max 50 iterations). Read-only tools run in parallel; `delegate_task` runs **sequentially** (one sub-agent at a time, `max_parallel_invocations = 1`) to avoid workspace conflicts during branch switching or file modifications; other mutating tools run one at a time.
 5. Session saved to `~/.coderAI/history/`
 
 **Runtime shape of `coderAI chat`:**
@@ -90,8 +90,11 @@ Per-turn flow (`Agent.process_message()` → `agent_loop`):
 - `coderAI/cost.py` — Per-model token cost tracking; enforces `budget_limit` from config.
 - `coderAI/history.py` — `Session` + `HistoryManager`; sessions in `~/.coderAI/history/`.
 - `coderAI/notepad.py` — Shared in-memory notepad for inter-agent communication.
+- `coderAI/error_policy.py` — Central home for retry/error constants and the transient-error regex; modules import from here instead of redefining.
+- `coderAI/hooks_manager.py` — Loads `.coderAI/hooks.json` and runs pre/post-tool shell hooks around tool execution.
+- `coderAI/system_prompt.py` — Builds the agent system prompt (tool docs, strategies, rule injection from `.coderAI/rules/*.md`).
 - `ui/` — TypeScript + Ink UI source. `ui/src/App.tsx` is the root component; `ui/src/rpc/agentClient.ts` spawns the Python agent; `ui/scripts/compile.ts` drives `bun build --compile` honoring `BUN_TARGET` / `PLATFORM` env vars.
-- `.github/workflows/ci.yml` — On push/PR: installs `pip install -e ".[dev]"`, runs `ruff check coderAI/`, `pytest`, `test_installation.py`, and `coderAI --version`.
+- `.github/workflows/ci.yml` — On push/PR: matrix of (ubuntu-latest, macos-latest) × (Python 3.10, 3.12). Installs `pip install -e ".[dev]"`, then runs `ruff check coderAI/`, `pytest -q`, and a `coderAI --version` smoke test. `make test` mirrors this (pytest + `coderAI --version`).
 - `.github/workflows/release.yml` — Cross-compiles the Ink binary for darwin-arm64/x64, linux-x64/arm64, windows-x64 on tagged releases, publishes GitHub Release assets with SHA256 sidecars, and uploads the pure-Python wheel to PyPI.
 
 **Tool categories** (`coderAI/tools/`):
@@ -101,7 +104,7 @@ Per-turn flow (`Agent.process_message()` → `agent_loop`):
 - `search.py` — text_search, grep
 - `web.py` — web_search (DuckDuckGo), read_url, download_file
 - `subagent.py` — delegate_task (max depth 3, retried 2×)
-- `mcp.py` — mcp_connect, mcp_call, mcp_list (connected servers expose functions as `mcp__<server>__<tool>`)
+- `mcp.py` — mcp_connect, mcp_call_tool, mcp_list (connected servers expose functions as `mcp__<server>__<tool>`)
 - `undo.py` — undo, undo_history
 - `context_manage.py` — pin/unpin files into the pinned-context manager (takes `Agent` at construction → registered manually)
 - `planning.py`, `tasks.py` — in-session plan + task list management
@@ -131,10 +134,12 @@ by `coderAI/ipc/chat_reference.py` so Ink never imports Rich.
 
 ## Model Aliases
 
-Current Claude model aliases in `coderAI/agents.py` (and Anthropic provider):
-- `opus` → `claude-4.6-opus`
-- `sonnet` → `claude-4-sonnet`
-- `haiku` → `claude-4.5-haiku`
+Short aliases resolved by `coderAI/llm/anthropic.py` (`MODEL_ALIASES`):
+- `opus` → `claude-opus-4-7`
+- `sonnet` → `claude-sonnet-4-6`
+- `haiku` → `claude-haiku-4-5-20251001`
+
+Friendly versioned aliases also supported: `claude-4.7-opus`, `claude-4.6-sonnet`, `claude-4.5-haiku`, `claude-4-sonnet`, `claude-4-opus`, `claude-4-haiku`, `claude-3.7-sonnet`, `claude-3.5-sonnet`, `claude-3.5-haiku`, `claude-3-opus`.
 
 ## Adding a New LLM Provider
 

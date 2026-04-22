@@ -55,3 +55,6 @@ ui/out/
 # Misc
 *.log
 .cache/
+.claude/
+.coderAI/
+.ruff_cache/

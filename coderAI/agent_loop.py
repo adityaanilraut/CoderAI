@@ -10,6 +10,7 @@ from .events import event_emitter
 from .tool_executor import ToolExecutor
 from .hooks_manager import HooksManager
 from .error_policy import (
+    BudgetExceededError,
     is_transient_error,
     MAX_RETRIES_PER_ITERATION,
     RETRY_BASE_DELAY,
@@ -29,7 +30,7 @@ class ExecutionLoop:
 
     async def run(self, user_message: str) -> Dict[str, Any]:
         """Process a user message and return response."""
-        
+
         # 1. Prepare session and check budget
         budget_block = self._prepare_session(user_message)
         if budget_block:
@@ -63,8 +64,9 @@ class ExecutionLoop:
 
             try:
                 if self.agent.tracker_info:
-                    self.agent.tracker_info.status = AgentStatus.THINKING
-                    self.agent._sync_tracker()
+                    if self.agent.tracker_info.status != AgentStatus.THINKING:
+                        self.agent.tracker_info.status = AgentStatus.THINKING
+                        self.agent._sync_tracker()
 
                 response_data = await self._call_llm_with_retry(messages, tool_schemas)
                 consecutive_errors = 0
@@ -103,19 +105,24 @@ class ExecutionLoop:
                     }
 
                 # Orchestrate tool execution via the dedicated executor
-                # Returns (did_error, messages, fatal_res)
-                did_error, messages, fatal_res = await self.tool_executor.orchestrate_tool_calls(
-                    tool_calls, user_message, hooks_data, self.hooks_manager, MAX_CONSECUTIVE_ERRORS, consecutive_errors
+                # Returns (did_error, fatal_res)
+                did_error, fatal_res = await self.tool_executor.orchestrate_tool_calls(
+                    tool_calls, messages, user_message, hooks_data, self.hooks_manager, MAX_CONSECUTIVE_ERRORS, consecutive_errors
                 )
-                
+
                 if did_error:
                     consecutive_errors += 1
                     if fatal_res:
                         return fatal_res
-                    continue
+                else:
+                    tools_were_used = True
 
-                tools_were_used = True
-
+                # Manage context window after tool results (or error messages) are added
+                messages = self.agent.context_controller.inject_context(messages, self.agent.context_manager, query=user_message)
+                messages = await self.agent.context_controller.manage_context_window(messages)
+            except BudgetExceededError as e:
+                # Terminal: budget is a hard stop, not a transient failure.
+                return self._handle_budget_exceeded(e)
             except Exception as e:
                 logger.error(f"Error during processing: {e}", exc_info=True)
                 consecutive_errors += 1
@@ -241,6 +248,17 @@ class ExecutionLoop:
         messages.append({"role": "system", "content": f"[Error in previous step: {e}. Acknowledge and try again.]"})
         return await self.agent.context_controller.manage_context_window(messages)
 
+    def _handle_budget_exceeded(self, e: BudgetExceededError) -> Dict[str, Any]:
+        """Stop the loop cleanly when the budget has been exhausted."""
+        event_emitter.emit("agent_error", message=str(e))
+        self.agent._finish_tracker(error=True)
+        self.agent.save_session()
+        return {
+            "content": f"Blocked: {e}",
+            "messages": self.agent.session.messages if self.agent.session else [],
+            "model_info": self.agent.provider.get_model_info(),
+        }
+
     def _handle_max_iterations(self) -> Dict[str, Any]:
         event_emitter.emit("agent_warning", message="Maximum iteration limit reached")
         self.agent._finish_tracker(error=True)
@@ -285,9 +303,12 @@ class ExecutionLoop:
                             f"(current: {CostTracker.format_cost(self.agent.cost_tracker.get_total_cost())}). Stopping."
                         )
                         event_emitter.emit("agent_warning", message=f"[bold red]BUDGET LIMIT EXCEEDED![/bold red] {msg}")
-                        raise RuntimeError(msg)
+                        raise BudgetExceededError(msg)
 
                 return result
+            except BudgetExceededError:
+                # Never retry a budget failure — it's a hard stop, not a blip.
+                raise
             except Exception as e:
                 if not is_transient_error(e) or attempt == MAX_RETRIES_PER_ITERATION:
                     raise

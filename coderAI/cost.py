@@ -16,10 +16,17 @@ MODEL_PRICING: Dict[str, Dict[str, float]] = {
     "o1-preview": {"input": 15.00, "output": 60.00},
     "o1-mini": {"input": 3.00, "output": 12.00},
     "o3-mini": {"input": 1.10, "output": 4.40},
-    # Anthropic
-    "claude-4-sonnet": {"input": 3.00, "output": 15.00},
-    "claude-4.6-opus": {"input": 15.00, "output": 75.00},
+    # Anthropic — Claude 4.X (current)
+    "claude-opus-4-7": {"input": 15.00, "output": 75.00},
+    "claude-sonnet-4-6": {"input": 3.00, "output": 15.00},
+    "claude-haiku-4-5": {"input": 0.80, "output": 4.00},
+    "claude-4.7-opus": {"input": 15.00, "output": 75.00},
+    "claude-4.6-sonnet": {"input": 3.00, "output": 15.00},
     "claude-4.5-haiku": {"input": 0.80, "output": 4.00},
+    "claude-4-sonnet": {"input": 3.00, "output": 15.00},
+    "claude-4-opus": {"input": 15.00, "output": 75.00},
+    "claude-4-haiku": {"input": 0.80, "output": 4.00},
+    # Anthropic — legacy
     "claude-3.7-sonnet": {"input": 3.00, "output": 15.00},
     "claude-3.5-sonnet": {"input": 3.00, "output": 15.00},
     "claude-3.5-haiku": {"input": 0.80, "output": 4.00},

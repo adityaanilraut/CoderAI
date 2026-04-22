@@ -90,6 +90,14 @@ class ToolExecutor:
                 return await self._confirmation_callback(name, args, tool_id=pc["tool_id"])
 
             if is_mcp_function_name(tool_name) and self.agent.tools.get(tool_name) is None:
+                if not self.agent.auto_approve:
+                    approved = await _confirm(tool_name, arguments)
+                    if not approved:
+                        return {
+                            "success": False,
+                            "error": f"Tool '{tool_name}' was denied by the user.",
+                            "error_code": "denied",
+                        }
                 result = await call_mcp_tool_by_function_name(tool_name, arguments)
             else:
                 result = await self.agent.tools.execute(
@@ -107,10 +115,10 @@ class ToolExecutor:
             return {"success": False, "error": str(e)}
 
     async def orchestrate_tool_calls(
-        self, tool_calls: list, user_message: str, hooks_data: Optional[Dict[str, Any]], hooks_manager, max_consecutive_errors: int, current_errors: int
-    ) -> Tuple[bool, Optional[List[Dict[str, Any]]], Optional[Dict[str, Any]]]:
-        """Parse and execute a batch of tool calls.
-        Returns: Tuple of (did_error, messages_for_next_round, dict_with_fatal_session)
+        self, tool_calls: list, messages: List[Dict[str, Any]], user_message: str, hooks_data: Optional[Dict[str, Any]], hooks_manager, max_consecutive_errors: int, current_errors: int
+    ) -> Tuple[bool, Optional[Dict[str, Any]]]:
+        """Parse and execute a batch of tool calls. Updates 'messages' in-place.
+        Returns: Tuple of (did_error, dict_with_fatal_session)
         """
         parsed_calls = []
         parse_failures = 0
@@ -135,12 +143,12 @@ class ToolExecutor:
             if check_count >= max_consecutive_errors:
                 self.agent._finish_tracker(error=True)
                 self.agent.save_session()
-                return True, [], {"content": f"I encountered {check_count} consecutive parse errors. Rephrase please.", "session_id": self.agent.session.session_id}
+                return True, {"content": f"I encountered {check_count} consecutive parse errors. Rephrase please.", "session_id": self.agent.session.session_id}
             
-            messages = self.agent.session.get_messages_for_api()
-            messages = self.agent.context_controller.inject_context(messages, self.agent.context_manager, query=user_message)
-            messages = await self.agent.context_controller.manage_context_window(messages)
-            return True, messages, {"retry": True}
+            # Update the messages list from session for the next LLM call
+            messages.clear()
+            messages.extend(self.agent.session.get_messages_for_api())
+            return True, {"retry": True}
 
         if self.agent.tracker_info:
             self.agent.tracker_info.status = AgentStatus.TOOL_CALL
@@ -163,12 +171,12 @@ class ToolExecutor:
             self.agent.tracker_info.current_tool = None
             self.agent._sync_tracker()
 
-        messages = self.agent.session.get_messages_for_api()
-        messages = self.agent.context_controller.inject_context(messages, self.agent.context_manager, query=user_message)
-        messages = await self.agent.context_controller.manage_context_window(messages)
+        # Update the messages list from session
+        messages.clear()
+        messages.extend(self.agent.session.get_messages_for_api())
         
         event_emitter.emit("agent_status", message="\n[dim]Processing results...[/dim]")
-        return False, messages, None
+        return False, None
 
     async def run_tool_batch(self, parsed_calls: list, hooks_data: Optional[Dict[str, Any]], hooks_manager) -> list:
         """Handle parallel/sequential execution of parsed tool calls."""

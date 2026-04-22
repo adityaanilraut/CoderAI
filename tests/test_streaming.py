@@ -154,3 +154,134 @@ class TestIPCStreamingHandler:
         assert "inner thoughts" in reasoning
         assert "before " in regular
         assert " after" in regular
+
+        assistant_end = [d for name, d in server.events if name == "assistant_end"]
+        assert assistant_end[-1]["content"] == "before  after"
+
+    def test_reasoning_field_stays_out_of_final_content(self):
+        server = _FakeServer()
+        handler = IPCStreamingHandler(server)
+
+        chunks = [
+            {"choices": [{"delta": {"reasoning_content": "plan"}}]},
+            {"choices": [{"delta": {"content": "answer"}}]},
+            {"choices": [{"delta": {}}]},
+        ]
+
+        async def run():
+            return await handler.handle_stream(_fake_stream(chunks))
+
+        result = asyncio.run(run())
+        assert result["content"] == "answer"
+
+        assistant_end = [d for name, d in server.events if name == "assistant_end"]
+        assert assistant_end[-1]["content"] == "answer"
+
+    def test_cumulative_think_chunks_do_not_duplicate_reasoning(self):
+        server = _FakeServer()
+        handler = IPCStreamingHandler(server)
+
+        chunks = [
+            {"choices": [{"delta": {"content": "before <think>inner"}}]},
+            {
+                "choices": [{
+                    "delta": {
+                        "content": "before <think>inner thoughts</think> after",
+                    }
+                }]
+            },
+            {"choices": [{"delta": {}}]},
+        ]
+
+        async def run():
+            return await handler.handle_stream(_fake_stream(chunks))
+
+        result = asyncio.run(run())
+        assert result["content"] == "before  after"
+
+        reasoning = "".join(
+            d["content"]
+            for name, d in server.events
+            if name == "stream_delta" and d.get("reasoning")
+        )
+        assert reasoning == "inner thoughts"
+
+    def test_delta_then_cumulative_does_not_duplicate(self):
+        """Provider flips from pure delta to cumulative mid-stream.
+
+        Once a cumulative chunk lands, only the suffix past what was already
+        seen must be re-emitted — not the whole prefix again.
+        """
+        server = _FakeServer()
+        handler = IPCStreamingHandler(server)
+
+        chunks = [
+            {"choices": [{"delta": {"content": "Hello"}}]},            # delta
+            {"choices": [{"delta": {"content": "Hello, world"}}]},     # cumulative
+            {"choices": [{"delta": {"content": "!"}}]},                # delta again
+            {"choices": [{"delta": {}}]},
+        ]
+
+        async def run():
+            return await handler.handle_stream(_fake_stream(chunks))
+
+        result = asyncio.run(run())
+        assert result["content"] == "Hello, world!"
+        regular = "".join(
+            d["content"]
+            for name, d in server.events
+            if name == "stream_delta" and not d.get("reasoning")
+        )
+        assert regular == "Hello, world!"
+
+    def test_cumulative_then_delta_does_not_duplicate(self):
+        """Provider starts cumulative, then switches to pure deltas."""
+        server = _FakeServer()
+        handler = IPCStreamingHandler(server)
+
+        chunks = [
+            {"choices": [{"delta": {"content": "Hello, "}}]},           # first cumulative == content
+            {"choices": [{"delta": {"content": "Hello, world"}}]},      # cumulative
+            {"choices": [{"delta": {"content": "!"}}]},                 # delta
+            {"choices": [{"delta": {}}]},
+        ]
+
+        async def run():
+            return await handler.handle_stream(_fake_stream(chunks))
+
+        result = asyncio.run(run())
+        assert result["content"] == "Hello, world!"
+        regular = "".join(
+            d["content"]
+            for name, d in server.events
+            if name == "stream_delta" and not d.get("reasoning")
+        )
+        assert regular == "Hello, world!"
+
+    def test_literal_angle_bracket_flushes_promptly(self):
+        """A ``<`` that can't possibly lead into ``<think>`` must not be held.
+
+        Regression for the buffered-lookahead bug: any ``<`` used to freeze
+        the entire tail of the buffer until enough characters arrived to
+        disprove a ``<think>`` match, causing visible jitter for content like
+        ``<T>`` or ``<html>``.
+        """
+        server = _FakeServer()
+        handler = IPCStreamingHandler(server)
+
+        chunks = [
+            {"choices": [{"delta": {"content": "use <T> as a type"}}]},
+            {"choices": [{"delta": {}}]},
+        ]
+
+        async def run():
+            return await handler.handle_stream(_fake_stream(chunks))
+
+        result = asyncio.run(run())
+        assert result["content"] == "use <T> as a type"
+        regular = "".join(
+            d["content"]
+            for name, d in server.events
+            if name == "stream_delta" and not d.get("reasoning")
+        )
+        assert regular == "use <T> as a type"

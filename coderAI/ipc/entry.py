@@ -68,6 +68,7 @@ async def _main() -> None:
 
     server = IPCServer(agent=agent)
     agent.ipc_server = server
+    agent._configure_delegate_tool_context()
 
     # Redirect the streaming handler so token deltas become NDJSON events
     # instead of Rich console prints.

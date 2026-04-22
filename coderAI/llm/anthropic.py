@@ -25,29 +25,45 @@ def _create_ssl_context() -> ssl.SSLContext:
     except ImportError:
         return ssl.create_default_context()
 
-# Cost per 1K tokens (approximate)
+# Cost per 1K tokens (approximate). These are back-of-the-envelope numbers
+# retained for historical reference; canonical pricing lives in
+# ``coderAI/cost.py::MODEL_PRICING`` (per-million-tokens).
 MODEL_COSTS = {
-    "claude-4-sonnet-20250514": {"input": 0.003, "output": 0.015},
-    "claude-4-6-opus-20250601": {"input": 0.015, "output": 0.075},
-    "claude-4-5-haiku-20250520": {"input": 0.0008, "output": 0.004},
+    "claude-opus-4-7": {"input": 0.015, "output": 0.075},
+    "claude-sonnet-4-6": {"input": 0.003, "output": 0.015},
+    "claude-haiku-4-5-20251001": {"input": 0.0008, "output": 0.004},
     "claude-3-7-sonnet-20250219": {"input": 0.003, "output": 0.015},
     "claude-3-5-sonnet-20241022": {"input": 0.003, "output": 0.015},
     "claude-3-5-haiku-20241022": {"input": 0.0008, "output": 0.004},
     "claude-3-opus-20240229": {"input": 0.015, "output": 0.075},
 }
 
-# Map friendly names to API model names
+# Friendly-name → API model ID.
+#
+# Anthropic's current (late-2026) Claude 4.X family ships with undated opus
+# and sonnet IDs and a dated haiku. When the API retires a dated snapshot,
+# update the right-hand side here — callers only reference the friendly
+# left-hand names. Prefer configuring aliases rather than baking specific
+# dated IDs into user-facing code.
 MODEL_ALIASES = {
-    "claude-4-sonnet": "claude-4-sonnet-20250514",
-    "claude-4.6-opus": "claude-4-6-opus-20250601",
-    "claude-4.5-haiku": "claude-4-5-haiku-20250520",
+    # Claude 4.X (current)
+    "claude-4.7-opus": "claude-opus-4-7",
+    "claude-4.6-sonnet": "claude-sonnet-4-6",
+    "claude-4.5-haiku": "claude-haiku-4-5-20251001",
+    # Kept for back-compat with existing configs (default_model was
+    # "claude-4-sonnet"). Point at the current 4.6 sonnet.
+    "claude-4-sonnet": "claude-sonnet-4-6",
+    "claude-4-opus": "claude-opus-4-7",
+    "claude-4-haiku": "claude-haiku-4-5-20251001",
+    # Legacy 3.X snapshots (retained so existing sessions still resolve).
     "claude-3.7-sonnet": "claude-3-7-sonnet-20250219",
     "claude-3.5-sonnet": "claude-3-5-sonnet-20241022",
     "claude-3.5-haiku": "claude-3-5-haiku-20241022",
     "claude-3-opus": "claude-3-opus-20240229",
-    "sonnet": "claude-4-sonnet-20250514",
-    "haiku": "claude-4-5-haiku-20250520",
-    "opus": "claude-4-6-opus-20250601",
+    # Short aliases: always resolve to the newest of each tier.
+    "opus": "claude-opus-4-7",
+    "sonnet": "claude-sonnet-4-6",
+    "haiku": "claude-haiku-4-5-20251001",
 }
 
 

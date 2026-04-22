@@ -15,6 +15,9 @@ export type ToolCategory =
 
 export type ToolRisk = "low" | "medium" | "high";
 
+export type ReasoningEffort = "high" | "medium" | "low" | "none";
+
+/** Aligned with `AgentStatus` in `coderAI/agent_tracker.py` (emitted in `agent` / `agent_lifecycle` payloads). */
 export type AgentStatus =
   | "idle"
   | "thinking"
@@ -110,21 +113,50 @@ export type AgentEvent =
   | { event: "success"; message: string }
   | { event: "model_changed"; model: string; provider: string }
   | { event: "auto_approve_changed"; autoApprove: boolean }
-  | { event: "reasoning_changed"; effort: "high" | "medium" | "low" | "none" }
+  | { event: "reasoning_changed"; effort: ReasoningEffort }
   | { event: "goodbye"; reason?: string };
+
+/** Every `event` name the agent may send; used for dev checks in `agentClient`. Keep in sync with this union. */
+export const AGENT_EVENT_NAMES: readonly string[] = [
+  "hello",
+  "ready",
+  "assistant_start",
+  "stream_delta",
+  "assistant_end",
+  "thinking_start",
+  "thinking_end",
+  "tool_call",
+  "tool_result",
+  "tool_approval_req",
+  "file_diff",
+  "status",
+  "agent_update",
+  "agent_lifecycle",
+  "error",
+  "info",
+  "warning",
+  "success",
+  "model_changed",
+  "auto_approve_changed",
+  "reasoning_changed",
+  "goodbye",
+];
 
 export type UIEnvelope = { v: 1; kind: "event" } & AgentEvent;
 
+// AgentCommand lists every command the UI may send over the NDJSON bridge;
+// see `AgentClient.send()` for the runtime envelope shape.
 export type AgentCommand =
   | { cmd: "send_message"; text: string }
   | { cmd: "cancel"; agentId?: string }
   | { cmd: "tool_approval_resp"; toolId: string; approve: boolean }
   | { cmd: "set_model"; model: string }
-  | { cmd: "set_reasoning"; effort: "high" | "medium" | "low" | "none" }
+  | { cmd: "set_reasoning"; effort: ReasoningEffort }
+  | { cmd: "set_default_model"; model: string }
   | { cmd: "toggle_auto_approve" }
   | { cmd: "compact_context" }
   | { cmd: "clear_context" }
   | { cmd: "get_state" }
+  | { cmd: "get_plan" }
+  | { cmd: "reference"; topic: string }
   | { cmd: "exit" };
-
-export type CmdEnvelope = { v: 1; kind: "cmd"; id: string } & AgentCommand;

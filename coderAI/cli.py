@@ -131,7 +131,7 @@ def config_set(key, value):
             value = float(value)
         elif key in ["max_tokens", "context_window", "max_iterations", "max_tool_output"]:
             value = int(value)
-        elif key in ["streaming", "save_history"]:
+        elif key in ["streaming", "save_history", "web_tools_in_main"]:
             value = value.lower() in ["true", "1", "yes"]
 
         config_manager.set(key, value)

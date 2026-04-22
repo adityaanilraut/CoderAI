@@ -259,9 +259,8 @@ def get_backup_store() -> FileBackupStore:
     return _backup_store
 
 
-# Backward-compat alias — prefer get_backup_store() for new code
-# (module-level @property is not valid; use the getter directly)
-backup_store = get_backup_store
+# Backward-compat alias — initialized once to allow instance-style access
+backup_store = get_backup_store()
 
 
 class UndoParams(BaseModel):

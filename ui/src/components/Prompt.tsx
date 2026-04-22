@@ -75,8 +75,19 @@ export function Prompt({onSubmit, disabled, placeholder, exitHint}: PromptProps)
   );
 
   return (
-    <Box flexDirection="column">
-      <Box>
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor={disabled ? theme.borderSoft : theme.accentDim}
+      paddingX={1}
+    >
+      <Box justifyContent="space-between">
+        <Text color={disabled ? theme.muted : theme.accent} bold>
+          Compose
+        </Text>
+        <Text color={theme.muted}>terminal chat</Text>
+      </Box>
+      <Box marginTop={1}>
         <Text color={disabled ? theme.muted : theme.accent} bold>
           {"❯ "}
         </Text>
@@ -102,7 +113,7 @@ export function Prompt({onSubmit, disabled, placeholder, exitHint}: PromptProps)
           showCursor={!disabled}
         />
       </Box>
-      <Box marginTop={0}>
+      <Box marginTop={1}>
         {exitHint ? (
           <Text color={theme.warning}>
             Press Ctrl+C again to exit, or type a message to continue

@@ -30,6 +30,8 @@ logger and is surfaced in the UI as a collapsible "Logs" drawer.
 | `error`              | `{category: "provider" \| "tool" \| "internal", message, hint?, details?}`              | Renders ErrorPanel, not a traceback dump           |
 | `info` / `warning` / `success` | `{message}`                                                                    | Short toasts                                       |
 | `model_changed`      | `{model, provider}`                                                                      |                                                    |
+| `auto_approve_changed` | `{autoApprove}`                                                                        | YOLO / safe mode badge                            |
+| `reasoning_changed`  | `{effort: high\|medium\|low\|none}`                                                    | CoT / reasoning level                             |
 | `goodbye`            | `{reason?}`                                                                              | Agent is shutting down                             |
 
 ### `AgentInfo`
@@ -40,7 +42,7 @@ logger and is surfaced in the UI as a collapsible "Logs" drawer.
   "name": "main",
   "role": "planner",
   "parentId": null,
-  "status": "thinking",        // idle|thinking|tool_call|waiting|done|error|cancelled
+  "status": "thinking",        // idle|thinking|tool_call|waiting_for_user|done|error|cancelled (see Python `AgentStatus`)
   "task": "refactoring login flow",
   "tool": "read_file",
   "model": "claude-4-sonnet",
@@ -60,13 +62,16 @@ logger and is surfaced in the UI as a collapsible "Logs" drawer.
 | ---------------------- | -------------------------- | ------------------------------------------------------ |
 | `send_message`         | `{text}`                   | User input (raw or slash-prefixed)                     |
 | `cancel`               | `{agentId?}`               | Cancel one agent or all if omitted (Esc key)           |
-| `tool_approval_resp`   | `{id, approve}`            | Responds to a `tool_approval_req`                      |
+| `tool_approval_resp`   | `{toolId, approve}`      | Responds to a `tool_approval_req` (id matches `id` on the request) |
 | `set_model`            | `{model}`                  |                                                        |
 | `set_reasoning`        | `{effort: high|medium|low|none}` |                                                  |
 | `toggle_auto_approve`  | `{}`                       |                                                        |
 | `compact_context`      | `{}`                       | Triggers summarization                                 |
 | `clear_context`        | `{}`                       | Fresh session                                          |
 | `get_state`            | `{}`                       | Ask agent to re-emit `status` + `agent_update`*N      |
+| `get_plan`             | `{}`                       | Emits `info` with `.coderAI/current_plan.json` or a short notice if none |
+| `reference`            | `{topic}`                  | Long-form help (`version`, `models`, `cost`, `system`, `config`, `info`, `tasks`, …) via `info` / `warning` events |
+| `set_default_model`    | `{model}`                  | Persists default model for new sessions (slash `/default`); `info` on success |
 | `exit`                 | `{}`                       | Graceful shutdown                                      |
 
 All commands carry a `{"id": "cmd_xxxxxxxx"}` for correlation. Agent replies
