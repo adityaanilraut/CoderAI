@@ -75,19 +75,8 @@ export function Prompt({onSubmit, disabled, placeholder, exitHint}: PromptProps)
   );
 
   return (
-    <Box
-      flexDirection="column"
-      borderStyle="round"
-      borderColor={disabled ? theme.borderSoft : theme.accentDim}
-      paddingX={1}
-    >
-      <Box justifyContent="space-between">
-        <Text color={disabled ? theme.muted : theme.accent} bold>
-          Compose
-        </Text>
-        <Text color={theme.muted}>terminal chat</Text>
-      </Box>
-      <Box marginTop={1}>
+    <Box flexDirection="column" paddingX={1}>
+      <Box>
         <Text color={disabled ? theme.muted : theme.accent} bold>
           {"❯ "}
         </Text>
@@ -95,7 +84,6 @@ export function Prompt({onSubmit, disabled, placeholder, exitHint}: PromptProps)
           value={value}
           onChange={(next) => {
             if (disabled) return;
-            // Typing invalidates history navigation: snap back to "draft".
             if (history.current.length > 0) {
               cursor.current = history.current.length;
             }
@@ -120,8 +108,7 @@ export function Prompt({onSubmit, disabled, placeholder, exitHint}: PromptProps)
           </Text>
         ) : (
           <Text color={theme.muted}>
-            Enter to send · ↑/↓ history · Esc to interrupt · Ctrl+C twice to
-            quit · /help for commands
+            Enter to send · ↑/↓ history · Esc to interrupt · Ctrl+C twice to quit · /help
           </Text>
         )}
       </Box>

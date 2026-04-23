@@ -1,12 +1,15 @@
 """CoderAI Tools Package.
 
 Provides all available tools for the coding agent, including:
-- Filesystem: read, write, search/replace, apply diff, directory listing, glob
-- Terminal: command execution, background processes
-- Git: status, diff, commit, log, branch, checkout, stash
+- Filesystem: read, write, search/replace, apply diff, directory listing, glob,
+              move, copy, delete, mkdir
+- Terminal: command execution, background processes, process list, kill
+- Git: status, diff, commit, log, branch, checkout, stash,
+       push, pull, merge, rebase, revert, reset, show, remote,
+       blame, cherry-pick, tag
 - Search: text search, grep with regex
-- Memory: save and recall persistent memories
-- Web: DuckDuckGo web search, URL reading, file download
+- Memory: save, recall, and delete persistent memories
+- Web: DuckDuckGo web search, URL reading, file download, HTTP requests
 - MCP: connect to external MCP servers
 - Undo: file backup and rollback
 - Project: auto-detect project context
@@ -31,25 +34,32 @@ from .filesystem import (
     ListDirectoryTool,
     GlobSearchTool,
     ApplyDiffTool,
+    MoveFileTool,
+    CopyFileTool,
+    DeleteFileTool,
+    CreateDirectoryTool,
 )
 
 # Terminal tools
-from .terminal import RunCommandTool, RunBackgroundTool
+from .terminal import RunCommandTool, RunBackgroundTool, ListProcessesTool, KillProcessTool
 
 # Git tools
 from .git import (
     GitAddTool, GitStatusTool, GitDiffTool, GitCommitTool, GitLogTool,
     GitBranchTool, GitCheckoutTool, GitStashTool,
+    GitPushTool, GitPullTool, GitMergeTool, GitRebaseTool, GitRevertTool,
+    GitResetTool, GitShowTool, GitRemoteTool, GitBlameTool,
+    GitCherryPickTool, GitTagTool,
 )
 
 # Search tools
 from .search import TextSearchTool, GrepTool
 
 # Memory tools
-from .memory import SaveMemoryTool, RecallMemoryTool
+from .memory import SaveMemoryTool, RecallMemoryTool, DeleteMemoryTool
 
-# Web search & URL reading & Download
-from .web import WebSearchTool, ReadURLTool, DownloadFileTool
+# Web search & URL reading & Download & HTTP
+from .web import WebSearchTool, ReadURLTool, DownloadFileTool, HTTPRequestTool
 
 # MCP tools
 from .mcp import MCPConnectTool, MCPCallTool, MCPListTool, mcp_client
@@ -101,9 +111,15 @@ __all__ = [
     "ListDirectoryTool",
     "GlobSearchTool",
     "ApplyDiffTool",
+    "MoveFileTool",
+    "CopyFileTool",
+    "DeleteFileTool",
+    "CreateDirectoryTool",
     # Terminal
     "RunCommandTool",
     "RunBackgroundTool",
+    "ListProcessesTool",
+    "KillProcessTool",
     # Git
     "GitAddTool",
     "GitStatusTool",
@@ -113,16 +129,29 @@ __all__ = [
     "GitBranchTool",
     "GitCheckoutTool",
     "GitStashTool",
+    "GitPushTool",
+    "GitPullTool",
+    "GitMergeTool",
+    "GitRebaseTool",
+    "GitRevertTool",
+    "GitResetTool",
+    "GitShowTool",
+    "GitRemoteTool",
+    "GitBlameTool",
+    "GitCherryPickTool",
+    "GitTagTool",
     # Search
     "TextSearchTool",
     "GrepTool",
     # Memory
     "SaveMemoryTool",
     "RecallMemoryTool",
+    "DeleteMemoryTool",
     # Web
     "WebSearchTool",
     "ReadURLTool",
     "DownloadFileTool",
+    "HTTPRequestTool",
     # MCP
     "MCPConnectTool",
     "MCPCallTool",

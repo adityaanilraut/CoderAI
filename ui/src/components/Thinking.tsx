@@ -20,18 +20,14 @@ export function Thinking({active}: {active: boolean}) {
   if (!active) return null;
 
   return (
-    <Box
-      borderStyle="round"
-      borderColor={theme.borderSoft}
-      paddingX={1}
-      marginBottom={1}
-    >
+    <Box paddingLeft={1} marginBottom={1}>
+      <Text color={theme.accent}>│ </Text>
       <Text color={theme.accent}>
         <Spinner type="dots" />
       </Text>
       <Text color={theme.muted}>
         {" "}
-        reasoning in progress · {(ms / 1000).toFixed(1)}s{" "}
+        reasoning · {(ms / 1000).toFixed(1)}s{" "}
         <Text dimColor>(Esc to interrupt)</Text>
       </Text>
     </Box>

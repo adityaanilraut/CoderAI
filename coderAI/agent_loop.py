@@ -112,7 +112,9 @@ class ExecutionLoop:
 
                 if did_error:
                     consecutive_errors += 1
-                    if fatal_res:
+                    # {"retry": True} means the messages were updated with error
+                    # feedback and the loop should retry the LLM call — not exit.
+                    if fatal_res and fatal_res is not True and fatal_res.get("retry") is not True:
                         return fatal_res
                 else:
                     tools_were_used = True
@@ -245,7 +247,7 @@ class ExecutionLoop:
         event_emitter.emit("agent_error", message=f"Error (attempt {count}/{MAX_CONSECUTIVE_ERRORS}): {e}")
         messages = self.agent.session.get_messages_for_api()
         messages = self.agent.context_controller.inject_context(messages, self.agent.context_manager, query=user_message)
-        messages.append({"role": "system", "content": f"[Error in previous step: {e}. Acknowledge and try again.]"})
+        messages.append({"role": "user", "content": f"[Error in previous step: {e}. Acknowledge and try again.]"})
         return await self.agent.context_controller.manage_context_window(messages)
 
     def _handle_budget_exceeded(self, e: BudgetExceededError) -> Dict[str, Any]:
@@ -322,8 +324,6 @@ class ExecutionLoop:
                     message=f"Transient error, retrying in {delay}s… ({attempt}/{MAX_RETRIES_PER_ITERATION})",
                 )
                 await asyncio.sleep(delay)
-
-        raise RuntimeError("Retry loop exited without raising — this should never happen.")
 
     async def _stream_response(
         self, messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]] = None

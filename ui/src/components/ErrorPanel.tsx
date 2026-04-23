@@ -87,13 +87,7 @@ export function ErrorPanel({
             </Box>
           ) : null}
           {expanded ? (
-            <Box
-              flexDirection="column"
-              marginTop={1}
-              borderStyle="single"
-              borderColor={theme.borderSoft}
-              paddingX={1}
-            >
+            <Box flexDirection="column" marginTop={1} paddingLeft={1}>
               <Text color={theme.muted}>{details}</Text>
             </Box>
           ) : null}

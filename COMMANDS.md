@@ -1,393 +1,338 @@
 # CoderAI Commands Reference
 
-This document provides a comprehensive reference for all available commands in CoderAI.
+Complete reference for CLI commands and interactive slash commands.
 
 ## Table of Contents
 - [CLI Commands](#cli-commands)
-- [Interactive Chat Commands](#interactive-chat-commands)
-- [Configuration Commands](#configuration-commands)
-- [History Commands](#history-commands)
+- [Interactive Slash Commands](#interactive-slash-commands)
+- [Configuration Keys](#configuration-keys)
+- [Environment Variables](#environment-variables)
+- [Tool Quick Reference](#tool-quick-reference)
 
 ---
 
 ## CLI Commands
 
-These commands are run from your terminal as `coderAI <command>`.
+Run from your terminal as `coderAI <command>`.
 
-### Basic Usage
+### `coderAI` / `coderAI chat`
+Start an interactive chat session in the Ink UI.
 
 ```bash
-# Start interactive chat
+coderAI
 coderAI chat
 
-# Start chat with specific model
-coderAI chat -m gpt-5
+# Specific model
+coderAI chat -m claude-4-sonnet
+coderAI chat -m opus
+coderAI chat -m gpt-5-mini
 
-# Resume previous session
-coderAI chat -r SESSION_ID
+# Resume a previous session
+coderAI chat --resume <session-id>
 
-# Inspect the current model and tool configuration
-coderAI info
+# Skip tool confirmation prompts (use with care)
+coderAI chat --auto-approve
+coderAI chat --yolo   # alias
 ```
 
-### Model Management
+On first run, downloads the prebuilt Ink UI binary for your platform and caches it in `~/.coderAI/bin/`. Set `$CODERAI_UI_BINARY` to use a local binary instead.
 
-#### `coderAI models`
+---
+
+### `coderAI models`
 List all available models and providers.
 
 ```bash
 coderAI models
 ```
 
-Shows:
-- OpenAI models (gpt-5, gpt-5-mini, gpt-5-nano)
-- LM Studio provider
-- Current default model
-
-#### `coderAI set-model <model_name>`
-Set the default model for new sessions.
-
-```bash
-coderAI set-model gpt-5-mini
-coderAI set-model lmstudio
-```
-
-Valid models: `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `lmstudio`
-
-### System Management
-
-#### `coderAI status`
-Show system status and diagnostics.
-
-```bash
-coderAI status
-```
-
-Displays:
-- Configuration directory
-- Default model
-- API key status (OpenAI)
-- LM Studio endpoint
-- History statistics
-
-#### `coderAI info`
-Show information about the agent and current model.
-
-```bash
-coderAI info
-```
-
-Displays:
-- CoderAI version
-- Model information
-- Available tools
-
-#### `coderAI setup`
-Run the interactive setup wizard.
-
-```bash
-coderAI setup
-```
-
-Configures:
-- OpenAI API key
-- Default model
-- LM Studio endpoint
-
 ---
 
-## Interactive Chat Commands
-
-These commands are used within an active chat session (after running `coderAI chat`). All commands start with `/`.
-
-### General Commands
-
-#### `/help`
-Display help message with all available commands.
-
-```
-/help
-```
-
-#### `/exit` or `/quit`
-Exit the chat session.
-
-```
-/exit
-```
-
-#### `/clear`
-Clear the screen.
-
-```
-/clear
-```
-
-### Context Management
-
-#### `/clear-context`
-Clear the conversation context and start fresh while staying in the same session.
-
-```
-/clear-context
-```
-
-Use this when you want to start a new conversation without exiting the chat.
-
-#### `/history`
-Show conversation history for the current session.
-
-```
-/history
-```
-
-Displays all messages with role (user/assistant) and truncated content.
-
-### Model Management
-
-#### `/model`
-Show current model information.
-
-```
-/model
-```
-
-Displays detailed information about the currently active model.
-
-#### `/change-model`
-Change the model/provider during the chat session.
-
-```
-/change-model
-```
-
-Follow the prompts to select a new model. Type `cancel` to abort.
-
-#### `/providers`
-Show available LLM providers and their features.
-
-```
-/providers
-```
-
-Lists:
-- OpenAI Provider (features, requirements)
-- LM Studio Provider (features, requirements)
-
-### Session Management
-
-#### `/save`
-Manually save the current session.
-
-```
-/save
-```
-
-Sessions are automatically saved, but you can force a save with this command.
-
-#### `/status`
-Show current session status.
-
-```
-/status
-```
-
-Displays:
-- Session ID
-- Current model
-- Provider
-- Message count
-- Streaming status
-- Save history status
-- Session timestamps
-
-#### `/export`
-Export the conversation to a JSON file.
-
-```
-/export
-```
-
-Creates a timestamped JSON file with:
-- Session ID
-- Model name
-- All messages
-- Timestamp
-
-### Tools & Configuration
-
-#### `/tools`
-List all available tools.
-
-```
-/tools
-```
-
-Shows all tools the agent can use (filesystem, git, search, terminal, etc.).
-
-#### `/config`
-Show current configuration.
-
-```
-/config
-```
-
-Displays all configuration values (API keys are masked).
-
-#### `/tokens`
-Show token usage information.
-
-```
-/tokens
-```
-
-Displays:
-- Total messages
-- Total characters
-- Approximate token count
-
----
-
-## Configuration Commands
-
-Manage CoderAI configuration settings.
-
-### `coderAI config show`
-Display current configuration.
+### `coderAI config`
+Manage configuration.
 
 ```bash
+# Show all settings (API keys are masked)
 coderAI config show
-```
 
-### `coderAI config set <key> <value>`
-Set a configuration value.
+# Set a value
+coderAI config set default_model claude-4-sonnet
+coderAI config set temperature 0.5
+coderAI config set budget_limit 5.0
 
-```bash
-coderAI config set default_model gpt-5-mini
-coderAI config set temperature 0.7
-coderAI config set max_tokens 4096
-coderAI config set streaming true
-coderAI config set save_history false
-```
-
-Common configuration keys:
-- `openai_api_key` - Your OpenAI API key
-- `default_model` - Default model to use
-- `temperature` - Model temperature (0.0 - 2.0)
-- `max_tokens` - Maximum tokens per response
-- `streaming` - Enable streaming (true/false)
-- `save_history` - Save conversation history (true/false)
-- `lmstudio_endpoint` - LM Studio endpoint URL
-- `lmstudio_model` - LM Studio model name
-
-### `coderAI config reset`
-Reset configuration to defaults.
-
-```bash
+# Reset to defaults
 coderAI config reset
 ```
 
 ---
 
-## History Commands
-
-Manage conversation history.
-
-### `coderAI history list`
-List all conversation sessions.
+### `coderAI history`
+Manage conversation sessions.
 
 ```bash
-coderAI history list
+coderAI history list             # List all past sessions
+coderAI history delete <id>      # Delete a specific session
+coderAI history clear            # Delete all sessions (asks for confirmation)
 ```
-
-### `coderAI history delete <session_id>`
-Delete a specific session.
-
-```bash
-coderAI history delete abc123
-```
-
-### `coderAI history clear`
-Clear all conversation history.
-
-```bash
-coderAI history clear
-```
-
-**Note:** This command requires confirmation.
 
 ---
 
-## Quick Reference
+### `coderAI status`
+Print system diagnostics — API key status, default model, config directory, session count.
 
-### Most Common Commands
-
-| Command | Description |
-|---------|-------------|
-| `coderAI chat` | Start interactive chat |
-| `coderAI models` | List available models |
-| `coderAI status` | Check system status |
-| `/help` | Show help in chat |
-| `/clear-context` | Clear conversation |
-| `/change-model` | Switch model |
-| `/export` | Export conversation |
-| `/exit` | Exit chat |
-
-### Workflow Examples
-
-**Start a new session:**
-```bash
-coderAI chat
-```
-
-**Switch models mid-conversation:**
-```
-/change-model
-gpt-5
-```
-
-**Clear context and start fresh:**
-```
-/clear-context
-```
-
-**Export your conversation:**
-```
-/export
-```
-
-**Check system status:**
 ```bash
 coderAI status
 ```
 
 ---
 
-## Tips
+### `coderAI cost`
+Show per-model pricing and current session cost.
 
-1. **Model Selection**: Use `gpt-5-mini` for most tasks (balanced performance and cost), `gpt-5` for complex tasks, and `lmstudio` for privacy-focused local inference.
+```bash
+coderAI cost
+```
 
-2. **Context Management**: Use `/clear-context` when switching topics to avoid confusion from previous conversation context.
+---
 
-3. **Session Management**: Sessions are auto-saved if `save_history` is enabled. Use `/save` to force save at any time.
+### `coderAI tasks`
+List in-progress tasks tracked by the agent.
 
-4. **Token Awareness**: Use `/tokens` periodically to monitor conversation length. Large contexts can slow responses and increase costs.
+```bash
+coderAI tasks list
+```
 
-5. **Export Important Conversations**: Use `/export` to save important conversations for future reference.
+---
+
+### `coderAI info`
+Show agent info: version, current model, registered tools.
+
+```bash
+coderAI info
+```
+
+---
+
+### `coderAI setup`
+Run the interactive setup wizard to configure API keys and defaults.
+
+```bash
+coderAI setup
+```
+
+---
+
+## Interactive Slash Commands
+
+These commands are typed inside an active `coderAI chat` session.
+
+| Command | Description |
+|---|---|
+| `/help` | Show all available slash commands |
+| `/model <name>` | Switch the LLM model for the current session |
+| `/tokens` | Show token usage and estimated cost for the session |
+| `/context` | List files currently pinned to the context window |
+| `/compact` | Force-compress conversation history to reclaim context space |
+| `/agents` | Show all active agents (main + any sub-agents) and their status |
+| `/auto-approve` | Toggle auto-approval of tool confirmations on/off |
+| `/clear` | Clear the conversation history and start fresh |
+| `/exit` | End the session |
+
+**Reference-only slash commands** (output rendered inline, no side effects):
+
+| Command | Description |
+|---|---|
+| `/models` | List available models |
+| `/cost` | Show pricing and session cost |
+| `/status` | Show session and agent status |
+| `/info` | Show agent and tool info |
+| `/tasks` | Show the task list |
+| `/config show` | Show current configuration |
+
+---
+
+## Configuration Keys
+
+Stored in `~/.coderAI/config.json`. Set via `coderAI config set <key> <value>` or environment variables.
+
+| Key | Default | Description |
+|---|---|---|
+| `default_model` | `claude-4-sonnet` | Default LLM model for new sessions |
+| `temperature` | `0.7` | Sampling temperature (0.0–2.0) |
+| `max_tokens` | `4096` | Max output tokens per LLM response |
+| `context_window` | `128000` | Token budget for the context window |
+| `max_iterations` | `50` | Max agentic loop iterations per message |
+| `reasoning_effort` | `medium` | Reasoning depth — `high`, `medium`, `low`, `none` |
+| `streaming` | `true` | Enable streaming token output |
+| `save_history` | `true` | Persist sessions to `~/.coderAI/history/` |
+| `budget_limit` | `0` | Max USD per session (`0` = unlimited) |
+| `max_file_size` | `1048576` | Max file size readable by `read_file` (bytes) |
+| `max_glob_results` | `200` | Max results returned by `glob_search` |
+| `max_command_output` | `10000` | Max characters captured from `run_command` output |
+| `max_tool_output` | `8000` | Max characters of any tool result kept in context |
+| `web_tools_in_main` | `true` | Allow web tools (`web_search`, `read_url`, `http_request`, `download_file`) in the main agent |
+| `log_level` | `WARNING` | Log verbosity — `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+| `lmstudio_endpoint` | `http://localhost:1234/v1` | LM Studio API endpoint |
+| `lmstudio_model` | `local-model` | LM Studio model name |
+| `ollama_endpoint` | `http://localhost:11434/v1` | Ollama API endpoint |
+| `ollama_model` | `llama3` | Ollama model name |
+
+**Project-level overrides** (`.coderAI/config.json` in the project root) accept a subset of the above keys — everything except API keys.
 
 ---
 
 ## Environment Variables
 
-You can also configure CoderAI using environment variables:
+Environment variables take precedence over `~/.coderAI/config.json`.
 
-```bash
-export OPENAI_API_KEY="your-api-key"
-export CODERAI_DEFAULT_MODEL="gpt-5-mini"
-export CODERAI_TEMPERATURE="0.7"
-export CODERAI_MAX_TOKENS="4096"
-export LMSTUDIO_ENDPOINT="http://localhost:1234/v1"
-```
+| Variable | Maps to config key |
+|---|---|
+| `ANTHROPIC_API_KEY` | `anthropic_api_key` |
+| `OPENAI_API_KEY` | `openai_api_key` |
+| `GROQ_API_KEY` | `groq_api_key` |
+| `DEEPSEEK_API_KEY` | `deepseek_api_key` |
+| `CODERAI_DEFAULT_MODEL` | `default_model` |
+| `CODERAI_TEMPERATURE` | `temperature` |
+| `CODERAI_MAX_TOKENS` | `max_tokens` |
+| `CODERAI_REASONING_EFFORT` | `reasoning_effort` |
+| `CODERAI_MAX_ITERATIONS` | `max_iterations` |
+| `CODERAI_MAX_TOOL_OUTPUT` | `max_tool_output` |
+| `CODERAI_BUDGET_LIMIT` | `budget_limit` |
+| `CODERAI_LOG_LEVEL` | `log_level` |
+| `CODERAI_PROJECT_INSTRUCTION_FILE` | `project_instruction_file` |
+| `LMSTUDIO_ENDPOINT` | `lmstudio_endpoint` |
+| `OLLAMA_ENDPOINT` | `ollama_endpoint` |
+| `CODERAI_UI_BINARY` | Override path to the Ink UI binary |
+| `CODERAI_MODEL` | Model override for the IPC entry point |
+| `CODERAI_RESUME` | Session ID to resume (IPC entry point) |
+| `CODERAI_AUTO_APPROVE` | `"1"` to skip all tool confirmations |
+| `CODERAI_ALLOW_LOCAL_URLS` | `"1"` to allow SSRF-protected web tools to reach localhost |
 
-Environment variables take precedence over configuration file settings.
+---
 
+## Tool Quick Reference
+
+All 54+ tools available to the agent. Confirmation required (`✓`) means the agent asks before running.
+
+### Filesystem
+
+| Tool | Confirm | Description |
+|---|---|---|
+| `read_file` | — | Read file contents (optional line range) |
+| `write_file` | ✓ | Create or overwrite a file |
+| `search_replace` | ✓ | Find-and-replace with verification |
+| `apply_diff` | ✓ | Apply a unified diff patch |
+| `list_directory` | — | List directory contents |
+| `glob_search` | — | Find files by glob pattern |
+| `move_file` | ✓ | Move or rename a file/directory |
+| `copy_file` | ✓ | Copy a file or directory tree |
+| `delete_file` | ✓ | Delete a file or directory |
+| `create_directory` | — | Create directories (like `mkdir -p`) |
+
+### Terminal
+
+| Tool | Confirm | Description |
+|---|---|---|
+| `run_command` | ✓ | Execute a shell command |
+| `run_background` | ✓ | Start a background process |
+| `list_processes` | — | List tracked background processes |
+| `kill_process` | ✓ | Terminate a process by PID |
+
+### Git
+
+| Tool | Confirm | Description |
+|---|---|---|
+| `git_add` | ✓ | Stage specific files |
+| `git_status` | — | Working tree status |
+| `git_diff` | — | View diffs |
+| `git_commit` | ✓ | Create a commit |
+| `git_log` | — | View commit history |
+| `git_branch` | ✓ | List/create/delete branches |
+| `git_checkout` | ✓ | Switch or create branches |
+| `git_stash` | ✓ | Stash/restore changes |
+| `git_push` | ✓ | Push to remote (`--force-with-lease`) |
+| `git_pull` | ✓ | Fetch and merge/rebase from remote |
+| `git_merge` | ✓ | Merge a branch |
+| `git_rebase` | ✓ | Rebase; supports `--abort`/`--continue` |
+| `git_revert` | ✓ | Create a revert commit |
+| `git_reset` | ✓ | Reset HEAD (soft/mixed/hard) |
+| `git_show` | — | Show commit details and diff |
+| `git_remote` | ✓ | Manage remotes |
+| `git_blame` | — | Annotate lines with commit/author |
+| `git_cherry_pick` | ✓ | Apply specific commits |
+| `git_tag` | ✓ | List/create/delete tags |
+
+### Search
+
+| Tool | Confirm | Description |
+|---|---|---|
+| `text_search` | — | Fast recursive text search |
+| `grep` | — | Regex search with context |
+
+### Web & HTTP
+
+| Tool | Confirm | Description |
+|---|---|---|
+| `web_search` | — | DuckDuckGo search |
+| `read_url` | — | Fetch a URL and return text |
+| `download_file` | — | Download a file from a URL |
+| `http_request` | — | Generic HTTP client (any method, headers, body) |
+
+### Memory
+
+| Tool | Confirm | Description |
+|---|---|---|
+| `save_memory` | — | Store a key-value pair persistently |
+| `recall_memory` | — | Retrieve or search memories |
+| `delete_memory` | ✓ | Delete a memory entry |
+
+### Code Quality
+
+| Tool | Confirm | Description |
+|---|---|---|
+| `lint` | — | Auto-detect and run linter |
+| `format` | ✓ | Auto-detect and run formatter |
+
+### Project, Context & Tasks
+
+| Tool | Confirm | Description |
+|---|---|---|
+| `project_context` | — | Auto-detect project type and structure |
+| `manage_context` | — | Pin/unpin files from the context window |
+| `manage_tasks` | — | Persistent TODO list management |
+
+### Multi-Agent & Collaboration
+
+| Tool | Confirm | Description |
+|---|---|---|
+| `delegate_task` | ✓ | Spawn an isolated sub-agent |
+| `notepad` | — | Shared inter-agent notepad |
+
+### Execution & Planning
+
+| Tool | Confirm | Description |
+|---|---|---|
+| `python_repl` | ✓ | Run Python code in an isolated subprocess |
+| `plan` | — | Structured multi-step execution plans |
+| `use_skill` | — | Load a skill workflow |
+
+### Vision
+
+| Tool | Confirm | Description |
+|---|---|---|
+| `read_image` | — | Read and encode an image for analysis |
+
+### MCP
+
+| Tool | Confirm | Description |
+|---|---|---|
+| `mcp_connect` | ✓ | Connect to an external MCP server |
+| `mcp_call_tool` | ✓ | Call a tool on a connected server |
+| `mcp_list` | — | List connected servers and tools |
+
+### Undo
+
+| Tool | Confirm | Description |
+|---|---|---|
+| `undo` | ✓ | Revert the last file modification |
+| `undo_history` | — | View recent file change history |

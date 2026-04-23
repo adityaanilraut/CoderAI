@@ -1,7 +1,6 @@
 import pytest
 import os
 import shutil
-from pathlib import Path
 
 from coderAI.tools import ToolRegistry
 from coderAI.tools.filesystem import ReadFileTool, WriteFileTool, SearchReplaceTool, ListDirectoryTool

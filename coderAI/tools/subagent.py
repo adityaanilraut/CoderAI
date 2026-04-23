@@ -1,5 +1,7 @@
 """Sub-agent delegation tool for multi-agent capabilities."""
 
+import asyncio
+import contextlib
 import logging
 import os
 from dataclasses import dataclass
@@ -82,6 +84,17 @@ class DelegateTaskParams(BaseModel):
             "or tasks that don't need access to the local codebase to save tokens."
         ),
     )
+    read_only_task: bool = Field(
+        False,
+        description=(
+            "Set to True when the sub-agent will only read files, search code, or do research — "
+            "it will NOT write files, run git commands, or modify any workspace state. "
+            "Read-only sub-agents run in parallel with each other (up to 4 at once), enabling "
+            "fan-out for tasks like multi-file review, parallel research, or security audits. "
+            "Leave False (default) for any task that modifies files, runs git commands, or "
+            "otherwise mutates workspace state — these run sequentially to prevent conflicts."
+        ),
+    )
 
 
 class DelegateTaskTool(Tool):
@@ -95,18 +108,27 @@ class DelegateTaskTool(Tool):
         "The sub-agent has access to all the same tools, runs in an isolated session, "
         "and returns a comprehensive report. Provide a detailed task_description with "
         "specific file paths and expected output format for best results. "
-        "Sub-agents run sequentially to prevent conflicts during branch switching "
-        "or file modifications."
+        "Set read_only_task=True for research/review tasks to run up to 4 sub-agents in "
+        "parallel. Leave read_only_task=False (default) for tasks that write files or run "
+        "git commands — these run sequentially to prevent workspace conflicts."
     )
-    # Sequential execution to avoid workspace state conflicts (branch switching, etc.)
-    max_parallel_invocations = 1
+    # Up to 4 sub-agents can be scheduled per batch by the executor.
+    # Read-only sub-agents run freely among themselves; mutating ones serialise
+    # through _mutating_lock so only one modifies the workspace at a time.
+    max_parallel_invocations = 4
     parameters_model = DelegateTaskParams
-    # Sub-agents may run mutating tools; parallel runs can race on the same files
-    # or git state.
     is_read_only = False
 
     # Depth (root agent = 0) — incremented on each delegation hop.
     _current_depth: int = 0
+    # Shared lock that serialises mutating sub-agents across all instances.
+    _mutating_lock: Optional[asyncio.Lock] = None
+
+    @classmethod
+    def _get_mutating_lock(cls) -> asyncio.Lock:
+        if cls._mutating_lock is None:
+            cls._mutating_lock = asyncio.Lock()
+        return cls._mutating_lock
 
     def __init__(self) -> None:
         super().__init__()
@@ -121,9 +143,10 @@ class DelegateTaskTool(Tool):
         context_hints: Optional[List[str]] = None,
         model: Optional[str] = None,
         inherit_project_context: bool = True,
+        read_only_task: bool = False,
     ) -> Dict[str, Any]:
         """Execute the sub-agent delegation."""
-        # Guard against infinite recursion
+        # Guard against infinite recursion (checked before acquiring any lock)
         if self._current_depth >= MAX_DELEGATION_DEPTH:
             return {
                 "success": False,
@@ -133,6 +156,23 @@ class DelegateTaskTool(Tool):
                 ),
             }
 
+        # Read-only sub-agents run freely in parallel; mutating ones serialise
+        # through the shared lock so only one modifies the workspace at a time.
+        lock_ctx = contextlib.nullcontext() if read_only_task else self._get_mutating_lock()
+        async with lock_ctx:
+            return await self._run_delegation(
+                task_description, agent_role, context_hints, model, inherit_project_context
+            )
+
+    async def _run_delegation(
+        self,
+        task_description: str,
+        agent_role: Optional[str],
+        context_hints: Optional[List[str]],
+        model: Optional[str],
+        inherit_project_context: bool,
+    ) -> Dict[str, Any]:
+        """Core sub-agent spawning logic, called after lock acquisition."""
         sub_agent = None
         try:
             from ..agent import Agent

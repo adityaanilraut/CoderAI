@@ -1,12 +1,12 @@
 """Tests for the Agent orchestrator."""
 
 import asyncio
-import json
 import re
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
+from coderAI.context_controller import ContextController
+
 
 
 class TestTransientErrorDetection:
@@ -22,6 +22,7 @@ class TestTransientErrorDetection:
             from coderAI.agent import Agent
 
             agent = Agent.__new__(Agent)
+            agent._context_controller = ContextController(cm.load.return_value, MagicMock())
             return agent
 
     def test_timeout_is_transient(self):
@@ -63,6 +64,7 @@ class TestSummarizeToolResult:
 
             agent = Agent.__new__(Agent)
             agent.config = cfg
+            agent._context_controller = ContextController(cfg, MagicMock())
             return agent
 
     def test_small_result_unchanged(self):
@@ -103,6 +105,7 @@ class TestTruncateMessages:
             agent.provider = MagicMock()
             agent.provider.count_tokens = lambda text: len(text) // 4
             agent.provider.chat = AsyncMock(return_value={"choices": [{"message": {"content": "summary"}}]})
+            agent._context_controller = ContextController(cfg, agent.provider)
             return agent
 
     def test_preserves_system_messages(self):
@@ -133,7 +136,7 @@ class TestTruncateMessages:
 
             # Patch provider creation to avoid needing a real API key
             with patch.object(Agent, "_create_provider", return_value=MagicMock()):
-                agent = Agent(model="gpt-5-mini", streaming=False)
+                Agent(model="gpt-5-mini", streaming=False)
                 # load_project_config should have been called
                 cm.load_project_config.assert_called_once_with(".")
 
@@ -414,6 +417,7 @@ class TestProcessMessageAfterCancel:
             from coderAI.agent_tracker import AgentStatus, agent_tracker
 
             mock_provider = MagicMock()
+            mock_provider.chat = AsyncMock(return_value={"choices": [{"message": {"content": "ok"}}]})
             mock_provider.supports_tools.return_value = False
             mock_provider.count_tokens = lambda text: max(1, len(text) // 4)
             mock_provider.get_model_info.return_value = {

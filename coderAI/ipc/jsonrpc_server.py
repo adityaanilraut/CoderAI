@@ -60,25 +60,42 @@ _TOOL_CATEGORY_FALLBACK = {
     # filesystem
     "read_file": "fs", "write_file": "fs", "search_replace": "fs",
     "apply_diff": "fs", "list_directory": "fs", "glob_search": "fs",
+    "move_file": "fs", "copy_file": "fs", "delete_file": "fs",
+    "create_directory": "fs",
     # search
     "text_search": "search", "grep": "search",
     # git
     "git_add": "git", "git_status": "git", "git_diff": "git",
     "git_commit": "git", "git_log": "git", "git_branch": "git",
     "git_checkout": "git", "git_stash": "git",
+    "git_push": "git", "git_pull": "git", "git_merge": "git",
+    "git_rebase": "git", "git_revert": "git", "git_reset": "git",
+    "git_show": "git", "git_remote": "git", "git_blame": "git",
+    "git_cherry_pick": "git", "git_tag": "git",
     # terminal
     "run_command": "shell", "run_background": "shell",
+    "list_processes": "shell", "kill_process": "shell",
     # web
     "web_search": "web", "read_url": "web", "download_file": "web",
+    "http_request": "web",
+    # memory
+    "save_memory": "memory", "recall_memory": "memory", "delete_memory": "memory",
     # subagent
     "delegate_task": "agent",
     # mcp — tool is registered as ``mcp_call_tool`` in ``coderAI/tools/mcp.py``
     "mcp_connect": "mcp", "mcp_call_tool": "mcp", "mcp_list": "mcp",
 }
 
-_HIGH_RISK = {"run_command", "run_background", "write_file", "search_replace",
-              "apply_diff", "git_commit", "git_checkout", "git_stash"}
-_MEDIUM_RISK = {"delegate_task", "download_file", "mcp_call_tool"}
+_HIGH_RISK = {
+    "run_command", "run_background", "write_file", "search_replace",
+    "apply_diff", "git_commit", "git_checkout", "git_stash",
+    "git_push", "git_reset", "git_rebase", "git_revert",
+    "delete_file", "move_file", "kill_process",
+}
+_MEDIUM_RISK = {
+    "delegate_task", "download_file", "mcp_call_tool",
+    "git_merge", "git_cherry_pick", "copy_file", "http_request",
+}
 
 
 def _tool_category(name: str, registry: Optional[Any] = None) -> str:
@@ -105,15 +122,22 @@ def _tool_risk(name: str) -> str:
     return "low"
 
 
-def _preview_args_for_approval(arguments: Dict[str, Any], max_str: int = 800) -> Dict[str, Any]:
-    """Shrink large string values (e.g. write_file content) for the UI payload."""
+def _truncate_args(args: Dict[str, Any], limit: int, *, show_count: bool = False) -> Dict[str, Any]:
+    """Shrink large string arg values so the UI stays snappy."""
+    if not isinstance(args, dict):
+        return {"value": str(args)[:limit]}
     out: Dict[str, Any] = {}
-    for k, v in arguments.items():
-        if isinstance(v, str) and len(v) > max_str:
-            out[k] = f"{v[:max_str]}… ({len(v)} chars total)"
+    for k, v in args.items():
+        if isinstance(v, str) and len(v) > limit:
+            suffix = f"… ({len(v)} chars total)" if show_count else "…"
+            out[k] = v[:limit] + suffix
         else:
             out[k] = v
     return out
+
+
+def _preview_args_for_approval(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    return _truncate_args(arguments, 800, show_count=True)
 
 
 # --- AgentInfo serialization -------------------------------------------------
@@ -160,6 +184,7 @@ class IPCServer:
         self._send_lock = asyncio.Lock()
         self._exit = asyncio.Event()
         self._approval_waiters: Dict[str, asyncio.Future] = {}
+        self._said_goodbye = False
         # Timestamp (ms since epoch) when the last ``status_start`` event fired.
         # Used to compute the real elapsed time for ``thinking_end``.
         self._thinking_start_ms: int = 0
@@ -388,7 +413,6 @@ class IPCServer:
         """Run until the UI exits or stdin closes."""
         self.emit_hello()
         self.emit_ready()
-        self._said_goodbye = False
         reader_task = asyncio.create_task(self._read_commands())
         try:
             await self._exit.wait()
@@ -410,16 +434,7 @@ _RESULT_PREVIEW_LIMIT = 400
 
 
 def _redact_args(args: Dict[str, Any]) -> Dict[str, Any]:
-    """Truncate absurdly long arg values so the UI stays snappy."""
-    if not isinstance(args, dict):
-        return {"value": str(args)[:_ARG_PREVIEW_LIMIT]}
-    out: Dict[str, Any] = {}
-    for k, v in args.items():
-        if isinstance(v, str) and len(v) > _ARG_PREVIEW_LIMIT:
-            out[k] = v[:_ARG_PREVIEW_LIMIT] + "…"
-        else:
-            out[k] = v
-    return out
+    return _truncate_args(args, _ARG_PREVIEW_LIMIT)
 
 
 def _result_preview(result: Dict[str, Any]) -> str:

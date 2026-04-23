@@ -15,6 +15,7 @@ from .tools.base import ToolRegistry
 # ``format_tools_markdown`` uses this when present so models see capabilities
 # (e.g. web_search + fetch_content), not only short class ``description`` strings.
 _TOOL_HELP: Dict[str, str] = {
+    # --- Filesystem ---
     "read_file": (
         "Read file contents (max 1MB; use `start_line`/`end_line` for large files)"
     ),
@@ -23,13 +24,35 @@ _TOOL_HELP: Dict[str, str] = {
     "apply_diff": "Apply a unified diff patch for precise multi-line edits",
     "list_directory": "List files and subdirectories in a path",
     "glob_search": "Find files matching glob patterns (e.g., `**/*.py`)",
+    "move_file": (
+        "Move or rename a file or directory. Set overwrite=true to replace an existing destination."
+    ),
+    "copy_file": (
+        "Copy a file or directory tree to a new location. Set overwrite=true to replace an existing destination."
+    ),
+    "delete_file": (
+        "Delete a file or directory. Set recursive=true to remove a non-empty directory and all its contents. "
+        "Protected system and home paths are always refused."
+    ),
+    "create_directory": (
+        "Create one or more directories (equivalent to `mkdir -p`). Succeeds silently if already exists."
+    ),
+    # --- Terminal ---
     "run_command": (
         "Execute a shell command and get stdout/stderr (dangerous commands need user confirmation)"
     ),
     "run_background": (
         "Start long-running processes (servers, watchers) in the background"
     ),
-    "git_add": "Stage files for commit",
+    "list_processes": (
+        "List all background processes currently tracked by the agent (started via run_background). "
+        "Shows PID, command, and running status."
+    ),
+    "kill_process": (
+        "Terminate a background process by PID. Sends SIGTERM by default; use force=true for SIGKILL."
+    ),
+    # --- Git core ---
+    "git_add": "Stage specific files for commit (never stages '.' — always list explicit paths)",
     "git_status": "Show working tree status",
     "git_diff": "View diffs (staged, unstaged, or between refs)",
     "git_commit": "Create a commit with a message",
@@ -37,10 +60,53 @@ _TOOL_HELP: Dict[str, str] = {
     "git_branch": "List, create, or delete branches",
     "git_checkout": "Switch branches or create and switch to a new one",
     "git_stash": "Stash or restore uncommitted changes (push, pop, list, drop)",
+    # --- Git extended ---
+    "git_push": (
+        "Push local commits to a remote. Uses --force-with-lease (not --force) when force=true "
+        "to prevent overwriting upstream changes you haven't fetched."
+    ),
+    "git_pull": (
+        "Fetch and merge (or rebase with rebase=true) changes from a remote into the current branch."
+    ),
+    "git_merge": (
+        "Merge another branch into the current branch. Supports --no-ff (force a merge commit) "
+        "and --squash (collapse commits)."
+    ),
+    "git_rebase": (
+        "Rebase the current branch onto another branch or commit. Also handles --abort and --continue "
+        "to manage an in-progress rebase after conflict resolution."
+    ),
+    "git_revert": (
+        "Create a new commit that reverses the changes from a prior commit. Safe for shared history — "
+        "does not rewrite commits."
+    ),
+    "git_reset": (
+        "Reset HEAD to a specified commit. Mode: 'soft' (keep staged), 'mixed' (unstage), "
+        "'hard' (discard all changes — destructive)."
+    ),
+    "git_show": (
+        "Display the commit message, author, date, and diff for a specific commit or ref. "
+        "Use stat_only=true for a summary without the full patch."
+    ),
+    "git_remote": (
+        "Manage remote connections: list, add, remove, or change the URL of a remote."
+    ),
+    "git_blame": (
+        "Annotate each line of a file with the commit hash and author that last changed it. "
+        "Supports line-range filtering."
+    ),
+    "git_cherry_pick": (
+        "Apply one or more specific commits from another branch onto the current branch."
+    ),
+    "git_tag": (
+        "List, create (lightweight or annotated), or delete git tags."
+    ),
+    # --- Search ---
     "text_search": (
         "Search for text across files in a directory (fast, recursive)"
     ),
     "grep": "Advanced pattern matching with regex support and context lines",
+    # --- Code quality ---
     "lint": (
         "Auto-detect and run the project linter (ruff, eslint, clippy, golangci-lint)"
     ),
@@ -48,9 +114,11 @@ _TOOL_HELP: Dict[str, str] = {
         "Run a formatter on source files (ruff format, black, prettier, gofmt); "
         "auto-detected by project type. Use check=true to preview without writing."
     ),
+    # --- Vision ---
     "read_image": (
         "Read and base64-encode an image for visual analysis (PNG, JPEG, GIF, WebP)"
     ),
+    # --- Web ---
     "web_search": (
         "Search the web using DuckDuckGo. Set `fetch_content=true` to automatically read "
         "the full text of the top results (up to 3) so you don't need separate `read_url` calls. "
@@ -64,12 +132,22 @@ _TOOL_HELP: Dict[str, str] = {
         "Download a file (ZIP, image, raw code snippet, etc.) from a URL to a local destination. "
         "Returns the absolute path to the downloaded file."
     ),
+    "http_request": (
+        "Send an HTTP request with any method (GET, POST, PUT, PATCH, DELETE) and custom headers or JSON body. "
+        "Use this for REST API calls, webhooks, or any endpoint that requires authentication headers or "
+        "a non-GET method. SSRF protection blocks requests to private/loopback IPs."
+    ),
+    # --- Memory ---
     "save_memory": (
         "Store key-value information that persists across sessions"
     ),
     "recall_memory": (
         "Retrieve or search previously saved memories"
     ),
+    "delete_memory": (
+        "Delete a previously saved memory entry by its key."
+    ),
+    # --- Project / context ---
     "project_context": (
         "Auto-detect project type and load config, dependencies, and directory structure"
     ),
@@ -77,9 +155,11 @@ _TOOL_HELP: Dict[str, str] = {
         "Pin or unpin files in context, list currently pinned files, or clear all pinned context. "
         "Actions: 'add' (pin a file path), 'remove' (unpin), 'list' (show pinned files), 'clear' (unpin all)."
     ),
+    # --- Tasks ---
     "manage_tasks": (
         "Track a persistent task/TODO list with priorities (add, list, complete, update, delete, clear)"
     ),
+    # --- Multi-agent ---
     "delegate_task": (
         "Spawn an isolated sub-agent for complex, self-contained tasks (research, code review, security audit, "
         "data gathering, or refactoring analysis). Sub-agents run sequentially (one at a time) to avoid "
@@ -88,6 +168,7 @@ _TOOL_HELP: Dict[str, str] = {
         "(e.g. 'code-reviewer', 'security-reviewer', 'planner'). Provide specific file paths and "
         "expected output format for best results. Max delegation depth: 3."
     ),
+    # --- Skills / REPL / planning ---
     "use_skill": (
         "Load predefined skill workflows from `.coderAI/skills/`. Use action='list' to see available skills, "
         "then action='use' with a skill name to load the full instructions."
@@ -104,6 +185,7 @@ _TOOL_HELP: Dict[str, str] = {
         "Read and write to a shared notepad that persists across tool calls and is shared between agents. "
         "Useful for sharing findings between the main agent and sub-agents."
     ),
+    # --- MCP / undo ---
     "mcp_connect": "Connect to an external MCP server",
     "mcp_call_tool": "Call a tool on a connected MCP server",
     "mcp_list": "List connected servers and their tools",
@@ -178,9 +260,13 @@ _TOOL_SECTIONS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
             "apply_diff",
             "list_directory",
             "glob_search",
+            "move_file",
+            "copy_file",
+            "delete_file",
+            "create_directory",
         ),
     ),
-    ("Terminal", ("run_command", "run_background")),
+    ("Terminal", ("run_command", "run_background", "list_processes", "kill_process")),
     (
         "Git",
         (
@@ -192,13 +278,24 @@ _TOOL_SECTIONS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
             "git_branch",
             "git_checkout",
             "git_stash",
+            "git_push",
+            "git_pull",
+            "git_merge",
+            "git_rebase",
+            "git_revert",
+            "git_reset",
+            "git_show",
+            "git_remote",
+            "git_blame",
+            "git_cherry_pick",
+            "git_tag",
         ),
     ),
     ("Search & Analysis", ("text_search", "grep")),
     ("Code Quality", ("lint", "format")),
     ("Vision", ("read_image",)),
-    ("Web", ("web_search", "read_url", "download_file")),
-    ("Memory (Persistent)", ("save_memory", "recall_memory")),
+    ("Web", ("web_search", "read_url", "download_file", "http_request")),
+    ("Memory (Persistent)", ("save_memory", "recall_memory", "delete_memory")),
     ("Project Context", ("project_context", "manage_context")),
     ("Task Management", ("manage_tasks",)),
     ("Multi-Agent Delegation", ("delegate_task",)),

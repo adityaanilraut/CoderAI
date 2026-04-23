@@ -3,7 +3,6 @@
 import asyncio
 import os
 import subprocess
-import tempfile
 import pytest
 
 from coderAI.tools.git import GitBranchTool, GitCheckoutTool, GitStashTool

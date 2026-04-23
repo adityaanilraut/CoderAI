@@ -11,14 +11,14 @@
 
 ---
 
-CoderAI is a Python CLI tool that pairs an LLM with **35+ built-in tools** to read, write, search, debug, test, and ship code — all from a single terminal session. It supports **6 LLM providers**, **17 specialist agent personas**, a **multi-agent delegation system** with retry logic, and a **plan-and-execute workflow** to tackle complex tasks autonomously.
+CoderAI is a Python CLI tool that pairs an LLM with **54+ built-in tools** to read, write, search, debug, test, and ship code — all from a single terminal session. It supports **6 LLM providers**, **17 specialist agent personas**, a **multi-agent delegation system** with retry logic, and a **plan-and-execute workflow** to tackle complex tasks autonomously.
 
 ## ✨ Key Features
 
 | Feature | Description |
 |---|---|
 | **Multi-Provider LLM** | OpenAI, Anthropic Claude, Groq, DeepSeek, LM Studio, Ollama |
-| **35+ Tools** | File I/O, Git, terminal, web search, linting, image reading, MCP, and more |
+| **54+ Tools** | File I/O, Git, terminal, web, HTTP, memory, process management, and more |
 | **Multi-Agent System** | Spawn isolated sub-agents for code review, security audit, research, etc. |
 | **Planning & Tasks** | Structured plan-and-execute workflows with persistent task tracking |
 | **Ink interactive UI** | `coderAI chat` uses a React + [Ink](https://github.com/vadimdemedes/ink) terminal UI; NDJSON IPC to the Python agent ([`ui/PROTOCOL.md`](ui/PROTOCOL.md)) |
@@ -167,12 +167,16 @@ CoderAI-main/
 │   │
 │   ├── tools/                  # ─── MCP Tool Implementations ───
 │   │   ├── base.py             #   Tool ABC + ToolRegistry
-│   │   ├── filesystem.py       #   read_file, write_file, search_replace, apply_diff, list_directory, glob_search
-│   │   ├── terminal.py         #   run_command, run_background (with safety blocklist)
-│   │   ├── git.py              #   git_add, git_status, git_diff, git_commit, git_log, git_branch, git_checkout, git_stash
+│   │   ├── filesystem.py       #   read_file, write_file, search_replace, apply_diff, list_directory,
+│   │   │                       #   glob_search, move_file, copy_file, delete_file, create_directory
+│   │   ├── terminal.py         #   run_command, run_background, list_processes, kill_process
+│   │   ├── git.py              #   git_add, git_status, git_diff, git_commit, git_log, git_branch,
+│   │   │                       #   git_checkout, git_stash, git_push, git_pull, git_merge, git_rebase,
+│   │   │                       #   git_revert, git_reset, git_show, git_remote, git_blame,
+│   │   │                       #   git_cherry_pick, git_tag
 │   │   ├── search.py           #   text_search, grep (regex-capable)
-│   │   ├── web.py              #   web_search (DuckDuckGo), read_url, download_file
-│   │   ├── memory.py           #   save_memory, recall_memory (persistent key-value)
+│   │   ├── web.py              #   web_search (DuckDuckGo), read_url, download_file, http_request
+│   │   ├── memory.py           #   save_memory, recall_memory, delete_memory (persistent key-value)
 │   │   ├── mcp.py              #   mcp_connect, mcp_call_tool, mcp_list
 │   │   ├── undo.py             #   undo, undo_history (file backup/rollback)
 │   │   ├── project.py          #   project_context (auto-detect project type)
@@ -282,9 +286,9 @@ The heart of CoderAI is the **agentic loop** in `agent.py → process_message()`
 
 ## 🛠️ Tools Reference
 
-CoderAI registers **35+ tools** that the LLM can call. Each tool follows the `Tool` abstract base class and is auto-registered in the `ToolRegistry`.
+CoderAI registers **54+ tools** that the LLM can call. Each tool follows the `Tool` abstract base class and is auto-registered in the `ToolRegistry`.
 
-### Filesystem (6 tools)
+### Filesystem (10 tools)
 
 | Tool | Description |
 |---|---|
@@ -294,19 +298,25 @@ CoderAI registers **35+ tools** that the LLM can call. Each tool follows the `To
 | `apply_diff` | Apply a unified diff patch for multi-line edits |
 | `list_directory` | List files and subdirectories |
 | `glob_search` | Find files by glob pattern (`**/*.py`) |
+| `move_file` | Move or rename a file or directory |
+| `copy_file` | Copy a file or directory tree |
+| `delete_file` | Delete a file or directory (recursive opt-in) |
+| `create_directory` | Create directories including parents (`mkdir -p`) |
 
-### Terminal (2 tools)
+### Terminal (4 tools)
 
 | Tool | Description |
 |---|---|
 | `run_command` | Execute shell commands (dangerous commands require confirmation) |
 | `run_background` | Start long-running processes (servers, watchers) |
+| `list_processes` | List background processes started by the agent |
+| `kill_process` | Terminate a background process by PID |
 
-### Git (8 tools)
+### Git (19 tools)
 
 | Tool | Description |
 |---|---|
-| `git_add` | Stage files |
+| `git_add` | Stage specific files for commit |
 | `git_status` | Show working tree status |
 | `git_diff` | View diffs (staged, unstaged, between refs) |
 | `git_commit` | Create commits |
@@ -314,6 +324,17 @@ CoderAI registers **35+ tools** that the LLM can call. Each tool follows the `To
 | `git_branch` | List, create, or delete branches |
 | `git_checkout` | Switch or create branches |
 | `git_stash` | Stash/restore uncommitted changes |
+| `git_push` | Push commits to remote (uses `--force-with-lease` for safety) |
+| `git_pull` | Fetch and merge/rebase from remote |
+| `git_merge` | Merge a branch into the current branch |
+| `git_rebase` | Rebase onto another branch; supports `--abort`/`--continue` |
+| `git_revert` | Create a revert commit (safe, doesn't rewrite history) |
+| `git_reset` | Reset HEAD — soft / mixed / hard |
+| `git_show` | Inspect a commit's message and diff |
+| `git_remote` | List, add, remove, or update remotes |
+| `git_blame` | Annotate file lines with commit and author |
+| `git_cherry_pick` | Apply specific commits onto the current branch |
+| `git_tag` | List, create, or delete tags |
 
 ### Search & Analysis (3 tools)
 
@@ -323,20 +344,22 @@ CoderAI registers **35+ tools** that the LLM can call. Each tool follows the `To
 | `grep` | Regex pattern matching with context lines |
 | `lint` | Auto-detect and run project linter (ruff, eslint, etc.) |
 
-### Web (3 tools)
+### Web & HTTP (4 tools)
 
 | Tool | Description |
 |---|---|
 | `web_search` | DuckDuckGo search with optional content fetching |
 | `read_url` | Fetch and extract text from any URL |
 | `download_file` | Download files (ZIP, images, etc.) from URLs |
+| `http_request` | Generic HTTP client — any method, headers, JSON body (SSRF-protected) |
 
-### Memory (2 tools)
+### Memory (3 tools)
 
 | Tool | Description |
 |---|---|
 | `save_memory` | Store key-value data persistently across sessions |
 | `recall_memory` | Retrieve or search saved memories |
+| `delete_memory` | Remove a memory entry by key |
 
 ### Project & Context (2 tools)
 

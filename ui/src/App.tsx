@@ -1,7 +1,5 @@
-import React, {useCallback, useEffect, useMemo, useRef, useState} from "react";
+import React, {memo, useCallback, useEffect, useMemo, useRef, useState} from "react";
 import {Box, Static, Text, useApp, useInput, useStdout} from "ink";
-import Spinner from "ink-spinner";
-import os from "node:os";
 import {useAgent} from "./hooks/useAgent.js";
 import {StatusBar} from "./components/StatusBar.js";
 import {Prompt} from "./components/Prompt.js";
@@ -78,6 +76,12 @@ export function App({python, cwd}: AppProps) {
     session.streaming ||
     helpMenuOpen ||
     approvalPending;
+
+  // Ref so renderItem can read the latest value without being in its dep array.
+  // promptBusy changes on every streaming tick (session.streaming), so keeping
+  // it out of useCallback deps prevents recreating renderItem 16+ times/second.
+  const promptBusyRef = useRef(promptBusy);
+  promptBusyRef.current = promptBusy;
 
   useInput(
     (input, key) => {
@@ -187,7 +191,7 @@ export function App({python, cwd}: AppProps) {
                 !helpMenuOpen &&
                 !approvalPending
               }
-              promptActive={!promptBusy}
+              promptActive={!promptBusyRef.current}
             />
           );
         case "toast":
@@ -210,17 +214,11 @@ export function App({python, cwd}: AppProps) {
           return <AgentCard key={item.id} agent={item.agent} />;
       }
     },
-    [lastErrorId, pendingApprovalId, promptBusy, columns, actions],
+    [lastErrorId, pendingApprovalId, helpMenuOpen, approvalPending, columns, actions],
   );
 
   return (
     <Box flexDirection="column">
-      {session.connected ? (
-        <Header session={session} narrow={narrow} />
-      ) : (
-        <ConnectingSplash />
-      )}
-
       <Box flexDirection="column" marginTop={1}>
         {/* Completed items — printed to stdout once and never redrawn. */}
         <Static items={frozenTimeline}>{(item) => renderItem(item)}</Static>
@@ -266,132 +264,3 @@ export function App({python, cwd}: AppProps) {
   );
 }
 
-function Header({
-  session,
-  narrow,
-}: {
-  session: ReturnType<typeof useAgent>["session"];
-  narrow: boolean;
-}) {
-  return (
-    <Box
-      borderStyle="double"
-      borderColor={theme.accent}
-      paddingX={1}
-      flexDirection="column"
-    >
-      <Box
-        flexDirection={narrow ? "column" : "row"}
-        justifyContent="space-between"
-      >
-        <Box flexDirection={narrow ? "column" : "row"}>
-          <Text color={theme.accent} bold>
-            CoderAI
-          </Text>
-          <Text color={theme.muted}>
-            {" "}
-            v{session.version || "—"} · autonomous terminal coding assistant
-          </Text>
-        </Box>
-        <Box flexDirection={narrow ? "column" : "row"}>
-          <Text color={theme.info}>
-            {session.cwd ? shortenCwd(session.cwd) : ""}
-          </Text>
-          {session.model ? (
-            <Text color={theme.muted}>
-              {narrow ? "" : "  "}
-              runtime {session.provider || "provider"} / {session.model}
-            </Text>
-          ) : null}
-        </Box>
-      </Box>
-      <Box
-        marginTop={1}
-        flexDirection={narrow ? "column" : "row"}
-      >
-        <HeaderBadge
-          label={session.autoApprove ? "YOLO MODE" : "SAFE MODE"}
-          color={session.autoApprove ? theme.warning : theme.success}
-        />
-        <Text color={theme.muted}>{narrow ? "" : " "}</Text>
-        <HeaderBadge
-          label={`REASONING ${session.reasoning.toUpperCase()}`}
-          color={theme.info}
-        />
-        <Text color={theme.muted}>{narrow ? "" : " "}</Text>
-        <HeaderBadge
-          label={`${Object.keys(session.agents).length} AGENTS TRACKED`}
-          color={theme.accentSoft}
-        />
-      </Box>
-      {session.projectSummary ? (
-        <Box marginTop={1}>
-          <Text color={theme.text} italic>
-            {truncate(session.projectSummary.trim(), 120)}
-          </Text>
-        </Box>
-      ) : null}
-    </Box>
-  );
-}
-
-function ConnectingSplash() {
-  return (
-    <Box
-      borderStyle="double"
-      borderColor={theme.accentDim}
-      paddingX={1}
-      flexDirection="column"
-    >
-      <Box>
-        <Text color={theme.accent} bold>
-          <Spinner type="dots" />
-        </Text>
-        <Text color={theme.accent} bold> CoderAI</Text>
-        <Text color={theme.muted}> · booting terminal workspace…</Text>
-      </Box>
-      <Box marginTop={1} flexDirection="column">
-        <Text color={theme.info}>multi-agent orchestration · tool registry · session state</Text>
-        <Text color={theme.muted} italic>
-          Spawning Python subprocess and loading providers. This usually
-          takes a second or two.
-        </Text>
-      </Box>
-    </Box>
-  );
-}
-
-function HeaderBadge({
-  label,
-  color,
-}: {
-  label: string;
-  color: string;
-}) {
-  return (
-    <Text backgroundColor={color} color="black" bold>
-      {" " + label + " "}
-    </Text>
-  );
-}
-
-
-function shortenCwd(cwd: string): string {
-  // `os.homedir()` handles Windows (USERPROFILE) and Unix (HOME) uniformly,
-  // unlike reading `process.env.HOME` directly.
-  const home = safeHomedir();
-  if (home && cwd.startsWith(home)) return "~" + cwd.slice(home.length);
-  return cwd;
-}
-
-function safeHomedir(): string | null {
-  try {
-    return os.homedir() || null;
-  } catch {
-    return null;
-  }
-}
-
-function truncate(s: string, max: number): string {
-  return s.length > max ? s.slice(0, max - 1) + "…" : s;
-}

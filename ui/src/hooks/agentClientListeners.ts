@@ -9,10 +9,10 @@ import type {AgentEvent, AgentInfo} from "../protocol.js";
 import type {SessionState, TimelineItem} from "./agentStateTypes.js";
 import {appendCapped} from "./timelineAppend.js";
 
-/** Coalesce stream_delta IPC into fewer Ink redraws (~40fps cap). */
-const STREAM_FLUSH_MS = 24;
+/** Coalesce stream_delta IPC into fewer Ink redraws (~16fps cap). */
+const STREAM_FLUSH_MS = 60;
 /** Cap status bar updates while tokens/context churn. */
-const STATUS_THROTTLE_MS = 100;
+const STATUS_THROTTLE_MS = 250;
 
 export type StatusPayload = {
   ctxUsed: number;

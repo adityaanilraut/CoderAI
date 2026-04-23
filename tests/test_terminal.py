@@ -166,7 +166,8 @@ class TestRunBackgroundTool:
     def test_cleanup_finished(self):
         asyncio.run(self.tool.execute(command="sleep 0"))
         # Give process time to finish
-        import time; time.sleep(0.2)
+        import time
+        time.sleep(0.2)
         removed = self.tool.cleanup_finished()
         assert isinstance(removed, int)
 

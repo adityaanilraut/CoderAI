@@ -1,7 +1,6 @@
 """Tests for ReadURLTool — SSRF protection and execution paths."""
 
 import asyncio
-import os
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -37,7 +36,6 @@ class TestReadURLToolSSRF:
         # Block at SSRF level so no real request is sent; just verify URL is rewritten
         calls = []
         from coderAI.tools import web as web_mod
-        original = web_mod._is_safe_url
         def capturing_check(url):
             calls.append(url)
             return False  # block so no real request

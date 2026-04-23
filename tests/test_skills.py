@@ -1,8 +1,6 @@
 """Tests for Skills loading and UseSkillTool."""
 
 import asyncio
-import tempfile
-from pathlib import Path
 import pytest
 
 from coderAI.tools.skills import UseSkillTool, load_skill, get_available_skills

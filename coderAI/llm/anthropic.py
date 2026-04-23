@@ -25,6 +25,18 @@ def _create_ssl_context() -> ssl.SSLContext:
     except ImportError:
         return ssl.create_default_context()
 
+# Models that support prompt caching (cache_control on system/tools/messages).
+# Kept in sync with MODEL_COSTS: every model here must have a cost entry.
+CACHING_SUPPORTED_MODELS = frozenset({
+    "claude-opus-4-7",
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5-20251001",
+    "claude-3-7-sonnet-20250219",
+    "claude-3-5-sonnet-20241022",
+    "claude-3-5-haiku-20241022",
+    "claude-3-opus-20240229",
+})
+
 # Cost per 1K tokens (approximate). These are back-of-the-envelope numbers
 # retained for historical reference; canonical pricing lives in
 # ``coderAI/cost.py::MODEL_PRICING`` (per-million-tokens).
@@ -66,7 +78,15 @@ MODEL_ALIASES = {
     "haiku": "claude-haiku-4-5-20251001",
 }
 
+_THINKING_BUDGETS: Dict[str, int] = {"low": 1024, "medium": 4096, "high": 16384}
 
+# Models that support extended thinking (budget_tokens).
+# Kept in sync with CACHING_SUPPORTED_MODELS.
+_THINKING_SUPPORTED_MODELS = frozenset({
+    "claude-opus-4-7",
+    "claude-sonnet-4-6",
+    "claude-3-7-sonnet-20250219",
+})
 
 
 class AnthropicProvider(LLMProvider):
@@ -91,6 +111,8 @@ class AnthropicProvider(LLMProvider):
         self.reasoning_effort = kwargs.get("reasoning_effort", "medium")
         self.total_input_tokens = 0
         self.total_output_tokens = 0
+        self.total_cache_creation_tokens = 0
+        self.total_cache_read_tokens = 0
         self._session: Optional[aiohttp.ClientSession] = None
 
         if not api_key:
@@ -111,11 +133,14 @@ class AnthropicProvider(LLMProvider):
 
     def _get_headers(self) -> Dict[str, str]:
         """Get API headers."""
-        return {
+        headers = {
             "Content-Type": "application/json",
             "x-api-key": self.api_key,
             "anthropic-version": self.API_VERSION,
         }
+        if self._supports_caching():
+            headers["anthropic-beta"] = "prompt-caching-2024-07-31"
+        return headers
 
     def _convert_messages(self, messages: List[Dict[str, Any]]) -> tuple:
         """Convert OpenAI-style messages to Anthropic format.
@@ -229,31 +254,107 @@ class AnthropicProvider(LLMProvider):
             "usage": response.get("usage", {}),
         }
 
+    def _supports_caching(self) -> bool:
+        """Check if the current model supports prompt caching."""
+        return self.actual_model in CACHING_SUPPORTED_MODELS
+
+    def _apply_cache_control(
+        self,
+        system_prompt: str,
+        anthropic_messages: List[Dict[str, Any]],
+        anthropic_tools: Optional[List[Dict[str, Any]]],
+    ) -> tuple:
+        """Add cache_control breakpoints to system, tools, and message history.
+
+        Strategy:
+        - System prompt → single content block marked ephemeral (cached every request)
+        - Tools → last tool marked ephemeral (tool list rarely changes)
+        - Messages → penultimate user message marked ephemeral (caches growing history;
+          the final user message is always new and intentionally left uncached)
+
+        Returns (system_payload, messages_payload, tools_payload).
+        """
+        system_payload = None
+        if system_prompt:
+            system_payload = [
+                {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}
+            ]
+
+        tools_payload = None
+        if anthropic_tools:
+            tools_payload = [dict(t) for t in anthropic_tools]
+            tools_payload[-1] = {**tools_payload[-1], "cache_control": {"type": "ephemeral"}}
+
+        messages_payload = [dict(m) for m in anthropic_messages]
+        user_indices = [i for i, m in enumerate(messages_payload) if m["role"] == "user"]
+        if len(user_indices) >= 2:
+            idx = user_indices[-2]
+            msg = dict(messages_payload[idx])
+            content = msg["content"]
+            if isinstance(content, str):
+                content = [{"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}]
+            else:
+                content = [dict(b) for b in content]
+                if content:
+                    content[-1] = {**content[-1], "cache_control": {"type": "ephemeral"}}
+            msg["content"] = content
+            messages_payload[idx] = msg
+
+        return system_payload, messages_payload, tools_payload
+
+    def _build_payload(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]],
+        max_tokens: Optional[int] = None,
+        stream: bool = False,
+    ) -> tuple:
+        """Build the Anthropic API payload.
+
+        Returns (payload, session_kwargs) where session_kwargs is passed to
+        aiohttp.ClientSession.post. Extracted to avoid duplicating the
+        payload-construction block between chat() and stream().
+        """
+        system_prompt, anthropic_messages = self._convert_messages(messages)
+        anthropic_tools = self._convert_tools(tools)
+
+        payload: Dict[str, Any] = {
+            "model": self.actual_model,
+            "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
+        }
+        if stream:
+            payload["stream"] = True
+
+        if self._supports_thinking() and self.reasoning_effort and self.reasoning_effort != "none":
+            budget = _THINKING_BUDGETS.get(self.reasoning_effort, 4096)
+            payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
+
+        if self._supports_caching():
+            sys_p, msg_p, tool_p = self._apply_cache_control(
+                system_prompt, anthropic_messages, anthropic_tools
+            )
+            if sys_p:
+                payload["system"] = sys_p
+            if tool_p:
+                payload["tools"] = tool_p
+            payload["messages"] = msg_p
+        else:
+            if system_prompt:
+                payload["system"] = system_prompt
+            if anthropic_tools:
+                payload["tools"] = anthropic_tools
+            payload["messages"] = anthropic_messages
+
+        return payload
+
     async def chat(
         self,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
         **kwargs,
     ) -> Dict[str, Any]:
-        """Send a chat request to Anthropic with retry logic."""
-        system_prompt, anthropic_messages = self._convert_messages(messages)
-        anthropic_tools = self._convert_tools(tools)
-
-        payload = {
-            "model": self.actual_model,
-            "max_tokens": kwargs.get("max_tokens", self.max_tokens),
-            "messages": anthropic_messages,
-        }
-        
-        if self._supports_thinking() and self.reasoning_effort and self.reasoning_effort != "none":
-            budget = {"low": 1024, "medium": 4096, "high": 16384}.get(self.reasoning_effort, 4096)
-            payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
-            
-        if system_prompt:
-            payload["system"] = system_prompt
-        if anthropic_tools:
-            payload["tools"] = anthropic_tools
-
+        """Send a chat request to Anthropic."""
+        payload = self._build_payload(messages, tools, max_tokens=kwargs.get("max_tokens"))
         session = await self._get_session()
         async with session.post(
             self.API_URL,
@@ -268,10 +369,11 @@ class AnthropicProvider(LLMProvider):
                 )
             result = await response.json()
 
-            # Track usage
             usage = result.get("usage", {})
             self.total_input_tokens += usage.get("input_tokens", 0)
             self.total_output_tokens += usage.get("output_tokens", 0)
+            self.total_cache_creation_tokens += usage.get("cache_creation_input_tokens", 0)
+            self.total_cache_read_tokens += usage.get("cache_read_input_tokens", 0)
 
             return self._convert_response(result)
 
@@ -282,25 +384,7 @@ class AnthropicProvider(LLMProvider):
         **kwargs,
     ) -> AsyncIterator[Dict[str, Any]]:
         """Stream response from Anthropic (SSE-based)."""
-        system_prompt, anthropic_messages = self._convert_messages(messages)
-        anthropic_tools = self._convert_tools(tools)
-
-        payload = {
-            "model": self.actual_model,
-            "max_tokens": kwargs.get("max_tokens", self.max_tokens),
-            "messages": anthropic_messages,
-            "stream": True,
-        }
-        
-        if self._supports_thinking() and self.reasoning_effort and self.reasoning_effort != "none":
-            budget = {"low": 1024, "medium": 4096, "high": 16384}.get(self.reasoning_effort, 4096)
-            payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
-            
-        if system_prompt:
-            payload["system"] = system_prompt
-        if anthropic_tools:
-            payload["tools"] = anthropic_tools
-
+        payload = self._build_payload(messages, tools, max_tokens=kwargs.get("max_tokens"), stream=True)
         session = await self._get_session()
         async with session.post(
             self.API_URL,
@@ -335,7 +419,14 @@ class AnthropicProvider(LLMProvider):
                             continue
 
                         # Convert Anthropic streaming events to OpenAI chunk format
-                        if current_event == "content_block_start":
+                        if current_event == "message_start":
+                            usage = parsed.get("message", {}).get("usage", {})
+                            self.total_input_tokens += usage.get("input_tokens", 0)
+                            self.total_cache_creation_tokens += usage.get("cache_creation_input_tokens", 0)
+                            self.total_cache_read_tokens += usage.get("cache_read_input_tokens", 0)
+                        elif current_event == "message_delta":
+                            self.total_output_tokens += parsed.get("usage", {}).get("output_tokens", 0)
+                        elif current_event == "content_block_start":
                             block = parsed.get("content_block", {})
                             index = parsed.get("index", 0)
                             if block.get("type") == "tool_use":
@@ -405,10 +496,7 @@ class AnthropicProvider(LLMProvider):
                             }
 
     def _supports_thinking(self) -> bool:
-        """Check if the current model supports extended thinking."""
-        # Claude 3.7+ and Claude 4+ models support extended thinking
-        model = self.actual_model
-        return any(tag in model for tag in ("claude-3-7", "claude-4", "claude-sonnet-4"))
+        return self.actual_model in _THINKING_SUPPORTED_MODELS
 
     def count_tokens(self, text: str) -> int:
         """Approximate token count for Claude models.
@@ -424,16 +512,26 @@ class AnthropicProvider(LLMProvider):
     def get_cost(self) -> Dict[str, Any]:
         """Get current session cost estimate."""
         costs = MODEL_COSTS.get(self.actual_model, {"input": 0, "output": 0})
-        input_cost = (self.total_input_tokens / 1000) * costs["input"]
-        output_cost = (self.total_output_tokens / 1000) * costs["output"]
+        input_price_per_k = costs["input"]
+        output_price_per_k = costs["output"]
+        # Cache write costs 1.25x input; cache read costs 0.1x input.
+        cache_write_cost = (self.total_cache_creation_tokens / 1000) * input_price_per_k * 1.25
+        cache_read_cost = (self.total_cache_read_tokens / 1000) * input_price_per_k * 0.1
+        uncached_input_cost = (self.total_input_tokens / 1000) * input_price_per_k
+        output_cost = (self.total_output_tokens / 1000) * output_price_per_k
+        total_cost = uncached_input_cost + output_cost + cache_write_cost + cache_read_cost
 
         return {
             "input_tokens": self.total_input_tokens,
             "output_tokens": self.total_output_tokens,
+            "cache_creation_tokens": self.total_cache_creation_tokens,
+            "cache_read_tokens": self.total_cache_read_tokens,
             "total_tokens": self.total_input_tokens + self.total_output_tokens,
-            "input_cost": round(input_cost, 6),
+            "input_cost": round(uncached_input_cost, 6),
             "output_cost": round(output_cost, 6),
-            "total_cost": round(input_cost + output_cost, 6),
+            "cache_write_cost": round(cache_write_cost, 6),
+            "cache_read_cost": round(cache_read_cost, 6),
+            "total_cost": round(total_cost, 6),
             "currency": "USD",
             "model": self.actual_model,
         }
@@ -446,4 +544,6 @@ class AnthropicProvider(LLMProvider):
         info["total_input_tokens"] = self.total_input_tokens
         info["total_output_tokens"] = self.total_output_tokens
         info["total_tokens"] = self.total_input_tokens + self.total_output_tokens
+        info["cache_creation_tokens"] = self.total_cache_creation_tokens
+        info["cache_read_tokens"] = self.total_cache_read_tokens
         return info

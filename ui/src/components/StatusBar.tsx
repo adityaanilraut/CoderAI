@@ -35,22 +35,6 @@ export function StatusBar({
     (a) => !["done", "error", "cancelled"].includes(a.status),
   ).length;
 
-  // Segments so we can either join them with pipes (wide) or stack them
-  // in a column (narrow terminals) without duplicating JSX.
-  const left = (
-    <Box flexDirection="column">
-      <Box>
-        <Text color={theme.accent} bold>
-          {session.model || "…"}
-        </Text>
-        <Text color={theme.muted}> · {session.provider || "not connected"}</Text>
-      </Box>
-      <Text color={theme.muted}>
-        {session.cwd ? session.cwd : "waiting for workspace"}
-      </Text>
-    </Box>
-  );
-
   const ctxSeg = (
     <Text color={ctxColor}>
       {ctxKnown ? (
@@ -81,56 +65,41 @@ export function StatusBar({
     </Text>
   );
 
-  const modeSeg = (
-    <Text color={session.autoApprove ? theme.warning : theme.muted}>
-      {session.autoApprove ? "YOLO" : "safe"}
-    </Text>
+  const barContent = (
+    <Box flexDirection={narrow ? "column" : "row"} justifyContent="space-between" width="100%">
+      <Box flexDirection="row">
+        <Text color={theme.accent} bold>CoderAI</Text>
+        <Text color={theme.muted}> v{session.version || "—"}</Text>
+        <Text color={theme.muted}>  ·  </Text>
+        {ctxSeg}
+        <Text color={theme.muted}>  ·  </Text>
+        {costSeg}
+        <Text color={theme.muted}>  ·  </Text>
+        {agentsSeg}
+      </Box>
+      <Box flexDirection="row">
+        {session.model ? (
+          <>
+            <Text color={theme.muted}>
+              {session.provider || "provider"} / {session.model}
+            </Text>
+            <Text color={theme.muted}>  ·  </Text>
+            <Text color={session.autoApprove ? theme.warning : theme.muted}>
+              {session.autoApprove ? "YOLO" : "safe"}
+            </Text>
+            <Text color={theme.muted}>  ·  </Text>
+            <Text color={theme.muted}>{session.reasoning}</Text>
+          </>
+        ) : (
+          <Text color={theme.muted}>booting…</Text>
+        )}
+      </Box>
+    </Box>
   );
 
-  if (narrow) {
-    return (
-      <Box
-        borderStyle="round"
-        borderColor={theme.border}
-        paddingX={1}
-        flexDirection="column"
-      >
-        {left}
-        <Box marginTop={1}>
-          {ctxSeg}
-          <Text color={theme.muted}>  ·  </Text>
-          {costSeg}
-        </Box>
-        <Box>
-          {agentsSeg}
-          <Text color={theme.muted}>  ·  </Text>
-          {modeSeg}
-          <Text color={theme.muted}>  ·  </Text>
-          <Text color={theme.info}>{session.reasoning}</Text>
-        </Box>
-      </Box>
-    );
-  }
-
   return (
-    <Box
-      borderStyle="double"
-      borderColor={theme.border}
-      paddingX={1}
-      justifyContent="space-between"
-    >
-      {left}
-      <Box>
-        {ctxSeg}
-        <Text color={theme.muted}>  │  </Text>
-        {costSeg}
-        <Text color={theme.muted}>  │  </Text>
-        {agentsSeg}
-        <Text color={theme.muted}>  │  </Text>
-        {modeSeg}
-        <Text color={theme.muted}>  │  </Text>
-        <Text color={theme.info}>{session.reasoning}</Text>
-      </Box>
+    <Box paddingX={1} marginTop={1}>
+      {barContent}
     </Box>
   );
 }

@@ -107,24 +107,29 @@ A comprehensive map of the CoderAI repository:
 │   │   ├── lmstudio.py      # LM Studio support
 │   │   ├── ollama.py        # Ollama support
 │   │   └── openai.py        # OpenAI support
-│   ├── tools/               # Tool implementations
+│   ├── tools/               # Tool implementations (54+ tools total)
 │   │   ├── __init__.py
 │   │   ├── base.py          # Tool registry and base class
-│   │   ├── filesystem.py    # File read/write/list/glob
-│   │   ├── git.py           # Git status/log/diff/commit
-│   │   ├── web.py           # Search and URL content
-│   │   ├── search.py        # Text search and grep
-│   │   ├── terminal.py      # Command execution
-│   │   ├── subagent.py      # Delegation to sub-agents
-│   │   ├── tasks.py         # Task tracking
-│   │   ├── memory.py        # Persistence for context
-│   │   ├── mcp.py           # Model Context Protocol support
-│   │   ├── vision.py        # Image analysis
-│   │   ├── undo.py          # File history and rollback
-│   │   ├── lint.py          # Code quality checks
-│   │   ├── context_manage.py # Manual context pinning
-│   │   ├── planning.py      # Agent planning tools
-│   │   └── format.py        # Data formatting
+│   │   ├── filesystem.py    # read_file, write_file, search_replace, apply_diff,
+│   │   │                    # list_directory, glob_search, move_file, copy_file,
+│   │   │                    # delete_file, create_directory
+│   │   ├── git.py           # git_add/status/diff/commit/log/branch/checkout/stash
+│   │   │                    # + git_push/pull/merge/rebase/revert/reset/show/remote
+│   │   │                    # + git_blame/cherry_pick/tag
+│   │   ├── web.py           # web_search, read_url, download_file, http_request
+│   │   ├── search.py        # text_search, grep (regex-capable)
+│   │   ├── terminal.py      # run_command, run_background, list_processes, kill_process
+│   │   ├── subagent.py      # delegate_task (spawn isolated sub-agents)
+│   │   ├── tasks.py         # manage_tasks (persistent TODO list)
+│   │   ├── memory.py        # save_memory, recall_memory, delete_memory
+│   │   ├── mcp.py           # mcp_connect, mcp_call_tool, mcp_list
+│   │   ├── vision.py        # read_image (base64 encoding for multimodal)
+│   │   ├── undo.py          # undo, undo_history (file backup/rollback)
+│   │   ├── lint.py          # lint (auto-detect & run linter)
+│   │   ├── context_manage.py # manage_context (pin/unpin files)
+│   │   ├── planning.py      # plan (create/show/advance/update/clear)
+│   │   ├── notepad.py       # notepad (shared inter-agent notepad)
+│   │   └── format.py        # format (auto-detect code formatter)
 │   └── ui/                  # Rich implementation for non-interactive CLI
 │       ├── __init__.py
 │       └── display.py       # Rich tables, markdown, and trees

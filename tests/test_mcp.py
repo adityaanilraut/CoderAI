@@ -1,11 +1,10 @@
 """Tests for MCPClient, MCPListTool, and MCPCallTool."""
 
 import asyncio
-import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from coderAI.tools.mcp import MCPClient, MCPListTool, MCPCallTool, MCPConnectTool, _normalize_parameters_schema
+from coderAI.tools.mcp import MCPClient, MCPListTool, MCPCallTool, MCPConnectTool
 
 
 class TestMCPClient:

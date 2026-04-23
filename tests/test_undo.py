@@ -87,8 +87,7 @@ class TestUndoTool:
     @pytest.fixture(autouse=True)
     def setup(self, tmp_path, monkeypatch):
         self.store = FileBackupStore(backup_dir=str(tmp_path / "backups"))
-        import coderAI.tools.undo as undo_mod
-        monkeypatch.setattr(undo_mod, "backup_store", self.store)
+        monkeypatch.setattr("coderAI.tools.undo.get_backup_store", lambda: self.store)
         self.tool = UndoTool()
 
     def test_undo_with_no_history(self):
@@ -117,8 +116,7 @@ class TestUndoHistoryTool:
     @pytest.fixture(autouse=True)
     def setup(self, tmp_path, monkeypatch):
         self.store = FileBackupStore(backup_dir=str(tmp_path / "backups"))
-        import coderAI.tools.undo as undo_mod
-        monkeypatch.setattr(undo_mod, "backup_store", self.store)
+        monkeypatch.setattr("coderAI.tools.undo.get_backup_store", lambda: self.store)
         self.tool = UndoHistoryTool()
 
     def test_empty_history(self):

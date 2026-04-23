@@ -1,5 +1,6 @@
 """Filesystem tools for file operations."""
 
+import asyncio
 import difflib
 import re
 from pathlib import Path
@@ -675,3 +676,214 @@ class ApplyDiffTool(Tool):
                 i += 1
 
         return hunks
+
+
+# ---------------------------------------------------------------------------
+# Additional filesystem tools: move, copy, delete, mkdir
+# ---------------------------------------------------------------------------
+
+
+class MoveFileParams(BaseModel):
+    source: str = Field(..., description="Source file or directory path")
+    destination: str = Field(..., description="Destination path (file or directory)")
+    overwrite: bool = Field(False, description="Overwrite the destination if it already exists")
+
+
+class MoveFileTool(Tool):
+    """Move or rename a file or directory."""
+
+    name = "move_file"
+    description = (
+        "Move or rename a file or directory. Set overwrite=true to replace an existing "
+        "destination; by default the operation fails if the destination exists."
+    )
+    category = "fs"
+    parameters_model = MoveFileParams
+    requires_confirmation = True
+
+    async def execute(
+        self, source: str, destination: str, overwrite: bool = False
+    ) -> Dict[str, Any]:
+        import shutil as _shutil
+
+        try:
+            src = Path(source)
+            dst = Path(destination)
+
+            if not src.exists():
+                return {"success": False, "error": f"Source does not exist: {source}"}
+
+            if _is_path_protected(dst):
+                return {"success": False, "error": f"Destination is in a protected path: {destination}"}
+
+            if dst.exists() and not overwrite:
+                return {
+                    "success": False,
+                    "error": f"Destination already exists: {destination}. Set overwrite=true to replace it.",
+                }
+
+            dst.parent.mkdir(parents=True, exist_ok=True)
+
+            def _move():
+                _shutil.move(str(src), str(dst))
+
+            await asyncio.to_thread(_move)
+            return {
+                "success": True,
+                "source": str(src),
+                "destination": str(dst),
+                "message": f"Moved '{src}' → '{dst}'",
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+
+class CopyFileParams(BaseModel):
+    source: str = Field(..., description="Source file or directory path")
+    destination: str = Field(..., description="Destination path")
+    overwrite: bool = Field(False, description="Overwrite the destination if it already exists")
+
+
+class CopyFileTool(Tool):
+    """Copy a file or directory tree."""
+
+    name = "copy_file"
+    description = (
+        "Copy a file or directory to a new location. For directories, copies the entire tree. "
+        "Set overwrite=true to replace an existing destination."
+    )
+    category = "fs"
+    parameters_model = CopyFileParams
+    requires_confirmation = True
+
+    async def execute(
+        self, source: str, destination: str, overwrite: bool = False
+    ) -> Dict[str, Any]:
+        import shutil as _shutil
+
+        try:
+            src = Path(source)
+            dst = Path(destination)
+
+            if not src.exists():
+                return {"success": False, "error": f"Source does not exist: {source}"}
+
+            if _is_path_protected(dst):
+                return {"success": False, "error": f"Destination is in a protected path: {destination}"}
+
+            if dst.exists() and not overwrite:
+                return {
+                    "success": False,
+                    "error": f"Destination already exists: {destination}. Set overwrite=true to replace it.",
+                }
+
+            dst.parent.mkdir(parents=True, exist_ok=True)
+
+            def _copy():
+                if src.is_dir():
+                    if dst.exists():
+                        _shutil.rmtree(str(dst))
+                    _shutil.copytree(str(src), str(dst))
+                else:
+                    _shutil.copy2(str(src), str(dst))
+
+            await asyncio.to_thread(_copy)
+            return {
+                "success": True,
+                "source": str(src),
+                "destination": str(dst),
+                "message": f"Copied '{src}' → '{dst}'",
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+
+class DeleteFileParams(BaseModel):
+    path: str = Field(..., description="File or directory path to delete")
+    recursive: bool = Field(False, description="Delete directories and their contents recursively")
+
+
+class DeleteFileTool(Tool):
+    """Delete a file or directory."""
+
+    name = "delete_file"
+    description = (
+        "Delete a file or empty directory. Set recursive=true to delete a directory and all "
+        "its contents. Protected system and home paths are always refused."
+    )
+    category = "fs"
+    parameters_model = DeleteFileParams
+    requires_confirmation = True
+
+    async def execute(self, path: str, recursive: bool = False) -> Dict[str, Any]:
+        import shutil as _shutil
+
+        try:
+            target = Path(path)
+
+            if not target.exists():
+                return {"success": False, "error": f"Path does not exist: {path}"}
+
+            if _is_path_protected(target):
+                return {"success": False, "error": f"Refusing to delete protected path: {path}"}
+
+            def _delete():
+                if target.is_dir():
+                    if recursive:
+                        _shutil.rmtree(str(target))
+                    else:
+                        target.rmdir()
+                else:
+                    target.unlink()
+
+            await asyncio.to_thread(_delete)
+            return {
+                "success": True,
+                "path": str(target),
+                "message": f"Deleted '{target}'",
+            }
+        except OSError as e:
+            if "Directory not empty" in str(e) or e.errno == 39:
+                return {
+                    "success": False,
+                    "error": f"Directory not empty: {path}. Set recursive=true to delete it and its contents.",
+                }
+            return {"success": False, "error": str(e)}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+
+class CreateDirectoryParams(BaseModel):
+    path: str = Field(..., description="Directory path to create")
+    parents: bool = Field(True, description="Create parent directories as needed (default: true)")
+
+
+class CreateDirectoryTool(Tool):
+    """Create one or more directories."""
+
+    name = "create_directory"
+    description = (
+        "Create a directory (and any missing parent directories by default). "
+        "Succeeds silently if the directory already exists."
+    )
+    category = "fs"
+    parameters_model = CreateDirectoryParams
+
+    async def execute(self, path: str, parents: bool = True) -> Dict[str, Any]:
+        try:
+            target = Path(path)
+
+            if _is_path_protected(target):
+                return {"success": False, "error": f"Refusing to create directory in protected path: {path}"}
+
+            def _mkdir():
+                target.mkdir(parents=parents, exist_ok=True)
+
+            await asyncio.to_thread(_mkdir)
+            return {
+                "success": True,
+                "path": str(target.resolve()),
+                "message": f"Directory created: '{target}'",
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}

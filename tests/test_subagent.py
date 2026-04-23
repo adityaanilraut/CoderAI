@@ -1,7 +1,6 @@
 """Tests for DelegateTaskTool — depth limiting, retry config, and error paths."""
 
 import asyncio
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from coderAI.tools.subagent import (
@@ -28,9 +27,9 @@ class TestDelegateTaskToolInit:
         """Sub-agents can mutate repo/state; parallelism is capped separately."""
         assert DelegateTaskTool.is_read_only is False
 
-    def test_parallel_cap_is_one(self):
-        """Sub-agents run sequentially to avoid workspace conflicts."""
-        assert DelegateTaskTool.max_parallel_invocations == 1
+    def test_parallel_cap_allows_concurrent_read_only(self):
+        """Up to 4 sub-agents can be scheduled per batch; mutating ones serialise via lock."""
+        assert DelegateTaskTool.max_parallel_invocations == 4
 
 
 class TestDelegateTaskDepthLimit:

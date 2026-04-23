@@ -13,7 +13,6 @@ from coderAI.safeguards import (
     project_sanity_check,
     resolve_git_root,
     get_current_branch,
-    JUNK_PATTERNS,
 )
 
 

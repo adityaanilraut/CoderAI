@@ -14,38 +14,22 @@ export function Assistant({
 }) {
   const trimmedReasoning = reasoning.trim();
   return (
-    <Box
-      flexDirection="column"
-      marginBottom={1}
-      borderStyle="round"
-      borderColor={streaming ? theme.accent : theme.border}
-      paddingX={1}
-    >
-      <Box justifyContent="space-between">
+    <Box flexDirection="column" marginTop={1} marginBottom={1} paddingLeft={1}>
+      <Box>
+        <Text color={theme.accent}>│ </Text>
         <Text color={theme.accent} bold>
           {streaming ? <Spinner type="dots" /> : "●"} Assistant
         </Text>
-        <Text color={theme.muted}>response</Text>
+        {streaming ? <Text color={theme.muted}> · streaming…</Text> : null}
       </Box>
-
       {trimmedReasoning ? (
-        <Box
-          marginTop={1}
-          borderStyle="single"
-          borderColor={theme.borderSoft}
-          paddingX={1}
-          flexDirection="column"
-        >
-          <Text color={theme.info} bold>
-            Working Notes
-          </Text>
+        <Box paddingLeft={2} marginTop={1}>
           <Text color={theme.muted} italic>
             {trimmedReasoning}
           </Text>
         </Box>
       ) : null}
-
-      <Box marginTop={1}>
+      <Box paddingLeft={2} marginTop={1}>
         <Text color={theme.text}>{content}</Text>
       </Box>
     </Box>
@@ -54,20 +38,12 @@ export function Assistant({
 
 export function UserBubble({text}: {text: string}) {
   return (
-    <Box
-      flexDirection="column"
-      marginBottom={1}
-      borderStyle="round"
-      borderColor={theme.info}
-      paddingX={1}
-    >
-      <Box justifyContent="space-between">
-        <Text color={theme.success} bold>
-          ▸ You
-        </Text>
-        <Text color={theme.muted}>prompt</Text>
+    <Box flexDirection="column" marginTop={1} paddingLeft={1}>
+      <Box>
+        <Text color={theme.info}>│ </Text>
+        <Text color={theme.success} bold>▸ You</Text>
       </Box>
-      <Box marginTop={1}>
+      <Box paddingLeft={2} marginTop={1}>
         <Text color={theme.text}>{text}</Text>
       </Box>
     </Box>

@@ -1,7 +1,6 @@
 """Tests for SaveMemoryTool, RecallMemoryTool, and MemoryStore."""
 
 import asyncio
-import json
 import pytest
 
 from coderAI.tools.memory import MemoryStore, SaveMemoryTool, RecallMemoryTool

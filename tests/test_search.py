@@ -1,7 +1,6 @@
 """Tests for TextSearchTool and GrepTool."""
 
 import asyncio
-import os
 import pytest
 
 from coderAI.tools.search import TextSearchTool, GrepTool

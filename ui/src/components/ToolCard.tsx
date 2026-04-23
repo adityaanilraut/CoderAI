@@ -14,8 +14,6 @@ export interface ToolCardProps {
   error: string | null;
   /**
    * Hints whether the Python side has more output than fit in `preview`.
-   * We currently just surface a "(output truncated)" note; a future
-   * enhancement could add a keybinding that re-requests the full result.
    */
   fullAvailable?: boolean;
 }
@@ -24,62 +22,40 @@ export function ToolCard(props: ToolCardProps) {
   const color = theme.tool[props.category] ?? theme.tool.other;
   const status = props.ok === null ? "running" : props.ok ? "ok" : "error";
   const summary = summarizeArgs(props.name, props.args);
+  const gutterColor = status === "error" ? theme.danger : color;
 
   return (
-    <Box
-      borderStyle="round"
-      borderColor={status === "error" ? theme.danger : color}
-      paddingX={1}
-      flexDirection="column"
-      marginBottom={1}
-    >
-      <Box justifyContent="space-between">
-        <Box flexDirection="column">
-          <Box>
-            <Text color={color} bold>
-              {iconFor(status)} {props.name}
-            </Text>
-            <Text color={theme.muted}>  {props.category}</Text>
-          </Box>
-          <Text color={color} bold>
-            {summary || "no arguments"}
-          </Text>
-        </Box>
+    <Box paddingLeft={1}>
+      <Text color={gutterColor}>│ </Text>
+      <Box flexDirection="column">
         <Box>
+          <Text color={gutterColor} bold>
+            {iconFor(status)} {props.name}
+          </Text>
+          {props.ok === null ? (
+            <Text color={theme.accent}>
+              {" "}
+              <Spinner type="dots" />
+            </Text>
+          ) : null}
+          <Text color={theme.muted}>  {props.category}  </Text>
           <RiskBadge risk={props.risk} />
         </Box>
-      </Box>
-
-      {props.ok === null ? (
-        <Box marginTop={1}>
-          <Text color={theme.accent}><Spinner type="dots" /></Text>
-          <Text color={theme.muted}> running…</Text>
-        </Box>
-      ) : props.ok ? (
-        <>
-          {props.preview ? (
-            <Box
-              marginTop={1}
-              borderStyle="single"
-              borderColor={theme.borderSoft}
-              paddingX={1}
-            >
-              <Text color={theme.muted}>{props.preview}</Text>
-            </Box>
-          ) : null}
-          {props.fullAvailable ? (
-            <Box marginTop={1}>
-              <Text color={theme.muted} italic>
-                (output truncated — full result kept in the session log)
-              </Text>
-            </Box>
-          ) : null}
-        </>
-      ) : (
-        <Box marginTop={1}>
+        {summary ? <Text color={theme.muted}>{summary}</Text> : null}
+        {props.ok === true && props.preview ? (
+          <Box marginTop={1} paddingLeft={1}>
+            <Text color={theme.muted}>{props.preview}</Text>
+          </Box>
+        ) : null}
+        {props.fullAvailable ? (
+          <Text color={theme.muted} italic>
+            (output truncated — full result kept in session log)
+          </Text>
+        ) : null}
+        {props.ok === false ? (
           <Text color={theme.danger}>✗ {props.error ?? "tool failed"}</Text>
-        </Box>
-      )}
+        ) : null}
+      </Box>
     </Box>
   );
 }
@@ -99,8 +75,7 @@ function RiskBadge({risk}: {risk: ToolRisk}) {
 }
 
 /**
- * Per-tool smart argument summary. Picks the single most useful arg instead
- * of listing every key: value pair.
+ * Per-tool smart argument summary. Picks the single most useful arg.
  */
 function summarizeArgs(name: string, args: Record<string, unknown>): string {
   if (!args || Object.keys(args).length === 0) return "";
@@ -130,7 +105,6 @@ function summarizeArgs(name: string, args: Record<string, unknown>): string {
     case "delegate_task":
       return `${get("persona") || "agent"}: ${truncate(get("task") || "", 60)}`;
     default: {
-      // Fallback: single compact "k=v" pair
       const entries = Object.entries(args)
         .slice(0, 2)
         .map(([k, v]) => `${k}=${truncate(String(v), 40)}`);

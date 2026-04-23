@@ -151,3 +151,27 @@ class RecallMemoryTool(Tool):
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+
+
+class DeleteMemoryParams(BaseModel):
+    key: str = Field(..., description="Memory key to delete")
+
+
+class DeleteMemoryTool(Tool):
+    """Delete a specific memory entry."""
+
+    name = "delete_memory"
+    description = "Delete a previously saved memory entry by its key."
+    category = "memory"
+    parameters_model = DeleteMemoryParams
+    requires_confirmation = True
+
+    async def execute(self, key: str) -> Dict[str, Any]:
+        try:
+            store = get_memory_store()
+            deleted = store.delete(key)
+            if deleted:
+                return {"success": True, "key": key, "message": f"Memory '{key}' deleted."}
+            return {"success": False, "error": f"Memory key not found: '{key}'"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}

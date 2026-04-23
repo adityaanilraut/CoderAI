@@ -391,3 +391,107 @@ def _cleanup_all_background():
 
 # Register cleanup on exit to prevent process leaks
 atexit.register(_cleanup_all_background)
+
+
+# ---------------------------------------------------------------------------
+# Process management: list background processes and kill by PID
+# ---------------------------------------------------------------------------
+
+
+class ListProcessesParams(BaseModel):
+    pass
+
+
+class ListProcessesTool(Tool):
+    """List all background processes started by run_background."""
+
+    name = "list_processes"
+    description = (
+        "List all background processes currently tracked by the agent "
+        "(started via run_background). Shows PID, command, and running status."
+    )
+    category = "shell"
+    parameters_model = ListProcessesParams
+    is_read_only = True
+
+    async def execute(self) -> Dict[str, Any]:
+        try:
+            processes = []
+            for instance in RunBackgroundTool._all_instances:
+                for pid, proc in instance._processes.items():
+                    processes.append(
+                        {
+                            "pid": pid,
+                            "running": proc.returncode is None,
+                            "returncode": proc.returncode,
+                        }
+                    )
+            return {
+                "success": True,
+                "processes": processes,
+                "count": len(processes),
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+
+class KillProcessParams(BaseModel):
+    pid: int = Field(..., description="Process ID (PID) to terminate")
+    force: bool = Field(False, description="Send SIGKILL instead of SIGTERM (force kill)")
+
+
+class KillProcessTool(Tool):
+    """Terminate a background process by PID."""
+
+    name = "kill_process"
+    description = (
+        "Terminate a background process that was started with run_background. "
+        "Sends SIGTERM by default; use force=true for SIGKILL."
+    )
+    category = "shell"
+    parameters_model = KillProcessParams
+    requires_confirmation = True
+
+    async def execute(self, pid: int, force: bool = False) -> Dict[str, Any]:
+        import signal as _signal
+
+        try:
+            found = False
+            for instance in RunBackgroundTool._all_instances:
+                proc = instance._processes.get(pid)
+                if proc is not None:
+                    found = True
+                    if proc.returncode is not None:
+                        return {
+                            "success": False,
+                            "error": f"Process {pid} has already exited (returncode={proc.returncode}).",
+                        }
+                    sig = _signal.SIGKILL if force else _signal.SIGTERM
+                    proc.send_signal(sig)
+                    del instance._processes[pid]
+                    return {
+                        "success": True,
+                        "pid": pid,
+                        "signal": "SIGKILL" if force else "SIGTERM",
+                        "message": f"Sent {'SIGKILL' if force else 'SIGTERM'} to process {pid}.",
+                    }
+
+            if not found:
+                # Also try OS-level kill for PIDs not tracked in our registry
+                import os as _os
+                try:
+                    sig = _signal.SIGKILL if force else _signal.SIGTERM
+                    _os.kill(pid, sig)
+                    return {
+                        "success": True,
+                        "pid": pid,
+                        "signal": "SIGKILL" if force else "SIGTERM",
+                        "message": f"Sent signal to untracked process {pid}.",
+                        "warning": "Process was not in the tracked process list.",
+                    }
+                except ProcessLookupError:
+                    return {"success": False, "error": f"No process found with PID {pid}."}
+                except PermissionError:
+                    return {"success": False, "error": f"Permission denied sending signal to PID {pid}."}
+        except Exception as e:
+            return {"success": False, "error": str(e)}

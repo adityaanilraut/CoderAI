@@ -6,7 +6,7 @@ import struct
 import zlib
 import pytest
 
-from coderAI.tools.vision import ReadImageTool, MAX_IMAGE_SIZE, SUPPORTED_MIME_TYPES
+from coderAI.tools.vision import ReadImageTool
 
 
 def _make_minimal_png(tmp_path, filename="test.png") -> str:

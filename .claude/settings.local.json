@@ -41,7 +41,15 @@
       "Bash(bunx tsc *)",
       "Bash(echo \"---exit $?---\")",
       "Bash(bun pm *)",
-      "Bash(node_modules/.bin/tsc --noEmit)"
+      "Bash(node_modules/.bin/tsc --noEmit)",
+      "Bash(grep -r \"TODO\\\\|FIXME\\\\|HACK\\\\|XXX\\\\|NotImplemented\\\\|raise NotImplemented\\\\|pass$\" /Users/adityaraut/Desktop/CoderAI-main/coderAI/ --include=\"*.py\" -n)",
+      "Bash(xargs ls *)",
+      "Bash(grep -n \"def \\\\|class \\\\|pass$\\\\|NotImplemented\\\\|TODO\\\\|FIXME\\\\|raise NotImplementedError\" /Users/adityaraut/Desktop/CoderAI-main/coderAI/tools/filesystem.py)",
+      "Bash(grep -n \"def \\\\|class \\\\|pass$\\\\|NotImplemented\\\\|TODO\\\\|FIXME\" /Users/adityaraut/Desktop/CoderAI-main/coderAI/tools/terminal.py)",
+      "Bash(grep -n \"def \\\\|class \\\\|pass$\\\\|NotImplemented\\\\|TODO\\\\|FIXME\" /Users/adityaraut/Desktop/CoderAI-main/coderAI/tools/git.py)",
+      "Bash(grep *)",
+      "Bash(sed -n '125,134p' /Users/adityaraut/Desktop/CoderAI-main/coderAI/ipc/jsonrpc_server.py)",
+      "Bash(sed -n '429,440p' /Users/adityaraut/Desktop/CoderAI-main/coderAI/ipc/jsonrpc_server.py)"
     ]
   }
 }

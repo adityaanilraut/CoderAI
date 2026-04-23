@@ -78,7 +78,7 @@ Per-turn flow (`Agent.process_message()` → `agent_loop`):
 - `coderAI/ipc/streaming.py` — `IPCStreamingHandler`: mirrors the old Rich streaming-handler contract but emits `stream_delta` events over the bridge.
 - `coderAI/ipc/entry.py` — `python -m coderAI.ipc.entry` entry point invoked by the Ink binary. Honors `CODERAI_MODEL`, `CODERAI_RESUME`, `CODERAI_AUTO_APPROVE`.
 - `coderAI/llm/` — LLM providers (openai, anthropic, groq, deepseek, lmstudio, ollama), all extending `base.LLMProvider`. Instantiation goes through `llm/factory.py::create_provider(model, config)` — do not construct providers directly from `agent.py`.
-- `coderAI/tools/` — 35+ tools extending `tools/base.Tool`. Registration is automatic via `tools/discovery.py::discover_tools()`, which walks the `coderAI.tools` package and instantiates every `Tool` subclass whose `__init__` takes no required args. Tools requiring constructor args (e.g. `ManageContextTool`, which needs the `Agent`) are registered manually in `Agent`.
+- `coderAI/tools/` — 54+ tools extending `tools/base.Tool`. Registration is automatic via `tools/discovery.py::discover_tools()`, which walks the `coderAI.tools` package and instantiates every `Tool` subclass whose `__init__` takes no required args. Tools requiring constructor args (e.g. `ManageContextTool`, which needs the `Agent`) are registered manually in `Agent`.
 - `coderAI/safeguards.py` — reusable validators that run before dangerous actions: interactive-command detection (blocks REPLs invoked via non-interactive pipes), project-directory validation, git-scope guards (prevent operations leaking to a parent repo), staging blocklist for junk files (`.DS_Store`, `__pycache__`, `.coderAI/`, …).
 - `coderAI/project_layout.py` — `find_dot_coderai_subdir()` resolves `.coderAI/<subdir>` across project root, cwd, and the package dir (for dev installs). Use this instead of hardcoding `.coderAI/` paths.
 - `coderAI/ipc/chat_reference.py` — plain-text renderings of `models`, `cost`, `status`, `config show`, `info`, `tasks list` for the Ink UI slash commands (keeps Ink free of Rich dependencies).
@@ -98,17 +98,18 @@ Per-turn flow (`Agent.process_message()` → `agent_loop`):
 - `.github/workflows/release.yml` — Cross-compiles the Ink binary for darwin-arm64/x64, linux-x64/arm64, windows-x64 on tagged releases, publishes GitHub Release assets with SHA256 sidecars, and uploads the pure-Python wheel to PyPI.
 
 **Tool categories** (`coderAI/tools/`):
-- `filesystem.py` — read_file, write_file, search_replace, apply_diff, list_directory, glob_search
-- `terminal.py` — run_command (safety blocklist), run_background
-- `git.py` — git_add, git_status, git_diff, git_commit, git_log, git_branch, git_checkout, git_stash
+- `filesystem.py` — read_file, write_file, search_replace, apply_diff, list_directory, glob_search, **move_file, copy_file, delete_file, create_directory**
+- `terminal.py` — run_command (safety blocklist), run_background, **list_processes, kill_process**
+- `git.py` — git_add, git_status, git_diff, git_commit, git_log, git_branch, git_checkout, git_stash, **git_push, git_pull, git_merge, git_rebase, git_revert, git_reset, git_show, git_remote, git_blame, git_cherry_pick, git_tag**
 - `search.py` — text_search, grep
-- `web.py` — web_search (DuckDuckGo), read_url, download_file
+- `web.py` — web_search (DuckDuckGo), read_url, download_file, **http_request**
+- `memory.py` — save_memory, recall_memory, **delete_memory**
 - `subagent.py` — delegate_task (max depth 3, retried 2×)
 - `mcp.py` — mcp_connect, mcp_call_tool, mcp_list (connected servers expose functions as `mcp__<server>__<tool>`)
 - `undo.py` — undo, undo_history
 - `context_manage.py` — pin/unpin files into the pinned-context manager (takes `Agent` at construction → registered manually)
 - `planning.py`, `tasks.py` — in-session plan + task list management
-- `memory.py`, `notepad.py` — persistent memory + shared inter-agent notepad
+- `notepad.py` — shared inter-agent notepad
 - `skills.py` — `use_skill` loads a workflow from `.coderAI/skills/*.md`
 - `project.py`, `format.py`, `lint.py`, `repl.py`, `vision.py` — project-info, code formatting, linting, Python REPL, image/vision helpers
 

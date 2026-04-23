@@ -792,7 +792,7 @@ class TestUndoTools:
     """Tests for undo/rollback functionality."""
 
     def test_backup_and_undo(self, temp_dir):
-        from coderAI.tools.undo import FileBackupStore, UndoTool
+        from coderAI.tools.undo import FileBackupStore
 
         store = FileBackupStore(backup_dir=os.path.join(temp_dir, "backups"))
 

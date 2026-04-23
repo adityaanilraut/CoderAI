@@ -563,3 +563,124 @@ class DownloadFileTool(Tool):
         except Exception as e:
             return {"success": False, "error": f"Failed to download {url}: {e}"}
 
+
+
+# ---------------------------------------------------------------------------
+# HTTPRequestTool — generic HTTP client for API calls
+# ---------------------------------------------------------------------------
+
+
+class HTTPRequestParams(BaseModel):
+    url: str = Field(..., description="Full URL to send the request to")
+    method: str = Field(
+        "GET",
+        description="HTTP method: GET, POST, PUT, PATCH, DELETE, HEAD (default: GET)",
+    )
+    headers: Optional[Dict[str, str]] = Field(
+        None, description="Optional HTTP headers as a key-value mapping"
+    )
+    json_body: Optional[Dict[str, Any]] = Field(
+        None, description="Request body as a JSON object (sets Content-Type: application/json)"
+    )
+    body: Optional[str] = Field(
+        None, description="Raw request body string (used when json_body is not set)"
+    )
+    timeout: int = Field(30, description="Request timeout in seconds (default: 30)")
+    max_response_length: int = Field(
+        16000,
+        description="Maximum characters of response body to return (default: 16000)",
+    )
+
+
+class HTTPRequestTool(Tool):
+    """Make arbitrary HTTP requests (GET, POST, PUT, PATCH, DELETE)."""
+
+    name = "http_request"
+    category = "web"
+    description = (
+        "Send an HTTP request to any URL with custom method, headers, and body. "
+        "Use this for REST API calls, webhooks, or any endpoint that needs "
+        "authentication headers or a non-GET method. SSRF protection blocks "
+        "requests to private/loopback IPs."
+    )
+    is_read_only = False
+    parameters_model = HTTPRequestParams
+
+    async def execute(
+        self,
+        url: str,
+        method: str = "GET",
+        headers: Optional[Dict[str, str]] = None,
+        json_body: Optional[Dict[str, Any]] = None,
+        body: Optional[str] = None,
+        timeout: int = 30,
+        max_response_length: int = 16000,
+    ) -> Dict[str, Any]:
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+
+        if not _is_safe_url(url):
+            return {
+                "success": False,
+                "error": f"SSRF Protection triggered. Blocked request to local/internal IP for {url}.",
+            }
+
+        method = method.upper()
+        allowed_methods = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"}
+        if method not in allowed_methods:
+            return {"success": False, "error": f"Method '{method}' not allowed. Use one of: {allowed_methods}"}
+
+        try:
+            req_headers = dict(_HEADERS_CHROME)
+            if headers:
+                req_headers.update(headers)
+
+            async with aiohttp.ClientSession(connector=_connector()) as session:
+                request_kwargs: Dict[str, Any] = {
+                    "headers": req_headers,
+                    "timeout": aiohttp.ClientTimeout(total=timeout),
+                    "allow_redirects": True,
+                }
+                if json_body is not None:
+                    request_kwargs["json"] = json_body
+                elif body is not None:
+                    request_kwargs["data"] = body
+
+                async with session.request(method, url, **request_kwargs) as response:
+                    status = response.status
+                    resp_headers = dict(response.headers)
+                    content_type = resp_headers.get("Content-Type", "")
+
+                    raw = await response.text(errors="replace")
+
+            truncated = False
+            if len(raw) > max_response_length:
+                raw = raw[:max_response_length]
+                truncated = True
+
+            # Try to parse as JSON for convenience
+            import json as _json
+            parsed_json = None
+            if "json" in content_type.lower():
+                try:
+                    parsed_json = _json.loads(raw)
+                except Exception:
+                    pass
+
+            result: Dict[str, Any] = {
+                "success": 200 <= status < 300,
+                "status_code": status,
+                "url": url,
+                "method": method,
+                "headers": resp_headers,
+                "body": raw,
+                "truncated": truncated,
+            }
+            if parsed_json is not None:
+                result["json"] = parsed_json
+            return result
+
+        except asyncio.TimeoutError:
+            return {"success": False, "error": f"Request timed out after {timeout}s: {url}"}
+        except Exception as e:
+            return {"success": False, "error": f"Request failed: {e}"}

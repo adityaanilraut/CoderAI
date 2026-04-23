@@ -45,30 +45,22 @@ export function Diff({
   const cap = Math.max(40, maxLineWidth);
 
   return (
-    <Box
-      borderStyle="round"
-      borderColor={theme.border}
-      flexDirection="column"
-      paddingX={1}
-      marginBottom={1}
-    >
-      <Box justifyContent="space-between">
+    <Box flexDirection="column" paddingLeft={1} marginBottom={1} marginTop={1}>
+      <Box>
+        <Text color={theme.border}>│ </Text>
         <Text bold color={theme.accent}>
           {path}
         </Text>
-        <Box>
-          <Text color={theme.success}>+{stats.adds}</Text>
-          <Text color={theme.muted}> / </Text>
-          <Text color={theme.danger}>-{stats.dels}</Text>
-        </Box>
+        <Text color={theme.muted}>  </Text>
+        <Text color={theme.success}>+{stats.adds}</Text>
+        <Text color={theme.muted}> / </Text>
+        <Text color={theme.danger}>-{stats.dels}</Text>
       </Box>
 
       <Box
         flexDirection="column"
         marginTop={1}
-        borderStyle="single"
-        borderColor={theme.borderSoft}
-        paddingX={1}
+        paddingLeft={2}
       >
         {rows.map((row, i) => {
           if (row.kind === "elision") {
