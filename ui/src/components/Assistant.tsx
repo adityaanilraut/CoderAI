@@ -1,51 +1,79 @@
 import React from "react";
-import {Box, Text} from "ink";
+import { Box, Text } from "ink";
 import Spinner from "ink-spinner";
-import {theme} from "../theme.js";
+import { theme } from "../theme.js";
+import { Rail, MessageHeader } from "./Primitives.js";
 
-export function Assistant({
-  content,
-  streaming,
-  reasoning,
-}: {
+export interface AssistantProps {
   content: string;
   streaming: boolean;
   reasoning: string;
-}) {
+}
+
+/**
+ * Assistant message — rail-based.
+ *
+ *   ▌ ◆ CoderAI  streaming…
+ *   ▌   reasoning (dim italic)
+ *   ▌
+ *   ▌ the actual content…
+ *
+ * The rail carries CoderAI's colour identity; the diamond glyph gives
+ * the assistant a consistent visual anchor without a full border box.
+ */
+export function Assistant({ content, streaming, reasoning }: AssistantProps) {
   const trimmedReasoning = reasoning.trim();
+  const label = `${theme.glyph.diamond} CoderAI`;
+
   return (
-    <Box flexDirection="column" marginTop={1} marginBottom={1} paddingLeft={1}>
-      <Box>
-        <Text color={theme.accent}>│ </Text>
-        <Text color={theme.accent} bold>
-          {streaming ? <Spinner type="dots" /> : "●"} Assistant
-        </Text>
-        {streaming ? <Text color={theme.muted}> · streaming…</Text> : null}
-      </Box>
+    <Rail color={theme.role.assistant} gap={2} marginBottom={1} marginTop={1}>
+      <MessageHeader
+        label={label}
+        labelColor={theme.role.assistant}
+        right={
+          streaming ? (
+            <Box>
+              <Text color={theme.accent}>
+                <Spinner type="dots" />
+              </Text>
+              <Text color={theme.muted}>  streaming</Text>
+            </Box>
+          ) : null
+        }
+      />
       {trimmedReasoning ? (
-        <Box paddingLeft={2} marginTop={1}>
-          <Text color={theme.muted} italic>
+        <Box marginTop={1}>
+          <Text color={theme.faint} italic>
             {trimmedReasoning}
           </Text>
         </Box>
       ) : null}
-      <Box paddingLeft={2} marginTop={1}>
-        <Text color={theme.text}>{content}</Text>
-      </Box>
-    </Box>
+      {content ? (
+        <Box marginTop={1}>
+          <Text color={theme.text}>{content}</Text>
+        </Box>
+      ) : null}
+    </Rail>
   );
 }
 
-export function UserBubble({text}: {text: string}) {
+export interface UserBubbleProps {
+  text: string;
+}
+
+/**
+ * User message — rail-based with a distinct green identity.
+ *
+ *   ▌ You
+ *   ▌ the message they sent
+ */
+export function UserBubble({ text }: UserBubbleProps) {
   return (
-    <Box flexDirection="column" marginTop={1} paddingLeft={1}>
-      <Box>
-        <Text color={theme.info}>│ </Text>
-        <Text color={theme.success} bold>▸ You</Text>
+    <Rail color={theme.role.user} gap={2} marginBottom={1} marginTop={1}>
+      <MessageHeader label="You" labelColor={theme.role.user} />
+      <Box marginTop={1}>
+        <Text color={theme.textSoft}>{text}</Text>
       </Box>
-      <Box paddingLeft={2} marginTop={1}>
-        <Text color={theme.text}>{text}</Text>
-      </Box>
-    </Box>
+    </Rail>
   );
 }

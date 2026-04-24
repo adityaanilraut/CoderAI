@@ -2,7 +2,7 @@
 
 import asyncio
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock
 
 from coderAI.tools.web import ReadURLTool
 
@@ -33,91 +33,80 @@ class TestReadURLToolSSRF:
 
     def test_prepends_https_when_missing(self, monkeypatch):
         """Bare domain without scheme should be prefixed with https://."""
-        # Block at SSRF level so no real request is sent; just verify URL is rewritten
         calls = []
         from coderAI.tools import web as web_mod
-        def capturing_check(url):
+
+        async def capturing_safe_request(method, url, **kwargs):
             calls.append(url)
-            return False  # block so no real request
-        monkeypatch.setattr(web_mod, "_is_safe_url", capturing_check)
+            return None  # pretend the request was blocked downstream
+
+        monkeypatch.setattr(web_mod, "_safe_request", capturing_safe_request)
         asyncio.run(self.tool.execute(url="example.com/page"))
         assert calls and calls[0].startswith("https://")
 
-    def test_allows_local_urls_with_env_var(self, monkeypatch, tmp_path):
-        """CODERAI_ALLOW_LOCAL_URLS=1 bypasses SSRF check (still may fail to connect)."""
+    def test_allows_local_urls_with_env_var(self, monkeypatch):
+        """CODERAI_ALLOW_LOCAL_URLS=1 bypasses SSRF check (may still fail to connect)."""
         monkeypatch.setenv("CODERAI_ALLOW_LOCAL_URLS", "1")
-        # We just verify it doesn't return an SSRF block error — it may fail to connect
         result = asyncio.run(self.tool.execute(url="http://localhost:19999/notexist"))
-        # Could be connection error, but NOT an SSRF block
         if not result["success"]:
             assert "SSRF" not in result.get("error", "")
 
 
 class TestReadURLToolExecution:
-    """Mock the HTTP layer to test the parsing/truncation logic."""
+    """Stub the request layer via ``_safe_request`` to exercise parsing."""
 
     @pytest.fixture(autouse=True)
     def setup(self):
         self.tool = ReadURLTool()
 
-    def _mock_response(self, status=200, content_type="text/html", body="<html><body>Hello world</body></html>"):
-        mock_resp = AsyncMock()
-        mock_resp.status = status
-        mock_resp.headers = {"Content-Type": content_type}
-        mock_resp.url = "https://example.com/"
-        mock_resp.text = AsyncMock(return_value=body)
-        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_resp.__aexit__ = AsyncMock(return_value=False)
-        return mock_resp
+    def _stub_safe_request(self, monkeypatch, *, status=200, content_type="text/html",
+                           text="<html><body>Hello world</body></html>",
+                           final_url="https://example.com/"):
+        from coderAI.tools import web as web_mod
 
-    def _patch_session(self, mock_resp):
-        mock_session = MagicMock()
-        mock_session.get = MagicMock(return_value=mock_resp)
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-        return mock_session
+        async def fake(method, url, **kwargs):
+            return {
+                "status": status,
+                "headers": {"Content-Type": content_type},
+                "url": final_url,
+                "content_type": content_type,
+                "text": text,
+                "content": text.encode("utf-8"),
+            }
+
+        monkeypatch.setattr(web_mod, "_safe_request", fake)
 
     def test_success_returns_content(self, monkeypatch):
-        from coderAI.tools import web as web_mod
-        monkeypatch.setattr(web_mod, "_is_safe_url", lambda url: True)
-        mock_resp = self._mock_response(body="<html><body>Hello world</body></html>")
-        mock_session = self._patch_session(mock_resp)
-        with patch("aiohttp.ClientSession", return_value=mock_session):
-            result = asyncio.run(self.tool.execute(url="https://example.com"))
+        self._stub_safe_request(monkeypatch)
+        result = asyncio.run(self.tool.execute(url="https://example.com"))
         assert result["success"]
         assert "Hello world" in result["content"]
 
     def test_http_error_returns_failure(self, monkeypatch):
-        from coderAI.tools import web as web_mod
-        monkeypatch.setattr(web_mod, "_is_safe_url", lambda url: True)
-        mock_resp = self._mock_response(status=404)
-        mock_session = self._patch_session(mock_resp)
-        with patch("aiohttp.ClientSession", return_value=mock_session):
-            result = asyncio.run(self.tool.execute(url="https://example.com/404"))
+        self._stub_safe_request(monkeypatch, status=404, text="")
+        result = asyncio.run(self.tool.execute(url="https://example.com/404"))
         assert not result["success"]
         assert "404" in result["error"]
 
     def test_truncation(self, monkeypatch):
-        from coderAI.tools import web as web_mod
-        monkeypatch.setattr(web_mod, "_is_safe_url", lambda url: True)
         long_body = "<html><body>" + ("x" * 20000) + "</body></html>"
-        mock_resp = self._mock_response(body=long_body)
-        mock_session = self._patch_session(mock_resp)
-        with patch("aiohttp.ClientSession", return_value=mock_session):
-            result = asyncio.run(self.tool.execute(url="https://example.com", max_length=100))
+        self._stub_safe_request(monkeypatch, text=long_body)
+        result = asyncio.run(self.tool.execute(url="https://example.com", max_length=100))
         assert result["success"]
         assert result["truncated"] is True
         assert len(result["content"]) <= 100
 
     def test_plain_text_not_html_parsed(self, monkeypatch):
-        from coderAI.tools import web as web_mod
-        monkeypatch.setattr(web_mod, "_is_safe_url", lambda url: True)
-        mock_resp = self._mock_response(
+        self._stub_safe_request(
+            monkeypatch,
             content_type="text/plain",
-            body="plain text content"
+            text="plain text content",
         )
-        mock_session = self._patch_session(mock_resp)
-        with patch("aiohttp.ClientSession", return_value=mock_session):
-            result = asyncio.run(self.tool.execute(url="https://example.com/file.txt"))
+        result = asyncio.run(self.tool.execute(url="https://example.com/file.txt"))
         assert result["success"]
         assert "plain text content" in result["content"]
+
+
+# Mark AsyncMock as intentionally unused — retained for future tests that
+# need it, e.g. streaming responses.
+_ = AsyncMock

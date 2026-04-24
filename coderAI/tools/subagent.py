@@ -1,7 +1,5 @@
 """Sub-agent delegation tool for multi-agent capabilities."""
 
-import asyncio
-import contextlib
 import logging
 import os
 from dataclasses import dataclass
@@ -33,6 +31,78 @@ class SubagentContext:
     parent_cost_tracker: Optional[Any] = None  # CostTracker (shared)
     parent_auto_approve: bool = False
     parent_ipc_server: Optional[Any] = None
+    parent_session: Optional[Any] = None  # Session — used to surface recent tool findings
+
+# Number of recent parent tool calls to summarise for the sub-agent so it
+# doesn't repeat inspection work the parent has already done.
+RECENT_TOOL_HISTORY_LIMIT = 10
+
+
+def _summarize_parent_tool_history(
+    parent_session: Any, limit: int = RECENT_TOOL_HISTORY_LIMIT
+) -> Optional[str]:
+    """Build a short markdown summary of the parent's most recent tool calls.
+
+    Returns ``None`` when there is nothing useful to share. Each entry shows
+    the tool name, the arguments, and a very compact preview of the result so
+    the sub-agent can see what has already been inspected.
+    """
+    import json as _json
+
+    if parent_session is None:
+        return None
+    messages = getattr(parent_session, "messages", None) or []
+    if not messages:
+        return None
+
+    # Walk backwards collecting (assistant tool_call, tool result) pairs.
+    pairs: List[tuple] = []
+    i = len(messages) - 1
+    while i >= 0 and len(pairs) < limit:
+        msg = messages[i]
+        if getattr(msg, "role", None) == "tool":
+            tool_name = getattr(msg, "name", None) or "unknown"
+            result = (getattr(msg, "content", None) or "")[:240]
+            # Find the preceding assistant message that emitted this tool_call
+            tc_id = getattr(msg, "tool_call_id", None)
+            args_preview = ""
+            j = i - 1
+            while j >= 0:
+                prev = messages[j]
+                if getattr(prev, "role", None) == "assistant" and getattr(prev, "tool_calls", None):
+                    for tc in prev.tool_calls:
+                        if (tc or {}).get("id") == tc_id:
+                            raw = (tc.get("function") or {}).get("arguments")
+                            if isinstance(raw, str):
+                                args_preview = raw[:160]
+                            else:
+                                try:
+                                    args_preview = _json.dumps(raw)[:160]
+                                except Exception:
+                                    args_preview = str(raw)[:160]
+                            break
+                    break
+                j -= 1
+            pairs.append((tool_name, args_preview, result))
+        i -= 1
+
+    if not pairs:
+        return None
+
+    lines = [
+        "The parent agent has already made these tool calls during the current session.",
+        "Use them as prior knowledge — do NOT repeat these exact calls unless the state has demonstrably changed.",
+        "",
+    ]
+    for tool_name, args_preview, result in reversed(pairs):
+        line = f"- **{tool_name}**"
+        if args_preview:
+            line += f" `{args_preview}`"
+        if result:
+            preview = result.replace("\n", " ")
+            line += f" → {preview}"
+        lines.append(line)
+    return "\n".join(lines)
 
 def _get_role_instructions(role: Optional[str]) -> str:
     """Get role-specific instructions."""
@@ -71,7 +141,7 @@ class DelegateTaskParams(BaseModel):
     model: Optional[str] = Field(
         None,
         description=(
-            "Optional model override for this sub-agent (e.g., 'gpt-5-mini', "
+            "Optional model override for this sub-agent (e.g., 'gpt-5.4-mini', "
             "'claude-3.5-haiku'). Defaults to the current model. DO NOT override "
             "the model unless explicitly requested by the user."
         ),
@@ -89,10 +159,8 @@ class DelegateTaskParams(BaseModel):
         description=(
             "Set to True when the sub-agent will only read files, search code, or do research — "
             "it will NOT write files, run git commands, or modify any workspace state. "
-            "Read-only sub-agents run in parallel with each other (up to 4 at once), enabling "
-            "fan-out for tasks like multi-file review, parallel research, or security audits. "
             "Leave False (default) for any task that modifies files, runs git commands, or "
-            "otherwise mutates workspace state — these run sequentially to prevent conflicts."
+            "otherwise mutates workspace state."
         ),
     )
 
@@ -108,33 +176,29 @@ class DelegateTaskTool(Tool):
         "The sub-agent has access to all the same tools, runs in an isolated session, "
         "and returns a comprehensive report. Provide a detailed task_description with "
         "specific file paths and expected output format for best results. "
-        "Set read_only_task=True for research/review tasks to run up to 4 sub-agents in "
-        "parallel. Leave read_only_task=False (default) for tasks that write files or run "
-        "git commands — these run sequentially to prevent workspace conflicts."
+        "Mutating delegations run one at a time to prevent workspace conflicts. "
+        "For pure research or read-only work, set read_only_task=True — such "
+        "delegations have mutating tools stripped and are fanned out in parallel "
+        "(up to 4 at a time), dramatically reducing wall time when you spawn "
+        "several specialists that don't touch the filesystem."
     )
-    # Up to 4 sub-agents can be scheduled per batch by the executor.
-    # Read-only sub-agents run freely among themselves; mutating ones serialise
-    # through _mutating_lock so only one modifies the workspace at a time.
-    max_parallel_invocations = 4
+    # Default to serialising sub-agents: mutating delegations share the
+    # workspace (git branch, file tree) and must not race. Read-only
+    # delegations (``read_only_task=True``) bypass this cap — see
+    # ``ToolExecutor.run_tool_batch`` which routes them to a bounded
+    # parallel group.
+    max_parallel_invocations = 1
     parameters_model = DelegateTaskParams
     is_read_only = False
-
-    # Depth (root agent = 0) — incremented on each delegation hop.
-    _current_depth: int = 0
-    # Shared lock that serialises mutating sub-agents across all instances.
-    _mutating_lock: Optional[asyncio.Lock] = None
-
-    @classmethod
-    def _get_mutating_lock(cls) -> asyncio.Lock:
-        if cls._mutating_lock is None:
-            cls._mutating_lock = asyncio.Lock()
-        return cls._mutating_lock
 
     def __init__(self) -> None:
         super().__init__()
         # ``context`` is populated by ``Agent._configure_delegate_tool_context``
         # once the parent agent is fully constructed.
         self.context: SubagentContext = SubagentContext()
+        # Depth (root agent = 0) — incremented on each delegation hop.
+        # Instance-level to avoid confusing class-attribute shadowing.
+        self._current_depth: int = 0
 
     async def execute(
         self,
@@ -146,7 +210,6 @@ class DelegateTaskTool(Tool):
         read_only_task: bool = False,
     ) -> Dict[str, Any]:
         """Execute the sub-agent delegation."""
-        # Guard against infinite recursion (checked before acquiring any lock)
         if self._current_depth >= MAX_DELEGATION_DEPTH:
             return {
                 "success": False,
@@ -156,13 +219,9 @@ class DelegateTaskTool(Tool):
                 ),
             }
 
-        # Read-only sub-agents run freely in parallel; mutating ones serialise
-        # through the shared lock so only one modifies the workspace at a time.
-        lock_ctx = contextlib.nullcontext() if read_only_task else self._get_mutating_lock()
-        async with lock_ctx:
-            return await self._run_delegation(
-                task_description, agent_role, context_hints, model, inherit_project_context
-            )
+        return await self._run_delegation(
+            task_description, agent_role, context_hints, model, inherit_project_context, read_only_task
+        )
 
     async def _run_delegation(
         self,
@@ -171,8 +230,9 @@ class DelegateTaskTool(Tool):
         context_hints: Optional[List[str]],
         model: Optional[str],
         inherit_project_context: bool,
+        read_only_task: bool = False,
     ) -> Dict[str, Any]:
-        """Core sub-agent spawning logic, called after lock acquisition."""
+        """Core sub-agent spawning and execution logic."""
         sub_agent = None
         try:
             from ..agent import Agent
@@ -257,6 +317,15 @@ class DelegateTaskTool(Tool):
                     new_agent.context_manager.project_instructions = None
                     new_agent.context_manager._instructions_loaded = True
 
+                # Strip mutating tools when the caller declared a read-only task
+                if read_only_task:
+                    mutating = [
+                        name for name, t in new_agent.tools.tools.items()
+                        if not getattr(t, "is_read_only", False)
+                    ]
+                    for name in mutating:
+                        del new_agent.tools.tools[name]
+
                 new_agent.create_session()
 
                 new_agent._register_tracker(
@@ -305,6 +374,14 @@ class DelegateTaskTool(Tool):
             if role_instructions:
                 system_preamble_parts.extend(["", f"ROLE-SPECIFIC GUIDANCE ({agent_role}):", role_instructions])
 
+            parent_history_note = _summarize_parent_tool_history(ctx.parent_session)
+            if parent_history_note:
+                system_preamble_parts.extend([
+                    "",
+                    "PARENT AGENT TOOL HISTORY (recent):",
+                    parent_history_note,
+                ])
+
             system_preamble = "\n".join(system_preamble_parts)
 
             # Prepend to the sub-agent's existing system prompt
@@ -329,6 +406,50 @@ class DelegateTaskTool(Tool):
             # Process the task
             try:
                 final_report = await sub_agent.process_single_shot(task_description)
+
+                # ── Retry: if the report is empty, ask once more for a summary ──
+                if not (final_report and final_report.strip()):
+                    logger.warning(
+                        "Sub-agent returned empty report — requesting summary retry."
+                    )
+                    event_emitter.emit(
+                        "agent_status",
+                        message=f"[dim]Sub-Agent{role_label} report was empty — retrying summary…[/dim]",
+                    )
+
+                    retry_prompt = (
+                        "Your previous response was empty. You have been working on the "
+                        "following task and have used tools to complete it. Please now write "
+                        "a comprehensive final report summarizing:\n"
+                        "1. What actions you took (files created/modified, commands run)\n"
+                        "2. The outcome of each action\n"
+                        "3. Any issues encountered\n"
+                        "4. Current status and next steps\n\n"
+                        f"Original task: {task_description[:2000]}"
+                    )
+                    sub_agent.session.add_message("user", retry_prompt)
+                    retry_messages = sub_agent.session.get_messages_for_api()
+                    # Call LLM without tools to force a text-only response
+                    try:
+                        retry_resp = await sub_agent.provider.chat(
+                            retry_messages, tools=None
+                        )
+                        choices = retry_resp.get("choices", [])
+                        if choices:
+                            final_report = (
+                                choices[0].get("message", {}).get("content") or ""
+                            )
+                    except Exception as retry_err:
+                        logger.warning(f"Sub-agent summary retry failed: {retry_err}")
+
+                # ── Fallback: synthesize report from tool results in session ──
+                if not (final_report and final_report.strip()):
+                    logger.warning(
+                        "Sub-agent still empty after retry — synthesizing from tool results."
+                    )
+                    final_report = self._synthesize_fallback_report(
+                        sub_agent, task_description, agent_role
+                    )
 
                 if not (final_report and final_report.strip()):
                     raise RuntimeError("Sub-agent produced no final report text.")
@@ -393,3 +514,68 @@ class DelegateTaskTool(Tool):
                     await sub_agent.close()
                 except Exception:
                     pass
+
+    @staticmethod
+    def _synthesize_fallback_report(
+        sub_agent: Any, task_description: str, agent_role: Optional[str]
+    ) -> str:
+        """Build a best-effort report from the sub-agent's session when the
+        LLM failed to produce one.
+
+        Walks the session messages looking for tool calls and their results,
+        and assembles a structured summary so the parent agent (and user)
+        can see what actually happened.
+        """
+        import json as _json
+
+        if sub_agent.session is None:
+            return ""
+
+        tool_summaries: List[str] = []
+        assistant_texts: List[str] = []
+
+        for msg in sub_agent.session.messages:
+            if msg.role == "assistant" and msg.content and msg.content.strip():
+                assistant_texts.append(msg.content.strip())
+
+            if msg.role == "tool" and msg.content:
+                tool_name = msg.name or "unknown_tool"
+                try:
+                    parsed = _json.loads(msg.content)
+                    success = parsed.get("success", "?")
+                    # Keep tool result short for the fallback summary
+                    detail = str(parsed.get("output", parsed.get("error", "")))[:300]
+                except (_json.JSONDecodeError, AttributeError):
+                    success = "?"
+                    detail = str(msg.content)[:300]
+                tool_summaries.append(
+                    f"- **{tool_name}**: success={success}"
+                    + (f" — {detail}" if detail else "")
+                )
+
+        if not tool_summaries and not assistant_texts:
+            return ""
+
+        parts = [
+            "## Fallback Report (auto-generated)",
+            f"**Role:** {agent_role or 'General Assistant'}",
+            f"**Task:** {task_description[:500]}",
+            "",
+        ]
+
+        if assistant_texts:
+            parts.append("### Assistant Notes")
+            # Include last few assistant messages — most likely to be relevant
+            for text in assistant_texts[-3:]:
+                parts.append(text[:500])
+            parts.append("")
+
+        if tool_summaries:
+            parts.append(f"### Tool Activity ({len(tool_summaries)} calls)")
+            parts.extend(tool_summaries[-30:])  # Cap to avoid giant reports
+            if len(tool_summaries) > 30:
+                parts.append(
+                    f"_(… and {len(tool_summaries) - 30} earlier tool calls omitted)_"
+                )
+
+        return "\n".join(parts)

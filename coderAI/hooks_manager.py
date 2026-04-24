@@ -4,9 +4,12 @@ import asyncio
 import json
 import logging
 import os
+import re
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from .agent_tracker import AgentStatus
 from .events import event_emitter
 
 logger = logging.getLogger(__name__)
@@ -80,14 +83,54 @@ class HooksManager:
 
             env = os.environ.copy()
             env["CODERAI_TOOL_NAME"] = tool_name
+
+            # Write full args to a tempfile; hook scripts can read the JSON
+            # without concerning themselves with shell quoting. This is the
+            # preferred path — the env-var copies below are still exported
+            # for convenience but are aggressively sanitized.
+            args_file_path: Optional[str] = None
             try:
-                env["CODERAI_ARGS_JSON"] = json.dumps(arguments, default=str)
+                args_json = json.dumps(arguments, default=str)
             except Exception:
-                env["CODERAI_ARGS_JSON"] = "{}"
+                args_json = "{}"
+            try:
+                fd, args_file_path = tempfile.mkstemp(
+                    prefix="coderai-hook-args-", suffix=".json"
+                )
+                try:
+                    os.chmod(args_file_path, 0o600)
+                except OSError:
+                    pass
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(args_json)
+                env["CODERAI_ARGS_FILE"] = args_file_path
+            except Exception as e:
+                logger.debug(f"Could not write hook args tempfile: {e}")
+                env["CODERAI_ARGS_FILE"] = ""
+
+            # Legacy env var for backward compatibility. Do NOT use this in
+            # hook commands unless you quote it — prefer reading
+            # $CODERAI_ARGS_FILE instead.
+            env["CODERAI_ARGS_JSON"] = args_json
+
+            _DANGEROUS_METACHARS = re.compile(r"[\x00$`\\;&|<>(){}\"'\n\r]")
+
+            def _sanitize_env_value(val: Any, max_len: int = 4096) -> str:
+                """Strip shell metacharacters from env var values.
+
+                Users' hook scripts may use these env vars unquoted; stripping
+                ``$``, backticks, quotes, redirection and command separators
+                prevents those scripts from being hijacked by adversarial
+                tool arguments.
+                """
+                s = str(val)[:max_len]
+                return _DANGEROUS_METACHARS.sub("", s)
+
             for i, (arg_key, arg_val) in enumerate(arguments.items()):
                 safe_key = "".join(c if c.isalnum() or c == "_" else "_" for c in str(arg_key)).upper()
-                env[f"CODERAI_ARG_{safe_key}"] = str(arg_val)
-                env[f"CODERAI_ARG_{i}"] = str(arg_val)
+                safe_val = _sanitize_env_value(arg_val)
+                env[f"CODERAI_ARG_{safe_key}"] = safe_val
+                env[f"CODERAI_ARG_{i}"] = safe_val
 
             runnable = []
             for hook in matching_hooks:
@@ -108,10 +151,17 @@ class HooksManager:
                     stdout, stderr = await proc.communicate()
                     return stdout.decode("utf-8").strip() if proc.returncode == 0 else None
 
-                outputs = await asyncio.gather(*(_exec_hook(c) for c in runnable), return_exceptions=True)
-                for out in outputs:
-                    if out and not isinstance(out, Exception):
-                        hooks_results.append(f"[{hook_type} Hook Output]: {out}")
+                try:
+                    outputs = await asyncio.gather(*(_exec_hook(c) for c in runnable), return_exceptions=True)
+                    for out in outputs:
+                        if out and not isinstance(out, Exception):
+                            hooks_results.append(f"[{hook_type} Hook Output]: {out}")
+                finally:
+                    if args_file_path:
+                        try:
+                            os.unlink(args_file_path)
+                        except OSError:
+                            pass
         except Exception as e:
             logger.error(f"Error running hooks: {e}")
         return hooks_results
@@ -124,21 +174,35 @@ class HooksManager:
             message=f"\n[bold yellow]⚠ Project hooks detected[/bold yellow]\n[dim]Commands: {cmds_preview}[/dim]"
         )
 
+        info = getattr(self.agent, "tracker_info", None)
+        previous = None
+        if info is not None:
+            previous = (info.status, info.current_tool)
+            info.status = AgentStatus.WAITING_FOR_USER
+            info.current_tool = "project_hooks"
+            self.agent._sync_tracker()
+
         ipc_server = getattr(self.agent, "ipc_server", None)
-        if ipc_server:
-            import uuid
-            approved = await ipc_server.request_tool_approval(
-                tool_id=str(uuid.uuid4()),
-                tool_name="project_hooks",
-                arguments={"commands": [h.get("command") for h in matching_hooks]},
-            )
-            return bool(approved)
-
         try:
-            from prompt_toolkit import PromptSession
-            ps = PromptSession()
-            answer = await ps.prompt_async("Allow project hooks to run? (y/n) > ")
-        except Exception:
-            answer = input("Allow project hooks to run? (y/n) > ")
+            if ipc_server:
+                import uuid
+                approved = await ipc_server.request_tool_approval(
+                    tool_id=str(uuid.uuid4()),
+                    tool_name="project_hooks",
+                    arguments={"commands": [h.get("command") for h in matching_hooks]},
+                )
+                return bool(approved)
 
-        return answer.strip().lower() in ("y", "yes")
+            try:
+                from prompt_toolkit import PromptSession
+                ps = PromptSession()
+                answer = await ps.prompt_async("Allow project hooks to run? (y/n) > ")
+            except Exception:
+                answer = input("Allow project hooks to run? (y/n) > ")
+
+            return answer.strip().lower() in ("y", "yes")
+        finally:
+            if info is not None and previous is not None:
+                if info.status != AgentStatus.CANCELLED:
+                    info.status, info.current_tool = previous
+                self.agent._sync_tracker()

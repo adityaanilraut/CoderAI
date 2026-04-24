@@ -5,6 +5,7 @@ and UI confirmation.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import time as _time
@@ -20,6 +21,30 @@ logger = logging.getLogger(__name__)
 # Cap concurrent read-only tools to avoid OS resource exhaustion
 MAX_CONCURRENT_READ_ONLY = 20
 
+# Cap concurrent read-only sub-agent delegations. Each sub-agent is a full
+# LLM session with its own tool loop, so we fan out far less aggressively
+# than for cheap read-only tools like read_file / grep.
+MAX_CONCURRENT_READ_ONLY_SUBAGENTS = 4
+
+# Number of times an identical (tool, args) call may be repeated across
+# iterations before the executor intervenes and returns a cached-with-warning
+# result. Stops the model from looping on the same read_file / git_status.
+DUPLICATE_CALL_THRESHOLD = 2
+
+
+def _fingerprint(tool_name: str, arguments: Optional[Dict[str, Any]]) -> str:
+    """Stable fingerprint of a tool call for duplicate detection.
+
+    ``arguments`` is a dict produced by ``coerce_tool_arguments``. Dicts are
+    serialized with sorted keys so argument ordering doesn't change the hash.
+    """
+    try:
+        args_blob = json.dumps(arguments or {}, sort_keys=True, default=str)
+    except Exception:
+        args_blob = repr(arguments)
+    h = hashlib.sha1(f"{tool_name}\x00{args_blob}".encode("utf-8")).hexdigest()
+    return h[:16]
+
 
 class ToolExecutor:
     """Coordinates tool batched runs, context updates, and UI confirmations."""
@@ -27,6 +52,47 @@ class ToolExecutor:
     def __init__(self, agent):
         self.agent = agent
         self._ro_semaphore: Optional[asyncio.Semaphore] = None
+        self._subagent_ro_semaphore: Optional[asyncio.Semaphore] = None
+        # Per-turn call counters keyed by tool fingerprint. A new
+        # ``ExecutionLoop`` (and therefore a new ``ToolExecutor``) is
+        # instantiated on every ``process_message``, so these are naturally
+        # scoped to one turn; ``reset_counts()`` lets callers clear them
+        # mid-turn if a session boundary is crossed another way.
+        self._call_counts: Dict[str, int] = {}
+        self._last_results: Dict[str, Dict[str, Any]] = {}
+
+    def reset_counts(self) -> None:
+        """Drop the fingerprint dedup / last-results caches."""
+        self._call_counts.clear()
+        self._last_results.clear()
+
+    def _enter_waiting_for_user(
+        self, tool_name: str
+    ) -> Optional[Tuple[AgentStatus, Optional[str]]]:
+        """Flip tracker state while execution is blocked on user input."""
+        info = self.agent.tracker_info
+        if not info:
+            return None
+        previous = (info.status, info.current_tool)
+        info.status = AgentStatus.WAITING_FOR_USER
+        info.current_tool = tool_name
+        self.agent._sync_tracker()
+        return previous
+
+    def _exit_waiting_for_user(
+        self, previous: Optional[Tuple[AgentStatus, Optional[str]]]
+    ) -> None:
+        """Restore tracker state after an approval prompt finishes."""
+        info = self.agent.tracker_info
+        if not info or previous is None:
+            return
+        if info.status == AgentStatus.CANCELLED:
+            self.agent._sync_tracker()
+            return
+        prev_status, prev_tool = previous
+        info.status = prev_status
+        info.current_tool = prev_tool
+        self.agent._sync_tracker()
 
     @property
     def _read_only_semaphore(self) -> asyncio.Semaphore:
@@ -34,6 +100,13 @@ class ToolExecutor:
         if self._ro_semaphore is None:
             self._ro_semaphore = asyncio.Semaphore(MAX_CONCURRENT_READ_ONLY)
         return self._ro_semaphore
+
+    @property
+    def _read_only_subagent_semaphore(self) -> asyncio.Semaphore:
+        """Separate, smaller semaphore for read-only sub-agent fan-out."""
+        if self._subagent_ro_semaphore is None:
+            self._subagent_ro_semaphore = asyncio.Semaphore(MAX_CONCURRENT_READ_ONLY_SUBAGENTS)
+        return self._subagent_ro_semaphore
 
     async def _confirmation_callback(
         self,
@@ -56,25 +129,29 @@ class ToolExecutor:
                 ),
             )
 
-        if ipc_server is not None:
-            return await ipc_server.request_tool_approval(
-                tool_id=tool_id or str(uuid.uuid4()),
-                tool_name=tool_name,
-                arguments=arguments,
-            )
-
+        previous = self._enter_waiting_for_user(tool_name)
         try:
-            from prompt_toolkit import PromptSession
-            prompt_session = PromptSession()
-            answer = await prompt_session.prompt_async("Allow this tool? (y/n) > ")
-        except (ImportError, EOFError, KeyboardInterrupt):
-            try:
-                loop = asyncio.get_running_loop()
-                answer = await loop.run_in_executor(None, lambda: input("Allow this tool? (y/n) > "))
-            except (EOFError, KeyboardInterrupt):
-                answer = "n"
+            if ipc_server is not None:
+                return await ipc_server.request_tool_approval(
+                    tool_id=tool_id or str(uuid.uuid4()),
+                    tool_name=tool_name,
+                    arguments=arguments,
+                )
 
-        return answer.strip().lower() in ("y", "yes")
+            try:
+                from prompt_toolkit import PromptSession
+                prompt_session = PromptSession()
+                answer = await prompt_session.prompt_async("Allow this tool? (y/n) > ")
+            except (ImportError, EOFError, KeyboardInterrupt):
+                try:
+                    loop = asyncio.get_running_loop()
+                    answer = await loop.run_in_executor(None, lambda: input("Allow this tool? (y/n) > "))
+                except (EOFError, KeyboardInterrupt):
+                    answer = "n"
+
+            return answer.strip().lower() in ("y", "yes")
+        finally:
+            self._exit_waiting_for_user(previous)
 
     async def execute_single_tool(self, pc: Dict[str, Any], hooks_data: Optional[Dict[str, Any]], hooks_manager) -> Dict[str, Any]:
         """Execute a single tool call, including hooks and confirmation."""
@@ -83,26 +160,38 @@ class ToolExecutor:
         try:
             tool_name = pc["tool_name"]
             arguments = pc["arguments"]
-
-            pre_hooks = await hooks_manager.run_hooks(tool_name, "PreToolUse", arguments, hooks_data)
+            tool = self.agent.tools.get(tool_name)
 
             async def _confirm(name, args):
                 return await self._confirmation_callback(name, args, tool_id=pc["tool_id"])
 
-            if is_mcp_function_name(tool_name) and self.agent.tools.get(tool_name) is None:
-                if not self.agent.auto_approve:
-                    approved = await _confirm(tool_name, arguments)
-                    if not approved:
-                        return {
-                            "success": False,
-                            "error": f"Tool '{tool_name}' was denied by the user.",
-                            "error_code": "denied",
-                        }
+            is_mcp_proxy = is_mcp_function_name(tool_name) and tool is None
+            needs_confirmation = (
+                not self.agent.auto_approve
+                and (
+                    is_mcp_proxy
+                    or bool(tool and getattr(tool, "requires_confirmation", False))
+                )
+            )
+            if needs_confirmation:
+                approved = await _confirm(tool_name, arguments)
+                if not approved:
+                    return {
+                        "success": False,
+                        "error": f"Tool '{tool_name}' was denied by the user.",
+                        "error_code": "denied",
+                    }
+
+            pre_hooks = await hooks_manager.run_hooks(
+                tool_name, "PreToolUse", arguments, hooks_data
+            )
+
+            if is_mcp_proxy:
                 result = await call_mcp_tool_by_function_name(tool_name, arguments)
             else:
                 result = await self.agent.tools.execute(
                     tool_name,
-                    confirmation_callback=_confirm if not self.agent.auto_approve else None,
+                    confirmation_callback=None,
                     **arguments,
                 )
 
@@ -143,7 +232,11 @@ class ToolExecutor:
             if check_count >= max_consecutive_errors:
                 self.agent._finish_tracker(error=True)
                 self.agent.save_session()
-                return True, {"content": f"I encountered {check_count} consecutive parse errors. Rephrase please.", "session_id": self.agent.session.session_id}
+                return True, {
+                    "content": f"I encountered {check_count} consecutive parse errors. Please rephrase your request.",
+                    "messages": self.agent.session.messages,
+                    "model_info": self.agent.provider.get_model_info(),
+                }
             
             # Update the messages list from session for the next LLM call
             messages.clear()
@@ -153,6 +246,7 @@ class ToolExecutor:
         if self.agent.tracker_info:
             self.agent.tracker_info.status = AgentStatus.TOOL_CALL
             self.agent.tracker_info.current_tool = ", ".join(pc["tool_name"] for pc in parsed_calls if pc["arguments"])
+            self.agent._sync_tracker()
 
         for pc in parsed_calls:
             if pc["parse_error"] is not None:
@@ -160,7 +254,78 @@ class ToolExecutor:
             elif pc["arguments"] is not None:
                 event_emitter.emit("tool_call", tool_name=pc["tool_name"], arguments=pc["arguments"], tool_id=pc["tool_id"])
 
-        results = await self.run_tool_batch(parsed_calls, hooks_data, hooks_manager)
+        # Detect duplicates and short-circuit them before running the batch.
+        # Two flavors:
+        #   1. In-batch duplicates — identical (tool, args) appearing more than
+        #      once in the same parallel batch. Execute once, replay the result.
+        #   2. Cross-iteration duplicates — same fingerprint seen on a prior
+        #      iteration for a read-only tool. Replay the cached result with a
+        #      warning so the model doesn't loop forever on read_file/grep.
+        dup_results: Dict[int, Dict[str, Any]] = {}
+        batch_seen: Dict[str, int] = {}
+        to_run_indices: List[int] = []
+        for idx, pc in enumerate(parsed_calls):
+            if pc["parse_error"] is not None or pc["arguments"] is None:
+                to_run_indices.append(idx)
+                continue
+            fp = _fingerprint(pc["tool_name"], pc["arguments"])
+            pc["_fp"] = fp
+
+            if fp in batch_seen:
+                dup_results[idx] = {
+                    "_dup_of_batch_index": batch_seen[fp],
+                    "_warning": (
+                        f"Duplicate call to '{pc['tool_name']}' in the same batch — "
+                        "result reused from the first call. Avoid emitting identical "
+                        "parallel tool calls."
+                    ),
+                }
+                continue
+
+            prior_count = self._call_counts.get(fp, 0)
+            tool = self.agent.tools.get(pc["tool_name"])
+            is_read_only = bool(tool and getattr(tool, "is_read_only", False))
+            if is_read_only and prior_count >= DUPLICATE_CALL_THRESHOLD and fp in self._last_results:
+                cached = dict(self._last_results[fp])
+                cached["_warning"] = (
+                    f"This is call #{prior_count + 1} to '{pc['tool_name']}' with identical "
+                    "arguments — returning the cached result. Stop repeating the same read; "
+                    "either work with the data you already have or try a different approach."
+                )
+                dup_results[idx] = cached
+                event_emitter.emit(
+                    "agent_warning",
+                    message=f"Skipping duplicate read-only call to {pc['tool_name']} (already run {prior_count}×).",
+                )
+                continue
+
+            batch_seen[fp] = idx
+            to_run_indices.append(idx)
+
+        calls_to_run = [parsed_calls[i] for i in to_run_indices]
+        run_results = await self.run_tool_batch(calls_to_run, hooks_data, hooks_manager)
+
+        # Merge real results + dup short-circuit results back into original order
+        results: List[Any] = [None] * len(parsed_calls)
+        for i, r in zip(to_run_indices, run_results):
+            results[i] = r
+        for i, placeholder in dup_results.items():
+            src = placeholder.pop("_dup_of_batch_index", None)
+            if src is not None and results[src] is not None:
+                cloned = dict(results[src]) if isinstance(results[src], dict) else {"output": results[src]}
+                cloned["_warning"] = placeholder.get("_warning", "Duplicate result reused.")
+                results[i] = cloned
+            else:
+                results[i] = placeholder
+
+        # Update call counters / last-result cache for future iterations.
+        for pc, res in zip(parsed_calls, results):
+            fp = pc.get("_fp")
+            if not fp:
+                continue
+            self._call_counts[fp] = self._call_counts.get(fp, 0) + 1
+            if isinstance(res, dict) and res.get("success") is True:
+                self._last_results[fp] = res
 
         for pc, res in zip(parsed_calls, results):
             res = self.agent.context_controller.summarize_tool_result(res)
@@ -174,20 +339,42 @@ class ToolExecutor:
         # Update the messages list from session
         messages.clear()
         messages.extend(self.agent.session.get_messages_for_api())
-        
-        event_emitter.emit("agent_status", message="\n[dim]Processing results...[/dim]")
+
+        all_tool_calls_failed = bool(results) and all(
+            not (isinstance(res, dict) and res.get("success") is True)
+            for res in results
+        )
+        if all_tool_calls_failed:
+            event_emitter.emit(
+                "agent_warning",
+                message="All tool calls in this step failed. Asking the model to revise its plan.",
+            )
+            return True, {"retry": True}
+
         return False, None
 
     async def run_tool_batch(self, parsed_calls: list, hooks_data: Optional[Dict[str, Any]], hooks_manager) -> list:
         """Handle parallel/sequential execution of parsed tool calls."""
         ro_indices: list = []
         capped_groups: Dict[str, list] = {}
+        sub_ro_indices: list = []
         mut_indices: list = []
         for i, pc in enumerate(parsed_calls):
             tool_name = pc["tool_name"]
             tool = self.agent.tools.get(tool_name)
             if not tool:
                 mut_indices.append(i)
+                continue
+            # delegate_task with read_only_task=True is safe to parallelize:
+            # the child sub-agent has all mutating tools stripped (see
+            # DelegateTaskTool._run_delegation), so workspace conflicts can't
+            # occur. Route to the sub-agent-bounded parallel group.
+            if (
+                tool_name == "delegate_task"
+                and isinstance(pc.get("arguments"), dict)
+                and bool(pc["arguments"].get("read_only_task"))
+            ):
+                sub_ro_indices.append(i)
                 continue
             max_par = getattr(tool, "max_parallel_invocations", 0)
             if max_par > 0:
@@ -222,14 +409,21 @@ class ToolExecutor:
                 payload["elapsed"] = elapsed
             event_emitter.emit("tool_progress", **payload)
 
-        event_emitter.emit("status_start", message="[bold cyan]Executing tools...[/bold cyan]")
-
         if ro_indices:
             async def _run_ro(idx):
                 async with self._read_only_semaphore:
                     return await _run(parsed_calls[idx])
             res = await asyncio.gather(*(_run_ro(i) for i in ro_indices))
             for i, r in zip(ro_indices, res):
+                results[i] = r
+                _emit_progress(i)
+
+        if sub_ro_indices:
+            async def _run_sub_ro(idx):
+                async with self._read_only_subagent_semaphore:
+                    return await _run(parsed_calls[idx])
+            res = await asyncio.gather(*(_run_sub_ro(i) for i in sub_ro_indices))
+            for i, r in zip(sub_ro_indices, res):
                 results[i] = r
                 _emit_progress(i)
 
@@ -248,5 +442,4 @@ class ToolExecutor:
             results[i] = await _run(parsed_calls[i])
             _emit_progress(i, elapsed=round(_time.time() - t0, 2))
 
-        event_emitter.emit("status_stop")
         return results

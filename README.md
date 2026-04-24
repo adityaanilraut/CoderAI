@@ -158,7 +158,7 @@ CoderAI-main/
 │   │
 │   ├── llm/                    # ─── LLM Provider Backends ───
 │   │   ├── base.py             #   Abstract LLMProvider interface
-│   │   ├── openai.py           #   OpenAI (GPT-5, o1, o3-mini)
+│   │   ├── openai.py           #   OpenAI (gpt-5.4, o1, o3-mini)
 │   │   ├── anthropic.py        #   Anthropic (Claude 4 Sonnet, 3.5 Sonnet, etc.)
 │   │   ├── groq.py             #   Groq (Llama 3, GPT-OSS models)
 │   │   ├── deepseek.py         #   DeepSeek (V3.2, R1)
@@ -562,7 +562,7 @@ Define pre/post tool execution hooks in `.coderAI/hooks.json`:
 
 | Provider | Models | Requirements |
 |---|---|---|
-| **OpenAI** | `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `o1`, `o1-mini`, `o3-mini` | `OPENAI_API_KEY` |
+| **OpenAI** | `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `o1`, `o1-mini`, `o3-mini` | `OPENAI_API_KEY` |
 | **Anthropic** | `claude-4-sonnet`, `claude-3.5-sonnet`, `claude-3.5-haiku`, `claude-3-opus` | `ANTHROPIC_API_KEY` |
 | **Groq** | `openai/gpt-oss-120b`, `openai/gpt-oss-20b`, `llama3-70b-8192`, `llama3-8b-8192` | `GROQ_API_KEY` |
 | **DeepSeek** | `deepseek-v3.2`, `deepseek-r1` | `DEEPSEEK_API_KEY` |
@@ -579,7 +579,7 @@ Configuration is stored in `~/.coderAI/config.json` and managed via `coderAI con
 
 | Key | Default | Description |
 |---|---|---|
-| `default_model` | `gpt-5-mini` | Default LLM model |
+| `default_model` | `gpt-5.4-mini` | Default LLM model |
 | `temperature` | `0.7` | Sampling temperature |
 | `max_tokens` | `8192` | Max output tokens |
 | `context_window` | `128000` | Context window size |

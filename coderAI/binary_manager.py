@@ -276,6 +276,8 @@ def ensure_binary(version: str, *, force: bool = False) -> Path:
     if target.exists() and not force:
         return target
 
+    allow_unsigned = os.environ.get("CODERAI_ALLOW_UNSIGNED_BINARY") == "1"
+
     try:
         sha_url = _checksum_url(version, plat)
         asset_url = _release_url(version, plat)
@@ -287,24 +289,46 @@ def ensure_binary(version: str, *, force: bool = False) -> Path:
         except urllib.error.HTTPError as e:
             if e.code != 404:
                 raise
-            # Some releases may not ship a sidecar; continue without
-            # verification but warn loudly.
-            logger.warning("No SHA256 sidecar at %s (HTTP 404)", sha_url)
+            if not allow_unsigned:
+                raise BinaryUnavailableError(
+                    f"No SHA256 sidecar found at {sha_url}. Refusing to "
+                    "install an unverified binary. Re-run with "
+                    "CODERAI_ALLOW_UNSIGNED_BINARY=1 to accept the risk, "
+                    "or build from source with `make ui-compile`."
+                ) from e
+            logger.warning(
+                "No SHA256 sidecar at %s (HTTP 404); continuing unverified "
+                "because CODERAI_ALLOW_UNSIGNED_BINARY=1.",
+                sha_url,
+            )
 
         _download_with_progress(asset_url, target)
 
         if sha_body:
             expected = _parse_checksum_sidecar(sha_body, _asset_name(plat))
-            if expected:
-                actual = _sha256_of(target)
-                if actual.lower() != expected:
-                    target.unlink(missing_ok=True)
-                    raise BinaryUnavailableError(
-                        "Downloaded UI binary failed SHA256 verification "
-                        f"(expected {expected}, got {actual}). The file has "
-                        "been removed. Re-run or build from source with "
-                        "`make ui-compile`."
-                    )
+            if not expected:
+                target.unlink(missing_ok=True)
+                raise BinaryUnavailableError(
+                    f"SHA256 sidecar at {sha_url} was present but unparseable. "
+                    "Refusing to install an unverified binary."
+                )
+            actual = _sha256_of(target)
+            if actual.lower() != expected:
+                target.unlink(missing_ok=True)
+                raise BinaryUnavailableError(
+                    "Downloaded UI binary failed SHA256 verification "
+                    f"(expected {expected}, got {actual}). The file has "
+                    "been removed. Re-run or build from source with "
+                    "`make ui-compile`."
+                )
+        elif not allow_unsigned:
+            # Defense in depth: sha_body must be present here unless the
+            # unsigned-escape branch above was taken.
+            target.unlink(missing_ok=True)
+            raise BinaryUnavailableError(
+                "Internal error: reached binary install path without SHA256 "
+                "verification. Binary removed."
+            )
 
         _make_executable(target)
         return target

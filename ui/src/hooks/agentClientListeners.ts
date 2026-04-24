@@ -9,8 +9,10 @@ import type {AgentEvent, AgentInfo} from "../protocol.js";
 import type {SessionState, TimelineItem} from "./agentStateTypes.js";
 import {appendCapped} from "./timelineAppend.js";
 
-/** Coalesce stream_delta IPC into fewer Ink redraws (~16fps cap). */
-const STREAM_FLUSH_MS = 60;
+/** Coalesce stream_delta IPC into fewer Ink redraws (~8fps cap).
+ *  A higher value reduces ANSI cursor thrash that causes scroll-to-top
+ *  issues in terminals that don't handle rapid live-region redraws well. */
+const STREAM_FLUSH_MS = 120;
 /** Cap status bar updates while tokens/context churn. */
 const STATUS_THROTTLE_MS = 250;
 

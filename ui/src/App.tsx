@@ -1,20 +1,20 @@
-import React, {memo, useCallback, useEffect, useMemo, useRef, useState} from "react";
-import {Box, Static, Text, useApp, useInput, useStdout} from "ink";
-import {useAgent} from "./hooks/useAgent.js";
-import {StatusBar} from "./components/StatusBar.js";
-import {Prompt} from "./components/Prompt.js";
-import {ToolCard} from "./components/ToolCard.js";
-import {Assistant, UserBubble} from "./components/Assistant.js";
-import {Diff} from "./components/Diff.js";
-import {ErrorPanel} from "./components/ErrorPanel.js";
-import {AgentCard} from "./components/AgentTable.js";
-import {Thinking} from "./components/Thinking.js";
-import {Toast} from "./components/Toast.js";
-import {HelpMenu} from "./components/HelpMenu.js";
-import {ApprovalPrompt} from "./components/ApprovalPrompt.js";
-import {theme} from "./theme.js";
-import {isTimelineItemFrozen} from "./timelineItemFrozen.js";
-import type {TimelineItem} from "./hooks/useAgent.js";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Box, Static, Text, useApp, useInput, useStdout } from "ink";
+import { useAgent } from "./hooks/useAgent.js";
+import { StatusBar } from "./components/StatusBar.js";
+import { Prompt } from "./components/Prompt.js";
+import { ToolCard } from "./components/ToolCard.js";
+import { Assistant, UserBubble } from "./components/Assistant.js";
+import { Diff } from "./components/Diff.js";
+import { ErrorPanel } from "./components/ErrorPanel.js";
+import { AgentCard } from "./components/AgentTable.js";
+import { Thinking } from "./components/Thinking.js";
+import { Toast } from "./components/Toast.js";
+import { HelpMenu } from "./components/HelpMenu.js";
+import { ApprovalPrompt } from "./components/ApprovalPrompt.js";
+import { theme } from "./theme.js";
+import { isTimelineItemFrozen } from "./timelineItemFrozen.js";
+import type { TimelineItem } from "./hooks/useAgent.js";
 
 export interface AppProps {
   python?: string;
@@ -24,10 +24,10 @@ export interface AppProps {
 const CTRL_C_WINDOW_MS = 1500;
 const NARROW_COLUMNS = 72;
 
-export function App({python, cwd}: AppProps) {
-  const {session, timeline, actions, helpMenuOpen} = useAgent({python, cwd});
-  const {exit} = useApp();
-  const {stdout} = useStdout();
+export function App({ python, cwd }: AppProps) {
+  const { session, timeline, actions, helpMenuOpen } = useAgent({ python, cwd });
+  const { exit } = useApp();
+  const { stdout } = useStdout();
   const columns = stdout?.columns ?? 100;
   const narrow = columns < NARROW_COLUMNS;
 
@@ -52,7 +52,7 @@ export function App({python, cwd}: AppProps) {
     if (timeline.length === 0) setStaticTimelineEnabled(true);
   }, [timeline.length]);
 
-  const {lastErrorId, pendingApprovalId} = useMemo(() => {
+  const { lastErrorId, pendingApprovalId } = useMemo(() => {
     let errId: string | null = null;
     let apprId: string | null = null;
     for (let i = timeline.length - 1; i >= 0; i--) {
@@ -67,7 +67,7 @@ export function App({python, cwd}: AppProps) {
       }
       if (errId && apprId) break;
     }
-    return {lastErrorId: errId, pendingApprovalId: apprId};
+    return { lastErrorId: errId, pendingApprovalId: apprId };
   }, [timeline]);
   const approvalPending = pendingApprovalId !== null;
   const promptBusy =
@@ -103,11 +103,17 @@ export function App({python, cwd}: AppProps) {
         if (session.thinking || session.streaming) actions.cancel();
       }
     },
-    {isActive: !helpMenuOpen},
+    { isActive: !helpMenuOpen },
   );
 
   // Split timeline into a frozen prefix (handed to Static — printed once, never
   // redrawn) and a live suffix (re-rendered normally for active updates).
+  //
+  // IMPORTANT: We aggressively freeze items to keep the live region as small as
+  // possible.  Ink redraws the entire live region on every state change (timers,
+  // stream ticks, status updates).  If the live region grows large the ANSI
+  // cursor-repositioning Ink performs causes the terminal viewport to jump to
+  // the top — the "scroll to top on refresh" bug.
   const frozenCount = useMemo(() => {
     let i = 0;
     while (i < timeline.length && isTimelineItemFrozen(timeline[i])) i++;
@@ -135,11 +141,18 @@ export function App({python, cwd}: AppProps) {
     () => (staticTimelineEnabled ? timeline.slice(0, frozenCount) : []),
     [timeline, frozenCount, staticTimelineEnabled],
   );
-  const liveTimeline = useMemo(
-    () =>
-      staticTimelineEnabled ? timeline.slice(frozenCount) : timeline,
-    [timeline, frozenCount, staticTimelineEnabled],
-  );
+  // Cap the number of live items rendered.  Ink clears+redraws every live row
+  // on each tick (~4-16fps).  With many live rows the ANSI cursor math causes
+  // the terminal to scroll to the top.  We keep only the tail; earlier items
+  // are already in <Static> or simply off-screen.
+  const MAX_LIVE_ITEMS = 12;
+  const liveTimeline = useMemo(() => {
+    if (!staticTimelineEnabled) {
+      return timeline;
+    }
+    const all = timeline.slice(frozenCount);
+    return all.length > MAX_LIVE_ITEMS ? all.slice(-MAX_LIVE_ITEMS) : all;
+  }, [timeline, frozenCount, staticTimelineEnabled]);
 
   const renderItem = useCallback(
     (item: TimelineItem) => {
@@ -217,9 +230,13 @@ export function App({python, cwd}: AppProps) {
     [lastErrorId, pendingApprovalId, helpMenuOpen, approvalPending, columns, actions],
   );
 
+  const empty = timeline.length === 0;
+
   return (
     <Box flexDirection="column">
-      <Box flexDirection="column" marginTop={1}>
+      {empty ? <WelcomeHero session={session} /> : null}
+
+      <Box flexDirection="column" marginTop={empty ? 0 : 1}>
         {/* Completed items — printed to stdout once and never redrawn. */}
         <Static items={frozenTimeline}>{(item) => renderItem(item)}</Static>
 
@@ -264,3 +281,56 @@ export function App({python, cwd}: AppProps) {
   );
 }
 
+/**
+ * First-paint hero shown until the user sends their first message.
+ * A branded diamond, the model being used, and a three-tip cheat sheet
+ * so the blank transcript doesn't feel cold.
+ */
+function WelcomeHero({ session }: { session: ReturnType<typeof useAgent>["session"] }) {
+  return (
+    <Box flexDirection="column" paddingX={2} marginTop={1} marginBottom={1}>
+      <Box>
+        <Text color={theme.accent} bold>
+          {theme.glyph.diamond}  CoderAI
+        </Text>
+        <Text color={theme.faint}>
+          {"   "}
+          AI Powered Coding Agent
+        </Text>
+      </Box>
+
+      {session.model ? (
+        <Box marginTop={1}>
+          <Text color={theme.faint}>connected to </Text>
+          <Text color={theme.accent}>{session.model}</Text>
+          {session.provider ? (
+            <Text color={theme.faint}>
+              {"  "}
+              via {session.provider}
+            </Text>
+          ) : null}
+        </Box>
+      ) : (
+        <Box marginTop={1}>
+          <Text color={theme.faint}>booting agent…</Text>
+        </Box>
+      )}
+
+      <Box marginTop={1} flexDirection="column">
+        <Text color={theme.muted}>
+          <Text color={theme.role.user}>{theme.glyph.arrowRun}</Text> ask for a
+          feature, a refactor, or a bug fix
+        </Text>
+        <Text color={theme.muted}>
+          <Text color={theme.role.user}>{theme.glyph.arrowRun}</Text> type{" "}
+          <Text color={theme.accent}>/help</Text> for commands
+        </Text>
+        <Text color={theme.muted}>
+          <Text color={theme.role.user}>{theme.glyph.arrowRun}</Text> press{" "}
+          <Text color={theme.accent}>esc</Text> to interrupt, ctrl+c twice to
+          quit
+        </Text>
+      </Box>
+    </Box>
+  );
+}

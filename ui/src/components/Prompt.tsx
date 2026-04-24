@@ -17,12 +17,18 @@ export interface PromptProps {
 
 const MAX_HISTORY = 100;
 
+/**
+ * Input prompt.
+ *
+ *   ❯ type a message…
+ *     Enter send · / help · Esc stop
+ *
+ * Redesign: one hint line, no `│` pipes.  Busy state dims the caret
+ * rather than swapping the glyph so the eye has a stable anchor.
+ */
 export function Prompt({onSubmit, disabled, placeholder, exitHint}: PromptProps) {
   const [value, setValue] = useState("");
 
-  // History is a ref so it survives re-renders without triggering them.
-  // `cursor === history.length` means "no history entry selected"; the
-  // user is editing their own draft which we stash in `draftRef`.
   const history = useRef<string[]>([]);
   const cursor = useRef<number>(0);
   const draftRef = useRef<string>("");
@@ -32,7 +38,6 @@ export function Prompt({onSubmit, disabled, placeholder, exitHint}: PromptProps)
     const trimmed = text.trim();
     if (!trimmed) return;
 
-    // Push into history (deduped with previous entry) and reset cursor.
     const hist = history.current;
     if (hist[hist.length - 1] !== trimmed) {
       hist.push(trimmed);
@@ -45,9 +50,6 @@ export function Prompt({onSubmit, disabled, placeholder, exitHint}: PromptProps)
     onSubmit(trimmed);
   };
 
-  // Handle Up/Down arrows for history recall BEFORE ink-text-input sees
-  // them. In a single-line input, vertical arrow keys are a no-op inside
-  // TextInput, so we just steal them for history navigation.
   useInput(
     (_input, key) => {
       if (!key.upArrow && !key.downArrow) return;
@@ -57,7 +59,6 @@ export function Prompt({onSubmit, disabled, placeholder, exitHint}: PromptProps)
 
       if (key.upArrow) {
         if (cursor.current === hist.length) {
-          // Entering history: stash whatever the user was typing.
           draftRef.current = value;
         }
         cursor.current = Math.max(0, cursor.current - 1);
@@ -75,10 +76,10 @@ export function Prompt({onSubmit, disabled, placeholder, exitHint}: PromptProps)
   );
 
   return (
-    <Box flexDirection="column" paddingX={1}>
+    <Box flexDirection="column" paddingX={theme.spacing.sm}>
       <Box>
-        <Text color={disabled ? theme.muted : theme.accent} bold>
-          {"❯ "}
+        <Text color={disabled ? theme.faint : theme.accent} bold>
+          {theme.glyph.caret}{" "}
         </Text>
         <TextInput
           value={value}
@@ -95,20 +96,28 @@ export function Prompt({onSubmit, disabled, placeholder, exitHint}: PromptProps)
             placeholder ??
             (disabled
               ? "waiting for agent…"
-              : "Ask anything, or type / for commands")
+              : "ask anything, or type / for commands")
           }
           focus={!disabled}
           showCursor={!disabled}
         />
       </Box>
-      <Box marginTop={1}>
+      <Box marginTop={theme.spacing.sm}>
         {exitHint ? (
           <Text color={theme.warning}>
-            Press Ctrl+C again to exit, or type a message to continue
+            {theme.glyph.warn} Press Ctrl+C again to exit — or type to continue
           </Text>
         ) : (
-          <Text color={theme.muted}>
-            Enter to send · ↑/↓ history · Esc to interrupt · Ctrl+C twice to quit · /help
+          <Text color={theme.faint}>
+            <Text color={theme.muted}>↵</Text> send
+            {theme.glyph.separator}
+            <Text color={theme.muted}>/</Text> help
+            {theme.glyph.separator}
+            <Text color={theme.muted}>↑↓</Text> history
+            {theme.glyph.separator}
+            <Text color={theme.muted}>esc</Text> stop
+            {theme.glyph.separator}
+            <Text color={theme.muted}>^C^C</Text> quit
           </Text>
         )}
       </Box>

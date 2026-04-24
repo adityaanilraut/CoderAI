@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 import re
 import time
 import uuid
@@ -146,7 +147,6 @@ class HistoryManager:
             tmp_file = index_file.with_suffix('.json.tmp')
             with open(tmp_file, "w") as f:
                 json.dump(index, f)
-            import os
             os.replace(tmp_file, index_file)
         except Exception as e:
             logger.warning(f"Failed to update session index: {e}")
@@ -196,7 +196,6 @@ class HistoryManager:
                 tmp_file = index_file.with_suffix('.json.tmp')
                 with open(tmp_file, "w") as f:
                     json.dump(index, f)
-                import os
                 os.replace(tmp_file, index_file)
             except Exception:
                 pass
@@ -211,6 +210,10 @@ class HistoryManager:
         for session_file in self.history_dir.glob("session_*.json"):
             session_file.unlink()
             count += 1
+        # Remove the index so list_sessions starts fresh
+        index_file = self.history_dir / "index.json"
+        if index_file.exists():
+            index_file.unlink()
         return count
 
     def delete_session(self, session_id: str) -> bool:
@@ -221,8 +224,27 @@ class HistoryManager:
         session_file = self.history_dir / f"{session_id}.json"
         if session_file.exists():
             session_file.unlink()
+            # Remove from index
+            self._remove_from_index(session_id)
             return True
         return False
+
+    def _remove_from_index(self, session_id: str) -> None:
+        """Remove a session from the fast-lookup index."""
+        index_file = self.history_dir / "index.json"
+        if not index_file.exists():
+            return
+        try:
+            with open(index_file, "r") as f:
+                index = json.load(f)
+            if session_id in index:
+                del index[session_id]
+                tmp_file = index_file.with_suffix('.json.tmp')
+                with open(tmp_file, "w") as f:
+                    json.dump(index, f)
+                os.replace(tmp_file, index_file)
+        except Exception as e:
+            logger.warning(f"Failed to update index after session delete: {e}")
 
 
 # Global history manager instance

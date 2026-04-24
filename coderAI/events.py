@@ -24,6 +24,29 @@ class EventEmitter:
         if callback not in self._listeners[event]:
             self._listeners[event].append(callback)
 
+    def off(self, event: str, callback: Callable) -> None:
+        """Unsubscribe a single callback from an event (no-op if missing)."""
+        listeners = self._listeners.get(event)
+        if not listeners:
+            return
+        try:
+            listeners.remove(callback)
+        except ValueError:
+            return
+        if not listeners:
+            del self._listeners[event]
+
+    def remove_all_listeners(self, event: str = None) -> None:
+        """Drop all listeners for *event*, or every event if *event* is None.
+
+        Use this to prevent stale listeners from leaking across session or
+        process boundaries (each IPC session installs its own set).
+        """
+        if event is None:
+            self._listeners.clear()
+        else:
+            self._listeners.pop(event, None)
+
     def emit(self, event: str, *args: Any, **kwargs: Any) -> None:
         """Emit an event to all subscribers.
 
@@ -57,8 +80,12 @@ class EventEmitter:
                                 )
                         task.add_done_callback(_on_task_done)
                     except RuntimeError:
-                        # No running event loop — run the coroutine synchronously
-                        asyncio.run(callback(*args, **kwargs))
+                        # No running event loop — cannot dispatch async listener
+                        import logging
+                        _logger = logging.getLogger(__name__)
+                        _logger.debug(
+                            "Skipping async listener for '%s' — no running event loop", event
+                        )
                 else:
                     callback(*args, **kwargs)
             except Exception as e:

@@ -2,10 +2,12 @@
 
 import asyncio
 import logging
+import os
 import re
 import shlex
 import shutil
 import atexit
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, Field
@@ -123,6 +125,45 @@ def is_command_blocked(command: str) -> bool:
     return False
 
 
+def _resolve_working_dir(working_dir: str) -> "tuple[Optional[Path], Optional[str]]":
+    """Resolve *working_dir* against the project root, rejecting escapes.
+
+    By default the terminal tools may not ``cd`` outside the project: a
+    mis-quoted path in a tool-generated command should not end up running
+    ``rm``-ish things in the user's home directory. Set
+    ``CODERAI_ALLOW_OUTSIDE_PROJECT=1`` to opt out when you genuinely need
+    cross-repo access.
+
+    Returns ``(Path, None)`` on success and ``(None, err)`` on rejection.
+    """
+    try:
+        cfg = config_manager.load()
+        project_root = Path(getattr(cfg, "project_root", ".") or ".").resolve()
+    except Exception:
+        project_root = Path.cwd().resolve()
+
+    candidate = Path(working_dir).expanduser()
+    if not candidate.is_absolute():
+        candidate = (project_root / candidate)
+    try:
+        resolved = candidate.resolve()
+    except Exception as e:
+        return None, f"Invalid working_dir {working_dir!r}: {e}"
+
+    if os.environ.get("CODERAI_ALLOW_OUTSIDE_PROJECT") == "1":
+        return resolved, None
+
+    try:
+        resolved.relative_to(project_root)
+    except ValueError:
+        return None, (
+            f"Refusing to run outside project root. working_dir={working_dir!r} "
+            f"resolves to {resolved}, which is not under {project_root}. "
+            "Set CODERAI_ALLOW_OUTSIDE_PROJECT=1 to override."
+        )
+    return resolved, None
+
+
 def is_command_dangerous(command: str) -> bool:
     """Check if a command should require confirmation."""
     cmd_lower = _normalize_command(command)
@@ -180,6 +221,11 @@ class RunCommandTool(Tool):
         falls back to create_subprocess_shell for complex shell syntax.
         """
         try:
+            resolved_cwd, cwd_err = _resolve_working_dir(working_dir)
+            if cwd_err:
+                return {"success": False, "error": cwd_err, "error_code": "scope"}
+            working_dir = str(resolved_cwd)
+
             # Block known destructive commands (these are never allowed)
             if is_command_blocked(command):
                 return {
@@ -284,6 +330,14 @@ class RunBackgroundParams(BaseModel):
     working_dir: str = Field(".", description="Working directory for the command (default: current)")
 
 
+# Module-level registry of all tracked background processes.
+# Using a plain dict (pid → process) rather than a WeakSet of tool instances:
+# when the tool registry is rebuilt (e.g. persona change), old RunBackgroundTool
+# instances are garbage-collected and any processes they tracked become orphaned.
+# A module-level dict keeps the processes reachable regardless of instance lifecycle.
+_tracked_bg_processes: Dict[int, asyncio.subprocess.Process] = {}
+
+
 class RunBackgroundTool(Tool):
     """Tool for starting background processes."""
 
@@ -292,15 +346,10 @@ class RunBackgroundTool(Tool):
     parameters_model = RunBackgroundParams
     requires_confirmation = True
 
-    # Track spawned background processes for cleanup / status queries
-    # NOTE: This is now per-instance; a module-level set tracks all instances
-    # so atexit cleanup still works.
-    _all_instances = set()
-
     def __init__(self):
         super().__init__()
-        self._processes: Dict[int, asyncio.subprocess.Process] = {}
-        RunBackgroundTool._all_instances.add(self)
+        # Instance shares the module-level process registry
+        self._processes = _tracked_bg_processes
 
     async def execute(self, command: str, working_dir: str = ".") -> Dict[str, Any]:
         """Start background process with tracking.
@@ -310,11 +359,30 @@ class RunBackgroundTool(Tool):
         only commands with shell metacharacters fall back to the shell.
         """
         try:
+            resolved_cwd, cwd_err = _resolve_working_dir(working_dir)
+            if cwd_err:
+                return {"success": False, "error": cwd_err, "error_code": "scope"}
+            working_dir = str(resolved_cwd)
+
             if is_command_blocked(command):
                 return {
                     "success": False,
                     "error": f"Command blocked for safety: {command}",
                     "blocked": True,
+                }
+
+            # Block interactive commands that would hang without a TTY
+            from ..safeguards import is_interactive_command
+            if is_interactive_command(command):
+                logger.warning(f"Blocked interactive background command: {command}")
+                return {
+                    "success": False,
+                    "error": (
+                        "Command appears interactive (requires TTY/user input): "
+                        f"{command!r}. Interactive commands cannot run in the background."
+                    ),
+                    "error_code": "interactive",
+                    "interactive": True,
                 }
 
             if is_command_dangerous(command):
@@ -385,9 +453,14 @@ class RunBackgroundTool(Tool):
 
 
 def _cleanup_all_background():
-    """Terminate background processes from ALL RunBackgroundTool instances."""
-    for instance in list(RunBackgroundTool._all_instances):
-        instance.terminate_all()
+    """Terminate background processes from the shared module-level registry."""
+    for pid, proc in dict(_tracked_bg_processes).items():
+        if proc.returncode is None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+    _tracked_bg_processes.clear()
 
 # Register cleanup on exit to prevent process leaks
 atexit.register(_cleanup_all_background)
@@ -417,15 +490,14 @@ class ListProcessesTool(Tool):
     async def execute(self) -> Dict[str, Any]:
         try:
             processes = []
-            for instance in RunBackgroundTool._all_instances:
-                for pid, proc in instance._processes.items():
-                    processes.append(
-                        {
-                            "pid": pid,
-                            "running": proc.returncode is None,
-                            "returncode": proc.returncode,
-                        }
-                    )
+            for pid, proc in _tracked_bg_processes.items():
+                processes.append(
+                    {
+                        "pid": pid,
+                        "running": proc.returncode is None,
+                        "returncode": proc.returncode,
+                    }
+                )
             return {
                 "success": True,
                 "processes": processes,
@@ -456,42 +528,31 @@ class KillProcessTool(Tool):
         import signal as _signal
 
         try:
-            found = False
-            for instance in RunBackgroundTool._all_instances:
-                proc = instance._processes.get(pid)
-                if proc is not None:
-                    found = True
-                    if proc.returncode is not None:
-                        return {
-                            "success": False,
-                            "error": f"Process {pid} has already exited (returncode={proc.returncode}).",
-                        }
-                    sig = _signal.SIGKILL if force else _signal.SIGTERM
-                    proc.send_signal(sig)
-                    del instance._processes[pid]
-                    return {
-                        "success": True,
-                        "pid": pid,
-                        "signal": "SIGKILL" if force else "SIGTERM",
-                        "message": f"Sent {'SIGKILL' if force else 'SIGTERM'} to process {pid}.",
-                    }
+            proc = _tracked_bg_processes.get(pid)
+            if proc is None:
+                return {
+                    "success": False,
+                    "error": (
+                        f"No tracked background process with PID {pid}. "
+                        "Only processes started by run_background can be terminated. "
+                        "Use run_command with 'kill' if you need to signal an external process."
+                    ),
+                }
 
-            if not found:
-                # Also try OS-level kill for PIDs not tracked in our registry
-                import os as _os
-                try:
-                    sig = _signal.SIGKILL if force else _signal.SIGTERM
-                    _os.kill(pid, sig)
-                    return {
-                        "success": True,
-                        "pid": pid,
-                        "signal": "SIGKILL" if force else "SIGTERM",
-                        "message": f"Sent signal to untracked process {pid}.",
-                        "warning": "Process was not in the tracked process list.",
-                    }
-                except ProcessLookupError:
-                    return {"success": False, "error": f"No process found with PID {pid}."}
-                except PermissionError:
-                    return {"success": False, "error": f"Permission denied sending signal to PID {pid}."}
+            if proc.returncode is not None:
+                return {
+                    "success": False,
+                    "error": f"Process {pid} has already exited (returncode={proc.returncode}).",
+                }
+
+            sig = _signal.SIGKILL if force else _signal.SIGTERM
+            proc.send_signal(sig)
+            del _tracked_bg_processes[pid]
+            return {
+                "success": True,
+                "pid": pid,
+                "signal": "SIGKILL" if force else "SIGTERM",
+                "message": f"Sent {'SIGKILL' if force else 'SIGTERM'} to process {pid}.",
+            }
         except Exception as e:
             return {"success": False, "error": str(e)}

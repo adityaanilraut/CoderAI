@@ -27,9 +27,9 @@ class TestDelegateTaskToolInit:
         """Sub-agents can mutate repo/state; parallelism is capped separately."""
         assert DelegateTaskTool.is_read_only is False
 
-    def test_parallel_cap_allows_concurrent_read_only(self):
-        """Up to 4 sub-agents can be scheduled per batch; mutating ones serialise via lock."""
-        assert DelegateTaskTool.max_parallel_invocations == 4
+    def test_parallel_cap_serialises_workspace_access(self):
+        """Sub-agents run one at a time to serialise workspace access and prevent deadlocks."""
+        assert DelegateTaskTool.max_parallel_invocations == 1
 
 
 class TestDelegateTaskDepthLimit:

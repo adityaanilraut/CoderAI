@@ -136,7 +136,7 @@ class TestTruncateMessages:
 
             # Patch provider creation to avoid needing a real API key
             with patch.object(Agent, "_create_provider", return_value=MagicMock()):
-                Agent(model="gpt-5-mini", streaming=False)
+                Agent(model="gpt-5.4-mini", streaming=False)
                 # load_project_config should have been called
                 cm.load_project_config.assert_called_once_with(".")
 
@@ -204,7 +204,7 @@ class TestAgentPersonaSwitching:
             from coderAI.agent import Agent
 
             with patch.object(Agent, "_create_provider", return_value=MagicMock()):
-                return Agent(model="gpt-5-mini", streaming=False)
+                return Agent(model="gpt-5.4-mini", streaming=False)
 
     def test_set_persona_updates_live_prompt_and_tools(self):
         from coderAI.agents import AgentPersona
@@ -246,7 +246,7 @@ class TestDelegateToolContext:
 
             with patch.object(Agent, "_create_provider", return_value=MagicMock()):
                 return Agent(
-                    model="gpt-5-mini",
+                    model="gpt-5.4-mini",
                     streaming=False,
                     auto_approve=auto_approve,
                 )
@@ -276,7 +276,7 @@ class TestAgentProjectRules:
             from coderAI.agent import Agent
 
             with patch.object(Agent, "_create_provider", return_value=MagicMock()):
-                return Agent(model="gpt-5-mini", streaming=False)
+                return Agent(model="gpt-5.4-mini", streaming=False)
 
     def test_get_system_prompt_with_rules(self):
         agent = self._make_agent()
@@ -310,7 +310,7 @@ class TestAgentProjectRules:
             from coderAI.agent import Agent
 
             with patch.object(Agent, "_create_provider", return_value=MagicMock()):
-                agent = Agent(model="gpt-5-mini", streaming=False)
+                agent = Agent(model="gpt-5.4-mini", streaming=False)
                 prompt = agent._get_system_prompt()
         assert "web_search" not in prompt
         assert "read_url" not in prompt
@@ -328,7 +328,7 @@ class TestAgentProjectRules:
             from coderAI.agent import Agent
 
             with patch.object(Agent, "_create_provider", return_value=MagicMock()):
-                agent = Agent(model="gpt-5-mini", streaming=False)
+                agent = Agent(model="gpt-5.4-mini", streaming=False)
                 prompt = agent._get_system_prompt()
         assert "web_search" in prompt
         assert "read_url" in prompt
@@ -343,7 +343,7 @@ class TestAgentProjectRules:
             from coderAI.agent import Agent
 
             with patch.object(Agent, "_create_provider", return_value=MagicMock()):
-                agent = Agent(model="gpt-5-mini", streaming=False, is_subagent=True)
+                agent = Agent(model="gpt-5.4-mini", streaming=False, is_subagent=True)
                 prompt = agent._get_system_prompt()
         assert "web_search" in prompt
 
@@ -427,12 +427,12 @@ class TestProcessMessageAfterCancel:
             }
 
             with patch.object(Agent, "_create_provider", return_value=mock_provider):
-                agent = Agent(model="gpt-5-mini", streaming=False)
+                agent = Agent(model="gpt-5.4-mini", streaming=False)
 
             agent.create_session()
             old_info = agent_tracker.register(
                 name="main",
-                model="gpt-5-mini",
+                model="gpt-5.4-mini",
                 context_limit=cfg.context_window,
             )
             old_info.request_cancel()

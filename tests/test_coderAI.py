@@ -379,7 +379,7 @@ class TestConfig:
         manager.config_dir = Path(temp_dir)
         manager.config_file = Path(temp_dir) / "config.json"
 
-        manager._config = Config(default_model="gpt-5")
+        manager._config = Config(default_model="gpt-5.4")
         manager.save()
 
         # Verify file permissions (unix-only)
@@ -389,7 +389,7 @@ class TestConfig:
 
         manager._config = None
         config = manager.load()
-        assert config.default_model == "gpt-5"
+        assert config.default_model == "gpt-5.4"
 
     def test_config_show_masks_keys(self):
         from coderAI.config import Config, ConfigManager
@@ -627,11 +627,11 @@ class TestOpenAIProvider:
     def test_model_mapping(self):
         from coderAI.llm.openai import OpenAIProvider
 
-        provider = OpenAIProvider(model="gpt-5", api_key="test-key")
-        assert provider.actual_model == "gpt-5"
+        provider = OpenAIProvider(model="gpt-5.4", api_key="test-key")
+        assert provider.actual_model == "gpt-5.4"
 
-        provider = OpenAIProvider(model="gpt-5-mini", api_key="test-key")
-        assert provider.actual_model == "gpt-5-mini"
+        provider = OpenAIProvider(model="gpt-5.4-mini", api_key="test-key")
+        assert provider.actual_model == "gpt-5.4-mini"
 
     def test_unknown_model_passthrough(self):
         from coderAI.llm.openai import OpenAIProvider
@@ -642,7 +642,7 @@ class TestOpenAIProvider:
     def test_token_counting(self):
         from coderAI.llm.openai import OpenAIProvider
 
-        provider = OpenAIProvider(model="gpt-5", api_key="test-key")
+        provider = OpenAIProvider(model="gpt-5.4", api_key="test-key")
         count = provider.count_tokens("Hello, how are you doing today?")
         assert count > 0
         assert isinstance(count, int)
@@ -650,8 +650,8 @@ class TestOpenAIProvider:
     def test_supported_models_are_real(self):
         from coderAI.llm.openai import OpenAIProvider
 
-        assert "gpt-5-mini" in OpenAIProvider.SUPPORTED_MODELS
-        assert "gpt-5-nano" in OpenAIProvider.SUPPORTED_MODELS
+        assert "gpt-5.4-mini" in OpenAIProvider.SUPPORTED_MODELS
+        assert "gpt-5.4-nano" in OpenAIProvider.SUPPORTED_MODELS
         assert "gpt-4" not in OpenAIProvider.SUPPORTED_MODELS
         assert "gpt-4-turbo" not in OpenAIProvider.SUPPORTED_MODELS
         assert "gpt-3.5-turbo" not in OpenAIProvider.SUPPORTED_MODELS
@@ -900,6 +900,7 @@ class TestAnthropicProvider:
         from coderAI.llm.anthropic import MODEL_ALIASES
 
         assert "claude-4-sonnet" in MODEL_ALIASES
+        assert MODEL_ALIASES["claude-4.6-opus"] == "claude-opus-4-7"
         assert "claude-3.5-sonnet" in MODEL_ALIASES
         assert "claude-3-opus" in MODEL_ALIASES
 
@@ -916,6 +917,22 @@ class TestAnthropicProvider:
         count = provider.count_tokens("Hello, how are you?")
         assert count > 0
         assert isinstance(count, int)
+
+    def test_thinking_payload_uses_adaptive_format(self):
+        from coderAI.llm.anthropic import AnthropicProvider
+
+        provider = AnthropicProvider(model="claude-4-sonnet", api_key="test-key", reasoning_effort="medium")
+        payload = provider._build_payload(messages=[{"role": "user", "content": "hi"}], tools=None)
+        assert payload["thinking"] == {"type": "adaptive"}
+        assert payload["output_config"] == {"effort": "medium"}
+
+    def test_thinking_payload_disabled_when_effort_none(self):
+        from coderAI.llm.anthropic import AnthropicProvider
+
+        provider = AnthropicProvider(model="claude-4-sonnet", api_key="test-key", reasoning_effort="none")
+        payload = provider._build_payload(messages=[{"role": "user", "content": "hi"}], tools=None)
+        assert "thinking" not in payload
+        assert "output_config" not in payload
 
 
 # ============================================================================
@@ -1177,3 +1194,42 @@ class TestCreateFolderAndLoginPage:
 
         # Validate JavaScript is present
         assert "addEventListener" in content
+
+
+# ============================================================================
+# Execution Loop Recovery
+# ============================================================================
+
+
+class TestExecutionLoopRecovery:
+    """Tests for tool-call transcript recovery in the main loop."""
+
+    def test_repairs_unpaired_assistant_tool_calls(self):
+        from types import SimpleNamespace
+
+        from coderAI.agent_loop import ExecutionLoop
+        from coderAI.history import Session
+
+        session = Session(session_id="session_1234567890_deadbeef")
+        session.add_message(
+            "assistant",
+            "I will run a tool",
+            tool_calls=[
+                {
+                    "id": "call_missing_1",
+                    "type": "function",
+                    "function": {"name": "read_file", "arguments": "{}"},
+                }
+            ],
+        )
+
+        agent = SimpleNamespace(session=session)
+        loop = ExecutionLoop(agent)
+        loop._repair_unpaired_tool_calls()
+
+        msgs = session.get_messages_for_api()
+        assert len(msgs) == 2
+        assert msgs[0]["role"] == "assistant"
+        assert msgs[1]["role"] == "tool"
+        assert msgs[1]["tool_call_id"] == "call_missing_1"
+        assert "internal error" in msgs[1]["content"].lower()

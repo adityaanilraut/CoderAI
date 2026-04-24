@@ -25,7 +25,7 @@ coderAI chat
 # Specific model
 coderAI chat -m claude-4-sonnet
 coderAI chat -m opus
-coderAI chat -m gpt-5-mini
+coderAI chat -m gpt-5.4-mini
 
 # Resume a previous session
 coderAI chat --resume <session-id>

@@ -39,26 +39,48 @@ class ContextController:
         total += 3  # reply priming
         return total
 
+    # Tag used to identify injected context messages for deduplication
+    _CONTEXT_TAG = "[Pinned Context]"
+
     def inject_context(
         self, 
         messages: List[Dict[str, Any]], 
         context_manager: Any,
         query: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """Inject the pinned-context system message after the last system message."""
+        """Inject the pinned-context system message after the last system message.
+
+        Returns a *new* list — the caller's list is never mutated. Any
+        previously injected context messages (identified by ``_CONTEXT_TAG``)
+        are stripped first to prevent accumulation across loop iterations.
+        """
         context_msg = context_manager.get_system_message(
             query=query,
             messages=messages,
         )
         if not context_msg:
-            return messages
-            
+            # Still strip stale context injections even when there's nothing new
+            return [
+                m for m in messages
+                if not (m.get("role") == "system" and isinstance(m.get("content"), str)
+                        and self._CONTEXT_TAG in m["content"])
+            ]
+
+        # Work on a copy and strip previous injections
+        result = [
+            m for m in messages
+            if not (m.get("role") == "system" and isinstance(m.get("content"), str)
+                    and self._CONTEXT_TAG in m["content"])
+        ]
+
         insert_idx = 0
-        for i, msg in enumerate(messages):
+        for i, msg in enumerate(result):
             if msg.get("role") == "system":
                 insert_idx = i + 1
-        messages.insert(insert_idx, {"role": "system", "content": context_msg})
-        return messages
+
+        tagged_content = f"{self._CONTEXT_TAG}\n{context_msg}"
+        result.insert(insert_idx, {"role": "system", "content": tagged_content})
+        return result
 
     async def manage_context_window(
         self,
@@ -100,6 +122,13 @@ class ContextController:
                 break
             kept_groups.insert(0, group)
             running_tokens += group_tokens
+
+        # Always keep at least the last group (most recent tool interaction)
+        # so the model retains context about what just happened, even if it
+        # exceeds the budget.  Without this, tool-heavy sessions can end up
+        # with zero kept messages and a confused model.
+        if not kept_groups and groups:
+            kept_groups = [groups[-1]]
 
         kept_messages = [msg for group in kept_groups for msg in group]
 

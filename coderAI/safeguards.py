@@ -50,6 +50,19 @@ _INTERACTIVE_BINARIES: Set[str] = {
     "coderai",
 }
 
+# Sub-categories of _INTERACTIVE_BINARIES used in is_interactive_command()
+# to decide whether arguments make the command non-interactive.
+# Maintaining these here avoids duplicate inline tuples.
+_SHELL_BINARIES: Set[str] = {"bash", "zsh", "sh", "fish", "csh", "tcsh"}
+_INTERPRETER_BINARIES: Set[str] = {
+    "python", "python3", "python2", "node", "bun", "lua",
+    "luajit", "julia", "ruby", "irb", "R", "r", "scala",
+}
+_ALWAYS_INTERACTIVE_BINARIES: Set[str] = {
+    "vim", "nvim", "vi", "nano", "emacs", "pico", "ed",
+    "less", "more", "top", "htop", "btop", "glances", "nmon",
+}
+
 # Patterns that indicate interactive flags (e.g. docker run -it, docker exec -it)
 _INTERACTIVE_FLAG_PATTERNS: List[re.Pattern] = [
     re.compile(r"\bdocker\s+(run|exec)\b.*\s-[a-z]*i[a-z]*t"),
@@ -136,7 +149,7 @@ def is_interactive_command(command: str) -> bool:
     first_arg = remaining_args[0]
 
     # For shells: -c / -lc / bash script.sh vs interactive shell
-    if binary in ("bash", "zsh", "sh", "fish", "csh", "tcsh"):
+    if binary in _SHELL_BINARIES:
         if any(_token_is_shell_dash_c(a) for a in remaining_args):
             return False
         if not first_arg.startswith("-"):
@@ -144,8 +157,7 @@ def is_interactive_command(command: str) -> bool:
         return True
 
     # For interpreters: stdin (-), script file, or flags
-    if binary in ("python", "python3", "python2", "node", "bun", "lua",
-                   "luajit", "julia", "ruby", "irb", "R", "r", "scala"):
+    if binary in _INTERPRETER_BINARIES:
         if first_arg == "-":
             return False  # read script from stdin (incl. heredoc after shell expansion)
         if not first_arg.startswith("-"):
@@ -153,8 +165,7 @@ def is_interactive_command(command: str) -> bool:
         return True
 
     # Editors / TUIs / monitors are always interactive regardless of args
-    if binary in ("vim", "nvim", "vi", "nano", "emacs", "pico", "ed",
-                   "less", "more", "top", "htop", "btop", "glances", "nmon"):
+    if binary in _ALWAYS_INTERACTIVE_BINARIES:
         return True
 
     # Database CLIs and network tools: interactive by default

@@ -47,6 +47,7 @@ class Config(BaseModel):
     max_command_output: int = Field(default=10_000)  # chars
     web_tools_in_main: bool = Field(default=True)  # Allow web tools in main agent
     project_root: str = Field(default=".")
+    approval_timeout_seconds: int = Field(default=300)  # 0 = wait forever
 
 
 class ConfigManager:
@@ -144,10 +145,14 @@ class ConfigManager:
         """Get all configuration as a dictionary."""
         config = self.load()
         data = config.model_dump(exclude_none=True)
-        # Mask sensitive data
+        # Mask sensitive data — never reveal short keys
         for key in ["openai_api_key", "anthropic_api_key", "groq_api_key", "deepseek_api_key"]:
             if key in data and data[key]:
-                data[key] = f"{data[key][:8]}...{data[key][-4:]}"
+                val = data[key]
+                if len(val) > 16:
+                    data[key] = f"{'*' * 8}...{val[-4:]}"
+                else:
+                    data[key] = "***"
         return data
 
     def reset(self) -> None:
@@ -195,6 +200,7 @@ class ConfigManager:
             "streaming",
             "reasoning_effort",
             "log_level",
+            "approval_timeout_seconds",
         }
 
         try:
@@ -207,18 +213,26 @@ class ConfigManager:
             if key not in ALLOWED_PROJECT_KEYS:
                 continue
             # Type coercion for numeric / boolean fields
-            if key == "temperature":
-                value = float(value)
-            elif key in {
-                "max_tokens", "max_iterations", "context_window",
-                "max_tool_output", "max_file_size", "max_glob_results",
-                "max_command_output",
-            }:
-                value = int(value)
-            elif key == "budget_limit":
-                value = float(value)
-            elif key == "streaming":
-                value = bool(value)
+            try:
+                if key == "temperature":
+                    value = float(value)
+                elif key in {
+                    "max_tokens", "max_iterations", "context_window",
+                    "max_tool_output", "max_file_size", "max_glob_results",
+                    "max_command_output", "approval_timeout_seconds",
+                }:
+                    value = int(value)
+                elif key == "budget_limit":
+                    value = float(value)
+                elif key == "streaming":
+                    # bool("false") is True in Python; handle string booleans explicitly
+                    if isinstance(value, str):
+                        value = value.strip().lower() in ("true", "1", "yes")
+                    else:
+                        value = bool(value)
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Invalid project config value for '{key}': {e}")
+                continue
             setattr(config, key, value)
 
         return config

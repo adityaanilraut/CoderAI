@@ -120,10 +120,20 @@ class TestRunCommandTool:
         assert result["success"]
         assert "hello" in result["stdout"]
 
-    def test_working_dir(self, tmp_path):
+    def test_working_dir(self, tmp_path, monkeypatch):
+        # ``_resolve_working_dir`` rejects paths outside the project root by
+        # default; tmp_path is outside it, so opt out via the documented
+        # escape hatch for this specific test.
+        monkeypatch.setenv("CODERAI_ALLOW_OUTSIDE_PROJECT", "1")
         result = asyncio.run(self.tool.execute(command="pwd", working_dir=str(tmp_path)))
         assert result["success"]
         assert str(tmp_path) in result["stdout"]
+
+    def test_working_dir_blocked_outside_project(self, tmp_path):
+        # Default behavior: rejecting a working_dir outside project root.
+        result = asyncio.run(self.tool.execute(command="pwd", working_dir=str(tmp_path)))
+        assert not result["success"]
+        assert result.get("error_code") == "scope"
 
     def test_stderr_captured(self):
         result = asyncio.run(self.tool.execute(command="ls /nonexistent_dir_xyz"))

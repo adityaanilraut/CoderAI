@@ -49,7 +49,14 @@
       "Bash(grep -n \"def \\\\|class \\\\|pass$\\\\|NotImplemented\\\\|TODO\\\\|FIXME\" /Users/adityaraut/Desktop/CoderAI-main/coderAI/tools/git.py)",
       "Bash(grep *)",
       "Bash(sed -n '125,134p' /Users/adityaraut/Desktop/CoderAI-main/coderAI/ipc/jsonrpc_server.py)",
-      "Bash(sed -n '429,440p' /Users/adityaraut/Desktop/CoderAI-main/coderAI/ipc/jsonrpc_server.py)"
+      "Bash(sed -n '429,440p' /Users/adityaraut/Desktop/CoderAI-main/coderAI/ipc/jsonrpc_server.py)",
+      "Bash(pytest tests/test_tool_executor.py tests/test_subagent.py -x --no-header -q)",
+      "Bash(pytest tests/test_tool_executor.py tests/test_subagent.py --no-header -q)",
+      "Bash(pytest tests/test_agent.py tests/test_context.py tests/test_tool_routing.py tests/test_web.py tests/test_coderAI.py --no-header -q)",
+      "Bash(pytest --no-header -q)",
+      "Bash(pytest tests/test_subagent.py tests/test_tool_executor.py -q)",
+      "Bash(pytest -q)",
+      "Bash(coderAI --version)"
     ]
   }
 }

@@ -1,6 +1,7 @@
 import React, {useState} from "react";
 import {Box, Text, useInput} from "ink";
 import {theme} from "../theme.js";
+import {Rail, MessageHeader, Kbd} from "./Primitives.js";
 
 export interface ErrorPanelProps {
   category: "provider" | "tool" | "internal";
@@ -18,8 +19,15 @@ export interface ErrorPanelProps {
 }
 
 /**
- * Replaces the raw Python traceback dumps. Shows a short, friendly summary
- * plus a "d" keypress reveal for the full details when the user wants them.
+ * Friendly error block.
+ *
+ *   ▌ ⚠ Provider error                  provider
+ *   ▌ missing ANTHROPIC_API_KEY
+ *   ▌ → run `coderAI setup` or set the env var
+ *   ▌ Ctrl+D to show details
+ *
+ * Replaces raw Python tracebacks with a short summary and an optional
+ * expandable details view keyed on `d`/`Ctrl+D`.
  */
 export function ErrorPanel({
   category,
@@ -54,46 +62,41 @@ export function ErrorPanel({
     "Check stderr for more detail or try again.";
 
   return (
-    <Box
-      borderStyle="double"
-      borderColor={theme.danger}
-      paddingX={1}
-      flexDirection="column"
-      marginBottom={1}
-    >
-      <Box justifyContent="space-between">
-        <Text color={theme.danger} bold>
-          ⚠ {title}
-        </Text>
-        <Text color={theme.muted}>{category}</Text>
-      </Box>
+    <Rail color={theme.danger} gap={2} marginBottom={1} marginTop={1}>
+      <MessageHeader
+        label={`${theme.glyph.warn} ${title}`}
+        labelColor={theme.danger}
+        right={<Text color={theme.faint}>{category}</Text>}
+      />
       <Box marginTop={1}>
         <Text color={theme.text}>{message}</Text>
       </Box>
       <Box>
-        <Text color={theme.warning}>▸ {resolvedHint}</Text>
+        <Text color={theme.warning}>
+          {theme.glyph.arrowRun} {resolvedHint}
+        </Text>
       </Box>
       {details ? (
         <>
           {canExpand ? (
-            <Box>
-              <Text color={theme.muted}>
-                Press <Text color={theme.accent}>
-                  {promptActive ? "Ctrl+D" : "d"}
-                </Text>{" "}
-                to{" "}
-                {expanded ? "hide" : "show"} details
+            <Box marginTop={1}>
+              <Text color={theme.faint}>
+                <Kbd label={promptActive ? "Ctrl+D" : "d"} />
+                <Text color={theme.faint}>
+                  {" "}
+                  to {expanded ? "hide" : "show"} details
+                </Text>
               </Text>
             </Box>
           ) : null}
           {expanded ? (
-            <Box flexDirection="column" marginTop={1} paddingLeft={1}>
+            <Box flexDirection="column" marginTop={1}>
               <Text color={theme.muted}>{details}</Text>
             </Box>
           ) : null}
         </>
       ) : null}
-    </Box>
+    </Rail>
   );
 }
 

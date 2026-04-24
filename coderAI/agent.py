@@ -154,12 +154,21 @@ class Agent:
         # arguments
         registry.register(ManageContextTool(self.context_manager))
 
-        # Filter web tools if not allowed for main agent
+        # Filter web tools if not allowed for main agent. Sub-agents always
+        # keep web tools so research delegations work.
+        # ``http_request`` is *also* gated here — it was inadvertently left on
+        # the main agent before, giving a back-door to web access even when
+        # web_tools_in_main=False.
         if not (self.is_subagent or self.config.web_tools_in_main):
-            to_remove = ["web_search", "read_url", "download_file"]
-            for name in to_remove:
-                if name in registry.tools:
-                    del registry.tools[name]
+            to_remove = ["web_search", "read_url", "download_file", "http_request"]
+            removed = [n for n in to_remove if n in registry.tools]
+            for name in removed:
+                del registry.tools[name]
+            if removed:
+                logger.info(
+                    "web_tools_in_main=False — removed from main agent: %s",
+                    ", ".join(removed),
+                )
 
         return registry
 
@@ -177,6 +186,7 @@ class Agent:
             parent_cost_tracker=self.cost_tracker,
             parent_auto_approve=self.auto_approve,
             parent_ipc_server=getattr(self, "ipc_server", None),
+            parent_session=getattr(self, "session", None),
         )
 
     def _rebuild_tool_registry(self) -> None:
@@ -323,8 +333,31 @@ class Agent:
             query=query
         )
 
+    def _reset_session_accounting(self) -> None:
+        """Reset cost, token, and hook-approval state at session boundaries.
+
+        The ``Agent`` outlives individual sessions (e.g. ``/clear`` creates a
+        new one, ``history`` can load another). Without this reset the
+        previous session's spend would count against the new session's
+        budget, and prior hook approvals would carry over silently.
+        """
+        self.cost_tracker.reset()
+        self.total_prompt_tokens = 0
+        self.total_completion_tokens = 0
+        self.total_tokens = 0
+        self._hooks_approved.clear()
+        # Re-align provider-side cumulative counters with the zeroed agent
+        # counters so subsequent deltas read correctly.
+        provider = getattr(self, "provider", None)
+        if provider is not None:
+            if hasattr(provider, "total_input_tokens"):
+                provider.total_input_tokens = 0
+            if hasattr(provider, "total_output_tokens"):
+                provider.total_output_tokens = 0
+
     def create_session(self) -> Session:
         """Create a new conversation session."""
+        self._reset_session_accounting()
         self.session = history_manager.create_session(model=self.model)
         # Add system prompt as the first message
         self.session.add_message("system", self._get_system_prompt())
@@ -332,6 +365,7 @@ class Agent:
 
     def load_session(self, session_id: str) -> Optional[Session]:
         """Load an existing session."""
+        self._reset_session_accounting()
         self.session = history_manager.load_session(session_id)
         return self.session
 
@@ -375,13 +409,13 @@ class Agent:
                 )
             )
 
-            for msg in compacted_messages:
+            for compacted_msg in compacted_messages:
                 if (
-                    msg.get("role") == "system"
-                    and isinstance(msg.get("content"), str)
+                    compacted_msg.get("role") == "system"
+                    and isinstance(compacted_msg.get("content"), str)
                     and (
-                        "[Prior Conversation Summary]:" in msg.get("content")
-                        or "were removed to fit" in msg.get("content")
+                        "[Prior Conversation Summary]:" in compacted_msg.get("content")
+                        or "were removed to fit" in compacted_msg.get("content")
                     )
                 ):
                     # Compaction reorders messages (inserts a summary, drops
@@ -405,10 +439,10 @@ class Agent:
                         )
 
                     new_messages = []
-                    for m in compacted_messages:
+                    for cm in compacted_messages:
                         msg_args = {
                             k: v
-                            for k, v in m.items()
+                            for k, v in cm.items()
                             if k in ["role", "content", "tool_calls", "tool_call_id", "name"]
                         }
                         key = (

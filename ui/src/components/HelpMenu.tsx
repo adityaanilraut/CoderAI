@@ -6,21 +6,22 @@ import {
   type HelpMenuEntry,
 } from "../helpMenu.js";
 import {theme} from "../theme.js";
+import {truncateSmart} from "../lib/format.js";
 
-function truncate(s: string, max: number): string {
-  if (max < 8) return "…";
-  return s.length <= max ? s : s.slice(0, Math.max(0, max - 1)) + "…";
-}
-
-export function HelpMenu({
-  onPick,
-  onClose,
-  maxWidth,
-}: {
+export interface HelpMenuProps {
   onPick: (slash: string) => void;
   onClose: () => void;
   maxWidth: number;
-}) {
+}
+
+/**
+ * /command picker overlay with keyboard navigation.
+ *
+ * Redesign: keeps the single round border (this is a modal and earns
+ * chrome), but swaps the row treatment to a filled selection bar that
+ * reads as a real focused menu row rather than a coloured text run.
+ */
+export function HelpMenu({onPick, onClose, maxWidth}: HelpMenuProps) {
   const [index, setIndex] = useState(0);
   const items = HELP_MENU_ENTRIES;
 
@@ -46,27 +47,31 @@ export function HelpMenu({
     {isActive: true},
   );
 
-  const inner = Math.max(40, Math.min(maxWidth - 2, 96));
+  const inner = Math.max(40, Math.min(maxWidth - 4, 96));
   const labelW = Math.min(34, Math.max(20, Math.floor(inner * 0.42)));
   const descW = Math.max(10, inner - labelW - 4);
 
   return (
     <Box
       flexDirection="column"
-      borderStyle="double"
+      borderStyle="round"
       borderColor={theme.accentDim}
       paddingX={1}
       marginBottom={1}
     >
-      <Box marginBottom={1}>
+      {/* Header */}
+      <Box marginBottom={1} justifyContent="space-between">
         <Text color={theme.accent} bold>
-          Commands
+          {theme.glyph.diamond} Commands
         </Text>
-        <Text color={theme.muted}>
-          {" "}
-          · command palette · ↑↓ select · Enter run · Esc close
+        <Text color={theme.faint}>
+          ↑↓ select
+          {theme.glyph.separator}↵ run
+          {theme.glyph.separator}esc close
         </Text>
       </Box>
+
+      {/* Entries */}
       {items.map((row, i) => (
         <HelpRow
           key={row.slash}
@@ -76,40 +81,40 @@ export function HelpMenu({
           descW={descW}
         />
       ))}
-      <Box marginTop={1} flexDirection="column">
-        <Text color={theme.muted} dimColor>
-          {truncate(HELP_CLI_FOOTER, inner)}
+
+      {/* Footer */}
+      <Box marginTop={1}>
+        <Text color={theme.faint} dimColor>
+          {truncateSmart(HELP_CLI_FOOTER, inner)}
         </Text>
       </Box>
     </Box>
   );
 }
 
-function HelpRow({
-  row,
-  selected,
-  labelW,
-  descW,
-}: {
+function HelpRow({row, selected, labelW, descW}: HelpRowProps) {
+  const mark = selected ? theme.glyph.caret + " " : "  ";
+  const lab = truncateSmart(row.slash, labelW);
+  const rest = truncateSmart(row.desc, descW);
+  return (
+    <Box>
+      <Text color={selected ? theme.accent : theme.faint}>{mark}</Text>
+      <Text
+        bold={selected}
+        color={selected ? "black" : theme.info}
+        backgroundColor={selected ? theme.accent : undefined}
+      >
+        {" "}
+        {lab.padEnd(labelW - 1)}
+      </Text>
+      <Text color={selected ? theme.textSoft : theme.muted}> {rest}</Text>
+    </Box>
+  );
+}
+
+export interface HelpRowProps {
   row: HelpMenuEntry;
   selected: boolean;
   labelW: number;
   descW: number;
-}) {
-  const mark = selected ? "❯ " : "  ";
-  const lab = truncate(row.slash, labelW);
-  const rest = truncate(row.desc, descW);
-  return (
-    <Box>
-      <Text color={selected ? theme.accent : theme.muted}>{mark}</Text>
-      <Text
-        bold={selected}
-        color={selected ? theme.focus : theme.info}
-        backgroundColor={selected ? theme.accentDim : undefined}
-      >
-        {lab.padEnd(labelW)}
-      </Text>
-      <Text color={theme.muted}> {rest}</Text>
-    </Box>
-  );
 }

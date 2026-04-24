@@ -2,7 +2,10 @@
 
 import asyncio
 import difflib
+import logging
+import os
 import re
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -13,6 +16,8 @@ from .undo import backup_store
 from ..config import config_manager
 from ..events import event_emitter
 from ..locks import resource_manager
+
+logger = logging.getLogger(__name__)
 
 
 def _emit_diff(path_obj: Path, before: str, after: str) -> None:
@@ -80,6 +85,14 @@ PROTECTED_SYSTEM_PATHS = [
     "/root",
 ]
 
+if sys.platform == "win32":
+    PROTECTED_SYSTEM_PATHS.extend([
+        "C:\\Windows",
+        "C:\\Windows\\System32",
+        "C:\\Program Files",
+        "C:\\Program Files (x86)",
+    ])
+
 
 def _is_path_protected(path: Path) -> bool:
     """Check if a path targets a protected location (home or system)."""
@@ -102,6 +115,50 @@ def _is_path_protected(path: Path) -> bool:
         except ValueError:
             continue
     return False
+
+
+def _is_in_project_root(path: Path) -> bool:
+    """Return True if *path* resolves underneath the configured project root.
+
+    ``.resolve()`` follows every symlink in the chain, so a symlinked ancestor
+    that points at ``/etc`` cannot be used to dodge this check.
+    """
+    try:
+        cfg = config_manager.load()
+        project_root = Path(getattr(cfg, "project_root", ".") or ".").resolve()
+    except Exception:
+        project_root = Path.cwd().resolve()
+    try:
+        path.resolve().relative_to(project_root)
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def _enforce_project_scope(path: Path, op: str) -> Optional[Dict[str, Any]]:
+    """Reject writes outside the project root when strict mode is on.
+
+    Strict mode is opt-in via ``CODERAI_STRICT_PATHS=1`` because many
+    legitimate flows (editing dotfiles, system config) write outside the
+    project root. When off we only log a WARNING so escapes are visible in
+    the audit trail without breaking existing workflows.
+    """
+    if _is_in_project_root(path):
+        return None
+    if os.environ.get("CODERAI_STRICT_PATHS") == "1":
+        return {
+            "success": False,
+            "error": (
+                f"Refusing to {op} outside project root: {path}. "
+                "Unset CODERAI_STRICT_PATHS to allow."
+            ),
+            "error_code": "scope",
+        }
+    logger.warning(
+        "%s outside project root: %s (set CODERAI_STRICT_PATHS=1 to block)",
+        op, path,
+    )
+    return None
 
 
 class ReadFileParams(BaseModel):
@@ -159,11 +216,17 @@ class ReadFileTool(Tool):
                 else:
                     content = f.read()
 
+            line_count = content.count("\n")
+            # A file with no trailing newline still has 1 line of content,
+            # but a truly empty file has 0 lines.
+            if content and not content.endswith("\n"):
+                line_count += 1
+
             return {
                 "success": True,
                 "path": str(path_obj),
                 "content": content,
-                "lines": len(content.split("\n")),
+                "lines": line_count,
                 "size_bytes": file_size,
             }
         except UnicodeDecodeError:
@@ -208,6 +271,9 @@ class WriteFileTool(Tool):
                         "error_code": "permission_denied",
                         "hint": "This path is protected for security. Choose a different location.",
                     }
+                scope_err = _enforce_project_scope(path_obj, "write_file")
+                if scope_err:
+                    return scope_err
 
                 path_obj.parent.mkdir(parents=True, exist_ok=True)
 
@@ -224,7 +290,10 @@ class WriteFileTool(Tool):
                         backup_store.backup_file(str(path_obj), "create")
                         before_content = ""
                 else:
-                    backup_store.backup_file(str(path_obj), "modify") if path_obj.exists() else backup_store.backup_file(str(path_obj), "create")
+                    op = "modify" if path_obj.exists() else "create"
+                    backup_result = backup_store.backup_file(str(path_obj), op)
+                    if isinstance(backup_result, dict) and backup_result.get("error"):
+                        logger.warning("Backup before append failed: %s", backup_result["error"])
 
                 mode = "a" if append else "w"
                 with open(path_obj, mode, encoding="utf-8") as f:
@@ -297,6 +366,9 @@ class SearchReplaceTool(Tool):
                         "success": False,
                         "error": f"Cannot modify protected path: {path}",
                     }
+                scope_err = _enforce_project_scope(path_obj, "search_replace")
+                if scope_err:
+                    return scope_err
 
                 with open(path_obj, "r", encoding="utf-8") as f:
                     content = f.read()
@@ -489,6 +561,9 @@ class ApplyDiffTool(Tool):
                         "success": False,
                         "error": f"Cannot modify protected path: {path}",
                     }
+                scope_err = _enforce_project_scope(path_obj, "apply_diff")
+                if scope_err:
+                    return scope_err
 
                 with open(path_obj, "r", encoding="utf-8") as f:
                     original_lines = f.readlines()
@@ -511,6 +586,9 @@ class ApplyDiffTool(Tool):
                         "success": False,
                         "error": "No valid hunks found in diff. Use @@ -start,count +start,count @@ format.",
                     }
+
+                # Create backup BEFORE modifying — consistent with other write tools
+                backup_store.backup_file(str(path_obj), "modify")
 
                 result_lines = list(original_lines)
                 hunks_applied = 0
@@ -559,8 +637,6 @@ class ApplyDiffTool(Tool):
                         line if line.endswith("\n") else line + "\n" for line in new_lines
                     ]
                     hunks_applied += 1
-
-                backup_store.backup_file(str(path_obj), "modify")
 
                 with open(path_obj, "w", encoding="utf-8") as f:
                     f.writelines(result_lines)
@@ -715,6 +791,9 @@ class MoveFileTool(Tool):
 
             if _is_path_protected(dst):
                 return {"success": False, "error": f"Destination is in a protected path: {destination}"}
+            scope_err = _enforce_project_scope(dst, "move/copy")
+            if scope_err:
+                return scope_err
 
             if dst.exists() and not overwrite:
                 return {
@@ -723,6 +802,12 @@ class MoveFileTool(Tool):
                 }
 
             dst.parent.mkdir(parents=True, exist_ok=True)
+
+            # Backup source (it will be removed) and destination (if overwritten)
+            if src.is_file():
+                backup_store.backup_file(str(src), "delete")
+            if dst.exists() and dst.is_file():
+                backup_store.backup_file(str(dst), "modify")
 
             def _move():
                 _shutil.move(str(src), str(dst))
@@ -770,6 +855,9 @@ class CopyFileTool(Tool):
 
             if _is_path_protected(dst):
                 return {"success": False, "error": f"Destination is in a protected path: {destination}"}
+            scope_err = _enforce_project_scope(dst, "move/copy")
+            if scope_err:
+                return scope_err
 
             if dst.exists() and not overwrite:
                 return {
@@ -778,6 +866,10 @@ class CopyFileTool(Tool):
                 }
 
             dst.parent.mkdir(parents=True, exist_ok=True)
+
+            # Backup destination if it will be overwritten
+            if dst.exists() and dst.is_file():
+                backup_store.backup_file(str(dst), "modify")
 
             def _copy():
                 if src.is_dir():
@@ -826,6 +918,13 @@ class DeleteFileTool(Tool):
 
             if _is_path_protected(target):
                 return {"success": False, "error": f"Refusing to delete protected path: {path}"}
+            scope_err = _enforce_project_scope(target, "delete")
+            if scope_err:
+                return scope_err
+
+            # Backup file before deletion for undo support
+            if target.is_file():
+                backup_store.backup_file(str(target), "delete")
 
             def _delete():
                 if target.is_dir():
@@ -875,6 +974,9 @@ class CreateDirectoryTool(Tool):
 
             if _is_path_protected(target):
                 return {"success": False, "error": f"Refusing to create directory in protected path: {path}"}
+            scope_err = _enforce_project_scope(target, "create_directory")
+            if scope_err:
+                return scope_err
 
             def _mkdir():
                 target.mkdir(parents=parents, exist_ok=True)

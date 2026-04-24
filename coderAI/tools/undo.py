@@ -2,7 +2,9 @@
 
 import json
 import logging
+import os
 import shutil
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -50,9 +52,29 @@ class FileBackupStore:
         return []
 
     def _save_index(self):
-        """Save backup index to disk."""
-        with open(self.index_file, "w") as f:
-            json.dump(self.index, f, indent=2)
+        """Atomically write the backup index to disk.
+
+        A crash between ``open()`` and ``close()`` would otherwise leave a
+        truncated ``index.json`` that fails to parse on the next load, and
+        the store would silently reset to an empty index. Write to a
+        temp file in the same directory, then ``os.replace`` — which is
+        atomic on both POSIX and Windows.
+        """
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(self.backup_dir), prefix=".index-", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(self.index, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, self.index_file)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
     def backup_file(self, filepath: str, operation: str = "modify") -> Dict[str, Any]:
         """Create a backup of a file before modification.
@@ -153,10 +175,11 @@ class FileBackupStore:
                     "message": f"Restored {filepath.name} to previous version",
                 }
 
+            else:
+                return {"success": False, "error": f"Unknown operation type: {operation}"}
+
         except Exception as e:
             return {"success": False, "error": str(e)}
-
-        return {"success": False, "error": "Unknown operation type"}
 
     def undo_specific(self, index: int) -> Dict[str, Any]:
         """Undo a specific operation by its index in the history.
@@ -207,10 +230,10 @@ class FileBackupStore:
                     "filepath": str(filepath),
                     "message": f"Restored {filepath.name} to version from {entry['timestamp']}",
                 }
+            else:
+                return {"success": False, "error": f"Unknown operation type: {operation}"}
         except Exception as e:
             return {"success": False, "error": str(e)}
-
-        return {"success": False, "error": "Unknown operation type"}
 
     def get_history(self, limit: int = 10) -> List[Dict[str, Any]]:
         """Get recent backup history.
@@ -227,13 +250,15 @@ class FileBackupStore:
         """Remove old backups beyond MAX_BACKUPS_PER_FILE."""
         file_entries = [e for e in self.index if e["filepath"] == filepath]
         if len(file_entries) > MAX_BACKUPS_PER_FILE:
-            to_remove = file_entries[: len(file_entries) - MAX_BACKUPS_PER_FILE]
-            for entry in to_remove:
+            to_remove = set(id(e) for e in file_entries[: len(file_entries) - MAX_BACKUPS_PER_FILE])
+            for entry in file_entries[: len(file_entries) - MAX_BACKUPS_PER_FILE]:
                 if entry.get("backup_path"):
                     backup = Path(entry["backup_path"])
                     if backup.exists():
                         backup.unlink()
-                self.index.remove(entry)
+            # Filter by identity rather than equality to avoid removing
+            # the wrong entry on timestamp/dict collisions
+            self.index = [e for e in self.index if id(e) not in to_remove]
             self._save_index()
 
     def _cleanup_global_backups(self):
@@ -259,8 +284,22 @@ def get_backup_store() -> FileBackupStore:
     return _backup_store
 
 
-# Backward-compat alias — initialized once to allow instance-style access
-backup_store = get_backup_store()
+class _LazyBackupStore:
+    """Module-level proxy that defers ``FileBackupStore`` creation until first use.
+
+    Avoids creating ``~/.coderAI/backups/`` and touching ``index.json`` on
+    import (e.g. ``coderAI --version``).
+    """
+
+    def __getattr__(self, name):
+        return getattr(get_backup_store(), name)
+
+    def __repr__(self):
+        return repr(get_backup_store())
+
+
+# Backward-compat alias — lazily delegates to the real store on first use
+backup_store: FileBackupStore = _LazyBackupStore()  # type: ignore[assignment]
 
 
 class UndoParams(BaseModel):

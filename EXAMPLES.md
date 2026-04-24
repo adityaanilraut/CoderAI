@@ -16,7 +16,7 @@ Or manually configure:
 
 ```bash
 coderAI config set openai_api_key YOUR_API_KEY
-coderAI config set default_model gpt-5-mini
+coderAI config set default_model gpt-5.4-mini
 ```
 
 ### 2. Interactive Mode
@@ -30,7 +30,7 @@ coderAI chat
 Or with a specific model:
 
 ```bash
-coderAI --model gpt-5 chat
+coderAI --model gpt-5.4 chat
 ```
 
 ### 3. Ask in the chat UI
@@ -271,9 +271,9 @@ You> Why did you choose this approach for error handling?
 
 ## Model Selection
 
-- **gpt-5**: Most capable, best for complex reasoning
-- **gpt-5-mini**: Balanced performance and speed
-- **gpt-5-nano**: Fastest, good for simple tasks
+- **gpt-5.4**: Most capable, best for complex reasoning
+- **gpt-5.4-mini**: Balanced performance and speed
+- **gpt-5.4-nano**: Fastest, good for simple tasks
 - **lmstudio**: Use your own local models
 
 ## Troubleshooting

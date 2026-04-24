@@ -93,7 +93,17 @@ class ContextManager:
         self._pinned_mtimes.clear()
 
     def refresh_pinned_files(self):
-        """Re-read pinned files from disk only when they have changed (mtime check)."""
+        """Re-read pinned files from disk only when they have changed (mtime check).
+
+        Includes a cooldown (2s) so rapid tool-loop iterations don't
+        stat-check every file on every single LLM call.
+        """
+        import time
+        now = time.monotonic()
+        if hasattr(self, "_last_refresh_at") and (now - self._last_refresh_at) < 2.0:
+            return  # Skip — checked recently
+        self._last_refresh_at = now
+
         stale_keys = []
         for path_str in list(self.pinned_files.keys()):
             try:

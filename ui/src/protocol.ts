@@ -84,6 +84,12 @@ export type AgentEvent =
       args: Record<string, unknown>;
       risk: ToolRisk;
     }
+  | {
+      event: "tool_approval_timeout";
+      id: string;
+      tool: string;
+      timeoutSeconds: number;
+    }
   | { event: "file_diff"; path: string; diff: string }
   | {
       event: "status";
@@ -103,7 +109,7 @@ export type AgentEvent =
     }
   | {
       event: "error";
-      category: "provider" | "tool" | "internal";
+      category: "provider" | "tool" | "internal" | "protocol";
       message: string;
       hint?: string;
       details?: string;
@@ -128,6 +134,7 @@ export const AGENT_EVENT_NAMES: readonly string[] = [
   "tool_call",
   "tool_result",
   "tool_approval_req",
+  "tool_approval_timeout",
   "file_diff",
   "status",
   "agent_update",

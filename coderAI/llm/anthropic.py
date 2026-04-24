@@ -62,6 +62,9 @@ MODEL_ALIASES = {
     "claude-4.7-opus": "claude-opus-4-7",
     "claude-4.6-sonnet": "claude-sonnet-4-6",
     "claude-4.5-haiku": "claude-haiku-4-5-20251001",
+    # Back-compat typo/legacy alias: "/models" in older builds surfaced this.
+    # Keep routing it to the current Opus family model to avoid API 404 loops.
+    "claude-4.6-opus": "claude-opus-4-7",
     # Kept for back-compat with existing configs (default_model was
     # "claude-4-sonnet"). Point at the current 4.6 sonnet.
     "claude-4-sonnet": "claude-sonnet-4-6",
@@ -78,9 +81,7 @@ MODEL_ALIASES = {
     "haiku": "claude-haiku-4-5-20251001",
 }
 
-_THINKING_BUDGETS: Dict[str, int] = {"low": 1024, "medium": 4096, "high": 16384}
-
-# Models that support extended thinking (budget_tokens).
+# Models that support adaptive thinking + effort controls.
 # Kept in sync with CACHING_SUPPORTED_MODELS.
 _THINKING_SUPPORTED_MODELS = frozenset({
     "claude-opus-4-7",
@@ -202,7 +203,18 @@ class AnthropicProvider(LLMProvider):
                         "content": [tool_result_block],
                     })
             elif role == "user":
-                anthropic_messages.append({"role": "user", "content": content})
+                # Anthropic requires strictly alternating user/assistant turns.
+                # Merge into the previous user message when adjacent user turns occur
+                # (e.g. injected error messages, pinned-context inserts, tool results
+                # followed by a recovery prompt).
+                if anthropic_messages and anthropic_messages[-1]["role"] == "user":
+                    prev_content = anthropic_messages[-1]["content"]
+                    if isinstance(prev_content, list):
+                        prev_content.append({"type": "text", "text": content or ""})
+                    else:
+                        anthropic_messages[-1]["content"] = (prev_content or "") + "\n" + (content or "")
+                else:
+                    anthropic_messages.append({"role": "user", "content": content})
 
         return system_prompt.strip(), anthropic_messages
 
@@ -308,12 +320,10 @@ class AnthropicProvider(LLMProvider):
         tools: Optional[List[Dict[str, Any]]],
         max_tokens: Optional[int] = None,
         stream: bool = False,
-    ) -> tuple:
+    ) -> Dict[str, Any]:
         """Build the Anthropic API payload.
 
-        Returns (payload, session_kwargs) where session_kwargs is passed to
-        aiohttp.ClientSession.post. Extracted to avoid duplicating the
-        payload-construction block between chat() and stream().
+        Returns the fully-assembled request body as a dictionary.
         """
         system_prompt, anthropic_messages = self._convert_messages(messages)
         anthropic_tools = self._convert_tools(tools)
@@ -326,8 +336,10 @@ class AnthropicProvider(LLMProvider):
             payload["stream"] = True
 
         if self._supports_thinking() and self.reasoning_effort and self.reasoning_effort != "none":
-            budget = _THINKING_BUDGETS.get(self.reasoning_effort, 4096)
-            payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
+            # Anthropic's current API expects adaptive thinking plus effort
+            # controls in output_config (not budget_tokens).
+            payload["thinking"] = {"type": "adaptive"}
+            payload["output_config"] = {"effort": self.reasoning_effort}
 
         if self._supports_caching():
             sys_p, msg_p, tool_p = self._apply_cache_control(
@@ -488,10 +500,13 @@ class AnthropicProvider(LLMProvider):
                                     }]
                                 }
                         elif current_event == "message_stop":
+                            # Use 'tool_calls' if any tool_use blocks were seen,
+                            # matching the non-streaming _convert_response() behavior.
+                            final_reason = "tool_calls" if tool_call_blocks else "stop"
                             yield {
                                 "choices": [{
                                     "delta": {},
-                                    "finish_reason": "stop",
+                                    "finish_reason": final_reason,
                                 }]
                             }
 

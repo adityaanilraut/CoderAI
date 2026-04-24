@@ -137,62 +137,59 @@ class TestDownloadFileToolSchema:
 
 
 class TestDownloadFileExecution:
-    @patch("coderAI.tools.web.aiohttp.ClientSession")
-    def test_successful_download(self, MockSession, tmp_path):
+    def test_successful_download(self, tmp_path, monkeypatch):
         from coderAI.tools.web import DownloadFileTool
+        from coderAI.tools import web as web_mod
         import os
 
-        # Mock binary content
         binary_data = b"fake binary data for testing"
 
-        mock_resp = AsyncMock()
-        mock_resp.status = 200
-        mock_resp.read = AsyncMock(return_value=binary_data)
-        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_resp.__aexit__ = AsyncMock(return_value=False)
+        async def fake_safe_request(method, url, **kwargs):
+            return {
+                "status": 200,
+                "headers": {"Content-Type": "application/octet-stream"},
+                "url": url,
+                "content_type": "application/octet-stream",
+                "text": "",
+                "content": binary_data,
+            }
 
-        mock_ctx = MagicMock()
-        mock_ctx.get = MagicMock(return_value=mock_resp)
-
-        mock_session = MagicMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_ctx)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-        MockSession.return_value = mock_session
+        monkeypatch.setattr(web_mod, "_safe_request", fake_safe_request)
 
         tool = DownloadFileTool()
         dest_file = tmp_path / "test_download.bin"
-        
-        result = asyncio.run(tool.execute(url="https://example.com/test.bin", destination_path=str(dest_file)))
-        
+
+        result = asyncio.run(
+            tool.execute(url="https://example.com/test.bin", destination_path=str(dest_file))
+        )
+
         assert result["success"] is True
         assert result["bytes_downloaded"] == len(binary_data)
         assert result["destination_path"] == str(dest_file)
-        
-        # Verify file was written
+
         assert os.path.exists(dest_file)
         with open(dest_file, "rb") as f:
             assert f.read() == binary_data
 
-    @patch("coderAI.tools.web.aiohttp.ClientSession")
-    def test_http_error(self, MockSession):
+    def test_http_error(self, monkeypatch):
         from coderAI.tools.web import DownloadFileTool
+        from coderAI.tools import web as web_mod
 
-        mock_resp = AsyncMock()
-        mock_resp.status = 404
-        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_resp.__aexit__ = AsyncMock(return_value=False)
+        async def fake_safe_request(method, url, **kwargs):
+            return {
+                "status": 404,
+                "headers": {},
+                "url": url,
+                "content_type": "",
+                "text": "",
+                "content": b"",
+            }
 
-        mock_ctx = MagicMock()
-        mock_ctx.get = MagicMock(return_value=mock_resp)
-
-        mock_session = MagicMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_ctx)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-        MockSession.return_value = mock_session
+        monkeypatch.setattr(web_mod, "_safe_request", fake_safe_request)
 
         tool = DownloadFileTool()
         result = asyncio.run(tool.execute(url="https://example.com/notfound.bin"))
-        
+
         assert result["success"] is False
         assert "HTTP 404" in result["error"]
 

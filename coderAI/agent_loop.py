@@ -1,12 +1,15 @@
 """Execution Loop orchestrator for CoderAI agent."""
 
 import asyncio
+import json
 import logging
+import time as _time
 from typing import Any, Dict, List, Optional
 
 from .agent_tracker import AgentStatus
 from .cost import CostTracker
 from .events import event_emitter
+from .history import Message
 from .tool_executor import ToolExecutor
 from .hooks_manager import HooksManager
 from .error_policy import (
@@ -48,6 +51,9 @@ class ExecutionLoop:
         # 5. Load project hooks
         hooks_data = self.hooks_manager.load_hooks()
 
+        # Clear accumulated reply fragments from any prior iteration.
+        # Intentionally done here (the single entry point into the loop)
+        # rather than on the Agent to guarantee a clean slate.
         self.agent._assistant_reply_parts.clear()
         tools_were_used = False
 
@@ -69,7 +75,6 @@ class ExecutionLoop:
                         self.agent._sync_tracker()
 
                 response_data = await self._call_llm_with_retry(messages, tool_schemas)
-                consecutive_errors = 0
 
                 content = response_data.get("content")
                 tool_calls = response_data.get("tool_calls")
@@ -118,6 +123,7 @@ class ExecutionLoop:
                         return fatal_res
                 else:
                     tools_were_used = True
+                    consecutive_errors = 0
 
                 # Manage context window after tool results (or error messages) are added
                 messages = self.agent.context_controller.inject_context(messages, self.agent.context_manager, query=user_message)
@@ -168,11 +174,82 @@ class ExecutionLoop:
 
     async def _prepare_messages(self, user_message: str) -> List[Dict[str, Any]]:
         """Retrieve messages from session, inject context, and manage window."""
+        self._repair_unpaired_tool_calls()
         messages = self.agent.session.get_messages_for_api()
         messages = self.agent.context_controller.inject_context(
             messages, self.agent.context_manager, query=user_message
         )
         return await self.agent.context_controller.manage_context_window(messages)
+
+    def _repair_unpaired_tool_calls(self) -> None:
+        """Ensure assistant tool calls are followed by matching tool results.
+
+        If a previous iteration crashed after writing an assistant message with
+        ``tool_calls`` but before tool result messages were appended, some
+        providers reject the next request. We synthesize tool-error messages for
+        any missing tool IDs so the transcript remains valid and recoverable.
+        """
+        session = self.agent.session
+        if not session or not session.messages:
+            return
+
+        repaired: List[Message] = []
+        injected = 0
+        i = 0
+        msgs = session.messages
+        while i < len(msgs):
+            msg = msgs[i]
+            repaired.append(msg)
+
+            expected_ids: List[str] = []
+            if msg.role == "assistant" and msg.tool_calls:
+                for tc in msg.tool_calls:
+                    tc_id = (tc or {}).get("id")
+                    if isinstance(tc_id, str) and tc_id:
+                        expected_ids.append(tc_id)
+
+            if not expected_ids:
+                i += 1
+                continue
+
+            seen_ids = set()
+            j = i + 1
+            while j < len(msgs) and msgs[j].role == "tool":
+                repaired.append(msgs[j])
+                if msgs[j].tool_call_id:
+                    seen_ids.add(msgs[j].tool_call_id)
+                j += 1
+
+            missing_ids = [tcid for tcid in expected_ids if tcid not in seen_ids]
+            for tcid in missing_ids:
+                repaired.append(
+                    Message(
+                        role="tool",
+                        content=json.dumps(
+                            {
+                                "success": False,
+                                "error": (
+                                    "Tool execution did not complete due to an internal error. "
+                                    "Recovered by adding a synthetic tool response."
+                                ),
+                            }
+                        ),
+                        tool_call_id=tcid,
+                        name="internal_recovery",
+                        timestamp=_time.time(),
+                    )
+                )
+                injected += 1
+
+            i = j
+
+        if injected:
+            session.messages = repaired
+            session.updated_at = _time.time()
+            logger.warning(
+                "Recovered %s unpaired assistant tool_call(s) by injecting synthetic tool responses.",
+                injected,
+            )
 
     def _get_tool_schemas(self) -> Optional[List[Dict[str, Any]]]:
         """Collect tool schemas from built-in registry and MCP."""
@@ -188,24 +265,26 @@ class ExecutionLoop:
         return tool_schemas
 
     async def _post_tool_closing_message(self, user_message: str) -> Optional[str]:
-        """Ask once for a short user-visible wrap-up when tools ran but the model returned no final text."""
+        """Ask once for a short user-visible wrap-up when tools ran but the model returned no final text.
+
+        The synthetic prompt is *ephemeral* — it is appended to the message list
+        sent to the LLM but NOT persisted in the session, so later turns don't
+        see a ghost user turn that was never actually from the user.
+        """
+        closing_prompt = (
+            "Tools have finished. If you have not already told the user clearly "
+            "what was accomplished, write 1–3 short sentences confirming success "
+            "(what changed and where). If you already explained everything above, "
+            "reply with one brief line such as: All set — everything above is complete. "
+            "Do not call tools."
+        )
+
         messages = self.agent.session.get_messages_for_api()
         messages = self.agent.context_controller.inject_context(
             messages, self.agent.context_manager, query=user_message
         )
-        messages.append(
-            {
-                "role": "user",
-                "content": (
-                    "Tools have finished. If you have not already told the user clearly "
-                    "what was accomplished, write 1–3 short sentences confirming success "
-                    "(what changed and where). If you already explained everything above, "
-                    "reply with one brief line such as: All set — everything above is complete. "
-                    "Do not call tools."
-                ),
-            }
-        )
         messages = await self.agent.context_controller.manage_context_window(messages)
+        messages.append({"role": "user", "content": closing_prompt})
         event_emitter.emit(
             "agent_status",
             message="\n[dim]Writing a short completion summary…[/dim]",
@@ -217,9 +296,12 @@ class ExecutionLoop:
             return "Tools finished — check the tool results above."
 
         text = (response.get("content") or "").strip()
-        if response.get("tool_calls") and not text:
+        if not text:
+            # Always return a fallback instead of None — callers
+            # (especially sub-agent process_single_shot) rely on
+            # getting non-empty text after a tool-heavy session.
             return "Tools finished — check the tool results above."
-        return text or None
+        return text
 
     def _handle_cancellation(self) -> Dict[str, Any]:
         self.agent._finish_tracker()
@@ -244,10 +326,26 @@ class ExecutionLoop:
         }
 
     async def _handle_recoverable_error(self, e: Exception, count: int, user_message: str) -> List[Dict[str, Any]]:
-        event_emitter.emit("agent_error", message=f"Error (attempt {count}/{MAX_CONSECUTIVE_ERRORS}): {e}")
+        # Sanitize error message to avoid leaking sensitive info (API keys, tracebacks)
+        error_str = str(e)
+        # Truncate long error messages and strip potential key/token patterns
+        if len(error_str) > 200:
+            error_str = error_str[:200] + "..."
+        import re
+        error_str = re.sub(r'(sk-|key-|token-|Bearer\s+)[A-Za-z0-9_\-]{8,}', r'\1[REDACTED]', error_str)
+
+        event_emitter.emit("agent_error", message=f"Error (attempt {count}/{MAX_CONSECUTIVE_ERRORS}): {error_str}")
         messages = self.agent.session.get_messages_for_api()
         messages = self.agent.context_controller.inject_context(messages, self.agent.context_manager, query=user_message)
-        messages.append({"role": "user", "content": f"[Error in previous step: {e}. Acknowledge and try again.]"})
+        messages.append({
+            "role": "user",
+            "content": (
+                f"[Error in previous step: {error_str}.] "
+                "Do NOT retry the exact same tool call with the same arguments — "
+                "that will fail the same way. Either change the arguments, use a "
+                "different tool, or explain why you cannot proceed."
+            ),
+        })
         return await self.agent.context_controller.manage_context_window(messages)
 
     def _handle_budget_exceeded(self, e: BudgetExceededError) -> Dict[str, Any]:
@@ -278,6 +376,10 @@ class ExecutionLoop:
     ) -> Dict[str, Any]:
         """Call the LLM with retry logic for transient errors."""
         for attempt in range(1, MAX_RETRIES_PER_ITERATION + 1):
+            event_emitter.emit(
+                "status_start",
+                message="[bold cyan]Thinking...[/bold cyan]",
+            )
             try:
                 if self.agent.streaming:
                     result = await self._stream_response(messages, tool_schemas)
@@ -324,6 +426,12 @@ class ExecutionLoop:
                     message=f"Transient error, retrying in {delay}s… ({attempt}/{MAX_RETRIES_PER_ITERATION})",
                 )
                 await asyncio.sleep(delay)
+            finally:
+                event_emitter.emit("status_stop")
+
+        # Unreachable when MAX_RETRIES_PER_ITERATION >= 1 — the last
+        # iteration either returns a result or re-raises the exception.
+        raise RuntimeError("_call_llm_with_retry exhausted without returning or raising")
 
     async def _stream_response(
         self, messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]] = None

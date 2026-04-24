@@ -1,14 +1,21 @@
 import React from "react";
 import {Box, Text} from "ink";
 import {theme} from "../theme.js";
+import {Rail} from "./Primitives.js";
 
-export function Toast({
-  level,
-  message,
-}: {
+export interface ToastProps {
   level: "info" | "warning" | "success";
   message: string;
-}) {
+}
+
+/**
+ * Ephemeral system notice — left-rail only, no panel chrome.
+ *
+ *   ▌ ℹ model changed to claude-sonnet-4-6
+ *   ▌ ✓ context compacted (−42%)
+ *   ▌ ⚠ YOLO mode enabled
+ */
+export function Toast({level, message}: ToastProps) {
   const color =
     level === "success"
       ? theme.success
@@ -16,22 +23,28 @@ export function Toast({
         ? theme.warning
         : theme.info;
   const icon =
-    level === "success" ? "✓" : level === "warning" ? "⚠" : "ℹ";
+    level === "success"
+      ? theme.glyph.tick
+      : level === "warning"
+        ? theme.glyph.warn
+        : "ℹ";
   const lines = message.split("\n");
+
   return (
-    <Box
-      flexDirection="column"
-      borderStyle="round"
-      borderColor={color}
-      paddingX={1}
-      marginBottom={1}
-    >
+    <Rail color={color} gap={2} marginBottom={1}>
       {lines.map((line, i) => (
-        <Text key={i} color={color}>
-          {i === 0 ? `${icon} ` : "   "}
-          {line}
-        </Text>
+        <Box key={i}>
+          {i === 0 ? (
+            <Text color={color} bold>
+              {icon}
+              {"  "}
+            </Text>
+          ) : (
+            <Text>{"   "}</Text>
+          )}
+          <Text color={color}>{line}</Text>
+        </Box>
       ))}
-    </Box>
+    </Rail>
   );
 }

@@ -75,6 +75,44 @@ def _connector() -> aiohttp.TCPConnector:
     return aiohttp.TCPConnector(ssl=_get_ssl_ctx())
 
 
+class _PinnedResolver(aiohttp.abc.AbstractResolver):
+    """aiohttp resolver that pins hostnames to pre-validated IPs.
+
+    Mitigates DNS rebinding: hostnames are resolved once at validation time,
+    then the socket connects to that exact IP. A second DNS lookup (which
+    aiohttp would otherwise do) cannot swap in a private IP mid-request.
+    """
+
+    def __init__(self, pinned: Dict[str, str]):
+        # host → IPv4 literal. Case-insensitive host keys.
+        self._pinned = {h.lower(): ip for h, ip in pinned.items()}
+
+    async def resolve(
+        self, host: str, port: int = 0, family: int = socket.AF_INET
+    ):  # type: ignore[override]
+        ip = self._pinned.get(host.lower())
+        if ip is None:
+            raise OSError(f"SSRF guard: host {host!r} not in pinned allowlist")
+        return [{
+            "hostname": host,
+            "host": ip,
+            "port": port,
+            "family": socket.AF_INET,
+            "proto": 0,
+            "flags": 0,
+        }]
+
+    async def close(self) -> None:  # type: ignore[override]
+        return None
+
+
+def _pinned_connector(host_to_ip: Dict[str, str]) -> aiohttp.TCPConnector:
+    return aiohttp.TCPConnector(
+        ssl=_get_ssl_ctx(),
+        resolver=_PinnedResolver(host_to_ip),
+    )
+
+
 def _strip_tags(raw: str) -> str:
     """Strip HTML tags and unescape entities."""
     return html_lib.unescape(re.sub(r"<[^>]+>", "", raw)).strip()
@@ -260,26 +298,27 @@ class WebSearchTool(Tool):
 
         for attempt, headers in enumerate(header_sets):
             try:
-                async with aiohttp.ClientSession(connector=_connector()) as session:
-                    async with session.post(
-                        self.DDG_URL,
-                        data={"q": query},
-                        headers=headers,
-                        timeout=aiohttp.ClientTimeout(total=15),
-                    ) as resp:
-                        if resp.status != 200:
-                            logger.debug(
-                                f"DDG attempt {attempt + 1}: HTTP {resp.status}"
-                            )
-                            await asyncio.sleep(1)
-                            continue
-                        html_text = await resp.text()
+                resp = await _safe_request(
+                    "POST",
+                    self.DDG_URL,
+                    headers=headers,
+                    body={"q": query},
+                    timeout_s=15.0,
+                )
+                if resp is None or resp["status"] != 200:
+                    logger.debug(
+                        f"DDG attempt {attempt + 1}: HTTP {resp['status'] if resp else 'blocked'}"
+                    )
+                    await asyncio.sleep(1)
+                    continue
+                html_text = resp["text"]
 
                 results = self._parse_results(html_text, num_results)
                 if results:
                     return results
-                # Empty results → try next header set
-                await asyncio.sleep(0.5)
+                # Empty results → try next header set immediately; the
+                # prior inter-attempt sleep added latency without helping
+                # (DDG returns the same empty page regardless of UA).
             except Exception as e:
                 logger.debug(f"DDG attempt {attempt + 1}: {e}")
                 await asyncio.sleep(1)
@@ -345,56 +384,146 @@ class WebSearchTool(Tool):
 # ---------------------------------------------------------------------------
 
 
-def _is_safe_url(url: str) -> bool:
-    """Check if the URL resolves to a public IP, preventing SSRF on local networks."""
-    if os.getenv("CODERAI_ALLOW_LOCAL_URLS") == "1":
-        return True
+_MAX_REDIRECTS = 5
+
+
+def _is_ip_public(ip_str: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return False
+    return not (
+        ip.is_loopback or ip.is_private or ip.is_link_local
+        or ip.is_multicast or ip.is_reserved or ip.is_unspecified
+    )
+
+
+def _allow_local(allow_local: bool) -> bool:
+    """Per-request allow-local flag, OR'd with the legacy env opt-in."""
+    return bool(allow_local) or os.getenv("CODERAI_ALLOW_LOCAL_URLS") == "1"
+
+
+def _resolve_and_validate(
+    url: str, *, allow_local: bool = False
+) -> Optional[Dict[str, str]]:
+    """Resolve hostname once and validate the IP.
+
+    Returns ``{"host": hostname, "ip": ipv4}`` on success, or ``None`` if the
+    URL is malformed or resolves to a blocked range.
+    """
     try:
         parsed = urlparse(url)
         hostname = parsed.hostname
         if not hostname:
-            return False
-            
+            return None
         ip_addr = socket.gethostbyname(hostname)
-        ip = ipaddress.ip_address(ip_addr)
-        
-        if (ip.is_loopback or ip.is_private or ip.is_link_local or 
-            ip.is_multicast or ip.is_reserved or ip.is_unspecified):
-            return False
     except Exception as e:
-        logger.warning(f"URL resolution failed or blocked for {url}: {e}")
-        return False
-    return True
+        logger.warning(f"URL resolution failed for {url}: {e}")
+        return None
+
+    if not _allow_local(allow_local) and not _is_ip_public(ip_addr):
+        logger.warning(
+            f"SSRF guard blocked {url}: resolved to non-public {ip_addr}"
+        )
+        return None
+    return {"host": hostname, "ip": ip_addr}
+
+
+def _is_safe_url(url: str, *, allow_local: bool = False) -> bool:
+    """Back-compat boolean gate. Prefer ``_resolve_and_validate``."""
+    return _resolve_and_validate(url, allow_local=allow_local) is not None
+
+
+async def _safe_request(
+    method: str,
+    url: str,
+    *,
+    headers: Optional[Dict[str, str]] = None,
+    json_body: Any = None,
+    body: Any = None,
+    timeout_s: float = 15.0,
+    allow_local: bool = False,
+) -> Optional[Dict[str, Any]]:
+    """Issue an HTTP request with DNS-rebind-resistant redirects.
+
+    Each hop is resolved once, validated against the public-IP allowlist, and
+    the connection is pinned to that IP. Redirects are handled manually (up
+    to ``_MAX_REDIRECTS``) so a public→private redirect cannot bypass the
+    guard. Returns ``{"status", "headers", "url", "content_type", "text",
+    "content"}`` or ``None`` on validation failure.
+    """
+    current = url
+    seen_urls: set = set()
+    for _ in range(_MAX_REDIRECTS + 1):
+        resolved = _resolve_and_validate(current, allow_local=allow_local)
+        if resolved is None:
+            # ``None`` is reserved for SSRF / validation failures — callers
+            # surface this as "blocked". Network errors raise instead.
+            return None
+        connector = _pinned_connector({resolved["host"]: resolved["ip"]})
+        async with aiohttp.ClientSession(connector=connector) as session:
+            async with session.request(
+                method,
+                current,
+                headers=headers or _HEADERS_CHROME,
+                timeout=aiohttp.ClientTimeout(total=timeout_s),
+                allow_redirects=False,
+                json=json_body,
+                data=body,
+            ) as resp:
+                if resp.status in (301, 302, 303, 307, 308):
+                    loc = resp.headers.get("Location")
+                    if not loc:
+                        return None
+                    from urllib.parse import urljoin
+                    next_url = urljoin(current, loc)
+                    if next_url in seen_urls:
+                        logger.warning(
+                            f"SSRF guard: redirect loop at {next_url}"
+                        )
+                        return None
+                    seen_urls.add(next_url)
+                    if not next_url.startswith(("http://", "https://")):
+                        logger.warning(
+                            f"SSRF guard: non-http redirect to {next_url}"
+                        )
+                        return None
+                    current = next_url
+                    continue
+
+                content_type = resp.headers.get("Content-Type", "")
+                raw_bytes = await resp.read()
+                try:
+                    text = raw_bytes.decode("utf-8", errors="replace")
+                except Exception:
+                    text = ""
+                return {
+                    "status": resp.status,
+                    "headers": dict(resp.headers),
+                    "url": str(resp.url),
+                    "content_type": content_type,
+                    "text": text,
+                    "content": raw_bytes,
+                }
+
+    logger.warning(f"SSRF guard: exceeded {_MAX_REDIRECTS} redirects from {url}")
+    return None
 
 
 async def _fetch_page_text(url: str, max_length: int) -> Optional[str]:
     """Fetch a single URL and return cleaned text, or None on failure."""
-    if not _is_safe_url(url):
-        logger.warning(f"SSRF Protection blocked request to: {url}")
+    resp = await _safe_request("GET", url, timeout_s=15.0)
+    if resp is None or resp["status"] != 200:
         return None
-    try:
-        async with aiohttp.ClientSession(connector=_connector()) as session:
-            async with session.get(
-                url,
-                headers=_HEADERS_CHROME,
-                timeout=aiohttp.ClientTimeout(total=15),
-                allow_redirects=True,
-            ) as resp:
-                if resp.status != 200:
-                    return None
-                content_type = resp.headers.get("Content-Type", "")
-                raw = await resp.text(errors="replace")
-
-        if "html" in content_type.lower() or raw.lstrip().startswith("<"):
-            text = _html_to_text(raw)
-        else:
-            text = raw
-
-        if len(text) > max_length:
-            text = text[:max_length] + "\n\n[...truncated...]"
-        return text if len(text) > 50 else None
-    except Exception:
-        return None
+    content_type = resp["content_type"]
+    raw = resp["text"]
+    if "html" in content_type.lower() or raw.lstrip().startswith("<"):
+        text = _html_to_text(raw)
+    else:
+        text = raw
+    if len(text) > max_length:
+        text = text[:max_length] + "\n\n[...truncated...]"
+    return text if len(text) > 50 else None
 
 
 # ---------------------------------------------------------------------------
@@ -425,52 +554,40 @@ class ReadURLTool(Tool):
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
 
-        if not _is_safe_url(url):
-            return {
-                "success": False,
-                "error": f"SSRF Protection triggered. Blocked request to local/internal IP for {url}.",
-            }
-
         try:
-            async with aiohttp.ClientSession(connector=_connector()) as session:
-                async with session.get(
-                    url,
-                    timeout=aiohttp.ClientTimeout(total=25),
-                    headers=_HEADERS_CHROME,
-                    allow_redirects=True,
-                ) as response:
-                    if response.status != 200:
-                        return {
-                            "success": False,
-                            "error": f"HTTP {response.status} for {url}",
-                        }
-
-                    final_url = str(response.url)
-                    content_type = response.headers.get("Content-Type", "")
-                    raw = await response.text(errors="replace")
-
-            if "html" in content_type.lower() or raw.lstrip().startswith("<"):
-                text = _html_to_text(raw)
-            else:
-                text = raw
-
-            truncated = False
-            if len(text) > max_length:
-                text = text[:max_length]
-                truncated = True
-
-            return {
-                "success": True,
-                "url": final_url,
-                "content": text,
-                "length": len(text),
-                "truncated": truncated,
-            }
-
+            resp = await _safe_request("GET", url, timeout_s=25.0)
         except asyncio.TimeoutError:
             return {"success": False, "error": f"Timeout fetching {url}"}
         except Exception as e:
             return {"success": False, "error": f"Failed to fetch {url}: {e}"}
+
+        if resp is None:
+            return {
+                "success": False,
+                "error": f"SSRF Protection triggered. Blocked request to local/internal IP for {url}.",
+            }
+        if resp["status"] != 200:
+            return {"success": False, "error": f"HTTP {resp['status']} for {url}"}
+
+        content_type = resp["content_type"]
+        raw = resp["text"]
+        if "html" in content_type.lower() or raw.lstrip().startswith("<"):
+            text = _html_to_text(raw)
+        else:
+            text = raw
+
+        truncated = False
+        if len(text) > max_length:
+            text = text[:max_length]
+            truncated = True
+
+        return {
+            "success": True,
+            "url": resp["url"],
+            "content": text,
+            "length": len(text),
+            "truncated": truncated,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -510,28 +627,23 @@ class DownloadFileTool(Tool):
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
 
-        if not _is_safe_url(url):
+        try:
+            resp = await _safe_request("GET", url, timeout_s=60.0)
+        except asyncio.TimeoutError:
+            return {"success": False, "error": f"Timeout downloading {url}"}
+        except Exception as e:
+            return {"success": False, "error": f"Failed to download {url}: {e}"}
+
+        if resp is None:
             return {
                 "success": False,
                 "error": f"SSRF Protection triggered. Blocked request to local/internal IP for {url}.",
             }
+        if resp["status"] != 200:
+            return {"success": False, "error": f"HTTP {resp['status']} for {url}"}
+        content = resp["content"]
 
         try:
-            async with aiohttp.ClientSession(connector=_connector()) as session:
-                async with session.get(
-                    url,
-                    timeout=aiohttp.ClientTimeout(total=60),
-                    headers=_HEADERS_CHROME,
-                    allow_redirects=True,
-                ) as response:
-                    if response.status != 200:
-                        return {
-                            "success": False,
-                            "error": f"HTTP {response.status} for {url}",
-                        }
-                    
-                    content = await response.read()
-
             if destination_path:
                 dest = Path(destination_path).expanduser().resolve()
             else:
@@ -541,6 +653,14 @@ class DownloadFileTool(Tool):
                 if not filename:
                     filename = f"download_{int(time.time())}.tmp"
                 dest = Path(os.getcwd()) / filename
+
+            # Guard against writing to protected system/home paths
+            from .filesystem import _is_path_protected
+            if _is_path_protected(dest):
+                return {
+                    "success": False,
+                    "error": f"Refusing to download to protected path: {dest}",
+                }
 
             # Ensure the parent directory exists
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -619,68 +739,62 @@ class HTTPRequestTool(Tool):
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
 
-        if not _is_safe_url(url):
-            return {
-                "success": False,
-                "error": f"SSRF Protection triggered. Blocked request to local/internal IP for {url}.",
-            }
-
         method = method.upper()
         allowed_methods = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"}
         if method not in allowed_methods:
             return {"success": False, "error": f"Method '{method}' not allowed. Use one of: {allowed_methods}"}
 
+        req_headers = dict(_HEADERS_CHROME)
+        if headers:
+            req_headers.update(headers)
+
         try:
-            req_headers = dict(_HEADERS_CHROME)
-            if headers:
-                req_headers.update(headers)
-
-            async with aiohttp.ClientSession(connector=_connector()) as session:
-                request_kwargs: Dict[str, Any] = {
-                    "headers": req_headers,
-                    "timeout": aiohttp.ClientTimeout(total=timeout),
-                    "allow_redirects": True,
-                }
-                if json_body is not None:
-                    request_kwargs["json"] = json_body
-                elif body is not None:
-                    request_kwargs["data"] = body
-
-                async with session.request(method, url, **request_kwargs) as response:
-                    status = response.status
-                    resp_headers = dict(response.headers)
-                    content_type = resp_headers.get("Content-Type", "")
-
-                    raw = await response.text(errors="replace")
-
-            truncated = False
-            if len(raw) > max_response_length:
-                raw = raw[:max_response_length]
-                truncated = True
-
-            # Try to parse as JSON for convenience
-            import json as _json
-            parsed_json = None
-            if "json" in content_type.lower():
-                try:
-                    parsed_json = _json.loads(raw)
-                except Exception:
-                    pass
-
-            result: Dict[str, Any] = {
-                "success": 200 <= status < 300,
-                "status_code": status,
-                "url": url,
-                "method": method,
-                "headers": resp_headers,
-                "body": raw,
-                "truncated": truncated,
-            }
-            if parsed_json is not None:
-                result["json"] = parsed_json
-            return result
-
+            resp = await _safe_request(
+                method,
+                url,
+                headers=req_headers,
+                json_body=json_body,
+                body=body,
+                timeout_s=float(timeout),
+            )
         except asyncio.TimeoutError:
             return {"success": False, "error": f"Request timed out after {timeout}s: {url}"}
         except Exception as e:
             return {"success": False, "error": f"Request failed: {e}"}
+
+        if resp is None:
+            return {
+                "success": False,
+                "error": f"SSRF Protection triggered. Blocked request to local/internal IP for {url}.",
+            }
+
+        status = resp["status"]
+        resp_headers = resp["headers"]
+        content_type = resp["content_type"]
+        raw = resp["text"]
+
+        truncated = False
+        if len(raw) > max_response_length:
+            raw = raw[:max_response_length]
+            truncated = True
+
+        import json as _json
+        parsed_json = None
+        if "json" in content_type.lower():
+            try:
+                parsed_json = _json.loads(raw)
+            except Exception:
+                pass
+
+        result: Dict[str, Any] = {
+            "success": 200 <= status < 300,
+            "status_code": status,
+            "url": resp["url"],
+            "method": method,
+            "headers": resp_headers,
+            "body": raw,
+            "truncated": truncated,
+        }
+        if parsed_json is not None:
+            result["json"] = parsed_json
+        return result

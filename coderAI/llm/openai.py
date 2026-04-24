@@ -12,9 +12,9 @@ logger = logging.getLogger(__name__)
 
 # Cost per 1K tokens (approximate, as of early 2026)
 MODEL_COSTS = {
-    "gpt-5": {"input": 0.0025, "output": 0.01},
-    "gpt-5-mini": {"input": 0.00015, "output": 0.0006},
-    "gpt-5-nano": {"input": 0.00005, "output": 0.0004},
+    "gpt-5.4": {"input": 0.0025, "output": 0.01},
+    "gpt-5.4-mini": {"input": 0.00015, "output": 0.0006},
+    "gpt-5.4-nano": {"input": 0.00005, "output": 0.0004},
     "o1": {"input": 0.015, "output": 0.06},
     "o1-mini": {"input": 0.003, "output": 0.012},
     "o3-mini": {"input": 0.0011, "output": 0.0044},
@@ -27,9 +27,9 @@ class OpenAIProvider(LLMProvider):
 
     # Supported models with their actual API names
     SUPPORTED_MODELS = {
-        "gpt-5": "gpt-5",
-        "gpt-5-mini": "gpt-5-mini",
-        "gpt-5-nano": "gpt-5-nano",
+        "gpt-5.4": "gpt-5.4",
+        "gpt-5.4-mini": "gpt-5.4-mini",
+        "gpt-5.4-nano": "gpt-5.4-nano",
         "o1": "o1",
         "o1-mini": "o1-mini",
         "o3-mini": "o3-mini",
@@ -39,7 +39,7 @@ class OpenAIProvider(LLMProvider):
         """Initialize OpenAI provider.
 
         Args:
-            model: Model name (gpt-5, gpt-5-mini, gpt-5-nano, etc.)
+            model: Model name (gpt-5.4, gpt-5.4-mini, gpt-5.4-nano, etc.)
             api_key: OpenAI API key
             **kwargs: Additional options (temperature, max_tokens, etc.)
         """
@@ -52,7 +52,7 @@ class OpenAIProvider(LLMProvider):
         self.client = AsyncOpenAI(api_key=api_key)
 
         # Extract common parameters
-        self.temperature = kwargs.get("temperature", 0.7)
+        self.temperature = kwargs.get("temperature", 1)
         self.max_tokens = kwargs.get("max_tokens", 4096)
         self.reasoning_effort = kwargs.get("reasoning_effort", "medium")
 
@@ -65,6 +65,37 @@ class OpenAIProvider(LLMProvider):
         # Cost tracking
         self.total_input_tokens = 0
         self.total_output_tokens = 0
+
+    # Models that don't support temperature (only accept default=1)
+    _NO_TEMPERATURE_MODELS_PREFIX = ("gpt-5",)
+    _NO_TEMPERATURE_MODELS_EXACT = {"o1", "o1-mini", "o3-mini"}
+
+    # Models that cannot accept reasoning_effort (e.g. nano rejects it with tools)
+    _NO_REASONING_EFFORT_MODELS = {"gpt-5.4-nano"}
+
+    @property
+    def _uses_reasoning_effort(self) -> bool:
+        """Whether this model rejects temperature (only accepts default=1).
+
+        gpt-5.x models (and o-series) only support temperature=1 (the default),
+        so we omit the parameter entirely.
+        """
+        return (
+            self.actual_model.startswith(self._NO_TEMPERATURE_MODELS_PREFIX)
+            or self.actual_model in self._NO_TEMPERATURE_MODELS_EXACT
+        )
+
+    @property
+    def _supports_reasoning_effort(self) -> bool:
+        """Whether this model accepts the reasoning_effort parameter.
+
+        gpt-5.4-nano does not support reasoning_effort with function tools
+        in /v1/chat/completions, so we omit it for that model.
+        """
+        return (
+            self._uses_reasoning_effort
+            and self.actual_model not in self._NO_REASONING_EFFORT_MODELS
+        )
 
     async def chat(
         self,
@@ -88,14 +119,11 @@ class OpenAIProvider(LLMProvider):
             "max_completion_tokens": kwargs.get("max_tokens", self.max_tokens),
         }
 
-        # Handle logic for temperature and reasoning_effort
-        is_gpt5 = self.actual_model in ("gpt-5", "gpt-5-mini", "gpt-5-nano")
-        is_o_series = self.actual_model in ("o1", "o1-mini", "o3-mini")
-
-        if is_gpt5 or is_o_series:
-            # GPT-5 and o-series models should use reasoning_effort, not temperature.
-            if self.reasoning_effort and self.reasoning_effort != "none":
+        # Handle temperature / reasoning_effort (mutually exclusive per model)
+        if self._uses_reasoning_effort:
+            if self._supports_reasoning_effort and self.reasoning_effort and self.reasoning_effort != "none":
                 params["reasoning_effort"] = self.reasoning_effort
+            # else: omit both — model uses its default (temperature=1, no effort param)
         else:
             params["temperature"] = kwargs.get("temperature", self.temperature)
 
@@ -118,7 +146,7 @@ class OpenAIProvider(LLMProvider):
             if "not a chat model" in msg and "v1/chat/completions" in msg:
                 raise RuntimeError(
                     f"Model '{self.actual_model}' is not compatible with chat.completions "
-                    "in this environment. Switch to gpt-5, gpt-5-mini, gpt-5-nano, "
+                    "in this environment. Switch to gpt-5.4, gpt-5.4-mini, gpt-5.4-nano, "
                     "o1, o1-mini, or o3-mini."
                 ) from e
             raise
@@ -147,14 +175,11 @@ class OpenAIProvider(LLMProvider):
             "stream_options": {"include_usage": True},
         }
 
-        # Handle logic for temperature and reasoning_effort
-        is_gpt5 = self.actual_model in ("gpt-5", "gpt-5-mini", "gpt-5-nano")
-        is_o_series = self.actual_model in ("o1", "o1-mini", "o3-mini")
-
-        if is_gpt5 or is_o_series:
-            # GPT-5 and o-series models should use reasoning_effort, not temperature.
-            if self.reasoning_effort and self.reasoning_effort != "none":
+        # Handle temperature / reasoning_effort (mutually exclusive per model)
+        if self._uses_reasoning_effort:
+            if self._supports_reasoning_effort and self.reasoning_effort and self.reasoning_effort != "none":
                 params["reasoning_effort"] = self.reasoning_effort
+            # else: omit both — model uses its default (temperature=1, no effort param)
         else:
             params["temperature"] = kwargs.get("temperature", self.temperature)
 
@@ -177,7 +202,7 @@ class OpenAIProvider(LLMProvider):
             if "not a chat model" in msg and "v1/chat/completions" in msg:
                 raise RuntimeError(
                     f"Model '{self.actual_model}' is not compatible with chat.completions "
-                    "in this environment. Switch to gpt-5, gpt-5-mini, gpt-5-nano, "
+                    "in this environment. Switch to gpt-5.4, gpt-5.4-mini, gpt-5.4-nano, "
                     "o1, o1-mini, or o3-mini."
                 ) from e
             raise

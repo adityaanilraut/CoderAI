@@ -111,7 +111,7 @@ This will guide you through:
 2. **Set default model (optional):**
 
    ```bash
-   coderAI config set default_model gpt-5-mini
+   coderAI config set default_model gpt-5.4-mini
    ```
 
 3. **Configure LM Studio for local models (optional):**
@@ -366,7 +366,7 @@ Example:
 
 ```bash
 export OPENAI_API_KEY="sk-..."
-export CODERAI_DEFAULT_MODEL="gpt-5-mini"
+export CODERAI_DEFAULT_MODEL="gpt-5.4-mini"
 export CODERAI_TEMPERATURE="0.7"
 coderAI chat
 ```

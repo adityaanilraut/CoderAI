@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 @click.group(invoke_without_command=True)
-@click.option("--model", "-m", help="Model to use (gpt-5, gpt-5-mini, claude-4-sonnet, lmstudio, ollama)")
+@click.option("--model", "-m", help="Model to use (gpt-5.4, gpt-5.4-mini, claude-4-sonnet, lmstudio, ollama)")
 @click.option("--resume", "-r", help="Resume a previous session by ID")
 @click.option("--version", "-v", is_flag=True, help="Show version")
 @click.option("--verbose", is_flag=True, help="Enable verbose/debug logging")
@@ -91,6 +91,11 @@ def chat(model, resume, auto_approve, python):
         env["CODERAI_RESUME"] = resume
     if auto_approve:
         env["CODERAI_AUTO_APPROVE"] = "1"
+        display.print_warning(
+            "YOLO MODE — auto-approve is ON. "
+            "Every tool call (including run_command, delete_file, git_push) "
+            "will execute without asking. Press Ctrl+C to abort."
+        )
     env["CODERAI_PYTHON"] = python or sys.executable
 
     try:
@@ -251,15 +256,15 @@ def setup():
     
     # Default Model
     display.print("[bold]5. Default Model[/bold]")
-    display.print("   Available: gpt-5, gpt-5-mini, gpt-5-nano, claude-4-sonnet, claude-4.5-haiku, claude-4.6-opus, claude-3.5-sonnet, lmstudio, ollama, openai/gpt-oss-120b, openai/gpt-oss-20b, deepseek-v3.2, deepseek-r1")
-    model = click.prompt("   Enter default model", default="gpt-5-mini")
+    display.print("   Available: gpt-5.4, gpt-5.4-mini, gpt-5.4-nano, claude-4-sonnet, claude-4.5-haiku, claude-4.6-opus, claude-3.5-sonnet, lmstudio, ollama, openai/gpt-oss-120b, openai/gpt-oss-20b, deepseek-v3.2, deepseek-r1")
+    model = click.prompt("   Enter default model", default="gpt-5.4-mini")
     config_manager.set("default_model", model)
     display.print_success(f"   Default model set to {model}")
     display.print()
     
     # Reasoning Effort
     display.print("[bold]6. Reasoning Effort[/bold]")
-    display.print("   How much thinking reasoning models (e.g. o1, o3-mini, gpt-5, claude-3.7-sonnet, claude-4-sonnet) should use.")
+    display.print("   How much thinking reasoning models (e.g. o1, o3-mini, gpt-5.4, claude-3.7-sonnet, claude-4-sonnet) should use.")
     display.print("   Available: high, medium, low, none")
     effort = click.prompt("   Enter reasoning effort", default="medium")
     config_manager.set("reasoning_effort", effort.lower())
@@ -299,9 +304,9 @@ def models():
     display.print_header("Available Models and Providers")
     
     display.print("\n[bold cyan]OpenAI Provider[/bold cyan]")
-    display.print("  • [yellow]gpt-5[/yellow] - GPT-5 (multimodal)")
-    display.print("  • [yellow]gpt-5-mini[/yellow] - GPT-5 Mini (fastest and most affordable GPT-5 option)")
-    display.print("  • [yellow]gpt-5-nano[/yellow] - GPT-5 Nano (lowest cost, quickest)")
+    display.print("  • [yellow]gpt-5.4[/yellow] - gpt-5.4 (multimodal)")
+    display.print("  • [yellow]gpt-5.4-mini[/yellow] - gpt-5.4 Mini (fastest and most affordable gpt-5.4 option)")
+    display.print("  • [yellow]gpt-5.4-nano[/yellow] - gpt-5.4 Nano (lowest cost, quickest)")
     display.print("  • [yellow]o1[/yellow] - o1 (reasoning model)")
     display.print("  • [yellow]o1-mini[/yellow] - o1 Mini (fast reasoning)")
     display.print("  • [yellow]o3-mini[/yellow] - o3 Mini (latest reasoning)")

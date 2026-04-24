@@ -45,16 +45,25 @@ export function Diff({
   const cap = Math.max(40, maxLineWidth);
 
   return (
-    <Box flexDirection="column" paddingLeft={1} marginBottom={1} marginTop={1}>
+    <Box
+      flexDirection="column"
+      paddingLeft={theme.spacing.md}
+      marginBottom={theme.spacing.sm}
+      marginTop={theme.spacing.sm}
+    >
       <Box>
-        <Text color={theme.border}>│ </Text>
-        <Text bold color={theme.accent}>
+        <Text color={theme.info} bold>
+          ◈{" "}
+        </Text>
+        <Text bold color={theme.text}>
           {path}
         </Text>
-        <Text color={theme.muted}>  </Text>
-        <Text color={theme.success}>+{stats.adds}</Text>
-        <Text color={theme.muted}> / </Text>
-        <Text color={theme.danger}>-{stats.dels}</Text>
+        <Text color={theme.faint}>
+          {"   "}
+          <Text color={theme.success}>+{stats.adds}</Text>
+          <Text color={theme.faint}> / </Text>
+          <Text color={theme.danger}>-{stats.dels}</Text>
+        </Text>
       </Box>
 
       <Box
