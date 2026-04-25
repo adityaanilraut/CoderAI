@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -23,8 +24,6 @@ _TIMELINE_ITEM_KINDS = frozenset(
     }
 )
 
-
-import pytest
 
 def _case_kinds_from_frozen_module() -> set[str]:
     path = ROOT / "ui/src/lib/timelineItemFrozen.ts"

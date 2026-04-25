@@ -6,10 +6,9 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 from groq import AsyncGroq
 
 from .base import LLMProvider
+from coderAI.cost import CostTracker
 
 logger = logging.getLogger(__name__)
-
-from coderAI.cost import CostTracker
 
 class GroqProvider(LLMProvider):
     """Groq LLM provider."""

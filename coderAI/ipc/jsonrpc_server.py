@@ -30,6 +30,7 @@ from typing import Any, Awaitable, Callable, Dict, Optional
 from ..agent_tracker import AgentInfo, AgentStatus, agent_tracker
 from ..config import config_manager
 from ..events import event_emitter
+from ..system_prompt import _TOOL_SECTIONS
 
 logger = logging.getLogger(__name__)
 
@@ -103,8 +104,6 @@ def _infer_error_hint(category: str, message: str) -> Optional[str]:
 # subclass (see ``coderAI/tools/base.py``). The fallback map below covers
 # MCP-proxy tools and anything that hasn't been tagged yet; tools looked
 # up in the registry override the map.
-
-from ..system_prompt import _TOOL_SECTIONS
 
 _CATEGORY_MAP = {
     "File Operations": "fs",
