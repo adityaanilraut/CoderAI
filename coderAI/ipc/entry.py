@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from ..agent import Agent
+from ..agent_tracker import AgentStatus, agent_tracker
 from .jsonrpc_server import IPCServer
 from .streaming import IPCStreamingHandler
 
@@ -69,6 +70,19 @@ async def _main() -> None:
     server = IPCServer(agent=agent)
     agent.ipc_server = server
     agent._configure_delegate_tool_context()
+
+    # Seed the tracker with an idle root entry so the UI's Agents panel shows
+    # the main agent from boot, not only after the first turn registers it.
+    agent.tracker_info = agent_tracker.register(
+        name=agent.persona.name if agent.persona else "main",
+        role=agent.persona.description if agent.persona else None,
+        model=agent.model,
+        context_limit=agent.config.context_window,
+    )
+    agent.tracker_info.status = AgentStatus.IDLE
+    agent._tracker_start_completion = agent.total_completion_tokens
+    agent._tracker_start_tokens = agent.total_tokens
+    agent._tracker_start_cost = agent.cost_tracker.get_total_cost()
 
     # Redirect the streaming handler so token deltas become NDJSON events
     # instead of Rich console prints.

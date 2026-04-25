@@ -9,11 +9,7 @@ from .base import LLMProvider
 
 logger = logging.getLogger(__name__)
 
-# Approximate costs for DeepSeek API
-MODEL_COSTS = {
-    "deepseek-chat": {"input": 0.00014, "output": 0.00028}, # DeepSeek-V3
-    "deepseek-reasoner": {"input": 0.00055, "output": 0.00219}, # DeepSeek-R1
-}
+from coderAI.cost import CostTracker
 
 class DeepSeekProvider(LLMProvider):
     """DeepSeek LLM provider."""
@@ -137,9 +133,9 @@ class DeepSeekProvider(LLMProvider):
 
     def get_cost(self) -> Dict[str, Any]:
         """Get current session cost estimate."""
-        costs = MODEL_COSTS.get(self.actual_model, {"input": 0, "output": 0})
-        input_cost = (self.total_input_tokens / 1000) * costs["input"]
-        output_cost = (self.total_output_tokens / 1000) * costs["output"]
+        pricing = CostTracker.get_model_pricing(self.actual_model)
+        input_cost = (self.total_input_tokens / 1_000_000) * pricing["input"]
+        output_cost = (self.total_output_tokens / 1_000_000) * pricing["output"]
 
         return {
             "input_tokens": self.total_input_tokens,

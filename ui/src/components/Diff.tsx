@@ -1,5 +1,5 @@
 import React from "react";
-import {Box, Text} from "ink";
+import {Box, Text, useStdout} from "ink";
 import {theme} from "../theme.js";
 
 export interface DiffProps {
@@ -13,6 +13,7 @@ export interface DiffProps {
    * surrounding round border.
    */
   maxLineWidth?: number;
+  verbose?: boolean;
 }
 
 type LineKind = "add" | "del" | "ctx" | "hunk" | "meta";
@@ -38,11 +39,56 @@ export function Diff({
   diff,
   contextLines = 3,
   maxLineWidth = 200,
+  verbose = false,
 }: DiffProps) {
+  const {stdout} = useStdout();
+  const columns = stdout?.columns ?? 100;
+  const narrow = columns < theme.layout.narrowCols;
   const stats = countStats(diff);
   const parsed = parseDiff(diff);
   const rows = elide(parsed, contextLines);
   const cap = Math.max(40, maxLineWidth);
+
+  if (!verbose) {
+    // Compact summary plus a 3-line preview of the first +/- hunk so the
+    // user can see the *shape* of the change without flipping verbose on.
+    // Empty diffs (deletes only) gracefully degrade to the header line.
+    const previewLines = firstChangePreview(parsed, 3, cap);
+    return (
+      <Box flexDirection="column" paddingX={2}>
+        <Box>
+          <Text color={theme.info} bold>± </Text>
+          <Text bold color={theme.text}>{path}</Text>
+          <Text color={theme.faint}>
+            {"   "}
+            <Text color={theme.success}>+{stats.adds}</Text>
+            {" "}
+            <Text color={theme.danger}>-{stats.dels}</Text>
+          </Text>
+        </Box>
+        {previewLines.length > 0 ? (
+          <Box flexDirection="column" paddingLeft={4}>
+            {previewLines.map((line, i) => (
+              <Text
+                key={i}
+                color={colorFor(line.kind)}
+                backgroundColor={bgFor(line.kind)}
+              >
+                {line.text.length > cap
+                  ? line.text.slice(0, cap - 1) + "…"
+                  : line.text}
+              </Text>
+            ))}
+            {hasMoreThanPreview(parsed, previewLines.length) ? (
+              <Text color={theme.faint} italic>
+                /verbose to see the full diff
+              </Text>
+            ) : null}
+          </Box>
+        ) : null}
+      </Box>
+    );
+  }
 
   return (
     <Box
@@ -75,7 +121,9 @@ export function Diff({
           if (row.kind === "elision") {
             return (
               <Box key={i}>
-                <Text color={theme.muted}>{"    │     "}</Text>
+                <Text color={theme.muted}>
+                  {narrow ? "      " : "           "}
+                </Text>
                 <Text color={theme.muted}>
                   {"  "}… {row.count} unchanged lines …
                 </Text>
@@ -88,7 +136,9 @@ export function Diff({
           return (
             <Box key={i}>
               <Text color={theme.muted}>
-                {formatGutter(line.oldLn, line.newLn)}
+                {narrow
+                  ? formatNarrowGutter(line.newLn ?? line.oldLn)
+                  : formatGutter(line.oldLn, line.newLn)}
               </Text>
               <Text
                 color={colorFor(line.kind)}
@@ -188,6 +238,43 @@ function elide(lines: ParsedLine[], contextLines: number): RenderRow[] {
   return rows;
 }
 
+/**
+ * Find the first run of +/- lines and return up to `maxLines` of it.
+ * Used by the non-verbose preview so the user can see *something* of
+ * the change without expanding the full diff.
+ */
+function firstChangePreview(
+  parsed: ParsedLine[],
+  maxLines: number,
+  cap: number,
+): ParsedLine[] {
+  const start = parsed.findIndex((l) => l.kind === "add" || l.kind === "del");
+  if (start === -1) return [];
+  const out: ParsedLine[] = [];
+  for (let i = start; i < parsed.length && out.length < maxLines; i++) {
+    const l = parsed[i];
+    if (l.kind === "add" || l.kind === "del") {
+      out.push(l);
+    } else if (l.kind === "ctx") {
+      // include immediately-adjacent context for readability
+      if (out.length > 0) out.push(l);
+    } else {
+      // hunk/meta — stop the preview; the next change is far away
+      break;
+    }
+  }
+  // Suppress single-line preview noise like trailing `cap`-truncation chars
+  void cap;
+  return out;
+}
+
+function hasMoreThanPreview(parsed: ParsedLine[], shown: number): boolean {
+  const totalChanges = parsed.filter(
+    (l) => l.kind === "add" || l.kind === "del",
+  ).length;
+  return totalChanges > shown;
+}
+
 function colorFor(k: LineKind): string {
   switch (k) {
     case "add":
@@ -212,5 +299,9 @@ function bgFor(k: LineKind): string | undefined {
 function formatGutter(oldLn?: number, newLn?: number): string {
   const o = oldLn != null ? String(oldLn).padStart(4, " ") : "    ";
   const n = newLn != null ? String(newLn).padStart(4, " ") : "    ";
-  return `${o} │ ${n}`;
+  return `${o}   ${n}`;
+}
+
+function formatNarrowGutter(ln?: number): string {
+  return ln != null ? String(ln).padStart(4, " ") : "    ";
 }

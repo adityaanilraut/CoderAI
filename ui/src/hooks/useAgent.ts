@@ -27,11 +27,13 @@ const INITIAL: SessionState = {
   version: "",
   autoApprove: false,
   reasoning: "none",
+  verbose: false,
   ctxUsed: 0,
   ctxLimit: 0,
   costUsd: 0,
   budgetUsd: 0,
   agents: {},
+  agentsFinishedAt: {},
 };
 
 export interface UseAgentResult {
@@ -42,9 +44,11 @@ export interface UseAgentResult {
   actions: {
     send: (text: string) => void;
     cancel: () => void;
-    approveTool: (toolId: string, approve: boolean) => void;
+    approveTool: (toolId: string, approve: boolean, always?: boolean) => void;
     exit: () => void;
     closeHelpMenu: () => void;
+    toggleVerbose: () => void;
+    revealReasoning: () => void;
   };
 }
 
@@ -53,6 +57,13 @@ export function useAgent(opts: {python?: string; cwd?: string} = {}): UseAgentRe
   const [session, setSession] = useState<SessionState>(INITIAL);
   const [timeline, setTimeline] = useState<TimelineItem[]>([]);
   const [helpMenuOpen, setHelpMenuOpen] = useState(false);
+
+  // Mirror of the latest session state, kept on a ref so memoised actions can
+  // read fresh values without re-creating their closures on every render. The
+  // actions useMemo([]) is stable, so anything they read from `session` must
+  // come from this ref instead.
+  const sessionRef = useRef<SessionState>(INITIAL);
+  sessionRef.current = session;
 
   // Refs to avoid closure staleness inside event handlers.
   const readyRef = useRef(false);
@@ -77,7 +88,7 @@ export function useAgent(opts: {python?: string; cwd?: string} = {}): UseAgentRe
   const nextId = () => `i_${++uidRef.current}_${Date.now().toString(36)}`;
 
   const push = (item: TimelineItem) =>
-    setTimeline((prev) => appendCapped(prev, item));
+    setTimeline((prev) => appendCapped(prev, item, nextId));
 
   useEffect(() => {
     const client = new AgentClient({python: opts.python, cwd: opts.cwd});
@@ -123,69 +134,145 @@ export function useAgent(opts: {python?: string; cwd?: string} = {}): UseAgentRe
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [opts.python, opts.cwd]);
 
-  const showHelp = () => setHelpMenuOpen(true);
-  const closeHelpMenu = () => setHelpMenuOpen(false);
-
-  const clearContext = () => {
-    setHelpMenuOpen(false);
-    if (streamFlushTimerRef.current !== null) {
-      clearTimeout(streamFlushTimerRef.current);
-      streamFlushTimerRef.current = null;
-    }
-    streamPendingContentRef.current = "";
-    streamPendingReasoningRef.current = "";
-    clientRef.current?.clearContext();
-    setTimeline([]);
-    currentAssistantId.current = null;
-  };
-
   const actions = useMemo<UseAgentResult["actions"]>(
-    () => ({
-      send: (text: string) => {
-        const client = clientRef.current;
-        if (!client) return;
+    () => {
+      const showHelp = () => setHelpMenuOpen(true);
+      const closeHelpMenu = () => setHelpMenuOpen(false);
 
-        const trimmed = text.trim();
-        if (!trimmed) return;
-
-        // Echo the raw user input to the timeline so slash-commands still
-        // produce a visible record of what was typed.
-        setTimeline((prev) =>
-          appendCapped(prev, {
-            kind: "user",
-            id: nextId(),
-            text: trimmed,
-          }),
-        );
-
-        if (trimmed.startsWith("/")) {
-          handleSlashCommand(
-            trimmed,
-            client,
-            push,
-            nextId,
-            showHelp,
-            clearContext,
-          );
-          return;
+      const clearContext = () => {
+        setHelpMenuOpen(false);
+        if (streamFlushTimerRef.current !== null) {
+          clearTimeout(streamFlushTimerRef.current);
+          streamFlushTimerRef.current = null;
         }
+        streamPendingContentRef.current = "";
+        streamPendingReasoningRef.current = "";
+        clientRef.current?.clearContext();
+        setTimeline([]);
+        currentAssistantId.current = null;
+        // Empty transcript is the primary signal, but a brief confirmation
+        // helps a user who mis-typed verify the action landed.
+        push({
+          kind: "toast",
+          id: nextId(),
+          level: "success",
+          message: "context cleared",
+        });
+      };
 
-        client.sendMessage(trimmed);
-      },
-      cancel: () => clientRef.current?.cancel(),
-      approveTool: (toolId: string, approve: boolean) => {
-        clientRef.current?.approveTool(toolId, approve);
-        setTimeline((prev) =>
-          prev.map((it) =>
-            it.kind === "approval" && it.id === toolId
-              ? {...it, decided: approve ? "approved" : "denied"}
-              : it,
-          ),
-        );
-      },
-      exit: () => clientRef.current?.exit(),
-      closeHelpMenu,
-    }),
+      const toggleVerbose = () => {
+        setSession((s) => {
+          const next = !s.verbose;
+          // Tell the server to start (or stop) forwarding low-priority toasts
+          // and chatty narration so the savings happen at the source, not
+          // just in the renderer.
+          clientRef.current?.setVerbosity(next ? "verbose" : "normal");
+          push({
+            kind: "toast",
+            id: nextId(),
+            level: "info",
+            message: next ? "verbose: on" : "verbose: off",
+          });
+          return {...s, verbose: next};
+        });
+      };
+
+      const revealReasoning = () => {
+        // Find the latest assistant turn with non-empty reasoning and
+        // surface it as an explicit timeline item the user opened.
+        setTimeline((prev) => {
+          for (let i = prev.length - 1; i >= 0; i--) {
+            const it = prev[i];
+            if (it.kind === "assistant" && it.reasoning.trim()) {
+              return appendCapped(
+                prev,
+                {
+                  kind: "toast",
+                  id: nextId(),
+                  level: "info",
+                  message: `reasoning ↓\n${it.reasoning.trim()}`,
+                },
+                nextId,
+              );
+            }
+          }
+          return appendCapped(
+            prev,
+            {
+              kind: "toast",
+              id: nextId(),
+              level: "info",
+              message: "no reasoning captured for the last turn",
+            },
+            nextId,
+          );
+        });
+      };
+
+      const refreshAgents = () => {
+        clientRef.current?.getState();
+        push({
+          kind: "toast",
+          id: nextId(),
+          level: "info",
+          message: "agents panel refreshed",
+        });
+      };
+
+      return {
+        send: (text: string) => {
+          const client = clientRef.current;
+          if (!client) return;
+
+          const trimmed = text.trim();
+          if (!trimmed) return;
+
+          // Echo the raw user input so slash-commands still produce a
+          // visible record of what was typed.
+          setTimeline((prev) =>
+            appendCapped(
+              prev,
+              {kind: "user", id: nextId(), text: trimmed},
+              nextId,
+            ),
+          );
+
+          if (trimmed.startsWith("/")) {
+            handleSlashCommand(trimmed, client, push, nextId, {
+              showHelp,
+              clearContext,
+              toggleVerbose,
+              revealReasoning,
+              refreshAgents,
+            });
+            return;
+          }
+
+          client.sendMessage(trimmed);
+        },
+        cancel: () => clientRef.current?.cancel(),
+        approveTool: (toolId: string, approve: boolean, always?: boolean) => {
+          // "Allow always" must *enable* YOLO unconditionally — toggling
+          // would silently turn it OFF if it was already on, which is the
+          // opposite of what the dialog promises.
+          if (approve && always && !sessionRef.current.autoApprove) {
+            clientRef.current?.toggleAutoApprove();
+          }
+          clientRef.current?.approveTool(toolId, approve);
+          setTimeline((prev) =>
+            prev.map((it) =>
+              it.kind === "approval" && it.id === toolId
+                ? {...it, decided: approve ? "approved" : "denied"}
+                : it,
+            ),
+          );
+        },
+        exit: () => clientRef.current?.exit(),
+        closeHelpMenu,
+        toggleVerbose,
+        revealReasoning,
+      };
+    },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );
@@ -193,14 +280,23 @@ export function useAgent(opts: {python?: string; cwd?: string} = {}): UseAgentRe
   return {session, timeline, helpMenuOpen, actions};
 }
 
+interface SlashHandlers {
+  showHelp: () => void;
+  clearContext: () => void;
+  toggleVerbose: () => void;
+  revealReasoning: () => void;
+  refreshAgents: () => void;
+}
+
 function handleSlashCommand(
   raw: string,
   client: AgentClient,
   push: (item: TimelineItem) => void,
   nextId: () => string,
-  showHelp: () => void,
-  clearContext: () => void,
+  handlers: SlashHandlers,
 ): void {
+  const {showHelp, clearContext, toggleVerbose, revealReasoning, refreshAgents} =
+    handlers;
   const [head, ...rest] = raw.slice(1).split(/\s+/);
   const arg = rest.join(" ").trim();
   const cmd = head.toLowerCase();
@@ -220,32 +316,32 @@ function handleSlashCommand(
       return;
     case "compact":
       client.compactContext();
-      toast("info", "Compacting context…");
       return;
     case "model":
-      if (!arg) {
-        client.getState();
-        toast("info", "Current model: (see status bar)");
-      } else {
-        client.setModel(arg);
-        toast("info", `Switching to model ${arg}…`);
-      }
-      return;
     case "change-model":
     case "changemodel":
-    case "switch-model":
-      if (arg) {
-        client.setModel(arg);
-        toast("info", `Switching to model ${arg}…`);
-      } else {
-        client.getState();
+    case "switch-model": {
+      // Unified model command:
+      //   /model                 → show current + list
+      //   /model <name>          → switch session model
+      //   /model default <name>  → persist as default for new sessions
+      const [first, ...tail] = arg ? arg.split(/\s+/) : [];
+      if (!first) {
         client.reference("models");
-        toast(
-          "info",
-          "To switch: type /model <name> or /change-model <name> (names listed above)",
-        );
+        return;
       }
+      if (first.toLowerCase() === "default") {
+        const target = tail.join(" ").trim();
+        if (!target) {
+          toast("warning", "Usage: /model default <name>");
+          return;
+        }
+        client.setDefaultModel(target);
+        return;
+      }
+      client.setModel(arg);
       return;
+    }
     case "reasoning":
     case "thinking": {
       const normalized = arg.toLowerCase() as ReasoningEffort;
@@ -257,7 +353,6 @@ function handleSlashCommand(
         return;
       }
       client.setReasoning(normalized);
-      toast("info", `Reasoning effort set to ${normalized}`);
       return;
     }
     case "yolo":
@@ -265,54 +360,62 @@ function handleSlashCommand(
     case "autoapprove":
       client.toggleAutoApprove();
       return;
+    case "verbose":
+      toggleVerbose();
+      return;
+    case "think":
+    case "reveal":
+      revealReasoning();
+      return;
     case "tokens":
     case "status":
     case "context":
       client.getState();
       return;
     case "agents":
-      toast(
-        "info",
-        "Agents table (above): main + sub-agents from delegate_task. Rows update live; /status refreshes session bar.",
-      );
+      // The panel updates live in the status region; the toast is the
+      // only proof that the refresh actually fired.
+      refreshAgents();
       return;
-    case "version":
-    case "v":
-      client.reference("version");
-      return;
-    case "models":
-    case "providers":
-      client.reference("models");
-      return;
-    case "cost":
-    case "pricing":
-      client.reference("cost");
-      return;
-    case "system":
-    case "diag":
-    case "diagnostics":
-      client.reference("system");
-      return;
-    case "config":
-      client.reference("config");
-      return;
-    case "info":
-      client.reference("info");
-      return;
-    case "tasks":
-    case "todos":
-    case "task":
-      client.reference("tasks");
-      return;
-    case "default":
-      if (!arg) {
+    case "show": {
+      const topic = arg.toLowerCase();
+      if (!topic) {
         toast(
           "warning",
-          "Usage: /default <model> — saves default for new sessions (see /models)",
+          "Usage: /show <version|models|cost|info|config|system|tasks|plan>",
         );
         return;
       }
-      client.setDefaultModel(arg);
+      if (topic === "plan") {
+        client.getPlan();
+        return;
+      }
+      const allowed = new Set([
+        "version", "models", "providers", "cost", "pricing",
+        "system", "diag", "diagnostics", "config", "info",
+        "tasks", "todos", "task",
+      ]);
+      if (!allowed.has(topic)) {
+        toast("warning", `Unknown topic: ${topic}`);
+        return;
+      }
+      client.reference(topic);
+      return;
+    }
+    // Legacy aliases — silent backward compat, route through /show.
+    case "version":
+    case "providers":
+    case "cost":
+    case "pricing":
+    case "system":
+    case "diag":
+    case "diagnostics":
+    case "config":
+    case "info":
+    case "tasks":
+    case "todos":
+    case "task":
+      client.reference(cmd === "providers" ? "models" : cmd);
       return;
     case "plan":
       client.getPlan();
@@ -322,6 +425,9 @@ function handleSlashCommand(
       client.exit();
       return;
     default:
-      toast("warning", `Unknown command: /${head} — type /help for a list`);
+      toast(
+        "warning",
+        `Unknown command: /${head} · press / or type /help to open the menu`,
+      );
   }
 }

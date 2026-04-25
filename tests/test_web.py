@@ -31,19 +31,17 @@ class TestWebSearchExecution:
         from coderAI.tools.web import WebSearchTool
 
         tool = WebSearchTool()
-        # WebSearchTool does not reject empty queries; it returns success
-        # with no results instead.
-        with patch("coderAI.tools.web.aiohttp.ClientSession") as MockSession:
+        with patch("coderAI.tools.web.aiohttp.ClientSession") as MockSession, \
+             patch("coderAI.tools.web.asyncio.sleep", new_callable=AsyncMock):
             mock_resp = AsyncMock()
             mock_resp.status = 200
-            mock_resp.json = AsyncMock(return_value={})
-            mock_resp.text = AsyncMock(return_value="<html></html>")
+            mock_resp.headers = {}
+            mock_resp.read = AsyncMock(return_value=b"<html></html>")
             mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
             mock_resp.__aexit__ = AsyncMock(return_value=False)
 
             mock_ctx = MagicMock()
-            mock_ctx.get = MagicMock(return_value=mock_resp)
-            mock_ctx.post = MagicMock(return_value=mock_resp)
+            mock_ctx.request = MagicMock(return_value=mock_resp)
 
             mock_session = MagicMock()
             mock_session.__aenter__ = AsyncMock(return_value=mock_ctx)
@@ -51,30 +49,29 @@ class TestWebSearchExecution:
             MockSession.return_value = mock_session
 
             result = asyncio.run(tool.execute(query=""))
-            assert result["success"] is True
-            assert result["results"] == []
+            assert result["success"] is False
 
+    @patch("coderAI.tools.web.asyncio.sleep", new_callable=AsyncMock)
     @patch("coderAI.tools.web.aiohttp.ClientSession")
-    def test_successful_search(self, MockSession):
+    def test_successful_search(self, MockSession, mock_sleep):
         from coderAI.tools.web import WebSearchTool
 
         html_body = (
             '<html><body>'
-            '<div class="result__body">'
-            '<a class="result__a" href="https://example.com">Example</a>'
-            '<a class="result__snippet">A test snippet.</a>'
-            '</div>'
+            '<a href="https://example.com" class="result-link">Example</a>'
+            '<a class="result-snippet">A test snippet.</a>'
             '</body></html>'
         )
 
         mock_resp = AsyncMock()
         mock_resp.status = 200
-        mock_resp.text = AsyncMock(return_value=html_body)
+        mock_resp.headers = {}
+        mock_resp.read = AsyncMock(return_value=html_body.encode("utf-8"))
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_resp.__aexit__ = AsyncMock(return_value=False)
 
         mock_ctx = MagicMock()
-        mock_ctx.post = MagicMock(return_value=mock_resp)
+        mock_ctx.request = MagicMock(return_value=mock_resp)
 
         mock_session = MagicMock()
         mock_session.__aenter__ = AsyncMock(return_value=mock_ctx)
@@ -85,8 +82,9 @@ class TestWebSearchExecution:
         result = asyncio.run(tool.execute(query="test query"))
         assert result["success"] is True
 
+    @patch("coderAI.tools.web.asyncio.sleep", new_callable=AsyncMock)
     @patch("coderAI.tools.web.aiohttp.ClientSession")
-    def test_network_error_returns_empty_results(self, MockSession):
+    def test_network_error_returns_empty_results(self, MockSession, mock_sleep):
         """When individual HTTP calls fail, inner methods return None and
         execute() falls through to the 'no results' branch (success=True)."""
         from coderAI.tools.web import WebSearchTool
@@ -101,8 +99,8 @@ class TestWebSearchExecution:
         result = asyncio.run(tool.execute(query="test"))
         # Inner methods swallow the exception and return None,
         # so execute() returns the "no results" fallback
-        assert result["success"] is True
-        assert result["results"] == []
+        assert result["success"] is False
+        assert "Search failed" in result["error"]
 
     def test_outer_exception_returns_error(self):
         """If the outer try/except in execute() catches, success=False."""

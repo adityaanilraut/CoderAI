@@ -27,6 +27,8 @@ class LMStudioProvider(LLMProvider):
         """
         super().__init__(model, None, **kwargs)
         self.endpoint = endpoint.rstrip("/")
+        if not self.endpoint.endswith("/v1"):
+            self.endpoint = f"{self.endpoint}/v1"
         self.temperature = kwargs.get("temperature", 0.7)
         self.max_tokens = kwargs.get("max_tokens", 4096)
 

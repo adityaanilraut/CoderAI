@@ -197,7 +197,8 @@ class HooksManager:
                 from prompt_toolkit import PromptSession
                 ps = PromptSession()
                 answer = await ps.prompt_async("Allow project hooks to run? (y/n) > ")
-            except Exception:
+            except Exception as e:
+                logger.warning(f"prompt_async failed: {e}", exc_info=True)
                 answer = input("Allow project hooks to run? (y/n) > ")
 
             return answer.strip().lower() in ("y", "yes")

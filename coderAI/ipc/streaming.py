@@ -1,12 +1,14 @@
 """Streaming handler that forwards LLM token deltas to the IPC server.
 
-Emits ``stream_delta`` (and related) NDJSON events so the Ink UI can render
-streaming output in React. Used when ``agent.streaming_handler`` is set from
+Emits a single phased ``turn`` NDJSON event (``phase`` of ``start`` /
+``reasoning`` / ``text`` / ``end``) so the Ink UI can render streaming
+output in React. Used when ``agent.streaming_handler`` is set from
 ``coderAI.ipc.entry`` (interactive mode).
 """
 
 from __future__ import annotations
 
+import time
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -53,7 +55,8 @@ class IPCStreamingHandler:
         self._raw_content = initial_content
         self._raw_reasoning = ""
 
-        self.server.emit("assistant_start")
+        start_time = time.monotonic()
+        self.server.emit("turn", phase="start")
 
         if initial_content:
             self._emit(initial_content, reasoning=False)
@@ -154,7 +157,8 @@ class IPCStreamingHandler:
                         if fn.get("arguments"):
                             self.tool_calls[idx]["function"]["arguments"] += fn["arguments"]
 
-        self.server.emit("assistant_end", content=self.current_content)
+        elapsed_ms = int((time.monotonic() - start_time) * 1000)
+        self.server.emit("turn", phase="end", elapsedMs=elapsed_ms)
 
         return {
             "content": self.current_content,
@@ -164,7 +168,7 @@ class IPCStreamingHandler:
     def _emit(self, text: str, *, reasoning: bool) -> None:
         if not text:
             return
-        self.server.emit("stream_delta", content=text, reasoning=reasoning)
+        self.server.emit("turn", phase="reasoning" if reasoning else "text", delta=text)
 
     def _coalesce_chunk(self, chunk: str, *, attr: str) -> str:
         """Trim provider-specific cumulative chunks down to only unseen text."""

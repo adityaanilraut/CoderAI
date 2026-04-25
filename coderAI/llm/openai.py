@@ -10,15 +10,7 @@ from .base import LLMProvider
 
 logger = logging.getLogger(__name__)
 
-# Cost per 1K tokens (approximate, as of early 2026)
-MODEL_COSTS = {
-    "gpt-5.4": {"input": 0.0025, "output": 0.01},
-    "gpt-5.4-mini": {"input": 0.00015, "output": 0.0006},
-    "gpt-5.4-nano": {"input": 0.00005, "output": 0.0004},
-    "o1": {"input": 0.015, "output": 0.06},
-    "o1-mini": {"input": 0.003, "output": 0.012},
-    "o3-mini": {"input": 0.0011, "output": 0.0044},
-}
+from coderAI.cost import CostTracker
 
 
 
@@ -32,6 +24,7 @@ class OpenAIProvider(LLMProvider):
         "gpt-5.4-nano": "gpt-5.4-nano",
         "o1": "o1",
         "o1-mini": "o1-mini",
+        "o1-pro": "o1-pro",
         "o3-mini": "o3-mini",
     }
 
@@ -68,10 +61,10 @@ class OpenAIProvider(LLMProvider):
 
     # Models that don't support temperature (only accept default=1)
     _NO_TEMPERATURE_MODELS_PREFIX = ("gpt-5",)
-    _NO_TEMPERATURE_MODELS_EXACT = {"o1", "o1-mini", "o3-mini"}
+    _NO_TEMPERATURE_MODELS_EXACT = {"o1", "o1-mini", "o1-pro", "o3-mini"}
 
-    # Models that cannot accept reasoning_effort (e.g. nano rejects it with tools)
-    _NO_REASONING_EFFORT_MODELS = {"gpt-5.4-nano"}
+    # Models that cannot accept reasoning_effort with function tools in /v1/chat/completions
+    _NO_REASONING_EFFORT_MODELS = {"gpt-5.4-nano", "gpt-5.4-mini"}
 
     @property
     def _uses_reasoning_effort(self) -> bool:
@@ -224,9 +217,9 @@ class OpenAIProvider(LLMProvider):
         Returns:
             Dictionary with cost breakdown
         """
-        costs = MODEL_COSTS.get(self.actual_model, {"input": 0, "output": 0})
-        input_cost = (self.total_input_tokens / 1000) * costs["input"]
-        output_cost = (self.total_output_tokens / 1000) * costs["output"]
+        pricing = CostTracker.get_model_pricing(self.actual_model)
+        input_cost = (self.total_input_tokens / 1_000_000) * pricing["input"]
+        output_cost = (self.total_output_tokens / 1_000_000) * pricing["output"]
 
         return {
             "input_tokens": self.total_input_tokens,

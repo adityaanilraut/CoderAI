@@ -49,6 +49,54 @@ def _strip_rich_markup(text: Any) -> str:
     return _RICH_TAG_RE.sub("", s)
 
 
+def _infer_error_hint(category: str, message: str) -> Optional[str]:
+    """Best-effort canonical hint for an error message.
+
+    Kept server-side so every consumer (Ink UI, logs, CLI fallbacks) sees the
+    same hint. The UI no longer tries to re-derive hints from message text.
+    """
+    lower = (message or "").lower()
+    if category == "provider":
+        if "localhost:1234" in lower or "lmstudio" in lower:
+            return "Start LM Studio: open the app → Developer → Start Server."
+        if "localhost:11434" in lower or "ollama" in lower:
+            return "Start Ollama: run `ollama serve` in another terminal."
+        if "anthropic" in lower and "key" in lower:
+            return "Set ANTHROPIC_API_KEY, or run `coderAI config set anthropic_api_key <KEY>`."
+        if "openai" in lower and "key" in lower:
+            return "Set OPENAI_API_KEY, or run `coderAI config set openai_api_key <KEY>`."
+        if "groq" in lower and "key" in lower:
+            return "Set GROQ_API_KEY, or run `coderAI config set groq_api_key <KEY>`."
+        if "deepseek" in lower and "key" in lower:
+            return "Set DEEPSEEK_API_KEY, or run `coderAI config set deepseek_api_key <KEY>`."
+        if any(k in lower for k in ("api key", "401", "unauthorized", "authentication")):
+            return "Missing/invalid API key — run `coderAI setup` or `coderAI doctor`."
+        if any(k in lower for k in ("rate limit", "429", "too many requests")):
+            return "Rate limited — wait a few seconds and retry, or switch models with /model <name>."
+        if "context" in lower and "length" in lower:
+            return "Context window exceeded. Try /compact to summarize, or /clear to reset."
+        if any(k in lower for k in ("quota", "insufficient", "billing")):
+            return "Provider reports quota/billing exhausted. Top up credits or switch providers."
+        if "timeout" in lower or "timed out" in lower:
+            return "Request timed out. Try again; if persistent, check your network and /model."
+        if any(k in lower for k in (
+            "cannot connect", "connection refused", "econnrefused", "getaddrinfo",
+        )):
+            return "Network/service unreachable. Check the endpoint URL, DNS, and firewall."
+        if "ssl" in lower or "certificate" in lower:
+            return "TLS handshake failed. Check your system clock and corporate proxy/CA certs."
+    if category == "tool":
+        if any(k in lower for k in ("permission denied", "eacces", "eperm")):
+            return "The tool lacks filesystem permissions. Check file ownership/mode."
+        if "not found" in lower or "enoent" in lower:
+            return "Target path or command wasn't found. Double-check the argument."
+        if "timeout" in lower or "timed out" in lower:
+            return "Tool timed out. For long shells try run_background, or raise timeout in args."
+        if "cancelled" in lower or "cancel" in lower:
+            return "Cancelled."
+    return None
+
+
 # --- Tool category inference ------------------------------------------------
 #
 # Primary source of truth is the ``category`` attribute on each ``Tool``
@@ -56,35 +104,29 @@ def _strip_rich_markup(text: Any) -> str:
 # MCP-proxy tools and anything that hasn't been tagged yet; tools looked
 # up in the registry override the map.
 
-_TOOL_CATEGORY_FALLBACK = {
-    # filesystem
-    "read_file": "fs", "write_file": "fs", "search_replace": "fs",
-    "apply_diff": "fs", "list_directory": "fs", "glob_search": "fs",
-    "move_file": "fs", "copy_file": "fs", "delete_file": "fs",
-    "create_directory": "fs",
-    # search
-    "text_search": "search", "grep": "search",
-    # git
-    "git_add": "git", "git_status": "git", "git_diff": "git",
-    "git_commit": "git", "git_log": "git", "git_branch": "git",
-    "git_checkout": "git", "git_stash": "git",
-    "git_push": "git", "git_pull": "git", "git_merge": "git",
-    "git_rebase": "git", "git_revert": "git", "git_reset": "git",
-    "git_show": "git", "git_remote": "git", "git_blame": "git",
-    "git_cherry_pick": "git", "git_tag": "git",
-    # terminal
-    "run_command": "shell", "run_background": "shell",
-    "list_processes": "shell", "kill_process": "shell",
-    # web
-    "web_search": "web", "read_url": "web", "download_file": "web",
-    "http_request": "web",
-    # memory
-    "save_memory": "memory", "recall_memory": "memory", "delete_memory": "memory",
-    # subagent
-    "delegate_task": "agent",
-    # mcp — tool is registered as ``mcp_call_tool`` in ``coderAI/tools/mcp.py``
-    "mcp_connect": "mcp", "mcp_call_tool": "mcp", "mcp_list": "mcp",
+from ..system_prompt import _TOOL_SECTIONS
+
+_CATEGORY_MAP = {
+    "File Operations": "fs",
+    "Terminal": "shell",
+    "Git": "git",
+    "Search & Analysis": "search",
+    "Web": "web",
+    "Memory (Persistent)": "memory",
+    "Multi-Agent Delegation": "agent",
+    "MCP (Model Context Protocol)": "mcp",
 }
+
+_TOOL_CATEGORY_FALLBACK = {}
+for _section_name, _tool_names in _TOOL_SECTIONS:
+    _cat = _CATEGORY_MAP.get(_section_name, "other")
+    for _t in _tool_names:
+        _TOOL_CATEGORY_FALLBACK[_t] = _cat
+
+# Ensure MCP proxy tools are covered even if missing from main prompt list
+_TOOL_CATEGORY_FALLBACK["mcp_connect"] = "mcp"
+_TOOL_CATEGORY_FALLBACK["mcp_call_tool"] = "mcp"
+_TOOL_CATEGORY_FALLBACK["mcp_list"] = "mcp"
 
 _HIGH_RISK = {
     "run_command", "run_background", "write_file", "search_replace",
@@ -186,9 +228,21 @@ class IPCServer:
         self._exit = asyncio.Event()
         self._approval_waiters: Dict[str, asyncio.Future] = {}
         self._said_goodbye = False
-        # Timestamp (ms since epoch) when the last ``status_start`` event fired.
-        # Used to compute the real elapsed time for ``thinking_end``.
-        self._thinking_start_ms: int = 0
+
+        # Per-agent-id timestamp (ms) of the last forwarded ``agent_update``.
+        # The tracker fires high-frequency token/cost ticks; we coalesce them
+        # to ≤1Hz per agent so the UI panel doesn't thrash. Lifecycle
+        # transitions bypass this throttle (see _on_agent_lifecycle).
+        self._agent_update_last_ms: Dict[str, int] = {}
+
+        # Verbosity filter — set by the UI via the ``set_verbosity`` command.
+        # ``normal`` (default) emits the structured protocol but suppresses
+        # the chattier ``success`` toasts. ``verbose`` re-enables them and
+        # forwards ``agent_status`` narration. ``quiet`` additionally drops
+        # transient ``info``/``warning`` toasts triggered by state changes
+        # (long-form ``info`` payloads from ``/show`` are always passed
+        # through — see ``_should_emit_event``).
+        self._verbosity: str = "normal"
 
         # Track our own event_emitter subscriptions so we can detach them at
         # shutdown — the emitter is a module-level singleton, so a stale
@@ -210,8 +264,49 @@ class IPCServer:
             self._exit.set()
 
     def emit(self, event: str, **data: Any) -> None:
-        """Emit one protocol event."""
+        """Emit one protocol event, honoring the current verbosity filter."""
+        if not self._should_emit_event(event, data):
+            return
         self._write({"v": 1, "kind": "event", "event": event, **data})
+
+    def _should_emit_event(self, event: str, data: Dict[str, Any]) -> bool:
+        """Decide whether ``event`` survives the current verbosity filter.
+
+        Structural protocol events (hello/ready/goodbye/tool_*/file_diff/
+        status/agent_*/error/*_changed/etc.) are always passed through —
+        only the chatty ``info``/``warning``/``success`` toasts get
+        filtered, and even then only when they look like single-line
+        state announcements.
+        """
+        v = self._verbosity
+        if v == "verbose":
+            return True
+        if event == "success":
+            # `success` events are always state-change toasts — never
+            # carry user-requested reference output.
+            return False
+        if event in ("info", "warning"):
+            msg = str(data.get("message", ""))
+            # Long-form payloads (multi-line) are reference output from
+            # `/show`, `/tasks`, `/plan` — keep them at every level.
+            if "\n" in msg:
+                return True
+            return v != "quiet"
+        return True
+
+    def _emit_error(self, category: str, message: str, *,
+                    hint: Optional[str] = None, details: Optional[str] = None) -> None:
+        """Emit an ``error`` event with a canonical hint if one isn't supplied."""
+        payload: Dict[str, Any] = {"category": category, "message": message}
+        resolved_hint = hint if hint is not None else _infer_error_hint(category, message)
+        if resolved_hint:
+            payload["hint"] = resolved_hint
+        if details:
+            payload["details"] = details
+        self.emit("error", **payload)
+
+    def _emit_tool_error(self, tool_name: str, error: Any) -> None:
+        self._emit_error("tool", _strip_rich_markup(f"{tool_name}: {error}"))
 
     async def request_tool_approval(
         self,
@@ -231,11 +326,14 @@ class IPCServer:
         fut: asyncio.Future = loop.create_future()
         self._approval_waiters[tool_id] = fut
         self.emit(
-            "tool_approval_req",
+            "tool",
             id=tool_id,
-            tool=tool_name,
-            args=_preview_args_for_approval(arguments),
-            risk=_tool_risk(tool_name),
+            phase="awaiting_approval",
+            payload={
+                "name": tool_name,
+                "args": _preview_args_for_approval(arguments),
+                "risk": _tool_risk(tool_name),
+            }
         )
         timeout_s = int(getattr(self.agent.config, "approval_timeout_seconds", 300) or 0)
         try:
@@ -247,10 +345,10 @@ class IPCServer:
                 "Approval for %s timed out after %ss; denying.", tool_name, timeout_s
             )
             self.emit(
-                "tool_approval_timeout",
+                "tool",
                 id=tool_id,
-                tool=tool_name,
-                timeoutSeconds=timeout_s,
+                phase="cancelled",
+                payload={"reason": "timeout", "timeoutSeconds": timeout_s}
             )
             return False
         except asyncio.CancelledError:
@@ -265,7 +363,6 @@ class IPCServer:
 
     def emit_hello(self) -> None:
         config = self.agent.config
-        project_summary = None
 
         self.emit(
             "hello",
@@ -273,7 +370,6 @@ class IPCServer:
             provider=self.agent.provider.__class__.__name__,
             cwd=os.getcwd(),
             version=getattr(self.agent, "version", "0.1.0"),
-            projectSummary=project_summary,
             contextLimit=getattr(config, "context_window", 200000),
             budgetLimit=getattr(config, "budget_limit", 0.0) or 0.0,
             autoApprove=bool(getattr(self.agent, "auto_approve", False)),
@@ -314,20 +410,17 @@ class IPCServer:
 
         _bind("tool_call", self._on_tool_call)
         _bind("tool_result", self._on_tool_result)
-        _bind("tool_error", lambda tool_name, error:
-              self.emit("error", category="tool",
-                        message=_strip_rich_markup(f"{tool_name}: {error}")))
-        _bind("agent_status", lambda message:
-              self.emit("info", message=_strip_rich_markup(message)))
+        _bind("tool_error", self._emit_tool_error)
+        # `agent_status` is high-frequency narration ("Reading file…",
+        # "Calling tool…"). The Ink UI shows the same information via
+        # tool_call / agent_update events, so we no longer forward it as
+        # a persistent toast. Re-enabled only when verbose flag flips.
         _bind("agent_error", lambda message:
-              self.emit("error", category="internal",
-                        message=_strip_rich_markup(message)))
+              self._emit_error("internal", _strip_rich_markup(message)))
         _bind("agent_warning", lambda message:
               self.emit("warning", message=_strip_rich_markup(message)))
         _bind("file_diff", lambda path, diff:
               self.emit("file_diff", path=str(path), diff=str(diff)))
-        _bind("status_start", self._on_thinking_start)
-        _bind("status_stop", self._on_thinking_stop)
         _bind("agent_lifecycle", self._on_agent_lifecycle)
         _bind("agent_tracker_sync", self._on_agent_tracker_sync)
 
@@ -342,12 +435,15 @@ class IPCServer:
             tool_id = f"t_{uuid.uuid4().hex[:12]}"
         self._last_tool_id = tool_id  # fallback for callers not providing tool_id
         self.emit(
-            "tool_call",
+            "tool",
             id=tool_id,
-            name=tool_name,
-            category=_tool_category(tool_name, getattr(self.agent, "tools", None)),
-            args=_redact_args(arguments),
-            risk=_tool_risk(tool_name),
+            phase="running",
+            payload={
+                "name": tool_name,
+                "category": _tool_category(tool_name, getattr(self.agent, "tools", None)),
+                "args": _redact_args(arguments),
+                "risk": _tool_risk(tool_name),
+            }
         )
 
     def _on_tool_result(self, tool_name: str, result: Dict[str, Any], tool_id: str = None) -> None:
@@ -357,37 +453,49 @@ class IPCServer:
         error = result.get("error") if not ok else None
         preview = _result_preview(result)
         self.emit(
-            "tool_result",
+            "tool",
             id=tool_id,
-            ok=ok,
-            preview=preview,
-            fullAvailable=len(str(result)) > len(preview),
-            error=error,
+            phase="ok" if ok else "err",
+            payload={
+                "preview": preview,
+                "fullAvailable": len(str(result)) > len(preview),
+                "error": error,
+            }
         )
 
     def _on_agent_lifecycle(self, action: str, info: AgentInfo) -> None:
+        # Lifecycle transitions are rare and load-bearing — never throttled.
+        # Reset the per-agent throttle clock so the next tick goes through.
+        self._agent_update_last_ms.pop(info.agent_id, None)
         self.emit(
-            "agent_lifecycle",
-            action=action,
-            agent=_agent_info_dict(info),
+            "agent",
+            phase=action,
+            info=_agent_info_dict(info),
+            parentId=info.parent_id,
         )
 
     def _on_agent_tracker_sync(self, info: AgentInfo) -> None:
-        """Push live token/cost/task updates for main + sub-agents to the UI."""
-        self.emit("agent_update", agent=_agent_info_dict(info))
+        """Push live token/cost/task updates for main + sub-agents to the UI.
 
-    def _on_thinking_start(self, message: str = None) -> None:
-        """Record start timestamp and emit ``thinking_start``."""
-        self._thinking_start_ms = int(_time.time() * 1000)
-        self.emit("thinking_start")
+        Coalesced per-agent to ≤1 emission/second — the tracker fires on
+        every tool call and stream tick, which is ~10× more than the UI
+        needs. Terminal status transitions still flow through
+        ``agent_lifecycle``.
+        """
+        # Always pass through terminal states so the panel sees the final
+        # token/cost numbers without waiting out the throttle window.
+        terminal = info.status in ("done", "error", "cancelled")
+        if not terminal:
+            now_ms = int(_time.time() * 1000)
+            last_ms = self._agent_update_last_ms.get(info.agent_id, 0)
+            if now_ms - last_ms < 1000:
+                return
+            self._agent_update_last_ms[info.agent_id] = now_ms
+        else:
+            self._agent_update_last_ms.pop(info.agent_id, None)
+        self.emit("agent", phase="update", info=_agent_info_dict(info), parentId=info.parent_id)
 
-    def _on_thinking_stop(self, *args: Any, **kwargs: Any) -> None:
-        """Compute real elapsed time and emit ``thinking_end`` with it."""
-        elapsed = 0
-        if self._thinking_start_ms:
-            elapsed = int(_time.time() * 1000) - self._thinking_start_ms
-            self._thinking_start_ms = 0
-        self.emit("thinking_end", elapsedMs=elapsed)
+
 
     # -- inbound (stdin) ------------------------------------------------------
 
@@ -464,8 +572,7 @@ class IPCServer:
             await handler(self, msg)
         except Exception as e:
             logger.exception("Command %s failed", cmd)
-            self.emit("error", category="internal",
-                      message=f"{cmd} failed: {e}")
+            self._emit_error("internal", f"{cmd} failed: {e}")
 
     # -- main loop ------------------------------------------------------------
 
@@ -473,6 +580,16 @@ class IPCServer:
         """Run until the UI exits or stdin closes."""
         self.emit_hello()
         self.emit_ready()
+        # Flush any agents already in the tracker (e.g. the idle root entry
+        # seeded by entry.py) so the Agents panel is populated from boot
+        # rather than only after the first turn registers a new agent.
+        for info in agent_tracker.get_all():
+            self.emit(
+                "agent",
+                phase="update",
+                info=_agent_info_dict(info),
+                parentId=info.parent_id,
+            )
         reader_task = asyncio.create_task(self._read_commands())
         try:
             await self._exit.wait()
@@ -548,10 +665,9 @@ async def _cmd_send_message(server: IPCServer, msg: Dict[str, Any]) -> None:
         try:
             await server.agent.process_message(text)
         except Exception as e:
-            server.emit(
-                "error",
-                category="internal",
-                message=str(e),
+            server._emit_error(
+                "internal",
+                str(e),
                 hint="See logs on stderr for the full traceback.",
             )
         finally:
@@ -583,8 +699,7 @@ async def _cmd_set_model(server: IPCServer, msg: Dict[str, Any]) -> None:
     except Exception as e:
         server.agent.model = old_model
         server.agent.provider = old_provider
-        server.emit("error", category="provider",
-                    message=f"Could not switch to {model}: {e}")
+        server._emit_error("provider", f"Could not switch to {model}: {e}")
         return
     _align_provider_usage_counters(
         server.agent.provider,
@@ -597,19 +712,25 @@ async def _cmd_set_model(server: IPCServer, msg: Dict[str, Any]) -> None:
     # each turn from this point forward.
     if server.agent.session is not None:
         server.agent.session.model = model
-    server.emit("model_changed", model=model,
-                provider=server.agent.provider.__class__.__name__)
-    server.emit("success", message=f"Model → {model}")
+    server.emit("session_patch", model=model, provider=server.agent.provider.__class__.__name__)
+    # Verbose-only confirmation; the status bar carries the change in normal mode.
+    server.emit("success", message=f"Switched model → {model}")
 
 
 async def _cmd_toggle_auto_approve(server: IPCServer, msg: Dict[str, Any]) -> None:
     server.agent.auto_approve = not server.agent.auto_approve
     server.agent._configure_delegate_tool_context()
-    state = "ON" if server.agent.auto_approve else "OFF"
-    # Emit a structured event so the UI can update its "safe"/"YOLO" badge
-    # synchronously, in addition to the user-visible toast.
-    server.emit("auto_approve_changed", autoApprove=bool(server.agent.auto_approve))
-    server.emit("info", message=f"Auto-approve is now {state}")
+    # Status bar's safe/YOLO pill is the indicator in normal mode; the
+    # success toast surfaces only in verbose.
+    server.emit("session_patch", autoApprove=bool(server.agent.auto_approve))
+    server.emit(
+        "success",
+        message=(
+            "Auto-approve enabled (YOLO)"
+            if server.agent.auto_approve
+            else "Auto-approve disabled"
+        ),
+    )
 
 
 async def _cmd_set_reasoning(server: IPCServer, msg: Dict[str, Any]) -> None:
@@ -630,8 +751,8 @@ async def _cmd_set_reasoning(server: IPCServer, msg: Dict[str, Any]) -> None:
             setattr(provider, "reasoning_effort", effort)
         except Exception:
             pass
-    server.emit("reasoning_changed", effort=effort)
-    server.emit("info", message=f"Reasoning effort → {effort}")
+    server.emit("session_patch", reasoning=effort)
+    # Status bar shows current reasoning level; no toast.
 
 
 async def _cmd_tool_approval_resp(server: IPCServer, msg: Dict[str, Any]) -> None:
@@ -640,6 +761,9 @@ async def _cmd_tool_approval_resp(server: IPCServer, msg: Dict[str, Any]) -> Non
     waiter = server._approval_waiters.pop(tool_id, None)
     if waiter is not None and not waiter.done():
         waiter.set_result(approve)
+    elif waiter is None:
+        logger.warning(f"Late or invalid approval response for tool {tool_id}")
+        server.emit("warning", message="Tool approval response was received too late.")
 
 
 async def _cmd_clear_context(server: IPCServer, msg: Dict[str, Any]) -> None:
@@ -649,24 +773,26 @@ async def _cmd_clear_context(server: IPCServer, msg: Dict[str, Any]) -> None:
     # token counters, hook-approval cache, and the provider-side cumulative
     # usage so the new session is fully independent of the old one.
     server.agent.create_session()
-    server.emit("success", message="Context cleared")
+    # The UI wipes its timeline on /clear and shows its own confirmation;
+    # a server-side success toast adds an audit trail in verbose mode.
+    server.emit("success", message="Session cleared")
     server.emit_status()
 
 
 async def _cmd_compact_context(server: IPCServer, msg: Dict[str, Any]) -> None:
     try:
         await server.agent.compact_context()
-        server.emit("success", message="Context compacted")
     except Exception as e:
-        server.emit("error", category="internal",
-                    message=f"Compaction failed: {e}")
+        server._emit_error("internal", f"Compaction failed: {e}")
+    else:
+        server.emit("success", message="Context compacted")
     server.emit_status()
 
 
 async def _cmd_get_state(server: IPCServer, msg: Dict[str, Any]) -> None:
     server.emit_status()
     for info in agent_tracker.get_all():
-        server.emit("agent_update", agent=_agent_info_dict(info))
+        server.emit("agent", phase="update", info=_agent_info_dict(info), parentId=info.parent_id)
 
 
 def _format_plan_message(plan: Dict[str, Any]) -> str:
@@ -797,6 +923,24 @@ async def _cmd_set_default_model(server: IPCServer, msg: Dict[str, Any]) -> None
         )
 
 
+async def _cmd_set_verbosity(server: IPCServer, msg: Dict[str, Any]) -> None:
+    """Adjust the IPC server's event filter.
+
+    Levels (least → most chatty):
+      - quiet:   drop info/warning/success state toasts entirely.
+      - normal:  drop success toasts only (default).
+      - verbose: pass through everything including agent_status narration.
+    """
+    level = str(msg.get("level", "normal")).lower()
+    if level not in ("quiet", "normal", "verbose"):
+        server.emit(
+            "warning",
+            message=f"Invalid verbosity: {level!r}. Use quiet|normal|verbose.",
+        )
+        return
+    server._verbosity = level
+
+
 async def _cmd_exit(server: IPCServer, msg: Dict[str, Any]) -> None:
     server.emit("goodbye", reason="user")
     server._said_goodbye = True
@@ -816,5 +960,6 @@ _COMMAND_HANDLERS: Dict[str, Callable[[IPCServer, Dict[str, Any]], Awaitable[Non
     "get_plan": _cmd_get_plan,
     "reference": _cmd_reference,
     "set_default_model": _cmd_set_default_model,
+    "set_verbosity": _cmd_set_verbosity,
     "exit": _cmd_exit,
 }

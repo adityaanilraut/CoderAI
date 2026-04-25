@@ -15,10 +15,9 @@ export interface StatusBarProps {
  *
  * Redesign: no more `│` pipe separators — fields breathe with whitespace
  * and each status gets a colored dot for scannability.  A tiny 10-cell
- * context-usage meter replaces the percentage-only readout so users can
- * feel the fill rate.
+ * context-usage meter pairs with the absolute fraction (no redundant %).
  *
- *   ◆ claude-opus-4-7   anthropic     ██████░░░░ 62%  12.3k/200k   $0.048   ● safe
+ *   ◆ claude-opus-4-7   anthropic     ██████░░░░ 12.3k/200k   $0.048   ● safe
  */
 export const StatusBar = memo(function StatusBar({
   session,
@@ -71,21 +70,19 @@ export const StatusBar = memo(function StatusBar({
     <Box>
       {ctxMeter}
       {ctxMeter ? <Text> </Text> : null}
-      <Text color={ctxColor}>
-        {ctxKnown ? `${ctxPct.toFixed(0)}%` : "ctx —"}
-      </Text>
       {ctxKnown ? (
-        <Text color={theme.faint}>
-          {theme.glyph.separator}
+        <Text color={ctxColor}>
           {formatTokenCount(session.ctxUsed)}/{formatTokenCount(session.ctxLimit)}
         </Text>
-      ) : null}
+      ) : (
+        <Text color={ctxColor}>ctx —</Text>
+      )}
     </Box>
   );
 
   const costSeg = (
     <Box>
-      <Text color={costColor}>${session.costUsd.toFixed(4)}</Text>
+      <Text color={costColor}>{formatCost(session.costUsd)}</Text>
       {budget > 0 ? (
         <Text color={theme.faint}>
           {theme.glyph.separator}/ ${budget.toFixed(2)}
@@ -115,12 +112,15 @@ export const StatusBar = memo(function StatusBar({
     </Box>
   );
 
-  const reasoningSeg = session.reasoning ? (
-    <Text color={theme.faint}>
-      {theme.glyph.separator}
-      {session.reasoning}
-    </Text>
-  ) : null;
+  // `none` means reasoning is off — no point showing chrome for the
+  // absence of a feature.
+  const reasoningSeg =
+    session.reasoning && session.reasoning !== "none" ? (
+      <Text color={theme.faint}>
+        {theme.glyph.separator}
+        {session.reasoning}
+      </Text>
+    ) : null;
 
   return (
     <Box
@@ -133,8 +133,9 @@ export const StatusBar = memo(function StatusBar({
       {/* Left: brand · model · provider */}
       {modelSeg}
 
-      {/* Right: ctx · cost · agents · mode */}
-      <Box>
+      {/* Right: ctx · cost · agents · mode. In narrow mode the parent
+          stacks vertically, so add a top margin so the rows don't fuse. */}
+      <Box marginTop={narrow ? 1 : 0}>
         {ctxSeg}
         <Text>{theme.glyph.separator}</Text>
         {costSeg}
@@ -151,6 +152,20 @@ export const StatusBar = memo(function StatusBar({
     </Box>
   );
 });
+
+/**
+ * Format a cost in USD with the smallest sensible precision.
+ *
+ * - sub-cent costs keep 4 decimals so a session that's only run a couple of
+ *   tool calls doesn't display as `$0.00`
+ * - dollar-scale costs collapse to two decimals to save horizontal space on
+ *   the most-watched line in the UI
+ */
+function formatCost(usd: number): string {
+  if (usd === 0) return "$0.00";
+  if (usd < 0.01) return `$${usd.toFixed(4)}`;
+  return `$${usd.toFixed(2)}`;
+}
 
 /**
  * 10-cell unicode bar, filled per percent.  Uses block glyphs so it

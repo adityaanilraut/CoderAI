@@ -37,6 +37,7 @@ PROJECT_INDICATORS = {
 
 class ProjectContextParams(BaseModel):
     path: str = Field(".", description="Project root directory (default: current directory)")
+    max_depth: int = Field(2, description="Maximum directory depth to scan for structure (default: 2)")
 
 
 class ProjectContextTool(Tool):
@@ -50,7 +51,7 @@ class ProjectContextTool(Tool):
     parameters_model = ProjectContextParams
     is_read_only = True
 
-    async def execute(self, path: str = ".") -> Dict[str, Any]:
+    async def execute(self, path: str = ".", max_depth: int = 2) -> Dict[str, Any]:
         """Detect project type and load context."""
         try:
             project_root = Path(path).expanduser().resolve()
@@ -82,8 +83,8 @@ class ProjectContextTool(Tool):
             if "go" in detected_types:
                 context["go"] = await self._load_go_context(project_root)
 
-            # Get directory structure (top 2 levels, skip common ignore dirs)
-            structure = self._get_directory_structure(project_root, max_depth=2)
+            # Get directory structure (up to max_depth levels, skip common ignore dirs)
+            structure = self._get_directory_structure(project_root, max_depth=max_depth)
 
             # Detect .gitignore patterns
             gitignore = self._load_gitignore(project_root)

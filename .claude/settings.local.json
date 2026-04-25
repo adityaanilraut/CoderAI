@@ -56,7 +56,29 @@
       "Bash(pytest --no-header -q)",
       "Bash(pytest tests/test_subagent.py tests/test_tool_executor.py -q)",
       "Bash(pytest -q)",
-      "Bash(coderAI --version)"
+      "Bash(coderAI --version)",
+      "Bash(command -v bun)",
+      "Bash(command -v tsc)",
+      "Bash(coderAI doctor *)",
+      "Bash(echo \"EXIT=$?\")",
+      "Bash(bunx --cwd /Users/adityaraut/Desktop/CoderAI-main/ui tsc -p /Users/adityaraut/Desktop/CoderAI-main/ui/tsconfig.json --noEmit)",
+      "Bash(bun --version)",
+      "Bash(bun x *)",
+      "Bash(bunx --bun tsc -p tsconfig.json)",
+      "Bash(pytest tests/test_ui_timeline_frozen.py -q)",
+      "Bash(pytest tests/test_streaming.py::TestIPCStreamingHandler::test_content_chunks -x)",
+      "Bash(pytest tests/test_ui_protocol_contract.py -x)",
+      "Bash(pytest tests/test_streaming.py tests/test_ui_protocol_contract.py)",
+      "Bash(pytest tests/test_streaming.py tests/test_ui_protocol_contract.py tests/test_ui_timeline_frozen.py -q)",
+      "Bash(bun install *)",
+      "Bash(echo \"exit $?\")",
+      "Bash(bunx --bun tsc -p tsconfig.json --noEmit)",
+      "Bash(/Users/adityaraut/Desktop/CoderAI-main/ui/node_modules/.bin/tsc -p /Users/adityaraut/Desktop/CoderAI-main/ui/tsconfig.json --noEmit)",
+      "Bash(xargs -I {} basename {} .py)",
+      "Bash([ ! -f \"/Users/adityaraut/Desktop/CoderAI-main/tests/test_$tool.py\" ])",
+      "Bash(xargs -n1 basename)",
+      "Bash(pytest tests/test_ipc_server.py tests/test_streaming.py tests/test_ui_protocol_contract.py -q)",
+      "Bash(pytest tests/test_ipc_server.py tests/test_streaming.py tests/test_ui_protocol_contract.py -v)"
     ]
   }
 }

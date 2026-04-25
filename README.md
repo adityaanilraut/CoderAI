@@ -5,7 +5,7 @@
     <a href="https://github.com/adityaanilraut/CoderAI/actions/workflows/ci.yml"><img src="https://github.com/adityaanilraut/CoderAI/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   </p>
   <p align="center">
-    <a href="#installation">Install</a> · <a href="#quick-start">Quick Start</a> · <a href="#architecture">Architecture</a> · <a href="#tools-reference">Tools</a> · <a href="#agent-system">Agents</a> · <a href="#workflows--skills">Workflows</a>
+    <a href="#-getting-started">Getting Started</a> · <a href="#architecture">Architecture</a> · <a href="#tools-reference">Tools</a> · <a href="#agent-system">Agents</a> · <a href="#workflows--skills">Workflows</a>
   </p>
 </p>
 
@@ -33,60 +33,52 @@ CoderAI is a Python CLI tool that pairs an LLM with **54+ built-in tools** to re
 
 ---
 
-## 📦 Installation
+## 🚀 Getting Started
 
 **Requirements:** Python 3.9+
 
 ```bash
-# Clone the repository
+# 1. Install
 git clone https://github.com/adityaanilraut/CoderAI.git
 cd CoderAI
-
-# Install in editable mode
 pip install -e .
 
-# Run the setup wizard to configure API keys
+# 2. Configure at least one provider (interactive wizard)
 coderAI setup
+
+# 3. Verify your install (config, keys, binary, cache)
+coderAI doctor
+
+# 4. Start chatting
+coderAI                    # default: opens Ink chat UI
+coderAI chat -m opus       # pick a model/alias
+coderAI chat --resume ID   # resume a saved session
 ```
 
-See [INSTALL.md](INSTALL.md) for detailed installation instructions and troubleshooting.
+Don't want to run the wizard? Set a provider key as an environment variable
+instead — `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GROQ_API_KEY`, or
+`DEEPSEEK_API_KEY`. For local inference, run `coderAI config set default_model
+lmstudio` (or `ollama`).
 
----
+See [INSTALL.md](INSTALL.md) for platform-specific notes and offline builds.
 
-## 🚀 Quick Start
+### Interactive chat commands
 
-```bash
-# Interactive chat (default)
-coderAI
-
-# or explicitly
-coderAI chat
-
-# Interactive chat with a specific model
-coderAI chat -m claude-4-sonnet
-
-# Resume a previous session
-coderAI chat --resume <session-id>
-
-# List available models
-coderAI models
-
-# Check system status
-coderAI status
-```
-
-### Interactive Commands (inside chat)
+Type a slash inside `coderAI chat`:
 
 | Command | Description |
 |---|---|
-| `/help` | Show available commands |
-| `/model` | Change the LLM model |
-| `/tokens` | Show token usage and cost |
-| `/context` | Show pinned context files |
+| `/help` | Open the command menu |
+| `/model [name]` | Switch session model · `/model default <name>` to persist |
+| `/tokens` · `/status` · `/context` | Session bar refresh |
 | `/compact` | Force-compress conversation history |
-| `/agents` | Show active agents and sub-agents |
-| `/clear` | Clear conversation history |
-| `/exit` | End the session |
+| `/agents` | Note about the live agents table |
+| `/clear` | Wipe conversation & context |
+| `/reasoning <high\|medium\|low\|none>` | Thinking budget for reasoning models |
+| `/yolo` | Toggle auto-approve for high-risk tools |
+| `/exit` | Shut down the agent |
+
+See [COMMANDS.md](COMMANDS.md) for the full CLI reference.
 
 ---
 

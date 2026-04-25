@@ -5,19 +5,21 @@ import {theme} from "../theme.js";
 
 export interface ThinkingProps {
   active: boolean;
+  /**
+   * Short description of *what* is being worked on right now (sub-agent
+   * name, tool name, or current task). Surfacing this turns the spinner
+   * from a vague "still alive" cue into actionable context.
+   */
+  detail?: string;
 }
 
 /**
  * Live "thinking" indicator shown below the timeline while the LLM
  * reasons before its next response.
  *
- *   ⠋ thinking  12s       esc to interrupt
- *
- * Redesign: slightly indented to sit below the chat rail column, uses
- * `faint` for the hint so it fades into the background when the model
- * is fast and the message flashes briefly.
+ *   ⠋ thinking · code-reviewer   12s    esc cancel
  */
-export function Thinking({active}: ThinkingProps) {
+export function Thinking({active, detail}: ThinkingProps) {
   const [ms, setMs] = useState(0);
 
   useEffect(() => {
@@ -26,8 +28,6 @@ export function Thinking({active}: ThinkingProps) {
       return;
     }
     const start = Date.now();
-    // 1s ticks — higher frequencies cause Ink live-region redraws that
-    // can scroll long transcripts to the top.
     const interval = setInterval(() => setMs(Date.now() - start), 1000);
     return () => clearInterval(interval);
   }, [active]);
@@ -40,14 +40,17 @@ export function Thinking({active}: ThinkingProps) {
         <Spinner type="dots" />
       </Text>
       <Text color={theme.textSoft}> thinking</Text>
+      {detail ? (
+        <Text color={theme.muted}>
+          {"  "}
+          {theme.glyph.dot} {detail}
+        </Text>
+      ) : null}
       <Text color={theme.faint}>
         {"  "}
         {Math.floor(ms / 1000)}s
       </Text>
-      <Text color={theme.faint}>
-        {"    "}
-        esc to interrupt
-      </Text>
+      <Text color={theme.faint}>{"    "}esc cancel</Text>
     </Box>
   );
 }

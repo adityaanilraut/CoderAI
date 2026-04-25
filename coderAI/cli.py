@@ -20,7 +20,14 @@ logger = logging.getLogger(__name__)
 
 
 @click.group(invoke_without_command=True)
-@click.option("--model", "-m", help="Model to use (gpt-5.4, gpt-5.4-mini, claude-4-sonnet, lmstudio, ollama)")
+@click.option(
+    "--model",
+    "-m",
+    help=(
+        "Model or alias (claude-sonnet-4-6, opus, haiku, gpt-5.4-mini, …). "
+        "Run `coderAI models` for the full list."
+    ),
+)
 @click.option("--resume", "-r", help="Resume a previous session by ID")
 @click.option("--version", "-v", is_flag=True, help="Show version")
 @click.option("--verbose", is_flag=True, help="Enable verbose/debug logging")
@@ -78,6 +85,31 @@ def chat(model, resume, auto_approve, python):
         ensure_binary,
     )
 
+    # Preflight: make sure the user has at least one provider configured
+    # before we spawn the UI. Otherwise the chat opens to a friendly
+    # status bar and then fails silently on the first send.
+    cfg = config_manager.load()
+    has_cloud_key = any(
+        [
+            getattr(cfg, "openai_api_key", None),
+            getattr(cfg, "anthropic_api_key", None),
+            getattr(cfg, "groq_api_key", None),
+            getattr(cfg, "deepseek_api_key", None),
+        ]
+    )
+    # Local providers (lmstudio/ollama) don't need an API key — detect
+    # by either default_model hint or a configured endpoint being set to
+    # something other than the library default.
+    local_default = (cfg.default_model or "").lower() in ("lmstudio", "ollama")
+    if not has_cloud_key and not local_default:
+        display.print_error(
+            "No API key configured. Run `coderAI setup` to add one, or set a "
+            "provider env var (ANTHROPIC_API_KEY, OPENAI_API_KEY, GROQ_API_KEY, "
+            "DEEPSEEK_API_KEY). For local models, run `coderAI config set "
+            "default_model lmstudio` (or ollama)."
+        )
+        sys.exit(1)
+
     try:
         binary = ensure_binary(__version__)
     except (BinaryUnavailableError, UnsupportedPlatformError) as e:
@@ -92,9 +124,9 @@ def chat(model, resume, auto_approve, python):
     if auto_approve:
         env["CODERAI_AUTO_APPROVE"] = "1"
         display.print_warning(
-            "YOLO MODE — auto-approve is ON. "
-            "Every tool call (including run_command, delete_file, git_push) "
-            "will execute without asking. Press Ctrl+C to abort."
+            "Auto-approve enabled — tool calls will run without confirmation. "
+            "This includes run_command, delete_file, and git_push. "
+            "Press Ctrl+C to abort."
         )
     env["CODERAI_PYTHON"] = python or sys.executable
 
@@ -212,74 +244,156 @@ def info(model):
     display.print_table(tools_info)
 
 
+_REASONING_CHOICES = ("high", "medium", "low", "none")
+
+
+def _valid_models() -> set[str]:
+    """Return the set of valid default-model values accepted by setup()."""
+    from .llm.anthropic import MODEL_ALIASES as _ANTH
+    from .llm.deepseek import DeepSeekProvider as _DS
+    from .llm.groq import GroqProvider as _GR
+    from .llm.openai import OpenAIProvider as _OAI
+
+    return (
+        set(_OAI.SUPPORTED_MODELS.keys())
+        | set(_ANTH.keys())
+        | set(_GR.SUPPORTED_MODELS.keys())
+        | set(_DS.SUPPORTED_MODELS.keys())
+        | {"lmstudio", "ollama"}
+    )
+
+
+def _valid_endpoint(url: str) -> bool:
+    """Loose URL check: must start with http:// or https:// and have a host."""
+    from urllib.parse import urlparse
+
+    try:
+        p = urlparse(url)
+    except Exception:
+        return False
+    return p.scheme in ("http", "https") and bool(p.netloc)
+
+
 @cli.command()
 def setup():
     """Interactive setup wizard."""
     display.print_header("CoderAI Setup Wizard")
     display.print()
-    
+
+    captured_any_key = False
+
     # OpenAI API Key
     display.print("[bold]1. OpenAI API Key[/bold]")
     display.print("   Required for using GPT models")
-    api_key = click.prompt("   Enter your OpenAI API key (or press Enter to skip)", default="", show_default=False)
+    api_key = click.prompt(
+        "   Enter your OpenAI API key (or press Enter to skip)",
+        default="",
+        show_default=False,
+    )
     if api_key:
         config_manager.set("openai_api_key", api_key)
         display.print_success("   OpenAI API key saved")
+        captured_any_key = True
     display.print()
-    
+
     # Anthropic API Key
     display.print("[bold]2. Anthropic API Key[/bold]")
     display.print("   Required for using Claude models")
-    anthropic_key = click.prompt("   Enter your Anthropic API key (or press Enter to skip)", default="", show_default=False)
+    anthropic_key = click.prompt(
+        "   Enter your Anthropic API key (or press Enter to skip)",
+        default="",
+        show_default=False,
+    )
     if anthropic_key:
         config_manager.set("anthropic_api_key", anthropic_key)
         display.print_success("   Anthropic API key saved")
+        captured_any_key = True
     display.print()
-    
+
     # Groq API Key
     display.print("[bold]3. Groq API Key[/bold]")
     display.print("   Required for using Groq models (including openai/gpt-oss-120b and openai/gpt-oss-20b)")
-    groq_key = click.prompt("   Enter your Groq API key (or press Enter to skip)", default="", show_default=False)
+    groq_key = click.prompt(
+        "   Enter your Groq API key (or press Enter to skip)",
+        default="",
+        show_default=False,
+    )
     if groq_key:
         config_manager.set("groq_api_key", groq_key)
         display.print_success("   Groq API key saved")
+        captured_any_key = True
     display.print()
-    
+
     # DeepSeek API Key
     display.print("[bold]4. DeepSeek API Key[/bold]")
     display.print("   Required for using DeepSeek models")
-    deepseek_key = click.prompt("   Enter your DeepSeek API key (or press Enter to skip)", default="", show_default=False)
+    deepseek_key = click.prompt(
+        "   Enter your DeepSeek API key (or press Enter to skip)",
+        default="",
+        show_default=False,
+    )
     if deepseek_key:
         config_manager.set("deepseek_api_key", deepseek_key)
         display.print_success("   DeepSeek API key saved")
+        captured_any_key = True
     display.print()
-    
-    # Default Model
+
+    # Default Model — validated against the provider registries.
+    valid = _valid_models()
     display.print("[bold]5. Default Model[/bold]")
-    display.print("   Available: gpt-5.4, gpt-5.4-mini, gpt-5.4-nano, claude-4-sonnet, claude-4.5-haiku, claude-4.6-opus, claude-3.5-sonnet, lmstudio, ollama, openai/gpt-oss-120b, openai/gpt-oss-20b, deepseek-v3.2, deepseek-r1")
-    model = click.prompt("   Enter default model", default="gpt-5.4-mini")
-    config_manager.set("default_model", model)
-    display.print_success(f"   Default model set to {model}")
+    display.print("   Run `coderAI models` after setup for the full list.")
+    display.print(
+        "   Common: claude-sonnet-4-6, opus, haiku, gpt-5.4-mini, "
+        "gpt-5.4, lmstudio, ollama"
+    )
+    while True:
+        model = click.prompt("   Enter default model", default="gpt-5.4-mini").strip()
+        if model in valid:
+            config_manager.set("default_model", model)
+            display.print_success(f"   Default model set to {model}")
+            break
+        display.print_error(
+            f"   Unknown model: {model}. Run `coderAI models` for the full list."
+        )
     display.print()
-    
-    # Reasoning Effort
+
+    # Reasoning Effort — whitelisted.
     display.print("[bold]6. Reasoning Effort[/bold]")
-    display.print("   How much thinking reasoning models (e.g. o1, o3-mini, gpt-5.4, claude-3.7-sonnet, claude-4-sonnet) should use.")
-    display.print("   Available: high, medium, low, none")
-    effort = click.prompt("   Enter reasoning effort", default="medium")
-    config_manager.set("reasoning_effort", effort.lower())
-    display.print_success(f"   Reasoning effort set to {effort.lower()}")
+    display.print(
+        "   Thinking budget for reasoning-capable models (o1, o3-mini, "
+        "gpt-5.4, claude-sonnet-4-6, …)."
+    )
+    effort = click.prompt(
+        "   Enter reasoning effort",
+        default="medium",
+        type=click.Choice(_REASONING_CHOICES, case_sensitive=False),
+        show_choices=True,
+    ).lower()
+    config_manager.set("reasoning_effort", effort)
+    display.print_success(f"   Reasoning effort set to {effort}")
     display.print()
-    
+
     # LM Studio (optional)
     display.print("[bold]7. LM Studio Configuration (Optional)[/bold]")
     display.print("   For using local models with LM Studio")
     use_lmstudio = click.confirm("   Configure LM Studio?", default=False)
     if use_lmstudio:
-        endpoint = click.prompt("   LM Studio server URL", default="http://localhost:1234/v1")
-        config_manager.set("lmstudio_endpoint", endpoint)
-        model = click.prompt("   LM Studio model name (optional)", default="local-model", show_default=True)
-        config_manager.set("lmstudio_model", model)
+        while True:
+            endpoint = click.prompt(
+                "   LM Studio server URL", default="http://localhost:1234/v1"
+            ).strip()
+            if _valid_endpoint(endpoint):
+                config_manager.set("lmstudio_endpoint", endpoint)
+                break
+            display.print_error(
+                "   Endpoint must be a full http(s)://host:port/v1 URL."
+            )
+        model_name = click.prompt(
+            "   LM Studio model name (optional)",
+            default="local-model",
+            show_default=True,
+        )
+        config_manager.set("lmstudio_model", model_name)
         display.print_success("   LM Studio configuration saved")
     display.print()
 
@@ -288,57 +402,72 @@ def setup():
     display.print("   For using local models with Ollama")
     use_ollama = click.confirm("   Configure Ollama?", default=False)
     if use_ollama:
-        endpoint = click.prompt("   Ollama server URL", default="http://localhost:11434/v1")
-        config_manager.set("ollama_endpoint", endpoint)
-        model = click.prompt("   Ollama model name", default="llama3", show_default=True)
-        config_manager.set("ollama_model", model)
+        while True:
+            endpoint = click.prompt(
+                "   Ollama server URL", default="http://localhost:11434/v1"
+            ).strip()
+            if _valid_endpoint(endpoint):
+                config_manager.set("ollama_endpoint", endpoint)
+                break
+            display.print_error(
+                "   Endpoint must be a full http(s)://host:port/v1 URL."
+            )
+        model_name = click.prompt(
+            "   Ollama model name", default="llama3", show_default=True
+        )
+        config_manager.set("ollama_model", model_name)
         display.print_success("   Ollama configuration saved")
     display.print()
-    
-    display.print_success("Setup complete! Run 'coderAI chat' to start.")
+
+    if not captured_any_key and not (use_lmstudio or use_ollama):
+        display.print_warning(
+            "No API keys entered and no local provider configured. "
+            "`coderAI chat` will refuse to start until one is set — re-run "
+            "`coderAI setup` or set an env var (ANTHROPIC_API_KEY, etc.)."
+        )
+    else:
+        display.print_success("Setup complete! Run 'coderAI chat' to start.")
 
 
 @cli.command()
 def models():
     """List available models and providers."""
-    display.print_header("Available Models and Providers")
-    
-    display.print("\n[bold cyan]OpenAI Provider[/bold cyan]")
-    display.print("  • [yellow]gpt-5.4[/yellow] - gpt-5.4 (multimodal)")
-    display.print("  • [yellow]gpt-5.4-mini[/yellow] - gpt-5.4 Mini (fastest and most affordable gpt-5.4 option)")
-    display.print("  • [yellow]gpt-5.4-nano[/yellow] - gpt-5.4 Nano (lowest cost, quickest)")
-    display.print("  • [yellow]o1[/yellow] - o1 (reasoning model)")
-    display.print("  • [yellow]o1-mini[/yellow] - o1 Mini (fast reasoning)")
-    display.print("  • [yellow]o3-mini[/yellow] - o3 Mini (latest reasoning)")
-    display.print("\n  [dim]Requires: OpenAI API key[/dim]")
-    
-    display.print("\n[bold cyan]Anthropic Provider[/bold cyan]")
-    display.print("  • [yellow]claude-4-sonnet[/yellow] - Claude 4 Sonnet (latest, most capable)")
-    display.print("  • [yellow]claude-3.5-sonnet[/yellow] - Claude 3.5 Sonnet (excellent coding)")
-    display.print("  • [yellow]claude-3.5-haiku[/yellow] - Claude 3.5 Haiku (fast, affordable)")
-    display.print("  • [yellow]claude-3-opus[/yellow] - Claude 3 Opus (most creative)")
-    display.print("\n  [dim]Requires: Anthropic API key[/dim]")
-    
-    display.print("\n[bold cyan]Groq Provider[/bold cyan]")
-    display.print("  • [yellow]openai/gpt-oss-120b[/yellow] - GPT OSS 120B (via Groq router)")
-    display.print("  • [yellow]openai/gpt-oss-20b[/yellow] - GPT OSS 20B (via Groq router)")
-    display.print("  • [yellow]llama3-70b-8192[/yellow] - Llama 3 70B")
-    display.print("  • [yellow]llama3-8b-8192[/yellow] - Llama 3 8B")
-    display.print("\n  [dim]Requires: Groq API key[/dim]")
-    
-    display.print("\n[bold cyan]DeepSeek Provider[/bold cyan]")
-    display.print("  • [yellow]deepseek-v3.2[/yellow] - DeepSeek-V3.2 / Chat")
-    display.print("  • [yellow]deepseek-r1[/yellow] - DeepSeek-R1 / Reasoner")
-    display.print("\n  [dim]Requires: DeepSeek API key[/dim]")
-    
-    display.print("\n[bold cyan]LM Studio Provider[/bold cyan]")
-    display.print("  • [yellow]lmstudio[/yellow] - Use any local model")
-    display.print("\n  [dim]Requires: LM Studio running locally[/dim]")
+    from .llm.anthropic import MODEL_ALIASES as ANTHROPIC_ALIASES
+    from .llm.deepseek import DeepSeekProvider
+    from .llm.groq import GroqProvider
+    from .llm.openai import OpenAIProvider
 
-    display.print("\n[bold cyan]Ollama Provider[/bold cyan]")
-    display.print("  • [yellow]ollama[/yellow] - Use any local model hosted via Ollama")
-    display.print("\n  [dim]Requires: Ollama running locally[/dim]")
-    
+    display.print_header("Available Models and Providers")
+
+    def _print_group(title: str, names, requires: str) -> None:
+        display.print(f"\n[bold cyan]{title}[/bold cyan]")
+        for name in names:
+            display.print(f"  • [yellow]{name}[/yellow]")
+        display.print(f"\n  [dim]Requires: {requires}[/dim]")
+
+    _print_group(
+        "OpenAI Provider",
+        OpenAIProvider.SUPPORTED_MODELS.keys(),
+        "OpenAI API key",
+    )
+    _print_group(
+        "Anthropic Provider",
+        ANTHROPIC_ALIASES.keys(),
+        "Anthropic API key",
+    )
+    _print_group(
+        "Groq Provider",
+        GroqProvider.SUPPORTED_MODELS.keys(),
+        "Groq API key",
+    )
+    _print_group(
+        "DeepSeek Provider",
+        DeepSeekProvider.SUPPORTED_MODELS.keys(),
+        "DeepSeek API key",
+    )
+    _print_group("LM Studio Provider", ["lmstudio"], "LM Studio running locally")
+    _print_group("Ollama Provider", ["ollama"], "Ollama running locally")
+
     config = config_manager.load()
     display.print(f"\n[bold]Current default:[/bold] [yellow]{config.default_model}[/yellow]")
     display.print()
@@ -348,19 +477,12 @@ def models():
 @click.argument("model_name")
 def set_model(model_name):
     """Set default model for new sessions."""
-    from .llm.openai import OpenAIProvider
-    from .llm.anthropic import MODEL_ALIASES
-    from .llm.groq import GroqProvider
-    from .llm.deepseek import DeepSeekProvider
-    
-    valid_models = list(OpenAIProvider.SUPPORTED_MODELS.keys()) + list(MODEL_ALIASES.keys()) + list(GroqProvider.SUPPORTED_MODELS.keys()) + list(DeepSeekProvider.SUPPORTED_MODELS.keys()) + ["lmstudio", "ollama"]
-    
-    if model_name not in valid_models:
+    valid = _valid_models()
+    if model_name not in valid:
         display.print_error(f"Invalid model: {model_name}")
-        display.print_info(f"Valid models: {', '.join(valid_models)}")
         display.print_info("Run 'coderAI models' to see all available models")
         return
-    
+
     config_manager.set("default_model", model_name)
     display.print_success(f"Default model set to: {model_name}")
 
@@ -389,69 +511,185 @@ def cost():
     display.print()
 
 
+def _on_off(flag: bool) -> str:
+    return "enabled" if flag else "disabled"
+
+
+def _key_row(label: str, configured: bool, hint_key: str) -> None:
+    if configured:
+        display.print(f"  {label:<12}  ✓ key configured")
+    else:
+        display.print(f"  {label:<12}  ✗ key missing")
+        display.print(
+            f"                [dim]coderAI config set {hint_key} <YOUR_KEY>[/dim]"
+        )
+
+
 @cli.command()
 def status():
     """Show system status and diagnostics."""
     display.print_header("CoderAI System Status")
-    
-    # Check configuration
-    config = config_manager.load()
-    display.print("\n[bold cyan]Configuration:[/bold cyan]")
-    display.print(f"  Config dir: {config_manager.config_dir}")
-    display.print(f"  Default model: [yellow]{config.default_model}[/yellow]")
-    display.print(f"  Streaming: {config.streaming}")
-    display.print(f"  Save history: {config.save_history}")
-    display.print(f"  Log level: {config.log_level}")
-    
-    # Check OpenAI
-    display.print("\n[bold cyan]OpenAI Provider:[/bold cyan]")
-    if config.openai_api_key:
-        display.print("  ✓ API key configured")
-    else:
-        display.print("  ✗ API key not configured")
-        display.print("    [dim]Run 'coderAI setup' or 'coderAI config set openai_api_key YOUR_KEY'[/dim]")
-    
-    # Check Anthropic
-    display.print("\n[bold cyan]Anthropic Provider:[/bold cyan]")
-    if config.anthropic_api_key:
-        display.print("  ✓ API key configured")
-    else:
-        display.print("  ✗ API key not configured")
-        display.print("    [dim]Run 'coderAI setup' or 'coderAI config set anthropic_api_key YOUR_KEY'[/dim]")
-        
-    # Check Groq
-    display.print("\n[bold cyan]Groq Provider:[/bold cyan]")
-    if config.groq_api_key:
-        display.print("  ✓ API key configured")
-    else:
-        display.print("  ✗ API key not configured")
-        display.print("    [dim]Run 'coderAI setup' or 'coderAI config set groq_api_key YOUR_KEY'[/dim]")
 
-    # Check DeepSeek
-    display.print("\n[bold cyan]DeepSeek Provider:[/bold cyan]")
-    if config.deepseek_api_key:
-        display.print("  ✓ API key configured")
-    else:
-        display.print("  ✗ API key not configured")
-        display.print("    [dim]Run 'coderAI setup' or 'coderAI config set deepseek_api_key YOUR_KEY'[/dim]")
-    
-    # Check LM Studio
-    display.print("\n[bold cyan]LM Studio Provider:[/bold cyan]")
-    display.print(f"  Endpoint: {config.lmstudio_endpoint}")
-    display.print(f"  Model: {config.lmstudio_model}")
-    
-    # Check Ollama
-    display.print("\n[bold cyan]Ollama Provider:[/bold cyan]")
-    display.print(f"  Endpoint: {config.ollama_endpoint}")
-    display.print(f"  Model: {config.ollama_model}")
-    
-    # Check history
+    config = config_manager.load()
+
+    display.print("\n[bold cyan]Configuration[/bold cyan]")
+    display.print(f"  config dir     {config_manager.config_dir}")
+    display.print(f"  default model  [yellow]{config.default_model}[/yellow]")
+    display.print(f"  streaming      {_on_off(config.streaming)}")
+    display.print(f"  save history   {_on_off(config.save_history)}")
+    display.print(f"  log level      {config.log_level.lower()}")
+
+    display.print("\n[bold cyan]Cloud providers[/bold cyan]")
+    _key_row("OpenAI", bool(config.openai_api_key), "openai_api_key")
+    _key_row("Anthropic", bool(config.anthropic_api_key), "anthropic_api_key")
+    _key_row("Groq", bool(config.groq_api_key), "groq_api_key")
+    _key_row("DeepSeek", bool(config.deepseek_api_key), "deepseek_api_key")
+
+    display.print("\n[bold cyan]Local providers[/bold cyan]")
+    display.print(f"  LM Studio     endpoint {config.lmstudio_endpoint}")
+    display.print(f"                model    {config.lmstudio_model}")
+    display.print(f"  Ollama        endpoint {config.ollama_endpoint}")
+    display.print(f"                model    {config.ollama_model}")
+
     from .history import history_manager
+
     sessions = history_manager.list_sessions()
-    display.print("\n[bold cyan]History:[/bold cyan]")
-    display.print(f"  History dir: {history_manager.history_dir}")
-    display.print(f"  Total sessions: {len(sessions)}")
-    
+    display.print("\n[bold cyan]History[/bold cyan]")
+    display.print(f"  history dir     {history_manager.history_dir}")
+    display.print(f"  saved sessions  {len(sessions)}")
+
+    display.print()
+
+
+@cli.command()
+def doctor():
+    """Diagnose a CoderAI install — config, keys, cache, binary."""
+    import os
+    import platform
+    import tempfile
+    from pathlib import Path
+
+    from .binary_manager import (
+        BinaryUnavailableError,
+        UnsupportedPlatformError,
+        detect_platform,
+        local_dev_binary,
+    )
+
+    display.print_header("CoderAI Doctor")
+
+    ok_count = 0
+    warn_count = 0
+    fail_count = 0
+
+    def check_ok(label: str, detail: str = "") -> None:
+        nonlocal ok_count
+        ok_count += 1
+        suffix = f"  [dim]{detail}[/dim]" if detail else ""
+        display.print(f"  [green]✓[/green] {label}{suffix}")
+
+    def check_warn(label: str, detail: str = "") -> None:
+        nonlocal warn_count
+        warn_count += 1
+        suffix = f"  [dim]{detail}[/dim]" if detail else ""
+        display.print(f"  [yellow]⚠[/yellow] {label}{suffix}")
+
+    def check_fail(label: str, detail: str = "") -> None:
+        nonlocal fail_count
+        fail_count += 1
+        suffix = f"  [dim]{detail}[/dim]" if detail else ""
+        display.print(f"  [red]✗[/red] {label}{suffix}")
+
+    # 1. Python
+    display.print("\n[bold cyan]Runtime[/bold cyan]")
+    check_ok(
+        f"Python {platform.python_version()}",
+        f"{platform.system().lower()}-{platform.machine()}",
+    )
+    check_ok(f"CoderAI {__version__}")
+
+    # 2. Config directory
+    display.print("\n[bold cyan]Config[/bold cyan]")
+    cfg_dir = config_manager.config_dir
+    if not cfg_dir.exists():
+        check_fail(f"{cfg_dir} missing", "run `coderAI setup` to create it")
+    elif not os.access(cfg_dir, os.W_OK):
+        check_fail(f"{cfg_dir} not writable")
+    else:
+        # Round-trip write test
+        try:
+            with tempfile.NamedTemporaryFile(
+                dir=cfg_dir, prefix=".doctor-", delete=True
+            ):
+                pass
+            check_ok(f"{cfg_dir} writable")
+        except OSError as e:
+            check_fail(f"{cfg_dir} write test failed", str(e))
+
+    cfg = config_manager.load()
+    if cfg.default_model:
+        check_ok(f"default model: {cfg.default_model}")
+    else:
+        check_warn("default model not set", "run `coderAI setup`")
+
+    # 3. Providers
+    display.print("\n[bold cyan]Providers[/bold cyan]")
+    keys = [
+        ("OpenAI", cfg.openai_api_key),
+        ("Anthropic", cfg.anthropic_api_key),
+        ("Groq", cfg.groq_api_key),
+        ("DeepSeek", cfg.deepseek_api_key),
+    ]
+    any_cloud = any(v for _, v in keys)
+    for name, val in keys:
+        if val:
+            masked = f"{val[:4]}…{val[-4:]}" if len(val) > 8 else "set"
+            check_ok(f"{name}: {masked}")
+        else:
+            check_warn(f"{name}: not configured")
+    if not any_cloud and (cfg.default_model or "").lower() not in ("lmstudio", "ollama"):
+        check_fail(
+            "No cloud key and default is not lmstudio/ollama",
+            "chat won't start until one is set",
+        )
+
+    # 4. UI binary
+    display.print("\n[bold cyan]Ink UI binary[/bold cyan]")
+    override = os.environ.get("CODERAI_UI_BINARY")
+    dev = local_dev_binary()
+    if override:
+        p = Path(override).expanduser()
+        (check_ok if p.is_file() else check_fail)(
+            f"$CODERAI_UI_BINARY → {p}",
+            "exists" if p.is_file() else "not found",
+        )
+    elif dev is not None:
+        check_ok(f"dev binary: {dev}")
+    else:
+        try:
+            plat = detect_platform()
+            check_ok(f"platform resolved: {plat}")
+        except (UnsupportedPlatformError, BinaryUnavailableError) as e:
+            check_fail("platform not supported", str(e))
+
+    # 5. History
+    display.print("\n[bold cyan]History[/bold cyan]")
+    try:
+        n = len(history_manager.list_sessions())
+        check_ok(f"{history_manager.history_dir} ({n} sessions)")
+    except Exception as e:
+        check_warn(f"{history_manager.history_dir}", str(e))
+
+    # Summary
+    display.print()
+    summary = f"{ok_count} ok · {warn_count} warn · {fail_count} fail"
+    if fail_count:
+        display.print_error(summary)
+        sys.exit(1)
+    elif warn_count:
+        display.print_warning(summary)
+    else:
+        display.print_success(summary)
     display.print()
 
 

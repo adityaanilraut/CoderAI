@@ -136,25 +136,30 @@ export function attachAgentClientListeners(
     }));
   };
 
-  const mergeAgentIntoTimeline = (agent: AgentInfo) => {
-    setTimeline((prev) => {
-      for (let i = prev.length - 1; i >= 0; i--) {
-        const it = prev[i];
-        if (it.kind === "agent" && it.agent.id === agent.id) {
-          const copy = [...prev];
-          copy[i] = {...it, agent};
-          return copy;
-        }
+  const FINISHED_AGENT_STATUSES = new Set(["done", "error", "cancelled"]);
+
+  const upsertAgentInSession = (agent: AgentInfo) => {
+    setSession((s) => {
+      const prev = s.agents[agent.id];
+      const becameFinished =
+        FINISHED_AGENT_STATUSES.has(agent.status) &&
+        (!prev || !FINISHED_AGENT_STATUSES.has(prev.status));
+      const finishedAt = {...s.agentsFinishedAt};
+      if (becameFinished) {
+        finishedAt[agent.id] = Date.now();
+      } else if (!FINISHED_AGENT_STATUSES.has(agent.status)) {
+        // Agent transitioned back into a live state — clear stale cull mark.
+        delete finishedAt[agent.id];
       }
-      return appendCapped(prev, {
-        kind: "agent",
-        id: `agent_${agent.id}`,
-        agent,
-      });
+      return {
+        ...s,
+        agents: {...s.agents, [agent.id]: agent},
+        agentsFinishedAt: finishedAt,
+      };
     });
   };
 
-  add("hello", (m: any) => {
+  add("hello", (m: Extract<AgentEvent, {event: "hello"}>) => {
     setSession((s) => ({
       ...s,
       connected: true,
@@ -162,7 +167,6 @@ export function attachAgentClientListeners(
       provider: m.provider,
       cwd: m.cwd,
       version: m.version,
-      projectSummary: m.projectSummary,
       ctxLimit: m.contextLimit,
       budgetUsd: m.budgetLimit,
       autoApprove: m.autoApprove,
@@ -174,140 +178,173 @@ export function attachAgentClientListeners(
     recoverIncompleteTurn();
   });
 
-  add("thinking_start", () =>
-    setSession((s) => ({...s, thinking: true})),
-  );
+  // Tracks whether the current turn is still in the "waiting for first
+  // token" window. Set on phase=start, cleared on the first text/reasoning
+  // delta — that transition is what flips the UI from "thinking" to
+  // "streaming". Lives in closure scope rather than as a ref because it
+  // never needs to be observed from outside this listener.
+  let awaitingFirstDelta = false;
+  const markFirstDeltaIfPending = () => {
+    if (!awaitingFirstDelta) return;
+    awaitingFirstDelta = false;
+    setSession((s) => ({...s, thinking: false, streaming: true}));
+  };
 
-  add("thinking_end", (m: any) => {
-    setSession((s) => ({...s, thinking: false}));
-    if (typeof m.elapsedMs === "number" && m.elapsedMs >= 2000) {
+  add("turn", (m: Extract<AgentEvent, {event: "turn"}>) => {
+    if (m.phase === "start") {
+      resetStreamFlushState();
+      // Until the first token arrives the LLM is still "thinking" —
+      // streaming flips on only when we see a text/reasoning delta.
+      awaitingFirstDelta = true;
+      setSession((s) => ({...s, thinking: true, streaming: false}));
+      setTimeline((prev) => {
+        const item: TimelineItem = {
+          kind: "assistant",
+          id: nextId(),
+          content: "",
+          streaming: true,
+          reasoning: "",
+        };
+        const next = appendCapped(prev, item, nextId);
+        currentAssistantId.current = item.id;
+        return next;
+      });
+    } else if (m.phase === "reasoning" && m.delta) {
+      markFirstDeltaIfPending();
+      streamPendingReasoningRef.current += m.delta;
+      scheduleStreamFlush();
+    } else if (m.phase === "text" && m.delta) {
+      markFirstDeltaIfPending();
+      streamPendingContentRef.current += m.delta;
+      scheduleStreamFlush();
+    } else if (m.phase === "end") {
+      awaitingFirstDelta = false;
+      if (streamFlushTimerRef.current !== null) {
+        clearTimeout(streamFlushTimerRef.current);
+        streamFlushTimerRef.current = null;
+      }
+      const pendingC = streamPendingContentRef.current;
+      const pendingR = streamPendingReasoningRef.current;
+      streamPendingContentRef.current = "";
+      streamPendingReasoningRef.current = "";
+
+      setTimeline((prev) => {
+        const id = currentAssistantId.current;
+        if (!id) return prev;
+        for (let i = prev.length - 1; i >= 0; i--) {
+          if (prev[i].id === id && prev[i].kind === "assistant") {
+            const item = prev[i] as Extract<TimelineItem, {kind: "assistant"}>;
+            const mergedContent = item.content + pendingC;
+            const mergedReasoning = item.reasoning + pendingR;
+            if (!mergedContent.trim() && !mergedReasoning.trim()) {
+              return prev.filter((_, idx) => idx !== i);
+            }
+            const copy = [...prev];
+            copy[i] = {
+              ...item,
+              content: mergedContent,
+              reasoning: mergedReasoning,
+              streaming: false,
+            };
+            return copy;
+          }
+        }
+        return prev;
+      });
+      currentAssistantId.current = null;
+      setSession((s) => ({...s, streaming: false, thinking: false}));
+    }
+  });
+
+  add("tool", (m: Extract<AgentEvent, {event: "tool"}>) => {
+    if (m.phase === "queued" || m.phase === "running") {
+      setTimeline((prev) => {
+        const exists = prev.some((it) => it.kind === "tool" && it.id === m.id);
+        if (!exists && m.payload.name) {
+          return appendCapped(
+            prev,
+            {
+              kind: "tool",
+              id: m.id,
+              name: m.payload.name,
+              category: m.payload.category || "other",
+              args: m.payload.args || {},
+              risk: m.payload.risk || "low",
+              ok: null,
+              preview: null,
+              error: null,
+              fullAvailable: false,
+            },
+            nextId,
+          );
+        }
+        return prev;
+      });
+    } else if (m.phase === "ok" || m.phase === "err") {
+      setTimeline((prev) => {
+        const idx = prev.findIndex((it) => it.kind === "tool" && it.id === m.id);
+        if (idx === -1) return prev;
+        const item = prev[idx];
+        if (item.kind !== "tool") return prev;
+        const copy = [...prev];
+        copy[idx] = {
+          ...item,
+          ok: m.phase === "ok",
+          preview: m.payload.preview ?? "",
+          error: m.payload.error ?? null,
+          fullAvailable: Boolean(m.payload.fullAvailable),
+        };
+        return copy;
+      });
+    } else if (m.phase === "awaiting_approval") {
       push({
-        kind: "toast",
-        id: nextId(),
-        level: "info",
-        message: `thought for ${(m.elapsedMs / 1000).toFixed(1)}s`,
+        kind: "approval",
+        id: m.id,
+        tool: m.payload.name,
+        args: m.payload.args || {},
+        risk: m.payload.risk || "low",
+        decided: "pending",
       });
     }
   });
 
-  add("assistant_start", () => {
-    resetStreamFlushState();
-    setSession((s) => ({...s, streaming: true, thinking: false}));
-    setTimeline((prev) => {
-      const item: TimelineItem = {
-        kind: "assistant",
-        id: nextId(),
-        content: "",
-        streaming: true,
-        reasoning: "",
-      };
-      const next = appendCapped(prev, item);
-      currentAssistantId.current = item.id;
-      return next;
-    });
+  add("agent", (m: Extract<AgentEvent, {event: "agent"}>) => {
+    upsertAgentInSession(m.info);
   });
 
-  add("stream_delta", (m: any) => {
-    if (m.reasoning) {
-      streamPendingReasoningRef.current += m.content;
-    } else {
-      streamPendingContentRef.current += m.content;
-    }
-    scheduleStreamFlush();
+  add("session_patch", (m: Extract<AgentEvent, {event: "session_patch"}>) => {
+    setSession((s) => ({
+      ...s,
+      ...(m.model !== undefined ? {model: m.model} : {}),
+      ...(m.provider !== undefined ? {provider: m.provider} : {}),
+      ...(m.autoApprove !== undefined ? {autoApprove: m.autoApprove} : {}),
+      ...(m.reasoning !== undefined ? {reasoning: m.reasoning} : {}),
+    }));
   });
 
-  add("assistant_end", (m: any) => {
-    if (streamFlushTimerRef.current !== null) {
-      clearTimeout(streamFlushTimerRef.current);
-      streamFlushTimerRef.current = null;
-    }
-    const pendingC = streamPendingContentRef.current;
-    const pendingR = streamPendingReasoningRef.current;
-    streamPendingContentRef.current = "";
-    streamPendingReasoningRef.current = "";
-
-    setTimeline((prev) => {
-      const id = currentAssistantId.current;
-      if (!id) return prev;
-      for (let i = prev.length - 1; i >= 0; i--) {
-        if (prev[i].id === id && prev[i].kind === "assistant") {
-          const item = prev[i] as Extract<TimelineItem, {kind: "assistant"}>;
-          const mergedContent = item.content + pendingC;
-          const mergedReasoning = item.reasoning + pendingR;
-          const finalContent =
-            mergedContent.trim().length > 0
-              ? mergedContent
-              : typeof m.content === "string"
-                ? m.content
-                : "";
-          if (!finalContent.trim() && !mergedReasoning.trim()) {
-            return prev.filter((_, idx) => idx !== i);
-          }
-          const copy = [...prev];
-          copy[i] = {
-            ...item,
-            content: finalContent,
-            reasoning: mergedReasoning,
-            streaming: false,
-          };
-          return copy;
-        }
-      }
-      return prev;
-    });
-    currentAssistantId.current = null;
-    setSession((s) => ({...s, streaming: false}));
-  });
-
-  add("tool_call", (m: any) =>
-    push({
-      kind: "tool",
-      id: m.id,
-      name: m.name,
-      category: m.category,
-      args: m.args,
-      risk: m.risk,
-      ok: null,
-      preview: null,
-      error: null,
-      fullAvailable: false,
-    }),
-  );
-
-  add("tool_result", (m: any) => {
-    setTimeline((prev) => {
-      const idx = prev.findIndex((it) => it.kind === "tool" && it.id === m.id);
-      if (idx === -1) return prev;
-      const item = prev[idx];
-      if (item.kind !== "tool") return prev;
-      const copy = [...prev];
-      copy[idx] = {
-        ...item,
-        ok: m.ok,
-        preview: m.preview,
-        error: m.error ?? null,
-        fullAvailable: Boolean(m.fullAvailable),
-      };
-      return copy;
-    });
-  });
-
-  add("tool_approval_req", (m: any) =>
-    push({
-      kind: "approval",
-      id: m.id,
-      tool: m.tool,
-      args: m.args,
-      risk: m.risk,
-      decided: "pending",
-    }),
-  );
-
-  add("file_diff", (m: any) =>
+  add("file_diff", (m: Extract<AgentEvent, {event: "file_diff"}>) =>
     push({kind: "diff", id: nextId(), path: m.path, diff: m.diff}),
   );
 
-  add("status", (m: any) => {
+  // Server-side toasts. The Python agent emits these for slash-command
+  // replies (`/show <topic>`, `/plan`), state-change confirmations
+  // (`Cancelled agent`), and per-command warnings (`Unknown command:`). They
+  // were previously silently dropped — every visible result of `/show ...`
+  // depends on these landing on the timeline.
+  const pushToast = (level: "info" | "warning" | "success", message: string) =>
+    push({kind: "toast", id: nextId(), level, message});
+
+  add("info", (m: Extract<AgentEvent, {event: "info"}>) =>
+    pushToast("info", m.message),
+  );
+  add("warning", (m: Extract<AgentEvent, {event: "warning"}>) =>
+    pushToast("warning", m.message),
+  );
+  add("success", (m: Extract<AgentEvent, {event: "success"}>) =>
+    pushToast("success", m.message),
+  );
+
+  add("status", (m: Extract<AgentEvent, {event: "status"}>) => {
     const payload: StatusPayload = {
       ctxUsed: m.ctxUsed,
       ctxLimit: m.ctxLimit,
@@ -324,35 +361,7 @@ export function attachAgentClientListeners(
     }, STATUS_THROTTLE_MS);
   });
 
-  add("agent_update", (m: any) => {
-    setSession((s) => ({
-      ...s,
-      agents: {...s.agents, [m.agent.id]: m.agent},
-    }));
-    mergeAgentIntoTimeline(m.agent);
-  });
-
-  add("agent_lifecycle", (m: any) => {
-    setSession((s) => ({
-      ...s,
-      agents: {...s.agents, [m.agent.id]: m.agent},
-    }));
-    mergeAgentIntoTimeline(m.agent);
-  });
-
-  add("model_changed", (m: any) =>
-    setSession((s) => ({...s, model: m.model, provider: m.provider})),
-  );
-
-  add("auto_approve_changed", (m: any) =>
-    setSession((s) => ({...s, autoApprove: Boolean(m.autoApprove)})),
-  );
-
-  add("reasoning_changed", (m: any) =>
-    setSession((s) => ({...s, reasoning: m.effort ?? "none"})),
-  );
-
-  add("error", (m: any) => {
+  add("error", (m: Extract<AgentEvent, {event: "error"}>) => {
     recoverIncompleteTurn();
     push({
       kind: "error",
@@ -364,26 +373,16 @@ export function attachAgentClientListeners(
     });
   });
 
-  add("info", (m: any) =>
-    push({kind: "toast", id: nextId(), level: "info", message: m.message}),
-  );
-  add("warning", (m: any) =>
-    push({kind: "toast", id: nextId(), level: "warning", message: m.message}),
-  );
-  add("success", (m: any) =>
-    push({kind: "toast", id: nextId(), level: "success", message: m.message}),
-  );
-
   add("goodbye", () => {
     recoverIncompleteTurn();
     goodbyeRef.current = true;
   });
 
-  add("stderr", (chunk: any) => {
+  add("stderr", (chunk: string) => {
     stderrRef.current = (stderrRef.current + chunk).slice(-4000);
   });
 
-  add("exit", (info: any) => {
+  add("exit", (info: {code: number | null; signal: string | null}) => {
     recoverIncompleteTurn();
     setSession((s) => ({...s, connected: false}));
 

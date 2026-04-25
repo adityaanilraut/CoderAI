@@ -367,7 +367,8 @@ async def get_current_branch(working_dir: str = ".") -> Optional[str]:
             branch = stdout.decode("utf-8", errors="replace").strip()
             return branch if branch != "HEAD" else None  # detached HEAD
         return None
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Failed to get current branch: {e}", exc_info=True)
         return None
 
 

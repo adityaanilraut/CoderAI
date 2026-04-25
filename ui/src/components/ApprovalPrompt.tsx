@@ -11,7 +11,7 @@ export interface ApprovalPromptProps {
   risk: ToolRisk;
   decided: "pending" | "approved" | "denied";
   active: boolean;
-  onDecide: (approve: boolean) => void;
+  onDecide: (approve: boolean, always?: boolean) => void;
 }
 
 /**
@@ -19,15 +19,13 @@ export interface ApprovalPromptProps {
  *
  * This is the ONE component that keeps a loud double border in the
  * redesign — the rest of the UI was de-chromed specifically so this
- * dialog pops when it matters.
+ * dialog pops when it matters. Wording is sentence-case; the border
+ * carries the urgency, not the typography.
  *
  *   ╔═══════════════════════════════════════════════╗
- *   ║  ⚠ APPROVAL REQUIRED                ⚠ high    ║
+ *   ║  Run? rm -rf build/                  high     ║
  *   ║                                               ║
- *   ║  run_command                                  ║
- *   ║  command=rm -rf build/                        ║
- *   ║                                               ║
- *   ║  [ Accept y ]   [ Deny n ]   ↵ confirm        ║
+ *   ║  [ Allow y ]   [ Deny n ]   ↵ confirm         ║
  *   ╚═══════════════════════════════════════════════╝
  */
 export function ApprovalPrompt({
@@ -42,23 +40,33 @@ export function ApprovalPrompt({
 
   useInput(
     (input, key) => {
-      if (input === "y" || input === "Y") onDecide(true);
-      else if (input === "n" || input === "N") onDecide(false);
-      else if (key.leftArrow || key.rightArrow || key.tab) {
-        setFocus((f) => (f === 0 ? 1 : 0));
+      if (input === "y" || input === "Y") onDecide(true, false);
+      else if (input === "a" || input === "A") onDecide(true, true);
+      else if (input === "n" || input === "N") onDecide(false, false);
+      else if (key.leftArrow) {
+        setFocus((f) => (f > 0 ? f - 1 : 2));
+      } else if (key.rightArrow || key.tab) {
+        setFocus((f) => (f < 2 ? f + 1 : 0));
       } else if (key.return) {
-        onDecide(focus === 0);
+        if (focus === 0) onDecide(true, false);
+        else if (focus === 1) onDecide(true, true);
+        else onDecide(false, false);
       }
     },
     {isActive: active && decided === "pending"},
   );
 
-  // Never truncate the "primary" arg — a long rm -rf path should never be
-  // hidden below the fold. Other args are still clipped to keep the dialog
-  // compact.
+  // Show the primary arg in full but hard-wrap it at a fixed width so a
+  // pathological value (a long `bash -lc 'curl ... | sh'`) can't blow the
+  // dialog open or wrap mid-token in a way that hides the dangerous part.
   const PRIMARY_KEYS = ["command", "file_path", "path", "url", "source", "destination"];
   const primaryKey = PRIMARY_KEYS.find((k) => k in args);
-  const primaryValue = primaryKey ? String(args[primaryKey] ?? "") : "";
+  const PRIMARY_HARD_CAP = 240;
+  const rawPrimary = primaryKey ? String(args[primaryKey] ?? "") : "";
+  const primaryValue =
+    rawPrimary.length > PRIMARY_HARD_CAP
+      ? rawPrimary.slice(0, PRIMARY_HARD_CAP - 1) + "…"
+      : rawPrimary;
   const secondary = Object.entries(args)
     .filter(([k]) => k !== primaryKey)
     .slice(0, 3)
@@ -82,10 +90,10 @@ export function ApprovalPrompt({
       marginBottom={1}
       marginTop={1}
     >
-      {/* Header — loud amber bar */}
+      {/* Header — sentence-case label, risk on the right. The border is the loud part. */}
       <Box justifyContent="space-between">
         <Text color={theme.warning} bold>
-          {theme.glyph.warn} APPROVAL REQUIRED
+          {theme.glyph.warn} Run?
         </Text>
         <RiskBadge risk={risk} />
       </Box>
@@ -106,24 +114,39 @@ export function ApprovalPrompt({
 
       {/* Decision row */}
       {decided === "pending" ? (
-        <Box marginTop={1}>
-          <ActionPill
-            label="Accept [y]"
-            selected={focus === 0}
-            color={theme.success}
-          />
-          <Text>   </Text>
-          <ActionPill
-            label="Deny [n]"
-            selected={focus === 1}
-            color={theme.danger}
-          />
-          <Box marginLeft={3}>
-            <Text color={theme.faint}>
-              ←→ navigate
-              {theme.glyph.separator}↵ confirm
-            </Text>
+        <Box flexDirection="column" marginTop={1}>
+          <Box>
+            <ActionPill
+              label="Allow once [y]"
+              selected={focus === 0}
+              color={theme.success}
+            />
+            <Text>   </Text>
+            <ActionPill
+              label="Enable YOLO mode [a]"
+              selected={focus === 1}
+              color={theme.warning}
+            />
+            <Text>   </Text>
+            <ActionPill
+              label="Deny [n]"
+              selected={focus === 2}
+              color={theme.danger}
+            />
+            <Box marginLeft={3}>
+              <Text color={theme.faint}>
+                ←→ navigate
+                {theme.glyph.separator}↵ confirm
+              </Text>
+            </Box>
           </Box>
+          {focus === 1 ? (
+            <Box marginTop={1}>
+              <Text color={theme.warning}>
+                {theme.glyph.warn} YOLO auto-approves <Text bold>all</Text> tools, not just this one.
+              </Text>
+            </Box>
+          ) : null}
         </Box>
       ) : (
         <Box marginTop={1}>
@@ -132,8 +155,8 @@ export function ApprovalPrompt({
             bold
           >
             {decided === "approved"
-              ? `${theme.glyph.tick} approved — executing…`
-              : `${theme.glyph.cross} denied — skipped`}
+              ? `${theme.glyph.tick} allowed`
+              : `${theme.glyph.cross} denied`}
           </Text>
         </Box>
       )}

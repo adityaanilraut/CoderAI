@@ -50,46 +50,13 @@ export type AgentEvent =
       provider: string;
       cwd: string;
       version: string;
-      projectSummary?: string;
       contextLimit: number;
       budgetLimit: number;
       autoApprove: boolean;
     }
   | { event: "ready" }
-  | { event: "assistant_start" }
-  | { event: "stream_delta"; content: string; reasoning?: boolean }
-  | { event: "assistant_end"; content: string }
-  | { event: "thinking_start" }
-  | { event: "thinking_end"; elapsedMs: number }
-  | {
-      event: "tool_call";
-      id: string;
-      name: string;
-      category: ToolCategory;
-      args: Record<string, unknown>;
-      risk: ToolRisk;
-    }
-  | {
-      event: "tool_result";
-      id: string;
-      ok: boolean;
-      preview: string;
-      fullAvailable: boolean;
-      error?: string;
-    }
-  | {
-      event: "tool_approval_req";
-      id: string;
-      tool: string;
-      args: Record<string, unknown>;
-      risk: ToolRisk;
-    }
-  | {
-      event: "tool_approval_timeout";
-      id: string;
-      tool: string;
-      timeoutSeconds: number;
-    }
+  | { event: "turn"; phase: "start" | "reasoning" | "text" | "end"; delta?: string; elapsedMs?: number }
+  | { event: "tool"; id: string; phase: "queued" | "awaiting_approval" | "running" | "ok" | "err" | "cancelled"; payload: Record<string, any> }
   | { event: "file_diff"; path: string; diff: string }
   | {
       event: "status";
@@ -101,12 +68,7 @@ export type AgentEvent =
       completionTokens: number;
       totalTokens: number;
     }
-  | { event: "agent_update"; agent: AgentInfo }
-  | {
-      event: "agent_lifecycle";
-      action: "started" | "finished";
-      agent: AgentInfo;
-    }
+  | { event: "agent"; phase: "started" | "update" | "finished"; info: AgentInfo; parentId: string | null }
   | {
       event: "error";
       category: "provider" | "tool" | "internal" | "protocol";
@@ -114,42 +76,34 @@ export type AgentEvent =
       hint?: string;
       details?: string;
     }
+  | { event: "session_patch"; model?: string; provider?: string; autoApprove?: boolean; reasoning?: ReasoningEffort }
+  | { event: "progress"; label: string; current?: number; total?: number; progressKind: "tokens" | "files" | "steps" }
   | { event: "info"; message: string }
   | { event: "warning"; message: string }
   | { event: "success"; message: string }
-  | { event: "model_changed"; model: string; provider: string }
-  | { event: "auto_approve_changed"; autoApprove: boolean }
-  | { event: "reasoning_changed"; effort: ReasoningEffort }
   | { event: "goodbye"; reason?: string };
 
 /** Every `event` name the agent may send; used for dev checks in `agentClient`. Keep in sync with this union. */
 export const AGENT_EVENT_NAMES: readonly string[] = [
   "hello",
   "ready",
-  "assistant_start",
-  "stream_delta",
-  "assistant_end",
-  "thinking_start",
-  "thinking_end",
-  "tool_call",
-  "tool_result",
-  "tool_approval_req",
-  "tool_approval_timeout",
+  "turn",
+  "tool",
   "file_diff",
   "status",
-  "agent_update",
-  "agent_lifecycle",
+  "agent",
   "error",
+  "session_patch",
+  "progress",
   "info",
   "warning",
   "success",
-  "model_changed",
-  "auto_approve_changed",
-  "reasoning_changed",
   "goodbye",
 ];
 
 export type UIEnvelope = { v: 1; kind: "event" } & AgentEvent;
+
+export type VerbosityLevel = "quiet" | "normal" | "verbose";
 
 // AgentCommand lists every command the UI may send over the NDJSON bridge;
 // see `AgentClient.send()` for the runtime envelope shape.
@@ -160,6 +114,7 @@ export type AgentCommand =
   | { cmd: "set_model"; model: string }
   | { cmd: "set_reasoning"; effort: ReasoningEffort }
   | { cmd: "set_default_model"; model: string }
+  | { cmd: "set_verbosity"; level: VerbosityLevel }
   | { cmd: "toggle_auto_approve" }
   | { cmd: "compact_context" }
   | { cmd: "clear_context" }

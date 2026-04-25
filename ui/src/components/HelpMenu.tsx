@@ -23,12 +23,17 @@ export interface HelpMenuProps {
  */
 export function HelpMenu({onPick, onClose, maxWidth}: HelpMenuProps) {
   const [index, setIndex] = useState(0);
+  const [showFooter, setShowFooter] = useState(false);
   const items = HELP_MENU_ENTRIES;
 
   useInput(
-    (_input, key) => {
+    (input, key) => {
       if (key.escape) {
         onClose();
+        return;
+      }
+      if (input === "?") {
+        setShowFooter((v) => !v);
         return;
       }
       if (key.upArrow) {
@@ -67,6 +72,7 @@ export function HelpMenu({onPick, onClose, maxWidth}: HelpMenuProps) {
         <Text color={theme.faint}>
           ↑↓ select
           {theme.glyph.separator}↵ run
+          {theme.glyph.separator}? cli help
           {theme.glyph.separator}esc close
         </Text>
       </Box>
@@ -82,12 +88,15 @@ export function HelpMenu({onPick, onClose, maxWidth}: HelpMenuProps) {
         />
       ))}
 
-      {/* Footer */}
-      <Box marginTop={1}>
-        <Text color={theme.faint} dimColor>
-          {truncateSmart(HELP_CLI_FOOTER, inner)}
-        </Text>
-      </Box>
+      {/* Footer — only shown after the user presses `?` so the menu
+          stays compact for the common case. */}
+      {showFooter ? (
+        <Box marginTop={1}>
+          <Text color={theme.faint} dimColor>
+            {truncateSmart(HELP_CLI_FOOTER, inner)}
+          </Text>
+        </Box>
+      ) : null}
     </Box>
   );
 }

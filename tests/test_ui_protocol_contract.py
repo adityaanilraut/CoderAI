@@ -61,8 +61,14 @@ GOLDEN = ROOT / "tests/fixtures/ndjson_protocol_golden.jsonl"
 
 
 def test_protocol_markdown_mentions_bespoke_events() -> None:
+    """The phased / unified events get easy to overlook in code review.
+
+    Make sure the doc explicitly mentions each one so a contributor looking
+    for ``auto_approve_changed`` (the pre-rename name) finds the new
+    ``session_patch`` mechanism instead.
+    """
     text = (ROOT / "ui/PROTOCOL.md").read_text(encoding="utf-8")
-    for ev in ("auto_approve_changed", "reasoning_changed"):
+    for ev in ("turn", "tool", "session_patch", "info", "warning", "success"):
         assert f"`{ev}`" in text, f"PROTOCOL.md should document `{ev}` for UI parity"
 
 

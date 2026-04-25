@@ -8,9 +8,11 @@ import {EventEmitter} from "node:events";
 import readline from "node:readline";
 import {
   AGENT_EVENT_NAMES,
+  type AgentCommand,
   type AgentEvent,
   type ReasoningEffort,
   type UIEnvelope,
+  type VerbosityLevel,
 } from "../protocol.js";
 
 const DEBUG_IPC =
@@ -103,11 +105,9 @@ export class AgentClient extends EventEmitter {
     this.emit("raw", msg);
   }
 
-  send(cmd: Record<string, unknown> & {cmd: string}): string {
+  send(cmd: AgentCommand): string {
     if (!this.child) throw new Error("AgentClient not started");
-    const id =
-      (cmd.id as string | undefined) ??
-      `c_${++this.cmdSeq}_${Date.now().toString(36)}`;
+    const id = `c_${++this.cmdSeq}_${Date.now().toString(36)}`;
     const envelope = {v: 1, kind: "cmd", id, ...cmd};
     this.child.stdin.write(JSON.stringify(envelope) + "\n");
     return id;
@@ -151,6 +151,10 @@ export class AgentClient extends EventEmitter {
 
   setDefaultModel(model: string): string {
     return this.send({cmd: "set_default_model", model});
+  }
+
+  setVerbosity(level: VerbosityLevel): string {
+    return this.send({cmd: "set_verbosity", level});
   }
 
   compactContext(): string {

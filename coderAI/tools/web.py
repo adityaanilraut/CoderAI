@@ -294,7 +294,8 @@ class WebSearchTool(Tool):
         self, query: str, num_results: int
     ) -> List[Dict[str, str]]:
         """Search DDG HTML endpoint with retries and header rotation."""
-        header_sets = [_HEADERS_CHROME, _HEADERS_FIREFOX]
+        header_sets = [_HEADERS_CHROME, _HEADERS_FIREFOX, _HEADERS_CHROME, _HEADERS_FIREFOX]
+        last_error = "Unknown error"
 
         for attempt, headers in enumerate(header_sets):
             try:
@@ -306,24 +307,27 @@ class WebSearchTool(Tool):
                     timeout_s=15.0,
                 )
                 if resp is None or resp["status"] != 200:
-                    logger.debug(
-                        f"DDG attempt {attempt + 1}: HTTP {resp['status'] if resp else 'blocked'}"
-                    )
-                    await asyncio.sleep(1)
+                    status = resp['status'] if resp else 'blocked'
+                    last_error = f"HTTP {status}"
+                    logger.debug(f"DDG attempt {attempt + 1}: {last_error}")
+                    await asyncio.sleep(2 ** attempt)
                     continue
+                
                 html_text = resp["text"]
-
                 results = self._parse_results(html_text, num_results)
+                
                 if results:
                     return results
-                # Empty results → try next header set immediately; the
-                # prior inter-attempt sleep added latency without helping
-                # (DDG returns the same empty page regardless of UA).
+                
+                # Empty results → try next header set
+                last_error = "Empty results returned"
+                await asyncio.sleep(2 ** attempt)
             except Exception as e:
+                last_error = str(e)
                 logger.debug(f"DDG attempt {attempt + 1}: {e}")
-                await asyncio.sleep(1)
+                await asyncio.sleep(2 ** attempt)
 
-        return []
+        raise RuntimeError(f"Search failed after {len(header_sets)} attempts. Last error: {last_error}")
 
     def _parse_results(
         self, html_text: str, max_results: int

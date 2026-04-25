@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from .base import Tool
 
@@ -104,6 +104,12 @@ class SaveMemoryTool(Tool):
 class RecallMemoryParams(BaseModel):
     key: Optional[str] = Field(None, description="Memory key to recall (optional, omit to search)")
     query: Optional[str] = Field(None, description="Search query to find related memories")
+
+    @model_validator(mode='after')
+    def check_at_least_one(self):
+        if not self.key and not self.query:
+            raise ValueError("Must provide either 'key' or 'query'")
+        return self
 
 
 class RecallMemoryTool(Tool):

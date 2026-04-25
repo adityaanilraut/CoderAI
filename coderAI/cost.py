@@ -71,6 +71,46 @@ class CostTracker:
         """Initialize the cost tracker."""
         self.total_cost_usd: float = 0.0
 
+    @staticmethod
+    def get_model_pricing(model: str) -> Dict[str, float]:
+        """Get the pricing for a model (USD per 1M tokens)."""
+        base_model = model.lower()
+
+        if base_model.startswith("claude-"):
+            import re
+            base_model = re.sub(r"-\d{8}$", "", base_model)
+            base_model = re.sub(
+                r"^(claude-)(\d+)-(\d+)(-\w+)$",
+                lambda m: f"{m.group(1)}{m.group(2)}.{m.group(3)}{m.group(4)}",
+                base_model,
+            )
+
+        pricing = MODEL_PRICING.get(base_model)
+        if not pricing:
+            for k, v in MODEL_PRICING.items():
+                if k in base_model:
+                    pricing = v
+                    break
+
+        if not pricing:
+            logger.debug(f"Unknown pricing for model '{model}'. Cost will be 0.")
+            return {"input": 0.0, "output": 0.0}
+            
+        return pricing
+
+    @staticmethod
+    def calculate_cost_for_tokens(model: str, input_tokens: int, output_tokens: int) -> float:
+        """Calculate cost without adding to total."""
+        pricing = CostTracker.get_model_pricing(model)
+
+        if not pricing:
+            logger.debug(f"Unknown pricing for model '{model}'. Cost will be 0.")
+            return 0.0
+
+        input_cost = (input_tokens / 1_000_000) * pricing["input"]
+        output_cost = (output_tokens / 1_000_000) * pricing["output"]
+        return input_cost + output_cost
+
     def add_cost(self, model: str, input_tokens: int, output_tokens: int) -> float:
         """Calculate cost for a single interaction and add to total.
 
@@ -82,41 +122,7 @@ class CostTracker:
         Returns:
             The cost of this specific interaction in USD
         """
-        # Normalise model name.
-        # Handles dated variants like "claude-3-5-sonnet-20240620" → "claude-3.5-sonnet"
-        # and "claude-4-sonnet-20250301" → "claude-4-sonnet".
-        base_model = model.lower()
-
-        # Claude dated-model normalisation: strip date suffix, replace hyphens
-        # between version digits with dots (e.g. "3-5" → "3.5").
-        if base_model.startswith("claude-"):
-            # Remove date suffix (e.g. -20240620)
-            import re
-            base_model = re.sub(r"-\d{8}$", "", base_model)
-            # Normalise "claude-3-5-sonnet" → "claude-3.5-sonnet" etc.
-            base_model = re.sub(
-                r"^(claude-)(\d+)-(\d+)(-\w+)$",
-                lambda m: f"{m.group(1)}{m.group(2)}.{m.group(3)}{m.group(4)}",
-                base_model,
-            )
-
-        # Fallback handling
-        pricing = MODEL_PRICING.get(base_model)
-        if not pricing:
-            # Try partial match
-            for k, v in MODEL_PRICING.items():
-                if k in base_model:
-                    pricing = v
-                    break
-
-        if not pricing:
-            logger.debug(f"Unknown pricing for model '{model}'. Cost will be 0.")
-            return 0.0
-
-        # Calculate cost
-        input_cost = (input_tokens / 1_000_000) * pricing["input"]
-        output_cost = (output_tokens / 1_000_000) * pricing["output"]
-        interaction_cost = input_cost + output_cost
+        interaction_cost = self.calculate_cost_for_tokens(model, input_tokens, output_tokens)
 
         self.total_cost_usd += interaction_cost
         return interaction_cost

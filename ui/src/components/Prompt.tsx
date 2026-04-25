@@ -102,25 +102,25 @@ export function Prompt({onSubmit, disabled, placeholder, exitHint}: PromptProps)
           showCursor={!disabled}
         />
       </Box>
-      <Box marginTop={theme.spacing.sm}>
-        {exitHint ? (
+      {exitHint ? (
+        <Box marginTop={theme.spacing.sm}>
           <Text color={theme.warning}>
-            {theme.glyph.warn} Press Ctrl+C again to exit — or type to continue
+            {theme.glyph.warn} ^C again to exit
           </Text>
-        ) : (
+        </Box>
+      ) : history.current.length === 0 && !disabled ? (
+        <Box marginTop={theme.spacing.sm}>
           <Text color={theme.faint}>
-            <Text color={theme.muted}>↵</Text> send
+            <Text color={theme.muted}>/</Text> commands
             {theme.glyph.separator}
-            <Text color={theme.muted}>/</Text> help
+            <Text color={theme.muted}>^R</Text> reasoning
             {theme.glyph.separator}
-            <Text color={theme.muted}>↑↓</Text> history
-            {theme.glyph.separator}
-            <Text color={theme.muted}>esc</Text> stop
+            <Text color={theme.muted}>esc/^C</Text> cancel
             {theme.glyph.separator}
             <Text color={theme.muted}>^C^C</Text> quit
           </Text>
-        )}
-      </Box>
+        </Box>
+      ) : null}
     </Box>
   );
 }

@@ -1,4 +1,4 @@
-import type {TimelineItem} from "./hooks/agentStateTypes.js";
+import type {TimelineItem} from "../hooks/agentStateTypes.js";
 
 /**
  * Whether a timeline item will never change again — safe to pass to Ink `<Static>`.
@@ -22,11 +22,5 @@ export function isTimelineItemFrozen(item: TimelineItem): boolean {
       return true;
     case "approval":
       return item.decided !== "pending";
-    case "agent":
-      return (
-        item.agent.status === "done" ||
-        item.agent.status === "error" ||
-        item.agent.status === "cancelled"
-      );
   }
 }

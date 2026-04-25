@@ -3,6 +3,11 @@
 The Rich-based ``StreamingHandler`` was removed when the interactive UI
 migrated to Ink; ``IPCStreamingHandler`` replaces it and honors the same
 ``handle_stream`` contract, so the same shape of tests applies.
+
+The streaming handler emits a single phased ``turn`` event:
+``("turn", phase="start" | "reasoning" | "text" | "end", delta?)``. These
+helpers extract the text/reasoning streams in that shape so the assertions
+read like the old ``stream_delta`` ones.
 """
 
 import asyncio
@@ -18,6 +23,22 @@ class _FakeServer:
 
     def emit(self, event: str, **data) -> None:
         self.events.append((event, data))
+
+
+def _text_deltas(events):
+    return "".join(
+        d.get("delta", "")
+        for name, d in events
+        if name == "turn" and d.get("phase") == "text"
+    )
+
+
+def _reasoning_deltas(events):
+    return "".join(
+        d.get("delta", "")
+        for name, d in events
+        if name == "turn" and d.get("phase") == "reasoning"
+    )
 
 
 async def _fake_stream(chunks):
@@ -53,13 +74,8 @@ class TestIPCStreamingHandler:
 
         result = asyncio.run(run())
         assert result.get("content") == "Hello World"
-        # Each content delta should have been relayed as a stream_delta event.
-        deltas = [
-            d["content"]
-            for name, d in server.events
-            if name == "stream_delta" and not d.get("reasoning")
-        ]
-        assert "".join(deltas) == "Hello World"
+        # Each content delta should have been relayed as a turn/text event.
+        assert _text_deltas(server.events) == "Hello World"
 
     def test_tool_call_accumulation(self):
         handler = IPCStreamingHandler(_FakeServer())
@@ -140,23 +156,14 @@ class TestIPCStreamingHandler:
         async def run():
             return await handler.handle_stream(_fake_stream(chunks))
 
-        asyncio.run(run())
-        reasoning = "".join(
-            d["content"]
-            for name, d in server.events
-            if name == "stream_delta" and d.get("reasoning")
-        )
-        regular = "".join(
-            d["content"]
-            for name, d in server.events
-            if name == "stream_delta" and not d.get("reasoning")
-        )
-        assert "inner thoughts" in reasoning
+        result = asyncio.run(run())
+        assert "inner thoughts" in _reasoning_deltas(server.events)
+        regular = _text_deltas(server.events)
         assert "before " in regular
         assert " after" in regular
-
-        assistant_end = [d for name, d in server.events if name == "assistant_end"]
-        assert assistant_end[-1]["content"] == "before  after"
+        # Final content lives on the handler's return value (the turn/end
+        # event is now content-free — see streaming.py).
+        assert result["content"] == "before  after"
 
     def test_reasoning_field_stays_out_of_final_content(self):
         server = _FakeServer()
@@ -173,9 +180,7 @@ class TestIPCStreamingHandler:
 
         result = asyncio.run(run())
         assert result["content"] == "answer"
-
-        assistant_end = [d for name, d in server.events if name == "assistant_end"]
-        assert assistant_end[-1]["content"] == "answer"
+        assert _text_deltas(server.events) == "answer"
 
     def test_cumulative_think_chunks_do_not_duplicate_reasoning(self):
         server = _FakeServer()
@@ -198,13 +203,7 @@ class TestIPCStreamingHandler:
 
         result = asyncio.run(run())
         assert result["content"] == "before  after"
-
-        reasoning = "".join(
-            d["content"]
-            for name, d in server.events
-            if name == "stream_delta" and d.get("reasoning")
-        )
-        assert reasoning == "inner thoughts"
+        assert _reasoning_deltas(server.events) == "inner thoughts"
 
     def test_delta_then_cumulative_does_not_duplicate(self):
         """Provider flips from pure delta to cumulative mid-stream.
@@ -227,12 +226,7 @@ class TestIPCStreamingHandler:
 
         result = asyncio.run(run())
         assert result["content"] == "Hello, world!"
-        regular = "".join(
-            d["content"]
-            for name, d in server.events
-            if name == "stream_delta" and not d.get("reasoning")
-        )
-        assert regular == "Hello, world!"
+        assert _text_deltas(server.events) == "Hello, world!"
 
     def test_cumulative_then_delta_does_not_duplicate(self):
         """Provider starts cumulative, then switches to pure deltas."""
@@ -251,12 +245,7 @@ class TestIPCStreamingHandler:
 
         result = asyncio.run(run())
         assert result["content"] == "Hello, world!"
-        regular = "".join(
-            d["content"]
-            for name, d in server.events
-            if name == "stream_delta" and not d.get("reasoning")
-        )
-        assert regular == "Hello, world!"
+        assert _text_deltas(server.events) == "Hello, world!"
 
     def test_literal_angle_bracket_flushes_promptly(self):
         """A ``<`` that can't possibly lead into ``<think>`` must not be held.
@@ -279,9 +268,4 @@ class TestIPCStreamingHandler:
 
         result = asyncio.run(run())
         assert result["content"] == "use <T> as a type"
-        regular = "".join(
-            d["content"]
-            for name, d in server.events
-            if name == "stream_delta" and not d.get("reasoning")
-        )
-        assert regular == "use <T> as a type"
+        assert _text_deltas(server.events) == "use <T> as a type"

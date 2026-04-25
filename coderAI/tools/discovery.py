@@ -51,7 +51,7 @@ def discover_tools(registry: ToolRegistry, package_name: str = "coderAI.tools") 
                     except TypeError:
                         # Log that we skipped it because it needs args.
                         # These must be handled manually in Agent._create_tool_registry.
-                        logger.debug(f"Skipping auto-registration for {module_name}.{name} (requires arguments)")
+                        logger.warning(f"Skipping auto-registration for {module_name}.{name} (requires arguments)")
         except Exception as e:
             # Don't let one bad module kill the whole discovery.
             logger.warning(f"Failed to load tools from {module_name}: {e}")

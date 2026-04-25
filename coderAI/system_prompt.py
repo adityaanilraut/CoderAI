@@ -8,8 +8,11 @@ documented tools always match ``ToolRegistry`` (personas, web_tools_in_main, etc
 from __future__ import annotations
 
 from typing import Dict, List, Tuple
+import logging
 
 from .tools.base import ToolRegistry
+
+logger = logging.getLogger(__name__)
 
 # Long-form guidance for each tool (restored from the original static prompt).
 # ``format_tools_markdown`` uses this when present so models see capabilities
@@ -371,7 +374,8 @@ def _format_connected_mcp_tools_appendix() -> str:
     """List currently connected MCP tools so the model matches the function schema."""
     try:
         from .tools.mcp import mcp_client
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Failed to format MCP tools appendix: {e}", exc_info=True)
         return ""
 
     if not getattr(mcp_client, "discovered_tools", None):

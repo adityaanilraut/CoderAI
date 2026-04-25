@@ -1,59 +1,46 @@
 import React from "react";
 import { Box, Text } from "ink";
-import Spinner from "ink-spinner";
 import { theme } from "../theme.js";
-import { Rail, MessageHeader } from "./Primitives.js";
 
 export interface AssistantProps {
   content: string;
   streaming: boolean;
   reasoning: string;
+  showReasoning?: boolean;
 }
 
 /**
- * Assistant message — rail-based.
+ * Assistant message — chrome-free.
  *
- *   ▌ ◆ CoderAI  streaming…
- *   ▌   reasoning (dim italic)
- *   ▌
- *   ▌ the actual content…
- *
- * The rail carries CoderAI's colour identity; the diamond glyph gives
- * the assistant a consistent visual anchor without a full border box.
+ * The model talking is signaled by the absence of `❯`. No header row,
+ * no rail, no role label. Reasoning is buffered and only rendered when
+ * verbose mode is on (or when the user pressed Ctrl+R / `/think`, which
+ * surfaces it as an explicit toast — see useAgent.revealReasoning).
  */
-export function Assistant({ content, streaming, reasoning }: AssistantProps) {
+export function Assistant({ content, streaming, reasoning, showReasoning }: AssistantProps) {
   const trimmedReasoning = reasoning.trim();
-  const label = `${theme.glyph.diamond} CoderAI`;
+  const hasContent = Boolean(content);
+  const hasReasoning = Boolean(trimmedReasoning) && showReasoning;
+  if (!hasContent && !hasReasoning && !streaming) return null;
 
   return (
-    <Rail color={theme.role.assistant} gap={2} marginBottom={1} marginTop={1}>
-      <MessageHeader
-        label={label}
-        labelColor={theme.role.assistant}
-        right={
-          streaming ? (
-            <Box>
-              <Text color={theme.accent}>
-                <Spinner type="dots" />
-              </Text>
-              <Text color={theme.muted}>  streaming</Text>
-            </Box>
-          ) : null
-        }
-      />
-      {trimmedReasoning ? (
-        <Box marginTop={1}>
+    <Box flexDirection="column" marginTop={1} marginBottom={1} paddingX={2}>
+      {hasReasoning ? (
+        <Box marginBottom={hasContent || streaming ? 1 : 0}>
           <Text color={theme.faint} italic>
             {trimmedReasoning}
           </Text>
         </Box>
       ) : null}
-      {content ? (
-        <Box marginTop={1}>
-          <Text color={theme.text}>{content}</Text>
-        </Box>
+      {hasContent ? (
+        <Text color={theme.text}>
+          {content}
+          {streaming ? <Text color={theme.faint}> ▋</Text> : null}
+        </Text>
+      ) : streaming ? (
+        <Text color={theme.faint}>…</Text>
       ) : null}
-    </Rail>
+    </Box>
   );
 }
 
@@ -62,18 +49,27 @@ export interface UserBubbleProps {
 }
 
 /**
- * User message — rail-based with a distinct green identity.
- *
- *   ▌ You
- *   ▌ the message they sent
+ * User message echoed back into the transcript. Uses `sentCaret` (›) to
+ * distinguish a *sent* message from the *editable* prompt below, which uses
+ * `caret` (❯). Without this differentiation a glanced page can't separate
+ * "I said this" from "now editing".
  */
 export function UserBubble({ text }: UserBubbleProps) {
+  const lines = text.split("\n");
   return (
-    <Rail color={theme.role.user} gap={2} marginBottom={1} marginTop={1}>
-      <MessageHeader label="You" labelColor={theme.role.user} />
-      <Box marginTop={1}>
-        <Text color={theme.textSoft}>{text}</Text>
-      </Box>
-    </Rail>
+    <Box flexDirection="column" marginTop={1} marginBottom={1} paddingX={1}>
+      {lines.map((line, i) => (
+        <Box key={i}>
+          {i === 0 ? (
+            <Text color={theme.role.user} bold>
+              {theme.glyph.sentCaret}{" "}
+            </Text>
+          ) : (
+            <Text>{"  "}</Text>
+          )}
+          <Text color={theme.textSoft}>{line}</Text>
+        </Box>
+      ))}
+    </Box>
   );
 }

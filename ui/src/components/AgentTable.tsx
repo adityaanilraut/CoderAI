@@ -1,67 +1,165 @@
 import React from "react";
 import {Box, Text} from "ink";
-import Spinner from "ink-spinner";
 import {theme} from "../theme.js";
 import type {AgentInfo, AgentStatus} from "../protocol.js";
 import {formatTokenCount, truncateText} from "../lib/format.js";
-import {Rail, MessageHeader} from "./Primitives.js";
 
 const FINISHED: AgentStatus[] = ["done", "error", "cancelled"];
 
 /**
- * Inline card for a sub-agent — rail-based.
+ * Sticky panel above the prompt that renders the live agent activity as a
+ * tree using `parentId`.  The scrolling transcript is "what happened";
+ * this panel is "what's running right now".
  *
- *   ▌ ⚙ code-reviewer  (reviewer)              3.4s
- *   ▌ 4.2k tok · $0.014 · read_file
- *   ▌ review the auth changes for potential regressions
+ *   ─ Agents ─────────────────────────────────────────────────────────
+ *     ◆ main · opus-4.7              42k tok   $0.18    14s
+ *     ├─ ⚙ code-reviewer · sonnet    8.2k     $0.03    grep "useState"
+ *     └─ ✓ test-runner · haiku       1.4k     $0.00    done
  */
-export interface AgentCardProps {
-  agent: AgentInfo;
+export interface AgentTreeProps {
+  agents: Record<string, AgentInfo>;
+  /** Hide finished children that have been done for longer than this. */
+  finishedGraceMs?: number;
+  /**
+   * Map of agent id → ms since epoch when it most recently flipped to a
+   * terminal status. Used together with `finishedGraceMs` to fade out
+   * completed children. The root agent never auto-collapses.
+   */
+  finishedAt?: Record<string, number>;
+  /**
+   * Total width available — used to clamp the rule line. Falls back to a
+   * sensible default when not provided.
+   */
+  width?: number;
 }
 
-export function AgentCard({agent}: AgentCardProps) {
-  const finished = FINISHED.includes(agent.status);
-  const railColor = railColorFor(agent.status);
-  const fmt = (n: number) => formatTokenCount(n);
+interface TreeNode {
+  agent: AgentInfo;
+  depth: number;
+  isLast: boolean;
+}
+
+export function AgentTree({
+  agents,
+  finishedGraceMs = 5000,
+  finishedAt = {},
+  width = 100,
+}: AgentTreeProps) {
+  const visible = filterAndBuildTree(agents, finishedAt, finishedGraceMs);
+  if (visible.length === 0) return null;
+
+  const ruleWidth = Math.max(20, Math.min(width - 2, 80));
+  const rule = "─".repeat(ruleWidth);
+  // Title takes the leading "─ Agents " (9 chars). Pad the trailing rule
+  // so the line is exactly `ruleWidth` wide regardless of how short the
+  // remainder is — prevents an empty title row when `width` is very small.
+  const titleTrailing = "─".repeat(Math.max(0, ruleWidth - 9));
 
   return (
-    <Rail color={railColor} gap={2} marginBottom={1}>
-      <MessageHeader
-        label={renderLabel(agent)}
-        labelColor={finished ? theme.muted : theme.text}
-        annotation={agent.role ? `(${agent.role})` : undefined}
-        right={
-          <Text color={theme.faint}>
-            {(agent.elapsedMs / 1000).toFixed(1)}s
-          </Text>
-        }
-      />
-      <Box>
-        <Text color={theme.muted}>
-          {fmt(agent.tokens)} tok{"  "}
-          {theme.glyph.dot} ${agent.costUsd.toFixed(4)}
-          {!finished && agent.tool ? (
-            <Text color={theme.warning}>
-              {"  "}
-              {theme.glyph.dot} {agent.tool}
-            </Text>
-          ) : null}
-        </Text>
-      </Box>
-      {agent.task ? (
-        <Box marginTop={1}>
-          <Text color={theme.faint} italic>
-            {truncateText(agent.task, 160)}
-          </Text>
-        </Box>
-      ) : null}
-    </Rail>
+    <Box flexDirection="column" marginTop={1} marginBottom={1} paddingX={2}>
+      <Text color={theme.faint}>─ Agents {titleTrailing}</Text>
+      {visible.map((node) => (
+        <AgentRow key={node.agent.id} node={node} width={width} />
+      ))}
+      <Text color={theme.faint}>{rule}</Text>
+    </Box>
   );
 }
 
-function renderLabel(agent: AgentInfo): string {
+interface AgentRowProps {
+  node: TreeNode;
+  width: number;
+}
+
+function AgentRow({node, width}: AgentRowProps) {
+  const {agent, depth, isLast} = node;
+  const finished = FINISHED.includes(agent.status);
   const glyph = glyphFor(agent.status);
-  return `${glyph} ${agent.name}`;
+  const glyphColor = colorFor(agent.status);
+  const branch = renderBranch(depth, isLast);
+  const detail = renderDetail(agent, finished);
+
+  // Right-truncate the persona/model/detail strings so a long sub-agent
+  // task can't push the elapsed/cost columns off the right edge on a
+  // narrow terminal. Budget rough widths from the row's available space.
+  const nameMax = width < theme.layout.narrowCols ? 14 : 28;
+  const modelMax = width < theme.layout.narrowCols ? 12 : 24;
+  const detailMax = width < theme.layout.narrowCols ? 18 : 60;
+
+  return (
+    <Box>
+      <Text color={theme.faint}>{branch}</Text>
+      <Text color={glyphColor} bold>
+        {glyph}
+      </Text>
+      <Text color={finished ? theme.muted : theme.text}>
+        {" "}
+        {truncateText(agent.name, nameMax)}
+      </Text>
+      <Text color={theme.faint}>
+        {"  "}
+        {theme.glyph.dot} {truncateText(agent.model || "—", modelMax)}
+      </Text>
+      <Text color={theme.muted}>
+        {"  "}
+        {formatTokenCount(agent.tokens)} tok
+      </Text>
+      <Text color={theme.muted}>
+        {"  "}${agent.costUsd.toFixed(4)}
+      </Text>
+      <Text color={theme.faint}>
+        {"  "}
+        {(agent.elapsedMs / 1000).toFixed(1)}s
+      </Text>
+      {detail ? (
+        <Text color={detail.color}>
+          {"  "}
+          {truncateText(detail.text, detailMax)}
+        </Text>
+      ) : null}
+    </Box>
+  );
+}
+
+function renderBranch(depth: number, isLast: boolean): string {
+  if (depth === 0) return "  ";
+  // Single level of indentation — keep it shallow so deep agent trees still
+  // fit. The ASCII branch chars come straight from box-drawing so the rail
+  // reads as a tree even when colors are stripped.
+  const prefix = "  ".repeat(depth);
+  return prefix + (isLast ? "└─ " : "├─ ");
+}
+
+function renderDetail(
+  agent: AgentInfo,
+  finished: boolean,
+): {text: string; color: string} | null {
+  if (agent.status === "error") {
+    return {text: "error", color: theme.danger};
+  }
+  if (agent.status === "cancelled") {
+    return {text: "cancelled", color: theme.muted};
+  }
+  if (agent.status === "done") {
+    return {text: "done", color: theme.success};
+  }
+  if (agent.status === "waiting_for_user") {
+    return {text: "waiting on approval", color: theme.info};
+  }
+  if (finished) return null;
+  if (agent.tool) {
+    return {
+      text: truncateText(agent.tool, 60),
+      color: theme.warning,
+    };
+  }
+  if (agent.task) {
+    return {
+      text: truncateText(agent.task, 60),
+      color: theme.faint,
+    };
+  }
+  return null;
 }
 
 function glyphFor(status: AgentStatus): string {
@@ -77,13 +175,13 @@ function glyphFor(status: AgentStatus): string {
     case "error":
       return theme.glyph.cross;
     case "cancelled":
-      return "⊘";
+      return theme.glyph.cancelled;
     default:
-      return theme.glyph.dot;
+      return theme.glyph.diamond;
   }
 }
 
-function railColorFor(status: AgentStatus): string {
+function colorFor(status: AgentStatus): string {
   switch (status) {
     case "thinking":
     case "tool_call":
@@ -97,38 +195,59 @@ function railColorFor(status: AgentStatus): string {
     case "cancelled":
       return theme.muted;
     default:
-      return theme.muted;
+      return theme.accent;
   }
 }
 
 /**
- * Legacy export kept for any outside callsite that still imports it.
- * The new `AgentCard` composes its own status glyph inline so this is
- * no longer used internally.
+ * Build a flat depth-tagged list (parents before children) suitable for
+ * sequential row rendering. Roots come first; finished children are
+ * filtered out once they're past the grace window.
+ *
+ * The "main" agent is always at the root and never collapses, even if
+ * the tracker reports it as `done` between turns.
  */
-export interface StatusBadgeProps {
-  status: AgentStatus;
-}
+function filterAndBuildTree(
+  agents: Record<string, AgentInfo>,
+  finishedAt: Record<string, number>,
+  graceMs: number,
+): TreeNode[] {
+  const all = Object.values(agents);
+  if (all.length === 0) return [];
 
-export function StatusBadge({status}: StatusBadgeProps) {
-  switch (status) {
-    case "thinking":
-      return (
-        <Text color={theme.accent}>
-          <Spinner type="dots" />
-        </Text>
-      );
-    case "tool_call":
-      return <Text color={theme.warning}>{theme.glyph.cog}</Text>;
-    case "waiting_for_user":
-      return <Text color={theme.info}>{theme.glyph.wait}</Text>;
-    case "done":
-      return <Text color={theme.success}>{theme.glyph.tick}</Text>;
-    case "error":
-      return <Text color={theme.danger}>{theme.glyph.cross}</Text>;
-    case "cancelled":
-      return <Text color={theme.muted}>⊘</Text>;
-    default:
-      return <Text color={theme.muted}>{theme.glyph.dot}</Text>;
+  const now = Date.now();
+  const isStale = (a: AgentInfo): boolean => {
+    if (!FINISHED.includes(a.status)) return false;
+    // Root agents never get culled by the grace window — the user wants to
+    // see the main agent's totals even when it's idle between turns.
+    if (!a.parentId) return false;
+    const flippedAt = finishedAt[a.id];
+    if (!flippedAt) return false;
+    return now - flippedAt > graceMs;
+  };
+
+  const visible = all.filter((a) => !isStale(a));
+  const byParent = new Map<string | null, AgentInfo[]>();
+  for (const a of visible) {
+    const key = a.parentId ?? null;
+    const list = byParent.get(key) ?? [];
+    list.push(a);
+    byParent.set(key, list);
   }
+
+  const flat: TreeNode[] = [];
+  const walk = (parentId: string | null, depth: number) => {
+    const children = byParent.get(parentId) ?? [];
+    children.sort((a, b) => a.elapsedMs - b.elapsedMs);
+    children.forEach((agent, i) => {
+      flat.push({
+        agent,
+        depth,
+        isLast: i === children.length - 1,
+      });
+      walk(agent.id, depth + 1);
+    });
+  };
+  walk(null, 0);
+  return flat;
 }

@@ -19,7 +19,7 @@ export type TimelineItem =
   | {
       kind: "error";
       id: string;
-      category: "provider" | "tool" | "internal";
+      category: "provider" | "tool" | "internal" | "protocol";
       message: string;
       hint?: string;
       details?: string;
@@ -32,8 +32,7 @@ export type TimelineItem =
       args: Record<string, unknown>;
       risk: ToolRisk;
       decided: "pending" | "approved" | "denied";
-    }
-  | {kind: "agent"; id: string; agent: AgentInfo};
+    };
 
 export interface SessionState {
   connected: boolean;
@@ -43,12 +42,20 @@ export interface SessionState {
   provider: string;
   cwd: string;
   version: string;
-  projectSummary?: string;
   autoApprove: boolean;
   reasoning: ReasoningEffort;
+  /** Show reasoning, expanded tool cards, and per-state toasts. */
+  verbose: boolean;
   ctxUsed: number;
   ctxLimit: number;
   costUsd: number;
   budgetUsd: number;
   agents: Record<string, AgentInfo>;
+  /**
+   * Wall-clock ms (Date.now()) at which an agent most recently flipped to
+   * a terminal status (done/error/cancelled). Used by the AgentTree panel
+   * to fade finished children out after a grace window. Root agents are
+   * exempt from grace-based culling — see AgentTree.
+   */
+  agentsFinishedAt: Record<string, number>;
 }

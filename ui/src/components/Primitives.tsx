@@ -4,75 +4,11 @@ import {theme} from "../theme.js";
 import type {ToolRisk} from "../protocol.js";
 
 /* -------------------------------------------------------------------------- */
-/*  LEGACY PRIMITIVES                                                         */
-/*  Kept for backward compatibility — Panel is still used by ErrorPanel       */
-/*  and Toast until their callsites are migrated.                             */
-/* -------------------------------------------------------------------------- */
-
-type PanelVariant = "default" | "info" | "warning" | "danger" | "success";
-
-export interface PanelProps {
-  children: React.ReactNode;
-  variant?: PanelVariant;
-  marginBottom?: number;
-  marginTop?: number;
-  paddingX?: number;
-  paddingY?: number;
-  flexDirection?: "row" | "column";
-}
-
-export function Panel({
-  children,
-  variant = "default",
-  marginBottom = 1,
-  marginTop,
-  paddingX = 1,
-  paddingY,
-  flexDirection = "column",
-}: PanelProps) {
-  void variant;
-  return (
-    <Box
-      paddingX={paddingX}
-      paddingY={paddingY}
-      flexDirection={flexDirection}
-      marginBottom={marginBottom}
-      marginTop={marginTop}
-    >
-      {children}
-    </Box>
-  );
-}
-
-export interface PanelHeaderProps {
-  title: string;
-  titleColor?: string;
-  titleBold?: boolean;
-  right?: React.ReactNode;
-}
-
-export function PanelHeader({
-  title,
-  titleColor = theme.text,
-  titleBold = true,
-  right,
-}: PanelHeaderProps) {
-  return (
-    <Box justifyContent="space-between">
-      <Text color={titleColor} bold={titleBold}>
-        {title}
-      </Text>
-      {right ?? <Text />}
-    </Box>
-  );
-}
-
-/* -------------------------------------------------------------------------- */
-/*  RAIL — the backbone of the redesigned chat rhythm.                        */
+/*  RAIL — the backbone of the chat rhythm.                                   */
 /*                                                                            */
-/*  Replaces full-border panels with a single colored left edge.              */
-/*  Created with Ink's per-side border props so it renders as a clean pipe    */
-/*  that spans the block's vertical height regardless of content.             */
+/*  Replaces full-border panels with a single colored left edge. Created with */
+/*  Ink's per-side border props so it renders as a clean pipe that spans the  */
+/*  block's vertical height regardless of content.                            */
 /* -------------------------------------------------------------------------- */
 
 export interface RailProps {
@@ -167,26 +103,6 @@ export function MessageHeader({
 /*  BADGES                                                                    */
 /* -------------------------------------------------------------------------- */
 
-export interface BadgeProps {
-  label: string;
-  backgroundColor?: string;
-  color?: string;
-  bold?: boolean;
-}
-
-export function Badge({
-  label,
-  backgroundColor = theme.accentDim,
-  color = "black",
-  bold = true,
-}: BadgeProps) {
-  return (
-    <Text backgroundColor={backgroundColor} color={color} bold={bold}>
-      {` ${label} `}
-    </Text>
-  );
-}
-
 export interface RiskBadgeProps {
   risk: ToolRisk;
 }
@@ -194,12 +110,19 @@ export interface RiskBadgeProps {
 /**
  * Compact inline risk badge — colored text, no background chrome so it
  * doesn't fight with the rail of the block it sits inside.
+ *
+ * Honors "earned colors": low risk skips the warn glyph (the eye should
+ * not register `⚠` for safe operations), medium and high keep it.
  */
 export function RiskBadge({risk}: RiskBadgeProps) {
   const color = theme.risk[risk];
-  const label =
-    risk === "high" ? "⚠ high" : risk === "medium" ? "· med" : "· low";
-  return <Text color={color}>{label}</Text>;
+  const label = risk === "high" ? "high" : risk === "medium" ? "med" : "low";
+  return (
+    <Text color={color}>
+      {risk === "low" ? "" : `${theme.glyph.warn} `}
+      {label}
+    </Text>
+  );
 }
 
 export interface ActionPillProps {
@@ -253,14 +176,3 @@ export function Kbd({label}: KbdProps) {
   );
 }
 
-/* -------------------------------------------------------------------------- */
-/*  META — single-line muted key/value strip, for sub-content under a header. */
-/* -------------------------------------------------------------------------- */
-
-export interface MetaProps {
-  children: React.ReactNode;
-}
-
-export function Meta({children}: MetaProps) {
-  return <Text color={theme.muted}>{children}</Text>;
-}

@@ -9,15 +9,7 @@ from .base import LLMProvider
 
 logger = logging.getLogger(__name__)
 
-# Approximate costs (often free or very low for Groq, but we can set 0 or estimates)
-MODEL_COSTS = {
-    "openai/gpt-oss-120b": {"input": 0.0, "output": 0.0},
-    "openai/gpt-oss-20b": {"input": 0.0, "output": 0.0},
-    "llama3-70b-8192": {"input": 0.00059, "output": 0.00079},
-    "llama3-8b-8192": {"input": 0.00005, "output": 0.00008},
-    "mixtral-8x7b-32768": {"input": 0.00024, "output": 0.00024},
-    "gemma-7b-it": {"input": 0.00007, "output": 0.00007},
-}
+from coderAI.cost import CostTracker
 
 class GroqProvider(LLMProvider):
     """Groq LLM provider."""
@@ -135,9 +127,9 @@ class GroqProvider(LLMProvider):
 
     def get_cost(self) -> Dict[str, Any]:
         """Get current session cost estimate."""
-        costs = MODEL_COSTS.get(self.actual_model, {"input": 0, "output": 0})
-        input_cost = (self.total_input_tokens / 1000) * costs["input"]
-        output_cost = (self.total_output_tokens / 1000) * costs["output"]
+        pricing = CostTracker.get_model_pricing(self.actual_model)
+        input_cost = (self.total_input_tokens / 1_000_000) * pricing["input"]
+        output_cost = (self.total_output_tokens / 1_000_000) * pricing["output"]
 
         return {
             "input_tokens": self.total_input_tokens,

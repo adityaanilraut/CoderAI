@@ -62,9 +62,14 @@ export const theme = {
   },
 
   spacing: {
-    xs: 0,
     sm: 1,
     md: 2,
+  },
+
+  // Shared layout breakpoints. Components that adapt to width should read
+  // `theme.layout.narrowCols` rather than redeclaring their own threshold.
+  layout: {
+    narrowCols: 72,
   },
 
   glyph: {
@@ -72,15 +77,17 @@ export const theme = {
     dot: "·",                  // Inline metadata separator
     bullet: "●",               // Generic marker
     diamond: "◆",              // Brand/agent mark
-    caret: "❯",                // Prompt
+    caret: "❯",                // Live prompt
+    sentCaret: "›",             // Echoed user message in transcript
     arrowRun: "→",             // Progress/hint arrow
     rail: "▌",                 // Left rail glyph (display only; rails use Ink borders)
-    gutter: "│ ",              // Legacy diff gutter
     tick: "✓",
     cross: "✗",
     warn: "⚠",
     wait: "⏸",
     cog: "⚙",
     pulse: "◇",
+    info: "ℹ",
+    cancelled: "⊘",
   },
 } as const;

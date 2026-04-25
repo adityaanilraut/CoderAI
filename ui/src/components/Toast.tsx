@@ -27,7 +27,7 @@ export function Toast({level, message}: ToastProps) {
       ? theme.glyph.tick
       : level === "warning"
         ? theme.glyph.warn
-        : "ℹ";
+        : theme.glyph.info;
   const lines = message.split("\n");
 
   return (

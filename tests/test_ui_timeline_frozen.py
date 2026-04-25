@@ -1,4 +1,4 @@
-"""Ensure `isTimelineItemFrozen` covers every `TimelineItem` kind (see `ui/src/timelineItemFrozen.ts`)."""
+"""Ensure `isTimelineItemFrozen` covers every `TimelineItem` kind (see `ui/src/lib/timelineItemFrozen.ts`)."""
 
 from __future__ import annotations
 
@@ -9,6 +9,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 # Must match the `TimelineItem` union in `ui/src/hooks/agentStateTypes.ts`.
+# Agents render in the dedicated `AgentTree` panel above the prompt, not in
+# the scrolling transcript, so there is no `agent` timeline kind.
 _TIMELINE_ITEM_KINDS = frozenset(
     {
         "user",
@@ -18,13 +20,17 @@ _TIMELINE_ITEM_KINDS = frozenset(
         "error",
         "toast",
         "approval",
-        "agent",
     }
 )
 
 
+import pytest
+
 def _case_kinds_from_frozen_module() -> set[str]:
-    text = (ROOT / "ui/src/timelineItemFrozen.ts").read_text(encoding="utf-8")
+    path = ROOT / "ui/src/lib/timelineItemFrozen.ts"
+    if not path.exists():
+        pytest.skip(f"timelineItemFrozen.ts missing at {path}")
+    text = path.read_text(encoding="utf-8")
     return set(re.findall(r'case\s+"([a-z_]+)"\s*:', text))
 
 

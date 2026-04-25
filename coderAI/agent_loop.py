@@ -376,10 +376,6 @@ class ExecutionLoop:
     ) -> Dict[str, Any]:
         """Call the LLM with retry logic for transient errors."""
         for attempt in range(1, MAX_RETRIES_PER_ITERATION + 1):
-            event_emitter.emit(
-                "status_start",
-                message="[bold cyan]Thinking...[/bold cyan]",
-            )
             try:
                 if self.agent.streaming:
                     result = await self._stream_response(messages, tool_schemas)
@@ -426,8 +422,6 @@ class ExecutionLoop:
                     message=f"Transient error, retrying in {delay}s… ({attempt}/{MAX_RETRIES_PER_ITERATION})",
                 )
                 await asyncio.sleep(delay)
-            finally:
-                event_emitter.emit("status_stop")
 
         # Unreachable when MAX_RETRIES_PER_ITERATION >= 1 — the last
         # iteration either returns a result or re-raises the exception.

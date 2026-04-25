@@ -122,12 +122,12 @@ Per-turn flow (`Agent.process_message()` → `agent_loop`):
 - `hooks.json` — pre/post tool hooks (shell commands run around tool execution)
 - `config.json` — project-scoped config overrides
 
-**Configuration** is read from `~/.coderAI/config.json` then overridden by environment variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `CODERAI_DEFAULT_MODEL`, `CODERAI_TEMPERATURE`, etc.). Per-project instructions go in `CODERAI.md` at project root.
+**Configuration** is read from `~/.coderAI/config.json` then overridden by environment variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `CODERAI_DEFAULT_MODEL`, `CODERAI_TEMPERATURE`, `CODERAI_ALLOW_LOCAL_URLS=1` for SSRF bypass, etc.). Per-project instructions go in `CODERAI.md` at project root.
 
 ## Interactive chat commands
 
 Inside `coderAI chat` (the Ink UI), slash commands are available:
-`/help`, `/model <name>`, `/tokens`, `/context`, `/compact`, `/agents`, `/auto-approve`, `/clear`, `/exit`.
+`/help`, `/model <name>`, `/clear`, `/compact`, `/reasoning`, `/yolo`, `/verbose`, `/agents`, `/show`, `/think`, `/exit`.
 These are dispatched by the Ink frontend and map to commands in the
 NDJSON protocol at [`ui/PROTOCOL.md`](ui/PROTOCOL.md). Read-only reference output
 (`/models`, `/cost`, `/status`, `/info`, `/tasks`, `/config show`) is rendered

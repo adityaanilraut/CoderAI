@@ -1,10 +1,10 @@
 import React from "react";
-import {Box, Text} from "ink";
+import {Box, Text, useStdout} from "ink";
 import Spinner from "ink-spinner";
 import {theme} from "../theme.js";
 import type {ToolCategory, ToolRisk} from "../protocol.js";
 import {truncateText} from "../lib/format.js";
-import {Rail, RiskBadge} from "./Primitives.js";
+import {RiskBadge} from "./Primitives.js";
 
 export interface ToolCardProps {
   name: string;
@@ -15,29 +15,27 @@ export interface ToolCardProps {
   preview: string | null;
   error: string | null;
   fullAvailable?: boolean;
+  /** When true, expand multi-line previews and always show category. */
+  verbose?: boolean;
 }
 
 /**
- * Tool execution card — rail-based.
+ * Tool execution — single-line by default.
  *
- * The redesign collapses successful runs with short previews to a
- * single line so a long transcript doesn't drown in bordered boxes:
+ *   ✓ read_file  ui/src/App.tsx                       12 lines
+ *   ⚙ run_command  $ pytest -q                        running…
+ *   ✗ write_file  config.yml                          permission denied
  *
- *   ▌ ✓ read_file  ui/src/App.tsx            · fs
- *
- * Multi-line previews, errors, and in-flight runs expand:
- *
- *   ▌ ⚙ run_command  $ pytest -q             · shell
- *   ▌   ⠋ running…
- *
- *   ▌ ✗ write_file  config.yml               · fs
- *   ▌   permission denied
+ * Verbose mode reinstates rail chrome, full multi-line previews, and the
+ * category label on the right. Risk badge appears only for med/high.
  */
 export function ToolCard(props: ToolCardProps) {
-  const color = theme.tool[props.category] ?? theme.tool.other;
+  const {stdout} = useStdout();
+  const columns = stdout?.columns ?? 100;
+  const narrow = columns < theme.layout.narrowCols;
+
   const status = props.ok === null ? "running" : props.ok ? "ok" : "error";
-  const summary = summarizeArgs(props.name, props.args);
-  const railColor = status === "error" ? theme.danger : color;
+  const summary = summarizeArgs(props.name, props.args, narrow ? 32 : 56);
   const icon =
     status === "ok"
       ? theme.glyph.tick
@@ -50,118 +48,161 @@ export function ToolCard(props: ToolCardProps) {
       : status === "error"
         ? theme.danger
         : theme.warning;
+  const nameColor = status === "error" ? theme.danger : theme.text;
 
-  const previewLines = (props.preview ?? "").split("\n");
-  const previewIsShort =
-    props.preview !== null &&
-    previewLines.length === 1 &&
-    (props.preview ?? "").length <= 60 &&
-    !props.fullAvailable;
+  const previewOneLine = oneLinePreview(
+    status,
+    props.preview,
+    props.error,
+    narrow ? 36 : 64,
+  );
+  const showRisk = props.risk !== "low";
 
-  // Compact single-line form when the run succeeded and the preview
-  // is either empty or trivially short.  This is the common case.
-  const compact =
-    status === "ok" && (props.preview === null || previewIsShort);
-
-  return (
-    <Rail color={railColor} gap={2} marginBottom={1}>
-      <Box justifyContent="space-between">
-        <Box>
-          <Text color={iconColor} bold>
-            {icon}
-          </Text>
-          <Text color={railColor} bold>
+  // Single-line render unless verbose mode wants more chrome.
+  if (!props.verbose) {
+    return (
+      <Box paddingX={2}>
+        <Box flexGrow={1}>
+          {status === "running" ? (
+            <Text color={iconColor}>
+              <Spinner type="dots" />
+            </Text>
+          ) : (
+            <Text color={iconColor} bold>
+              {icon}
+            </Text>
+          )}
+          <Text color={nameColor} bold>
             {" "}
             {props.name}
           </Text>
           {summary ? (
-            <Text color={theme.muted}>
-              {"  "}
-              {summary}
-            </Text>
-          ) : null}
-          {compact && previewIsShort && props.preview ? (
-            <Text color={theme.faint}>
-              {"  "}
-              {theme.glyph.arrowRun} {props.preview}
-            </Text>
+            <Text color={theme.muted}>{"  "}{summary}</Text>
           ) : null}
         </Box>
         <Box>
-          <RiskBadge risk={props.risk} />
-          <Text color={theme.faint}>
-            {"  "}
-            {theme.glyph.dot} {props.category}
-          </Text>
+          {showRisk && !narrow ? (
+            <Box marginRight={1}>
+              <RiskBadge risk={props.risk} />
+            </Box>
+          ) : null}
+          {previewOneLine ? (
+            <Text color={status === "error" ? theme.danger : theme.faint}>
+              {previewOneLine}
+            </Text>
+          ) : null}
         </Box>
       </Box>
+    );
+  }
 
-      {/* Running state */}
-      {status === "running" ? (
-        <Box marginTop={0}>
-          <Text color={theme.accent}>
+  // Verbose: expanded card with multi-line preview.
+  const previewLines = (props.preview ?? "").split("\n");
+  return (
+    <Box flexDirection="column" paddingX={2} marginBottom={1}>
+      <Box>
+        {status === "running" ? (
+          <Text color={iconColor}>
             <Spinner type="dots" />
           </Text>
-          <Text color={theme.muted}> running…</Text>
-        </Box>
-      ) : null}
-
-      {/* Multi-line or long preview */}
-      {status === "ok" && !compact && props.preview ? (
-        <Box marginTop={0} flexDirection="column">
-          <Text color={theme.muted}>{props.preview}</Text>
+        ) : (
+          <Text color={iconColor} bold>
+            {icon}
+          </Text>
+        )}
+        <Text color={nameColor} bold>
+          {" "}
+          {props.name}
+        </Text>
+        {summary ? (
+          <Text color={theme.muted}>{"  "}{summary}</Text>
+        ) : null}
+        {showRisk ? (
+          <Text>
+            {"  "}
+            <RiskBadge risk={props.risk} />
+          </Text>
+        ) : null}
+        <Text color={theme.faint}>
+          {"  "}
+          {theme.glyph.dot} {props.category}
+        </Text>
+      </Box>
+      {status === "ok" && props.preview ? (
+        <Box marginTop={0} flexDirection="column" paddingLeft={4}>
+          {previewLines.map((ln, i) => (
+            <Text key={i} color={theme.muted}>
+              {ln}
+            </Text>
+          ))}
           {props.fullAvailable ? (
             <Text color={theme.faint} italic>
-              {theme.glyph.dot} output truncated — full result in session log
+              + more lines hidden — /verbose to expand
             </Text>
           ) : null}
         </Box>
       ) : null}
-
-      {/* Error */}
       {status === "error" ? (
-        <Box marginTop={0}>
+        <Box paddingLeft={4}>
           <Text color={theme.danger}>{props.error ?? "tool failed"}</Text>
         </Box>
       ) : null}
-    </Rail>
+    </Box>
   );
+}
+
+function oneLinePreview(
+  status: "running" | "ok" | "error",
+  preview: string | null,
+  error: string | null,
+  maxLen: number,
+): string {
+  if (status === "running") return "";
+  if (status === "error") return truncateText((error ?? "failed").split("\n")[0], maxLen);
+  if (!preview) return "";
+  const first = preview.split("\n")[0];
+  return truncateText(first, maxLen);
 }
 
 /**
  * Per-tool smart argument summary.  Picks the single most useful arg.
  */
-function summarizeArgs(name: string, args: Record<string, unknown>): string {
+function summarizeArgs(
+  name: string,
+  args: Record<string, unknown>,
+  maxLen: number = 80,
+): string {
   if (!args || Object.keys(args).length === 0) return "";
   const get = (k: string) => (args[k] ? String(args[k]) : null);
+  const trunc = (s: string) => truncateText(s, maxLen);
 
   switch (name) {
     case "read_file":
     case "write_file":
     case "apply_diff":
     case "search_replace":
-      return get("path") || get("file_path") || "";
+      return trunc(get("path") || get("file_path") || "");
     case "glob_search":
-      return get("pattern") || "";
+      return trunc(get("pattern") || "");
     case "list_directory":
-      return get("path") || ".";
+      return trunc(get("path") || ".");
     case "grep":
     case "text_search":
-      return `"${get("pattern") || get("query") || ""}"`;
+      return `"${trunc(get("pattern") || get("query") || "")}"`;
     case "run_command":
     case "run_background":
-      return `$ ${truncateText(get("command") || "", 80)}`;
+      return `$ ${trunc(get("command") || "")}`;
     case "web_search":
-      return `"${get("query") || ""}"`;
+      return `"${trunc(get("query") || "")}"`;
     case "read_url":
     case "download_file":
-      return get("url") || "";
+      return trunc(get("url") || "");
     case "delegate_task":
-      return `${get("agent_role") || get("persona") || "agent"}: ${truncateText(get("task_description") || get("task") || "", 60)}`;
+      return `${get("agent_role") || get("persona") || "agent"}: ${trunc(get("task_description") || get("task") || "")}`;
     default: {
       const entries = Object.entries(args)
         .slice(0, 2)
-        .map(([k, v]) => `${k}=${truncateText(String(v), 40)}`);
+        .map(([k, v]) => `${k}=${truncateText(String(v), Math.min(40, maxLen))}`);
       return entries.join(" ");
     }
   }
