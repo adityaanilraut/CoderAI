@@ -21,6 +21,10 @@ class TestParseMcpFunctionName:
         assert parse_mcp_function_name("read_file") is None
         assert parse_mcp_function_name("mcp__onlyone") is None
         assert parse_mcp_function_name("") is None
+        assert parse_mcp_function_name("mcp__srv__ ") is None
+
+    def test_single_character_segments_are_valid(self):
+        assert parse_mcp_function_name("mcp__s__t") == ("s", "t")
 
 
 class TestIsMcpFunctionName:

@@ -360,6 +360,11 @@ function handleSlashCommand(
     case "autoapprove":
       client.toggleAutoApprove();
       return;
+    case "allow-tool":
+    case "disallow-tool":
+    case "allowed-tools":
+      client.sendMessage(raw);
+      return;
     case "verbose":
       toggleVerbose();
       return;

@@ -51,11 +51,10 @@ class CreatePlanTool(Tool):
 
     name = "plan"
     description = (
-        "Create and manage a structured execution plan. Before starting a complex task, "
-        "use action='create' with a title and list of steps. Use action='show' to display "
-        "the plan, action='advance' to mark the current step done and proceed, and "
-        "action='clear' to remove the plan. This helps organize multi-step work and "
-        "track progress."
+        "Create and manage a structured execution plan. Use this when work has several "
+        "ordered steps and you need to track progress across them. Do not use it for "
+        "single-step tasks or scratch notes; use notepad for that. Example: action='create', "
+        "title='Refactor auth flow', steps=['Map current flow', 'Patch backend', 'Add tests']."
     )
     parameters_model = PlanParams
     is_read_only = False

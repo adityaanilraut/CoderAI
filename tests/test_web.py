@@ -124,7 +124,7 @@ class TestDownloadFileToolSchema:
         params = tool.get_parameters()
         assert "url" in params["properties"]
         assert "destination_path" in params["properties"]
-        assert params["required"] == ["url"]
+        assert params["required"] == ["url", "destination_path"]
 
     def test_tool_name(self):
         from coderAI.tools.web import DownloadFileTool
@@ -186,7 +186,7 @@ class TestDownloadFileExecution:
         monkeypatch.setattr(web_mod, "_safe_request", fake_safe_request)
 
         tool = DownloadFileTool()
-        result = asyncio.run(tool.execute(url="https://example.com/notfound.bin"))
+        result = asyncio.run(tool.execute(url="https://example.com/notfound.bin", destination_path="notfound.bin"))
 
         assert result["success"] is False
         assert "HTTP 404" in result["error"]

@@ -108,7 +108,7 @@ class AnthropicProvider(LLMProvider):
         super().__init__(model, api_key, **kwargs)
         self.actual_model = MODEL_ALIASES.get(model, model)
         self.temperature = kwargs.get("temperature", 0.7)
-        self.max_tokens = kwargs.get("max_tokens", 4096)
+        self.max_tokens = kwargs.get("max_tokens", 8192)
         self.reasoning_effort = kwargs.get("reasoning_effort", "medium")
         self.total_input_tokens = 0
         self.total_output_tokens = 0
@@ -260,6 +260,12 @@ class AnthropicProvider(LLMProvider):
         stop_reason = response.get("stop_reason", "")
         if stop_reason == "end_turn":
             finish_reason = "stop"
+        elif stop_reason == "max_tokens":
+            finish_reason = "length"
+        elif stop_reason == "refusal":
+            finish_reason = "refusal"
+        elif stop_reason == "pause_turn":
+            finish_reason = "pause_turn"
 
         return {
             "choices": [{"message": message, "finish_reason": finish_reason}],
@@ -412,6 +418,8 @@ class AnthropicProvider(LLMProvider):
 
             buffer = ""
             current_event = ""
+            final_stop_reason = ""
+            saw_message_stop = False
             # State for reconstructing tool calls from streaming events
             tool_call_blocks: Dict[int, Dict[str, Any]] = {}  # index -> {id, name, arguments}
             async for raw_chunk in response.content:
@@ -438,6 +446,8 @@ class AnthropicProvider(LLMProvider):
                             self.total_cache_read_tokens += usage.get("cache_read_input_tokens", 0)
                         elif current_event == "message_delta":
                             self.total_output_tokens += parsed.get("usage", {}).get("output_tokens", 0)
+                            if "delta" in parsed and "stop_reason" in parsed["delta"]:
+                                final_stop_reason = parsed["delta"]["stop_reason"]
                         elif current_event == "content_block_start":
                             block = parsed.get("content_block", {})
                             index = parsed.get("index", 0)
@@ -500,15 +510,28 @@ class AnthropicProvider(LLMProvider):
                                     }]
                                 }
                         elif current_event == "message_stop":
+                            saw_message_stop = True
                             # Use 'tool_calls' if any tool_use blocks were seen,
                             # matching the non-streaming _convert_response() behavior.
-                            final_reason = "tool_calls" if tool_call_blocks else "stop"
+                            if tool_call_blocks:
+                                final_reason = "tool_calls"
+                            elif final_stop_reason == "refusal":
+                                final_reason = "refusal"
+                            elif final_stop_reason == "pause_turn":
+                                final_reason = "pause_turn"
+                            else:
+                                final_reason = "stop"
                             yield {
                                 "choices": [{
                                     "delta": {},
                                     "finish_reason": final_reason,
                                 }]
                             }
+            if not saw_message_stop:
+                logger.warning(
+                    "Anthropic stream ended without message_stop; partial tool buffers=%s",
+                    {idx: block.get("arguments", "") for idx, block in tool_call_blocks.items()},
+                )
 
     def _supports_thinking(self) -> bool:
         return self.actual_model in _THINKING_SUPPORTED_MODELS
@@ -518,7 +541,8 @@ class AnthropicProvider(LLMProvider):
 
         Claude uses about 1 token per 4 characters on average.
         """
-        return max(1, len(text) // 4)
+        from ._token_counter import count_tokens_anthropic
+        return count_tokens_anthropic(text, self.actual_model, self.api_key)
 
     def supports_tools(self) -> bool:
         """Claude supports tool calling."""

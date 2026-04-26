@@ -1,9 +1,11 @@
 """Execution Loop orchestrator for CoderAI agent."""
 
 import asyncio
+import hashlib
 import json
 import logging
 import time as _time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .agent_tracker import AgentStatus
@@ -11,7 +13,6 @@ from .cost import CostTracker
 from .events import event_emitter
 from .history import Message
 from .tool_executor import ToolExecutor
-from .hooks_manager import HooksManager
 from .error_policy import (
     BudgetExceededError,
     is_transient_error,
@@ -22,6 +23,44 @@ from .error_policy import (
 
 logger = logging.getLogger(__name__)
 
+# #region agent log
+_AGENT_DEBUG_LOG_PATHS = (
+    Path(__file__).resolve().parent.parent / ".cursor" / "debug-d1bd12.log",
+    Path.home() / ".coderAI" / "debug-d1bd12.log",
+)
+
+
+def _agent_debug_log(
+    hypothesis_id: str, location: str, message: str, data: dict, run_id: str = "pre-fix"
+) -> None:
+    import time as _dbg_time
+
+    line = (
+        json.dumps(
+            {
+                "sessionId": "d1bd12",
+                "runId": run_id,
+                "hypothesisId": hypothesis_id,
+                "location": location,
+                "message": message,
+                "data": data,
+                "timestamp": int(_dbg_time.time() * 1000),
+            },
+            default=str,
+        )
+        + "\n"
+    )
+    for _p in _AGENT_DEBUG_LOG_PATHS:
+        try:
+            _p.parent.mkdir(parents=True, exist_ok=True)
+            with open(_p, "a", encoding="utf-8") as _f:
+                _f.write(line)
+        except Exception:
+            pass
+
+
+# #endregion
+
 
 class ExecutionLoop:
     """Manages the main LLM-Tool interaction loop."""
@@ -29,7 +68,17 @@ class ExecutionLoop:
     def __init__(self, agent):
         self.agent = agent
         self.tool_executor = ToolExecutor(agent)
-        self.hooks_manager = HooksManager(agent)
+        # Use the agent's hooks manager for consistent state (e.g. approval cache)
+        self.hooks_manager = getattr(agent, "hooks_manager", None)
+        if self.hooks_manager is None:
+            class _NoopHooksManager:
+                def load_hooks(self):
+                    return None
+
+                async def run_hooks(self, *args, **kwargs):
+                    return []
+
+            self.hooks_manager = _NoopHooksManager()
 
     async def run(self, user_message: str) -> Dict[str, Any]:
         """Process a user message and return response."""
@@ -39,8 +88,17 @@ class ExecutionLoop:
         if budget_block:
             return budget_block
 
-        # 2. Add user message to session
-        self.agent.session.add_message("user", user_message)
+        # Advance the per-session read-cache turn so placeholder text
+        # ("unchanged since previous read at turn N") reflects user-visible
+        # turn boundaries instead of internal tool-loop iterations.
+        read_cache = getattr(self.agent, "read_cache", None)
+        if read_cache is not None:
+            read_cache.bump_turn()
+
+        # 2. Run on_user_prompt hooks
+        hooks_data = self.hooks_manager.load_hooks()
+        if hooks_data:
+            await self.hooks_manager.run_hooks("*", "on_user_prompt", {"text": user_message}, hooks_data)
 
         # 3. Prepare messages (retrieve, inject context, manage window)
         messages = await self._prepare_messages(user_message)
@@ -69,6 +127,22 @@ class ExecutionLoop:
                 return self._handle_cancellation()
 
             try:
+                # #region agent log
+                _sess = self.agent.session
+                _agent_debug_log(
+                    "B",
+                    "agent_loop.py:while",
+                    "loop_iteration",
+                    {
+                        "iteration": iteration,
+                        "max_iterations": max_iterations,
+                        "consecutive_errors": consecutive_errors,
+                        "session_messages": len(_sess.messages) if _sess else 0,
+                        "tools_were_used": tools_were_used,
+                    },
+                )
+                # #endregion
+
                 if self.agent.tracker_info:
                     if self.agent.tracker_info.status != AgentStatus.THINKING:
                         self.agent.tracker_info.status = AgentStatus.THINKING
@@ -78,14 +152,90 @@ class ExecutionLoop:
 
                 content = response_data.get("content")
                 tool_calls = response_data.get("tool_calls")
+                finish_reason = response_data.get("finish_reason")
+
+                # #region agent log
+                _ct = str(content or "").strip()
+                _agent_debug_log(
+                    "C,E",
+                    "agent_loop.py:after_llm",
+                    "llm_response_shape",
+                    {
+                        "iteration": iteration,
+                        "finish_reason": finish_reason,
+                        "content_len": len(_ct),
+                        "tool_calls_n": len(tool_calls) if tool_calls else 0,
+                        "content_fp": hashlib.sha256(_ct[:400].encode()).hexdigest()[:16]
+                        if _ct
+                        else None,
+                    },
+                )
+                # #endregion
 
                 if content and str(content).strip():
                     self.agent._assistant_reply_parts.append(str(content).strip())
 
                 self.agent.session.add_message("assistant", content, tool_calls=tool_calls)
 
+                if finish_reason == "refusal":
+                    event_emitter.emit(
+                        "agent_warning",
+                        message="Model refused this request (stop_reason=refusal). Returning model text without further tool calls."
+                    )
+                    # Return the refusal content as final response — do NOT loop
+                    self.agent._finish_tracker()
+                    self.agent.save_session()
+
+                    # Run on_stop hooks
+                    if hooks_data:
+                        await self.hooks_manager.run_hooks("*", "on_stop", {"iterations": iteration}, hooks_data)
+
+                    joined = "\n\n".join(self.agent._assistant_reply_parts)
+                    return {
+                        "content": joined if joined else (content or ""),
+                        "messages": self.agent.session.messages,
+                        "model_info": self.agent.provider.get_model_info(),
+                    }
+                elif finish_reason == "length":
+                    # Model hit max_tokens and was cut off mid-response.
+                    event_emitter.emit(
+                        "agent_warning",
+                        message=(
+                            "Response was truncated (max_tokens limit reached). "
+                            "Increase max_tokens in config to fix this."
+                        ),
+                    )
+                    self.agent._finish_tracker(error=True)
+                    self.agent.save_session()
+                    joined = "\n\n".join(self.agent._assistant_reply_parts)
+                    note = (
+                        "[Output cut off — the model hit the max_tokens limit. "
+                        "Run `coderAI config set max_tokens 16000` to increase it.]"
+                    )
+                    return {
+                        "content": f"{joined}\n\n{note}" if joined else note,
+                        "messages": self.agent.session.messages,
+                        "model_info": self.agent.provider.get_model_info(),
+                    }
+                elif finish_reason == "pause_turn":
+                    # Model paused mid-thought. Re-issue same messages to resume.
+                    event_emitter.emit(
+                        "agent_paused",
+                        message="Model requested pause_turn; resuming automatically.",
+                    )
+                    iteration -= 1  # don't count toward max_iterations
+                    continue
+
                 if not tool_calls:
                     if tools_were_used and not (content or "").strip():
+                        # #region agent log
+                        _agent_debug_log(
+                            "C",
+                            "agent_loop.py:post_tool_closing",
+                            "invoking_post_tool_closing_message",
+                            {"iteration": iteration},
+                        )
+                        # #endregion
                         summary = await self._post_tool_closing_message(user_message)
                         if summary:
                             msgs = self.agent.session.messages
@@ -101,8 +251,25 @@ class ExecutionLoop:
 
                     self.agent._finish_tracker()
                     self.agent.save_session()
+
+                    # Run on_stop hooks
+                    if hooks_data:
+                        await self.hooks_manager.run_hooks("*", "on_stop", {"iterations": iteration}, hooks_data)
+
                     joined = "\n\n".join(self.agent._assistant_reply_parts)
                     reply_text = joined if joined else (content or "")
+                    # #region agent log
+                    _agent_debug_log(
+                        "C,E",
+                        "agent_loop.py:return_no_tools",
+                        "exit_no_tool_calls",
+                        {
+                            "iteration": iteration,
+                            "reply_parts_n": len(self.agent._assistant_reply_parts),
+                            "reply_len": len(reply_text or ""),
+                        },
+                    )
+                    # #endregion
                     return {
                         "content": reply_text,
                         "messages": self.agent.session.messages,
@@ -272,11 +439,12 @@ class ExecutionLoop:
         see a ghost user turn that was never actually from the user.
         """
         closing_prompt = (
-            "Tools have finished. If you have not already told the user clearly "
-            "what was accomplished, write 1–3 short sentences confirming success "
-            "(what changed and where). If you already explained everything above, "
-            "reply with one brief line such as: All set — everything above is complete. "
-            "Do not call tools."
+            "Tools have finished. Write 1–3 short sentences for the user that state "
+            "what was done and the outcome, with concrete details from this turn "
+            "(file paths, commands, or errors) when applicable. "
+            "If you already gave a full explanation in assistant messages above, add one sentence "
+            "that points to that work without repeating it verbatim. "
+            "Do not use stock filler or the same generic closing every time. Do not call tools."
         )
 
         messages = self.agent.session.get_messages_for_api()
@@ -316,6 +484,14 @@ class ExecutionLoop:
         }
 
     def _handle_fatal_error(self, e: Exception, count: int) -> Dict[str, Any]:
+        # #region agent log
+        _agent_debug_log(
+            "B",
+            "agent_loop.py:_handle_fatal_error",
+            "fatal_consecutive_errors",
+            {"count": count, "exc_type": type(e).__name__},
+        )
+        # #endregion
         event_emitter.emit("agent_error", message=f"Too many consecutive errors ({count}). Last: {e}")
         self.agent._finish_tracker(error=True)
         self.agent.save_session()
@@ -358,13 +534,28 @@ class ExecutionLoop:
             "messages": self.agent.session.messages if self.agent.session else [],
             "model_info": self.agent.provider.get_model_info(),
         }
-
-    def _handle_max_iterations(self) -> Dict[str, Any]:
-        event_emitter.emit("agent_warning", message="Maximum iteration limit reached")
+    async def _handle_max_iterations(self) -> Dict[str, Any]:
+        """Handle hitting the iteration limit."""
+        # #region agent log
+        _agent_debug_log(
+            "B",
+            "agent_loop.py:_handle_max_iterations",
+            "max_iterations_reached",
+            {"max_iterations": self.agent.config.max_iterations},
+        )
+        # #endregion
+        msg = "I've reached the maximum number of iterations. Please try again."
+        event_emitter.emit("agent_warning", message=msg)
         self.agent._finish_tracker(error=True)
         self.agent.save_session()
+
+        # Run on_stop hooks
+        hooks_data = self.hooks_manager.load_hooks()
+        if hooks_data:
+            await self.hooks_manager.run_hooks("*", "on_stop", {"iterations": self.agent.config.max_iterations, "error": "max_iterations"}, hooks_data)
+
         return {
-            "content": "I've reached the maximum number of iterations. Please try again.",
+            "content": msg,
             "messages": self.agent.session.messages,
             "model_info": self.agent.provider.get_model_info(),
         }
@@ -448,4 +639,5 @@ class ExecutionLoop:
         return {
             "content": message.get("content"),
             "tool_calls": message.get("tool_calls"),
+            "finish_reason": choices[0].get("finish_reason"),
         }

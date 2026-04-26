@@ -601,11 +601,10 @@ class ReadURLTool(Tool):
 
 class DownloadFileParams(BaseModel):
     url: str = Field(..., description="URL of the file to download")
-    destination_path: Optional[str] = Field(
-        None,
+    destination_path: str = Field(
+        ...,
         description=(
-            "Absolute path where the file should be saved. "
-            "If omitted, a temporary file in the current working directory will be created."
+            "Absolute path where the file should be saved."
         ),
     )
 
@@ -620,12 +619,11 @@ class DownloadFileTool(Tool):
     )
     is_read_only = False
     parameters_model = DownloadFileParams
+    timeout = 300.0
 
     async def execute(
-        self, url: str, destination_path: Optional[str] = None
+        self, url: str, destination_path: str
     ) -> Dict[str, Any]:
-        import os
-        import time
         from pathlib import Path
 
         if not url.startswith(("http://", "https://")):
@@ -648,15 +646,7 @@ class DownloadFileTool(Tool):
         content = resp["content"]
 
         try:
-            if destination_path:
-                dest = Path(destination_path).expanduser().resolve()
-            else:
-                # generate a reasonable filename based on url or timestamp
-                parsed = urlparse(url)
-                filename = os.path.basename(parsed.path)
-                if not filename:
-                    filename = f"download_{int(time.time())}.tmp"
-                dest = Path(os.getcwd()) / filename
+            dest = Path(destination_path).expanduser().resolve()
 
             # Guard against writing to protected system/home paths
             from .filesystem import _is_path_protected

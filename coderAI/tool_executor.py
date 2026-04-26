@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 # Cap concurrent read-only tools to avoid OS resource exhaustion
 MAX_CONCURRENT_READ_ONLY = 20
 
+DEFAULT_TOOL_TIMEOUT_SECONDS = 120.0
+
 # Cap concurrent read-only sub-agent delegations. Each sub-agent is a full
 # LLM session with its own tool loop, so we fan out far less aggressively
 # than for cheap read-only tools like read_file / grep.
@@ -66,6 +68,48 @@ class ToolExecutor:
         self._call_counts.clear()
         self._last_results.clear()
 
+    def _approval_allowlist(self) -> set[str]:
+        allowlist = getattr(self.agent, "_tool_approval_allowlist", None)
+        if allowlist is None:
+            allowlist = set()
+            self.agent._tool_approval_allowlist = allowlist
+        return allowlist
+
+    def _normalize_tool_result(
+        self,
+        result: Any,
+        *,
+        tool_name: str,
+        default_error_code: str = "tool_error",
+    ) -> Dict[str, Any]:
+        """Coerce arbitrary tool returns into the standard tool result envelope."""
+        if isinstance(result, dict):
+            normalized = dict(result)
+            if "success" not in normalized:
+                normalized["success"] = "error" not in normalized
+            if normalized.get("success") is False:
+                normalized["error"] = str(
+                    normalized.get("error") or f"Tool '{tool_name}' failed."
+                )
+                normalized.setdefault("error_code", default_error_code)
+            return normalized
+
+        if isinstance(result, str):
+            return {
+                "success": False,
+                "error": result,
+                "error_code": default_error_code,
+            }
+
+        if result is None:
+            return {
+                "success": False,
+                "error": f"Tool '{tool_name}' returned no result.",
+                "error_code": default_error_code,
+            }
+
+        return {"success": True, "result": result}
+
     def _enter_waiting_for_user(
         self, tool_name: str
     ) -> Optional[Tuple[AgentStatus, Optional[str]]]:
@@ -108,6 +152,78 @@ class ToolExecutor:
             self._subagent_ro_semaphore = asyncio.Semaphore(MAX_CONCURRENT_READ_ONLY_SUBAGENTS)
         return self._subagent_ro_semaphore
 
+    def _compute_preview_diff(self, tool_name: str, arguments: Dict[str, Any]) -> Optional[str]:
+        if tool_name not in ("write_file", "search_replace", "apply_diff", "multi_edit"):
+            return None
+        
+        path = arguments.get("path")
+        if not path:
+            return None
+            
+        import os
+        from pathlib import Path
+        import difflib
+        
+        try:
+            path_obj = Path(path).expanduser()
+            if not path_obj.exists() and tool_name != "write_file":
+                return None
+                
+            original_content = ""
+            if path_obj.exists():
+                try:
+                    original_content = path_obj.read_text(encoding="utf-8")
+                except Exception:
+                    return None
+            
+            new_content = original_content
+            
+            if tool_name == "write_file":
+                if arguments.get("append"):
+                    new_content += arguments.get("content", "")
+                else:
+                    new_content = arguments.get("content", "")
+            elif tool_name == "search_replace":
+                search = arguments.get("search", "")
+                replace = arguments.get("replace", "")
+                if arguments.get("replace_all"):
+                    new_content = original_content.replace(search, replace)
+                else:
+                    new_content = original_content.replace(search, replace, 1)
+            elif tool_name == "multi_edit":
+                edits = arguments.get("edits", [])
+                for edit in edits:
+                    new_content = new_content.replace(edit.get("search", ""), edit.get("replace", ""))
+            elif tool_name == "apply_diff":
+                raw_diff = arguments.get("diff", "")
+                if len(raw_diff) > 32768:
+                    hidden = len(raw_diff) - 32768
+                    return (
+                        raw_diff[:32768]
+                        + f"\n... (diff truncated) {hidden} chars hidden"
+                    )
+                return raw_diff
+            
+            diff_lines = list(
+                difflib.unified_diff(
+                    original_content.splitlines(keepends=True),
+                    new_content.splitlines(keepends=True),
+                    fromfile=f"a/{path_obj.name}",
+                    tofile=f"b/{path_obj.name}",
+                    n=3,
+                )
+            )
+            diff_text = "".join(diff_lines)
+            if len(diff_text) > 32768:
+                hidden = len(diff_text) - 32768
+                return (
+                    diff_text[:32768]
+                    + f"\n... (diff truncated) {hidden} chars hidden"
+                )
+            return diff_text
+        except Exception:
+            return None
+
     async def _confirmation_callback(
         self,
         tool_name: str,
@@ -117,15 +233,21 @@ class ToolExecutor:
         """Ask the user to confirm a tool execution."""
         ipc_server = getattr(self.agent, "ipc_server", None)
 
+        diff = self._compute_preview_diff(tool_name, arguments)
+
         if ipc_server is None:
             args_preview = json.dumps(arguments, indent=2)
             if len(args_preview) > 300:
                 args_preview = args_preview[:300] + "\n  ... (truncated)"
+            
+            diff_preview = f"\n\nDiff Preview:\n{diff}" if diff else ""
+            
             event_emitter.emit(
                 "agent_status",
                 message=(
                     f"\n[bold yellow]⚠ Tool '{tool_name}' requires confirmation.[/bold yellow]"
                     f"\n[dim]{args_preview}[/dim]"
+                    f"[dim]{diff_preview}[/dim]"
                 ),
             )
 
@@ -136,6 +258,7 @@ class ToolExecutor:
                     tool_id=tool_id or str(uuid.uuid4()),
                     tool_name=tool_name,
                     arguments=arguments,
+                    diff=diff,
                 )
 
             try:
@@ -156,7 +279,14 @@ class ToolExecutor:
     async def execute_single_tool(self, pc: Dict[str, Any], hooks_data: Optional[Dict[str, Any]], hooks_manager) -> Dict[str, Any]:
         """Execute a single tool call, including hooks and confirmation."""
         if pc.get("parse_error"):
-            return {"success": False, "error": pc["parse_error"]}
+            return self._normalize_tool_result(
+                {
+                    "success": False,
+                    "error": pc["parse_error"],
+                    "error_code": "parse_error",
+                },
+                tool_name=pc.get("tool_name", "unknown"),
+            )
         try:
             tool_name = pc["tool_name"]
             arguments = pc["arguments"]
@@ -168,6 +298,7 @@ class ToolExecutor:
             is_mcp_proxy = is_mcp_function_name(tool_name) and tool is None
             needs_confirmation = (
                 not self.agent.auto_approve
+                and tool_name not in self._approval_allowlist()
                 and (
                     is_mcp_proxy
                     or bool(tool and getattr(tool, "requires_confirmation", False))
@@ -184,24 +315,51 @@ class ToolExecutor:
 
             pre_hooks = await hooks_manager.run_hooks(
                 tool_name, "PreToolUse", arguments, hooks_data
-            )
+            ) or []
+            for hook_msg in pre_hooks:
+                if hook_msg.startswith("[PreToolUse Hook ERROR]"):
+                    return {
+                        "success": False,
+                        "error": hook_msg,
+                        "error_code": "hook_blocked",
+                    }
 
-            if is_mcp_proxy:
-                result = await call_mcp_tool_by_function_name(tool_name, arguments)
-            else:
-                result = await self.agent.tools.execute(
-                    tool_name,
-                    confirmation_callback=None,
-                    **arguments,
-                )
+            timeout = getattr(tool, "timeout", None) or DEFAULT_TOOL_TIMEOUT_SECONDS
 
-            post_hooks = await hooks_manager.run_hooks(tool_name, "PostToolUse", arguments, hooks_data)
+            async def _inner_execute():
+                if is_mcp_proxy:
+                    return await call_mcp_tool_by_function_name(tool_name, arguments)
+                else:
+                    return await self.agent.tools.execute(
+                        tool_name,
+                        confirmation_callback=None,
+                        **arguments,
+                    )
+
+            try:
+                result = await asyncio.wait_for(_inner_execute(), timeout=timeout)
+            except asyncio.TimeoutError:
+                result = {
+                    "success": False,
+                    "error": f"Tool '{tool_name}' exceeded timeout of {timeout}s",
+                    "error_code": "timeout",
+                }
+
+            post_hooks = await hooks_manager.run_hooks(tool_name, "PostToolUse", arguments, hooks_data) or []
+            result = self._normalize_tool_result(result, tool_name=tool_name)
 
             if isinstance(result, dict) and (pre_hooks or post_hooks):
                 result["_hooks"] = {"pre": pre_hooks, "post": post_hooks}
             return result
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return self._normalize_tool_result(
+                {
+                    "success": False,
+                    "error": str(e),
+                    "error_code": "tool_exception",
+                },
+                tool_name=pc.get("tool_name", "unknown"),
+            )
 
     async def orchestrate_tool_calls(
         self, tool_calls: list, messages: List[Dict[str, Any]], user_message: str, hooks_data: Optional[Dict[str, Any]], hooks_manager, max_consecutive_errors: int, current_errors: int
@@ -227,7 +385,18 @@ class ToolExecutor:
             # All tools failed to parse
             check_count = current_errors + 1
             for pc in parsed_calls:
-                self.agent.session.add_message("tool", json.dumps({"success": False, "error": pc["parse_error"]}), tool_call_id=pc["tool_id"], name=pc["tool_name"])
+                self.agent.session.add_message(
+                    "tool",
+                    json.dumps(
+                        {
+                            "success": False,
+                            "error": pc["parse_error"],
+                            "error_code": "parse_error",
+                        }
+                    ),
+                    tool_call_id=pc["tool_id"],
+                    name=pc["tool_name"],
+                )
             
             if check_count >= max_consecutive_errors:
                 self.agent._finish_tracker(error=True)
@@ -323,11 +492,13 @@ class ToolExecutor:
             fp = pc.get("_fp")
             if not fp:
                 continue
+            res = self._normalize_tool_result(res, tool_name=pc["tool_name"])
             self._call_counts[fp] = self._call_counts.get(fp, 0) + 1
             if isinstance(res, dict) and res.get("success") is True:
                 self._last_results[fp] = res
 
         for pc, res in zip(parsed_calls, results):
+            res = self._normalize_tool_result(res, tool_name=pc["tool_name"])
             res = self.agent.context_controller.summarize_tool_result(res)
             event_emitter.emit("tool_result", tool_name=pc["tool_name"], result=res, tool_id=pc["tool_id"])
             self.agent.session.add_message("tool", json.dumps(res), tool_call_id=pc["tool_id"], name=pc["tool_name"])

@@ -1,4 +1,13 @@
-"""Project hooks manager for CoderAI."""
+"""Project hooks manager for CoderAI.
+
+Supported hook types:
+- PreToolUse: Fired before a tool is executed.
+- PostToolUse: Fired after a tool is executed.
+- on_user_prompt: Fired when the user sends a new message to the agent.
+- on_stop: Fired when the agent loop finishes processing (all iterations complete).
+- on_subagent_stop: Fired when a sub-agent finishes its task.
+- on_compact: Fired after context compaction/summarization.
+"""
 
 import asyncio
 import json
@@ -149,12 +158,19 @@ class HooksManager:
                         cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env
                     )
                     stdout, stderr = await proc.communicate()
-                    return stdout.decode("utf-8").strip() if proc.returncode == 0 else None
+                    stdout_text = stdout.decode("utf-8", errors="replace").strip()
+                    stderr_text = stderr.decode("utf-8", errors="replace").strip()
+                    if proc.returncode != 0:
+                        detail = stderr_text or stdout_text or f"exit code {proc.returncode}"
+                        return f"[{hook_type} Hook ERROR]: {cmd} :: {detail}"
+                    return stdout_text or None
 
                 try:
                     outputs = await asyncio.gather(*(_exec_hook(c) for c in runnable), return_exceptions=True)
                     for out in outputs:
-                        if out and not isinstance(out, Exception):
+                        if isinstance(out, Exception):
+                            hooks_results.append(f"[{hook_type} Hook ERROR]: {out}")
+                        elif out:
                             hooks_results.append(f"[{hook_type} Hook Output]: {out}")
                 finally:
                     if args_file_path:
@@ -164,6 +180,7 @@ class HooksManager:
                             pass
         except Exception as e:
             logger.error(f"Error running hooks: {e}")
+            hooks_results.append(f"[{hook_type} Hook ERROR]: {e}")
         return hooks_results
 
     async def request_hooks_approval(self, matching_hooks: list) -> bool:

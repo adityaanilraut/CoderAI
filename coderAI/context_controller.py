@@ -2,15 +2,53 @@
 
 import json
 import logging
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .events import event_emitter
 
 logger = logging.getLogger(__name__)
 
+# #region agent log
+_CTX_DEBUG_LOG_PATHS = (
+    Path(__file__).resolve().parent.parent / ".cursor" / "debug-d1bd12.log",
+    Path.home() / ".coderAI" / "debug-d1bd12.log",
+)
+
+
+def _ctx_debug_log(hypothesis_id: str, location: str, message: str, data: dict) -> None:
+    import time as _t
+
+    line = (
+        json.dumps(
+            {
+                "sessionId": "d1bd12",
+                "runId": "pre-fix",
+                "hypothesisId": hypothesis_id,
+                "location": location,
+                "message": message,
+                "data": data,
+                "timestamp": int(_t.time() * 1000),
+            },
+            default=str,
+        )
+        + "\n"
+    )
+    for _p in _CTX_DEBUG_LOG_PATHS:
+        try:
+            _p.parent.mkdir(parents=True, exist_ok=True)
+            with open(_p, "a", encoding="utf-8") as _f:
+                _f.write(line)
+        except Exception:
+            pass
+
+
+# #endregion
+
 # Reserved tokens for response and tool overhead
 RESPONSE_TOKEN_RESERVE = 1024
 TOOL_OVERHEAD_TOKENS = 512
+IMAGE_TOKEN_FLOOR = 1500
 
 class ContextController:
     """Handles token estimation, context window truncation, and summarization."""
@@ -28,6 +66,12 @@ class ContextController:
             content = msg.get("content") or ""
             if isinstance(content, str) and content:
                 total += self.provider.count_tokens(content)
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") in {"image", "input_image"}:
+                        total += IMAGE_TOKEN_FLOOR
+                    else:
+                        total += self.provider.count_tokens(json.dumps(block, default=str))
             # Tool calls add tokens too
             if msg.get("tool_calls"):
                 total += self.provider.count_tokens(json.dumps(msg["tool_calls"]))
@@ -98,6 +142,19 @@ class ContextController:
         if total_tokens <= max_content_tokens:
             return messages
 
+        # #region agent log
+        _ctx_debug_log(
+            "A",
+            "context_controller.py:manage_context_window",
+            "truncation_triggered",
+            {
+                "total_tokens": total_tokens,
+                "max_content_tokens": max_content_tokens,
+                "context_limit": context_limit,
+            },
+        )
+        # #endregion
+
         logger.info(
             f"Context window management: {total_tokens} tokens exceeds limit of {max_content_tokens}. Truncating old messages."
         )
@@ -134,6 +191,19 @@ class ContextController:
 
         if len(kept_messages) < len(non_system):
             removed_messages = non_system[: -len(kept_messages)] if kept_messages else non_system
+            # #region agent log
+            _ctx_debug_log(
+                "A",
+                "context_controller.py:truncation_detail",
+                "messages_removed_for_window",
+                {
+                    "removed_count": len(removed_messages),
+                    "kept_non_system_count": len(kept_messages),
+                    "groups_total": len(groups),
+                    "kept_groups_count": len(kept_groups),
+                },
+            )
+            # #endregion
             text_to_summarize = ""
             for msg in removed_messages:
                 role = msg.get("role", "unknown")
@@ -169,8 +239,11 @@ class ContextController:
                             "role": "system",
                             "content": f"[Prior Conversation Summary]: {summary_content}",
                         }
-                        result = system_messages + ([first_task_message] if first_task_message else []) + [summary_notice] + kept_messages
-                        return result
+                        summary_tokens = self.estimate_tokens([summary_notice])
+                        if running_tokens + summary_tokens <= remaining_budget:
+                            result = system_messages + ([first_task_message] if first_task_message else []) + [summary_notice] + kept_messages
+                            return result
+                        logger.info("Skipping generated summary because it would overflow the remaining context budget.")
                 except Exception as e:
                     logger.warning(f"Failed to summarize context: {e}")
 

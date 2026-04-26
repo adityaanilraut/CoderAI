@@ -28,7 +28,7 @@ class Config(BaseModel):
     deepseek_api_key: Optional[str] = Field(default=None)
     default_model: str = Field(default="claude-4-sonnet")
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
-    max_tokens: Optional[int] = Field(default=4096)
+    max_tokens: Optional[int] = Field(default=8192)
     lmstudio_endpoint: str = Field(default="http://localhost:1234/v1")
     lmstudio_model: str = Field(default="local-model")
     ollama_endpoint: str = Field(default="http://localhost:11434/v1")
@@ -88,6 +88,7 @@ class ConfigManager:
             "CODERAI_MAX_ITERATIONS": "max_iterations",
             "CODERAI_MAX_TOOL_OUTPUT": "max_tool_output",
             "CODERAI_PROJECT_INSTRUCTION_FILE": "project_instruction_file",
+            "CODERAI_WEB_TOOLS_IN_MAIN": "web_tools_in_main",
         }
 
         for env_var, config_key in env_mappings.items():
@@ -98,6 +99,8 @@ class ConfigManager:
                     value = float(value)
                 elif config_key in ["max_tokens", "max_iterations", "max_tool_output"]:
                     value = int(value)
+                elif config_key == "web_tools_in_main":
+                    value = value.strip().lower() in ("true", "1", "yes", "on")
                 config_data[config_key] = value
 
         # Warn about unknown keys (they'll be dropped by extra="ignore")

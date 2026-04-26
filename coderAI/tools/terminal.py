@@ -42,6 +42,8 @@ BLOCKED_PATTERNS = [
     "format c:",
     "base64 -d",
     "base64 --decode",
+    "nc -e",
+    "bash -i >&",
 ]
 
 # Patterns that indicate piping a network fetch straight into a shell.
@@ -211,6 +213,7 @@ class RunCommandTool(Tool):
     description = "Execute a shell command and return its output. Dangerous commands require confirmation."
     parameters_model = RunCommandParams
     requires_confirmation = True
+    timeout = None
 
     async def execute(
         self, command: str, working_dir: str = ".", timeout: int = 60
@@ -299,6 +302,16 @@ class RunCommandTool(Tool):
                     "error": f"Command timed out after {timeout} seconds",
                     "error_code": "timeout",
                 }
+            except asyncio.CancelledError:
+                try:
+                    process.terminate()
+                    await asyncio.wait_for(process.wait(), timeout=1)
+                except Exception:
+                    try:
+                        process.kill()
+                    except Exception:
+                        pass
+                raise
 
             # Truncate very large output to prevent context overflow
             stdout_str = stdout.decode("utf-8", errors="replace")
@@ -312,7 +325,11 @@ class RunCommandTool(Tool):
                     + stdout_str[-max_output // 2:]
                 )
             if len(stderr_str) > max_output:
-                stderr_str = stderr_str[:max_output]
+                stderr_str = (
+                    stderr_str[:max_output // 2]
+                    + f"\n\n... [truncated {len(stderr_str) - max_output} chars] ...\n\n"
+                    + stderr_str[-max_output // 2:]
+                )
 
             return {
                 "success": process.returncode == 0,

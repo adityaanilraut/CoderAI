@@ -137,6 +137,64 @@ async def test_all_failed_tool_calls_request_retry() -> None:
     assert '"success": false' in (session.messages[-1].content or "").lower()
 
 
+@pytest.mark.asyncio
+async def test_tool_result_normalization_wraps_strings() -> None:
+    registry = SimpleNamespace(
+        get=MagicMock(return_value=SimpleNamespace(requires_confirmation=False)),
+        execute=AsyncMock(return_value="boom"),
+    )
+    agent = SimpleNamespace(
+        auto_approve=True,
+        ipc_server=None,
+        tools=registry,
+        tracker_info=None,
+        _sync_tracker=MagicMock(),
+    )
+    hooks_manager = SimpleNamespace(run_hooks=AsyncMock(return_value=[]))
+    executor = ToolExecutor(agent)
+
+    result = await executor.execute_single_tool(
+        {"tool_id": "t1", "tool_name": "read_file", "arguments": {"path": "x"}, "parse_error": None},
+        hooks_data=None,
+        hooks_manager=hooks_manager,
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "tool_error"
+
+
+@pytest.mark.asyncio
+async def test_pre_hook_errors_block_tool_execution() -> None:
+    registry = SimpleNamespace(
+        get=MagicMock(return_value=SimpleNamespace(requires_confirmation=False)),
+        execute=AsyncMock(return_value={"success": True}),
+    )
+    agent = SimpleNamespace(
+        auto_approve=True,
+        ipc_server=None,
+        tools=registry,
+        tracker_info=None,
+        _sync_tracker=MagicMock(),
+    )
+    hooks_manager = SimpleNamespace(
+        run_hooks=AsyncMock(side_effect=[
+            ["[PreToolUse Hook ERROR]: blocked"],
+            [],
+        ])
+    )
+    executor = ToolExecutor(agent)
+
+    result = await executor.execute_single_tool(
+        {"tool_id": "t1", "tool_name": "write_file", "arguments": {"path": "x", "content": "y"}, "parse_error": None},
+        hooks_data=None,
+        hooks_manager=hooks_manager,
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "hook_blocked"
+    registry.execute.assert_not_awaited()
+
+
 def test_failed_tool_iterations_accumulate_in_execution_loop() -> None:
     with patch("coderAI.agent.config_manager") as cm:
         from coderAI.config import Config

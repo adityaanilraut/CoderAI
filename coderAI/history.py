@@ -78,6 +78,58 @@ class Session(BaseModel):
 
 # Valid session ID pattern: session_<timestamp>_<hex8>
 _SESSION_ID_PATTERN = re.compile(r"^session_\d+_[a-f0-9]{8}$")
+_SESSION_RETENTION_SECONDS = 30 * 24 * 60 * 60
+
+
+def _sanitize_session_data(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Drop malformed tool metadata before loading a session."""
+    messages = data.get("messages", []) or []
+    sanitized_messages = []
+    seen_tool_ids = set()
+
+    for raw in messages:
+        if not isinstance(raw, dict):
+            continue
+        msg = dict(raw)
+        tool_calls = msg.get("tool_calls")
+        if isinstance(tool_calls, list):
+            clean_tool_calls = []
+            for tc in tool_calls:
+                if not isinstance(tc, dict):
+                    continue
+                tc_copy = dict(tc)
+                fn = tc_copy.get("function")
+                if isinstance(fn, dict):
+                    fn_copy = dict(fn)
+                    args = fn_copy.get("arguments")
+                    if isinstance(args, str):
+                        try:
+                            parsed = json.loads(args)
+                        except json.JSONDecodeError:
+                            logger.warning("Dropping malformed stored tool arguments in session %s", data.get("session_id"))
+                            continue
+                        if not isinstance(parsed, dict):
+                            logger.warning("Dropping non-object stored tool arguments in session %s", data.get("session_id"))
+                            continue
+                    fn_copy["arguments"] = args
+                    tc_copy["function"] = fn_copy
+                tc_id = tc_copy.get("id")
+                if isinstance(tc_id, str) and tc_id:
+                    seen_tool_ids.add(tc_id)
+                clean_tool_calls.append(tc_copy)
+            msg["tool_calls"] = clean_tool_calls or None
+
+        if msg.get("role") == "tool":
+            tool_call_id = msg.get("tool_call_id")
+            if tool_call_id and tool_call_id not in seen_tool_ids:
+                logger.warning("Dropping orphaned tool_result %s from session %s", tool_call_id, data.get("session_id"))
+                continue
+
+        sanitized_messages.append(msg)
+
+    data = dict(data)
+    data["messages"] = sanitized_messages
+    return data
 
 
 class HistoryManager:
@@ -91,6 +143,7 @@ class HistoryManager:
 
     def create_session(self, model: Optional[str] = None) -> Session:
         """Create a new session, defaulting to the configured model."""
+        self._cleanup_expired_sessions()
         session_id = f"session_{int(time.time())}_{uuid.uuid4().hex[:8]}"
         if model is None:
             model = _default_session_model()
@@ -99,6 +152,7 @@ class HistoryManager:
 
     def load_session(self, session_id: str) -> Optional[Session]:
         """Load a session from disk."""
+        self._cleanup_expired_sessions()
         if not _SESSION_ID_PATTERN.match(session_id):
             return None
 
@@ -107,13 +161,14 @@ class HistoryManager:
             return None
 
         with open(session_file, "r") as f:
-            data = json.load(f)
+            data = _sanitize_session_data(json.load(f))
             session = Session(**data)
             self.current_session = session
             return session
 
     def save_session(self, session: Optional[Session] = None) -> None:
         """Save a session to disk."""
+        self._cleanup_expired_sessions()
         if session is None:
             session = self.current_session
         if session is None:
@@ -153,6 +208,7 @@ class HistoryManager:
 
     def list_sessions(self) -> List[Dict[str, Any]]:
         """List all available sessions using index.json cache."""
+        self._cleanup_expired_sessions()
         index_file = self.history_dir / "index.json"
         index = {}
         if index_file.exists():
@@ -204,6 +260,11 @@ class HistoryManager:
         sessions.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
         return sessions
 
+    def get_latest_session_id(self) -> Optional[str]:
+        """Return the most recently updated session id, or None."""
+        sessions = self.list_sessions()
+        return sessions[0]["session_id"] if sessions else None
+
     def clear_history(self) -> int:
         """Clear all history. Returns number of sessions deleted."""
         count = 0
@@ -246,7 +307,16 @@ class HistoryManager:
         except Exception as e:
             logger.warning(f"Failed to update index after session delete: {e}")
 
+    def _cleanup_expired_sessions(self) -> None:
+        """Delete sessions older than the retention window."""
+        cutoff = time.time() - _SESSION_RETENTION_SECONDS
+        for session_file in self.history_dir.glob("session_*.json"):
+            try:
+                if session_file.stat().st_mtime < cutoff:
+                    session_file.unlink()
+            except OSError:
+                continue
+
 
 # Global history manager instance
 history_manager = HistoryManager()
-

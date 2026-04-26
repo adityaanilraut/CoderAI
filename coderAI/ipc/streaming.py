@@ -56,7 +56,8 @@ class IPCStreamingHandler:
         self._raw_reasoning = ""
 
         start_time = time.monotonic()
-        self.server.emit("turn", phase="start")
+        finish_reason: Optional[str] = None
+        self.server.emit("turn", phase="start", reasoningActive=False)
 
         if initial_content:
             self._emit(initial_content, reasoning=False)
@@ -65,7 +66,10 @@ class IPCStreamingHandler:
             choices = chunk.get("choices", [])
             if not choices:
                 continue
-            delta = choices[0].get("delta", {})
+            choice = choices[0]
+            if choice.get("finish_reason"):
+                finish_reason = choice["finish_reason"]
+            delta = choice.get("delta", {})
 
             # Reasoning field (Anthropic / OpenAI o-series extensions)
             reasoning_delta = self._coalesce_chunk(
@@ -158,17 +162,23 @@ class IPCStreamingHandler:
                             self.tool_calls[idx]["function"]["arguments"] += fn["arguments"]
 
         elapsed_ms = int((time.monotonic() - start_time) * 1000)
-        self.server.emit("turn", phase="end", elapsedMs=elapsed_ms)
+        self.server.emit("turn", phase="end", elapsedMs=elapsed_ms, reasoningActive=bool(self.current_reasoning))
 
         return {
             "content": self.current_content,
             "tool_calls": self.tool_calls if self.tool_calls else None,
+            "finish_reason": finish_reason,
         }
 
     def _emit(self, text: str, *, reasoning: bool) -> None:
         if not text:
             return
-        self.server.emit("turn", phase="reasoning" if reasoning else "text", delta=text)
+        self.server.emit(
+            "turn",
+            phase="reasoning" if reasoning else "text",
+            delta=text,
+            reasoningActive=bool(reasoning or self.current_reasoning),
+        )
 
     def _coalesce_chunk(self, chunk: str, *, attr: str) -> str:
         """Trim provider-specific cumulative chunks down to only unseen text."""

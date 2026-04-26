@@ -42,6 +42,11 @@ async def _main() -> None:
     model = os.environ.get("CODERAI_MODEL") or None
     auto_approve = os.environ.get("CODERAI_AUTO_APPROVE") == "1"
     resume_id = os.environ.get("CODERAI_RESUME") or None
+    continue_ = os.environ.get("CODERAI_CONTINUE") == "1"
+
+    if continue_ and not resume_id:
+        from ..history import history_manager
+        resume_id = history_manager.get_latest_session_id()
 
     agent = Agent(
         model=model,
@@ -88,8 +93,26 @@ async def _main() -> None:
     # instead of Rich console prints.
     agent.streaming_handler = IPCStreamingHandler(server)
 
+    async def _parent_watchdog() -> None:
+        while not server._exit.is_set():
+            await asyncio.sleep(5)
+            try:
+                os.kill(os.getppid(), 0)
+            except OSError:
+                logging.getLogger(__name__).warning("Parent process disappeared; shutting down IPC server.")
+                server._exit.set()
+                return
+
     try:
-        await server.run()
+        watchdog = asyncio.create_task(_parent_watchdog())
+        try:
+            await server.run()
+        finally:
+            watchdog.cancel()
+            try:
+                await watchdog
+            except Exception:
+                pass
     finally:
         try:
             await agent.close()

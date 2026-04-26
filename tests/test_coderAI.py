@@ -1223,7 +1223,7 @@ class TestExecutionLoopRecovery:
             ],
         )
 
-        agent = SimpleNamespace(session=session)
+        agent = SimpleNamespace(session=session, hooks_manager=None)
         loop = ExecutionLoop(agent)
         loop._repair_unpaired_tool_calls()
 

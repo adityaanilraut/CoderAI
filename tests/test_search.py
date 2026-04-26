@@ -1,9 +1,9 @@
-"""Tests for TextSearchTool and GrepTool."""
+"""Tests for TextSearchTool, GrepTool, and SymbolSearchTool."""
 
 import asyncio
 import pytest
 
-from coderAI.tools.search import TextSearchTool, GrepTool
+from coderAI.tools.search import TextSearchTool, GrepTool, SymbolSearchTool
 
 
 @pytest.fixture
@@ -61,6 +61,7 @@ class TestTextSearchTool:
         )
         assert result["success"]
         assert result["count"] <= 1
+        assert result["was_truncated"] is True
 
     def test_invalid_path(self):
         result = asyncio.run(
@@ -124,3 +125,23 @@ class TestGrepTool:
         )
         assert result["success"]
         assert result["count"] <= 2
+        assert result["was_truncated"] is True
+
+
+class TestSymbolSearchTool:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        self.tool = SymbolSearchTool()
+
+    def test_finds_python_class(self, search_tree):
+        result = asyncio.run(self.tool.execute(symbol="hello", kind="function", path=str(search_tree)))
+        assert result["success"]
+        assert result["count"] >= 1
+
+    def test_finds_typescript_symbol(self, tmp_path):
+        target = tmp_path / "sample.ts"
+        target.write_text("export class Agent {}\nconst helper = () => 1\n", encoding="utf-8")
+        result = asyncio.run(self.tool.execute(symbol="Agent", kind="class", path=str(tmp_path)))
+        assert result["success"]
+        assert result["count"] == 1
+        assert result["results"][0]["kind"] == "class"

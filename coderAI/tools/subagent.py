@@ -190,6 +190,7 @@ class DelegateTaskTool(Tool):
     max_parallel_invocations = 1
     parameters_model = DelegateTaskParams
     is_read_only = False
+    timeout = 600.0
 
     def __init__(self) -> None:
         super().__init__()
@@ -483,6 +484,15 @@ class DelegateTaskTool(Tool):
             cost_usd = sub_agent.cost_tracker.get_total_cost() - parent_cost_before
 
             sub_agent._finish_tracker()
+
+            # Run on_subagent_stop hooks on the parent agent
+            hooks_data = self.context.parent_ipc_server.agent.hooks_manager.load_hooks() if (self.context.parent_ipc_server and hasattr(self.context.parent_ipc_server, "agent")) else None
+            if hooks_data:
+                await self.context.parent_ipc_server.agent.hooks_manager.run_hooks(
+                    "delegate_task", "on_subagent_stop", 
+                    {"task": task_description, "report": final_report, "tokens": tokens_used}, 
+                    hooks_data
+                )
 
             from ..cost import CostTracker
             event_emitter.emit(

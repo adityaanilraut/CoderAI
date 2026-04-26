@@ -29,10 +29,14 @@ logger = logging.getLogger(__name__)
     ),
 )
 @click.option("--resume", "-r", help="Resume a previous session by ID")
+@click.option(
+    "--continue", "continue_", is_flag=True,
+    help="Resume the most recently updated session"
+)
 @click.option("--version", "-v", is_flag=True, help="Show version")
 @click.option("--verbose", is_flag=True, help="Enable verbose/debug logging")
 @click.pass_context
-def cli(ctx, model, resume, version, verbose):
+def cli(ctx, model, resume, continue_, version, verbose):
     """CoderAI - Intelligent Coding Agent CLI Tool.
 
     Run 'coderAI chat' for interactive mode.
@@ -61,15 +65,19 @@ def cli(ctx, model, resume, version, verbose):
 
     # If no subcommand, default to chat
     if ctx.invoked_subcommand is None:
-        ctx.invoke(chat, model=model, resume=resume)
+        ctx.invoke(chat, model=model, resume=resume, continue_=continue_)
 
 
 @cli.command()
 @click.option("--model", "-m", help="Model to use")
 @click.option("--resume", "-r", help="Resume a previous session by ID")
+@click.option(
+    "--continue", "continue_", is_flag=True,
+    help="Resume the most recently updated session"
+)
 @click.option("--auto-approve", "--yolo", is_flag=True, help="Skip tool confirmation prompts")
 @click.option("--python", default=None, help="Python interpreter for the agent (defaults to current)")
-def chat(model, resume, auto_approve, python):
+def chat(model, resume, continue_, auto_approve, python):
     """Start an interactive chat session in the Ink UI.
 
     On first run, downloads the prebuilt UI binary for the current platform
@@ -115,6 +123,17 @@ def chat(model, resume, auto_approve, python):
     except (BinaryUnavailableError, UnsupportedPlatformError) as e:
         display.print_error(str(e))
         sys.exit(1)
+
+    if continue_:
+        if resume:
+            click.echo("Pass either --resume or --continue, not both.", err=True)
+            sys.exit(2)
+        sid = history_manager.get_latest_session_id()
+        if not sid:
+            click.echo("No previous sessions found.", err=True)
+            sys.exit(1)
+        resume = sid
+        click.echo(f"Resuming session {sid}")
 
     env = os.environ.copy()
     if model:

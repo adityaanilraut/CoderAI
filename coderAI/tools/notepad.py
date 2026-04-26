@@ -88,10 +88,10 @@ class NotepadTool(Tool):
 
     name = "notepad"
     description = (
-        "Read and write to a shared notepad that persists across tool calls and is "
-        "shared between the main agent and all sub-agents. Useful for sharing findings, "
-        "intermediate results, or coordination notes between agents. "
-        "Actions: 'write' (key + value), 'read' (key), 'list', 'read_all', 'delete' (key), 'clear'."
+        "Read and write a shared scratchpad across the main agent and sub-agents. Use this "
+        "when you want to stash findings, coordination notes, or intermediate results under "
+        "stable keys. Do not use it as a step tracker; use plan for that. Example: "
+        "action='write', key='auth_findings', value='refresh token flow lives in auth.py'."
     )
     parameters_model = NotepadParams
     is_read_only = False

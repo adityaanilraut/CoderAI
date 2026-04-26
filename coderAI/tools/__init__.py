@@ -39,6 +39,7 @@ from .filesystem import (
     DeleteFileTool,
     CreateDirectoryTool,
 )
+from .multi_edit import MultiEditTool
 
 # Terminal tools
 from .terminal import RunCommandTool, RunBackgroundTool, ListProcessesTool, KillProcessTool
@@ -53,7 +54,7 @@ from .git import (
 )
 
 # Search tools
-from .search import TextSearchTool, GrepTool
+from .search import TextSearchTool, GrepTool, SymbolSearchTool
 
 # Memory tools
 from .memory import SaveMemoryTool, RecallMemoryTool, DeleteMemoryTool
@@ -115,6 +116,7 @@ __all__ = [
     "CopyFileTool",
     "DeleteFileTool",
     "CreateDirectoryTool",
+    "MultiEditTool",
     # Terminal
     "RunCommandTool",
     "RunBackgroundTool",
@@ -143,6 +145,7 @@ __all__ = [
     # Search
     "TextSearchTool",
     "GrepTool",
+    "SymbolSearchTool",
     # Memory
     "SaveMemoryTool",
     "RecallMemoryTool",
@@ -186,5 +189,4 @@ __all__ = [
     "NotepadTool",
     # Factory imports (optional for external consumers)
 ]
-
 

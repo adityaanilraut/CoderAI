@@ -43,7 +43,7 @@ unknown phases are ignored.
 | phase                | payload keys                                                  |
 | -------------------- | ------------------------------------------------------------- |
 | `queued` / `running` | `{name, category, args, risk}`                                |
-| `awaiting_approval`  | `{name, args, risk}`                                          |
+| `awaiting_approval`  | `{name, args, risk, diff?}`                                   |
 | `ok`                 | `{preview, fullAvailable}`                                    |
 | `err`                | `{error, preview?}`                                           |
 | `cancelled`          | `{reason?, timeoutSeconds?}`                                  |

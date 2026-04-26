@@ -1,5 +1,6 @@
 """Main agent orchestrator for CoderAI."""
 
+import hashlib
 import logging
 import time as _time
 from typing import Any, Dict, List, Optional, Tuple
@@ -27,6 +28,8 @@ from .tools.context_manage import ManageContextTool
 from .events import event_emitter
 from .agents import load_agent_persona, AgentPersona, expand_persona_tools
 from .agent_tracker import agent_tracker, AgentStatus, AgentInfo
+from .hooks_manager import HooksManager
+from .read_cache import FileReadCache
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +97,10 @@ class Agent:
             config=self.config, provider=self.provider
         )
 
+        # Per-session file-read dedup cache (created before tool registry
+        # build so the read_file tool picks it up via _wire_read_cache below).
+        self.read_cache = FileReadCache()
+
         # Initialize tool registry
         # (optionally filtered by persona tools)
         self.tools = ToolRegistry()
@@ -129,6 +136,14 @@ class Agent:
         # Per-command approval cache for project hooks. Keyed by command string
         # so new or changed hooks re-prompt instead of inheriting an approval.
         self._hooks_approved: Dict[str, bool] = {}
+        self._tool_approval_allowlist: set[str] = set()
+
+        self.hooks_manager = HooksManager(self)
+
+        # Per-session file-read dedup cache. Wire onto the read_file tool so
+        # repeat reads of unchanged files in the same session collapse to a
+        # short placeholder.
+        self._wire_read_cache()
 
     @property
     def context_controller(self) -> ContextController:
@@ -195,6 +210,18 @@ class Agent:
         if self.persona and self.persona.tools:
             self._filter_tools_for_persona(self.persona.tools)
         self._configure_delegate_tool_context()
+        # Re-attach the read cache; rebuilding the registry creates fresh
+        # tool instances that don't carry the per-session attribute.
+        self._wire_read_cache()
+
+    def _wire_read_cache(self) -> None:
+        """Attach the per-session FileReadCache to the read_file tool."""
+        cache = getattr(self, "read_cache", None)
+        if cache is None:
+            return
+        read_tool = self.tools.get("read_file")
+        if read_tool is not None:
+            read_tool.read_cache = cache
 
     def _refresh_session_system_prompt(self) -> None:
         """Update live session system prompt after persona changes."""
@@ -280,17 +307,27 @@ class Agent:
 
     def _get_system_prompt(self) -> str:
         """Get base prompt and append rules from .coderAI/rules/."""
+        sections: List[str] = []
+        seen_hashes: set[str] = set()
+
+        def _append_once(text: str) -> None:
+            digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+            if digest in seen_hashes:
+                return
+            seen_hashes.add(digest)
+            sections.append(text)
+
         if self.persona:
             # Keep core principles, strategy, and safety — not only persona
             # text + tool names.
-            prompt = (
+            _append_once(
                 f"{SYSTEM_PROMPT_INTRO}\n\n"
                 f"{self.persona.instructions}\n\n"
                 f"{format_tools_markdown(self.tools)}\n\n"
                 f"{SYSTEM_PROMPT_TAIL}"
             )
         else:
-            prompt = compose_default_system_prompt(self.tools)
+            _append_once(compose_default_system_prompt(self.tools))
 
         # Look for project rules and append them
         try:
@@ -301,10 +338,21 @@ class Agent:
                 rules = []
                 for rule_file in sorted(rules_dir.glob("*.md")):
                     try:
-                        content = rule_file.read_text().strip()
+                        try:
+                            resolved = rule_file.resolve()
+                            resolved.relative_to(rules_dir.resolve())
+                        except Exception:
+                            resolved = rule_file
+                        content = rule_file.read_text(encoding="utf-8").strip()
                         if content:
+                            quoted = "\n".join(
+                                f"> {line}" if line else ">" for line in content.splitlines()
+                            )
                             rules.append(
-                                f"### Rule: {rule_file.name}\n{content}"
+                                f"### Rule: {rule_file.name}\n"
+                                "[BEGIN PROJECT RULE]\n"
+                                f"{quoted}\n"
+                                "[END PROJECT RULE]"
                             )
                     except Exception as e:
                         logger.warning(
@@ -312,16 +360,16 @@ class Agent:
                         )
 
                 if rules:
-                    prompt += "\n\n## Project Specific Rules\n\n"
-                    prompt += (
+                    _append_once(
+                        "\n\n## Project Specific Rules\n\n"
                         "The following rules are specific to this project "
                         "and MUST be followed:\n\n"
+                        + "\n\n".join(rules)
                     )
-                    prompt += "\n\n".join(rules)
         except Exception as e:
             logger.warning(f"Error loading project rules: {e}")
 
-        return prompt
+        return "\n\n".join(sections)
 
     def _inject_context_message(
         self, messages: List[Dict[str, Any]], query: str
@@ -346,6 +394,14 @@ class Agent:
         self.total_completion_tokens = 0
         self.total_tokens = 0
         self._hooks_approved.clear()
+        allowlist = getattr(self, "_tool_approval_allowlist", None)
+        if allowlist is not None:
+            allowlist.clear()
+        # Drop per-session read cache so a new conversation starts with
+        # fresh file reads rather than placeholders pointing at turns from
+        # the prior session.
+        if hasattr(self, "read_cache") and self.read_cache is not None:
+            self.read_cache.clear()
         # Re-align provider-side cumulative counters with the zeroed agent
         # counters so subsequent deltas read correctly.
         provider = getattr(self, "provider", None)
@@ -460,6 +516,11 @@ class Agent:
                         new_messages.append(Message(**msg_args))
                     self.session.messages = new_messages
                     self.session.updated_at = now
+                    # Run on_compact hooks
+                    hooks_data = self.hooks_manager.load_hooks()
+                    if hooks_data:
+                         await self.hooks_manager.run_hooks("*", "on_compact", {}, hooks_data)
+
                     event_emitter.emit(
                         "agent_status",
                         message="[bold green]Context compacted successfully![/bold green]",

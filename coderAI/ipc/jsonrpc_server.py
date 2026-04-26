@@ -312,6 +312,7 @@ class IPCServer:
         tool_id: str,
         tool_name: str,
         arguments: Dict[str, Any],
+        diff: Optional[str] = None,
     ) -> bool:
         """Block until the UI sends ``tool_approval_resp`` for this tool call.
 
@@ -324,15 +325,20 @@ class IPCServer:
         loop = asyncio.get_running_loop()
         fut: asyncio.Future = loop.create_future()
         self._approval_waiters[tool_id] = fut
+        
+        payload = {
+            "name": tool_name,
+            "args": _preview_args_for_approval(arguments),
+            "risk": _tool_risk(tool_name),
+        }
+        if diff is not None:
+            payload["diff"] = diff
+            
         self.emit(
             "tool",
             id=tool_id,
             phase="awaiting_approval",
-            payload={
-                "name": tool_name,
-                "args": _preview_args_for_approval(arguments),
-                "risk": _tool_risk(tool_name),
-            }
+            payload=payload
         )
         timeout_s = int(getattr(self.agent.config, "approval_timeout_seconds", 300) or 0)
         try:
@@ -416,6 +422,8 @@ class IPCServer:
         # a persistent toast. Re-enabled only when verbose flag flips.
         _bind("agent_error", lambda message:
               self._emit_error("internal", _strip_rich_markup(message)))
+        _bind("agent_paused", lambda message:
+              self.emit("info", message=_strip_rich_markup(message)))
         _bind("agent_warning", lambda message:
               self.emit("warning", message=_strip_rich_markup(message)))
         _bind("file_diff", lambda path, diff:
@@ -510,6 +518,7 @@ class IPCServer:
             await loop.connect_read_pipe(lambda: protocol, sys.stdin)
         except Exception as e:
             logger.error("Failed to hook stdin: %s", e)
+            self._exit.set()
             return
 
         # Commands must dispatch concurrently: ``send_message`` holds the
@@ -660,6 +669,38 @@ def _align_provider_usage_counters(
 
 async def _cmd_send_message(server: IPCServer, msg: Dict[str, Any]) -> None:
     text = msg.get("text", "")
+    stripped = str(text).strip()
+    if stripped.startswith("/"):
+        parts = stripped[1:].split(None, 1)
+        cmd = parts[0].lower() if parts else ""
+        arg = parts[1].strip() if len(parts) > 1 else ""
+        allowlist = getattr(server.agent, "_tool_approval_allowlist", None)
+        if allowlist is None:
+            allowlist = set()
+            server.agent._tool_approval_allowlist = allowlist
+        if cmd == "allow-tool":
+            if not arg:
+                server.emit("warning", message="Usage: /allow-tool <tool-name>")
+                server.emit_ready()
+                return
+            allowlist.add(arg)
+            server.emit("info", message=f"Tool approval memory enabled for {arg}.")
+            server.emit_ready()
+            return
+        if cmd == "disallow-tool":
+            if not arg:
+                server.emit("warning", message="Usage: /disallow-tool <tool-name>")
+                server.emit_ready()
+                return
+            allowlist.discard(arg)
+            server.emit("info", message=f"Tool approval memory removed for {arg}.")
+            server.emit_ready()
+            return
+        if cmd == "allowed-tools":
+            names = ", ".join(sorted(allowlist)) if allowlist else "(none)"
+            server.emit("info", message=f"Always-allowed tools for this session: {names}")
+            server.emit_ready()
+            return
     async with server._turn_lock:
         try:
             await server.agent.process_message(text)

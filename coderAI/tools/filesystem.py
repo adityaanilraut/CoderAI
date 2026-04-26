@@ -175,6 +175,9 @@ class ReadFileTool(Tool):
     parameters_model = ReadFileParams
     is_read_only = True
 
+    # Optional per-session FileReadCache; wired by Agent after registry build.
+    read_cache = None
+
     async def execute(
         self, path: str, start_line: int = None, end_line: int = None
     ) -> Dict[str, Any]:
@@ -197,7 +200,9 @@ class ReadFileTool(Tool):
                 }
 
             # Check file size before reading
-            file_size = path_obj.stat().st_size
+            stat = path_obj.stat()
+            file_size = stat.st_size
+            mtime = stat.st_mtime
             max_file_size = _get_max_file_size()
             if file_size > max_file_size:
                 return {
@@ -207,8 +212,26 @@ class ReadFileTool(Tool):
                     "hint": "Use start_line and end_line to read a specific range, or use grep to search.",
                 }
 
+            is_partial_read = start_line is not None or end_line is not None
+
+            # Consult the per-session read cache for repeat reads of unchanged
+            # full files. Partial reads bypass — start/end may move turn over
+            # turn even when the file is byte-identical.
+            cache = self.read_cache
+            cache_key = str(path_obj.resolve())
+            if cache is not None and not is_partial_read:
+                prev_turn = cache.check(cache_key, mtime, file_size)
+                if prev_turn is not None:
+                    return {
+                        "success": True,
+                        "path": str(path_obj),
+                        "cached": True,
+                        "content": f"[unchanged since previous read at turn {prev_turn}]",
+                        "size_bytes": file_size,
+                    }
+
             with open(path_obj, "r", encoding="utf-8") as f:
-                if start_line is not None or end_line is not None:
+                if is_partial_read:
                     lines = f.readlines()
                     start = (start_line - 1) if start_line else 0
                     end = end_line if end_line else len(lines)
@@ -221,6 +244,9 @@ class ReadFileTool(Tool):
             # but a truly empty file has 0 lines.
             if content and not content.endswith("\n"):
                 line_count += 1
+
+            if cache is not None and not is_partial_read:
+                cache.record(cache_key, mtime, file_size)
 
             return {
                 "success": True,
@@ -967,6 +993,7 @@ class CreateDirectoryTool(Tool):
     )
     category = "fs"
     parameters_model = CreateDirectoryParams
+    requires_confirmation = True
 
     async def execute(self, path: str, parents: bool = True) -> Dict[str, Any]:
         try:

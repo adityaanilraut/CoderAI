@@ -12,6 +12,17 @@ from ..locks import resource_manager
 
 logger = logging.getLogger(__name__)
 
+MAX_GIT_OUTPUT_BYTES = 64_000
+
+def _truncate_output(text: str, max_bytes: int = MAX_GIT_OUTPUT_BYTES) -> tuple[str, bool]:
+    """Truncate text to max_bytes, returning (text, was_truncated)."""
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text, False
+    head = encoded[:max_bytes].decode("utf-8", errors="replace")
+    omitted = len(encoded) - max_bytes
+    return head + f"\n\n[... truncated, {omitted} more bytes — re-run with a narrower scope ...]", True
+
 
 async def _validate_git_scope(repo_path: str) -> Optional[Dict[str, Any]]:
     """Validate that the git root matches the intended repo_path.
@@ -137,7 +148,7 @@ class GitStatusTool(Tool):
     """Tool for checking git repository status."""
 
     name = "git_status"
-    description = "Get the status of a git repository"
+    description = "Get the status of a git repository. Output truncated at 64KB."
     parameters_model = GitStatusParams
     is_read_only = True
 
@@ -159,6 +170,7 @@ class GitStatusTool(Tool):
                 }
 
             output = stdout.decode("utf-8", errors="replace")
+            output, truncated = _truncate_output(output)
             # The first line from --porcelain -b is the branch header (## main...);
             # actual changes are on subsequent lines.
             lines = output.strip().split("\n")
@@ -167,6 +179,7 @@ class GitStatusTool(Tool):
                 "success": True,
                 "status": output,
                 "has_changes": bool(change_lines),
+                "truncated": truncated,
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -182,7 +195,7 @@ class GitDiffTool(Tool):
     """Tool for viewing git diffs."""
 
     name = "git_diff"
-    description = "View git diff for changes"
+    description = "View git diff for changes. Output truncated at 64KB; use file_path to narrow scope on huge diffs."
     parameters_model = GitDiffParams
     is_read_only = True
 
@@ -212,10 +225,12 @@ class GitDiffTool(Tool):
                 }
 
             diff = stdout.decode("utf-8", errors="replace")
+            diff, truncated = _truncate_output(diff)
             return {
                 "success": True,
                 "diff": diff,
                 "has_diff": bool(diff.strip()),
+                "truncated": truncated,
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -273,7 +288,7 @@ class GitLogTool(Tool):
     """Tool for viewing git history."""
 
     name = "git_log"
-    description = "View git commit history"
+    description = "View git commit history. Output truncated at 64KB."
     parameters_model = GitLogParams
     is_read_only = True
 
@@ -295,10 +310,12 @@ class GitLogTool(Tool):
                 }
 
             log = stdout.decode("utf-8", errors="replace")
+            log, truncated = _truncate_output(log)
             return {
                 "success": True,
                 "log": log,
                 "commits": log.strip().split("\n") if log.strip() else [],
+                "truncated": truncated,
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -325,7 +342,7 @@ class GitBranchTool(Tool):
     """Tool for managing git branches."""
 
     name = "git_branch"
-    description = "List, create, or delete git branches"
+    description = "List, create, or delete git branches. Output truncated at 64KB."
     parameters_model = GitBranchParams
     requires_confirmation = True
 
@@ -344,10 +361,11 @@ class GitBranchTool(Tool):
                     stdout, stderr = await process.communicate()
                     if process.returncode != 0:
                         return {"success": False, "error": stderr.decode("utf-8", errors="replace")}
+                    output, truncated = _truncate_output(stdout.decode("utf-8", errors="replace"))
                     branches = [
-                        b.strip().lstrip("* ") for b in stdout.decode("utf-8").strip().split("\n") if b.strip()
+                        b.strip().lstrip("* ") for b in output.strip().split("\n") if b.strip()
                     ]
-                    return {"success": True, "branches": branches, "count": len(branches)}
+                    return {"success": True, "branches": branches, "count": len(branches), "truncated": truncated}
 
                 elif action == "create":
                     if not branch_name:
@@ -826,7 +844,7 @@ class GitShowTool(Tool):
     """Display details and diff of a specific commit."""
 
     name = "git_show"
-    description = "Show the commit message, author, date, and diff for a specific commit or reference."
+    description = "Show the commit message, author, date, and diff for a specific commit or reference. Output truncated at 64KB."
     category = "git"
     parameters_model = GitShowParams
     is_read_only = True
@@ -854,7 +872,8 @@ class GitShowTool(Tool):
             if process.returncode != 0:
                 return {"success": False, "error": stderr.decode("utf-8", errors="replace").strip()}
 
-            return {"success": True, "output": stdout.decode("utf-8", errors="replace")}
+            output, truncated = _truncate_output(stdout.decode("utf-8", errors="replace"))
+            return {"success": True, "output": output, "truncated": truncated}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -932,7 +951,7 @@ class GitBlameTool(Tool):
     """Show which commit last modified each line of a file."""
 
     name = "git_blame"
-    description = "Annotate each line of a file with the commit and author that last changed it."
+    description = "Annotate each line of a file with the commit and author that last changed it. Output truncated at 64KB."
     category = "git"
     parameters_model = GitBlameParams
     is_read_only = True
@@ -964,6 +983,7 @@ class GitBlameTool(Tool):
                 return {"success": False, "error": stderr.decode("utf-8", errors="replace").strip()}
 
             raw = stdout.decode("utf-8", errors="replace")
+            raw, truncated = _truncate_output(raw)
             lines: List[Dict[str, str]] = []
             current: Dict[str, str] = {}
             for line in raw.splitlines():
@@ -981,7 +1001,7 @@ class GitBlameTool(Tool):
                         key, _, value = line.partition(" ")
                         current[key] = value
 
-            return {"success": True, "file": file_path, "annotations": lines, "count": len(lines)}
+            return {"success": True, "file": file_path, "annotations": lines, "count": len(lines), "truncated": truncated}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
