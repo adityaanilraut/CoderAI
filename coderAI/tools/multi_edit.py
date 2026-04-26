@@ -47,7 +47,7 @@ class MultiEditTool(Tool):
                 for i, edit in enumerate(edits):
                     search = edit["search"]
                     replace = edit["replace"]
-                    expected_count = edit.get("expected_count", 1)
+                    edit.get("expected_count", 1)
                     
                     actual_count = new_content.count(search)
                     if actual_count == 0:

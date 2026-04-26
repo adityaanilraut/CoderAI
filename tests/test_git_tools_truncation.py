@@ -1,4 +1,3 @@
-import asyncio
 import pytest
 from unittest.mock import AsyncMock, patch
 
@@ -9,7 +8,6 @@ from coderAI.tools.git import (
     GitLogTool,
     GitBranchTool,
     GitBlameTool,
-    MAX_GIT_OUTPUT_BYTES,
 )
 
 @pytest.fixture

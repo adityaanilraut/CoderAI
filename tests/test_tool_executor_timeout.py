@@ -1,7 +1,7 @@
 import asyncio
 import pytest
 
-from coderAI.tool_executor import ToolExecutor, DEFAULT_TOOL_TIMEOUT_SECONDS
+from coderAI.tool_executor import ToolExecutor
 from coderAI.tools.base import Tool, ToolRegistry
 from unittest.mock import MagicMock, AsyncMock
 

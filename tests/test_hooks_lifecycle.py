@@ -1,6 +1,4 @@
-import asyncio
 import json
-import os
 import pytest
 from unittest.mock import MagicMock, AsyncMock
 from coderAI.agent import Agent

@@ -160,7 +160,6 @@ class ToolExecutor:
         if not path:
             return None
             
-        import os
         from pathlib import Path
         import difflib
         

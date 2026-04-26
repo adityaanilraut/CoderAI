@@ -1,4 +1,3 @@
-import pytest
 from coderAI.tool_executor import ToolExecutor
 from unittest.mock import MagicMock
 

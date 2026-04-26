@@ -1,5 +1,4 @@
 import pytest
-import os
 from coderAI.tools.search import TextSearchTool
 
 @pytest.fixture
