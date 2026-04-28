@@ -186,6 +186,10 @@ class IPCStreamingHandler:
             return ""
 
         previous = getattr(self, attr)
+        # Some providers re-send the same full cumulative `content` as a second
+        # delta; appending it again would double the user-visible text.
+        if previous and chunk == previous:
+            return ""
         if previous and len(chunk) > len(previous) and chunk.startswith(previous):
             setattr(self, attr, chunk)
             return chunk[len(previous):]

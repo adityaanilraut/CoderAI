@@ -41,9 +41,9 @@ CACHING_SUPPORTED_MODELS = frozenset({
 # retained for historical reference; canonical pricing lives in
 # ``coderAI/cost.py::MODEL_PRICING`` (per-million-tokens).
 MODEL_COSTS = {
-    "claude-opus-4-7": {"input": 0.015, "output": 0.075},
+    "claude-opus-4-7": {"input": 0.005, "output": 0.025},
     "claude-sonnet-4-6": {"input": 0.003, "output": 0.015},
-    "claude-haiku-4-5-20251001": {"input": 0.0008, "output": 0.004},
+    "claude-haiku-4-5-20251001": {"input": 0.001, "output": 0.005},
     "claude-3-7-sonnet-20250219": {"input": 0.003, "output": 0.015},
     "claude-3-5-sonnet-20241022": {"input": 0.003, "output": 0.015},
     "claude-3-5-haiku-20241022": {"input": 0.0008, "output": 0.004},
@@ -62,9 +62,6 @@ MODEL_ALIASES = {
     "claude-4.7-opus": "claude-opus-4-7",
     "claude-4.6-sonnet": "claude-sonnet-4-6",
     "claude-4.5-haiku": "claude-haiku-4-5-20251001",
-    # Back-compat typo/legacy alias: "/models" in older builds surfaced this.
-    # Keep routing it to the current Opus family model to avoid API 404 loops.
-    "claude-4.6-opus": "claude-opus-4-7",
     # Kept for back-compat with existing configs (default_model was
     # "claude-4-sonnet"). Point at the current 4.6 sonnet.
     "claude-4-sonnet": "claude-sonnet-4-6",

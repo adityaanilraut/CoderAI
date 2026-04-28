@@ -1016,3 +1016,148 @@ class CreateDirectoryTool(Tool):
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# Filesystem metadata tools: stat, chmod, chown, readlink
+# ---------------------------------------------------------------------------
+
+
+class FileStatParams(BaseModel):
+    path: str = Field(..., description="Path to the file or directory")
+
+
+class FileStatTool(Tool):
+    """Get detailed metadata about a file or directory."""
+
+    name = "file_stat"
+    description = "Get detailed file metadata: size, permissions, timestamps, type, owner"
+    category = "fs"
+    parameters_model = FileStatParams
+    is_read_only = True
+
+    async def execute(self, path: str) -> Dict[str, Any]:
+        try:
+            target = Path(path).expanduser()
+            if not target.exists():
+                return {"success": False, "error": f"Path does not exist: {path}"}
+            stat = target.stat()
+            return {
+                "success": True,
+                "path": str(target.resolve()),
+                "size": stat.st_size,
+                "mode_octal": oct(stat.st_mode)[-4:],
+                "mode": stat.st_mode,
+                "mtime": stat.st_mtime,
+                "atime": stat.st_atime,
+                "ctime": stat.st_ctime,
+                "uid": stat.st_uid,
+                "gid": stat.st_gid,
+                "is_file": target.is_file(),
+                "is_dir": target.is_dir(),
+                "is_symlink": target.is_symlink(),
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+
+class FileChmodParams(BaseModel):
+    path: str = Field(..., description="Path to the file or directory")
+    mode: str = Field(..., description="Octal mode string, e.g. '755' or '644'")
+
+
+class FileChmodTool(Tool):
+    """Change file permissions."""
+
+    name = "file_chmod"
+    description = "Change file or directory permissions using octal mode (e.g. '755', '644')"
+    category = "fs"
+    parameters_model = FileChmodParams
+    requires_confirmation = True
+
+    async def execute(self, path: str, mode: str) -> Dict[str, Any]:
+        try:
+            target = Path(path).expanduser()
+            if not target.exists():
+                return {"success": False, "error": f"Path does not exist: {path}"}
+            if _is_path_protected(target):
+                return {"success": False, "error": f"Refusing to chmod protected path: {path}"}
+            scope_err = _enforce_project_scope(target, "chmod")
+            if scope_err:
+                return scope_err
+            target.chmod(int(mode, 8))
+            return {"success": True, "path": str(target.resolve()), "mode": mode}
+        except PermissionError:
+            return {"success": False, "error": f"Permission denied: {path}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+
+class FileChownParams(BaseModel):
+    path: str = Field(..., description="Path to the file or directory")
+    owner: Optional[str] = Field(None, description="New owner name or UID")
+    group: Optional[str] = Field(None, description="New group name or GID")
+
+
+class FileChownTool(Tool):
+    """Change file ownership (requires appropriate privileges)."""
+
+    name = "file_chown"
+    description = "Change file or directory owner and/or group. Typically requires root/sudo."
+    category = "fs"
+    parameters_model = FileChownParams
+    requires_confirmation = True
+
+    async def execute(self, path: str, owner: Optional[str] = None, group: Optional[str] = None) -> Dict[str, Any]:
+        try:
+            if not owner and not group:
+                return {"success": False, "error": "At least one of 'owner' or 'group' must be specified"}
+            target = Path(path).expanduser()
+            if not target.exists():
+                return {"success": False, "error": f"Path does not exist: {path}"}
+            if _is_path_protected(target):
+                return {"success": False, "error": f"Refusing to chown protected path: {path}"}
+            scope_err = _enforce_project_scope(target, "chown")
+            if scope_err:
+                return scope_err
+            uid = int(owner) if (owner and owner.isdigit()) else -1
+            gid = int(group) if (group and group.isdigit()) else -1
+            import pwd
+            import grp
+            if owner and uid == -1:
+                uid = pwd.getpwnam(owner).pw_uid
+            if group and gid == -1:
+                gid = grp.getgrnam(group).gr_gid
+            import os
+            os.chown(str(target.resolve()), uid if owner else -1, gid if group else -1)
+            return {"success": True, "path": str(target.resolve()), "owner": owner, "group": group}
+        except PermissionError:
+            return {"success": False, "error": f"Permission denied changing ownership of: {path}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+
+class FileReadlinkParams(BaseModel):
+    path: str = Field(..., description="Path to the symlink")
+
+
+class FileReadlinkTool(Tool):
+    """Read the target of a symbolic link."""
+
+    name = "file_readlink"
+    description = "Read the target path of a symbolic link"
+    category = "fs"
+    parameters_model = FileReadlinkParams
+    is_read_only = True
+
+    async def execute(self, path: str) -> Dict[str, Any]:
+        try:
+            target = Path(path).expanduser()
+            if not target.exists():
+                return {"success": False, "error": f"Path does not exist: {path}"}
+            if not target.is_symlink():
+                return {"success": False, "error": f"Not a symlink: {path}"}
+            resolved = target.readlink()
+            return {"success": True, "path": str(target.resolve()), "target": str(resolved)}
+        except Exception as e:
+            return {"success": False, "error": str(e)}

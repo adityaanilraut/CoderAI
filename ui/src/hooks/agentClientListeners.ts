@@ -170,6 +170,7 @@ export function attachAgentClientListeners(
       ctxLimit: m.contextLimit,
       budgetUsd: m.budgetLimit,
       autoApprove: m.autoApprove,
+      sessionStartedAt: s.sessionStartedAt ?? Date.now(),
     }));
   });
 
@@ -196,7 +197,7 @@ export function attachAgentClientListeners(
       // Until the first token arrives the LLM is still "thinking" —
       // streaming flips on only when we see a text/reasoning delta.
       awaitingFirstDelta = true;
-      setSession((s) => ({...s, thinking: true, streaming: false}));
+      setSession((s) => ({...s, thinking: true, streaming: false, progress: null}));
       setTimeline((prev) => {
         const item: TimelineItem = {
           kind: "assistant",
@@ -312,6 +313,13 @@ export function attachAgentClientListeners(
     upsertAgentInSession(m.info);
   });
 
+  add("available_models", (m: Extract<AgentEvent, {event: "available_models"}>) => {
+    setSession((s) => ({
+      ...s,
+      availableModels: m.models,
+    }));
+  });
+
   add("session_patch", (m: Extract<AgentEvent, {event: "session_patch"}>) => {
     setSession((s) => ({
       ...s,
@@ -373,9 +381,27 @@ export function attachAgentClientListeners(
     });
   });
 
+  add("progress", (m: Extract<AgentEvent, {event: "progress"}>) => {
+    setSession((s) => ({
+      ...s,
+      progress: {
+        label: m.label,
+        current: m.current,
+        total: m.total,
+        kind: m.progressKind,
+      },
+    }));
+  });
+
   add("goodbye", () => {
     recoverIncompleteTurn();
     goodbyeRef.current = true;
+    push({
+      kind: "toast",
+      id: nextId(),
+      level: "info",
+      message: "Agent session ended. Type /exit or ^C^C to close.",
+    });
   });
 
   add("stderr", (chunk: string) => {

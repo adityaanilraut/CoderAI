@@ -658,6 +658,58 @@ class TestOpenAIProvider:
 
 
 # ============================================================================
+# DeepSeek Provider
+# ============================================================================
+
+
+class TestDeepSeekProvider:
+    """Tests for DeepSeek provider configuration and model aliases."""
+
+    def test_model_mapping(self):
+        from coderAI.llm.deepseek import DeepSeekProvider
+
+        provider = DeepSeekProvider(model="deepseek-v4-flash", api_key="test-key")
+        assert provider.actual_model == "deepseek-v4-flash"
+
+        provider = DeepSeekProvider(model="deepseek-v4-pro", api_key="test-key")
+        assert provider.actual_model == "deepseek-v4-pro"
+
+        provider = DeepSeekProvider(model="deepseek-v3.2", api_key="test-key")
+        assert provider.actual_model == "deepseek-chat"
+
+    def test_v4_requests_disable_thinking_by_default(self):
+        from coderAI.llm.deepseek import DeepSeekProvider
+
+        provider = DeepSeekProvider(model="deepseek-v4-pro", api_key="test-key")
+        params = provider._build_request_params(
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[{"type": "function", "function": {"name": "ping"}}],
+        )
+
+        assert params["model"] == "deepseek-v4-pro"
+        assert params["extra_body"] == {"thinking": {"type": "disabled"}}
+        assert params["tool_choice"] == "auto"
+
+    def test_supported_models_include_v4(self):
+        from coderAI.llm.deepseek import DeepSeekProvider
+
+        assert "deepseek-v4-flash" in DeepSeekProvider.SUPPORTED_MODELS
+        assert "deepseek-v4-pro" in DeepSeekProvider.SUPPORTED_MODELS
+
+    def test_v4_cost_pricing_is_registered(self):
+        from coderAI.cost import CostTracker
+
+        assert CostTracker.get_model_pricing("deepseek-v4-flash") == {
+            "input": 0.14,
+            "output": 0.28,
+        }
+        assert CostTracker.get_model_pricing("deepseek-v4-pro") == {
+            "input": 1.74,
+            "output": 3.48,
+        }
+
+
+# ============================================================================
 # LM Studio Provider
 # ============================================================================
 
@@ -900,7 +952,6 @@ class TestAnthropicProvider:
         from coderAI.llm.anthropic import MODEL_ALIASES
 
         assert "claude-4-sonnet" in MODEL_ALIASES
-        assert MODEL_ALIASES["claude-4.6-opus"] == "claude-opus-4-7"
         assert "claude-3.5-sonnet" in MODEL_ALIASES
         assert "claude-3-opus" in MODEL_ALIASES
 

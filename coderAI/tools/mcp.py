@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 class MCPClient:
     """Client for connecting to MCP servers and discovering tools.
 
-    Supports stdio transport for connecting to MCP-compatible servers.
+    Supports stdio and SSE transports for connecting to MCP-compatible servers.
     Discovered tools are registered in the CoderAI tool registry.
     """
 
@@ -157,6 +157,7 @@ class MCPClient:
             # Store connection info
             server_info = tools_response.get("result", {}).get("tools", [])
             self.servers[server_name] = {
+                "transport": "stdio",
                 "process": process,
                 "tools": server_info,
                 "server_info": init_response.get("result", {}),
@@ -212,6 +213,11 @@ class MCPClient:
             return {"success": False, "error": f"Server not connected: {server_name}"}
 
         server = self.servers[server_name]
+        transport = server.get("transport", "stdio")
+
+        if transport == "sse":
+            return await self._call_tool_sse(server_name, tool_name, arguments)
+
         process = server["process"]
 
         if process.returncode is not None:
@@ -285,12 +291,23 @@ class MCPClient:
         if server_name not in self.servers:
             return {"success": False, "error": f"Server not connected: {server_name}"}
 
-        try:
-            process = self.servers[server_name]["process"]
-            process.terminate()
-            await asyncio.wait_for(process.wait(), timeout=5)
-        except asyncio.TimeoutError:
-            process.kill()
+        server = self.servers[server_name]
+        transport = server.get("transport", "stdio")
+
+        if transport == "sse":
+            session = server.get("session")
+            if session:
+                try:
+                    await session.close()
+                except Exception:
+                    pass
+        else:
+            try:
+                process = server["process"]
+                process.terminate()
+                await asyncio.wait_for(process.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                process.kill()
 
         del self.servers[server_name]
         self.discovered_tools = [
@@ -298,6 +315,178 @@ class MCPClient:
         ]
 
         return {"success": True, "message": f"Disconnected from {server_name}"}
+
+    async def connect_sse(self, server_name: str, url: str) -> Dict[str, Any]:
+        """Connect to an MCP server via SSE transport.
+
+        Args:
+            server_name: Friendly name for this server connection
+            url: SSE endpoint URL (e.g., http://localhost:8080/sse)
+
+        Returns:
+            Connection result with discovered tools
+        """
+        import aiohttp
+
+        if "__" in server_name:
+            return {
+                "success": False,
+                "error": "server_name must not contain '__'",
+            }
+
+        session = None
+        try:
+            session = aiohttp.ClientSession()
+            # Connect to SSE endpoint and discover the message endpoint
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    await session.close()
+                    return {
+                        "success": False,
+                        "error": f"SSE endpoint returned HTTP {resp.status}",
+                    }
+                # Read SSE events to find the endpoint
+                message_url = None
+                async for line in resp.content:
+                    line_text = line.decode("utf-8", errors="replace").strip()
+                    if line_text.startswith("event: endpoint"):
+                        # Read next line for data
+                        continue
+                    if line_text.startswith("data: "):
+                        data = line_text[6:]
+                        # The 'endpoint' event carries the message URL
+                        if message_url is None:
+                            # Check if this is after an endpoint event
+                            pass
+                        message_url = data
+                        break
+                    if line_text and not line_text.startswith(":"):
+                        # Generic SSE — try parsing as endpoint data
+                        if "http" in line_text and not line_text.startswith("data:"):
+                            message_url = line_text
+
+                if not message_url:
+                    # Fallback: derive message URL from SSE URL
+                    from urllib.parse import urlparse, urlunparse
+                    parsed = list(urlparse(url))
+                    parsed[2] = parsed[2].replace("/sse", "/messages") or "/messages"
+                    message_url = urlunparse(parsed)
+
+            # Send initialize request via POST to message endpoint
+            init_id = self._get_next_id()
+            init_request = {
+                "jsonrpc": "2.0",
+                "id": init_id,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "CoderAI", "version": "0.1.0"},
+                },
+            }
+
+            async with session.post(message_url, json=init_request) as resp:
+                init_response = await resp.json()
+
+            # Send initialized notification
+            await session.post(message_url, json={
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized",
+            })
+
+            # Request tool list
+            tools_id = self._get_next_id()
+            tools_request = {
+                "jsonrpc": "2.0",
+                "id": tools_id,
+                "method": "tools/list",
+            }
+            async with session.post(message_url, json=tools_request) as resp:
+                tools_response = await resp.json()
+
+            server_info = tools_response.get("result", {}).get("tools", [])
+            self.servers[server_name] = {
+                "transport": "sse",
+                "session": session,
+                "message_url": message_url,
+                "tools": server_info,
+                "server_info": init_response.get("result", {}),
+            }
+
+            for tool in server_info:
+                self.discovered_tools.append({
+                    "server": server_name,
+                    "name": tool.get("name", ""),
+                    "description": tool.get("description", ""),
+                    "input_schema": tool.get("inputSchema", {}),
+                })
+
+            return {
+                "success": True,
+                "server": server_name,
+                "transport": "sse",
+                "tools_discovered": len(server_info),
+                "tools": [t.get("name") for t in server_info],
+                "server_info": init_response.get("result", {}).get("serverInfo", {}),
+            }
+
+        except ImportError:
+            if session:
+                await session.close()
+            return {"success": False, "error": "aiohttp is required for SSE transport"}
+        except Exception as e:
+            if session:
+                await session.close()
+            if server_name in self.servers:
+                del self.servers[server_name]
+            return {"success": False, "error": str(e)}
+
+    async def _call_tool_sse(
+        self, server_name: str, tool_name: str, arguments: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Call a tool on an SSE-connected MCP server."""
+        import aiohttp as _aiohttp
+
+        server = self.servers[server_name]
+        session = server.get("session")
+        message_url = server.get("message_url")
+
+        if not session or not message_url:
+            return {"success": False, "error": f"SSE connection state invalid for '{server_name}'"}
+
+        try:
+            call_id = self._get_next_id()
+            request = {
+                "jsonrpc": "2.0",
+                "id": call_id,
+                "method": "tools/call",
+                "params": {"name": tool_name, "arguments": arguments},
+            }
+            async with session.post(message_url, json=request, timeout=_aiohttp.ClientTimeout(total=30)) as resp:
+                response = await resp.json()
+
+            result = response.get("result", {})
+            error = response.get("error")
+            if error:
+                return {"success": False, "error": error.get("message", str(error))}
+
+            content_parts = result.get("content", [])
+            text_content = ""
+            for part in content_parts:
+                if part.get("type") == "text":
+                    text_content += part.get("text", "")
+
+            is_error = bool(result.get("isError"))
+            out: Dict[str, Any] = {
+                "success": not is_error,
+                "content": text_content,
+                "raw": result,
+            }
+            if is_error:
+                out["error"] = text_content or "MCP tool returned an error."
+            return out
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
     def get_tools_as_openai_format(self) -> List[Dict[str, Any]]:
         """Get discovered MCP tools in OpenAI function-calling format.
@@ -356,21 +545,30 @@ atexit.register(_cleanup_mcp_servers)
 
 class MCPConnectParams(BaseModel):
     server_name: str = Field(..., description="Friendly name for this server connection")
-    command: str = Field(..., description="Command to start the MCP server (e.g., 'npx')")
+    command: str = Field("", description="Command to start the MCP server (e.g., 'npx'), for stdio transport")
     args: Optional[List[str]] = Field(None, description="Arguments for the server command")
+    transport: str = Field("stdio", description="Transport type: 'stdio' or 'sse' (default: stdio)")
+    url: Optional[str] = Field(None, description="SSE endpoint URL (required for SSE transport, e.g., http://host:port/sse)")
 
 
 class MCPConnectTool(Tool):
-    """Tool for connecting to MCP servers."""
+    """Tool for connecting to MCP servers via stdio or SSE transport."""
 
     name = "mcp_connect"
     description = "Connect to an MCP (Model Context Protocol) server to discover and use its tools"
     parameters_model = MCPConnectParams
 
     async def execute(
-        self, server_name: str, command: str, args: list = None
+        self, server_name: str, command: str = "", args: list = None,
+        transport: str = "stdio", url: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Connect to an MCP server."""
+        if transport == "sse":
+            if not url:
+                return {"success": False, "error": "URL is required for SSE transport"}
+            return await mcp_client.connect_sse(server_name, url)
+        if not command:
+            return {"success": False, "error": "Command is required for stdio transport"}
         return await mcp_client.connect_stdio(server_name, command, args)
 
 
@@ -421,3 +619,29 @@ class MCPListTool(Tool):
             "servers": servers,
             "total_tools": len(mcp_client.discovered_tools),
         }
+
+
+# ---------------------------------------------------------------------------
+# MCP disconnect
+# ---------------------------------------------------------------------------
+
+
+class MCPDisconnectParams(BaseModel):
+    server_name: str = Field(..., description="Name of the MCP server to disconnect from")
+
+
+class MCPDisconnectTool(Tool):
+    """Disconnect from a connected MCP server."""
+
+    name = "mcp_disconnect"
+    description = "Disconnect from a connected MCP server and free its resources"
+    category = "mcp"
+    parameters_model = MCPDisconnectParams
+    is_read_only = False
+
+    async def execute(self, server_name: str) -> Dict[str, Any]:
+        try:
+            await mcp_client.disconnect(server_name)
+            return {"success": True, "message": f"Disconnected from MCP server: {server_name}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}

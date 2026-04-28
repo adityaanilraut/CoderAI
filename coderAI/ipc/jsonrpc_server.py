@@ -32,6 +32,9 @@ from ..config import config_manager
 from ..events import event_emitter
 from ..system_prompt import _TOOL_SECTIONS
 
+# IPC protocol version. Increment when the wire format changes incompatibly.
+PROTOCOL_VERSION = 2
+
 logger = logging.getLogger(__name__)
 
 # Matches Rich-style markup tags, e.g. ``[bold cyan]``, ``[/bold cyan]``,
@@ -375,6 +378,7 @@ class IPCServer:
             provider=self.agent.provider.__class__.__name__,
             cwd=os.getcwd(),
             version=getattr(self.agent, "version", "0.1.0"),
+            protocolVersion=PROTOCOL_VERSION,
             contextLimit=getattr(config, "context_window", 200000),
             budgetLimit=getattr(config, "budget_limit", 0.0) or 0.0,
             autoApprove=bool(getattr(self.agent, "auto_approve", False)),
@@ -885,6 +889,26 @@ async def _cmd_get_plan(server: IPCServer, msg: Dict[str, Any]) -> None:
     server.emit("info", message=_format_plan_message(plan))
 
 
+async def _cmd_list_models(server: IPCServer, _msg: Dict[str, Any]) -> None:
+    """Return all available models grouped by provider for the model-picker UI."""
+    from ..llm.anthropic import MODEL_ALIASES
+    from ..llm.deepseek import DeepSeekProvider
+    from ..llm.groq import GroqProvider
+    from ..llm.openai import OpenAIProvider
+
+    server.emit(
+        "available_models",
+        current=server.agent.model,
+        models={
+            "Anthropic": sorted(MODEL_ALIASES.keys()),
+            "OpenAI": sorted(OpenAIProvider.SUPPORTED_MODELS.keys()),
+            "DeepSeek": sorted(DeepSeekProvider.SUPPORTED_MODELS.keys()),
+            "Groq": sorted(GroqProvider.SUPPORTED_MODELS.keys()),
+            "Local": ["lmstudio", "ollama"],
+        },
+    )
+
+
 async def _cmd_reference(server: IPCServer, msg: Dict[str, Any]) -> None:
     """Emit long-form help text (models, cost, system status, config, info, tasks)."""
     from .chat_reference import build_tasks_text, resolve_reference_text
@@ -987,9 +1011,37 @@ async def _cmd_exit(server: IPCServer, msg: Dict[str, Any]) -> None:
     server._exit.set()
 
 
+async def _cmd_cancel_agent(server: IPCServer, msg: Dict[str, Any]) -> None:
+    """Cancel a specific sub-agent by ID."""
+    agent_id = (msg.get("payload") or {}).get("agentId")
+    if not agent_id:
+        server.emit("error", category="protocol", message="cancel_agent requires agentId")
+        return
+    from ..agent_tracker import agent_tracker as tracker
+    cancelled = tracker.cancel(agent_id)
+    server.emit(
+        "success",
+        message=f"Sub-agent {agent_id} cancellation {'requested' if cancelled else 'failed (not found)'}",
+    )
+
+
+async def _cmd_handshake(server: IPCServer, msg: Dict[str, Any]) -> None:
+    """Handle UI handshake — negotiate protocol version."""
+    payload = msg.get("payload") or {}
+    ui_version = payload.get("protocolVersion", 1)
+    if ui_version != PROTOCOL_VERSION:
+        server.emit(
+            "warning",
+            message=f"Protocol version mismatch: agent v{PROTOCOL_VERSION}, UI v{ui_version}. "
+                    f"Some features may not work correctly.",
+        )
+    server._handshake_done = True
+
+
 _COMMAND_HANDLERS: Dict[str, Callable[[IPCServer, Dict[str, Any]], Awaitable[None]]] = {
     "send_message": _cmd_send_message,
     "cancel": _cmd_cancel,
+    "cancel_agent": _cmd_cancel_agent,
     "set_model": _cmd_set_model,
     "set_reasoning": _cmd_set_reasoning,
     "toggle_auto_approve": _cmd_toggle_auto_approve,
@@ -998,8 +1050,10 @@ _COMMAND_HANDLERS: Dict[str, Callable[[IPCServer, Dict[str, Any]], Awaitable[Non
     "compact_context": _cmd_compact_context,
     "get_state": _cmd_get_state,
     "get_plan": _cmd_get_plan,
+    "list_models": _cmd_list_models,
     "reference": _cmd_reference,
     "set_default_model": _cmd_set_default_model,
     "set_verbosity": _cmd_set_verbosity,
     "exit": _cmd_exit,
+    "handshake": _cmd_handshake,
 }

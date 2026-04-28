@@ -1,7 +1,10 @@
-import React, {useRef, useState} from "react";
+import React, {useEffect, useRef, useState} from "react";
 import {Box, Text, useInput} from "ink";
 import TextInput from "ink-text-input";
 import {theme} from "../theme.js";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as os from "node:os";
 
 export interface PromptProps {
   onSubmit: (text: string) => void;
@@ -17,6 +20,32 @@ export interface PromptProps {
 
 const MAX_HISTORY = 100;
 
+function historyPath(): string {
+  const dir = path.join(os.homedir(), ".coderAI");
+  return path.join(dir, "prompt_history.json");
+}
+
+function loadHistory(): string[] {
+  try {
+    const raw = fs.readFileSync(historyPath(), "utf8");
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) return parsed.slice(-MAX_HISTORY);
+  } catch {
+    // File missing or corrupt — start fresh.
+  }
+  return [];
+}
+
+function saveHistory(items: string[]) {
+  try {
+    const dir = path.join(os.homedir(), ".coderAI");
+    fs.mkdirSync(dir, {recursive: true});
+    fs.writeFileSync(historyPath(), JSON.stringify(items.slice(-MAX_HISTORY)) + "\n", "utf8");
+  } catch {
+    // Best-effort persistence.
+  }
+}
+
 /**
  * Input prompt.
  *
@@ -29,7 +58,7 @@ const MAX_HISTORY = 100;
 export function Prompt({onSubmit, disabled, placeholder, exitHint}: PromptProps) {
   const [value, setValue] = useState("");
 
-  const history = useRef<string[]>([]);
+  const history = useRef<string[]>(loadHistory());
   const cursor = useRef<number>(0);
   const draftRef = useRef<string>("");
 
@@ -42,6 +71,7 @@ export function Prompt({onSubmit, disabled, placeholder, exitHint}: PromptProps)
     if (hist[hist.length - 1] !== trimmed) {
       hist.push(trimmed);
       if (hist.length > MAX_HISTORY) hist.shift();
+      saveHistory(hist);
     }
     cursor.current = hist.length;
     draftRef.current = "";

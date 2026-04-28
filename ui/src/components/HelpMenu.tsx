@@ -1,4 +1,4 @@
-import React, {useState} from "react";
+import React, {useMemo, useState} from "react";
 import {Box, Text, useInput} from "ink";
 import {
   HELP_CLI_FOOTER,
@@ -15,16 +15,23 @@ export interface HelpMenuProps {
 }
 
 /**
- * /command picker overlay with keyboard navigation.
+ * /command picker overlay with keyboard navigation and type-to-filter.
  *
- * Redesign: keeps the single round border (this is a modal and earns
- * chrome), but swaps the row treatment to a filled selection bar that
- * reads as a real focused menu row rather than a coloured text run.
+ * Start typing to narrow the list. Backspace widens. Arrow keys still
+ * navigate. The filter resets when the menu closes.
  */
 export function HelpMenu({onPick, onClose, maxWidth}: HelpMenuProps) {
   const [index, setIndex] = useState(0);
   const [showFooter, setShowFooter] = useState(false);
-  const items = HELP_MENU_ENTRIES;
+  const [filter, setFilter] = useState("");
+
+  const items = useMemo(() => {
+    if (!filter) return HELP_MENU_ENTRIES;
+    const q = filter.toLowerCase();
+    return HELP_MENU_ENTRIES.filter(
+      (e) => e.slash.toLowerCase().includes(q) || e.desc.toLowerCase().includes(q),
+    );
+  }, [filter]);
 
   useInput(
     (input, key) => {
@@ -32,21 +39,32 @@ export function HelpMenu({onPick, onClose, maxWidth}: HelpMenuProps) {
         onClose();
         return;
       }
+      if (key.return) {
+        const row = items[index];
+        if (row) onPick(row.slash);
+        return;
+      }
       if (input === "?") {
         setShowFooter((v) => !v);
         return;
       }
       if (key.upArrow) {
-        setIndex((i) => (i - 1 + items.length) % items.length);
+        setIndex((i) => (i - 1 + Math.max(1, items.length)) % Math.max(1, items.length));
         return;
       }
       if (key.downArrow) {
-        setIndex((i) => (i + 1) % items.length);
+        setIndex((i) => (i + 1) % Math.max(1, items.length));
         return;
       }
-      if (key.return) {
-        const row = items[index];
-        if (row) onPick(row.slash);
+      if (key.backspace || key.delete) {
+        setFilter((f) => f.slice(0, -1));
+        setIndex(0);
+        return;
+      }
+      // Any printable character feeds the filter.
+      if (input.length === 1 && !key.ctrl && !key.meta) {
+        setFilter((f) => f + input);
+        setIndex(0);
       }
     },
     {isActive: true},
@@ -70,23 +88,36 @@ export function HelpMenu({onPick, onClose, maxWidth}: HelpMenuProps) {
           {theme.glyph.diamond} Commands
         </Text>
         <Text color={theme.faint}>
-          ↑↓ select
+          type to filter
           {theme.glyph.separator}↵ run
           {theme.glyph.separator}? cli help
           {theme.glyph.separator}esc close
         </Text>
       </Box>
 
+      {filter ? (
+        <Box marginBottom={1}>
+          <Text color={theme.info}>
+            Filter: <Text color={theme.textSoft}>{filter}</Text>
+            <Text color={theme.faint}>  ({items.length} match{items.length === 1 ? "" : "es"})</Text>
+          </Text>
+        </Box>
+      ) : null}
+
       {/* Entries */}
-      {items.map((row, i) => (
-        <HelpRow
-          key={row.slash}
-          row={row}
-          selected={i === index}
-          labelW={labelW}
-          descW={descW}
-        />
-      ))}
+      {items.length === 0 ? (
+        <Text color={theme.muted}>No commands match the filter.</Text>
+      ) : (
+        items.map((row, i) => (
+          <HelpRow
+            key={row.slash}
+            row={row}
+            selected={i === index}
+            labelW={labelW}
+            descW={descW}
+          />
+        ))
+      )}
 
       {/* Footer — only shown after the user presses `?` so the menu
           stays compact for the common case. */}

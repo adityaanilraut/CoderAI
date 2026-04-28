@@ -62,11 +62,15 @@ class ToolExecutor:
         # mid-turn if a session boundary is crossed another way.
         self._call_counts: Dict[str, int] = {}
         self._last_results: Dict[str, Dict[str, Any]] = {}
+        # Cache file contents by (path, mtime) for _compute_preview_diff so
+        # repeated diffs on the same file within one turn avoid re-reading.
+        self._preview_file_cache: Dict[str, Tuple[float, str]] = {}
 
     def reset_counts(self) -> None:
-        """Drop the fingerprint dedup / last-results caches."""
+        """Drop the fingerprint dedup / last-results / file caches."""
         self._call_counts.clear()
         self._last_results.clear()
+        self._preview_file_cache.clear()
 
     def _approval_allowlist(self) -> set[str]:
         allowlist = getattr(self.agent, "_tool_approval_allowlist", None)
@@ -155,28 +159,35 @@ class ToolExecutor:
     def _compute_preview_diff(self, tool_name: str, arguments: Dict[str, Any]) -> Optional[str]:
         if tool_name not in ("write_file", "search_replace", "apply_diff", "multi_edit"):
             return None
-        
+
         path = arguments.get("path")
         if not path:
             return None
-            
+
         from pathlib import Path
         import difflib
-        
+
         try:
             path_obj = Path(path).expanduser()
             if not path_obj.exists() and tool_name != "write_file":
                 return None
-                
+
             original_content = ""
             if path_obj.exists():
                 try:
-                    original_content = path_obj.read_text(encoding="utf-8")
+                    resolved = str(path_obj.resolve())
+                    current_mtime = path_obj.stat().st_mtime
+                    cached = self._preview_file_cache.get(resolved)
+                    if cached is not None and cached[0] == current_mtime:
+                        original_content = cached[1]
+                    else:
+                        original_content = path_obj.read_text(encoding="utf-8")
+                        self._preview_file_cache[resolved] = (current_mtime, original_content)
                 except Exception:
                     return None
-            
+
             new_content = original_content
-            
+
             if tool_name == "write_file":
                 if arguments.get("append"):
                     new_content += arguments.get("content", "")

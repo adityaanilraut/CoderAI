@@ -51,6 +51,8 @@ MODEL_PRICING: Dict[str, Dict[str, float]] = {
     "llama-3.1-8b-instant": {"input": 0.05, "output": 0.08},
 
     # DeepSeek
+    "deepseek-v4-flash": {"input": 0.14, "output": 0.28},
+    "deepseek-v4-pro": {"input": 1.74, "output": 3.48},
     "deepseek-chat": {"input": 0.27, "output": 1.10},
     "deepseek-reasoner": {"input": 0.55, "output": 2.19},
     "deepseek-v3": {"input": 0.27, "output": 1.10},
@@ -87,9 +89,10 @@ class CostTracker:
 
         pricing = MODEL_PRICING.get(base_model)
         if not pricing:
-            for k, v in MODEL_PRICING.items():
+            # Match longest key first so "o1-pro" matches "o1-pro" before "o1"
+            for k in sorted(MODEL_PRICING, key=len, reverse=True):
                 if k in base_model:
-                    pricing = v
+                    pricing = MODEL_PRICING[k]
                     break
 
         if not pricing:

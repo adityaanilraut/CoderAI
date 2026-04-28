@@ -19,7 +19,7 @@ export const theme = {
   danger: "#f7768e",      // Pink-red — shell tools, ✗ errors, high-risk
   info: "#7dcfff",        // Cyan — fs tools, help menu, waiting state
   muted: "#565f89",       // Slate — secondary text, quiet borders
-  faint: "#414868",       // Darker slate — tertiary chrome, dividers
+  faint: "#525985",       // Dim slate — tertiary chrome, dividers (raised from #414868 for contrast)
 
   // Main text (Tokyo Night foreground)
   text: "#c0caf5",

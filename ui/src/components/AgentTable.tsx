@@ -2,7 +2,7 @@ import React from "react";
 import {Box, Text} from "ink";
 import {theme} from "../theme.js";
 import type {AgentInfo, AgentStatus} from "../protocol.js";
-import {formatTokenCount, truncateText} from "../lib/format.js";
+import {formatTokenCount, formatCost, truncateSmart} from "../lib/format.js";
 
 const FINISHED: AgentStatus[] = ["done", "error", "cancelled"];
 
@@ -94,27 +94,29 @@ function AgentRow({node, width}: AgentRowProps) {
       </Text>
       <Text color={finished ? theme.muted : theme.text}>
         {" "}
-        {truncateText(agent.name, nameMax)}
+        {truncateSmart(agent.name, nameMax)}
       </Text>
       <Text color={theme.faint}>
         {"  "}
-        {theme.glyph.dot} {truncateText(agent.model || "—", modelMax)}
+        {theme.glyph.dot} {truncateSmart(agent.model || "—", modelMax)}
       </Text>
       <Text color={theme.muted}>
         {"  "}
         {formatTokenCount(agent.tokens)} tok
       </Text>
       <Text color={theme.muted}>
-        {"  "}${agent.costUsd.toFixed(4)}
+        {"  "}{formatCost(agent.costUsd)}
       </Text>
-      <Text color={theme.faint}>
-        {"  "}
-        {(agent.elapsedMs / 1000).toFixed(1)}s
-      </Text>
+      {finished ? null : (
+        <Text color={theme.faint}>
+          {"  "}
+          {(agent.elapsedMs / 1000).toFixed(1)}s
+        </Text>
+      )}
       {detail ? (
         <Text color={detail.color}>
           {"  "}
-          {truncateText(detail.text, detailMax)}
+          {truncateSmart(detail.text, detailMax)}
         </Text>
       ) : null}
     </Box>
@@ -149,13 +151,13 @@ function renderDetail(
   if (finished) return null;
   if (agent.tool) {
     return {
-      text: truncateText(agent.tool, 60),
+      text: truncateSmart(agent.tool, 60),
       color: theme.warning,
     };
   }
   if (agent.task) {
     return {
-      text: truncateText(agent.task, 60),
+      text: truncateSmart(agent.task, 60),
       color: theme.faint,
     };
   }

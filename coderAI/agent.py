@@ -145,6 +145,11 @@ class Agent:
         # short placeholder.
         self._wire_read_cache()
 
+        # Memoization for _get_system_prompt() — only rebuild when rules,
+        # tools, or persona change.
+        self._cached_system_prompt: Optional[str] = None
+        self._system_prompt_cache_key: Optional[str] = None
+
     @property
     def context_controller(self) -> ContextController:
         """Context controller (always initialized in __init__)."""
@@ -213,6 +218,7 @@ class Agent:
         # Re-attach the read cache; rebuilding the registry creates fresh
         # tool instances that don't carry the per-session attribute.
         self._wire_read_cache()
+        self._cached_system_prompt = None  # invalidate
 
     def _wire_read_cache(self) -> None:
         """Attach the per-session FileReadCache to the read_file tool."""
@@ -252,6 +258,7 @@ class Agent:
             if self.session:
                 self.session.model = self.model
 
+        self._cached_system_prompt = None  # invalidate before rebuild
         self._rebuild_tool_registry()
         self._refresh_session_system_prompt()
 
@@ -305,8 +312,33 @@ class Agent:
         for name in to_remove:
             del self.tools.tools[name]
 
+    def _compute_system_prompt_cache_key(self) -> str:
+        """Build a cache key that changes when rules, tools, or persona change."""
+        from pathlib import Path
+        parts: List[str] = []
+        parts.append(self.model)
+        if self.persona:
+            parts.append(f"persona:{self.persona.name}")
+        parts.append(f"tools:{len(self.tools.tools)}:{','.join(sorted(self.tools.tools.keys()))}")
+        rules_dir = Path(self.config.project_root, ".coderAI", "rules")
+        if rules_dir.exists() and rules_dir.is_dir():
+            for rule_file in sorted(rules_dir.glob("*.md")):
+                try:
+                    mtime = rule_file.stat().st_mtime
+                    parts.append(f"rule:{rule_file.name}:{mtime}")
+                except Exception:
+                    pass
+        return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+
     def _get_system_prompt(self) -> str:
         """Get base prompt and append rules from .coderAI/rules/."""
+        cache_key = self._compute_system_prompt_cache_key()
+        if (
+            self._cached_system_prompt is not None
+            and self._system_prompt_cache_key == cache_key
+        ):
+            return self._cached_system_prompt
+
         sections: List[str] = []
         seen_hashes: set[str] = set()
 
@@ -369,7 +401,10 @@ class Agent:
         except Exception as e:
             logger.warning(f"Error loading project rules: {e}")
 
-        return "\n\n".join(sections)
+        result = "\n\n".join(sections)
+        self._cached_system_prompt = result
+        self._system_prompt_cache_key = cache_key
+        return result
 
     def _inject_context_message(
         self, messages: List[Dict[str, Any]], query: str
@@ -410,6 +445,10 @@ class Agent:
                 provider.total_input_tokens = 0
             if hasattr(provider, "total_output_tokens"):
                 provider.total_output_tokens = 0
+            if hasattr(provider, "total_cache_creation_tokens"):
+                provider.total_cache_creation_tokens = 0
+            if hasattr(provider, "total_cache_read_tokens"):
+                provider.total_cache_read_tokens = 0
 
     def create_session(self) -> Session:
         """Create a new conversation session."""
@@ -616,15 +655,19 @@ class Agent:
         from .agent_loop import ExecutionLoop
         return await ExecutionLoop(self)._call_llm_with_retry(messages, tool_schemas)
 
-    async def process_message(self, user_message: str) -> Dict[str, Any]:
+    async def process_message(
+        self, user_message: str, progress_callback=None
+    ) -> Dict[str, Any]:
         """Process a user message using ExecutionLoop."""
         from .agent_loop import ExecutionLoop
 
-        return await ExecutionLoop(self).run(user_message)
+        return await ExecutionLoop(self, progress_callback=progress_callback).run(user_message)
 
-    async def process_single_shot(self, user_message: str) -> str:
+    async def process_single_shot(
+        self, user_message: str, progress_callback=None
+    ) -> str:
         """Process a single message and return the assistant's text response."""
-        result = await self.process_message(user_message)
+        result = await self.process_message(user_message, progress_callback=progress_callback)
         return result.get("content", "")
 
     def get_model_info(self) -> Dict[str, Any]:

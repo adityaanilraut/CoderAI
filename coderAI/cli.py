@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import sys
+from pathlib import Path
 
 import click
 from dotenv import load_dotenv
@@ -363,7 +364,7 @@ def setup():
     display.print("   Run `coderAI models` after setup for the full list.")
     display.print(
         "   Common: claude-sonnet-4-6, opus, haiku, gpt-5.4-mini, "
-        "gpt-5.4, lmstudio, ollama"
+        "gpt-5.4, deepseek-v4-flash, deepseek-v4-pro, lmstudio, ollama"
     )
     while True:
         model = click.prompt("   Enter default model", default="gpt-5.4-mini").strip()
@@ -716,6 +717,121 @@ def doctor():
 def tasks():
     """Manage project tasks and TODOs."""
     pass
+
+
+@cli.command("index")
+@click.option("--force", is_flag=True, help="Re-index all files, ignoring the manifest cache")
+@click.option(
+    "--paths", "-p", multiple=True,
+    help="Specific files or directories to index (can be repeated). If omitted, indexes the whole project."
+)
+def index_cmd(force, paths):
+    """Build or update the semantic code search index.
+
+    Walks the project, splits source files into semantic chunks, generates
+    embeddings via the configured provider, and stores them in a local
+    vector database under .coderAI/index/.
+
+    Requires an OpenAI API key (for embeddings). Subsequent runs only
+    re-index changed files unless --force is used.
+    """
+    import asyncio
+
+    from .config import config_manager
+    from .embeddings.factory import create_embedding_provider
+    from .code_indexer import CodeIndexer
+    from .ui.display import display
+
+    config = config_manager.load()
+    provider = create_embedding_provider(config)
+    if provider is None:
+        display.print_error(
+            "No embedding provider available. Set openai_api_key via "
+            "`coderAI config set openai_api_key <key>` or OPENAI_API_KEY env var."
+        )
+        sys.exit(1)
+
+    project_root = str(Path(config.project_root).resolve())
+    indexer = CodeIndexer(project_root, provider)
+
+    display.print_info(f"Project root: {project_root}")
+    display.print_info("Indexing project (this may take a while on first run)...")
+
+    try:
+        result = asyncio.run(
+            indexer.index(
+                skip_if_unchanged=not force,
+                paths=list(paths) if paths else None,
+            )
+        )
+    except Exception as e:
+        display.print_error(f"Indexing failed: {e}")
+        sys.exit(1)
+
+    stats = indexer.stats()
+    display.print_success(
+        f"Index updated: {result['added']} added, {result['updated']} updated, "
+        f"{result['removed']} removed, {result['unchanged']} unchanged. "
+        f"Total: {stats['chunks']} chunks from {stats['indexed_files']} files."
+    )
+
+
+@cli.command("search")
+@click.argument("query")
+@click.option("--top-k", "-n", default=10, help="Number of results (default: 10)")
+@click.option("--file-filter", "-f", default=None, help="Glob to filter results, e.g. '*.py'")
+def search_cmd(query, top_k, file_filter):
+    """Search the codebase with a natural-language query.
+
+    Requires a pre-built index. Run `coderAI index` first.
+
+    Examples:
+      coderAI search "where is authentication middleware?"
+      coderAI search "rate limiting logic" -f "*.py"
+    """
+    import asyncio
+
+    from .config import config_manager
+    from .embeddings.factory import create_embedding_provider
+    from .code_indexer import CodeIndexer
+    from .ui.display import display
+
+    config = config_manager.load()
+    provider = create_embedding_provider(config)
+    if provider is None:
+        display.print_error(
+            "No embedding provider available. Set openai_api_key."
+        )
+        sys.exit(1)
+
+    project_root = str(Path(config.project_root).resolve())
+    indexer = CodeIndexer(project_root, provider)
+
+    try:
+        results = asyncio.run(
+            indexer.search(query=query, top_k=top_k, file_filter=file_filter)
+        )
+    except Exception as e:
+        display.print_error(f"Search failed: {e}")
+        sys.exit(1)
+
+    if not results:
+        display.print_warning("No results found. Is the index built? Run `coderAI index`.")
+        return
+
+    display.print_header(f"Semantic search results for: \"{query}\"")
+    for i, r in enumerate(results, 1):
+        display.print(
+            f"\n[bold]{i}.[/bold] [cyan]{r['file_path']}[/cyan] "
+            f"lines {r['start_line']}-{r['end_line']} "
+            f"[dim]({r['language']}, score: {r['score']:.3f})[/dim]"
+        )
+        # Show first 3 lines of the chunk
+        snippet = r["text"][:300]
+        if len(r["text"]) > 300:
+            snippet += "..."
+        for line in snippet.split("\n")[:5]:
+            display.print(f"    {line}")
 
 
 @tasks.command("list")

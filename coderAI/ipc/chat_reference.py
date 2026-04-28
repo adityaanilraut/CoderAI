@@ -48,7 +48,7 @@ def build_models_text() -> str:
         "  openai/gpt-oss-120b, openai/gpt-oss-20b, llama3-70b-8192, …",
         "",
         "DeepSeek — requires DEEPSEEK or config deepseek_api_key",
-        "  deepseek-v3.2, deepseek-r1, …",
+        "  deepseek-v4-flash, deepseek-v4-pro, deepseek-v3.2, deepseek-r1, …",
         "",
         "Local",
         "  lmstudio — LM Studio at lmstudio_endpoint",

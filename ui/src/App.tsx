@@ -10,7 +10,10 @@ import { ErrorPanel } from "./components/ErrorPanel.js";
 import { AgentTree } from "./components/AgentTable.js";
 import { Thinking } from "./components/Thinking.js";
 import { Toast } from "./components/Toast.js";
+import { ProgressBar } from "./components/ProgressBar.js";
 import { HelpMenu } from "./components/HelpMenu.js";
+import { ModelMenu } from "./components/ModelMenu.js";
+import { ReasoningMenu } from "./components/ReasoningMenu.js";
 import { ApprovalPrompt } from "./components/ApprovalPrompt.js";
 import { theme } from "./theme.js";
 import { isTimelineItemFrozen } from "./lib/timelineItemFrozen.js";
@@ -29,7 +32,7 @@ const CTRL_C_WINDOW_MS = 1500;
 const MAX_LIVE_ITEMS = 12;
 
 export function App({ python, cwd }: AppProps) {
-  const { session, timeline, actions, helpMenuOpen } = useAgent({ python, cwd });
+  const { session, timeline, actions, helpMenuOpen, modelMenuOpen, reasoningMenuOpen } = useAgent({ python, cwd });
   const { exit } = useApp();
   const { stdout } = useStdout();
   const columns = stdout?.columns ?? 100;
@@ -80,6 +83,8 @@ export function App({ python, cwd }: AppProps) {
     session.thinking ||
     session.streaming ||
     helpMenuOpen ||
+    modelMenuOpen ||
+    reasoningMenuOpen ||
     approvalPending;
 
   // Ref so renderItem can read the latest value without being in its dep array.
@@ -113,7 +118,7 @@ export function App({ python, cwd }: AppProps) {
         if (session.thinking || session.streaming) actions.cancel();
       }
     },
-    { isActive: !helpMenuOpen },
+    { isActive: !helpMenuOpen && !modelMenuOpen && !reasoningMenuOpen },
   );
 
   // Split timeline into a frozen prefix (handed to Static — printed once, never
@@ -255,6 +260,15 @@ export function App({ python, cwd }: AppProps) {
 
         <Thinking active={session.thinking} detail={thinkingDetail(session.agents)} />
 
+        {session.progress ? (
+          <ProgressBar
+            label={session.progress.label}
+            current={session.progress.current}
+            total={session.progress.total}
+            kind={session.progress.kind}
+          />
+        ) : null}
+
         {helpMenuOpen ? (
           <HelpMenu
             maxWidth={columns}
@@ -262,6 +276,31 @@ export function App({ python, cwd }: AppProps) {
             onPick={(slash) => {
               actions.closeHelpMenu();
               actions.send(slash);
+            }}
+          />
+        ) : null}
+
+        {modelMenuOpen ? (
+          <ModelMenu
+            models={session.availableModels}
+            current={session.model}
+            maxWidth={columns}
+            onClose={actions.closeModelMenu}
+            onPick={(model) => {
+              actions.closeModelMenu();
+              actions.send(`/model ${model}`);
+            }}
+          />
+        ) : null}
+
+        {reasoningMenuOpen ? (
+          <ReasoningMenu
+            current={session.reasoning}
+            maxWidth={columns}
+            onClose={actions.closeReasoningMenu}
+            onPick={(effort) => {
+              actions.closeReasoningMenu();
+              actions.send(`/reasoning ${effort}`);
             }}
           />
         ) : null}
@@ -280,7 +319,11 @@ export function App({ python, cwd }: AppProps) {
           placeholder={
             helpMenuOpen
               ? "Esc closes command menu"
-              : !session.connected
+              : modelMenuOpen
+                ? "Esc closes model picker"
+                : reasoningMenuOpen
+                  ? "Esc closes reasoning picker"
+                  : !session.connected
                 ? "starting agent…"
                 : session.thinking
                   ? "thinking…"

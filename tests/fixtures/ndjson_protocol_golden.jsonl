@@ -10,7 +10,7 @@
 {"v":1,"kind":"event","event":"file_diff","path":"p","diff":"d"}
 {"v":1,"kind":"event","event":"status","ctxUsed":0,"ctxLimit":1,"costUsd":0,"budgetUsd":0,"promptTokens":0,"completionTokens":0,"totalTokens":0}
 {"v":1,"kind":"event","event":"agent","phase":"update","info":{"id":"1","name":"n","role":null,"parentId":"2","status":"idle","task":"","tool":null,"model":"","tokens":0,"costUsd":0,"ctxUsed":0,"ctxLimit":0,"elapsedMs":0},"parentId":"2"}
-{"v":1,"kind":"event","event":"agent","phase":"started","info":{"id":"1","name":"n","role":null,"parentId":"2","status":"idle","task":"","tool":null,"model":"","tokens":0,"costUsd":0,"ctxUsed":0,"ctxLimit":0,"elapsedMs":0},"parentId":"2"}
+{"v":1,"kind":"event","event":"agent","phase":"update","info":{"id":"1","name":"n2","role":null,"parentId":"3","status":"idle","task":"","tool":null,"model":"","tokens":0,"costUsd":0,"ctxUsed":0,"ctxLimit":0,"elapsedMs":0},"parentId":"3"}
 {"v":1,"kind":"event","event":"error","category":"internal","message":"e"}
 {"v":1,"kind":"event","event":"info","message":"i"}
 {"v":1,"kind":"event","event":"warning","message":"w"}

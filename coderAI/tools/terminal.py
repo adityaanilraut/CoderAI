@@ -8,7 +8,7 @@ import shlex
 import shutil
 import atexit
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -204,6 +204,7 @@ class RunCommandParams(BaseModel):
     command: str = Field(..., description="Shell command to execute")
     working_dir: str = Field(".", description="Working directory for the command (default: current)")
     timeout: int = Field(60, description="Timeout in seconds (default: 60)")
+    input: Optional[str] = Field(None, description="Optional text to send to the process stdin (max 64KB)")
 
 
 class RunCommandTool(Tool):
@@ -216,7 +217,8 @@ class RunCommandTool(Tool):
     timeout = None
 
     async def execute(
-        self, command: str, working_dir: str = ".", timeout: int = 60
+        self, command: str, working_dir: str = ".", timeout: int = 60,
+        input: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Execute shell command with safety checks.
 
@@ -289,9 +291,12 @@ class RunCommandTool(Tool):
                     )
 
             # Wait for completion with timeout
+            stdin_bytes = None
+            if input is not None:
+                stdin_bytes = input[:65536].encode("utf-8", errors="replace")  # cap at 64KB
             try:
                 stdout, stderr = await asyncio.wait_for(
-                    process.communicate(), timeout=timeout
+                    process.communicate(input=stdin_bytes), timeout=timeout
                 )
                 if process.returncode is None:
                     await process.wait()
@@ -345,14 +350,28 @@ class RunCommandTool(Tool):
 class RunBackgroundParams(BaseModel):
     command: str = Field(..., description="Shell command to execute in background")
     working_dir: str = Field(".", description="Working directory for the command (default: current)")
+    capture_output: bool = Field(False, description="Capture stdout/stderr for later retrieval via read_bg_output (default: false)")
+
+
+class BgProcessInfo:
+    """Tracks a background process plus its output buffer when capture is enabled."""
+
+    def __init__(self, process: asyncio.subprocess.Process):
+        self.process = process
+        self.stdout_buf: List[str] = []
+        self.stderr_buf: List[str] = []
+        self._max_buf_chars = 65536  # 64KB total cap
+
+    def _append(self, buf: List[str], data: str) -> None:
+        current = sum(len(s) for s in buf)
+        if current >= self._max_buf_chars:
+            return
+        remaining = self._max_buf_chars - current
+        buf.append(data[:remaining])
 
 
 # Module-level registry of all tracked background processes.
-# Using a plain dict (pid → process) rather than a WeakSet of tool instances:
-# when the tool registry is rebuilt (e.g. persona change), old RunBackgroundTool
-# instances are garbage-collected and any processes they tracked become orphaned.
-# A module-level dict keeps the processes reachable regardless of instance lifecycle.
-_tracked_bg_processes: Dict[int, asyncio.subprocess.Process] = {}
+_tracked_bg_processes: Dict[int, BgProcessInfo] = {}
 
 
 class RunBackgroundTool(Tool):
@@ -368,7 +387,8 @@ class RunBackgroundTool(Tool):
         # Instance shares the module-level process registry
         self._processes = _tracked_bg_processes
 
-    async def execute(self, command: str, working_dir: str = ".") -> Dict[str, Any]:
+    async def execute(self, command: str, working_dir: str = ".",
+                      capture_output: bool = False) -> Dict[str, Any]:
         """Start background process with tracking.
 
         Uses the same exec-vs-shell heuristic as ``run_command`` — plain
@@ -408,11 +428,14 @@ class RunBackgroundTool(Tool):
             command = _rewrite_command_aliases(command)
             needs_shell = any(c in command for c in ['|', '>', '<', '&&', '||', ';', '`', '$', '*', '?', '~', '&'])
 
+            stdout_target = asyncio.subprocess.PIPE if capture_output else asyncio.subprocess.DEVNULL
+            stderr_target = asyncio.subprocess.PIPE if capture_output else asyncio.subprocess.DEVNULL
+
             if needs_shell:
                 process = await asyncio.create_subprocess_shell(
                     command,
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
+                    stdout=stdout_target,
+                    stderr=stderr_target,
                     cwd=working_dir,
                 )
             else:
@@ -420,37 +443,53 @@ class RunBackgroundTool(Tool):
                     args = shlex.split(command)
                     process = await asyncio.create_subprocess_exec(
                         *args,
-                        stdout=asyncio.subprocess.DEVNULL,
-                        stderr=asyncio.subprocess.DEVNULL,
+                        stdout=stdout_target,
+                        stderr=stderr_target,
                         cwd=working_dir,
                     )
                 except ValueError:
                     process = await asyncio.create_subprocess_shell(
                         command,
-                        stdout=asyncio.subprocess.DEVNULL,
-                        stderr=asyncio.subprocess.DEVNULL,
+                        stdout=stdout_target,
+                        stderr=stderr_target,
                         cwd=working_dir,
                     )
 
             # Track the process
-            self._processes[process.pid] = process
+            info = BgProcessInfo(process)
+            self._processes[process.pid] = info
+
+            if capture_output:
+                # Start reader tasks to accumulate output
+                async def _read_stream(stream, buf_list):
+                    while True:
+                        line_bytes = await stream.readline()
+                        if not line_bytes:
+                            break
+                        info._append(buf_list, line_bytes.decode("utf-8", errors="replace"))
+                if process.stdout:
+                    asyncio.create_task(_read_stream(process.stdout, info.stdout_buf))
+                if process.stderr:
+                    asyncio.create_task(_read_stream(process.stderr, info.stderr_buf))
 
             return {
                 "success": True,
                 "pid": process.pid,
                 "command": command,
+                "capture_output": capture_output,
                 "message": "Process started in background",
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    def get_tracked_processes(self) -> Dict[int, asyncio.subprocess.Process]:
+    def get_tracked_processes(self) -> Dict[int, BgProcessInfo]:
         """Get all tracked background processes for this instance."""
         return self._processes
 
     def cleanup_finished(self) -> int:
         """Clean up finished processes from tracking. Returns count removed."""
-        finished = [pid for pid, proc in self._processes.items() if proc.returncode is not None]
+        finished = [pid for pid, info in self._processes.items()
+                    if info.process.returncode is not None]
         for pid in finished:
             del self._processes[pid]
         return len(finished)
@@ -458,10 +497,10 @@ class RunBackgroundTool(Tool):
     def terminate_all(self) -> int:
         """Forcefully terminate all remaining tracked processes."""
         terminated = 0
-        for pid, proc in dict(self._processes).items():
-            if proc.returncode is None:
+        for pid, info in dict(self._processes).items():
+            if info.process.returncode is None:
                 try:
-                    proc.kill()
+                    info.process.kill()
                     terminated += 1
                 except Exception:
                     pass
@@ -471,10 +510,10 @@ class RunBackgroundTool(Tool):
 
 def _cleanup_all_background():
     """Terminate background processes from the shared module-level registry."""
-    for pid, proc in dict(_tracked_bg_processes).items():
-        if proc.returncode is None:
+    for pid, info in dict(_tracked_bg_processes).items():
+        if info.process.returncode is None:
             try:
-                proc.kill()
+                info.process.kill()
             except Exception:
                 pass
     _tracked_bg_processes.clear()
@@ -507,12 +546,12 @@ class ListProcessesTool(Tool):
     async def execute(self) -> Dict[str, Any]:
         try:
             processes = []
-            for pid, proc in _tracked_bg_processes.items():
+            for pid, info in _tracked_bg_processes.items():
                 processes.append(
                     {
                         "pid": pid,
-                        "running": proc.returncode is None,
-                        "returncode": proc.returncode,
+                        "running": info.process.returncode is None,
+                        "returncode": info.process.returncode,
                     }
                 )
             return {
@@ -545,8 +584,8 @@ class KillProcessTool(Tool):
         import signal as _signal
 
         try:
-            proc = _tracked_bg_processes.get(pid)
-            if proc is None:
+            info = _tracked_bg_processes.get(pid)
+            if info is None:
                 return {
                     "success": False,
                     "error": (
@@ -556,20 +595,67 @@ class KillProcessTool(Tool):
                     ),
                 }
 
-            if proc.returncode is not None:
+            if info.process.returncode is not None:
                 return {
                     "success": False,
-                    "error": f"Process {pid} has already exited (returncode={proc.returncode}).",
+                    "error": f"Process {pid} has already exited (returncode={info.process.returncode}).",
                 }
 
             sig = _signal.SIGKILL if force else _signal.SIGTERM
-            proc.send_signal(sig)
+            info.process.send_signal(sig)
             del _tracked_bg_processes[pid]
             return {
                 "success": True,
                 "pid": pid,
                 "signal": "SIGKILL" if force else "SIGTERM",
                 "message": f"Sent {'SIGKILL' if force else 'SIGTERM'} to process {pid}.",
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# Read background process output
+# ---------------------------------------------------------------------------
+
+
+class ReadBgOutputParams(BaseModel):
+    pid: int = Field(..., description="Process ID (PID) of the background process")
+
+
+class ReadBgOutputTool(Tool):
+    """Read captured output from a background process started with capture_output=True."""
+
+    name = "read_bg_output"
+    description = "Read captured stdout/stderr from a background process started with capture_output=True"
+    category = "shell"
+    parameters_model = ReadBgOutputParams
+    is_read_only = True
+
+    async def execute(self, pid: int) -> Dict[str, Any]:
+        try:
+            info = _tracked_bg_processes.get(pid)
+            if info is None:
+                return {
+                    "success": False,
+                    "error": (
+                        f"No tracked background process with PID {pid}. "
+                        "Only processes started by run_background with capture_output=True "
+                        "can have their output read."
+                    ),
+                }
+
+            stdout_text = "".join(info.stdout_buf)
+            stderr_text = "".join(info.stderr_buf)
+            running = info.process.returncode is None
+
+            return {
+                "success": True,
+                "pid": pid,
+                "running": running,
+                "returncode": info.process.returncode,
+                "stdout": stdout_text,
+                "stderr": stderr_text,
             }
         except Exception as e:
             return {"success": False, "error": str(e)}

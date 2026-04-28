@@ -1117,3 +1117,57 @@ class GitTagTool(Tool):
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# Git fetch
+# ---------------------------------------------------------------------------
+
+
+class GitFetchParams(BaseModel):
+    remote: str = Field("origin", description="Remote name (default: origin)")
+    branch: Optional[str] = Field(None, description="Specific branch to fetch (default: all)")
+    prune: bool = Field(False, description="Remove remote-tracking branches that no longer exist on the remote (-p)")
+    repo_path: str = Field(".", description="Path to the git repository")
+
+
+class GitFetchTool(Tool):
+    """Download objects and refs from a remote repository without merging."""
+
+    name = "git_fetch"
+    description = "Download objects and refs from a remote repository. Unlike git_pull, this does not merge changes."
+    category = "git"
+    parameters_model = GitFetchParams
+    is_read_only = True
+
+    async def execute(
+        self,
+        remote: str = "origin",
+        branch: Optional[str] = None,
+        prune: bool = False,
+        repo_path: str = ".",
+    ) -> Dict[str, Any]:
+        try:
+            scope_error = await _validate_git_scope(repo_path)
+            if scope_error:
+                return scope_error
+
+            cmd = ["git", "fetch", remote]
+            if prune:
+                cmd.append("--prune")
+            if branch:
+                cmd.append(branch)
+
+            async with resource_manager.git_lock():
+                process = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=repo_path,
+                )
+                stdout, stderr = await process.communicate()
+
+            output = stdout.decode("utf-8", errors="replace") + stderr.decode("utf-8", errors="replace")
+            return {"success": process.returncode == 0, "output": output.strip()}
+        except Exception as e:
+            return {"success": False, "error": str(e)}

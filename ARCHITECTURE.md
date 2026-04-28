@@ -92,6 +92,9 @@ A comprehensive map of the CoderAI repository:
 │   ├── skills.py            # Skill-based tool grouping
 │   ├── system_prompt.py     # Dynamic system prompt generation
 │   ├── tool_executor.py     # Logic for running tool calls
+│   ├── code_chunker.py      # Code chunker for semantic indexing
+│   ├── code_indexer.py      # ChromaDB-backed semantic code index
+│   ├── embeddings/          # Embedding providers (OpenAI)
 │   ├── ipc/                 # IPC communication bridge
 │   │   ├── __init__.py
 │   │   ├── entry.py         # Entry point for the Ink UI
@@ -107,22 +110,24 @@ A comprehensive map of the CoderAI repository:
 │   │   ├── lmstudio.py      # LM Studio support
 │   │   ├── ollama.py        # Ollama support
 │   │   └── openai.py        # OpenAI support
-│   ├── tools/               # Tool implementations (54+ tools total)
+│   ├── tools/               # Tool implementations (56+ tools total)
 │   │   ├── __init__.py
 │   │   ├── base.py          # Tool registry and base class
-│   │   ├── filesystem.py    # read_file, write_file, search_replace, apply_diff,
-│   │   │                    # list_directory, glob_search, move_file, copy_file,
-│   │   │                    # delete_file, create_directory
+│   │   ├── filesystem.py    # read_file, write_file, search_replace, multi_edit,
+│   │   │                    # apply_diff, list_directory, glob_search, move_file,
+│   │   │                    # copy_file, delete_file, create_directory, file_stat,
+│   │   │                    # file_chmod, file_chown, file_readlink
 │   │   ├── git.py           # git_add/status/diff/commit/log/branch/checkout/stash
 │   │   │                    # + git_push/pull/merge/rebase/revert/reset/show/remote
 │   │   │                    # + git_blame/cherry_pick/tag
 │   │   ├── web.py           # web_search, read_url, download_file, http_request
-│   │   ├── search.py        # text_search, grep (regex-capable)
+│   │   ├── search.py        # text_search, grep, symbol_search
+│   │   ├── semantic_search.py # semantic_search (natural-language code search)
 │   │   ├── terminal.py      # run_command, run_background, list_processes, kill_process
 │   │   ├── subagent.py      # delegate_task (spawn isolated sub-agents)
 │   │   ├── tasks.py         # manage_tasks (persistent TODO list)
 │   │   ├── memory.py        # save_memory, recall_memory, delete_memory
-│   │   ├── mcp.py           # mcp_connect, mcp_call_tool, mcp_list
+│   │   ├── mcp.py           # mcp_connect, mcp_disconnect, mcp_call_tool, mcp_list
 │   │   ├── vision.py        # read_image (base64 encoding for multimodal)
 │   │   ├── undo.py          # undo, undo_history (file backup/rollback)
 │   │   ├── lint.py          # lint (auto-detect & run linter)

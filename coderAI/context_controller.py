@@ -2,48 +2,11 @@
 
 import json
 import logging
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .events import event_emitter
 
 logger = logging.getLogger(__name__)
-
-# #region agent log
-_CTX_DEBUG_LOG_PATHS = (
-    Path(__file__).resolve().parent.parent / ".cursor" / "debug-d1bd12.log",
-    Path.home() / ".coderAI" / "debug-d1bd12.log",
-)
-
-
-def _ctx_debug_log(hypothesis_id: str, location: str, message: str, data: dict) -> None:
-    import time as _t
-
-    line = (
-        json.dumps(
-            {
-                "sessionId": "d1bd12",
-                "runId": "pre-fix",
-                "hypothesisId": hypothesis_id,
-                "location": location,
-                "message": message,
-                "data": data,
-                "timestamp": int(_t.time() * 1000),
-            },
-            default=str,
-        )
-        + "\n"
-    )
-    for _p in _CTX_DEBUG_LOG_PATHS:
-        try:
-            _p.parent.mkdir(parents=True, exist_ok=True)
-            with open(_p, "a", encoding="utf-8") as _f:
-                _f.write(line)
-        except Exception:
-            pass
-
-
-# #endregion
 
 # Reserved tokens for response and tool overhead
 RESPONSE_TOKEN_RESERVE = 1024
@@ -56,30 +19,38 @@ class ContextController:
     def __init__(self, config, provider):
         self.config = config
         self.provider = provider
+        self._token_cache: Dict[int, int] = {}
+        self._last_summary_time: float = 0.0
+
+    def _estimate_message_tokens(self, msg: Dict[str, Any]) -> int:
+        """Estimate tokens for a single message, populating the id-keyed cache."""
+        msg_id = id(msg)
+        if msg_id in self._token_cache:
+            return self._token_cache[msg_id]
+        total = 4  # per-message formatting overhead
+        content = msg.get("content") or ""
+        if isinstance(content, str) and content:
+            total += self.provider.count_tokens(content)
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") in {"image", "input_image"}:
+                    total += IMAGE_TOKEN_FLOOR
+                else:
+                    total += self.provider.count_tokens(json.dumps(block, default=str))
+        if msg.get("tool_calls"):
+            total += self.provider.count_tokens(json.dumps(msg["tool_calls"]))
+        if msg.get("tool_call_id"):
+            total += self.provider.count_tokens(msg["tool_call_id"])
+        if msg.get("name"):
+            total += self.provider.count_tokens(msg["name"])
+        self._token_cache[msg_id] = total
+        return total
 
     def estimate_tokens(self, messages: List[Dict[str, Any]]) -> int:
         """Estimate token count for a list of messages."""
         total = 0
         for msg in messages:
-            # ~4 tokens per message for formatting overhead (role, separators, etc.)
-            total += 4
-            content = msg.get("content") or ""
-            if isinstance(content, str) and content:
-                total += self.provider.count_tokens(content)
-            elif isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict) and block.get("type") in {"image", "input_image"}:
-                        total += IMAGE_TOKEN_FLOOR
-                    else:
-                        total += self.provider.count_tokens(json.dumps(block, default=str))
-            # Tool calls add tokens too
-            if msg.get("tool_calls"):
-                total += self.provider.count_tokens(json.dumps(msg["tool_calls"]))
-            # Tool result metadata
-            if msg.get("tool_call_id"):
-                total += self.provider.count_tokens(msg["tool_call_id"])
-            if msg.get("name"):
-                total += self.provider.count_tokens(msg["name"])
+            total += self._estimate_message_tokens(msg)
         total += 3  # reply priming
         return total
 
@@ -132,28 +103,19 @@ class ContextController:
         context_limit_override: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """Manage context window by summarizing old messages to fit."""
+        import time as _time_module
+
         context_limit = context_limit_override or self.config.context_window
         max_content_tokens = context_limit - RESPONSE_TOKEN_RESERVE - TOOL_OVERHEAD_TOKENS
 
         if max_content_tokens <= 0:
             max_content_tokens = context_limit // 2
 
+        # Single pass populates per-message cache; subsequent group sums reuse it
+        self._token_cache.clear()
         total_tokens = self.estimate_tokens(messages)
         if total_tokens <= max_content_tokens:
             return messages
-
-        # #region agent log
-        _ctx_debug_log(
-            "A",
-            "context_controller.py:manage_context_window",
-            "truncation_triggered",
-            {
-                "total_tokens": total_tokens,
-                "max_content_tokens": max_content_tokens,
-                "context_limit": context_limit,
-            },
-        )
-        # #endregion
 
         logger.info(
             f"Context window management: {total_tokens} tokens exceeds limit of {max_content_tokens}. Truncating old messages."
@@ -167,23 +129,25 @@ class ContextController:
         if non_system and non_system[0].get("role") == "user":
             first_task_message = non_system.pop(0)
 
-        system_tokens = self.estimate_tokens(system_messages + ([first_task_message] if first_task_message else []))
+        system_tokens = sum(self._token_cache.get(id(m), self._estimate_message_tokens(m))
+                           for m in system_messages)
+        if first_task_message:
+            system_tokens += self._token_cache.get(id(first_task_message),
+                                                   self._estimate_message_tokens(first_task_message))
         remaining_budget = max_content_tokens - system_tokens
 
         groups = self._group_messages_for_truncation(non_system)
         kept_groups = []
         running_tokens = 0
         for group in reversed(groups):
-            group_tokens = self.estimate_tokens(group)
+            group_tokens = sum(self._token_cache.get(id(m), self._estimate_message_tokens(m))
+                              for m in group)
             if running_tokens + group_tokens > remaining_budget:
                 break
             kept_groups.insert(0, group)
             running_tokens += group_tokens
 
         # Always keep at least the last group (most recent tool interaction)
-        # so the model retains context about what just happened, even if it
-        # exceeds the budget.  Without this, tool-heavy sessions can end up
-        # with zero kept messages and a confused model.
         if not kept_groups and groups:
             kept_groups = [groups[-1]]
 
@@ -191,19 +155,6 @@ class ContextController:
 
         if len(kept_messages) < len(non_system):
             removed_messages = non_system[: -len(kept_messages)] if kept_messages else non_system
-            # #region agent log
-            _ctx_debug_log(
-                "A",
-                "context_controller.py:truncation_detail",
-                "messages_removed_for_window",
-                {
-                    "removed_count": len(removed_messages),
-                    "kept_non_system_count": len(kept_messages),
-                    "groups_total": len(groups),
-                    "kept_groups_count": len(kept_groups),
-                },
-            )
-            # #endregion
             text_to_summarize = ""
             for msg in removed_messages:
                 role = msg.get("role", "unknown")
@@ -211,7 +162,14 @@ class ContextController:
                 if content and isinstance(content, str):
                     text_to_summarize += f"{role.upper()}: {content}\n"
 
-            if text_to_summarize:
+            # Skip LLM summarization when it's unlikely to be worth the cost
+            should_summarize = (
+                len(removed_messages) > 2
+                and len(text_to_summarize) >= 500
+                and (_time_module.time() - self._last_summary_time) >= 60
+            )
+
+            if should_summarize and text_to_summarize:
                 event_emitter.emit(
                     "agent_status",
                     message="\n[dim]Context window filling up. Summarizing older conversations...[/dim]",
@@ -229,6 +187,7 @@ class ContextController:
                     f"{text_to_summarize}"
                 )
                 try:
+                    self._last_summary_time = _time_module.time()
                     response = await self.provider.chat([{"role": "user", "content": prompt}], tools=None)
                     summary_content = ""
                     if "choices" in response and response["choices"]:
@@ -239,7 +198,7 @@ class ContextController:
                             "role": "system",
                             "content": f"[Prior Conversation Summary]: {summary_content}",
                         }
-                        summary_tokens = self.estimate_tokens([summary_notice])
+                        summary_tokens = self._estimate_message_tokens(summary_notice)
                         if running_tokens + summary_tokens <= remaining_budget:
                             result = system_messages + ([first_task_message] if first_task_message else []) + [summary_notice] + kept_messages
                             return result

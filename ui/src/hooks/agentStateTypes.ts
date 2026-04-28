@@ -50,6 +50,8 @@ export interface SessionState {
   ctxLimit: number;
   costUsd: number;
   budgetUsd: number;
+  /** Model catalogue grouped by provider (populated by /model picker request). */
+  availableModels: Record<string, string[]> | null;
   agents: Record<string, AgentInfo>;
   /**
    * Wall-clock ms (Date.now()) at which an agent most recently flipped to
@@ -58,4 +60,8 @@ export interface SessionState {
    * exempt from grace-based culling — see AgentTree.
    */
   agentsFinishedAt: Record<string, number>;
+  /** Live progress bar state (null when nothing is in progress). */
+  progress: {label: string; current?: number; total?: number; kind: "tokens" | "files" | "steps"} | null;
+  /** Date.now() when the session started (set on hello). */
+  sessionStartedAt: number | null;
 }

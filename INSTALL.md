@@ -91,8 +91,13 @@ coderAI setup
 This will guide you through:
 
 1. Setting your OpenAI API key
-2. Choosing a default model
-3. Configuring LM Studio (optional)
+2. Setting your Anthropic API key
+3. Setting your Groq API key
+4. Setting your DeepSeek API key
+5. Choosing a default model
+6. Setting reasoning effort
+7. Configuring LM Studio (optional)
+8. Configuring Ollama (optional)
 
 ### Manual Setup
 
@@ -127,11 +132,14 @@ CoderAI stores configuration, history, and the cached UI binary in `~/.coderAI/`
 ~/.coderAI/
 ├── config.json                              # Configuration settings
 ├── bin/                                     # Auto-downloaded UI binaries
-│   └── coderai-ui-<platform>-v<version>    # (created on first `coderAI chat`)
+│   └── coderai-ui-<platform>-v<version>     # (created on first `coderAI chat`)
 ├── history/                                 # Conversation history
 │   └── session_*.json
-└── memory/                                  # Knowledge base
-    └── memories.json
+├── memory/                                  # Persistent memory store
+│   └── memories.json
+└── index/                                   # Semantic code search index
+    ├── manifest.json                        #   File-hash index manifest
+    └── vectordb/                            #   ChromaDB persistent store
 ```
 
 To force a re-download of the UI binary, delete `~/.coderAI/bin/` and
@@ -353,14 +361,21 @@ rm -rf ~/.coderAI
 
 CoderAI supports these environment variables:
 
+- `ANTHROPIC_API_KEY` - Anthropic (Claude) API key
 - `OPENAI_API_KEY` - OpenAI API key
-- `LMSTUDIO_ENDPOINT` - LM Studio API endpoint
+- `GROQ_API_KEY` - Groq API key
+- `DEEPSEEK_API_KEY` - DeepSeek API key
 - `CODERAI_DEFAULT_MODEL` - Default model to use
 - `CODERAI_TEMPERATURE` - Temperature for generation (0.0-2.0)
 - `CODERAI_MAX_TOKENS` - Maximum tokens to generate
+- `CODERAI_REASONING_EFFORT` - Reasoning depth (high/medium/low/none)
+- `CODERAI_BUDGET_LIMIT` - Max cost in USD per session (0 = unlimited)
+- `CODERAI_MAX_ITERATIONS` - Max agentic loop iterations per message
+- `CODERAI_LOG_LEVEL` - Python-side log level (default `WARNING`)
+- `LMSTUDIO_ENDPOINT` - LM Studio API endpoint
+- `OLLAMA_ENDPOINT` - Ollama API endpoint
 - `CODERAI_UI_BINARY` - Path to a locally built Ink UI binary (bypasses the auto-downloader)
 - `CODERAI_UI_REPO` - Override the GitHub `owner/repo` to pull UI binaries from (default: `coderAI/coderAI`)
-- `CODERAI_LOG_LEVEL` - Python-side log level inside the UI agent (default `WARNING`)
 
 Example:
 

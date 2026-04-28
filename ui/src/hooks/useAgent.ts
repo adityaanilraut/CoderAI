@@ -32,8 +32,11 @@ const INITIAL: SessionState = {
   ctxLimit: 0,
   costUsd: 0,
   budgetUsd: 0,
+  availableModels: null,
   agents: {},
   agentsFinishedAt: {},
+  progress: null,
+  sessionStartedAt: null,
 };
 
 export interface UseAgentResult {
@@ -41,12 +44,18 @@ export interface UseAgentResult {
   timeline: TimelineItem[];
   /** When true, the interactive /help menu is open (prompt should be inactive). */
   helpMenuOpen: boolean;
+  /** When true, the model picker overlay is open. */
+  modelMenuOpen: boolean;
+  /** When true, the reasoning effort picker is open. */
+  reasoningMenuOpen: boolean;
   actions: {
     send: (text: string) => void;
     cancel: () => void;
     approveTool: (toolId: string, approve: boolean, always?: boolean) => void;
     exit: () => void;
     closeHelpMenu: () => void;
+    closeModelMenu: () => void;
+    closeReasoningMenu: () => void;
     toggleVerbose: () => void;
     revealReasoning: () => void;
   };
@@ -57,6 +66,8 @@ export function useAgent(opts: {python?: string; cwd?: string} = {}): UseAgentRe
   const [session, setSession] = useState<SessionState>(INITIAL);
   const [timeline, setTimeline] = useState<TimelineItem[]>([]);
   const [helpMenuOpen, setHelpMenuOpen] = useState(false);
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const [reasoningMenuOpen, setReasoningMenuOpen] = useState(false);
 
   // Mirror of the latest session state, kept on a ref so memoised actions can
   // read fresh values without re-creating their closures on every render. The
@@ -138,6 +149,8 @@ export function useAgent(opts: {python?: string; cwd?: string} = {}): UseAgentRe
     () => {
       const showHelp = () => setHelpMenuOpen(true);
       const closeHelpMenu = () => setHelpMenuOpen(false);
+      const closeModelMenu = () => setModelMenuOpen(false);
+      const closeReasoningMenu = () => setReasoningMenuOpen(false);
 
       const clearContext = () => {
         setHelpMenuOpen(false);
@@ -244,6 +257,8 @@ export function useAgent(opts: {python?: string; cwd?: string} = {}): UseAgentRe
               toggleVerbose,
               revealReasoning,
               refreshAgents,
+              showModelMenu: () => setModelMenuOpen(true),
+              showReasoningMenu: () => setReasoningMenuOpen(true),
             });
             return;
           }
@@ -269,6 +284,8 @@ export function useAgent(opts: {python?: string; cwd?: string} = {}): UseAgentRe
         },
         exit: () => clientRef.current?.exit(),
         closeHelpMenu,
+        closeModelMenu,
+        closeReasoningMenu,
         toggleVerbose,
         revealReasoning,
       };
@@ -277,7 +294,7 @@ export function useAgent(opts: {python?: string; cwd?: string} = {}): UseAgentRe
     [],
   );
 
-  return {session, timeline, helpMenuOpen, actions};
+  return {session, timeline, helpMenuOpen, modelMenuOpen, reasoningMenuOpen, actions};
 }
 
 interface SlashHandlers {
@@ -286,6 +303,8 @@ interface SlashHandlers {
   toggleVerbose: () => void;
   revealReasoning: () => void;
   refreshAgents: () => void;
+  showModelMenu: () => void;
+  showReasoningMenu: () => void;
 }
 
 function handleSlashCommand(
@@ -295,7 +314,7 @@ function handleSlashCommand(
   nextId: () => string,
   handlers: SlashHandlers,
 ): void {
-  const {showHelp, clearContext, toggleVerbose, revealReasoning, refreshAgents} =
+  const {showHelp, clearContext, toggleVerbose, revealReasoning, refreshAgents, showModelMenu, showReasoningMenu} =
     handlers;
   const [head, ...rest] = raw.slice(1).split(/\s+/);
   const arg = rest.join(" ").trim();
@@ -327,7 +346,8 @@ function handleSlashCommand(
       //   /model default <name>  → persist as default for new sessions
       const [first, ...tail] = arg ? arg.split(/\s+/) : [];
       if (!first) {
-        client.reference("models");
+        client.listModels();
+        showModelMenu();
         return;
       }
       if (first.toLowerCase() === "default") {
@@ -337,13 +357,19 @@ function handleSlashCommand(
           return;
         }
         client.setDefaultModel(target);
+        toast("success", `Default model set to ${target}`);
         return;
       }
       client.setModel(arg);
+      toast("success", `Model set to ${arg}`);
       return;
     }
     case "reasoning":
     case "thinking": {
+      if (!arg) {
+        showReasoningMenu();
+        return;
+      }
       const normalized = arg.toLowerCase() as ReasoningEffort;
       if (!["high", "medium", "low", "none"].includes(normalized)) {
         toast(
@@ -353,6 +379,7 @@ function handleSlashCommand(
         return;
       }
       client.setReasoning(normalized);
+      toast("success", `Reasoning set to ${normalized}`);
       return;
     }
     case "yolo":
@@ -393,15 +420,6 @@ function handleSlashCommand(
       }
       if (topic === "plan") {
         client.getPlan();
-        return;
-      }
-      const allowed = new Set([
-        "version", "models", "providers", "cost", "pricing",
-        "system", "diag", "diagnostics", "config", "info",
-        "tasks", "todos", "task",
-      ]);
-      if (!allowed.has(topic)) {
-        toast("warning", `Unknown topic: ${topic}`);
         return;
       }
       client.reference(topic);

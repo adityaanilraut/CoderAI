@@ -77,6 +77,23 @@ class TestIPCStreamingHandler:
         # Each content delta should have been relayed as a turn/text event.
         assert _text_deltas(server.events) == "Hello World"
 
+    def test_ignores_duplicate_cumulative_resend(self):
+        """Provider sometimes emits the same full `content` twice; must not double UI text."""
+        server = _FakeServer()
+        handler = IPCStreamingHandler(server)
+        text = "How can I help?"
+        chunks = [
+            {"choices": [{"delta": {"content": text}}]},
+            {"choices": [{"delta": {"content": text}}]},
+        ]
+
+        async def run():
+            return await handler.handle_stream(_fake_stream(chunks))
+
+        result = asyncio.run(run())
+        assert result.get("content") == text
+        assert _text_deltas(server.events) == text
+
     def test_tool_call_accumulation(self):
         handler = IPCStreamingHandler(_FakeServer())
 

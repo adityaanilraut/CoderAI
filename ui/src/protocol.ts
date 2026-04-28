@@ -68,7 +68,7 @@ export type AgentEvent =
       completionTokens: number;
       totalTokens: number;
     }
-  | { event: "agent"; phase: "started" | "update" | "finished"; info: AgentInfo; parentId: string | null }
+  | { event: "agent"; phase: "update"; info: AgentInfo; parentId: string | null }
   | {
       event: "error";
       category: "provider" | "tool" | "internal" | "protocol";
@@ -77,6 +77,7 @@ export type AgentEvent =
       details?: string;
     }
   | { event: "session_patch"; model?: string; provider?: string; autoApprove?: boolean; reasoning?: ReasoningEffort }
+  | { event: "available_models"; current: string; models: Record<string, string[]> }
   | { event: "progress"; label: string; current?: number; total?: number; progressKind: "tokens" | "files" | "steps" }
   | { event: "info"; message: string }
   | { event: "warning"; message: string }
@@ -94,6 +95,7 @@ export const AGENT_EVENT_NAMES: readonly string[] = [
   "agent",
   "error",
   "session_patch",
+  "available_models",
   "progress",
   "info",
   "warning",
@@ -120,5 +122,6 @@ export type AgentCommand =
   | { cmd: "clear_context" }
   | { cmd: "get_state" }
   | { cmd: "get_plan" }
+  | { cmd: "list_models" }
   | { cmd: "reference"; topic: string }
   | { cmd: "exit" };

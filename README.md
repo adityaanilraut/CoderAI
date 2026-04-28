@@ -11,18 +11,19 @@
 
 ---
 
-CoderAI is a Python CLI tool that pairs an LLM with **54+ built-in tools** to read, write, search, debug, test, and ship code — all from a single terminal session. It supports **6 LLM providers**, **17 specialist agent personas**, a **multi-agent delegation system** with retry logic, and a **plan-and-execute workflow** to tackle complex tasks autonomously.
+CoderAI is a Python CLI tool that pairs an LLM with **56+ built-in tools** to read, write, search, debug, test, and ship code — all from a single terminal session. It supports **6 LLM providers**, **17 specialist agent personas**, a **multi-agent delegation system** with retry logic, a **semantic code search engine**, and a **plan-and-execute workflow** to tackle complex tasks autonomously.
 
 ## ✨ Key Features
 
 | Feature | Description |
 |---|---|
 | **Multi-Provider LLM** | OpenAI, Anthropic Claude, Groq, DeepSeek, LM Studio, Ollama |
-| **54+ Tools** | File I/O, Git, terminal, web, HTTP, memory, process management, and more |
+| **56+ Tools** | File I/O, Git, terminal, web, HTTP, memory, process management, semantic search, and more |
 | **Multi-Agent System** | Spawn isolated sub-agents for code review, security audit, research, etc. |
 | **Planning & Tasks** | Structured plan-and-execute workflows with persistent task tracking |
 | **Ink interactive UI** | `coderAI chat` uses a React + [Ink](https://github.com/vadimdemedes/ink) terminal UI; NDJSON IPC to the Python agent ([`ui/PROTOCOL.md`](ui/PROTOCOL.md)) |
 | **Rich CLI output** | Non-interactive commands (`status`, `config`, `history`, …) use [Rich](https://github.com/Textualize/rich) for tables and formatting |
+| **Semantic Search** | Natural-language code search via embeddings (OpenAI + ChromaDB) |
 | **Context Management** | Pin files, auto-detect project type, smart context compaction |
 | **Persistent Memory** | Key-value store that survives across sessions |
 | **Undo / Rollback** | Revert any file modification instantly |
@@ -105,7 +106,7 @@ See [COMMANDS.md](COMMANDS.md) for the full CLI reference.
    ┌────┴────┐   ┌─────┴──────┐  ┌────┴─────┐  ┌────┴────────┐
    │   LLM   │   │   Tools    │  │Ink UI +  │  │  Sub-Agent  │
    │Providers│   │  Registry  │  │IPC/Rich  │  │  Delegation │
-   │ (6)     │   │  (35+)     │  │          │  │  (Isolated) │
+   │ (6)     │   │  (56+)     │  │          │  │  (Isolated) │
    └─────────┘   └────────────┘  └──────────┘  └─────────────┘
 ```
 
@@ -136,12 +137,19 @@ CoderAI-main/
 │   ├── context.py              # Pinned-file context manager with relevance filtering
 │   ├── context_selector.py     # Keyword extraction & relevance-based snippet selection
 │   ├── cost.py                 # Token cost tracking with per-model pricing
+│   ├── code_chunker.py         # AST/regex/sliding-window code chunker for embedding
+│   ├── code_indexer.py         # ChromaDB-backed semantic code index with incremental updates
 │   ├── events.py               # Event emitter for UI notifications
 │   ├── history.py              # Session persistence (JSON files in ~/.coderAI/history/)
 │   ├── locks.py                # Async resource locks for parallel agent safety
 │   ├── notepad.py              # Shared in-memory notepad for inter-agent communication
 │   ├── skills.py               # Skill loader from .coderAI/skills/*.md
 │   ├── system_prompt.py        # Default system prompt with tool docs & strategies
+│   │
+│   ├── embeddings/             # ─── Embedding providers for semantic search ───
+│   │   ├── base.py             #   Abstract EmbeddingProvider interface
+│   │   ├── openai.py           #   OpenAI embeddings (text-embedding-3-small)
+│   │   └── factory.py          #   Create provider from config
 │   │
 │   ├── ipc/                    # ─── NDJSON bridge for Ink UI (stdio) ───
 │   │   ├── entry.py            #   python -m coderAI.ipc.entry (spawned by UI binary)
@@ -166,7 +174,8 @@ CoderAI-main/
 │   │   │                       #   git_checkout, git_stash, git_push, git_pull, git_merge, git_rebase,
 │   │   │                       #   git_revert, git_reset, git_show, git_remote, git_blame,
 │   │   │                       #   git_cherry_pick, git_tag
-│   │   ├── search.py           #   text_search, grep (regex-capable)
+│   │   ├── search.py           #   text_search, grep, symbol_search
+│   │   ├── semantic_search.py  #   semantic_search (natural-language code search)
 │   │   ├── web.py              #   web_search (DuckDuckGo), read_url, download_file, http_request
 │   │   ├── memory.py           #   save_memory, recall_memory, delete_memory (persistent key-value)
 │   │   ├── mcp.py              #   mcp_connect, mcp_call_tool, mcp_list
@@ -280,13 +289,14 @@ The heart of CoderAI is the **agentic loop** in `agent.py → process_message()`
 
 CoderAI registers **54+ tools** that the LLM can call. Each tool follows the `Tool` abstract base class and is auto-registered in the `ToolRegistry`.
 
-### Filesystem (10 tools)
+### Filesystem (15 tools)
 
 | Tool | Description |
 |---|---|
 | `read_file` | Read file contents with optional line range |
 | `write_file` | Create or overwrite files (protected paths blocked) |
 | `search_replace` | Find and replace text in a file with verification |
+| `multi_edit` | Apply multiple edits to a file in a single atomic operation |
 | `apply_diff` | Apply a unified diff patch for multi-line edits |
 | `list_directory` | List files and subdirectories |
 | `glob_search` | Find files by glob pattern (`**/*.py`) |
@@ -294,6 +304,10 @@ CoderAI registers **54+ tools** that the LLM can call. Each tool follows the `To
 | `copy_file` | Copy a file or directory tree |
 | `delete_file` | Delete a file or directory (recursive opt-in) |
 | `create_directory` | Create directories including parents (`mkdir -p`) |
+| `file_stat` | Get file metadata (size, permissions, timestamps) |
+| `file_chmod` | Change file permissions |
+| `file_chown` | Change file ownership |
+| `file_readlink` | Read symlink targets | |
 
 ### Terminal (4 tools)
 
@@ -328,12 +342,14 @@ CoderAI registers **54+ tools** that the LLM can call. Each tool follows the `To
 | `git_cherry_pick` | Apply specific commits onto the current branch |
 | `git_tag` | List, create, or delete tags |
 
-### Search & Analysis (3 tools)
+### Search & Analysis (5 tools)
 
 | Tool | Description |
 |---|---|
 | `text_search` | Fast recursive text search across files |
 | `grep` | Regex pattern matching with context lines |
+| `symbol_search` | Find function/class/variable definitions by name |
+| `semantic_search` | Natural-language code search via embeddings |
 | `lint` | Auto-detect and run project linter (ruff, eslint, etc.) |
 
 ### Web & HTTP (4 tools)
@@ -374,6 +390,13 @@ CoderAI registers **54+ tools** that the LLM can call. Each tool follows the `To
 | `delegate_task` | Spawn an isolated sub-agent for complex tasks |
 | `notepad` | Shared notepad for inter-agent communication |
 
+### Code Quality (2 tools)
+
+| Tool | Description |
+|---|---|
+| `lint` | Auto-detect and run project linter (ruff, eslint, clippy, etc.) |
+| `format` | Auto-detect and run code formatter (ruff format, black, prettier, gofmt) |
+
 ### Code Execution (1 tool)
 
 | Tool | Description |
@@ -392,11 +415,12 @@ CoderAI registers **54+ tools** that the LLM can call. Each tool follows the `To
 |---|---|
 | `use_skill` | Load predefined skill workflows from `.coderAI/skills/` |
 
-### MCP Integration (3 tools)
+### MCP Integration (4 tools)
 
 | Tool | Description |
 |---|---|
 | `mcp_connect` | Connect to an external MCP server |
+| `mcp_disconnect` | Disconnect from an MCP server |
 | `mcp_call_tool` | Call a tool on a connected MCP server |
 | `mcp_list` | List connected servers and their tools |
 
@@ -557,7 +581,7 @@ Define pre/post tool execution hooks in `.coderAI/hooks.json`:
 | **OpenAI** | `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `o1`, `o1-mini`, `o3-mini` | `OPENAI_API_KEY` |
 | **Anthropic** | `claude-4-sonnet`, `claude-3.5-sonnet`, `claude-3.5-haiku`, `claude-3-opus` | `ANTHROPIC_API_KEY` |
 | **Groq** | `openai/gpt-oss-120b`, `openai/gpt-oss-20b`, `llama3-70b-8192`, `llama3-8b-8192` | `GROQ_API_KEY` |
-| **DeepSeek** | `deepseek-v3.2`, `deepseek-r1` | `DEEPSEEK_API_KEY` |
+| **DeepSeek** | `deepseek-v4-flash`, `deepseek-v4-pro`, `deepseek-v3.2`, `deepseek-r1` | `DEEPSEEK_API_KEY` |
 | **LM Studio** | Any local model | LM Studio running locally |
 | **Ollama** | Any local model | Ollama running locally |
 
@@ -580,6 +604,8 @@ Configuration is stored in `~/.coderAI/config.json` and managed via `coderAI con
 | `streaming` | `true` | Enable streaming responses |
 | `save_history` | `true` | Persist conversation sessions |
 | `budget_limit` | `0` | Max cost in USD (0 = unlimited) |
+| `web_tools_in_main` | `true` | Allow web tools in the main agent |
+| `approval_timeout_seconds` | `300` | Seconds before approval prompts auto-deny (0 = wait forever) |
 
 ---
 
@@ -637,6 +663,8 @@ python manual_parallel_subagents.py
 | `coderAI status` | System diagnostics |
 | `coderAI cost` | API cost and pricing info |
 | `coderAI tasks list` | Show project tasks |
+| `coderAI index` | Build/update the semantic code search index |
+| `coderAI search <query>` | Search the codebase with natural language |
 
 ---
 
@@ -645,27 +673,24 @@ python manual_parallel_subagents.py
 ### Adding a New Tool
 
 ```python
+from pydantic import BaseModel, Field
 from coderAI.tools.base import Tool
+
+class MyParams(BaseModel):
+    input: str = Field(..., description="Input value")
 
 class MyCustomTool(Tool):
     name = "my_tool"
     description = "Does something useful"
+    parameters_model = MyParams
     is_read_only = True  # Set False if the tool mutates state
-
-    def get_parameters(self):
-        return {
-            "type": "object",
-            "properties": {
-                "input": {"type": "string", "description": "Input value"}
-            },
-            "required": ["input"]
-        }
 
     async def execute(self, input: str, **kwargs):
         return {"success": True, "result": f"Processed: {input}"}
 
-# Register in agent.py → _create_tool_registry()
-registry.register(MyCustomTool())
+# Auto-discovered by tools/discovery.py if __init__ takes no required args.
+# For tools that need the Agent (e.g. ManageContextTool), register manually
+# in Agent._create_tool_registry().
 ```
 
 ### Adding a New Agent Persona
@@ -676,8 +701,8 @@ Create `.coderAI/agents/my-specialist.md`:
 ---
 name: my-specialist
 description: Expert in my domain
-tools: ["read_file", "grep", "run_command"]
-model: claude-4-sonnet
+tools: ["Read", "Grep", "Bash", "Glob"]
+model: sonnet
 ---
 
 You are an expert in [domain]. Your role is to...

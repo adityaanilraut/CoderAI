@@ -135,6 +135,18 @@ You> Find all files that import the requests library
 You> Use grep to find all TODO comments in the codebase
 ```
 
+**Semantic search (find code by meaning):**
+```
+You> Use semantic_search to find where authentication middleware is implemented
+You> Find the rate-limiting logic in this project
+```
+
+**Build the semantic index:**
+```bash
+coderAI index                    # Index the whole project
+coderAI search "JWT validation"  # Search from the CLI
+```
+
 ### Web Search
 
 **Find documentation:**
@@ -271,10 +283,11 @@ You> Why did you choose this approach for error handling?
 
 ## Model Selection
 
-- **gpt-5.4**: Most capable, best for complex reasoning
-- **gpt-5.4-mini**: Balanced performance and speed
-- **gpt-5.4-nano**: Fastest, good for simple tasks
-- **lmstudio**: Use your own local models
+- **Claude (Anthropic)**: `opus` (most capable), `sonnet` (balanced), `haiku` (fast)
+- **GPT (OpenAI)**: `gpt-5.4` (most capable), `gpt-5.4-mini` (balanced), `gpt-5.4-nano` (fastest)
+- **DeepSeek**: `deepseek-v4-pro` (most capable), `deepseek-v4-flash` (fast)
+- **Groq**: Ultra-fast inference for Llama 3 and GPT-OSS models
+- **lmstudio / ollama**: Use your own local models
 
 ## Troubleshooting
 

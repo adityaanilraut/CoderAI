@@ -104,6 +104,39 @@ coderAI tasks list
 
 ---
 
+### `coderAI index`
+Build or update the semantic code search index.
+
+```bash
+coderAI index                    # Index the whole project
+coderAI index -p src/ -p lib/    # Index specific paths
+coderAI index --force            # Re-index everything (ignore cache)
+```
+
+---
+
+### `coderAI search`
+Search the codebase with natural language.
+
+```bash
+coderAI search "authentication middleware"
+coderAI search "rate limiting" -f "*.py" -n 20
+```
+
+Requires the index to be built first (`coderAI index`).
+
+---
+
+### `coderAI set-model`
+Set the default model for new sessions.
+
+```bash
+coderAI set-model sonnet
+coderAI set-model gpt-5.4-mini
+```
+
+---
+
 ### `coderAI info`
 Show agent info: version, current model, registered tools.
 
@@ -134,7 +167,11 @@ These commands are typed inside an active `coderAI chat` session.
 | `/context` | List files currently pinned to the context window |
 | `/compact` | Force-compress conversation history to reclaim context space |
 | `/agents` | Show all active agents (main + any sub-agents) and their status |
-| `/auto-approve` | Toggle auto-approval of tool confirmations on/off |
+| `/reasoning <high\|medium\|low\|none>` | Set thinking budget for reasoning models |
+| `/yolo` | Toggle auto-approve for high-risk tools |
+| `/verbose` | Toggle verbose mode (show all tool outputs) |
+| `/show` | Show the last assistant message / tool result |
+| `/think` | Toggle thinking/reasoning display |
 | `/clear` | Clear the conversation history and start fresh |
 | `/exit` | End the session |
 
@@ -159,7 +196,7 @@ Stored in `~/.coderAI/config.json`. Set via `coderAI config set <key> <value>` o
 |---|---|---|
 | `default_model` | `claude-4-sonnet` | Default LLM model for new sessions |
 | `temperature` | `0.7` | Sampling temperature (0.0–2.0) |
-| `max_tokens` | `4096` | Max output tokens per LLM response |
+| `max_tokens` | `8192` | Max output tokens per LLM response |
 | `context_window` | `128000` | Token budget for the context window |
 | `max_iterations` | `50` | Max agentic loop iterations per message |
 | `reasoning_effort` | `medium` | Reasoning depth — `high`, `medium`, `low`, `none` |
@@ -171,6 +208,8 @@ Stored in `~/.coderAI/config.json`. Set via `coderAI config set <key> <value>` o
 | `max_command_output` | `10000` | Max characters captured from `run_command` output |
 | `max_tool_output` | `8000` | Max characters of any tool result kept in context |
 | `web_tools_in_main` | `true` | Allow web tools (`web_search`, `read_url`, `http_request`, `download_file`) in the main agent |
+| `approval_timeout_seconds` | `300` | Seconds before approval prompts auto-deny (0 = wait forever) |
+| `project_root` | `.` | Project root directory path |
 | `log_level` | `WARNING` | Log verbosity — `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `lmstudio_endpoint` | `http://localhost:1234/v1` | LM Studio API endpoint |
 | `lmstudio_model` | `local-model` | LM Studio model name |
@@ -212,7 +251,7 @@ Environment variables take precedence over `~/.coderAI/config.json`.
 
 ## Tool Quick Reference
 
-All 54+ tools available to the agent. Confirmation required (`✓`) means the agent asks before running.
+All 56+ tools available to the agent. Confirmation required (`✓`) means the agent asks before running.
 
 ### Filesystem
 
@@ -227,7 +266,12 @@ All 54+ tools available to the agent. Confirmation required (`✓`) means the ag
 | `move_file` | ✓ | Move or rename a file/directory |
 | `copy_file` | ✓ | Copy a file or directory tree |
 | `delete_file` | ✓ | Delete a file or directory |
+| `multi_edit` | ✓ | Apply multiple edits to a file atomically |
 | `create_directory` | — | Create directories (like `mkdir -p`) |
+| `file_stat` | — | Get file metadata (size, permissions, mtime) |
+| `file_chmod` | ✓ | Change file permissions |
+| `file_chown` | ✓ | Change file ownership |
+| `file_readlink` | — | Read symlink targets |
 
 ### Terminal
 
@@ -261,6 +305,7 @@ All 54+ tools available to the agent. Confirmation required (`✓`) means the ag
 | `git_blame` | — | Annotate lines with commit/author |
 | `git_cherry_pick` | ✓ | Apply specific commits |
 | `git_tag` | ✓ | List/create/delete tags |
+| `git_fetch` | — | Fetch objects and refs from a remote |
 
 ### Search
 
@@ -268,6 +313,8 @@ All 54+ tools available to the agent. Confirmation required (`✓`) means the ag
 |---|---|---|
 | `text_search` | — | Fast recursive text search |
 | `grep` | — | Regex search with context |
+| `symbol_search` | — | Find function/class/variable definitions by name |
+| `semantic_search` | — | Natural-language code search via embeddings |
 
 ### Web & HTTP
 
@@ -327,6 +374,7 @@ All 54+ tools available to the agent. Confirmation required (`✓`) means the ag
 | Tool | Confirm | Description |
 |---|---|---|
 | `mcp_connect` | ✓ | Connect to an external MCP server |
+| `mcp_disconnect` | — | Disconnect from an MCP server |
 | `mcp_call_tool` | ✓ | Call a tool on a connected server |
 | `mcp_list` | — | List connected servers and tools |
 

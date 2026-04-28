@@ -3,7 +3,7 @@ import {Box, Text, useStdout} from "ink";
 import Spinner from "ink-spinner";
 import {theme} from "../theme.js";
 import type {ToolCategory, ToolRisk} from "../protocol.js";
-import {truncateText} from "../lib/format.js";
+import {truncateSmart} from "../lib/format.js";
 import {RiskBadge} from "./Primitives.js";
 
 export interface ToolCardProps {
@@ -158,10 +158,10 @@ function oneLinePreview(
   maxLen: number,
 ): string {
   if (status === "running") return "";
-  if (status === "error") return truncateText((error ?? "failed").split("\n")[0], maxLen);
+  if (status === "error") return truncateSmart((error ?? "failed").split("\n")[0], maxLen);
   if (!preview) return "";
   const first = preview.split("\n")[0];
-  return truncateText(first, maxLen);
+  return truncateSmart(first, maxLen);
 }
 
 /**
@@ -174,7 +174,7 @@ function summarizeArgs(
 ): string {
   if (!args || Object.keys(args).length === 0) return "";
   const get = (k: string) => (args[k] ? String(args[k]) : null);
-  const trunc = (s: string) => truncateText(s, maxLen);
+  const trunc = (s: string) => truncateSmart(s, maxLen);
 
   switch (name) {
     case "read_file":
@@ -202,7 +202,7 @@ function summarizeArgs(
     default: {
       const entries = Object.entries(args)
         .slice(0, 2)
-        .map(([k, v]) => `${k}=${truncateText(String(v), Math.min(40, maxLen))}`);
+        .map(([k, v]) => `${k}=${truncateSmart(String(v), Math.min(40, maxLen))}`);
       return entries.join(" ");
     }
   }

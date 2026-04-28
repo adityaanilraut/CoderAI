@@ -2,7 +2,7 @@ import React from "react";
 import {Box, Text, useInput} from "ink";
 import {theme} from "../theme.js";
 import type {ToolRisk} from "../protocol.js";
-import {truncateText} from "../lib/format.js";
+import {truncateSmart} from "../lib/format.js";
 import {ActionPill, RiskBadge} from "./Primitives.js";
 
 export interface ApprovalPromptProps {
@@ -70,7 +70,7 @@ export function ApprovalPrompt({
   const secondary = Object.entries(args)
     .filter(([k]) => k !== primaryKey)
     .slice(0, 3)
-    .map(([k, v]) => `${k}=${truncateText(String(v), 60)}`)
+    .map(([k, v]) => `${k}=${truncateSmart(String(v), 60)}`)
     .join("  ");
 
   const borderColor =

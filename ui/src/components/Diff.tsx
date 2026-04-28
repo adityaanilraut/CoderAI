@@ -53,7 +53,7 @@ export function Diff({
     // Compact summary plus a 3-line preview of the first +/- hunk so the
     // user can see the *shape* of the change without flipping verbose on.
     // Empty diffs (deletes only) gracefully degrade to the header line.
-    const previewLines = firstChangePreview(parsed, 3, cap);
+    const previewLines = firstChangePreview(parsed, 3);
     return (
       <Box flexDirection="column" paddingX={2}>
         <Box>
@@ -246,7 +246,6 @@ function elide(lines: ParsedLine[], contextLines: number): RenderRow[] {
 function firstChangePreview(
   parsed: ParsedLine[],
   maxLines: number,
-  cap: number,
 ): ParsedLine[] {
   const start = parsed.findIndex((l) => l.kind === "add" || l.kind === "del");
   if (start === -1) return [];
@@ -263,8 +262,6 @@ function firstChangePreview(
       break;
     }
   }
-  // Suppress single-line preview noise like trailing `cap`-truncation chars
-  void cap;
   return out;
 }
 

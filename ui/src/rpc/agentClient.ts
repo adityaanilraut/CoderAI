@@ -145,6 +145,10 @@ export class AgentClient extends EventEmitter {
     return this.send({cmd: "get_plan"});
   }
 
+  listModels(): string {
+    return this.send({cmd: "list_models"});
+  }
+
   reference(topic: string): string {
     return this.send({cmd: "reference", topic});
   }

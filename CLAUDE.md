@@ -78,7 +78,7 @@ Per-turn flow (`Agent.process_message()` → `agent_loop`):
 - `coderAI/ipc/streaming.py` — `IPCStreamingHandler`: mirrors the old Rich streaming-handler contract but emits `stream_delta` events over the bridge.
 - `coderAI/ipc/entry.py` — `python -m coderAI.ipc.entry` entry point invoked by the Ink binary. Honors `CODERAI_MODEL`, `CODERAI_RESUME`, `CODERAI_AUTO_APPROVE`.
 - `coderAI/llm/` — LLM providers (openai, anthropic, groq, deepseek, lmstudio, ollama), all extending `base.LLMProvider`. Instantiation goes through `llm/factory.py::create_provider(model, config)` — do not construct providers directly from `agent.py`.
-- `coderAI/tools/` — 54+ tools extending `tools/base.Tool`. Registration is automatic via `tools/discovery.py::discover_tools()`, which walks the `coderAI.tools` package and instantiates every `Tool` subclass whose `__init__` takes no required args. Tools requiring constructor args (e.g. `ManageContextTool`, which needs the `Agent`) are registered manually in `Agent`.
+- `coderAI/tools/` — 56+ tools extending `tools/base.Tool`. Registration is automatic via `tools/discovery.py::discover_tools()`, which walks the `coderAI.tools` package and instantiates every `Tool` subclass whose `__init__` takes no required args. Tools requiring constructor args (e.g. `ManageContextTool`, which needs the `Agent`) are registered manually in `Agent`.
 - `coderAI/safeguards.py` — reusable validators that run before dangerous actions: interactive-command detection (blocks REPLs invoked via non-interactive pipes), project-directory validation, git-scope guards (prevent operations leaking to a parent repo), staging blocklist for junk files (`.DS_Store`, `__pycache__`, `.coderAI/`, …).
 - `coderAI/project_layout.py` — `find_dot_coderai_subdir()` resolves `.coderAI/<subdir>` across project root, cwd, and the package dir (for dev installs). Use this instead of hardcoding `.coderAI/` paths.
 - `coderAI/ipc/chat_reference.py` — plain-text renderings of `models`, `cost`, `status`, `config show`, `info`, `tasks list` for the Ink UI slash commands (keeps Ink free of Rich dependencies).
@@ -93,6 +93,9 @@ Per-turn flow (`Agent.process_message()` → `agent_loop`):
 - `coderAI/error_policy.py` — Central home for retry/error constants and the transient-error regex; modules import from here instead of redefining.
 - `coderAI/hooks_manager.py` — Loads `.coderAI/hooks.json` and runs pre/post-tool shell hooks around tool execution.
 - `coderAI/system_prompt.py` — Builds the agent system prompt (tool docs, strategies, rule injection from `.coderAI/rules/*.md`).
+- `coderAI/code_chunker.py` — Splits source files into semantic chunks (AST-aware for Python, regex for JS/TS, sliding window fallback).
+- `coderAI/code_indexer.py` — ChromaDB-backed semantic code index with incremental updates via file-hash manifests.
+- `coderAI/embeddings/` — Embedding provider abstraction (OpenAI `text-embedding-3-small` by default).
 - `ui/` — TypeScript + Ink UI source. `ui/src/App.tsx` is the root component; `ui/src/rpc/agentClient.ts` spawns the Python agent; `ui/scripts/compile.ts` drives `bun build --compile` honoring `BUN_TARGET` / `PLATFORM` env vars.
 - `.github/workflows/ci.yml` — On push/PR: matrix of (ubuntu-latest, macos-latest) × (Python 3.10, 3.12). Installs `pip install -e ".[dev]"`, then runs `ruff check coderAI/`, `pytest -q`, and a `coderAI --version` smoke test. `make test` mirrors this (pytest + `coderAI --version`).
 - `.github/workflows/release.yml` — Cross-compiles the Ink binary for darwin-arm64/x64, linux-x64/arm64, windows-x64 on tagged releases, publishes GitHub Release assets with SHA256 sidecars, and uploads the pure-Python wheel to PyPI.
@@ -101,7 +104,8 @@ Per-turn flow (`Agent.process_message()` → `agent_loop`):
 - `filesystem.py` — read_file, write_file, search_replace, apply_diff, list_directory, glob_search, **move_file, copy_file, delete_file, create_directory**
 - `terminal.py` — run_command (safety blocklist), run_background, **list_processes, kill_process**
 - `git.py` — git_add, git_status, git_diff, git_commit, git_log, git_branch, git_checkout, git_stash, **git_push, git_pull, git_merge, git_rebase, git_revert, git_reset, git_show, git_remote, git_blame, git_cherry_pick, git_tag**
-- `search.py` — text_search, grep
+- `search.py` — text_search, grep, symbol_search
+- `semantic_search.py` — semantic_search (natural-language code search via embeddings)
 - `web.py` — web_search (DuckDuckGo), read_url, download_file, **http_request**
 - `memory.py` — save_memory, recall_memory, **delete_memory**
 - `subagent.py` — delegate_task (max depth 3, retried 2×)

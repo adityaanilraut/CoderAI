@@ -23,8 +23,8 @@ export function appendCapped(
   const marker: TimelineItem = {
     kind: "toast",
     id: nextId ? nextId() : `trim_${Date.now().toString(36)}`,
-    level: "info",
-    message: `… ${dropped} earlier timeline entries trimmed for performance …`,
+    level: "warning",
+    message: `… ${dropped} earlier entries trimmed · keeping most recent ${TRIM_TO} …`,
   };
   return [marker, ...prev.slice(-tailKeep), item];
 }

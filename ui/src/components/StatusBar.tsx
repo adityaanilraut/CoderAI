@@ -1,8 +1,8 @@
-import React, {memo} from "react";
+import React, {memo, useEffect, useState} from "react";
 import {Box, Text} from "ink";
 import type {SessionState} from "../hooks/useAgent.js";
 import {theme} from "../theme.js";
-import {formatTokenCount} from "../lib/format.js";
+import {formatTokenCount, formatCost} from "../lib/format.js";
 import {Dot} from "./Primitives.js";
 
 export interface StatusBarProps {
@@ -50,14 +50,24 @@ export const StatusBar = memo(function StatusBar({
 
   const ctxMeter = ctxKnown ? renderMeter(ctxPct, ctxColor) : null;
 
+  const disconnected = session.sessionStartedAt !== null && !session.connected;
+
   const modelSeg = (
     <Box>
-      <Dot color={theme.accent} glyph={theme.glyph.diamond} />
-      <Text color={theme.accent} bold>
+      <Dot
+        color={disconnected ? theme.danger : theme.accent}
+        glyph={disconnected ? theme.glyph.cross : theme.glyph.diamond}
+      />
+      <Text color={disconnected ? theme.danger : theme.accent} bold>
         {" "}
-        {session.model || "booting…"}
+        {disconnected ? "disconnected" : session.model || "booting…"}
       </Text>
-      {session.provider ? (
+      {disconnected ? (
+        <Text color={theme.faint}>
+          {theme.glyph.separator}
+          restart coderAI chat
+        </Text>
+      ) : session.provider ? (
         <Text color={theme.faint}>
           {theme.glyph.separator}
           {session.provider}
@@ -122,6 +132,14 @@ export const StatusBar = memo(function StatusBar({
       </Text>
     ) : null;
 
+  const durationSeg =
+    session.sessionStartedAt ? (
+      <>
+        <Text>{theme.glyph.separator}</Text>
+        <ElapsedTimer startedAt={session.sessionStartedAt} />
+      </>
+    ) : null;
+
   return (
     <Box
       paddingX={theme.spacing.sm}
@@ -148,24 +166,11 @@ export const StatusBar = memo(function StatusBar({
         <Text>{theme.glyph.separator}</Text>
         {modeSeg}
         {reasoningSeg}
+        {durationSeg}
       </Box>
     </Box>
   );
 });
-
-/**
- * Format a cost in USD with the smallest sensible precision.
- *
- * - sub-cent costs keep 4 decimals so a session that's only run a couple of
- *   tool calls doesn't display as `$0.00`
- * - dollar-scale costs collapse to two decimals to save horizontal space on
- *   the most-watched line in the UI
- */
-function formatCost(usd: number): string {
-  if (usd === 0) return "$0.00";
-  if (usd < 0.01) return `$${usd.toFixed(4)}`;
-  return `$${usd.toFixed(2)}`;
-}
 
 /**
  * 10-cell unicode bar, filled per percent.  Uses block glyphs so it
@@ -181,5 +186,24 @@ function renderMeter(pct: number, color: string) {
       <Text color={color}>{"█".repeat(filled)}</Text>
       <Text color={theme.faint}>{"░".repeat(empty)}</Text>
     </Box>
+  );
+}
+
+function ElapsedTimer({startedAt}: {startedAt: number}) {
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    const tick = () => setElapsed(Math.floor((Date.now() - startedAt) / 1000));
+    tick();
+    const interval = setInterval(tick, 30000);
+    return () => clearInterval(interval);
+  }, [startedAt]);
+
+  const m = Math.floor(elapsed / 60);
+  const s = elapsed % 60;
+  return (
+    <Text color={theme.faint}>
+      {m}:{String(s).padStart(2, "0")}
+    </Text>
   );
 }

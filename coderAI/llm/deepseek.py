@@ -14,10 +14,12 @@ class DeepSeekProvider(LLMProvider):
     """DeepSeek LLM provider."""
 
     SUPPORTED_MODELS = {
+        "deepseek-v4-flash": "deepseek-v4-flash",
+        "deepseek-v4-pro": "deepseek-v4-pro",
         "deepseek-chat": "deepseek-chat",
         "deepseek-reasoner": "deepseek-reasoner",
         "deepseek-v3": "deepseek-chat",
-        "deepseek-v3.2": "deepseek-chat", # Alias for the latest v3.2/v3 chat model
+        "deepseek-v3.2": "deepseek-chat",  # Legacy alias retained for compatibility
         "deepseek-r1": "deepseek-reasoner",
     }
 
@@ -41,10 +43,46 @@ class DeepSeekProvider(LLMProvider):
 
         self.temperature = kwargs.get("temperature", 0.7)
         self.max_tokens = kwargs.get("max_tokens", 4096)
+        self.reasoning_effort = kwargs.get("reasoning_effort", "medium")
 
         # Cost tracking
         self.total_input_tokens = 0
         self.total_output_tokens = 0
+
+    @property
+    def _uses_v4_family(self) -> bool:
+        return self.actual_model in {"deepseek-v4-flash", "deepseek-v4-pro"}
+
+    def _build_request_params(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]] = None,
+        *,
+        stream: bool = False,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        params: Dict[str, Any] = {
+            "model": self.actual_model,
+            "messages": messages,
+            "temperature": kwargs.get("temperature", self.temperature),
+            "max_tokens": kwargs.get("max_tokens", self.max_tokens),
+        }
+
+        if stream:
+            params["stream"] = True
+            params["stream_options"] = {"include_usage": True}
+
+        if tools and self.actual_model != "deepseek-reasoner":
+            params["tools"] = tools
+            params["tool_choice"] = kwargs.get("tool_choice", "auto")
+
+        # DeepSeek V4 defaults thinking mode to enabled. This agent loop does
+        # not yet round-trip reasoning_content across tool turns, so keep the
+        # new V4 IDs in non-thinking mode by default for compatibility.
+        if self._uses_v4_family:
+            params["extra_body"] = {"thinking": {"type": "disabled"}}
+
+        return params
 
     async def chat(
         self,
@@ -62,17 +100,7 @@ class DeepSeekProvider(LLMProvider):
         Returns:
             Response dictionary
         """
-        params = {
-            "model": self.actual_model,
-            "messages": messages,
-            "temperature": kwargs.get("temperature", self.temperature),
-            "max_tokens": kwargs.get("max_tokens", self.max_tokens),
-        }
-
-        if tools and self.actual_model != "deepseek-reasoner":
-            # Reasoner model might not support tools yet, but chat does
-            params["tools"] = tools
-            params["tool_choice"] = kwargs.get("tool_choice", "auto")
+        params = self._build_request_params(messages, tools, **kwargs)
 
         response = await self.client.chat.completions.create(**params)
         result = response.model_dump()
@@ -99,18 +127,7 @@ class DeepSeekProvider(LLMProvider):
         Yields:
             Response chunks
         """
-        params = {
-            "model": self.actual_model,
-            "messages": messages,
-            "temperature": kwargs.get("temperature", self.temperature),
-            "max_tokens": kwargs.get("max_tokens", self.max_tokens),
-            "stream": True,
-            "stream_options": {"include_usage": True},
-        }
-
-        if tools and self.actual_model != "deepseek-reasoner":
-            params["tools"] = tools
-            params["tool_choice"] = kwargs.get("tool_choice", "auto")
+        params = self._build_request_params(messages, tools, stream=True, **kwargs)
 
         stream = await self.client.chat.completions.create(**params)
         async for chunk in stream:

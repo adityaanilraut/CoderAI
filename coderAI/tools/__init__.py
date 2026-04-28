@@ -22,6 +22,7 @@ Provides all available tools for the coding agent, including:
 - Python REPL: execute Python code in isolated subprocess
 - Planning: structured plan-and-execute workflows
 - Notepad: shared inter-agent communication notepad
+- Semantic Search: natural-language codebase search via embeddings
 """
 
 from .base import Tool, ToolRegistry
@@ -38,11 +39,15 @@ from .filesystem import (
     CopyFileTool,
     DeleteFileTool,
     CreateDirectoryTool,
+    FileStatTool,
+    FileChmodTool,
+    FileChownTool,
+    FileReadlinkTool,
 )
 from .multi_edit import MultiEditTool
 
 # Terminal tools
-from .terminal import RunCommandTool, RunBackgroundTool, ListProcessesTool, KillProcessTool
+from .terminal import RunCommandTool, RunBackgroundTool, ListProcessesTool, KillProcessTool, ReadBgOutputTool
 
 # Git tools
 from .git import (
@@ -50,7 +55,7 @@ from .git import (
     GitBranchTool, GitCheckoutTool, GitStashTool,
     GitPushTool, GitPullTool, GitMergeTool, GitRebaseTool, GitRevertTool,
     GitResetTool, GitShowTool, GitRemoteTool, GitBlameTool,
-    GitCherryPickTool, GitTagTool,
+    GitCherryPickTool, GitTagTool, GitFetchTool,
 )
 
 # Search tools
@@ -63,7 +68,7 @@ from .memory import SaveMemoryTool, RecallMemoryTool, DeleteMemoryTool
 from .web import WebSearchTool, ReadURLTool, DownloadFileTool, HTTPRequestTool
 
 # MCP tools
-from .mcp import MCPConnectTool, MCPCallTool, MCPListTool, mcp_client
+from .mcp import MCPConnectTool, MCPCallTool, MCPListTool, MCPDisconnectTool, mcp_client
 
 # Undo / rollback tools
 from .undo import UndoTool, UndoHistoryTool, get_backup_store, backup_store
@@ -98,6 +103,9 @@ from .repl import PythonREPLTool
 # Planning
 from .planning import CreatePlanTool
 
+# Semantic code search
+from .semantic_search import SemanticSearchTool
+
 # Notepad (inter-agent communication)
 from .notepad import NotepadTool
 
@@ -116,12 +124,17 @@ __all__ = [
     "CopyFileTool",
     "DeleteFileTool",
     "CreateDirectoryTool",
+    "FileStatTool",
+    "FileChmodTool",
+    "FileChownTool",
+    "FileReadlinkTool",
     "MultiEditTool",
     # Terminal
     "RunCommandTool",
     "RunBackgroundTool",
     "ListProcessesTool",
     "KillProcessTool",
+    "ReadBgOutputTool",
     # Git
     "GitAddTool",
     "GitStatusTool",
@@ -142,6 +155,7 @@ __all__ = [
     "GitBlameTool",
     "GitCherryPickTool",
     "GitTagTool",
+    "GitFetchTool",
     # Search
     "TextSearchTool",
     "GrepTool",
@@ -159,6 +173,7 @@ __all__ = [
     "MCPConnectTool",
     "MCPCallTool",
     "MCPListTool",
+    "MCPDisconnectTool",
     "mcp_client",
     # Undo
     "UndoTool",
@@ -185,6 +200,8 @@ __all__ = [
     "PythonREPLTool",
     # Planning
     "CreatePlanTool",
+    # Semantic search
+    "SemanticSearchTool",
     # Notepad
     "NotepadTool",
     # Factory imports (optional for external consumers)

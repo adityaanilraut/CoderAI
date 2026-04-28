@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 from .base import Tool
+from ..agent_tracker import AgentStatus
 from ..events import event_emitter
 
 logger = logging.getLogger(__name__)
@@ -404,9 +405,26 @@ class DelegateTaskTool(Tool):
                 message=f"[dim]Sub-Agent working on: {truncated_desc}[/dim]",
             )
 
-            # Process the task
+            # Process the task with progress reporting
+            def _on_tool_progress(tool_calls, did_error):
+                info = sub_agent.tracker_info
+                if not info:
+                    return
+                if tool_calls:
+                    names = [tc.get("function", {}).get("name", tc.get("name", "?"))
+                            for tc in tool_calls[:3]]
+                    info.current_tool = ", ".join(names)
+                    if len(tool_calls) > 3:
+                        info.current_tool += f" +{len(tool_calls) - 3} more"
+                else:
+                    info.current_tool = None
+                info.status = AgentStatus.TOOL_CALL if not did_error else AgentStatus.THINKING
+                event_emitter.emit("agent_tracker_sync", info=info)
+
             try:
-                final_report = await sub_agent.process_single_shot(task_description)
+                final_report = await sub_agent.process_single_shot(
+                    task_description, progress_callback=_on_tool_progress
+                )
 
                 # ── Retry: if the report is empty, ask once more for a summary ──
                 if not (final_report and final_report.strip()):

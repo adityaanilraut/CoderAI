@@ -29,7 +29,7 @@ unknown phases are ignored.
 | `tool`          | `{id, phase: "queued" | "awaiting_approval" | "running" | "ok" | "err" | "cancelled", payload}` | Lifecycle of a single tool call. `payload` shape depends on phase (see below).      |
 | `file_diff`     | `{path, diff}`                                                                                | Unified diff string                                                                  |
 | `status`        | `{ctxUsed, ctxLimit, costUsd, budgetUsd, promptTokens, completionTokens, totalTokens}`        | Emitted after every turn                                                             |
-| `agent`         | `{phase: "started" | "update" | "finished", info: AgentInfo, parentId}`                       | Per-agent snapshot; multiple agents possible                                         |
+| `agent`         | `{phase: "update", info: AgentInfo, parentId}`                                                | Per-agent snapshot; multiple agents possible                                         |
 | `session_patch` | `{model?, provider?, autoApprove?, reasoning?}`                                               | Partial session-state update — only changed fields are present                       |
 | `info`          | `{message}`                                                                                   | Long-form reference output (`/show <topic>`, `/plan`) and short notices             |
 | `warning`       | `{message}`                                                                                   | Non-fatal user-facing problem (unknown command, bad input)                           |
