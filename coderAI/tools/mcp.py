@@ -557,6 +557,9 @@ class MCPConnectTool(Tool):
     name = "mcp_connect"
     description = "Connect to an MCP (Model Context Protocol) server to discover and use its tools"
     parameters_model = MCPConnectParams
+    requires_confirmation = True
+
+    _ALLOWED_MCP_LAUNCHERS = {"npx", "node", "python", "python3", "uvx", "bun", "deno"}
 
     async def execute(
         self, server_name: str, command: str = "", args: list = None,
@@ -569,6 +572,23 @@ class MCPConnectTool(Tool):
             return await mcp_client.connect_sse(server_name, url)
         if not command:
             return {"success": False, "error": "Command is required for stdio transport"}
+
+        cmd_lower = command.lower()
+        allowed = any(cmd_lower == launcher or cmd_lower.endswith("/" + launcher)
+                      for launcher in self._ALLOWED_MCP_LAUNCHERS)
+        if not allowed:
+            return {
+                "success": False,
+                "error": f"MCP server launcher '{command}' is not in the allowed set: {', '.join(sorted(self._ALLOWED_MCP_LAUNCHERS))}",
+            }
+
+        from .terminal import is_command_blocked, is_interactive_command
+        full_cmd = command + " " + " ".join(args) if args else command
+        if is_command_blocked(full_cmd):
+            return {"success": False, "error": "MCP server command is blocked for safety"}
+        if is_interactive_command(full_cmd):
+            return {"success": False, "error": "MCP server command appears interactive, which is not allowed"}
+
         return await mcp_client.connect_stdio(server_name, command, args)
 
 

@@ -1,4 +1,4 @@
-import React from "react";
+import React, {useEffect, useState} from "react";
 import {Box, Text} from "ink";
 import {theme} from "../theme.js";
 import type {AgentInfo, AgentStatus} from "../protocol.js";
@@ -45,7 +45,21 @@ export function AgentTree({
   finishedAt = {},
   width = 100,
 }: AgentTreeProps) {
-  const visible = filterAndBuildTree(agents, finishedAt, finishedGraceMs);
+  // Drive grace-window filtering off a 1Hz tick rather than recomputing on
+  // every parent render. Without this, the panel rebuilt its visibility set
+  // on every status patch / stream delta — finished children could flicker
+  // in or out at frame boundaries depending on whether a re-render happened
+  // to land on the wrong side of `now - flippedAt > graceMs`. The tick
+  // pauses when nothing is finished, so idle sessions stay quiet.
+  const [now, setNow] = useState(() => Date.now());
+  const hasPending = Object.keys(finishedAt).length > 0;
+  useEffect(() => {
+    if (!hasPending) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [hasPending]);
+
+  const visible = filterAndBuildTree(agents, finishedAt, finishedGraceMs, now);
   if (visible.length === 0) return null;
 
   const ruleWidth = Math.max(20, Math.min(width - 2, 80));
@@ -213,11 +227,11 @@ function filterAndBuildTree(
   agents: Record<string, AgentInfo>,
   finishedAt: Record<string, number>,
   graceMs: number,
+  now: number,
 ): TreeNode[] {
   const all = Object.values(agents);
   if (all.length === 0) return [];
 
-  const now = Date.now();
   const isStale = (a: AgentInfo): boolean => {
     if (!FINISHED.includes(a.status)) return false;
     // Root agents never get culled by the grace window — the user wants to

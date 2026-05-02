@@ -27,16 +27,34 @@ PERSONA_TOOL_ALIASES: Dict[str, Set[str]] = {
     "bash": {"run_command", "run_background", "python_repl"},
 }
 
+AgentMode = str  # "primary" | "subagent" | "all" | "hidden"
+
 
 class AgentPersona:
     """Represents a specialized agent persona loaded from a markdown file."""
 
-    def __init__(self, name: str, description: str, tools: List[str], model: str, instructions: str):
+    def __init__(
+        self,
+        name: str,
+        description: str,
+        tools: List[str],
+        model: str,
+        instructions: str,
+        mode: AgentMode = "all",
+        hidden: bool = False,
+        permission: Optional[Dict[str, str]] = None,
+    ):
         self.name = name
         self.description = description
         self.tools = tools
         self.model = model
         self.instructions = instructions
+        # Agent mode: "primary" (main agent only), "subagent" (delegation only),
+        # "all" (usable anywhere), "hidden" (internal system agents)
+        self.mode: AgentMode = mode
+        self.hidden = hidden
+        # Per-agent permission rules: {"tool_name": "allow"|"deny"}
+        self.permission: Dict[str, str] = permission or {}
 
 
 def _normalize_persona_name(name: str) -> str:
@@ -135,8 +153,13 @@ def load_agent_persona(persona_name: str, project_root: str = ".") -> Optional[A
             description=metadata.get("description", f"Specialized {resolved_name} agent"),
             tools=metadata.get("tools", []),
             model=model_name,
-            instructions=instructions
+            instructions=instructions,
+            mode=metadata.get("mode", "all"),
+            hidden=metadata.get("hidden", False),
+            permission=metadata.get("permission"),
         )
+    except (KeyboardInterrupt, SystemExit):
+        raise
     except Exception as e:
         logger.error(f"Error loading agent persona {persona_name}: {e}")
         return None

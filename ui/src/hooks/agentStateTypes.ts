@@ -50,6 +50,10 @@ export interface SessionState {
   ctxLimit: number;
   costUsd: number;
   budgetUsd: number;
+  /** Per-turn token breakdown (set from status event). */
+  promptTokens: number;
+  /** Per-turn token breakdown (set from status event). */
+  completionTokens: number;
   /** Model catalogue grouped by provider (populated by /model picker request). */
   availableModels: Record<string, string[]> | null;
   agents: Record<string, AgentInfo>;

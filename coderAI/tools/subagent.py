@@ -2,6 +2,7 @@
 
 import logging
 import os
+import time as _time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -19,12 +20,7 @@ MAX_DELEGATION_DEPTH = 3
 
 @dataclass
 class SubagentContext:
-    """Everything a ``DelegateTaskTool`` needs from its parent ``Agent``.
-
-    Passed as a single attribute on the tool so the wiring is legible and
-    tests can construct a realistic context without monkey-patching a
-    handful of private attributes.
-    """
+    """References from the parent Agent needed by DelegateTaskTool."""
 
     parent_agent_id: Optional[str] = None
     parent_model: Optional[str] = None
@@ -32,7 +28,8 @@ class SubagentContext:
     parent_cost_tracker: Optional[Any] = None  # CostTracker (shared)
     parent_auto_approve: bool = False
     parent_ipc_server: Optional[Any] = None
-    parent_session: Optional[Any] = None  # Session — used to surface recent tool findings
+    parent_session: Optional[Any] = None  # Session
+    delegation_depth: int = 0
 
 # Number of recent parent tool calls to summarise for the sub-agent so it
 # doesn't repeat inspection work the parent has already done.
@@ -67,6 +64,9 @@ def _summarize_parent_tool_history(
             # Find the preceding assistant message that emitted this tool_call
             tc_id = getattr(msg, "tool_call_id", None)
             args_preview = ""
+            if tc_id is None:
+                i -= 1
+                continue
             j = i - 1
             while j >= 0:
                 prev = messages[j]
@@ -164,6 +164,15 @@ class DelegateTaskParams(BaseModel):
             "otherwise mutates workspace state."
         ),
     )
+    task_id: Optional[str] = Field(
+        None,
+        description=(
+            "This should only be set if you mean to resume a previous task (you can pass a "
+            "prior task_id and the task will continue the same subagent session as before "
+            "instead of creating a fresh one). The task_id is returned in the output of a "
+            "previous delegate_task call."
+        ),
+    )
 
 
 class DelegateTaskTool(Tool):
@@ -191,16 +200,22 @@ class DelegateTaskTool(Tool):
     max_parallel_invocations = 1
     parameters_model = DelegateTaskParams
     is_read_only = False
-    timeout = 600.0
+    timeout = 600.0  # 10 minutes; not yet configurable via standard Tool settings
 
     def __init__(self) -> None:
         super().__init__()
         # ``context`` is populated by ``Agent._configure_delegate_tool_context``
         # once the parent agent is fully constructed.
         self.context: SubagentContext = SubagentContext()
-        # Depth (root agent = 0) — incremented on each delegation hop.
-        # Instance-level to avoid confusing class-attribute shadowing.
-        self._current_depth: int = 0
+
+    @property
+    def _current_depth(self) -> int:
+        """Owner-agent depth sourced from the structured context."""
+        return self.context.delegation_depth
+
+    @_current_depth.setter
+    def _current_depth(self, value: int) -> None:
+        self.context.delegation_depth = value
 
     async def execute(
         self,
@@ -210,9 +225,10 @@ class DelegateTaskTool(Tool):
         model: Optional[str] = None,
         inherit_project_context: bool = True,
         read_only_task: bool = False,
+        task_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Execute the sub-agent delegation."""
-        if self._current_depth >= MAX_DELEGATION_DEPTH:
+        if self.context.delegation_depth >= MAX_DELEGATION_DEPTH:
             return {
                 "success": False,
                 "error": (
@@ -222,7 +238,7 @@ class DelegateTaskTool(Tool):
             }
 
         return await self._run_delegation(
-            task_description, agent_role, context_hints, model, inherit_project_context, read_only_task
+            task_description, agent_role, context_hints, model, inherit_project_context, read_only_task, task_id
         )
 
     async def _run_delegation(
@@ -233,32 +249,66 @@ class DelegateTaskTool(Tool):
         model: Optional[str],
         inherit_project_context: bool,
         read_only_task: bool = False,
+        task_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Core sub-agent spawning and execution logic."""
         sub_agent = None
         try:
             from ..agent import Agent
+            from ..history import history_manager
 
             cwd = os.getcwd()
+            ctx = self.context
+            child_depth = ctx.delegation_depth + 1
+
+            if child_depth > MAX_DELEGATION_DEPTH:
+                return {
+                    "success": False,
+                    "error": (
+                        f"Maximum delegation depth ({MAX_DELEGATION_DEPTH}) reached "
+                        f"at construction time (would-be depth={child_depth})."
+                    ),
+                }
+
+            # If task_id is provided, try to resume an existing sub-agent session
+            resumed_session = None
+            if task_id:
+                try:
+                    resumed_session = history_manager.load_session(task_id)
+                    if resumed_session is not None:
+                        logger.info(
+                            "Resuming sub-agent session %s for task_id=%s",
+                            task_id, task_id,
+                        )
+                        event_emitter.emit(
+                            "agent_status",
+                            message=f"[dim]Resuming sub-agent session {task_id}...[/dim]",
+                        )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to resume sub-agent session %s: %s — starting fresh",
+                        task_id, e,
+                    )
+
             logger.info(
-                f"Sub-agent delegation: "
-                f"depth={self._current_depth + 1}/{MAX_DELEGATION_DEPTH}"
+                f"Sub-agent delegation: depth={child_depth}/{MAX_DELEGATION_DEPTH}"
             )
 
             role_label = f" ({agent_role})" if agent_role else ""
+            action = "Resuming" if resumed_session else "Spawning"
             event_emitter.emit(
                 "agent_status",
-                message=f"[bold purple]Spawning Sub-Agent{role_label} (depth {self._current_depth + 1}/{MAX_DELEGATION_DEPTH})...[/bold purple]",
+                message=f"[bold purple]{action} Sub-Agent{role_label} (depth {child_depth}/{MAX_DELEGATION_DEPTH})...[/bold purple]",
             )
-
-            ctx = self.context
 
             # Inherit the parent agent's model when no explicit override is given
             effective_model = model or ctx.parent_model
 
-            # Snapshot the parent's cost so we can report only the sub-agent's
-            # incremental spend later (the cost tracker is shared, so a raw read
-            # of get_total_cost() would include everything the parent spent).
+            # Snapshot cost BEFORE spawning so we can attribute spend to this
+            # sub-agent. NOTE: the cost tracker is shared across all agents, so
+            # the delta ``final - snapshot`` may include cost from other
+            # concurrently running read-only sub-agents — the per-agent cost
+            # is therefore only accurate when no other sub-agents are active.
             parent_cost_before = (
                 ctx.parent_cost_tracker.get_total_cost()
                 if ctx.parent_cost_tracker is not None
@@ -266,131 +316,123 @@ class DelegateTaskTool(Tool):
             )
 
             def _build_sub_agent():
-                """Create and fully wire a fresh sub-agent.
-
-                Factored out so the spawn path and the retry path share one
-                implementation. Returns ``(agent, persona)``.
-                """
-                new_agent = Agent(
+                """Create and fully wire a fresh sub-agent."""
+                nonlocal sub_agent
+                sub_agent = Agent(
                     model=effective_model,
                     auto_approve=ctx.parent_auto_approve,
                     is_subagent=True,
+                    delegation_depth=child_depth,
                 )
-                new_agent.ipc_server = ctx.parent_ipc_server
+                sub_agent.ipc_server = ctx.parent_ipc_server
 
-                # Share parent's cost tracker BEFORE reconfiguring delegate
-                # tool context — otherwise nested delegations (grand-children)
-                # would account against an orphan tracker.
                 if ctx.parent_cost_tracker is not None:
-                    new_agent.cost_tracker = ctx.parent_cost_tracker
+                    sub_agent.cost_tracker = ctx.parent_cost_tracker
 
                 persona = None
                 if agent_role:
-                    persona = new_agent.set_persona(
+                    persona = sub_agent.set_persona(
                         agent_role,
                         update_model=model is None,
                     )
 
-                # Re-wire the child's delegate_task tool so its
-                # ``context`` reflects the post-override state. ``set_persona``
-                # already does this when a persona is applied, but not
-                # otherwise.
-                new_agent._configure_delegate_tool_context()
+                sub_agent._configure_delegate_tool_context()
 
-                # Inherit parent's pinned context.
                 if (
                     inherit_project_context
                     and ctx.parent_context_manager is not None
                 ):
-                    new_agent.context_manager.pinned_files = dict(
+                    sub_agent.context_manager.pinned_files = dict(
                         ctx.parent_context_manager.pinned_files
                     )
-                    new_agent.context_manager._pinned_mtimes = dict(
+                    sub_agent.context_manager._pinned_mtimes = dict(
                         ctx.parent_context_manager._pinned_mtimes
                     )
                     if ctx.parent_context_manager.project_instructions:
-                        new_agent.context_manager.project_instructions = (
+                        sub_agent.context_manager.project_instructions = (
                             ctx.parent_context_manager.project_instructions
                         )
-                        new_agent.context_manager._instructions_loaded = True
+                        sub_agent.context_manager._instructions_loaded = True
                 else:
-                    # Explicitly mark as loaded with no content to prevent
-                    # the sub-agent from lazily loading them from disk.
-                    new_agent.context_manager.project_instructions = None
-                    new_agent.context_manager._instructions_loaded = True
+                    sub_agent.context_manager.project_instructions = None
+                    sub_agent.context_manager._instructions_loaded = True
 
-                # Strip mutating tools when the caller declared a read-only task
                 if read_only_task:
                     mutating = [
-                        name for name, t in new_agent.tools.tools.items()
+                        name
+                        for name, t in sub_agent.tools.tools.items()
                         if not getattr(t, "is_read_only", False)
                     ]
                     for name in mutating:
-                        del new_agent.tools.tools[name]
+                        del sub_agent.tools.tools[name]
 
-                new_agent.create_session()
+                sub_agent.create_session()
+                if resumed_session is not None:
+                    # Clone messages from the resumed session so the sub-agent
+                    # continues where it left off.
+                    sub_agent.session.messages = list(resumed_session.messages)
+                    sub_agent.session.model = effective_model
+                    sub_agent.session.updated_at = _time.time()
 
-                new_agent._register_tracker(
+                sub_agent._register_tracker(
                     task=task_description[:120],
                     role=agent_role,
                     parent_id=ctx.parent_agent_id,
                 )
 
-                # Propagate delegation depth so the sub-agent's
-                # DelegateTaskTool enforces MAX_DELEGATION_DEPTH.
-                child_delegate = new_agent.tools.get("delegate_task")
-                if child_delegate is not None:
-                    child_delegate._current_depth = self._current_depth + 1
-
-                return new_agent, persona
+                return sub_agent, persona
 
             sub_agent, applied_persona = _build_sub_agent()
 
-            # Build a rich system prompt overlay for the sub-agent
-            role_instructions = "" if applied_persona else _get_role_instructions(agent_role)
+            # Build a rich system prompt overlay for the sub-agent (only for new sessions)
+            if not resumed_session:
+                role_instructions = "" if applied_persona else _get_role_instructions(agent_role)
 
-            system_preamble_parts = [
-                "You are a specialized sub-agent spawned by a parent CoderAI agent.",
-                f"You are working in the project directory: {cwd}",
-                "",
-                "IMPORTANT INSTRUCTIONS:",
-                "- Complete the assigned task thoroughly and autonomously.",
-                "- Use tools (read_file, grep, run_command, etc.) to gather information — do NOT guess.",
-                "- Provide a comprehensive, well-structured final report.",
-                "- Structure your report with clear sections: Summary, Findings, Recommendations.",
-                "- Be specific: cite file paths, line numbers, and code snippets.",
-                "- Do NOT ask questions — make reasonable assumptions and note them.",
-                "- WEB SEARCH: If `web_search` or `read_url` appear under **Available Tools** in your system prompt, "
-                "call them directly to retrieve web content — NEVER tell the parent agent or user to run curl/wget "
-                "themselves. Include the fetched content directly in your report.",
-                "- Do NOT parse HTML or scrape web pages with shell pipelines (`curl | grep | sed`). "
-                "Use `web_search`/`read_url` if available, otherwise a short Python script.",
-                "- Do NOT switch branches unless explicitly required by the task.",
-                "- CRITICAL: Your FINAL turn MUST be a plain-text assistant message "
-                "containing the full report. Do NOT end the conversation on a "
-                "tool call — after you have gathered enough information, stop "
-                "calling tools and write the report as text. An empty or "
-                "tool-call-only final turn is considered a failure.",
-            ]
-
-            if role_instructions:
-                system_preamble_parts.extend(["", f"ROLE-SPECIFIC GUIDANCE ({agent_role}):", role_instructions])
-
-            parent_history_note = _summarize_parent_tool_history(ctx.parent_session)
-            if parent_history_note:
-                system_preamble_parts.extend([
+                system_preamble_parts = [
+                    "You are a specialized sub-agent spawned by a parent CoderAI agent.",
+                    f"You are working in the project directory: {cwd}",
                     "",
-                    "PARENT AGENT TOOL HISTORY (recent):",
-                    parent_history_note,
-                ])
+                    "IMPORTANT INSTRUCTIONS:",
+                    "- Complete the assigned task thoroughly and autonomously.",
+                    "- Use tools (read_file, grep, run_command, etc.) to gather information — do NOT guess.",
+                    "- Provide a comprehensive, well-structured final report.",
+                    "- Structure your report with clear sections: Summary, Findings, Recommendations.",
+                    "- Be specific: cite file paths, line numbers, and code snippets.",
+                    "- Do NOT ask questions — make reasonable assumptions and note them.",
+                    "- WEB SEARCH: If `web_search` or `read_url` appear under **Available Tools** in your system prompt, "
+                    "call them directly to retrieve web content — NEVER tell the parent agent or user to run curl/wget "
+                    "themselves. Include the fetched content directly in your report.",
+                    "- Do NOT parse HTML or scrape web pages with shell pipelines (`curl | grep | sed`). "
+                    "Use `web_search`/`read_url` if available, otherwise a short Python script.",
+                    "- Do NOT switch branches unless explicitly required by the task.",
+                    "- CRITICAL: Your FINAL turn MUST be a plain-text assistant message "
+                    "containing the full report. Do NOT end the conversation on a "
+                    "tool call — after you have gathered enough information, stop "
+                    "calling tools and write the report as text. An empty or "
+                    "tool-call-only final turn is considered a failure.",
+                ]
 
-            system_preamble = "\n".join(system_preamble_parts)
+                if role_instructions:
+                    system_preamble_parts.extend(["", f"ROLE-SPECIFIC GUIDANCE ({agent_role}):", role_instructions])
 
-            # Prepend to the sub-agent's existing system prompt
-            for msg in sub_agent.session.messages:
-                if msg.role == "system":
-                    msg.content = f"{system_preamble}\n\n---\n\n{msg.content}"
-                    break
+                parent_history_note = _summarize_parent_tool_history(ctx.parent_session)
+                if parent_history_note:
+                    system_preamble_parts.extend([
+                        "",
+                        "PARENT AGENT TOOL HISTORY (recent):",
+                        parent_history_note,
+                    ])
+
+                system_preamble = "\n".join(system_preamble_parts)
+
+                found_system = False
+                for msg in sub_agent.session.messages:
+                    if msg.role == "system":
+                        msg.content = f"{system_preamble}\n\n---\n\n{msg.content}"
+                        found_system = True
+                        break
+                if not found_system:
+                    sub_agent.session.add_message("system", system_preamble)
 
             # Add context hints to the task description directly
             if context_hints:
@@ -426,7 +468,7 @@ class DelegateTaskTool(Tool):
                     task_description, progress_callback=_on_tool_progress
                 )
 
-                # ── Retry: if the report is empty, ask once more for a summary ──
+                # Retry: if the report is empty, ask once more for a summary
                 if not (final_report and final_report.strip()):
                     logger.warning(
                         "Sub-agent returned empty report — requesting summary retry."
@@ -444,24 +486,58 @@ class DelegateTaskTool(Tool):
                         "2. The outcome of each action\n"
                         "3. Any issues encountered\n"
                         "4. Current status and next steps\n\n"
-                        f"Original task: {task_description[:2000]}"
+                        f"Task (with context hints): {task_description[:2000]}"
                     )
                     sub_agent.session.add_message("user", retry_prompt)
                     retry_messages = sub_agent.session.get_messages_for_api()
-                    # Call LLM without tools to force a text-only response
+                    # Call LLM without tools to force a text-only response.
+                    # ``tools=None`` is also what keeps this retry inside the
+                    # delegation depth budget: with no tools advertised, the
+                    # model cannot invoke ``delegate_task`` again and so cannot
+                    # spawn an off-the-books grand-child past
+                    # ``MAX_DELEGATION_DEPTH``.
                     try:
+                        # Snapshot provider counters before the retry call so
+                        # we can attribute incremental tokens to this retry.
+                        mi_before = sub_agent.provider.get_model_info()
                         retry_resp = await sub_agent.provider.chat(
                             retry_messages, tools=None
                         )
+                        mi_after = sub_agent.provider.get_model_info()
+                        new_in = mi_after.get("total_input_tokens", 0) - mi_before.get(
+                            "total_input_tokens", 0
+                        )
+                        new_out = mi_after.get(
+                            "total_output_tokens", 0
+                        ) - mi_before.get("total_output_tokens", 0)
+                        sub_agent.total_prompt_tokens = mi_after.get(
+                            "total_input_tokens", 0
+                        )
+                        sub_agent.total_completion_tokens = mi_after.get(
+                            "total_output_tokens", 0
+                        )
+                        sub_agent.total_tokens = mi_after.get("total_tokens", 0)
+                        if (new_in > 0 or new_out > 0) and sub_agent.cost_tracker is not None:
+                            model_for_cost = getattr(
+                                sub_agent.provider, "actual_model", sub_agent.model
+                            )
+                            sub_agent.cost_tracker.add_cost(
+                                model_for_cost, new_in, new_out
+                            )
                         choices = retry_resp.get("choices", [])
                         if choices:
                             final_report = (
                                 choices[0].get("message", {}).get("content") or ""
                             )
+                            # Persist the retry reply so a later task_id resume
+                            # doesn't see a dangling user prompt with no answer.
+                            if final_report:
+                                sub_agent.session.add_message("assistant", final_report)
+                                sub_agent.save_session()
                     except Exception as retry_err:
                         logger.warning(f"Sub-agent summary retry failed: {retry_err}")
 
-                # ── Fallback: synthesize report from tool results in session ──
+                # Fallback: synthesize report from tool results in session
                 if not (final_report and final_report.strip()):
                     logger.warning(
                         "Sub-agent still empty after retry — synthesizing from tool results."
@@ -503,13 +579,22 @@ class DelegateTaskTool(Tool):
 
             sub_agent._finish_tracker()
 
-            # Run on_subagent_stop hooks on the parent agent
-            hooks_data = self.context.parent_ipc_server.agent.hooks_manager.load_hooks() if (self.context.parent_ipc_server and hasattr(self.context.parent_ipc_server, "agent")) else None
+            # Run on_subagent_stop hooks on the parent agent. The whole chain
+            # (parent_ipc_server → agent → hooks_manager) is optional in
+            # headless / test setups, so guard each hop instead of letting an
+            # AttributeError get caught as a generic delegation failure.
+            parent_hooks_manager = None
+            parent_ipc = self.context.parent_ipc_server
+            parent_for_hooks = getattr(parent_ipc, "agent", None) if parent_ipc else None
+            if parent_for_hooks is not None:
+                parent_hooks_manager = getattr(parent_for_hooks, "hooks_manager", None)
+
+            hooks_data = parent_hooks_manager.load_hooks() if parent_hooks_manager else None
             if hooks_data:
-                await self.context.parent_ipc_server.agent.hooks_manager.run_hooks(
-                    "delegate_task", "on_subagent_stop", 
-                    {"task": task_description, "report": final_report, "tokens": tokens_used}, 
-                    hooks_data
+                await parent_hooks_manager.run_hooks(
+                    "delegate_task", "on_subagent_stop",
+                    {"task": task_description, "report": final_report, "tokens": tokens_used},
+                    hooks_data,
                 )
 
             from ..cost import CostTracker
@@ -522,6 +607,7 @@ class DelegateTaskTool(Tool):
                 ),
             )
 
+            task_session_id = getattr(sub_agent.session, "id", None)
             return {
                 "success": True,
                 "sub_agent_role": agent_role or "General Assistant",
@@ -529,6 +615,11 @@ class DelegateTaskTool(Tool):
                 "final_report": final_report,
                 "tokens_used": tokens_used,
                 "cost_usd": cost_usd,
+                **(
+                    {"task_id": task_session_id, "note": "Pass this task_id to future delegate_task calls with the same subagent_type to resume this session."}
+                    if task_session_id
+                    else {}
+                ),
             }
 
         except Exception as e:
@@ -563,17 +654,26 @@ class DelegateTaskTool(Tool):
         assistant_texts: List[str] = []
 
         for msg in sub_agent.session.messages:
-            if msg.role == "assistant" and msg.content and msg.content.strip():
+            if (
+                msg.role == "assistant"
+                and isinstance(msg.content, str)
+                and msg.content.strip()
+            ):
                 assistant_texts.append(msg.content.strip())
 
             if msg.role == "tool" and msg.content:
                 tool_name = msg.name or "unknown_tool"
-                try:
-                    parsed = _json.loads(msg.content)
-                    success = parsed.get("success", "?")
-                    # Keep tool result short for the fallback summary
-                    detail = str(parsed.get("output", parsed.get("error", "")))[:300]
-                except (_json.JSONDecodeError, AttributeError):
+                if isinstance(msg.content, str):
+                    try:
+                        parsed = _json.loads(msg.content)
+                        success = parsed.get("success", "?")
+                        detail = str(
+                            parsed.get("output", parsed.get("error", ""))
+                        )[:300]
+                    except (_json.JSONDecodeError, AttributeError):
+                        success = "?"
+                        detail = str(msg.content)[:300]
+                else:
                     success = "?"
                     detail = str(msg.content)[:300]
                 tool_summaries.append(

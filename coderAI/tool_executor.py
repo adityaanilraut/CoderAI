@@ -33,51 +33,42 @@ MAX_CONCURRENT_READ_ONLY_SUBAGENTS = 4
 # result. Stops the model from looping on the same read_file / git_status.
 DUPLICATE_CALL_THRESHOLD = 2
 
+# Hard ceiling on identical (tool, args) calls across iterations. Once a
+# fingerprint reaches this count the executor signals the loop to stop
+# entirely. Unlike DUPLICATE_CALL_THRESHOLD this applies to ALL tools
+# (read-only or not), because mutating tools called identically N times
+# almost always indicate a stuck model rather than legitimate work.
+# Triggered in production by gpt-5.4-mini calling `plan action=show`
+# 14+ times in a single turn before the user cancelled.
+DOOM_LOOP_HARD_THRESHOLD = 5
+
 
 def _fingerprint(tool_name: str, arguments: Optional[Dict[str, Any]]) -> str:
-    """Stable fingerprint of a tool call for duplicate detection.
-
-    ``arguments`` is a dict produced by ``coerce_tool_arguments``. Dicts are
-    serialized with sorted keys so argument ordering doesn't change the hash.
-    """
     try:
         args_blob = json.dumps(arguments or {}, sort_keys=True, default=str)
     except Exception:
         args_blob = repr(arguments)
-    h = hashlib.sha1(f"{tool_name}\x00{args_blob}".encode("utf-8")).hexdigest()
-    return h[:16]
+    h = hashlib.sha256(f"{tool_name}\x00{args_blob}".encode("utf-8")).hexdigest()
+    return h
 
 
 class ToolExecutor:
-    """Coordinates tool batched runs, context updates, and UI confirmations."""
-
     def __init__(self, agent):
         self.agent = agent
-        self._ro_semaphore: Optional[asyncio.Semaphore] = None
-        self._subagent_ro_semaphore: Optional[asyncio.Semaphore] = None
-        # Per-turn call counters keyed by tool fingerprint. A new
-        # ``ExecutionLoop`` (and therefore a new ``ToolExecutor``) is
-        # instantiated on every ``process_message``, so these are naturally
-        # scoped to one turn; ``reset_counts()`` lets callers clear them
-        # mid-turn if a session boundary is crossed another way.
+        self._ro_semaphore = asyncio.Semaphore(MAX_CONCURRENT_READ_ONLY)
+        self._subagent_ro_semaphore = asyncio.Semaphore(MAX_CONCURRENT_READ_ONLY_SUBAGENTS)
         self._call_counts: Dict[str, int] = {}
         self._last_results: Dict[str, Dict[str, Any]] = {}
-        # Cache file contents by (path, mtime) for _compute_preview_diff so
-        # repeated diffs on the same file within one turn avoid re-reading.
         self._preview_file_cache: Dict[str, Tuple[float, str]] = {}
 
     def reset_counts(self) -> None:
-        """Drop the fingerprint dedup / last-results / file caches."""
         self._call_counts.clear()
         self._last_results.clear()
         self._preview_file_cache.clear()
 
     def _approval_allowlist(self) -> set[str]:
-        allowlist = getattr(self.agent, "_tool_approval_allowlist", None)
-        if allowlist is None:
-            allowlist = set()
-            self.agent._tool_approval_allowlist = allowlist
-        return allowlist
+        # Initialized in Agent.__init__ so no race-condition risk here.
+        return self.agent._tool_approval_allowlist
 
     def _normalize_tool_result(
         self,
@@ -86,11 +77,11 @@ class ToolExecutor:
         tool_name: str,
         default_error_code: str = "tool_error",
     ) -> Dict[str, Any]:
-        """Coerce arbitrary tool returns into the standard tool result envelope."""
         if isinstance(result, dict):
             normalized = dict(result)
             if "success" not in normalized:
-                normalized["success"] = "error" not in normalized
+                has_useful_output = bool(normalized.get("result") or normalized.get("output") or normalized.get("data"))
+                normalized["success"] = "error" not in normalized and has_useful_output
             if normalized.get("success") is False:
                 normalized["error"] = str(
                     normalized.get("error") or f"Tool '{tool_name}' failed."
@@ -117,7 +108,6 @@ class ToolExecutor:
     def _enter_waiting_for_user(
         self, tool_name: str
     ) -> Optional[Tuple[AgentStatus, Optional[str]]]:
-        """Flip tracker state while execution is blocked on user input."""
         info = self.agent.tracker_info
         if not info:
             return None
@@ -130,7 +120,6 @@ class ToolExecutor:
     def _exit_waiting_for_user(
         self, previous: Optional[Tuple[AgentStatus, Optional[str]]]
     ) -> None:
-        """Restore tracker state after an approval prompt finishes."""
         info = self.agent.tracker_info
         if not info or previous is None:
             return
@@ -144,16 +133,10 @@ class ToolExecutor:
 
     @property
     def _read_only_semaphore(self) -> asyncio.Semaphore:
-        """Lazily create the semaphore inside a running event loop."""
-        if self._ro_semaphore is None:
-            self._ro_semaphore = asyncio.Semaphore(MAX_CONCURRENT_READ_ONLY)
         return self._ro_semaphore
 
     @property
     def _read_only_subagent_semaphore(self) -> asyncio.Semaphore:
-        """Separate, smaller semaphore for read-only sub-agent fan-out."""
-        if self._subagent_ro_semaphore is None:
-            self._subagent_ro_semaphore = asyncio.Semaphore(MAX_CONCURRENT_READ_ONLY_SUBAGENTS)
         return self._subagent_ro_semaphore
 
     def _compute_preview_diff(self, tool_name: str, arguments: Dict[str, Any]) -> Optional[str]:
@@ -168,7 +151,16 @@ class ToolExecutor:
         import difflib
 
         try:
-            path_obj = Path(path).expanduser()
+            path_obj = Path(path).expanduser().resolve()
+
+            import os
+            if self.agent and self.agent.config and os.environ.get("CODERAI_ALLOW_OUTSIDE_PROJECT") != "1":
+                project_root = Path(self.agent.config.project_root).resolve()
+                try:
+                    path_obj.relative_to(project_root)
+                except ValueError:
+                    return None
+
             if not path_obj.exists() and tool_name != "write_file":
                 return None
 
@@ -231,19 +223,53 @@ class ToolExecutor:
                     + f"\n... (diff truncated) {hidden} chars hidden"
                 )
             return diff_text
-        except Exception:
+        except Exception as e:
+            logger.debug("Preview diff computation failed for %s: %s", tool_name, e)
             return None
+
+    async def _precompute_diffs(
+        self, parsed_calls: list
+    ) -> Dict[int, Optional[str]]:
+        gated: List[Tuple[int, dict]] = []
+        for i, pc in enumerate(parsed_calls):
+            if pc.get("parse_error") or pc.get("arguments") is None:
+                continue
+            tool = self.agent.tools.get(pc.get("tool_name", ""))
+            if tool is not None and getattr(tool, "requires_confirmation", False):
+                gated.append((i, pc))
+
+        if not gated:
+            return {}
+
+        async def _one(idx: int, pc: dict) -> Tuple[int, Optional[str]]:
+            diff = await asyncio.to_thread(
+                self._compute_preview_diff, pc["tool_name"], pc["arguments"]
+            )
+            return idx, diff
+
+        diffs: Dict[int, Optional[str]] = {}
+        results = await asyncio.gather(*(_one(i, pc) for i, pc in gated))
+        for idx, diff in results:
+            if diff is not None:
+                diffs[idx] = diff
+        return diffs
 
     async def _confirmation_callback(
         self,
         tool_name: str,
         arguments: Dict[str, Any],
         tool_id: Optional[str] = None,
+        precomputed_diff: Optional[str] = None,
     ) -> bool:
-        """Ask the user to confirm a tool execution."""
+        # getattr avoids a hard import on ipc_server; the agent may run
+        # without IPC (e.g. one-shot CLI) where ipc_server is never set.
         ipc_server = getattr(self.agent, "ipc_server", None)
 
-        diff = self._compute_preview_diff(tool_name, arguments)
+        diff = (
+            precomputed_diff
+            if precomputed_diff is not None
+            else await asyncio.to_thread(self._compute_preview_diff, tool_name, arguments)
+        )
 
         if ipc_server is None:
             args_preview = json.dumps(arguments, indent=2)
@@ -286,8 +312,13 @@ class ToolExecutor:
         finally:
             self._exit_waiting_for_user(previous)
 
-    async def execute_single_tool(self, pc: Dict[str, Any], hooks_data: Optional[Dict[str, Any]], hooks_manager) -> Dict[str, Any]:
-        """Execute a single tool call, including hooks and confirmation."""
+    async def execute_single_tool(
+        self,
+        pc: Dict[str, Any],
+        hooks_data: Optional[Dict[str, Any]],
+        hooks_manager,
+        precomputed_diff: Optional[str] = None,
+    ) -> Dict[str, Any]:
         if pc.get("parse_error"):
             return self._normalize_tool_result(
                 {
@@ -303,7 +334,9 @@ class ToolExecutor:
             tool = self.agent.tools.get(tool_name)
 
             async def _confirm(name, args):
-                return await self._confirmation_callback(name, args, tool_id=pc["tool_id"])
+                return await self._confirmation_callback(
+                    name, args, tool_id=pc["tool_id"], precomputed_diff=precomputed_diff
+                )
 
             is_mcp_proxy = is_mcp_function_name(tool_name) and tool is None
             needs_confirmation = (
@@ -315,13 +348,35 @@ class ToolExecutor:
                 )
             )
             if needs_confirmation:
-                approved = await _confirm(tool_name, arguments)
-                if not approved:
-                    return {
-                        "success": False,
-                        "error": f"Tool '{tool_name}' was denied by the user.",
-                        "error_code": "denied",
-                    }
+                # Check permission hooks first (can auto-allow or auto-deny)
+                if hooks_manager is not None and hooks_data:
+                    permission_status = await getattr(
+                        hooks_manager, "run_permission_hooks", lambda *a, **kw: None
+                    )(tool_name, arguments, hooks_data)
+                    if permission_status == "allow":
+                        pass  # Skip user prompt, proceed
+                    elif permission_status == "deny":
+                        return {
+                            "success": False,
+                            "error": f"Tool '{tool_name}' was denied by a permission hook.",
+                            "error_code": "denied_by_hook",
+                        }
+                    else:
+                        approved = await _confirm(tool_name, arguments)
+                        if not approved:
+                            return {
+                                "success": False,
+                                "error": f"Tool '{tool_name}' was denied by the user.",
+                                "error_code": "denied",
+                            }
+                else:
+                    approved = await _confirm(tool_name, arguments)
+                    if not approved:
+                        return {
+                            "success": False,
+                            "error": f"Tool '{tool_name}' was denied by the user.",
+                            "error_code": "denied",
+                        }
 
             pre_hooks = await hooks_manager.run_hooks(
                 tool_name, "PreToolUse", arguments, hooks_data
@@ -346,16 +401,21 @@ class ToolExecutor:
                         **arguments,
                     )
 
+            tool_timed_out = False
             try:
                 result = await asyncio.wait_for(_inner_execute(), timeout=timeout)
             except asyncio.TimeoutError:
+                tool_timed_out = True
                 result = {
                     "success": False,
                     "error": f"Tool '{tool_name}' exceeded timeout of {timeout}s",
                     "error_code": "timeout",
                 }
 
-            post_hooks = await hooks_manager.run_hooks(tool_name, "PostToolUse", arguments, hooks_data) or []
+            post_hook_args = dict(arguments or {})
+            if tool_timed_out:
+                post_hook_args["_tool_timed_out"] = True
+            post_hooks = await hooks_manager.run_hooks(tool_name, "PostToolUse", post_hook_args, hooks_data) or []
             result = self._normalize_tool_result(result, tool_name=tool_name)
 
             if isinstance(result, dict) and (pre_hooks or post_hooks):
@@ -372,11 +432,13 @@ class ToolExecutor:
             )
 
     async def orchestrate_tool_calls(
-        self, tool_calls: list, messages: List[Dict[str, Any]], user_message: str, hooks_data: Optional[Dict[str, Any]], hooks_manager, max_consecutive_errors: int, current_errors: int
+        self,
+        tool_calls: list,
+        messages: List[Dict[str, Any]],
+        user_message: str,
+        hooks_data: Optional[Dict[str, Any]],
+        hooks_manager,
     ) -> Tuple[bool, Optional[Dict[str, Any]]]:
-        """Parse and execute a batch of tool calls. Updates 'messages' in-place.
-        Returns: Tuple of (did_error, dict_with_fatal_session)
-        """
         parsed_calls = []
         parse_failures = 0
         for tc in tool_calls:
@@ -392,8 +454,9 @@ class ToolExecutor:
                 parsed_calls.append({"tool_id": tool_id, "tool_name": name, "arguments": args, "parse_error": None})
 
         if parse_failures == len(parsed_calls):
-            # All tools failed to parse
-            check_count = current_errors + 1
+            # All tools failed to parse — record the synthetic tool replies and
+            # ask the loop for another LLM round. The loop's
+            # ``consecutive_errors`` counter terminates if this keeps happening.
             for pc in parsed_calls:
                 self.agent.session.add_message(
                     "tool",
@@ -407,17 +470,7 @@ class ToolExecutor:
                     tool_call_id=pc["tool_id"],
                     name=pc["tool_name"],
                 )
-            
-            if check_count >= max_consecutive_errors:
-                self.agent._finish_tracker(error=True)
-                self.agent.save_session()
-                return True, {
-                    "content": f"I encountered {check_count} consecutive parse errors. Please rephrase your request.",
-                    "messages": self.agent.session.messages,
-                    "model_info": self.agent.provider.get_model_info(),
-                }
-            
-            # Update the messages list from session for the next LLM call
+
             messages.clear()
             messages.extend(self.agent.session.get_messages_for_api())
             return True, {"retry": True}
@@ -433,13 +486,6 @@ class ToolExecutor:
             elif pc["arguments"] is not None:
                 event_emitter.emit("tool_call", tool_name=pc["tool_name"], arguments=pc["arguments"], tool_id=pc["tool_id"])
 
-        # Detect duplicates and short-circuit them before running the batch.
-        # Two flavors:
-        #   1. In-batch duplicates — identical (tool, args) appearing more than
-        #      once in the same parallel batch. Execute once, replay the result.
-        #   2. Cross-iteration duplicates — same fingerprint seen on a prior
-        #      iteration for a read-only tool. Replay the cached result with a
-        #      warning so the model doesn't loop forever on read_file/grep.
         dup_results: Dict[int, Dict[str, Any]] = {}
         batch_seen: Dict[str, int] = {}
         to_run_indices: List[int] = []
@@ -495,9 +541,14 @@ class ToolExecutor:
                 cloned["_warning"] = placeholder.get("_warning", "Duplicate result reused.")
                 results[i] = cloned
             else:
+                placeholder["error"] = "Duplicate tool call skipped"
                 results[i] = placeholder
 
         # Update call counters / last-result cache for future iterations.
+        # Also detect cross-iteration doom-loops here: if any fingerprint
+        # has now been called >= DOOM_LOOP_HARD_THRESHOLD times, we'll
+        # signal the loop to terminate after persisting the current results.
+        doom_offender: Optional[Tuple[str, int]] = None  # (tool_name, count)
         for pc, res in zip(parsed_calls, results):
             fp = pc.get("_fp")
             if not fp:
@@ -506,10 +557,15 @@ class ToolExecutor:
             self._call_counts[fp] = self._call_counts.get(fp, 0) + 1
             if isinstance(res, dict) and res.get("success") is True:
                 self._last_results[fp] = res
+            count = self._call_counts[fp]
+            if count >= DOOM_LOOP_HARD_THRESHOLD and (
+                doom_offender is None or count > doom_offender[1]
+            ):
+                doom_offender = (pc["tool_name"], count)
 
         for pc, res in zip(parsed_calls, results):
-            res = self._normalize_tool_result(res, tool_name=pc["tool_name"])
             res = self.agent.context_controller.summarize_tool_result(res)
+            res = self._normalize_tool_result(res, tool_name=pc["tool_name"])
             event_emitter.emit("tool_result", tool_name=pc["tool_name"], result=res, tool_id=pc["tool_id"])
             self.agent.session.add_message("tool", json.dumps(res), tool_call_id=pc["tool_id"], name=pc["tool_name"])
 
@@ -521,21 +577,47 @@ class ToolExecutor:
         messages.clear()
         messages.extend(self.agent.session.get_messages_for_api())
 
+        # Detect which failures are user denials (not real errors).
+        denied_tools: List[str] = []
+        for pc, res in zip(parsed_calls, results):
+            if isinstance(res, dict) and res.get("error_code") == "denied":
+                denied_tools.append(pc.get("tool_name", "unknown"))
+
         all_tool_calls_failed = bool(results) and all(
             not (isinstance(res, dict) and res.get("success") is True)
             for res in results
         )
         if all_tool_calls_failed:
+            if denied_tools:
+                event_emitter.emit(
+                    "agent_warning",
+                    message=f"Tool(s) denied by user: {', '.join(denied_tools)}. "
+                            "Asking the model to try a different approach.",
+                )
+                return True, {"retry": True, "_denied": True, "_denied_tools": denied_tools}
             event_emitter.emit(
                 "agent_warning",
                 message="All tool calls in this step failed. Asking the model to revise its plan.",
             )
             return True, {"retry": True}
 
+        if denied_tools:
+            return True, {"retry": True, "_denied": True, "_denied_tools": denied_tools}
+
+        if doom_offender is not None:
+            tool_name, count = doom_offender
+            event_emitter.emit(
+                "agent_warning",
+                message=(
+                    f"Stopping: '{tool_name}' was called {count} times with identical "
+                    f"arguments. The model is stuck in a loop."
+                ),
+            )
+            return True, {"_doom_loop_stop": True, "tool_name": tool_name, "count": count}
+
         return False, None
 
     async def run_tool_batch(self, parsed_calls: list, hooks_data: Optional[Dict[str, Any]], hooks_manager) -> list:
-        """Handle parallel/sequential execution of parsed tool calls."""
         ro_indices: list = []
         capped_groups: Dict[str, list] = {}
         sub_ro_indices: list = []
@@ -546,10 +628,7 @@ class ToolExecutor:
             if not tool:
                 mut_indices.append(i)
                 continue
-            # delegate_task with read_only_task=True is safe to parallelize:
-            # the child sub-agent has all mutating tools stripped (see
-            # DelegateTaskTool._run_delegation), so workspace conflicts can't
-            # occur. Route to the sub-agent-bounded parallel group.
+            # delegate_task with read_only_task=True is safe to parallelize.
             if (
                 tool_name == "delegate_task"
                 and isinstance(pc.get("arguments"), dict)
@@ -567,10 +646,14 @@ class ToolExecutor:
 
         results = [None] * len(parsed_calls)
         total, done = len(parsed_calls), 0
+        # _cancel_event is an asyncio.Event on AgentTrackerInfo used to
+        # signal cancellation across concurrent tool tasks.
         cancel_event = self.agent.tracker_info._cancel_event if self.agent.tracker_info else None
 
-        async def _run(pc):
-            coro = self.execute_single_tool(pc, hooks_data, hooks_manager)
+        precomputed_diffs = await self._precompute_diffs(parsed_calls)
+
+        async def _run(pc, diff=None):
+            coro = self.execute_single_tool(pc, hooks_data, hooks_manager, precomputed_diff=diff)
             if not cancel_event:
                 return await coro
             t = asyncio.ensure_future(coro)
@@ -580,6 +663,10 @@ class ToolExecutor:
                 w.cancel()
                 return t.result()
             t.cancel()
+            try:
+                await asyncio.wait_for(t, timeout=2.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
             return {"success": False, "error": "Cancelled by user.", "error_code": "cancelled"}
 
         def _emit_progress(i: int, elapsed: Optional[float] = None) -> None:
@@ -590,22 +677,39 @@ class ToolExecutor:
                 payload["elapsed"] = elapsed
             event_emitter.emit("tool_progress", **payload)
 
+        def _coerce_gather_result(idx: int, raw: Any) -> Dict[str, Any]:
+            if isinstance(raw, BaseException):
+                if isinstance(raw, (KeyboardInterrupt, SystemExit)):
+                    raise raw
+                tool_name = parsed_calls[idx].get("tool_name", "unknown")
+                logger.warning("Tool '%s' raised in parallel batch: %s", tool_name, raw)
+                return {
+                    "success": False,
+                    "error": f"Tool '{tool_name}' raised: {raw}",
+                    "error_code": "tool_exception",
+                }
+            return raw
+
         if ro_indices:
             async def _run_ro(idx):
                 async with self._read_only_semaphore:
-                    return await _run(parsed_calls[idx])
-            res = await asyncio.gather(*(_run_ro(i) for i in ro_indices))
+                    return await _run(parsed_calls[idx], diff=precomputed_diffs.get(idx))
+            res = await asyncio.gather(
+                *(_run_ro(i) for i in ro_indices), return_exceptions=True
+            )
             for i, r in zip(ro_indices, res):
-                results[i] = r
+                results[i] = _coerce_gather_result(i, r)
                 _emit_progress(i)
 
         if sub_ro_indices:
             async def _run_sub_ro(idx):
                 async with self._read_only_subagent_semaphore:
-                    return await _run(parsed_calls[idx])
-            res = await asyncio.gather(*(_run_sub_ro(i) for i in sub_ro_indices))
+                    return await _run(parsed_calls[idx], diff=precomputed_diffs.get(idx))
+            res = await asyncio.gather(
+                *(_run_sub_ro(i) for i in sub_ro_indices), return_exceptions=True
+            )
             for i, r in zip(sub_ro_indices, res):
-                results[i] = r
+                results[i] = _coerce_gather_result(i, r)
                 _emit_progress(i)
 
         for tool_name, indices in capped_groups.items():
@@ -613,14 +717,16 @@ class ToolExecutor:
             size = max(1, int(getattr(cap_tool, "max_parallel_invocations", 1)))
             for start in range(0, len(indices), size):
                 chunk = indices[start : start + size]
-                res = await asyncio.gather(*(_run(parsed_calls[i]) for i in chunk))
+                res = await asyncio.gather(
+                    *(_run(parsed_calls[i], diff=precomputed_diffs.get(i)) for i in chunk), return_exceptions=True
+                )
                 for i, r in zip(chunk, res):
-                    results[i] = r
+                    results[i] = _coerce_gather_result(i, r)
                     _emit_progress(i)
 
         for i in mut_indices:
             t0 = _time.time()
-            results[i] = await _run(parsed_calls[i])
+            results[i] = await _run(parsed_calls[i], diff=precomputed_diffs.get(i))
             _emit_progress(i, elapsed=round(_time.time() - t0, 2))
 
         return results

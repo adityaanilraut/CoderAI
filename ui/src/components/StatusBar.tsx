@@ -1,14 +1,19 @@
 import React, {memo, useEffect, useState} from "react";
-import {Box, Text} from "ink";
+import {Box, Text, useStdout} from "ink";
 import type {SessionState} from "../hooks/useAgent.js";
 import {theme} from "../theme.js";
-import {formatTokenCount, formatCost} from "../lib/format.js";
+import {formatTokenCount, formatCost, truncateSmart} from "../lib/format.js";
 import {Dot} from "./Primitives.js";
 
 export interface StatusBarProps {
   session: SessionState;
   narrow?: boolean;
 }
+
+/** Width breakpoint between "compact row" and "everything in one row". Below
+ *  this we drop low-priority fields (reasoning, duration) so the high-signal
+ *  ones (ctx, cost, mode) don't wrap mid-segment. */
+const COMPACT_COLS = 100;
 
 /**
  * Bottom status bar.
@@ -23,6 +28,13 @@ export const StatusBar = memo(function StatusBar({
   session,
   narrow = false,
 }: StatusBarProps) {
+  const {stdout} = useStdout();
+  const columns = stdout?.columns ?? 100;
+  // Three tiers: narrow stacks vertically, compact drops reasoning+duration
+  // and truncates model/provider, wide shows everything. Without the compact
+  // tier a long model id ("claude-opus-4-7") + provider + ctx + cost + mode +
+  // reasoning + 1:23 elapsed easily overflowed 100 cols and wrapped.
+  const compact = !narrow && columns < COMPACT_COLS;
   const ctxKnown = session.ctxLimit > 0;
   const ctxPct = ctxKnown ? (session.ctxUsed / session.ctxLimit) * 100 : 0;
   const ctxColor = !ctxKnown
@@ -52,6 +64,9 @@ export const StatusBar = memo(function StatusBar({
 
   const disconnected = session.sessionStartedAt !== null && !session.connected;
 
+  const modelLabel = disconnected
+    ? "disconnected"
+    : truncateSmart(session.model || "booting…", compact ? 22 : 64);
   const modelSeg = (
     <Box>
       <Dot
@@ -60,14 +75,14 @@ export const StatusBar = memo(function StatusBar({
       />
       <Text color={disconnected ? theme.danger : theme.accent} bold>
         {" "}
-        {disconnected ? "disconnected" : session.model || "booting…"}
+        {modelLabel}
       </Text>
       {disconnected ? (
         <Text color={theme.faint}>
           {theme.glyph.separator}
           restart coderAI chat
         </Text>
-      ) : session.provider ? (
+      ) : session.provider && !compact ? (
         <Text color={theme.faint}>
           {theme.glyph.separator}
           {session.provider}
@@ -123,9 +138,9 @@ export const StatusBar = memo(function StatusBar({
   );
 
   // `none` means reasoning is off — no point showing chrome for the
-  // absence of a feature.
+  // absence of a feature. Suppressed in compact mode so the row fits.
   const reasoningSeg =
-    session.reasoning && session.reasoning !== "none" ? (
+    !compact && session.reasoning && session.reasoning !== "none" ? (
       <Text color={theme.faint}>
         {theme.glyph.separator}
         {session.reasoning}
@@ -133,7 +148,7 @@ export const StatusBar = memo(function StatusBar({
     ) : null;
 
   const durationSeg =
-    session.sessionStartedAt ? (
+    !compact && session.sessionStartedAt ? (
       <>
         <Text>{theme.glyph.separator}</Text>
         <ElapsedTimer startedAt={session.sessionStartedAt} />

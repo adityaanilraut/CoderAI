@@ -90,6 +90,7 @@ class FormatTool(Tool):
         "Use check=true to preview changes without writing them."
     )
     parameters_model = FormatParams
+    requires_confirmation = True
 
     async def execute(
         self,

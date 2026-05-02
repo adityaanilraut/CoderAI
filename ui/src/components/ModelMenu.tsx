@@ -1,8 +1,8 @@
 import React, {useState, useMemo} from "react";
 import {Box, Text, useInput} from "ink";
-import Spinner from "ink-spinner";
 import {theme} from "../theme.js";
 import {truncateSmart} from "../lib/format.js";
+import {QuietSpinner} from "./QuietSpinner.js";
 
 export interface ModelMenuProps {
   /** Provider -> model names, e.g. {"Anthropic": ["opus", "sonnet", ...], ...} */
@@ -107,7 +107,7 @@ export function ModelMenu({models, current, onPick, onClose, maxWidth}: ModelMen
 
       {loading ? (
         <Box>
-          <Text color={theme.accent}><Spinner type="dots" /></Text>
+          <Text color={theme.accent}><QuietSpinner /></Text>
           <Text color={theme.faint}> loading models…</Text>
         </Box>
       ) : groups.length === 0 ? (
@@ -127,14 +127,14 @@ export function ModelMenu({models, current, onPick, onClose, maxWidth}: ModelMen
               return (
                 <Box key={model}>
                   <Text color={selected ? theme.accent : theme.faint}>{mark}</Text>
-                  <Text
-                    bold={selected}
-                    color={selected ? "black" : theme.info}
-                    backgroundColor={selected ? theme.accent : undefined}
-                  >
-                    {" "}
-                    {lab.padEnd(modelW - 1)}
-                  </Text>
+                    <Text
+                      bold={selected}
+                      color={selected ? theme.bg : theme.info}
+                      backgroundColor={selected ? theme.accent : undefined}
+                    >
+                      {" "}
+                      {lab.padEnd(modelW - 1)}
+                    </Text>
                   <Text color={selected ? theme.textSoft : theme.muted}>
                     {" "}
                     {isCurrent ? "(current)" : ""}

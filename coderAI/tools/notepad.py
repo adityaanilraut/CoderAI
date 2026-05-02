@@ -117,7 +117,7 @@ class NotepadTool(Tool):
                 note = shared_notepad.read(key)
                 if note is None:
                     return {"success": False, "error": f"Note '{key}' not found."}
-                return {"success": True, "key": key, **note}
+                return {"success": True, "key": key, "note": note}
 
             elif action == "list":
                 keys = shared_notepad.list_keys()

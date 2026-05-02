@@ -10,8 +10,8 @@ agent via an internal async queue.
 
 Wire format (see ``ui/PROTOCOL.md`` for the full spec):
 
-    {"v": 1, "kind": "event", "event": "<name>", ...payload}
-    {"v": 1, "kind": "cmd",   "cmd":   "<name>", "id": "...", ...payload}
+    {"v": 2, "kind": "event", "event": "<name>", ...payload}
+    {"v": 2, "kind": "cmd",   "cmd":   "<name>", "id": "...", ...payload}
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import threading
 import time as _time
 import uuid
 from typing import Any, Awaitable, Callable, Dict, Optional
@@ -30,6 +31,7 @@ from typing import Any, Awaitable, Callable, Dict, Optional
 from ..agent_tracker import AgentInfo, AgentStatus, agent_tracker
 from ..config import config_manager
 from ..events import event_emitter
+from ..project_layout import find_dot_coderai_subdir
 from ..system_prompt import _TOOL_SECTIONS
 
 # IPC protocol version. Increment when the wire format changes incompatibly.
@@ -109,8 +111,8 @@ def _infer_error_hint(category: str, message: str) -> Optional[str]:
 # up in the registry override the map.
 
 _CATEGORY_MAP = {
-    "File Operations": "fs",
-    "Terminal": "shell",
+    "File Operations": "filesystem",
+    "Terminal": "terminal",
     "Git": "git",
     "Search & Analysis": "search",
     "Web": "web",
@@ -225,10 +227,11 @@ class IPCServer:
     ):
         self.agent = agent
         self._stdin_reader = stdin
-        self._send_lock = asyncio.Lock()
+        self._send_lock = threading.Lock()
         self._turn_lock = asyncio.Lock()
         self._exit = asyncio.Event()
         self._approval_waiters: Dict[str, asyncio.Future] = {}
+        self._pending_tasks: set[asyncio.Task] = set()
         self._said_goodbye = False
 
         # Per-agent-id timestamp (ms) of the last forwarded ``agent_update``.
@@ -258,18 +261,19 @@ class IPCServer:
 
     def _write(self, payload: Dict[str, Any]) -> None:
         """Write one NDJSON line synchronously. Safe to call from any context."""
-        try:
-            sys.__stdout__.write(json.dumps(payload, default=str) + "\n")
-            sys.__stdout__.flush()
-        except (BrokenPipeError, ValueError):
-            # UI closed the pipe; stop emitting.
-            self._exit.set()
+        with self._send_lock:
+            try:
+                sys.__stdout__.write(json.dumps(payload, default=str) + "\n")
+                sys.__stdout__.flush()
+            except (BrokenPipeError, ValueError):
+                # UI closed the pipe; stop emitting.
+                self._exit.set()
 
     def emit(self, event: str, **data: Any) -> None:
         """Emit one protocol event, honoring the current verbosity filter."""
         if not self._should_emit_event(event, data):
             return
-        self._write({"v": 1, "kind": "event", "event": event, **data})
+        self._write({"v": PROTOCOL_VERSION, "kind": "event", "event": event, **data})
 
     def _should_emit_event(self, event: str, data: Dict[str, Any]) -> bool:
         """Decide whether ``event`` survives the current verbosity filter.
@@ -444,7 +448,6 @@ class IPCServer:
         # Use provided tool_id if available, otherwise generate one
         if not tool_id:
             tool_id = f"t_{uuid.uuid4().hex[:12]}"
-        self._last_tool_id = tool_id  # fallback for callers not providing tool_id
         self.emit(
             "tool",
             id=tool_id,
@@ -452,14 +455,14 @@ class IPCServer:
             payload={
                 "name": tool_name,
                 "category": _tool_category(tool_name, getattr(self.agent, "tools", None)),
-                "args": _redact_args(arguments),
+                "args": _arg_preview(arguments),
                 "risk": _tool_risk(tool_name),
             }
         )
 
     def _on_tool_result(self, tool_name: str, result: Dict[str, Any], tool_id: str = None) -> None:
         if not tool_id:
-            tool_id = getattr(self, "_last_tool_id", f"t_{uuid.uuid4().hex[:12]}")
+            tool_id = f"t_{uuid.uuid4().hex[:12]}"
         ok = bool(result.get("success", True))
         error = result.get("error") if not ok else None
         preview = _result_preview(result)
@@ -529,25 +532,23 @@ class IPCServer:
         # coroutine open for the entire agentic turn (including awaiting
         # ``tool_approval_resp``), so if we awaited dispatch serially the
         # approval reply would never be read and the turn would deadlock.
-        pending: set[asyncio.Task] = set()
         while not self._exit.is_set():
             try:
                 line = await reader.readline()
-            except asyncio.LimitOverrunError as e:
-                # A frame exceeded the buffer. Drain it so we resync on the
-                # next newline rather than wedging on the same byte.
-                try:
-                    await reader.readexactly(e.consumed)
-                except Exception:
-                    pass
-                logger.warning("stdin: oversized NDJSON frame (%s bytes); dropped.", e.consumed)
-                self.emit(
-                    "error",
-                    category="protocol",
-                    message=f"Oversized NDJSON frame ({e.consumed} bytes) was dropped.",
-                )
-                continue
             except Exception as e:
+                if type(e).__name__ == "LimitOverrunError":
+                    consumed = getattr(e, "consumed", 0)
+                    try:
+                        await reader.readline()
+                    except Exception:
+                        pass
+                    logger.warning("stdin: oversized NDJSON frame (%s bytes); dropped.", consumed)
+                    self.emit(
+                        "error",
+                        category="protocol",
+                        message=f"Oversized NDJSON frame ({consumed} bytes) was dropped.",
+                    )
+                    continue
                 logger.error("stdin read failed: %s", e)
                 break
             if not line:
@@ -571,8 +572,8 @@ class IPCServer:
             if msg.get("kind") != "cmd":
                 continue
             task = asyncio.create_task(self._dispatch(msg))
-            pending.add(task)
-            task.add_done_callback(pending.discard)
+            self._pending_tasks.add(task)
+            task.add_done_callback(self._pending_tasks.discard)
 
     async def _dispatch(self, msg: Dict[str, Any]) -> None:
         cmd = msg.get("cmd")
@@ -607,6 +608,12 @@ class IPCServer:
             await self._exit.wait()
         finally:
             reader_task.cancel()
+            # Cancel any in-flight command-dispatch tasks.
+            for task in list(self._pending_tasks):
+                task.cancel()
+            if self._pending_tasks:
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+            self._resolve_approval_waiters_on_shutdown()
             try:
                 await reader_task
             except (asyncio.CancelledError, Exception):
@@ -619,6 +626,13 @@ class IPCServer:
             # from this one's lingering closures.
             self._unwire_event_listeners()
 
+    def _resolve_approval_waiters_on_shutdown(self) -> None:
+        """Resolve any pending tool-approval futures when the server shuts down."""
+        for tool_id, fut in list(self._approval_waiters.items()):
+            if not fut.done():
+                fut.set_result(False)
+        self._approval_waiters.clear()
+
 
 # --- Argument / result sanitization -----------------------------------------
 
@@ -626,7 +640,8 @@ _ARG_PREVIEW_LIMIT = 240
 _RESULT_PREVIEW_LIMIT = 400
 
 
-def _redact_args(args: Dict[str, Any]) -> Dict[str, Any]:
+def _arg_preview(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Truncate string values to keep tool-call args panel snappy."""
     return _truncate_args(args, _ARG_PREVIEW_LIMIT)
 
 
@@ -654,21 +669,6 @@ def _result_preview(result: Dict[str, Any]) -> str:
     return s[:_RESULT_PREVIEW_LIMIT]
 
 
-def _align_provider_usage_counters(
-    provider: Any,
-    *,
-    prompt_tokens: int,
-    completion_tokens: int,
-) -> None:
-    """Keep provider-local cumulative usage aligned with agent totals."""
-    if provider is None:
-        return
-    if hasattr(provider, "total_input_tokens"):
-        provider.total_input_tokens = max(0, int(prompt_tokens))
-    if hasattr(provider, "total_output_tokens"):
-        provider.total_output_tokens = max(0, int(completion_tokens))
-
-
 # --- Command handlers -------------------------------------------------------
 
 async def _cmd_send_message(server: IPCServer, msg: Dict[str, Any]) -> None:
@@ -678,10 +678,7 @@ async def _cmd_send_message(server: IPCServer, msg: Dict[str, Any]) -> None:
         parts = stripped[1:].split(None, 1)
         cmd = parts[0].lower() if parts else ""
         arg = parts[1].strip() if len(parts) > 1 else ""
-        allowlist = getattr(server.agent, "_tool_approval_allowlist", None)
-        if allowlist is None:
-            allowlist = set()
-            server.agent._tool_approval_allowlist = allowlist
+        allowlist = getattr(server.agent, "_tool_approval_allowlist", set())
         if cmd == "allow-tool":
             if not arg:
                 server.emit("warning", message="Usage: /allow-tool <tool-name>")
@@ -745,10 +742,9 @@ async def _cmd_set_model(server: IPCServer, msg: Dict[str, Any]) -> None:
         server.agent.provider = old_provider
         server._emit_error("provider", f"Could not switch to {model}: {e}")
         return
-    _align_provider_usage_counters(
-        server.agent.provider,
-        prompt_tokens=server.agent.total_prompt_tokens,
-        completion_tokens=server.agent.total_completion_tokens,
+    server.agent.provider.set_cumulative_usage(
+        input_tokens=server.agent.total_prompt_tokens,
+        output_tokens=server.agent.total_completion_tokens,
     )
     server.agent._configure_delegate_tool_context()
     # Persist the hot-switch on the active session so replays from
@@ -803,22 +799,30 @@ async def _cmd_tool_approval_resp(server: IPCServer, msg: Dict[str, Any]) -> Non
     tool_id = str(msg.get("toolId") or msg.get("id") or "")
     approve = bool(msg.get("approve", False))
     waiter = server._approval_waiters.pop(tool_id, None)
-    if waiter is not None and not waiter.done():
-        waiter.set_result(approve)
-    elif waiter is None:
-        logger.warning(f"Late or invalid approval response for tool {tool_id}")
+    if waiter is None:
+        logger.warning("Late or invalid approval response for tool %s", tool_id)
         server.emit("warning", message="Tool approval response was received too late.")
+        return
+    # Calling ``set_result`` on an already-resolved or cancelled future would
+    # raise ``InvalidStateError``. The waiter can complete out from under us
+    # via timeout (``asyncio.wait_for``) or cancellation (``/clear``, ``/exit``)
+    # before the UI's response arrives, so check first.
+    if waiter.done():
+        logger.warning(
+            "Approval response for tool %s arrived after waiter resolved (state=%s); ignoring.",
+            tool_id,
+            "cancelled" if waiter.cancelled() else "done",
+        )
+        server.emit("warning", message="Tool approval response was received too late.")
+        return
+    waiter.set_result(approve)
 
 
 async def _cmd_clear_context(server: IPCServer, msg: Dict[str, Any]) -> None:
-    server.agent.session = None
-    server.agent.context_manager.clear()
-    # create_session() calls _reset_session_accounting(), which zeros cost,
-    # token counters, hook-approval cache, and the provider-side cumulative
-    # usage so the new session is fully independent of the old one.
-    server.agent.create_session()
-    # The UI wipes its timeline on /clear and shows its own confirmation;
-    # a server-side success toast adds an audit trail in verbose mode.
+    async with server._turn_lock:
+        server.agent.session = None
+        server.agent.context_manager.clear()
+        server.agent.create_session()
     server.emit("success", message="Session cleared")
     server.emit_status()
 
@@ -870,7 +874,10 @@ def _format_plan_message(plan: Dict[str, Any]) -> str:
 async def _cmd_get_plan(server: IPCServer, msg: Dict[str, Any]) -> None:
     pr = getattr(server.agent.config, "project_root", None) or "."
     config = config_manager.load_project_config(pr)
-    plan_path = Path(config.project_root).resolve() / ".coderAI" / "current_plan.json"
+    dot_coderai_dir = find_dot_coderai_subdir("", str(config.project_root))
+    if dot_coderai_dir is None:
+        dot_coderai_dir = Path(config.project_root).resolve() / ".coderAI"
+    plan_path = dot_coderai_dir / "current_plan.json"
     if not plan_path.exists():
         server.emit(
             "info",
@@ -1017,8 +1024,7 @@ async def _cmd_cancel_agent(server: IPCServer, msg: Dict[str, Any]) -> None:
     if not agent_id:
         server.emit("error", category="protocol", message="cancel_agent requires agentId")
         return
-    from ..agent_tracker import agent_tracker as tracker
-    cancelled = tracker.cancel(agent_id)
+    cancelled = agent_tracker.cancel(agent_id)
     server.emit(
         "success",
         message=f"Sub-agent {agent_id} cancellation {'requested' if cancelled else 'failed (not found)'}",

@@ -5,7 +5,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 from openai import AsyncOpenAI
 
-from .base import LLMProvider
+from .base import LLMProvider, REASONING_BUDGET_MAP
 from coderAI.cost import CostTracker
 
 logger = logging.getLogger(__name__)
@@ -19,7 +19,7 @@ class DeepSeekProvider(LLMProvider):
         "deepseek-chat": "deepseek-chat",
         "deepseek-reasoner": "deepseek-reasoner",
         "deepseek-v3": "deepseek-chat",
-        "deepseek-v3.2": "deepseek-chat",  # Legacy alias retained for compatibility
+        "deepseek-v3.2": "deepseek-chat-v3.2",
         "deepseek-r1": "deepseek-reasoner",
     }
 
@@ -33,7 +33,10 @@ class DeepSeekProvider(LLMProvider):
         """
         super().__init__(model, api_key, **kwargs)
 
-        self.actual_model = self.SUPPORTED_MODELS.get(model.lower(), model)
+        if not api_key:
+            raise ValueError("DeepSeek API key is required")
+
+        self.actual_model = self.SUPPORTED_MODELS.get(model.lower(), model.lower())
         
         # DeepSeek uses OpenAI-compatible API
         self.client = AsyncOpenAI(
@@ -42,12 +45,15 @@ class DeepSeekProvider(LLMProvider):
         )
 
         self.temperature = kwargs.get("temperature", 0.7)
-        self.max_tokens = kwargs.get("max_tokens", 4096)
-        self.reasoning_effort = kwargs.get("reasoning_effort", "medium")
+        self.max_tokens = kwargs.get("max_tokens", 8192)
+        self.reasoning_effort = kwargs.get("reasoning_effort", "none")
 
         # Cost tracking
         self.total_input_tokens = 0
         self.total_output_tokens = 0
+
+    async def close(self) -> None:
+        await self.client.close()
 
     @property
     def _uses_v4_family(self) -> bool:
@@ -76,11 +82,15 @@ class DeepSeekProvider(LLMProvider):
             params["tools"] = tools
             params["tool_choice"] = kwargs.get("tool_choice", "auto")
 
-        # DeepSeek V4 defaults thinking mode to enabled. This agent loop does
-        # not yet round-trip reasoning_content across tool turns, so keep the
-        # new V4 IDs in non-thinking mode by default for compatibility.
+        # TODO: DeepSeek V4 defaults thinking mode to enabled. This agent loop
+        # does not yet round-trip reasoning_content across tool turns, so keep
+        # the new V4 IDs in non-thinking mode by default for compatibility.
         if self._uses_v4_family:
-            params["extra_body"] = {"thinking": {"type": "disabled"}}
+            if self.reasoning_effort and self.reasoning_effort != "none":
+                budget = REASONING_BUDGET_MAP.get(self.reasoning_effort, 8192)
+                params["extra_body"] = {"thinking": {"type": "enabled", "budget_tokens": budget}}
+            else:
+                params["extra_body"] = {"thinking": {"type": "disabled"}}
 
         return params
 
@@ -102,7 +112,12 @@ class DeepSeekProvider(LLMProvider):
         """
         params = self._build_request_params(messages, tools, **kwargs)
 
-        response = await self.client.chat.completions.create(**params)
+        try:
+            response = await self.client.chat.completions.create(**params)
+        except Exception as e:
+            raise RuntimeError(
+                f"DeepSeek API error: {e}"
+            ) from e
         result = response.model_dump()
 
         usage = result.get("usage", {})
@@ -129,7 +144,12 @@ class DeepSeekProvider(LLMProvider):
         """
         params = self._build_request_params(messages, tools, stream=True, **kwargs)
 
-        stream = await self.client.chat.completions.create(**params)
+        try:
+            stream = await self.client.chat.completions.create(**params)
+        except Exception as e:
+            raise RuntimeError(
+                f"DeepSeek API streaming error: {e}"
+            ) from e
         async for chunk in stream:
             chunk_data = chunk.model_dump()
             
@@ -143,8 +163,12 @@ class DeepSeekProvider(LLMProvider):
 
             yield chunk_data
 
+    def supports_tools(self) -> bool:
+        """DeepSeek Reasoner model does not support tool use."""
+        return self.actual_model != "deepseek-reasoner"
+
     def count_tokens(self, text: str) -> int:
-        """Count tokens. Using a rough estimate of 4 chars per token."""
+        """Count tokens. Using a rough estimate of 4 chars per token (approximate)."""
         return len(text) // 4
 
     def get_cost(self) -> Dict[str, Any]:

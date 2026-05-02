@@ -397,8 +397,8 @@ class TestConfig:
         manager = ConfigManager()
         manager._config = Config(openai_api_key="sk-1234567890abcdef1234567890abcdef")
         shown = manager.show()
-        # Should be partially masked (first 8 chars + ... + last 4 chars)
-        assert "..." in shown["openai_api_key"]
+        # Should be partially masked (first 7 chars + ***)
+        assert "***" in shown["openai_api_key"]
         # Should NOT show the full key
         assert shown["openai_api_key"] != "sk-1234567890abcdef1234567890abcdef"
 
@@ -544,10 +544,16 @@ class TestSystemPrompt:
         return reg
 
     def test_system_prompt_exists(self):
-        from coderAI.system_prompt import SYSTEM_PROMPT
+        from coderAI.system_prompt import compose_default_system_prompt
+        from coderAI.tools import ToolRegistry
+        from coderAI.tools.discovery import discover_tools
 
-        assert isinstance(SYSTEM_PROMPT, str)
-        assert len(SYSTEM_PROMPT) > 100
+        reg = ToolRegistry()
+        discover_tools(reg)
+        text = compose_default_system_prompt(reg)
+
+        assert isinstance(text, str)
+        assert len(text) > 100
 
     def test_system_prompt_mentions_tools(self):
         from coderAI.system_prompt import compose_default_system_prompt
@@ -565,13 +571,15 @@ class TestSystemPrompt:
         assert "manage_tasks" in text
 
     def test_system_prompt_has_agentic_guidance(self):
-        from coderAI.system_prompt import SYSTEM_PROMPT
+        from coderAI.system_prompt import compose_default_system_prompt
+
+        text = compose_default_system_prompt(self._full_tool_registry())
 
         # Agentic reasoning / planning keywords (static narrative tail)
-        assert "step-by-step" in SYSTEM_PROMPT.lower()
-        assert "Search before" in SYSTEM_PROMPT or "search before" in SYSTEM_PROMPT.lower()
-        assert "Verify after" in SYSTEM_PROMPT or "verify after" in SYSTEM_PROMPT.lower()
-        assert "delegate" in SYSTEM_PROMPT.lower()
+        assert "step-by-step" in text.lower()
+        assert "Search before" in text or "search before" in text.lower()
+        assert "Verify after" in text or "verify after" in text.lower()
+        assert "delegate" in text.lower()
 
 
 # ============================================================================
@@ -675,7 +683,7 @@ class TestDeepSeekProvider:
         assert provider.actual_model == "deepseek-v4-pro"
 
         provider = DeepSeekProvider(model="deepseek-v3.2", api_key="test-key")
-        assert provider.actual_model == "deepseek-chat"
+        assert provider.actual_model == "deepseek-chat-v3.2"
 
     def test_v4_requests_disable_thinking_by_default(self):
         from coderAI.llm.deepseek import DeepSeekProvider
@@ -969,13 +977,17 @@ class TestAnthropicProvider:
         assert count > 0
         assert isinstance(count, int)
 
-    def test_thinking_payload_uses_adaptive_format(self):
+    def test_thinking_payload_uses_budget_tokens_format(self):
         from coderAI.llm.anthropic import AnthropicProvider
 
         provider = AnthropicProvider(model="claude-4-sonnet", api_key="test-key", reasoning_effort="medium")
         payload = provider._build_payload(messages=[{"role": "user", "content": "hi"}], tools=None)
-        assert payload["thinking"] == {"type": "adaptive"}
-        assert payload["output_config"] == {"effort": "medium"}
+        thinking = payload["thinking"]
+        assert thinking["type"] == "enabled"
+        assert isinstance(thinking["budget_tokens"], int)
+        assert thinking["budget_tokens"] > 0
+        assert thinking["budget_tokens"] < payload["max_tokens"]
+        assert "output_config" not in payload
 
     def test_thinking_payload_disabled_when_effort_none(self):
         from coderAI.llm.anthropic import AnthropicProvider
@@ -1056,7 +1068,7 @@ class TestConfigAnthropicKey:
         manager = ConfigManager()
         manager._config = Config(anthropic_api_key="sk-ant-test1234567890abcdef1234567890")
         shown = manager.show()
-        assert "..." in shown["anthropic_api_key"]
+        assert "***" in shown["anthropic_api_key"]
         assert shown["anthropic_api_key"] != "sk-ant-test1234567890abcdef1234567890"
 
 

@@ -1,6 +1,8 @@
 """Memory tools for storing and recalling information."""
 
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -27,9 +29,22 @@ class MemoryStore:
                 self._memories = json.load(f)
 
     def save(self) -> None:
-        """Save memories to disk."""
-        with open(self.memory_file, "w") as f:
-            json.dump(self._memories, f, indent=2)
+        """Save memories to disk atomically."""
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(self.memory_dir), prefix=".memories-", suffix=".json.tmp"
+        )
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(self._memories, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, self.memory_file)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
     def add(self, key: str, value: Any) -> None:
         """Add or update a memory."""

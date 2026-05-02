@@ -79,8 +79,10 @@ async def test_git_branch_truncation_large(mock_subprocess):
     large_output = b"  branch_name\n" * 10_000 # ~140KB
     process_mock.communicate.return_value = (large_output, b"")
     
-    tool = GitBranchTool()
-    result = await tool.execute(action="list")
+    with patch("coderAI.tools.git._validate_git_scope", new_callable=AsyncMock) as mock_validate:
+        mock_validate.return_value = None
+        tool = GitBranchTool()
+        result = await tool.execute(action="list")
     
     assert result["success"] is True
     assert result["truncated"] is True

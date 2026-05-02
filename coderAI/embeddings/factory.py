@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import logging
 
+from typing import Optional
+
 from .base import EmbeddingProvider
 from .openai import OpenAIEmbeddingProvider
 
 logger = logging.getLogger(__name__)
 
 
-def create_embedding_provider(config) -> EmbeddingProvider:
+def create_embedding_provider(config) -> Optional[EmbeddingProvider]:
     """Create an embedding provider from the application config.
 
     Prefers OpenAI when an API key is present. Returns ``None`` if no

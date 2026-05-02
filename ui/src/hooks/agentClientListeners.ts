@@ -21,6 +21,8 @@ export type StatusPayload = {
   ctxLimit: number;
   costUsd: number;
   budgetUsd: number;
+  promptTokens: number;
+  completionTokens: number;
 };
 
 export interface AgentListenerRefs {
@@ -133,6 +135,8 @@ export function attachAgentClientListeners(
       ctxLimit: m.ctxLimit,
       costUsd: m.costUsd,
       budgetUsd: m.budgetUsd,
+      promptTokens: m.promptTokens,
+      completionTokens: m.completionTokens,
     }));
   };
 
@@ -358,6 +362,8 @@ export function attachAgentClientListeners(
       ctxLimit: m.ctxLimit,
       costUsd: m.costUsd,
       budgetUsd: m.budgetUsd,
+      promptTokens: m.promptTokens,
+      completionTokens: m.completionTokens,
     };
     statusPendingRef.current = payload;
     if (statusThrottleTimerRef.current !== null) return;

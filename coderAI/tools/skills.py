@@ -38,8 +38,22 @@ def load_skill(skill_name: str, project_root: str = ".") -> Optional[Skill]:
     if skills_dir is None:
         return None
 
-    file_path = skills_dir / f"{skill_name}.md"
+    if ".." in skill_name or "/" in skill_name or "\\" in skill_name:
+        logger.warning(f"Rejected skill_name with path traversal: {skill_name}")
+        return None
+
+    file_path = (skills_dir / f"{skill_name}.md").resolve()
+    skills_dir_resolved = skills_dir.resolve()
+
+    if not str(file_path).startswith(str(skills_dir_resolved) + "/") and str(file_path) != str(skills_dir_resolved / f"{skill_name}.md"):
+        logger.warning(f"Path traversal attempt blocked for skill: {skill_name}")
+        return None
+
     if not file_path.exists():
+        return None
+
+    if file_path.stat().st_size > 100 * 1024:
+        logger.warning(f"Skill file too large: {file_path}")
         return None
 
     try:

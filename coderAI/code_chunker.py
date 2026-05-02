@@ -15,7 +15,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict
 
 logger = logging.getLogger(__name__)
 
@@ -177,11 +177,14 @@ def _chunk_python(source: str, rel_path: str, language: str) -> list[Chunk]:
     lines = source.splitlines()
     chunks: list[Chunk] = []
     preamble_end = 0
+    first_entity_line = None
 
     for node in ast.iter_child_nodes(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             start = node.lineno
             end = node.end_lineno or start
+            if first_entity_line is None:
+                first_entity_line = start
             body = "\n".join(lines[start - 1 : end])
             chunks.append(
                 Chunk(
@@ -198,6 +201,8 @@ def _chunk_python(source: str, rel_path: str, language: str) -> list[Chunk]:
         elif isinstance(node, ast.ClassDef):
             start = node.lineno
             end = node.end_lineno or start
+            if first_entity_line is None:
+                first_entity_line = start
             body = "\n".join(lines[start - 1 : end])
             chunks.append(
                 Chunk(
@@ -214,20 +219,19 @@ def _chunk_python(source: str, rel_path: str, language: str) -> list[Chunk]:
         else:
             preamble_end = max(preamble_end, node.end_lineno or node.lineno)
 
-    # Preamble chunk: everything before the first class/function, or the
-    # whole file when there are no class/function-level nodes.
-    if chunks and preamble_end > 0:
-        preamble = "\n".join(lines[:preamble_end]).strip()
+    # Preamble chunk: everything before the first class/function, not
+    # including entity bodies (which are already their own chunks).
+    preamble_limit = first_entity_line - 1 if first_entity_line is not None else (preamble_end if preamble_end > 0 else None)
+    if preamble_limit is not None:
+        preamble = "\n".join(lines[:preamble_limit]).strip()
         if preamble:
-            # Find where the preamble actually ends (last non-empty line
-            # before the first entity)
             chunks.insert(
                 0,
                 Chunk(
                     text=preamble,
                     file_path=rel_path,
                     start_line=1,
-                    end_line=preamble_end,
+                    end_line=preamble_limit,
                     language=language,
                     chunk_type="module",
                 ),
@@ -239,11 +243,15 @@ def _chunk_python(source: str, rel_path: str, language: str) -> list[Chunk]:
 
 
 def _func_type(name: str) -> str:
-    """Heuristic to label a function as a method vs standalone function."""
-    if name.startswith("_") and not (name.startswith("__") and name.endswith("__")):
-        return "function"  # private module-level helper
+    """Classify a module-level function by name.
+
+    Called only on direct children of ``ast.Module``, so the result is always
+    a top-level callable — never a method. We separate dunder names so chunk
+    metadata can distinguish ``__init__``-style hooks from ordinary helpers
+    when ranking semantic-search results.
+    """
     if name.startswith("__") and name.endswith("__"):
-        return "function"  # dunder
+        return "dunder"
     return "function"
 
 

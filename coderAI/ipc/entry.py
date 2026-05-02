@@ -30,10 +30,26 @@ def _configure_logging() -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
-    # Redirect stdout to stderr to prevent rogue print() statements
-    # in third-party libraries or internal tools from corrupting the IPC stream.
-    # The JSON-RPC server writes directly to sys.__stdout__.
+    # Redirect stdout to stderr so stray third-party print() calls don't
+    # corrupt the NDJSON stream on fd 1. The JSON-RPC server writes directly
+    # to sys.__stdout__, so it is unaffected by this global mutation.
     sys.stdout = sys.stderr
+
+
+def _activate_resumed_session_model(agent: Agent, requested_model: str | None) -> None:
+    """Restore or override the active model after loading a saved session."""
+    session = getattr(agent, "session", None)
+    if session is None:
+        return
+
+    effective_model = requested_model or session.model or agent.model
+    if agent.model != effective_model:
+        agent.model = effective_model
+        agent.provider = agent._create_provider()
+
+    session.model = effective_model
+    agent.realign_provider_usage_counters()
+    agent._configure_delegate_tool_context()
 
 
 async def _main() -> None:
@@ -69,6 +85,8 @@ async def _main() -> None:
                 "Resume id %r not found; starting new session", resume_id
             )
             agent.create_session()
+        else:
+            _activate_resumed_session_model(agent, model)
     else:
         agent.create_session()
 
@@ -97,7 +115,12 @@ async def _main() -> None:
         while not server._exit.is_set():
             await asyncio.sleep(5)
             try:
-                os.kill(os.getppid(), 0)
+                ppid = os.getppid()
+                if ppid == 1:
+                    logging.getLogger(__name__).warning("Parent process is PID 1; shutting down IPC server.")
+                    server._exit.set()
+                    return
+                os.kill(ppid, 0)
             except OSError:
                 logging.getLogger(__name__).warning("Parent process disappeared; shutting down IPC server.")
                 server._exit.set()

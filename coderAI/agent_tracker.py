@@ -66,6 +66,7 @@ class AgentInfo:
         """Signal this agent to stop after the current step."""
         self._cancel_event.set()
         self.status = AgentStatus.CANCELLED
+        self.finished_at = time.time()
 
 
 # Upper bound on how many finished agent records we retain in memory.
@@ -163,8 +164,10 @@ class AgentTracker:
 
     def cancel_all(self):
         """Request cancellation for every active agent."""
-        for info in self.get_active():
-            info.request_cancel()
+        with self._lock:
+            for info in self._agents.values():
+                if info.status not in (AgentStatus.DONE, AgentStatus.ERROR, AgentStatus.CANCELLED):
+                    info.request_cancel()
 
     def cancel(self, agent_id: str) -> bool:
         with self._lock:

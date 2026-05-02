@@ -17,6 +17,7 @@ import {
 
 const DEBUG_IPC =
   process.env.CODERAI_DEBUG === "1" || process.env.CODERAI_DEBUG === "true";
+const PROTOCOL_VERSION = 2;
 
 export interface AgentClientOptions {
   /** Python executable, defaults to `python3`. */
@@ -71,6 +72,13 @@ export class AgentClient extends EventEmitter {
     this.child.on("exit", (code, signal) => {
       this.emit("exit", {code, signal});
     });
+
+    this.child.on("error", (err) => {
+      this.emit("stderr", `Agent process error: ${err.message}`);
+      this.emit("exit", {code: 1, signal: null});
+    });
+
+    this.send({cmd: "handshake", payload: {protocolVersion: PROTOCOL_VERSION}});
   }
 
   private _handleLine(line: string): void {
@@ -108,8 +116,12 @@ export class AgentClient extends EventEmitter {
   send(cmd: AgentCommand): string {
     if (!this.child) throw new Error("AgentClient not started");
     const id = `c_${++this.cmdSeq}_${Date.now().toString(36)}`;
-    const envelope = {v: 1, kind: "cmd", id, ...cmd};
-    this.child.stdin.write(JSON.stringify(envelope) + "\n");
+    const envelope = {v: PROTOCOL_VERSION, kind: "cmd", id, ...cmd};
+    try {
+      this.child.stdin.write(JSON.stringify(envelope) + "\n");
+    } catch (err) {
+      this.emit("stderr", `Failed to write command to agent: ${err}`);
+    }
     return id;
   }
 

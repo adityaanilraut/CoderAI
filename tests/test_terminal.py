@@ -67,11 +67,15 @@ class TestIsCommandDangerous:
     def test_sudo_dangerous(self):
         assert is_command_dangerous("sudo apt-get install foo") is True
 
-    def test_pip_install_dangerous(self):
-        assert is_command_dangerous("pip install requests") is True
+    def test_pip_install_not_dangerous(self):
+        # pip install is no longer in the dangerous prefix list;
+        # use the dedicated package_manager tool for safe package installation.
+        assert is_command_dangerous("pip install requests") is False
 
-    def test_npm_install_dangerous(self):
-        assert is_command_dangerous("npm install lodash") is True
+    def test_npm_install_not_dangerous(self):
+        # npm install is no longer in the dangerous prefix list;
+        # use the dedicated package_manager tool.
+        assert is_command_dangerous("npm install lodash") is False
 
     def test_ls_not_dangerous(self):
         assert is_command_dangerous("ls -la") is False
@@ -135,8 +139,12 @@ class TestRunCommandTool:
         assert result["success"]
         assert str(tmp_path) in result["stdout"]
 
-    def test_working_dir_blocked_outside_project(self, tmp_path):
-        # Default behavior: rejecting a working_dir outside project root.
+    def test_working_dir_blocked_outside_project(self, tmp_path, monkeypatch):
+        # Default behavior: reject a working_dir outside the project root.
+        # The session-wide opt-out in conftest must be cleared for this test.
+        from coderAI.config import config_manager
+        monkeypatch.delenv("CODERAI_ALLOW_OUTSIDE_PROJECT", raising=False)
+        config_manager._config = None  # clear cache so load() re-reads env/file
         result = asyncio.run(self.tool.execute(command="pwd", working_dir=str(tmp_path)))
         assert not result["success"]
         assert result.get("error_code") == "scope"

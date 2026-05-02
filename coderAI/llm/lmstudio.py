@@ -1,6 +1,5 @@
 """LM Studio local LLM provider implementation."""
 
-import asyncio
 import json
 import logging
 from typing import Any, AsyncIterator, Dict, List, Optional
@@ -30,7 +29,7 @@ class LMStudioProvider(LLMProvider):
         if not self.endpoint.endswith("/v1"):
             self.endpoint = f"{self.endpoint}/v1"
         self.temperature = kwargs.get("temperature", 0.7)
-        self.max_tokens = kwargs.get("max_tokens", 4096)
+        self.max_tokens = kwargs.get("max_tokens", 8192)
 
         # Token tracking for session info
         self.total_input_tokens = 0
@@ -48,14 +47,6 @@ class LMStudioProvider(LLMProvider):
         """Close the HTTP session."""
         if self._session and not self._session.closed:
             await self._session.close()
-
-    def __del__(self):
-        if self._session and not self._session.closed:
-            try:
-                loop = asyncio.get_running_loop()
-                loop.create_task(self._session.close())
-            except RuntimeError:
-                pass
 
     async def chat(
         self,
@@ -80,7 +71,10 @@ class LMStudioProvider(LLMProvider):
             url, json=payload, timeout=aiohttp.ClientTimeout(total=120)
         ) as response:
             response.raise_for_status()
-            result = await response.json()
+            try:
+                result = await response.json()
+            except Exception as e:
+                raise RuntimeError(f"LM Studio returned malformed JSON response: {e}") from e
 
             # Track usage
             usage = result.get("usage", {})

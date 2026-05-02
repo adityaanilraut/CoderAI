@@ -1,13 +1,16 @@
 from typing import Any, Dict, List
+import logging
 import os
 import tempfile
 from pathlib import Path
 from pydantic import BaseModel, Field
 
 from .base import Tool
-from .filesystem import _is_path_protected, _enforce_project_scope, _emit_diff
+from .filesystem import _is_path_protected, _enforce_project_scope, _emit_diff, _reject_symlink_leaf, _safe_open_no_symlink
 from .undo import backup_store
 from ..locks import resource_manager
+
+logger = logging.getLogger(__name__)
 
 class EditChunk(BaseModel):
     search: str = Field(..., description="Exact text to search for")
@@ -38,8 +41,11 @@ class MultiEditTool(Tool):
                 scope_err = _enforce_project_scope(path_obj, "multi_edit")
                 if scope_err:
                     return scope_err
+                symlink_err = _reject_symlink_leaf(path_obj, "multi_edit")
+                if symlink_err:
+                    return symlink_err
 
-                with open(path_obj, "r", encoding="utf-8") as f:
+                with _safe_open_no_symlink(path_obj, "r") as f:
                     original_content = f.read()
 
                 new_content = original_content
@@ -47,8 +53,8 @@ class MultiEditTool(Tool):
                 for i, edit in enumerate(edits):
                     search = edit["search"]
                     replace = edit["replace"]
-                    edit.get("expected_count", 1)
-                    
+                    expected_count = edit.get("expected_count", 1)
+
                     actual_count = new_content.count(search)
                     if actual_count == 0:
                         return {
@@ -56,7 +62,12 @@ class MultiEditTool(Tool):
                             "error": f"Edit {i+1} failed: expected to find search text, found 0 occurrences.",
                             "hint": "Check the file contents and make sure the search text exactly matches what's in the file."
                         }
-                    
+                    if expected_count == 1 and actual_count > 1:
+                        logger.warning(
+                            "multi_edit: edit %d matches %d occurrences but expected_count=1",
+                            i + 1, actual_count,
+                        )
+
                     new_content = new_content.replace(search, replace)
 
                 backup_store.backup_file(str(path_obj), "modify")
@@ -72,7 +83,7 @@ class MultiEditTool(Tool):
                     "success": True,
                     "path": str(path_obj),
                     "edits_applied": len(edits),
-                    "actual_counts": [new_content.count(edit["replace"]) for edit in edits],
+                    "actual_counts": [original_content.count(edit["search"]) for edit in edits],
                     "count_mismatches": [
                         {
                             "edit_index": i,

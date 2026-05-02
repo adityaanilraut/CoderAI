@@ -6,7 +6,7 @@ import os
 import re
 import shlex
 import shutil
-import atexit
+import signal as _signal
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -31,20 +31,48 @@ BLOCKED_PATTERNS = [
     "rm -rf /",
     "rm -rf ~",
     "rm -rf /*",
+    "rm -r -f /",
+    "rm -r -f ~",
+    "rm -r -f /*",
+    "rm -rf --no-preserve-root /",
     "mkfs",
-    "dd if=",
+    "/sbin/mkfs",
+    "mkfs.",
+    "dd if=/",
+    "dd if ~",
     ":(){:|:&};:",       # fork bomb
     "> /dev/sda",
+    "> /dev/sdb",
+    "> /dev/hda",
     "chmod -R 777 /",
+    "chmod -R 777 /*",
+    "chmod 777 /",
     "shutdown",
+    "/sbin/shutdown",
+    "systemctl poweroff",
     "reboot",
+    "systemctl reboot",
     "halt",
-    "format c:",
     "base64 -d",
     "base64 --decode",
     "nc -e",
     "bash -i >&",
 ]
+
+_RM_DESTRUCTIVE_REGEX = re.compile(r'\brm\s+.*(?:-r|-f|--recursive|--force).*(?:/|~)\b')
+
+def _build_blocked_regexes(patterns):
+    """Precompile blocked-pattern regexes with token-boundary matching.
+
+    The boundary anchors prevent a pattern like ``"rm -rf /"`` from matching
+    against ``"rm -rf /tmp/build"`` while still catching the bare form.
+    """
+    return [
+        re.compile(r'(?:^|\s)' + re.escape(p) + r'(?:\s|$)')
+        for p in patterns
+    ]
+
+_BLOCKED_REGEXES = _build_blocked_regexes(BLOCKED_PATTERNS)
 
 # Patterns that indicate piping a network fetch straight into a shell.
 # Matched against a whitespace-normalised lowercase command.
@@ -62,10 +90,6 @@ DANGEROUS_PREFIXES = [
     "kill ",
     "killall ",
     "pkill ",
-    "pip install",
-    "pip uninstall",
-    "npm install",
-    "npm uninstall",
     "apt ",
     "apt-get ",
     "brew ",
@@ -86,6 +110,20 @@ _COMMAND_ALIASES = [
 def _normalize_command(command: str) -> str:
     """Normalize command for safety checks: strip, collapse whitespace, lowercase."""
     return re.sub(r'\s+', ' ', command.strip()).lower()
+
+
+_SHELL_METACHARS = re.compile(r'[|><&;$*?~`\\]')
+
+
+def _needs_shell(command: str) -> bool:
+    """Check whether *command* requires a shell to interpret metacharacters.
+
+    Characters inside single-quoted strings do NOT trigger shell mode (e.g.
+    ``echo '$HOME'`` runs fine with ``create_subprocess_exec``).
+    """
+    # Strip single-quoted segments, then check the remainder
+    stripped = re.sub(r"'[^']*'", "", command)
+    return bool(_SHELL_METACHARS.search(stripped))
 
 
 # Shells that can wrap arbitrary commands — we extract the inner command
@@ -113,7 +151,10 @@ def is_command_blocked(command: str) -> bool:
     """
     cmd_lower = _normalize_command(command)
 
-    if any(blocked in cmd_lower for blocked in BLOCKED_PATTERNS):
+    if any(r.search(cmd_lower) for r in _BLOCKED_REGEXES):
+        return True
+
+    if _RM_DESTRUCTIVE_REGEX.search(cmd_lower):
         return True
 
     if _PIPE_TO_SHELL_RE.search(cmd_lower):
@@ -152,7 +193,11 @@ def _resolve_working_dir(working_dir: str) -> "tuple[Optional[Path], Optional[st
     except Exception as e:
         return None, f"Invalid working_dir {working_dir!r}: {e}"
 
-    if os.environ.get("CODERAI_ALLOW_OUTSIDE_PROJECT") == "1":
+    try:
+        cfg_allow_outside = bool(config_manager.get("allow_outside_project", False))
+    except Exception:
+        cfg_allow_outside = False
+    if os.environ.get("CODERAI_ALLOW_OUTSIDE_PROJECT") == "1" or cfg_allow_outside:
         return resolved, None
 
     try:
@@ -226,6 +271,8 @@ class RunCommandTool(Tool):
         falls back to create_subprocess_shell for complex shell syntax.
         """
         try:
+            timeout = max(1, min(timeout, 3600))
+
             resolved_cwd, cwd_err = _resolve_working_dir(working_dir)
             if cwd_err:
                 return {"success": False, "error": cwd_err, "error_code": "scope"}
@@ -263,7 +310,7 @@ class RunCommandTool(Tool):
             command = _rewrite_command_aliases(command)
 
             # Try to use exec (no shell) for simple commands
-            needs_shell = any(c in command for c in ['|', '>', '<', '&&', '||', ';', '`', '$', '*', '?', '~', '&'])
+            needs_shell = _needs_shell(command)
 
             if needs_shell:
                 process = await asyncio.create_subprocess_shell(
@@ -282,18 +329,19 @@ class RunCommandTool(Tool):
                         cwd=working_dir,
                     )
                 except ValueError:
-                    # shlex.split can fail on malformed input — fallback to shell
-                    process = await asyncio.create_subprocess_shell(
-                        command,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
-                        cwd=working_dir,
-                    )
+                    return {
+                        "success": False,
+                        "error": (
+                            f"Command has malformed quoting — cannot split safely: "
+                            f"{command!r}. Check for unmatched quotes."
+                        ),
+                        "error_code": "malformed_command",
+                    }
 
             # Wait for completion with timeout
             stdin_bytes = None
             if input is not None:
-                stdin_bytes = input[:65536].encode("utf-8", errors="replace")  # cap at 64KB
+                stdin_bytes = input.encode("utf-8", errors="replace")[:65536]  # cap at 64KB
             try:
                 stdout, stderr = await asyncio.wait_for(
                     process.communicate(input=stdin_bytes), timeout=timeout
@@ -301,11 +349,29 @@ class RunCommandTool(Tool):
                 if process.returncode is None:
                     await process.wait()
             except asyncio.TimeoutError:
-                process.kill()
+                try:
+                    process.terminate()
+                    try:
+                        await asyncio.wait_for(process.wait(), timeout=2)
+                    except asyncio.TimeoutError:
+                        process.kill()
+                        await process.wait()
+                except ProcessLookupError:
+                    pass
+                # Attempt to read any partial output that was buffered
+                try:
+                    stdout, stderr = await process.communicate()
+                except Exception:
+                    stdout, stderr = b"", b""
+                stdout_str = stdout.decode("utf-8", errors="replace")
+                stderr_str = stderr.decode("utf-8", errors="replace")
                 return {
                     "success": False,
                     "error": f"Command timed out after {timeout} seconds",
                     "error_code": "timeout",
+                    "stdout": stdout_str,
+                    "stderr": stderr_str,
+                    "returncode": process.returncode,
                 }
             except asyncio.CancelledError:
                 try:
@@ -356,18 +422,22 @@ class RunBackgroundParams(BaseModel):
 class BgProcessInfo:
     """Tracks a background process plus its output buffer when capture is enabled."""
 
-    def __init__(self, process: asyncio.subprocess.Process):
+    def __init__(self, process: asyncio.subprocess.Process, command: str = ""):
         self.process = process
+        self.command = command
         self.stdout_buf: List[str] = []
         self.stderr_buf: List[str] = []
-        self._max_buf_chars = 65536  # 64KB total cap
+        self._buf_bytes = 0
+        self._max_buf_bytes = 65536  # 64KB total cap
 
     def _append(self, buf: List[str], data: str) -> None:
-        current = sum(len(s) for s in buf)
-        if current >= self._max_buf_chars:
+        if self._buf_bytes >= self._max_buf_bytes:
             return
-        remaining = self._max_buf_chars - current
-        buf.append(data[:remaining])
+        encoded = data.encode("utf-8", errors="replace")
+        remaining = self._max_buf_bytes - self._buf_bytes
+        chunk = encoded[:remaining]
+        self._buf_bytes += len(chunk)
+        buf.append(chunk.decode("utf-8", errors="replace"))
 
 
 # Module-level registry of all tracked background processes.
@@ -426,7 +496,7 @@ class RunBackgroundTool(Tool):
                 logger.warning(f"Executing potentially dangerous background command: {command}")
 
             command = _rewrite_command_aliases(command)
-            needs_shell = any(c in command for c in ['|', '>', '<', '&&', '||', ';', '`', '$', '*', '?', '~', '&'])
+            needs_shell = _needs_shell(command)
 
             stdout_target = asyncio.subprocess.PIPE if capture_output else asyncio.subprocess.DEVNULL
             stderr_target = asyncio.subprocess.PIPE if capture_output else asyncio.subprocess.DEVNULL
@@ -448,15 +518,18 @@ class RunBackgroundTool(Tool):
                         cwd=working_dir,
                     )
                 except ValueError:
-                    process = await asyncio.create_subprocess_shell(
-                        command,
-                        stdout=stdout_target,
-                        stderr=stderr_target,
-                        cwd=working_dir,
-                    )
+                    return {
+                        "success": False,
+                        "error": (
+                            f"Command has malformed quoting — cannot split safely: "
+                            f"{command!r}. Check for unmatched quotes."
+                        ),
+                        "error_code": "malformed_command",
+                    }
 
             # Track the process
-            info = BgProcessInfo(process)
+            _ensure_atexit_cleanup()
+            info = BgProcessInfo(process, command)
             self._processes[process.pid] = info
 
             if capture_output:
@@ -518,8 +591,17 @@ def _cleanup_all_background():
                 pass
     _tracked_bg_processes.clear()
 
-# Register cleanup on exit to prevent process leaks
-atexit.register(_cleanup_all_background)
+
+_atexit_registered = False
+
+
+def _ensure_atexit_cleanup():
+    """Register cleanup handler the first time a background process is started."""
+    global _atexit_registered
+    if not _atexit_registered:
+        import atexit
+        atexit.register(_cleanup_all_background)
+        _atexit_registered = True
 
 
 # ---------------------------------------------------------------------------
@@ -539,7 +621,7 @@ class ListProcessesTool(Tool):
         "List all background processes currently tracked by the agent "
         "(started via run_background). Shows PID, command, and running status."
     )
-    category = "shell"
+    category = "terminal"
     parameters_model = ListProcessesParams
     is_read_only = True
 
@@ -552,6 +634,7 @@ class ListProcessesTool(Tool):
                         "pid": pid,
                         "running": info.process.returncode is None,
                         "returncode": info.process.returncode,
+                        "command": info.command,
                     }
                 )
             return {
@@ -576,13 +659,11 @@ class KillProcessTool(Tool):
         "Terminate a background process that was started with run_background. "
         "Sends SIGTERM by default; use force=true for SIGKILL."
     )
-    category = "shell"
+    category = "terminal"
     parameters_model = KillProcessParams
     requires_confirmation = True
 
     async def execute(self, pid: int, force: bool = False) -> Dict[str, Any]:
-        import signal as _signal
-
         try:
             info = _tracked_bg_processes.get(pid)
             if info is None:
@@ -603,6 +684,11 @@ class KillProcessTool(Tool):
 
             sig = _signal.SIGKILL if force else _signal.SIGTERM
             info.process.send_signal(sig)
+            try:
+                await asyncio.wait_for(info.process.wait(), timeout=3)
+            except asyncio.TimeoutError:
+                info.process.kill()
+                await info.process.wait()
             del _tracked_bg_processes[pid]
             return {
                 "success": True,
@@ -628,7 +714,7 @@ class ReadBgOutputTool(Tool):
 
     name = "read_bg_output"
     description = "Read captured stdout/stderr from a background process started with capture_output=True"
-    category = "shell"
+    category = "terminal"
     parameters_model = ReadBgOutputParams
     is_read_only = True
 

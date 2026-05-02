@@ -3,6 +3,11 @@
 The canonical default prompt is built from ``SYSTEM_PROMPT_INTRO`` + a **dynamic**
 tool list from ``format_tools_markdown(registry)`` + ``SYSTEM_PROMPT_TAIL`` so
 documented tools always match ``ToolRegistry`` (personas, web_tools_in_main, etc.).
+
+Note: ``Agent._get_system_prompt`` separately appends the contents of any
+``.coderAI/rules/*.md`` files to the composed prompt at session start. This file
+does not handle that — it produces only the framework-level prompt. Project-level
+rules are an extension hook, not part of the static prompt body.
 """
 
 from __future__ import annotations
@@ -138,6 +143,28 @@ _TOOL_HELP: Dict[str, str] = {
         "Run a formatter on source files (ruff format, black, prettier, gofmt); "
         "auto-detected by project type. Use check=true to preview without writing."
     ),
+    "run_tests": (
+        "Auto-detect test framework (pytest, jest, vitest, go test, cargo test, unittest) "
+        "and run project tests. Parses results into pass/fail/skip counts with failure details. "
+        "Use 'filter' to run a specific test file or test name. "
+        "Use this after making code changes to verify correctness."
+    ),
+    # --- Refactoring ---
+    "refactor": (
+        "Cross-file refactoring: rename symbols, find all references. "
+        "Supports Python (AST-aware) and JS/TS (regex). "
+        "Use action='find_references' to list all usages of a symbol. "
+        "Use action='rename_symbol' with new_name to rename across files. "
+        "Always use dry_run=true first to preview changes."
+    ),
+    # --- Package management ---
+    "package_manager": (
+        "Install, uninstall, list, or check outdated packages. "
+        "Auto-detects pip, npm, yarn, pnpm, bun, cargo, or go. "
+        "Use action='install' to add a dependency, 'uninstall' to remove, "
+        "'list' to see installed packages, 'outdated' to check for updates. "
+        "Safe: validates package names to prevent shell injection."
+    ),
     # --- Vision ---
     "read_image": (
         "Read and base64-encode an image for visual analysis (PNG, JPEG, GIF, WebP)"
@@ -181,7 +208,10 @@ _TOOL_HELP: Dict[str, str] = {
     ),
     # --- Tasks ---
     "manage_tasks": (
-        "Track a persistent task/TODO list with priorities (add, list, complete, update, delete, clear)"
+        "Maintain a persistent task checklist for the current implementation (priorities, status). "
+        "Use this alongside `plan` while executing multi-step work — record each granular action as a "
+        "task, mark it 'start' when you begin and 'complete' when done. The checklist is file-backed in "
+        "`.coderAI/tasks.json` and survives across agent-loop iterations."
     ),
     # --- Multi-agent ---
     "delegate_task": (
@@ -206,8 +236,10 @@ _TOOL_HELP: Dict[str, str] = {
         "testing snippets, or running one-off scripts."
     ),
     "plan": (
-        "Create and manage a structured execution plan for complex tasks. Use action='create' with a title "
-        "and steps, then action='advance' as you complete each step."
+        "**Call this first** for any multi-step task assigned by the user. Create a structured execution "
+        "plan (action='create' with title and ordered steps), then advance through it (action='advance') "
+        "as you complete each step. Use action='show' to recall current progress, 'update_step' to amend "
+        "a step mid-execution. Skip only for trivial one-shot asks."
     ),
     "notepad": (
         "Read and write to a shared notepad that persists across tool calls and is shared between agents. "
@@ -232,86 +264,103 @@ You are CoderAI, an AI coding agent running in the user's terminal. Help the use
 ## Core Principles
 
 1. **Think step-by-step.** Break work into small, verifiable steps.
-2. **Search before you assume (about the codebase).** Inspect the repository before guessing how it works; do not treat this as a reason to avoid answering greetings, who-you-are, or general capability questions.
+2. **Search before you assume (about the codebase).** Inspect the repository before guessing.
 3. **Read before you edit.** Understand the existing code and nearby call sites first.
 4. **Verify after you change.** Run the relevant checks when they exist.
-5. **Minimize diffs.** Preserve existing structure, style, and naming unless there is a good reason not to.
-6. **Stay capability-aware.** Only rely on tools listed under **Available Tools**. If a tool or workflow is not listed, do not imply that it exists.
+5. **Plan before you build.** For non-trivial work, call `plan` first and use `manage_tasks` while executing. Skip planning only for trivial asks.
+6. **Minimize diffs.** Preserve existing structure, style, and naming unless there is a good reason not to.
+7. **Stay capability-aware.** Only rely on tools listed under **Available Tools**. If a tool or workflow is not listed, do not imply that it exists.
 
 ## Tool Use Expectations
 
-- **Conversational and meta questions** (e.g. greetings, who you are, what you can do in general): Answer directly from your role and the **Available Tools** list. Do not require `project_context`, `list_directory`, or a non-empty workspace to answer these. Do not reply with "the directory is empty" unless the user is actually asking about files in the workspace.
-- **Brief greetings** (e.g. hi, hello): One or two short sentences. Do not paste the same long "how can I help" template twice, and do not repeat identical sentences in a single reply.
-- For **repository-specific** work and questions about this project's code, gather context with the available discovery, search, read, and project tools before answering or editing.
-- If web tools are listed under **Available Tools** and the task needs current or external information, use them directly instead of telling the user to run shell fetch commands.
-- Personas and skills are opt-in. Do not assume any persona, workflow, slash command, or external integration is automatically active unless it is explicitly present in the current session or repository.
-- **Tool parallelism**: Read-only tools (e.g. `read_file`, `grep`, `text_search`, `git_diff`) that you call in the same response are executed concurrently — batch them together whenever it saves round-trips. Mutating tools (`write_file`, `run_command`, git write ops) always run one at a time in the order you specify.
+- **Conversational and meta questions**: Answer directly; do not require repo inspection for greetings or general capability questions.
+- **Brief greetings** (e.g. hi, hello): One or two short, non-repetitive sentences.
+- For **repository-specific** work, inspect the relevant files before answering or editing.
+- If web tools are listed under **Available Tools** and current information is needed, use them directly.
+- Personas and skills are opt-in.
+- Batch read-only tool calls together when it saves round-trips. Mutating tools run one at a time.
 """
+
+SYSTEM_PROMPT_OUTPUT_STYLE = """\
+## Output & Communication Style
+
+- Keep responses concise and direct. Minimize output tokens and avoid tangents.
+- No preamble or postamble. Just do the work and report the outcome.
+- Use GitHub-flavored markdown when helpful.
+- Reference code locations with `file_path:line_number`.
+- Explain code only when asked.
+- Follow existing code conventions, avoid unnecessary comments, and never expose secrets.
+"""
+
+def build_environment_section(
+    model: str = "",
+    working_directory: str = "",
+    workspace_root: str = "",
+    is_git_repo: bool = False,
+    platform: str = "unknown",
+) -> str:
+    """Build an environment-info block injected at the top of the system prompt.
+
+    Mirrors OpenCode's ``SystemPrompt.environment()`` pattern: model identity +
+    a structured ``<env>`` block with workspace metadata so the LLM knows
+    its runtime context without having to deduce it.
+    """
+    import datetime
+
+    lines = ["<env>"]
+    if model:
+        lines.append(f"  Model: {model}")
+    if working_directory:
+        lines.append(f"  Working directory: {working_directory}")
+    if workspace_root:
+        lines.append(f"  Workspace root: {workspace_root}")
+    lines.append(f"  Git repo: {'yes' if is_git_repo else 'no'}")
+    lines.append(f"  Platform: {platform}")
+    lines.append(f"  Date: {datetime.date.today().isoformat()}")
+    lines.append("</env>")
+    return "\n".join(lines)
+
 
 SYSTEM_PROMPT_TAIL = """\
 ## Strategy for Common Tasks
 
 ### Understanding a Codebase
-- Start by locating the relevant files, entry points, and configuration.
-- Batch multiple discovery calls (`glob_search`, `text_search`, `read_file`) in the same response — they run concurrently.
+- Locate the relevant files, entry points, and configuration first.
+- Batch discovery calls when it saves round-trips.
 - Read the smallest useful set of files before proposing changes.
-- Use `project_context` for a quick structural overview when starting on an unfamiliar project.
+- Use `project_context` for a quick overview on unfamiliar projects.
+
+### Plan-First Workflow
+
+For any non-trivial task assigned by the user:
+
+1. **Build the plan.** Call `plan` with `action='create'` before editing.
+2. **Maintain a task checklist while implementing.** Use `manage_tasks` for granular actions and mark them as you go.
+3. **Advance the plan.** Call `plan` with `action='advance'` as steps complete; update steps instead of recreating the plan.
+4. **Skip planning only for trivial work.** Greetings, one-shot reads, and simple one-line answers do not need a plan.
 
 ### Editing Code
 - Read the target file first.
-- For multiple related changes in the same file, prefer `multi_edit` to keep edits atomic.
+- Prefer atomic edits when they help.
 - Make the smallest change that addresses the issue.
-- Run `lint` or `run_command` to verify correctness after changes.
+- Run the relevant checks after changes.
 
 ### Debugging
 - Reproduce or inspect the failing path when possible.
 - Trace definitions and usages before deciding on a fix.
-- Use `python_repl` for quick calculations or one-off verifications.
 - Verify the fix and call out any remaining uncertainty.
 
-### Research and External Information
+### Research and Delegation
 - If web tools are listed, use them directly for current information or specific URLs.
-- Do not push basic lookup work back onto the user when you already have the needed tools.
-- For broad multi-file research, consider `delegate_task` with `read_only_task=True` so up to 4 specialist sub-agents can run in parallel.
-
-### Multi-Agent Delegation
-Use `delegate_task` when a sub-task benefits from isolation — code review, security audit, deep research, or work that would otherwise exhaust your own context.
-
-**Key parameters:**
-- `agent_role` — specialist persona from `.coderAI/agents/` (e.g. `'code-reviewer'`, `'security-reviewer'`, `'planner'`, `'architect'`). Falls back to generic role guidance if no persona file exists.
-- `context_hints` — list of file paths or short notes to give the sub-agent a head start without it re-discovering them.
-- `read_only_task=True` — strips mutating tools from the sub-agent and enables parallel fan-out (up to 4 at a time). Use this for any task that only reads files, searches code, or fetches web content.
-- `model` — override the model for this sub-agent only. Defaults to the parent model. **Do not override unless the user asks.**
-- `inherit_project_context` — pass `False` for lightweight web-only research that does not need the local codebase.
-
-**Parallelism rules:**
-- Multiple `read_only_task=True` delegations called in the same turn fan out up to 4 at a time.
-- Mutating delegations (default) always run one at a time to prevent workspace conflicts.
-- Delegation nests up to 3 levels deep. At depth 3, complete the task directly.
-
-**Sub-agent behavior:**
-- Each sub-agent runs in a fully isolated session with its own tool loop.
-- It inherits the parent's pinned context and model unless overridden.
-- It receives a summary of the parent's recent tool calls so it does not repeat inspection work already done.
-- Its final turn must be a plain-text report (Summary / Findings / Recommendations). An empty final turn is retried automatically once before falling back to a synthesized report.
-
-### Skills
-- Use `use_skill` only when a matching skill file exists in `.coderAI/skills/`.
-- Call `use_skill` with `action='list'` to see available skills before assuming one exists.
-
-## Execution Limits and Error Handling
-
-- The agent loop runs for up to `max_iterations` turns (default 50). Plan multi-step work to fit within this budget.
-- Transient LLM errors (rate limits, timeouts, 429/5xx) are retried up to 3 times with exponential backoff before propagating.
-- After 5 consecutive tool errors the loop terminates. If a tool keeps failing, change your approach rather than repeating the same call.
-- If the configured cost budget is exceeded, the loop stops immediately.
+- Use `delegate_task` for isolated review or research work. Prefer `read_only_task=True` when no mutations are needed.
+- Do not override the sub-agent model unless the user asks.
 
 ## Safety & Communication
 
 - Do not invent hidden tools, slash commands, hooks, or external services.
-- If a tool fails, say so briefly and adapt — do not retry the identical call with identical arguments.
+- If a tool fails, say so briefly and adapt instead of retrying the identical call.
 - Be concise, direct, and specific about what you inspected, changed, and verified.
-- A minimal or empty project directory is normal; it does not require refusing general conversation. Suggest opening or creating a project only when the user needs local code or files you must inspect.
+- A minimal or empty project directory is normal; do not refuse general conversation because of it.
 """
 
 # Ordered sections: (heading, tool names in preferred display order).
@@ -363,7 +412,9 @@ _TOOL_SECTIONS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
         ),
     ),
     ("Search & Analysis", ("text_search", "grep", "symbol_search", "semantic_search")),
-    ("Code Quality", ("lint", "format")),
+    ("Code Quality", ("lint", "format", "run_tests")),
+    ("Refactoring", ("refactor",)),
+    ("Package Management", ("package_manager",)),
     ("Vision", ("read_image",)),
     ("Web", ("web_search", "read_url", "download_file", "http_request")),
     ("Memory (Persistent)", ("save_memory", "recall_memory", "delete_memory")),
@@ -384,8 +435,7 @@ def format_tools_markdown(registry: ToolRegistry) -> str:
     lines: List[str] = [
         "## Available Tools",
         "",
-        "Only use tools listed below **and** exposed in your current function-calling / tool schema. "
-        "If a tool is not listed here, it is not registered for this session — do not assume it exists.",
+        "Only use tools listed below. If a tool is not listed here, do not assume it exists.",
         "",
     ]
     seen: set[str] = set()
@@ -432,8 +482,7 @@ def format_tools_markdown(registry: ToolRegistry) -> str:
         lines.append(mcp_extra)
 
     lines.append(
-        "*If you use `mcp_connect`, additional functions appear as `mcp__<server>__<tool>` "
-        "in your tool list — use those exact names (also listed above when connected).*"
+        "*After `mcp_connect`, additional functions appear as `mcp__<server>__<tool>`. Use those exact names.*"
     )
     return "\n".join(lines).rstrip() + "\n"
 
@@ -443,7 +492,7 @@ def _format_connected_mcp_tools_appendix() -> str:
     try:
         from .tools.mcp import mcp_client
     except Exception as e:
-        logger.warning(f"Failed to format MCP tools appendix: {e}", exc_info=True)
+        logger.warning("Failed to format MCP tools appendix: %s", e)
         return ""
 
     if not getattr(mcp_client, "discovered_tools", None):
@@ -466,15 +515,18 @@ def _format_connected_mcp_tools_appendix() -> str:
     return "\n".join(blocks)
 
 
-def compose_default_system_prompt(registry: ToolRegistry) -> str:
-    """Default CoderAI system prompt: intro + dynamic tools + tail."""
-    return (
-        f"{SYSTEM_PROMPT_INTRO}\n\n"
-        f"{format_tools_markdown(registry)}\n"
-        f"{SYSTEM_PROMPT_TAIL}"
-    )
-
-
-# Back-compat: static narrative without the per-session tool list (tests use
-# compose_default_system_prompt(registry) or INTRO/TAIL for full content).
-SYSTEM_PROMPT = SYSTEM_PROMPT_INTRO + "\n\n" + SYSTEM_PROMPT_TAIL
+def compose_default_system_prompt(
+    registry: ToolRegistry,
+    env_section: str = "",
+) -> str:
+    """Default CoderAI system prompt: env (optional) + intro + dynamic tools + tail."""
+    parts = []
+    if env_section:
+        parts.append(env_section)
+    parts.extend([
+        SYSTEM_PROMPT_INTRO,
+        format_tools_markdown(registry),
+        SYSTEM_PROMPT_OUTPUT_STYLE,
+        SYSTEM_PROMPT_TAIL,
+    ])
+    return "\n\n".join(parts)

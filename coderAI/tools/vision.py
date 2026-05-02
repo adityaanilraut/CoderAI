@@ -57,6 +57,13 @@ class ReadImageTool(Tool):
         try:
             filepath = Path(path).resolve()
 
+            from .filesystem import _is_path_protected, _enforce_project_scope
+            if _is_path_protected(filepath):
+                return {"success": False, "error": f"Refusing to read protected path: {path}"}
+            scope_err = _enforce_project_scope(filepath, "read_image")
+            if scope_err is not None:
+                return scope_err
+
             # Check file exists
             if not filepath.is_file():
                 return {"success": False, "error": f"File not found: {path}"}

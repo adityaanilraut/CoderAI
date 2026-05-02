@@ -3,6 +3,7 @@
 import logging
 from typing import Any, AsyncIterator, Dict, List, Optional
 
+import openai
 import tiktoken
 from openai import AsyncOpenAI
 
@@ -37,15 +38,15 @@ class OpenAIProvider(LLMProvider):
         """
         super().__init__(model, api_key, **kwargs)
 
-        # Use actual model name, or pass through if not in supported list
-        self.actual_model = self.SUPPORTED_MODELS.get(model, model)
+        if not api_key:
+            raise ValueError("OpenAI API key is required")
 
-        # Initialize OpenAI client
+        self.actual_model = self.SUPPORTED_MODELS.get(model, model)
         self.client = AsyncOpenAI(api_key=api_key)
 
         # Extract common parameters
         self.temperature = kwargs.get("temperature", 1)
-        self.max_tokens = kwargs.get("max_tokens", 4096)
+        self.max_tokens = kwargs.get("max_tokens", 8192)
         self.reasoning_effort = kwargs.get("reasoning_effort", "medium")
 
         # Initialize tokenizer
@@ -66,7 +67,7 @@ class OpenAIProvider(LLMProvider):
     _NO_REASONING_EFFORT_MODELS = {"gpt-5.4-nano", "gpt-5.4-mini"}
 
     @property
-    def _uses_reasoning_effort(self) -> bool:
+    def _rejects_temperature(self) -> bool:
         """Whether this model rejects temperature (only accepts default=1).
 
         gpt-5.x models (and o-series) only support temperature=1 (the default),
@@ -85,9 +86,16 @@ class OpenAIProvider(LLMProvider):
         in /v1/chat/completions, so we omit it for that model.
         """
         return (
-            self._uses_reasoning_effort
+            self._rejects_temperature
             and self.actual_model not in self._NO_REASONING_EFFORT_MODELS
         )
+
+    def _apply_temp_and_reasoning(self, params: Dict[str, Any], **kwargs) -> None:
+        if self._rejects_temperature:
+            if self._supports_reasoning_effort and self.reasoning_effort and self.reasoning_effort != "none":
+                params["reasoning_effort"] = self.reasoning_effort
+        else:
+            params["temperature"] = kwargs.get("temperature", self.temperature)
 
     async def chat(
         self,
@@ -95,7 +103,7 @@ class OpenAIProvider(LLMProvider):
         tools: Optional[List[Dict[str, Any]]] = None,
         **kwargs,
     ) -> Dict[str, Any]:
-        """Send a chat completion request to OpenAI with retry logic.
+        """Send a chat completion request to OpenAI.
 
         Args:
             messages: List of message dictionaries
@@ -111,13 +119,7 @@ class OpenAIProvider(LLMProvider):
             "max_completion_tokens": kwargs.get("max_tokens", self.max_tokens),
         }
 
-        # Handle temperature / reasoning_effort (mutually exclusive per model)
-        if self._uses_reasoning_effort:
-            if self._supports_reasoning_effort and self.reasoning_effort and self.reasoning_effort != "none":
-                params["reasoning_effort"] = self.reasoning_effort
-            # else: omit both — model uses its default (temperature=1, no effort param)
-        else:
-            params["temperature"] = kwargs.get("temperature", self.temperature)
+        self._apply_temp_and_reasoning(params, **kwargs)
 
         if tools:
             params["tools"] = tools
@@ -133,7 +135,7 @@ class OpenAIProvider(LLMProvider):
             self.total_output_tokens += usage.get("completion_tokens", 0)
 
             return result
-        except Exception as e:
+        except openai.APIError as e:
             msg = str(e)
             if "not a chat model" in msg and "v1/chat/completions" in msg:
                 raise RuntimeError(
@@ -149,7 +151,7 @@ class OpenAIProvider(LLMProvider):
         tools: Optional[List[Dict[str, Any]]] = None,
         **kwargs,
     ) -> AsyncIterator[Dict[str, Any]]:
-        """Send a streaming chat completion request to OpenAI with retry logic.
+        """Send a streaming chat completion request to OpenAI.
 
         Args:
             messages: List of message dictionaries
@@ -167,13 +169,7 @@ class OpenAIProvider(LLMProvider):
             "stream_options": {"include_usage": True},
         }
 
-        # Handle temperature / reasoning_effort (mutually exclusive per model)
-        if self._uses_reasoning_effort:
-            if self._supports_reasoning_effort and self.reasoning_effort and self.reasoning_effort != "none":
-                params["reasoning_effort"] = self.reasoning_effort
-            # else: omit both — model uses its default (temperature=1, no effort param)
-        else:
-            params["temperature"] = kwargs.get("temperature", self.temperature)
+        self._apply_temp_and_reasoning(params, **kwargs)
 
         if tools:
             params["tools"] = tools
@@ -189,7 +185,7 @@ class OpenAIProvider(LLMProvider):
                     self.total_input_tokens += usage.get("prompt_tokens", 0)
                     self.total_output_tokens += usage.get("completion_tokens", 0)
                 yield chunk_data
-        except Exception as e:
+        except openai.APIError as e:
             msg = str(e)
             if "not a chat model" in msg and "v1/chat/completions" in msg:
                 raise RuntimeError(
@@ -208,7 +204,10 @@ class OpenAIProvider(LLMProvider):
         Returns:
             Number of tokens
         """
-        return len(self.tokenizer.encode(text))
+        try:
+            return len(self.tokenizer.encode(text))
+        except Exception:
+            return len(text) // 4
 
     def get_cost(self) -> Dict[str, Any]:
         """Get current session cost estimate.
@@ -239,3 +238,6 @@ class OpenAIProvider(LLMProvider):
         info["total_output_tokens"] = self.total_output_tokens
         info["total_tokens"] = self.total_input_tokens + self.total_output_tokens
         return info
+
+    async def close(self) -> None:
+        await self.client.close()

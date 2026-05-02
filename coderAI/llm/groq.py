@@ -32,15 +32,21 @@ class GroqProvider(LLMProvider):
         """
         super().__init__(model, api_key, **kwargs)
 
+        if not api_key:
+            raise ValueError("Groq API key is required")
+
         self.actual_model = self.SUPPORTED_MODELS.get(model, model)
         self.client = AsyncGroq(api_key=api_key)
 
         self.temperature = kwargs.get("temperature", 0.7)
-        self.max_tokens = kwargs.get("max_tokens", 4096)
+        self.max_tokens = kwargs.get("max_tokens", 8192)
 
         # Cost tracking
         self.total_input_tokens = 0
         self.total_output_tokens = 0
+
+    async def close(self) -> None:
+        await self.client.close()
 
     async def chat(
         self,
@@ -69,7 +75,12 @@ class GroqProvider(LLMProvider):
             params["tools"] = tools
             params["tool_choice"] = kwargs.get("tool_choice", "auto")
 
-        response = await self.client.chat.completions.create(**params)
+        try:
+            response = await self.client.chat.completions.create(**params)
+        except Exception as e:
+            raise RuntimeError(
+                f"Groq API error: {e}"
+            ) from e
         result = response.model_dump()
 
         usage = result.get("usage", {})
@@ -106,14 +117,18 @@ class GroqProvider(LLMProvider):
             params["tools"] = tools
             params["tool_choice"] = kwargs.get("tool_choice", "auto")
 
-        stream = await self.client.chat.completions.create(**params)
+        try:
+            stream = await self.client.chat.completions.create(**params)
+        except Exception as e:
+            raise RuntimeError(
+                f"Groq API streaming error: {e}"
+            ) from e
         async for chunk in stream:
             chunk_data = chunk.model_dump()
             
-            # Groq streaming might include usage in specific chunks (like the last one)
-            # Depending on Groq's exact streaming API for usage, we attempt to capture it:
-            if getattr(chunk, "x_groq", None) and getattr(chunk.x_groq, "usage", None):
-                usage = chunk.x_groq.usage.model_dump()
+            # Groq streaming may include usage in the chunk data dict.
+            usage = chunk_data.get("x_groq", {}).get("usage")
+            if usage:
                 self.total_input_tokens += usage.get("prompt_tokens", 0)
                 self.total_output_tokens += usage.get("completion_tokens", 0)
 
@@ -121,7 +136,7 @@ class GroqProvider(LLMProvider):
 
     def count_tokens(self, text: str) -> int:
         """Count tokens. Groq doesn't provide a direct tokenizer, using approx."""
-        # Note: accurate tiktoken requires a specific model mapping; we use a rough char estimate here
+        # Approximate: ~4 chars per token. May be off by ~25%.
         return len(text) // 4
 
     def get_cost(self) -> Dict[str, Any]:

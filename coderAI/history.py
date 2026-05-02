@@ -81,8 +81,11 @@ _SESSION_ID_PATTERN = re.compile(r"^session_\d+_[a-f0-9]{8}$")
 _SESSION_RETENTION_SECONDS = 30 * 24 * 60 * 60
 
 
+_VALID_ROLES = {"system", "user", "assistant", "tool"}
+
+
 def _sanitize_session_data(data: Dict[str, Any]) -> Dict[str, Any]:
-    """Drop malformed tool metadata before loading a session."""
+    """Drop or repair malformed messages before loading a session."""
     messages = data.get("messages", []) or []
     sanitized_messages = []
     seen_tool_ids = set()
@@ -91,6 +94,44 @@ def _sanitize_session_data(data: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(raw, dict):
             continue
         msg = dict(raw)
+
+        # Validate role
+        role = msg.get("role")
+        if not isinstance(role, str) or role not in _VALID_ROLES:
+            logger.warning(
+                "Dropping message with missing/invalid role %r in session %s",
+                role,
+                data.get("session_id"),
+            )
+            continue
+
+        # Only assistant may emit tool_calls
+        if role != "assistant" and msg.get("tool_calls"):
+            logger.warning(
+                "Stripping tool_calls from non-assistant %r message in session %s",
+                role,
+                data.get("session_id"),
+            )
+            msg.pop("tool_calls", None)
+
+        # Nullify content when tool_calls are present (providers reject mixed messages)
+        if role == "assistant" and msg.get("tool_calls") and msg.get("content"):
+            logger.warning(
+                "Nullifying content on assistant message with tool_calls in session %s",
+                data.get("session_id"),
+            )
+            msg["content"] = None
+
+        # Validate timestamp type
+        ts = msg.get("timestamp")
+        if ts is not None and not isinstance(ts, (int, float)):
+            logger.warning(
+                "Dropping non-numeric timestamp %r in session %s",
+                ts,
+                data.get("session_id"),
+            )
+            msg.pop("timestamp", None)
+
         tool_calls = msg.get("tool_calls")
         if isinstance(tool_calls, list):
             clean_tool_calls = []
@@ -111,7 +152,7 @@ def _sanitize_session_data(data: Dict[str, Any]) -> Dict[str, Any]:
                         if not isinstance(parsed, dict):
                             logger.warning("Dropping non-object stored tool arguments in session %s", data.get("session_id"))
                             continue
-                    fn_copy["arguments"] = args
+                    fn_copy["arguments"] = parsed
                     tc_copy["function"] = fn_copy
                 tc_id = tc_copy.get("id")
                 if isinstance(tc_id, str) and tc_id:
@@ -167,7 +208,12 @@ class HistoryManager:
             return session
 
     def save_session(self, session: Optional[Session] = None) -> None:
-        """Save a session to disk."""
+        """Save a session to disk.
+
+        Writes via a temp file + ``os.replace`` so a crash mid-write cannot
+        leave a truncated/invalid JSON behind that breaks ``list_sessions()``
+        on the next launch. Same atomicity pattern the index already uses.
+        """
         self._cleanup_expired_sessions()
         if session is None:
             session = self.current_session
@@ -175,9 +221,19 @@ class HistoryManager:
             return
 
         session_file = self.history_dir / f"{session.session_id}.json"
-        with open(session_file, "w") as f:
-            json.dump(session.model_dump(), f, indent=2)
-            
+        tmp_file = session_file.with_suffix(".json.tmp")
+        try:
+            with open(tmp_file, "w") as f:
+                json.dump(session.model_dump(), f, indent=2)
+            os.replace(tmp_file, session_file)
+        except Exception:
+            # Don't leave an orphan ``.tmp`` when the write itself failed.
+            try:
+                tmp_file.unlink()
+            except OSError:
+                pass
+            raise
+
         self._update_index(session)
 
     def _update_index(self, session: Session) -> None:
@@ -188,8 +244,15 @@ class HistoryManager:
             try:
                 with open(index_file, "r") as f:
                     index = json.load(f)
-            except Exception:
-                pass
+            except json.JSONDecodeError:
+                logger.warning(
+                    "Session index %s is corrupted, rebuilding from session files.",
+                    index_file,
+                )
+            except OSError as e:
+                logger.warning(
+                    "Could not read session index %s: %s", index_file, e
+                )
                 
         index[session.session_id] = {
             "session_id": session.session_id,
@@ -257,6 +320,7 @@ class HistoryManager:
                 pass
 
         sessions = list(index.values())
+        # updated_at is formatted YYYY-MM-DD HH:MM:SS which sorts lexicographically in chronological order
         sessions.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
         return sessions
 
@@ -310,12 +374,17 @@ class HistoryManager:
     def _cleanup_expired_sessions(self) -> None:
         """Delete sessions older than the retention window."""
         cutoff = time.time() - _SESSION_RETENTION_SECONDS
+        removed_ids = []
         for session_file in self.history_dir.glob("session_*.json"):
             try:
                 if session_file.stat().st_mtime < cutoff:
+                    session_id = session_file.stem.replace("session_", "")
                     session_file.unlink()
+                    removed_ids.append(session_id)
             except OSError:
                 continue
+        for sid in removed_ids:
+            self._remove_from_index(sid)
 
 
 # Global history manager instance

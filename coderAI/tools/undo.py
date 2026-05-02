@@ -71,6 +71,10 @@ class FileBackupStore:
             os.replace(tmp_path, self.index_file)
         except Exception:
             try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
                 os.unlink(tmp_path)
             except OSError:
                 pass
@@ -250,16 +254,20 @@ class FileBackupStore:
         """Remove old backups beyond MAX_BACKUPS_PER_FILE."""
         file_entries = [e for e in self.index if e["filepath"] == filepath]
         if len(file_entries) > MAX_BACKUPS_PER_FILE:
-            to_remove = set(id(e) for e in file_entries[: len(file_entries) - MAX_BACKUPS_PER_FILE])
-            for entry in file_entries[: len(file_entries) - MAX_BACKUPS_PER_FILE]:
+            excess = file_entries[:len(file_entries) - MAX_BACKUPS_PER_FILE]
+            to_remove = set(id(e) for e in excess)
+            # Rebuild and save index first so a crash during file deletion
+            # doesn't leave dangling index entries.
+            self.index = [e for e in self.index if id(e) not in to_remove]
+            self._save_index()
+            for entry in excess:
                 if entry.get("backup_path"):
                     backup = Path(entry["backup_path"])
                     if backup.exists():
-                        backup.unlink()
-            # Filter by identity rather than equality to avoid removing
-            # the wrong entry on timestamp/dict collisions
-            self.index = [e for e in self.index if id(e) not in to_remove]
-            self._save_index()
+                        try:
+                            backup.unlink()
+                        except OSError:
+                            pass
 
     def _cleanup_global_backups(self):
         """Prune oldest backups when total exceeds MAX_TOTAL_BACKUPS."""

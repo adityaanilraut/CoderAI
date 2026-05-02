@@ -165,14 +165,25 @@ def _download_with_progress(url: str, dest: Path, timeout: float = 120.0) -> Non
         ) as progress:
             task = progress.add_task("download", total=total)
             tmp = dest.with_suffix(dest.suffix + ".part")
-            with open(tmp, "wb") as f:
-                while True:
-                    chunk = resp.read(64 * 1024)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                    progress.update(task, advance=len(chunk))
-            tmp.replace(dest)
+            bytes_received = 0
+            try:
+                with open(tmp, "wb") as f:
+                    while True:
+                        chunk = resp.read(64 * 1024)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        bytes_received += len(chunk)
+                        progress.update(task, advance=len(chunk))
+                if total is not None and bytes_received != total:
+                    tmp.unlink(missing_ok=True)
+                    raise BinaryUnavailableError(
+                        f"Download incomplete: expected {total} bytes, got {bytes_received}"
+                    )
+                tmp.replace(dest)
+            except Exception:
+                tmp.unlink(missing_ok=True)
+                raise
 
 
 def _sha256_of(path: Path) -> str:

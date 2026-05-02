@@ -7,7 +7,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 import aiohttp
 
-from .base import LLMProvider
+from .base import LLMProvider, REASONING_BUDGET_MAP
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,6 @@ def _create_ssl_context() -> ssl.SSLContext:
         return ssl.create_default_context()
 
 # Models that support prompt caching (cache_control on system/tools/messages).
-# Kept in sync with MODEL_COSTS: every model here must have a cost entry.
 CACHING_SUPPORTED_MODELS = frozenset({
     "claude-opus-4-7",
     "claude-sonnet-4-6",
@@ -37,26 +36,8 @@ CACHING_SUPPORTED_MODELS = frozenset({
     "claude-3-opus-20240229",
 })
 
-# Cost per 1K tokens (approximate). These are back-of-the-envelope numbers
-# retained for historical reference; canonical pricing lives in
-# ``coderAI/cost.py::MODEL_PRICING`` (per-million-tokens).
-MODEL_COSTS = {
-    "claude-opus-4-7": {"input": 0.005, "output": 0.025},
-    "claude-sonnet-4-6": {"input": 0.003, "output": 0.015},
-    "claude-haiku-4-5-20251001": {"input": 0.001, "output": 0.005},
-    "claude-3-7-sonnet-20250219": {"input": 0.003, "output": 0.015},
-    "claude-3-5-sonnet-20241022": {"input": 0.003, "output": 0.015},
-    "claude-3-5-haiku-20241022": {"input": 0.0008, "output": 0.004},
-    "claude-3-opus-20240229": {"input": 0.015, "output": 0.075},
-}
-
 # Friendly-name → API model ID.
-#
-# Anthropic's current (late-2026) Claude 4.X family ships with undated opus
-# and sonnet IDs and a dated haiku. When the API retires a dated snapshot,
-# update the right-hand side here — callers only reference the friendly
-# left-hand names. Prefer configuring aliases rather than baking specific
-# dated IDs into user-facing code.
+# Update the right-hand side when the API retires a dated snapshot.
 MODEL_ALIASES = {
     # Claude 4.X (current)
     "claude-4.7-opus": "claude-opus-4-7",
@@ -78,8 +59,7 @@ MODEL_ALIASES = {
     "haiku": "claude-haiku-4-5-20251001",
 }
 
-# Models that support adaptive thinking + effort controls.
-# Kept in sync with CACHING_SUPPORTED_MODELS.
+# Models that support extended thinking with a token budget.
 _THINKING_SUPPORTED_MODELS = frozenset({
     "claude-opus-4-7",
     "claude-sonnet-4-6",
@@ -151,7 +131,9 @@ class AnthropicProvider(LLMProvider):
 
         for msg in messages:
             role = msg.get("role", "")
-            content = msg.get("content", "")
+            content = msg.get("content")
+            if content is None:
+                content = ""
 
             if role == "system":
                 system_prompt += content + "\n"
@@ -163,10 +145,26 @@ class AnthropicProvider(LLMProvider):
                         content_blocks.append({"type": "text", "text": content})
                     for tc in msg["tool_calls"]:
                         func = tc.get("function", {})
+                        raw_args = func.get("arguments", "{}")
                         try:
-                            tool_input = json.loads(func.get("arguments", "{}"))
-                        except json.JSONDecodeError:
-                            tool_input = {}
+                            tool_input = json.loads(raw_args)
+                        except json.JSONDecodeError as e:
+                            # Malformed JSON in stored tool args is unrecoverable
+                            # here: silently substituting ``{}`` would invoke the
+                            # tool with empty arguments on replay (e.g. a
+                            # ``git_reset`` with default ``reset_type='hard'``).
+                            # Raise so the agent loop can surface the error and
+                            # the model can try again with valid args.
+                            raise ValueError(
+                                f"Could not parse tool arguments for "
+                                f"{func.get('name', '?')!r}: {e}. Raw: {raw_args!r}"
+                            ) from e
+                        if not isinstance(tool_input, dict):
+                            raise ValueError(
+                                f"Tool arguments for {func.get('name', '?')!r} "
+                                f"must decode to a JSON object, got "
+                                f"{type(tool_input).__name__}"
+                            )
                         content_blocks.append({
                             "type": "tool_use",
                             "id": tc.get("id", ""),
@@ -255,7 +253,9 @@ class AnthropicProvider(LLMProvider):
 
         finish_reason = "tool_calls" if tool_calls else "stop"
         stop_reason = response.get("stop_reason", "")
-        if stop_reason == "end_turn":
+        if stop_reason == "tool_use":
+            finish_reason = "tool_calls"
+        elif stop_reason == "end_turn" and not tool_calls:
             finish_reason = "stop"
         elif stop_reason == "max_tokens":
             finish_reason = "length"
@@ -339,10 +339,15 @@ class AnthropicProvider(LLMProvider):
             payload["stream"] = True
 
         if self._supports_thinking() and self.reasoning_effort and self.reasoning_effort != "none":
-            # Anthropic's current API expects adaptive thinking plus effort
-            # controls in output_config (not budget_tokens).
-            payload["thinking"] = {"type": "adaptive"}
-            payload["output_config"] = {"effort": self.reasoning_effort}
+            # Per Anthropic's extended-thinking API:
+            # {"type": "enabled", "budget_tokens": N} where N < max_tokens.
+            budget = REASONING_BUDGET_MAP.get(self.reasoning_effort, 8192)
+            request_max = max_tokens if max_tokens is not None else self.max_tokens
+            if budget >= request_max:
+                budget = max(1024, request_max - 1024)
+                if budget >= request_max:
+                    budget = request_max - 1
+            payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
 
         if self._supports_caching():
             sys_p, msg_p, tool_p = self._apply_cache_control(
@@ -380,7 +385,7 @@ class AnthropicProvider(LLMProvider):
             if response.status != 200:
                 error_body = await response.text()
                 raise RuntimeError(
-                    f"Anthropic API error {response.status}: {error_body}"
+                    f"Anthropic API error {response.status}: {error_body[:200]}"
                 )
             result = await response.json()
 
@@ -410,7 +415,7 @@ class AnthropicProvider(LLMProvider):
             if response.status != 200:
                 error_body = await response.text()
                 raise RuntimeError(
-                    f"Anthropic API error {response.status}: {error_body}"
+                    f"Anthropic API error {response.status}: {error_body[:200]}"
                 )
 
             buffer = ""
@@ -493,12 +498,16 @@ class AnthropicProvider(LLMProvider):
                                 if index in tool_call_blocks:
                                     tool_call_blocks[index]["arguments"] += partial_json
                                 # Emit the argument chunk in OpenAI format
+                                block_info = tool_call_blocks.get(index, {})
                                 yield {
                                     "choices": [{
                                         "delta": {
                                             "tool_calls": [{
                                                 "index": index,
+                                                "id": block_info.get("id", ""),
+                                                "type": "function",
                                                 "function": {
+                                                    "name": block_info.get("name", ""),
                                                     "arguments": partial_json,
                                                 },
                                             }]
@@ -547,14 +556,17 @@ class AnthropicProvider(LLMProvider):
 
     def get_cost(self) -> Dict[str, Any]:
         """Get current session cost estimate."""
-        costs = MODEL_COSTS.get(self.actual_model, {"input": 0, "output": 0})
-        input_price_per_k = costs["input"]
-        output_price_per_k = costs["output"]
+        from ..cost import CostTracker
+        pricing = CostTracker.get_model_pricing(self.actual_model)
+        # MODEL_PRICING is per-million tokens.
+        input_per_token = pricing["input"] / 1_000_000
+        output_per_token = pricing["output"] / 1_000_000
         # Cache write costs 1.25x input; cache read costs 0.1x input.
-        cache_write_cost = (self.total_cache_creation_tokens / 1000) * input_price_per_k * 1.25
-        cache_read_cost = (self.total_cache_read_tokens / 1000) * input_price_per_k * 0.1
-        uncached_input_cost = (self.total_input_tokens / 1000) * input_price_per_k
-        output_cost = (self.total_output_tokens / 1000) * output_price_per_k
+        cache_write_cost = self.total_cache_creation_tokens * input_per_token * 1.25
+        cache_read_cost = self.total_cache_read_tokens * input_per_token * 0.1
+        uncached_input = max(0, self.total_input_tokens - self.total_cache_creation_tokens - self.total_cache_read_tokens)
+        uncached_input_cost = uncached_input * input_per_token
+        output_cost = self.total_output_tokens * output_per_token
         total_cost = uncached_input_cost + output_cost + cache_write_cost + cache_read_cost
 
         return {

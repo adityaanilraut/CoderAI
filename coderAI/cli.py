@@ -137,6 +137,8 @@ def chat(model, resume, continue_, auto_approve, python):
         click.echo(f"Resuming session {sid}")
 
     env = os.environ.copy()
+    if continue_:
+        env["CODERAI_CONTINUE"] = "1"
     if model:
         env["CODERAI_MODEL"] = model
     if resume:
@@ -309,6 +311,7 @@ def setup():
         "   Enter your OpenAI API key (or press Enter to skip)",
         default="",
         show_default=False,
+        hide_input=True,
     )
     if api_key:
         config_manager.set("openai_api_key", api_key)
@@ -323,6 +326,7 @@ def setup():
         "   Enter your Anthropic API key (or press Enter to skip)",
         default="",
         show_default=False,
+        hide_input=True,
     )
     if anthropic_key:
         config_manager.set("anthropic_api_key", anthropic_key)
@@ -337,6 +341,7 @@ def setup():
         "   Enter your Groq API key (or press Enter to skip)",
         default="",
         show_default=False,
+        hide_input=True,
     )
     if groq_key:
         config_manager.set("groq_api_key", groq_key)
@@ -351,6 +356,7 @@ def setup():
         "   Enter your DeepSeek API key (or press Enter to skip)",
         default="",
         show_default=False,
+        hide_input=True,
     )
     if deepseek_key:
         config_manager.set("deepseek_api_key", deepseek_key)

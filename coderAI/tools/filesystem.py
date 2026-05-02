@@ -5,9 +5,10 @@ import difflib
 import logging
 import os
 import re
+import shutil as _shutil
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -135,30 +136,90 @@ def _is_in_project_root(path: Path) -> bool:
         return False
 
 
-def _enforce_project_scope(path: Path, op: str) -> Optional[Dict[str, Any]]:
-    """Reject writes outside the project root when strict mode is on.
+def _enforce_project_scope(path: Path, op: str) -> Optional[dict[str, Any]]:
+    """Reject writes outside the project root.
 
-    Strict mode is opt-in via ``CODERAI_STRICT_PATHS=1`` because many
-    legitimate flows (editing dotfiles, system config) write outside the
-    project root. When off we only log a WARNING so escapes are visible in
-    the audit trail without breaking existing workflows.
+    Set ``CODERAI_ALLOW_OUTSIDE_PROJECT=1`` to opt out (e.g. when editing
+    dotfiles or scratch files outside the repo).
     """
     if _is_in_project_root(path):
         return None
-    if os.environ.get("CODERAI_STRICT_PATHS") == "1":
-        return {
-            "success": False,
-            "error": (
-                f"Refusing to {op} outside project root: {path}. "
-                "Unset CODERAI_STRICT_PATHS to allow."
-            ),
-            "error_code": "scope",
-        }
-    logger.warning(
-        "%s outside project root: %s (set CODERAI_STRICT_PATHS=1 to block)",
-        op, path,
-    )
+    if os.environ.get("CODERAI_ALLOW_OUTSIDE_PROJECT") == "1":
+        logger.warning("%s outside project root: %s (allowed by env opt-out)", op, path)
+        return None
+    try:
+        if config_manager.get("allow_outside_project", False):
+            logger.warning("%s outside project root: %s (allowed by config)", op, path)
+            return None
+    except Exception:
+        pass
+    return {
+        "success": False,
+        "error": (
+            f"Refusing to {op} outside project root: {path}. "
+            "Set CODERAI_ALLOW_OUTSIDE_PROJECT=1 to allow."
+        ),
+        "error_code": "scope",
+    }
+
+
+def _reject_symlink_leaf(path: Path, op: str) -> Optional[dict[str, Any]]:
+    """Refuse to operate on a symlink leaf.
+
+    Mitigates the symlink-TOCTOU pattern: ``_is_path_protected`` and
+    ``_enforce_project_scope`` both call ``Path.resolve()``, which follows
+    every symlink in the chain — so a path that *currently* points at a
+    benign file inside the project passes, even though the link could be
+    swapped to point at ``/etc/passwd`` between the check and the
+    subsequent open. Refusing symlink leaves outright closes the common
+    attack shape; ``_safe_open_no_symlink`` below is the second layer
+    against a swap inside the microsecond gap between the lstat and the
+    actual ``open()``.
+    """
+    try:
+        if path.is_symlink():
+            return {
+                "success": False,
+                "error": (
+                    f"Refusing to {op} a symlink leaf: {path}. "
+                    "Operate on the resolved target path directly."
+                ),
+                "error_code": "symlink",
+            }
+    except OSError:
+        # ``is_symlink`` raises on broken paths; let the caller's exists()
+        # check produce the canonical error.
+        pass
     return None
+
+
+# ``O_NOFOLLOW`` is POSIX-only; on Windows the constant is absent and the
+# open flag has no equivalent (Windows does not have user-space symlinks
+# in the same shape). Falling back to 0 is acceptable because the lstat
+# check above is the primary guard; O_NOFOLLOW is the belt-and-suspenders.
+_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+
+
+def _safe_open_no_symlink(path: Path, mode: str, encoding: Optional[str] = "utf-8"):
+    """Open *path* with ``O_NOFOLLOW`` so a swap-to-symlink between
+    ``_reject_symlink_leaf`` and the open will fail with ``OSError(ELOOP)``
+    instead of silently following the link.
+
+    ``mode`` is the standard textual mode (``"r"``, ``"w"``, ``"a"``).
+    Translates to the matching POSIX flags. The caller is responsible for
+    converting ``OSError`` into a tool-shaped error response.
+    """
+    if mode == "r":
+        flags = os.O_RDONLY
+    elif mode == "w":
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    elif mode == "a":
+        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+    else:
+        raise ValueError(f"Unsupported mode for safe open: {mode!r}")
+    flags |= _O_NOFOLLOW
+    fd = os.open(str(path), flags, 0o666)
+    return os.fdopen(fd, mode, encoding=encoding)
 
 
 class ReadFileParams(BaseModel):
@@ -174,13 +235,14 @@ class ReadFileTool(Tool):
     description = "Read the contents of a file"
     parameters_model = ReadFileParams
     is_read_only = True
+    category = "filesystem"
 
     # Optional per-session FileReadCache; wired by Agent after registry build.
     read_cache = None
 
     async def execute(
         self, path: str, start_line: int = None, end_line: int = None
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Read file contents with size limit."""
         try:
             path_obj = Path(path).expanduser()
@@ -280,8 +342,9 @@ class WriteFileTool(Tool):
     description = "Write content to a file (creates, overwrites, or appends). Protected system paths are blocked."
     parameters_model = WriteFileParams
     requires_confirmation = True
+    category = "filesystem"
 
-    async def execute(self, path: str, content: str, append: bool = False) -> Dict[str, Any]:
+    async def execute(self, path: str, content: str, append: bool = False) -> dict[str, Any]:
         """Write content to file with path protection."""
         try:
             path_obj = Path(path).expanduser()
@@ -300,8 +363,26 @@ class WriteFileTool(Tool):
                 scope_err = _enforce_project_scope(path_obj, "write_file")
                 if scope_err:
                     return scope_err
+                # Refuse a symlink leaf — either the file already exists as a
+                # symlink (likely TOCTOU bait) or the agent is asking us to
+                # create one, neither of which we want to honour silently.
+                if path_obj.exists():
+                    symlink_err = _reject_symlink_leaf(path_obj, "write to")
+                    if symlink_err:
+                        return symlink_err
 
                 path_obj.parent.mkdir(parents=True, exist_ok=True)
+
+                # Re-check symlink after parent creation (mitigates TOCTOU
+                # where a symlink could be placed at path_obj between the
+                # initial check above and the mkdir call).
+                if path_obj.exists():
+                    symlink_err2 = _reject_symlink_leaf(path_obj, "write to")
+                    if symlink_err2:
+                        return symlink_err2
+
+                # Capture old file size for accurate bytes_written on append
+                old_size = path_obj.stat().st_size if path_obj.exists() and append else 0
 
                 # Read before-content for diff (skip binary / append mode)
                 before_content: Optional[str] = None
@@ -322,17 +403,42 @@ class WriteFileTool(Tool):
                         logger.warning("Backup before append failed: %s", backup_result["error"])
 
                 mode = "a" if append else "w"
-                with open(path_obj, mode, encoding="utf-8") as f:
-                    f.write(content)
+                try:
+                    if mode == "w":
+                        import tempfile
+                        fd, tmp_path = tempfile.mkstemp(
+                            dir=str(path_obj.parent), prefix="." + path_obj.name + "."
+                        )
+                        try:
+                            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                                f.write(content)
+                            os.replace(tmp_path, str(path_obj))
+                        except Exception:
+                            try:
+                                os.unlink(tmp_path)
+                            except OSError:
+                                pass
+                            raise
+                    else:
+                        with _safe_open_no_symlink(path_obj, mode) as f:
+                            f.write(content)
+                except OSError as e:
+                    return {
+                        "success": False,
+                        "error": f"Could not write {path}: {e}",
+                        "error_code": "symlink" if "loop" in str(e).lower() else "io",
+                    }
 
                 # Emit diff for non-append text writes
                 if before_content is not None:
                     _emit_diff(path_obj, before_content, content)
 
+                bytes_written = path_obj.stat().st_size - old_size
+
                 return {
                     "success": True,
                     "path": str(path_obj),
-                    "bytes_written": len(content.encode("utf-8")),
+                    "bytes_written": bytes_written,
                     "mode": "append" if append else "write",
                 }
         except Exception as e:
@@ -353,10 +459,11 @@ class SearchReplaceTool(Tool):
     description = "Search for text in a file and replace it"
     parameters_model = SearchReplaceParams
     requires_confirmation = True
+    category = "filesystem"
 
     async def execute(
         self, path: str, search: str, replace: str, replace_all: bool = False
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Search and replace in file with protection."""
         try:
             if not path or not str(path).strip():
@@ -395,9 +502,19 @@ class SearchReplaceTool(Tool):
                 scope_err = _enforce_project_scope(path_obj, "search_replace")
                 if scope_err:
                     return scope_err
+                symlink_err = _reject_symlink_leaf(path_obj, "search_replace in")
+                if symlink_err:
+                    return symlink_err
 
-                with open(path_obj, "r", encoding="utf-8") as f:
-                    content = f.read()
+                try:
+                    with _safe_open_no_symlink(path_obj, "r") as f:
+                        content = f.read()
+                except OSError as e:
+                    return {
+                        "success": False,
+                        "error": f"Could not open {path}: {e}",
+                        "error_code": "symlink" if "loop" in str(e).lower() else "io",
+                    }
 
                 if search not in content:
                     return {
@@ -416,8 +533,27 @@ class SearchReplaceTool(Tool):
                     new_content = content.replace(search, replace, 1)
                     count = 1
 
-                with open(path_obj, "w", encoding="utf-8") as f:
-                    f.write(new_content)
+                try:
+                    import tempfile
+                    fd, tmp_path = tempfile.mkstemp(
+                        dir=str(path_obj.parent), prefix="." + path_obj.name + "."
+                    )
+                    try:
+                        with os.fdopen(fd, "w", encoding="utf-8") as f:
+                            f.write(new_content)
+                        os.replace(tmp_path, str(path_obj))
+                    except Exception:
+                        try:
+                            os.unlink(tmp_path)
+                        except OSError:
+                            pass
+                        raise
+                except OSError as e:
+                    return {
+                        "success": False,
+                        "error": f"Could not write {path}: {e}",
+                        "error_code": "symlink" if "loop" in str(e).lower() else "io",
+                    }
 
                 _emit_diff(path_obj, content, new_content)
 
@@ -441,8 +577,9 @@ class ListDirectoryTool(Tool):
     description = "List files and directories in a path"
     parameters_model = ListDirectoryParams
     is_read_only = True
+    category = "filesystem"
 
-    async def execute(self, path: str) -> Dict[str, Any]:
+    async def execute(self, path: str) -> dict[str, Any]:
         """List directory contents."""
         try:
             path_obj = Path(path).expanduser()
@@ -492,8 +629,9 @@ class GlobSearchTool(Tool):
     description = "Find files matching a glob pattern"
     parameters_model = GlobSearchParams
     is_read_only = True
+    category = "filesystem"
 
-    async def execute(self, pattern: str, base_path: str = ".") -> Dict[str, Any]:
+    async def execute(self, pattern: str, base_path: str = ".") -> dict[str, Any]:
         """Find files matching pattern with result limit."""
         try:
             base = Path(base_path).expanduser()
@@ -508,7 +646,11 @@ class GlobSearchTool(Tool):
             matches = []
             total_matches = 0
             for match in base.glob(pattern):
-                if match.is_file():
+                try:
+                    is_file = match.is_file()
+                except OSError:
+                    continue
+                if is_file:
                     # Skip common ignore patterns
                     if any(
                         p in match.parts
@@ -564,11 +706,12 @@ class ApplyDiffTool(Tool):
     )
     parameters_model = ApplyDiffParams
     requires_confirmation = True
+    category = "filesystem"
 
     # How far from the stated line number to search for a matching hunk
     SEARCH_WINDOW = 50
 
-    async def execute(self, path: str, diff: str) -> Dict[str, Any]:
+    async def execute(self, path: str, diff: str) -> dict[str, Any]:
         """Apply a unified diff to a file."""
         try:
             path_obj = Path(path).expanduser()
@@ -590,9 +733,19 @@ class ApplyDiffTool(Tool):
                 scope_err = _enforce_project_scope(path_obj, "apply_diff")
                 if scope_err:
                     return scope_err
+                symlink_err = _reject_symlink_leaf(path_obj, "apply_diff to")
+                if symlink_err:
+                    return symlink_err
 
-                with open(path_obj, "r", encoding="utf-8") as f:
-                    original_lines = f.readlines()
+                try:
+                    with _safe_open_no_symlink(path_obj, "r") as f:
+                        original_lines = f.readlines()
+                except OSError as e:
+                    return {
+                        "success": False,
+                        "error": f"Could not open {path}: {e}",
+                        "error_code": "symlink" if "loop" in str(e).lower() else "io",
+                    }
 
                 # Clean up markdown code blocks if the LLM provided them
                 diff = diff.strip()
@@ -664,8 +817,29 @@ class ApplyDiffTool(Tool):
                     ]
                     hunks_applied += 1
 
-                with open(path_obj, "w", encoding="utf-8") as f:
-                    f.writelines(result_lines)
+                # Write to a temp file then atomically replace to avoid
+                # leaving the target in a partial-write state.
+                try:
+                    import tempfile
+                    fd, tmp_path = tempfile.mkstemp(
+                        dir=str(path_obj.parent), prefix="." + path_obj.name + "."
+                    )
+                    try:
+                        with os.fdopen(fd, "w", encoding="utf-8") as f:
+                            f.writelines(result_lines)
+                        os.replace(tmp_path, str(path_obj))
+                    except Exception:
+                        try:
+                            os.unlink(tmp_path)
+                        except OSError:
+                            pass
+                        raise
+                except OSError as e:
+                    return {
+                        "success": False,
+                        "error": f"Could not write {path}: {e}",
+                        "error_code": "symlink" if "loop" in str(e).lower() else "io",
+                    }
 
                 _emit_diff(
                     path_obj,
@@ -686,8 +860,8 @@ class ApplyDiffTool(Tool):
 
     @staticmethod
     def _find_hunk_position(
-        file_lines: List[str],
-        old_lines: List[str],
+        file_lines: list[str],
+        old_lines: list[str],
         expected_start: int,
         search_window: int,
     ) -> Optional[int]:
@@ -722,7 +896,7 @@ class ApplyDiffTool(Tool):
         return None
 
     @staticmethod
-    def _parse_hunks(diff_text: str) -> List[Dict[str, Any]]:
+    def _parse_hunks(diff_text: str) -> list[dict[str, Any]]:
         """Parse unified diff text into hunks.
 
         Handles common LLM quirks:
@@ -730,7 +904,7 @@ class ApplyDiffTool(Tool):
         - Trailing blank lines from JSON serialization
         - ``---`` / ``+++`` file headers (skipped outside hunks)
         """
-        hunks: List[Dict[str, Any]] = []
+        hunks: list[dict[str, Any]] = []
         hunk_header_re = re.compile(r"^@@\s*-(\d+)(?:,\d+)?\s*\+\d+(?:,\d+)?\s*@@")
 
         # Strip trailing blank lines that result from split() on trailing \n
@@ -743,8 +917,8 @@ class ApplyDiffTool(Tool):
             match = hunk_header_re.match(lines[i])
             if match:
                 start_line = int(match.group(1))
-                old_lines: List[str] = []
-                new_lines: List[str] = []
+                old_lines: list[str] = []
+                new_lines: list[str] = []
                 i += 1
 
                 while i < len(lines):
@@ -780,11 +954,6 @@ class ApplyDiffTool(Tool):
         return hunks
 
 
-# ---------------------------------------------------------------------------
-# Additional filesystem tools: move, copy, delete, mkdir
-# ---------------------------------------------------------------------------
-
-
 class MoveFileParams(BaseModel):
     source: str = Field(..., description="Source file or directory path")
     destination: str = Field(..., description="Destination path (file or directory)")
@@ -799,27 +968,37 @@ class MoveFileTool(Tool):
         "Move or rename a file or directory. Set overwrite=true to replace an existing "
         "destination; by default the operation fails if the destination exists."
     )
-    category = "fs"
+    category = "filesystem"
     parameters_model = MoveFileParams
     requires_confirmation = True
 
     async def execute(
         self, source: str, destination: str, overwrite: bool = False
-    ) -> Dict[str, Any]:
-        import shutil as _shutil
+    ) -> dict[str, Any]:
 
         try:
-            src = Path(source)
-            dst = Path(destination)
+            src = Path(os.path.expanduser(source))
+            dst = Path(os.path.expanduser(destination))
 
             if not src.exists():
                 return {"success": False, "error": f"Source does not exist: {source}"}
 
+            if _is_path_protected(src):
+                return {"success": False, "error": f"Source is in a protected path: {source}"}
+            scope_err = _enforce_project_scope(src, "move/copy")
+            if scope_err:
+                return scope_err
             if _is_path_protected(dst):
                 return {"success": False, "error": f"Destination is in a protected path: {destination}"}
             scope_err = _enforce_project_scope(dst, "move/copy")
             if scope_err:
                 return scope_err
+            # Refuse symlink leaves on either side. ``_is_path_protected``
+            # resolves through symlinks, so a swap between check and move
+            # could otherwise redirect the operation onto a protected target.
+            symlink_err = _reject_symlink_leaf(src, "move from") or _reject_symlink_leaf(dst, "move to")
+            if symlink_err:
+                return symlink_err
 
             if dst.exists() and not overwrite:
                 return {
@@ -863,27 +1042,38 @@ class CopyFileTool(Tool):
         "Copy a file or directory to a new location. For directories, copies the entire tree. "
         "Set overwrite=true to replace an existing destination."
     )
-    category = "fs"
+    category = "filesystem"
     parameters_model = CopyFileParams
     requires_confirmation = True
 
     async def execute(
         self, source: str, destination: str, overwrite: bool = False
-    ) -> Dict[str, Any]:
-        import shutil as _shutil
+    ) -> dict[str, Any]:
 
         try:
-            src = Path(source)
-            dst = Path(destination)
+            src = Path(os.path.expanduser(source))
+            dst = Path(os.path.expanduser(destination))
 
             if not src.exists():
                 return {"success": False, "error": f"Source does not exist: {source}"}
 
+            if _is_path_protected(src):
+                return {"success": False, "error": f"Source is in a protected path: {source}"}
+            scope_err = _enforce_project_scope(src, "move/copy")
+            if scope_err:
+                return scope_err
             if _is_path_protected(dst):
                 return {"success": False, "error": f"Destination is in a protected path: {destination}"}
             scope_err = _enforce_project_scope(dst, "move/copy")
             if scope_err:
                 return scope_err
+            # ``shutil.copy2`` follows symlinks by default and copies the
+            # *target's* contents — a swapped src symlink would otherwise let
+            # us copy ``/etc/passwd`` into the project. Refuse symlink leaves
+            # on either side.
+            symlink_err = _reject_symlink_leaf(src, "copy from") or _reject_symlink_leaf(dst, "copy to")
+            if symlink_err:
+                return symlink_err
 
             if dst.exists() and not overwrite:
                 return {
@@ -929,15 +1119,14 @@ class DeleteFileTool(Tool):
         "Delete a file or empty directory. Set recursive=true to delete a directory and all "
         "its contents. Protected system and home paths are always refused."
     )
-    category = "fs"
+    category = "filesystem"
     parameters_model = DeleteFileParams
     requires_confirmation = True
 
-    async def execute(self, path: str, recursive: bool = False) -> Dict[str, Any]:
-        import shutil as _shutil
+    async def execute(self, path: str, recursive: bool = False) -> dict[str, Any]:
 
         try:
-            target = Path(path)
+            target = Path(os.path.expanduser(path))
 
             if not target.exists():
                 return {"success": False, "error": f"Path does not exist: {path}"}
@@ -947,12 +1136,25 @@ class DeleteFileTool(Tool):
             scope_err = _enforce_project_scope(target, "delete")
             if scope_err:
                 return scope_err
+            # Refuse a symlink leaf. ``Path.unlink`` removes the link itself
+            # (safe), but ``shutil.rmtree`` on a symlinked directory can walk
+            # into the link target on some platforms — and either way we'd
+            # rather not delete-via-symlink at all when the link could have
+            # been swapped between the protection check and now.
+            symlink_err = _reject_symlink_leaf(target, "delete")
+            if symlink_err:
+                return symlink_err
 
             # Backup file before deletion for undo support
             if target.is_file():
                 backup_store.backup_file(str(target), "delete")
 
             def _delete():
+                # Re-check symlink right before deletion to guard against
+                # a TOCTOU swap between the lstat check and the unlink/rmtree.
+                symlink_err2 = _reject_symlink_leaf(target, "delete")
+                if symlink_err2:
+                    raise OSError("Path was replaced by a symlink after validation")
                 if target.is_dir():
                     if recursive:
                         _shutil.rmtree(str(target))
@@ -991,13 +1193,13 @@ class CreateDirectoryTool(Tool):
         "Create a directory (and any missing parent directories by default). "
         "Succeeds silently if the directory already exists."
     )
-    category = "fs"
+    category = "filesystem"
     parameters_model = CreateDirectoryParams
     requires_confirmation = True
 
-    async def execute(self, path: str, parents: bool = True) -> Dict[str, Any]:
+    async def execute(self, path: str, parents: bool = True) -> dict[str, Any]:
         try:
-            target = Path(path)
+            target = Path(os.path.expanduser(path))
 
             if _is_path_protected(target):
                 return {"success": False, "error": f"Refusing to create directory in protected path: {path}"}
@@ -1032,11 +1234,11 @@ class FileStatTool(Tool):
 
     name = "file_stat"
     description = "Get detailed file metadata: size, permissions, timestamps, type, owner"
-    category = "fs"
+    category = "filesystem"
     parameters_model = FileStatParams
     is_read_only = True
 
-    async def execute(self, path: str) -> Dict[str, Any]:
+    async def execute(self, path: str) -> dict[str, Any]:
         try:
             target = Path(path).expanduser()
             if not target.exists():
@@ -1071,11 +1273,11 @@ class FileChmodTool(Tool):
 
     name = "file_chmod"
     description = "Change file or directory permissions using octal mode (e.g. '755', '644')"
-    category = "fs"
+    category = "filesystem"
     parameters_model = FileChmodParams
     requires_confirmation = True
 
-    async def execute(self, path: str, mode: str) -> Dict[str, Any]:
+    async def execute(self, path: str, mode: str) -> dict[str, Any]:
         try:
             target = Path(path).expanduser()
             if not target.exists():
@@ -1103,12 +1305,18 @@ class FileChownTool(Tool):
     """Change file ownership (requires appropriate privileges)."""
 
     name = "file_chown"
-    description = "Change file or directory owner and/or group. Typically requires root/sudo."
-    category = "fs"
+    description = "Change file or directory owner and/or group. Typically requires root/sudo. POSIX only."
+    category = "filesystem"
     parameters_model = FileChownParams
     requires_confirmation = True
 
-    async def execute(self, path: str, owner: Optional[str] = None, group: Optional[str] = None) -> Dict[str, Any]:
+    async def execute(self, path: str, owner: Optional[str] = None, group: Optional[str] = None) -> dict[str, Any]:
+        if sys.platform == "win32":
+            return {
+                "success": False,
+                "error": "file_chown is not supported on Windows.",
+                "error_code": "unsupported_platform",
+            }
         try:
             if not owner and not group:
                 return {"success": False, "error": "At least one of 'owner' or 'group' must be specified"}
@@ -1128,7 +1336,6 @@ class FileChownTool(Tool):
                 uid = pwd.getpwnam(owner).pw_uid
             if group and gid == -1:
                 gid = grp.getgrnam(group).gr_gid
-            import os
             os.chown(str(target.resolve()), uid if owner else -1, gid if group else -1)
             return {"success": True, "path": str(target.resolve()), "owner": owner, "group": group}
         except PermissionError:
@@ -1146,11 +1353,11 @@ class FileReadlinkTool(Tool):
 
     name = "file_readlink"
     description = "Read the target path of a symbolic link"
-    category = "fs"
+    category = "filesystem"
     parameters_model = FileReadlinkParams
     is_read_only = True
 
-    async def execute(self, path: str) -> Dict[str, Any]:
+    async def execute(self, path: str) -> dict[str, Any]:
         try:
             target = Path(path).expanduser()
             if not target.exists():

@@ -78,14 +78,14 @@ export function ReasoningMenu({current, onPick, onClose, maxWidth}: ReasoningMen
         return (
           <Box key={opt.value}>
             <Text color={selected ? theme.accent : theme.faint}>{mark}</Text>
-            <Text
-              bold={selected}
-              color={selected ? "black" : theme.info}
-              backgroundColor={selected ? theme.accent : undefined}
-            >
-              {" "}
-              {opt.value.padEnd(labelW - 1)}
-            </Text>
+              <Text
+                bold={selected}
+                color={selected ? theme.bg : theme.info}
+                backgroundColor={selected ? theme.accent : undefined}
+              >
+                {" "}
+                {opt.value.padEnd(labelW - 1)}
+              </Text>
             <Text color={selected ? theme.textSoft : theme.muted}>
               {" "}
               {opt.desc}

@@ -14,6 +14,10 @@ import {
 } from "./agentClientListeners.js";
 import {appendCapped} from "./timelineAppend.js";
 import type {SessionState, TimelineItem} from "./agentStateTypes.js";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as os from "node:os";
+import {BEL, ESC} from "../lib/hyperlink.js";
 
 export type {SessionState, TimelineItem} from "./agentStateTypes.js";
 
@@ -32,6 +36,8 @@ const INITIAL: SessionState = {
   ctxLimit: 0,
   costUsd: 0,
   budgetUsd: 0,
+  promptTokens: 0,
+  completionTokens: 0,
   availableModels: null,
   agents: {},
   agentsFinishedAt: {},
@@ -48,6 +54,10 @@ export interface UseAgentResult {
   modelMenuOpen: boolean;
   /** When true, the reasoning effort picker is open. */
   reasoningMenuOpen: boolean;
+  /** When true, the transcript search overlay is open. */
+  searchOpen: boolean;
+  /** Current search filter string for the transcript search overlay. */
+  searchFilter: string;
   actions: {
     send: (text: string) => void;
     cancel: () => void;
@@ -56,6 +66,8 @@ export interface UseAgentResult {
     closeHelpMenu: () => void;
     closeModelMenu: () => void;
     closeReasoningMenu: () => void;
+    closeSearch: () => void;
+    setSearchFilter: (f: string) => void;
     toggleVerbose: () => void;
     revealReasoning: () => void;
   };
@@ -68,6 +80,8 @@ export function useAgent(opts: {python?: string; cwd?: string} = {}): UseAgentRe
   const [helpMenuOpen, setHelpMenuOpen] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [reasoningMenuOpen, setReasoningMenuOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchFilter, setSearchFilter] = useState("");
 
   // Mirror of the latest session state, kept on a ref so memoised actions can
   // read fresh values without re-creating their closures on every render. The
@@ -92,6 +106,10 @@ export function useAgent(opts: {python?: string; cwd?: string} = {}): UseAgentRe
   const statusThrottleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
+  const exitArmedRef = useRef(false);
+  const exitArmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const timelineRef = useRef<TimelineItem[]>([]);
+  timelineRef.current = timeline;
 
   // Monotonic id generator shared across event handlers AND the synchronous
   // actions below. Kept on a ref so it survives re-renders.
@@ -151,6 +169,16 @@ export function useAgent(opts: {python?: string; cwd?: string} = {}): UseAgentRe
       const closeHelpMenu = () => setHelpMenuOpen(false);
       const closeModelMenu = () => setModelMenuOpen(false);
       const closeReasoningMenu = () => setReasoningMenuOpen(false);
+      const closeSearch = () => { setSearchOpen(false); setSearchFilter(""); };
+      const setSearchFilterAction = (f: string) => setSearchFilter(f);
+
+      const armExit = () => {
+        if (exitArmTimerRef.current) clearTimeout(exitArmTimerRef.current);
+        exitArmedRef.current = true;
+        exitArmTimerRef.current = setTimeout(() => {
+          exitArmedRef.current = false;
+        }, 5000);
+      };
 
       const clearContext = () => {
         setHelpMenuOpen(false);
@@ -259,6 +287,14 @@ export function useAgent(opts: {python?: string; cwd?: string} = {}): UseAgentRe
               refreshAgents,
               showModelMenu: () => setModelMenuOpen(true),
               showReasoningMenu: () => setReasoningMenuOpen(true),
+              showSearch: () => { setSearchOpen(true); setSearchFilter(""); },
+              closeSearch,
+              setSearchFilterAction,
+              armExit,
+            }, {
+              exitArmedRef,
+              exitArmTimerRef,
+              timelineRef,
             });
             return;
           }
@@ -286,6 +322,8 @@ export function useAgent(opts: {python?: string; cwd?: string} = {}): UseAgentRe
         closeHelpMenu,
         closeModelMenu,
         closeReasoningMenu,
+        closeSearch,
+        setSearchFilter: setSearchFilterAction,
         toggleVerbose,
         revealReasoning,
       };
@@ -294,7 +332,7 @@ export function useAgent(opts: {python?: string; cwd?: string} = {}): UseAgentRe
     [],
   );
 
-  return {session, timeline, helpMenuOpen, modelMenuOpen, reasoningMenuOpen, actions};
+  return {session, timeline, helpMenuOpen, modelMenuOpen, reasoningMenuOpen, searchOpen, searchFilter, actions};
 }
 
 interface SlashHandlers {
@@ -305,6 +343,16 @@ interface SlashHandlers {
   refreshAgents: () => void;
   showModelMenu: () => void;
   showReasoningMenu: () => void;
+  showSearch: () => void;
+  closeSearch: () => void;
+  setSearchFilterAction: (f: string) => void;
+  armExit: () => void;
+}
+
+interface SlashRefs {
+  exitArmedRef: React.MutableRefObject<boolean>;
+  exitArmTimerRef: React.MutableRefObject<ReturnType<typeof setTimeout> | null>;
+  timelineRef: React.MutableRefObject<TimelineItem[]>;
 }
 
 function handleSlashCommand(
@@ -313,9 +361,11 @@ function handleSlashCommand(
   push: (item: TimelineItem) => void,
   nextId: () => string,
   handlers: SlashHandlers,
+  refs: SlashRefs,
 ): void {
-  const {showHelp, clearContext, toggleVerbose, revealReasoning, refreshAgents, showModelMenu, showReasoningMenu} =
+  const {showHelp, clearContext, toggleVerbose, revealReasoning, refreshAgents, showModelMenu, showReasoningMenu, showSearch, closeSearch, setSearchFilterAction, armExit} =
     handlers;
+  const {exitArmedRef, exitArmTimerRef, timelineRef} = refs;
   const [head, ...rest] = raw.slice(1).split(/\s+/);
   const arg = rest.join(" ").trim();
   const cmd = head.toLowerCase();
@@ -445,7 +495,60 @@ function handleSlashCommand(
       return;
     case "exit":
     case "quit":
-      client.exit();
+      if (exitArmedRef.current) {
+        if (exitArmTimerRef.current) clearTimeout(exitArmTimerRef.current);
+        exitArmedRef.current = false;
+        client.exit();
+      } else {
+        armExit();
+        toast("warning", "Type /exit again to confirm shutdown (resets in 5s)");
+      }
+      return;
+    case "export":
+    case "save": {
+      const defaultName = `coderAI-session-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}.md`;
+      const target = arg || path.join(os.homedir(), "Desktop", defaultName);
+      const content = timelineToMarkdown(timelineRef.current);
+      try {
+        fs.mkdirSync(path.dirname(target), {recursive: true});
+        fs.writeFileSync(target, content, "utf8");
+        toast("success", `Exported to ${target}`);
+      } catch (e: any) {
+        toast("warning", `Export failed: ${e.message}`);
+      }
+      return;
+    }
+    case "search":
+    case "find":
+      if (!arg) {
+        showSearch();
+      } else {
+        setSearchFilterAction(arg);
+        showSearch();
+      }
+      return;
+    case "copy": {
+      const lastAsst = findLastAssistant(timelineRef.current);
+      if (!lastAsst) {
+        toast("warning", "No assistant response to copy");
+      } else {
+        copyToClipboard(lastAsst);
+        toast("success", "Copied last response to clipboard");
+      }
+      return;
+    }
+    case "theme": {
+      const themeName = arg.toLowerCase();
+      if (themeName === "dark" || themeName === "light") {
+        process.env.CODERAI_THEME = themeName;
+        toast("success", `Theme set to ${themeName}. Restart chat to apply.`);
+      } else {
+        toast("warning", "Usage: /theme <dark|light>  (requires restart)");
+      }
+      return;
+    }
+    case "undo":
+      client.sendMessage(raw);
       return;
     default:
       toast(
@@ -453,4 +556,53 @@ function handleSlashCommand(
         `Unknown command: /${head} · press / or type /help to open the menu`,
       );
   }
+}
+
+function timelineToMarkdown(items: TimelineItem[]): string {
+  let md = "# CoderAI Session\n\n";
+  md += `Exported: ${new Date().toISOString()}\n\n---\n\n`;
+  for (const item of items) {
+    switch (item.kind) {
+      case "user":
+        md += `**You:**\n\n${item.text}\n\n---\n\n`;
+        break;
+      case "assistant":
+        md += `**Assistant:**\n\n${item.content}\n`;
+        if (item.reasoning.trim()) {
+          md += `\n<details><summary>Reasoning (${item.reasoning.length.toLocaleString()} chars)</summary>\n\n${item.reasoning.trim()}\n\n</details>\n`;
+        }
+        md += "\n---\n\n";
+        break;
+      case "tool":
+        md += `**Tool:** \`${item.name}\` — ${item.ok ? "✓" : item.ok === false ? "✗" : "…"}\n\n`;
+        if (item.preview) md += `> ${item.preview.replace(/\n/g, "\n> ")}\n`;
+        if (item.error) md += `> ${item.error}\n`;
+        md += "\n---\n\n";
+        break;
+      case "diff":
+        md += `**Diff:** \`${item.path}\`\n\n\`\`\`diff\n${item.diff}\n\`\`\`\n\n---\n\n`;
+        break;
+      case "error":
+        md += `**Error:** ${item.message}\n`;
+        if (item.details) md += `\n\`\`\`\n${item.details}\n\`\`\`\n`;
+        md += "\n---\n\n";
+        break;
+    }
+  }
+  return md;
+}
+
+function findLastAssistant(items: TimelineItem[]): string | null {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i];
+    if (it.kind === "assistant" && it.content.trim()) {
+      return it.content.trim();
+    }
+  }
+  return null;
+}
+
+function copyToClipboard(text: string): void {
+  const base64 = Buffer.from(text, "utf8").toString("base64");
+  process.stdout.write(`${ESC}]52;c;${base64}${BEL}`);
 }

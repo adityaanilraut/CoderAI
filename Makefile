@@ -1,6 +1,6 @@
 # Makefile for CoderAI
 
-.PHONY: help install dev test clean run lint format setup ui-install ui-dev ui-build ui-compile ui-compile-all ui-typecheck ui
+.PHONY: help install dev test clean run lint format setup ui-install ui-dev ui-build ui-compile ui-compile-all ui-typecheck ui install-dev quickstart dist
 
 help:
 	@echo "CoderAI Development Commands"
@@ -57,7 +57,7 @@ typecheck:
 	python3 -m mypy coderAI/
 
 format:
-	black coderAI/
+	python3 -m black coderAI/
 	@echo "Code formatted with black"
 
 setup:

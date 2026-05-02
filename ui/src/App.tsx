@@ -17,6 +17,7 @@ import { ReasoningMenu } from "./components/ReasoningMenu.js";
 import { ApprovalPrompt } from "./components/ApprovalPrompt.js";
 import { theme } from "./theme.js";
 import { isTimelineItemFrozen } from "./lib/timelineItemFrozen.js";
+import { SearchOverlay } from "./components/SearchOverlay.js";
 import type { TimelineItem } from "./hooks/useAgent.js";
 
 export interface AppProps {
@@ -32,7 +33,7 @@ const CTRL_C_WINDOW_MS = 1500;
 const MAX_LIVE_ITEMS = 12;
 
 export function App({ python, cwd }: AppProps) {
-  const { session, timeline, actions, helpMenuOpen, modelMenuOpen, reasoningMenuOpen } = useAgent({ python, cwd });
+  const { session, timeline, actions, helpMenuOpen, modelMenuOpen, reasoningMenuOpen, searchOpen, searchFilter } = useAgent({ python, cwd });
   const { exit } = useApp();
   const { stdout } = useStdout();
   const columns = stdout?.columns ?? 100;
@@ -60,9 +61,10 @@ export function App({ python, cwd }: AppProps) {
     };
   }, [exitArmed]);
 
-  const { lastErrorId, pendingApprovalId } = useMemo(() => {
+  const { lastErrorId, pendingApprovalId, lastAssistantId } = useMemo(() => {
     let errId: string | null = null;
     let apprId: string | null = null;
+    let asstId: string | null = null;
     for (let i = timeline.length - 1; i >= 0; i--) {
       const it = timeline[i];
       if (!errId && it.kind === "error") errId = it.id;
@@ -73,9 +75,10 @@ export function App({ python, cwd }: AppProps) {
       ) {
         apprId = it.id;
       }
-      if (errId && apprId) break;
+      if (!asstId && it.kind === "assistant") asstId = it.id;
+      if (errId && apprId && asstId) break;
     }
-    return { lastErrorId: errId, pendingApprovalId: apprId };
+    return { lastErrorId: errId, pendingApprovalId: apprId, lastAssistantId: asstId };
   }, [timeline]);
   const approvalPending = pendingApprovalId !== null;
   const promptBusy =
@@ -85,6 +88,7 @@ export function App({ python, cwd }: AppProps) {
     helpMenuOpen ||
     modelMenuOpen ||
     reasoningMenuOpen ||
+    searchOpen ||
     approvalPending;
 
   // Ref so renderItem can read the latest value without being in its dep array.
@@ -100,10 +104,10 @@ export function App({ python, cwd }: AppProps) {
         return;
       }
 
-      if (key.ctrl && input === "r") {
-        actions.revealReasoning();
-        return;
-      }
+      // Ctrl+R is now owned by the Prompt (reverse-i-search). Reveal
+      // reasoning still has the /think slash command and the inline
+      // "▸ reasoning" hint surfaced under the latest assistant turn —
+      // no keystroke is needed.
 
       if (key.ctrl && input === "c") {
         const now = Date.now();
@@ -118,7 +122,7 @@ export function App({ python, cwd }: AppProps) {
         if (session.thinking || session.streaming) actions.cancel();
       }
     },
-    { isActive: !helpMenuOpen && !modelMenuOpen && !reasoningMenuOpen },
+    { isActive: !helpMenuOpen && !modelMenuOpen && !reasoningMenuOpen && !searchOpen },
   );
 
   // Split timeline into a frozen prefix (handed to Static — printed once, never
@@ -145,10 +149,14 @@ export function App({ python, cwd }: AppProps) {
     if (frozenCount === 0) return;
 
     // Ink `Static` prints completed rows once and never reflows them, so a
-    // terminal resize can leave the old layout on screen. Clear the screen
-    // and bump the epoch — that re-bakes a fresh Static block from current
-    // widths and keeps long sessions performant after multiple resizes.
-    stdout?.write("\u001b[2J\u001b[H");
+    // terminal resize can leave the old layout on screen. Bump the epoch to
+    // re-bake a fresh Static block from current widths.
+    //
+    // ESC[J clears from cursor to end of screen. We used to send ESC[2J
+    // ESC[H (full clear + home cursor), which also wiped scrollback — users
+    // often want prior session output preserved (long tracebacks, commands
+    // they ran), so the gentler form keeps history above the cursor intact.
+    stdout?.write("\u001b[J");
     setStaticTimelineEpoch((e) => e + 1);
   }, [columns, frozenCount, stdout]);
 
@@ -158,31 +166,56 @@ export function App({ python, cwd }: AppProps) {
   );
   // Cap the live region. Ink clears+redraws every live row on each tick
   // (~4-16fps); a large live region causes the ANSI cursor math to scroll
-  // to the top. Older items live in <Static> or have scrolled off-screen.
+  // to the top.
+  //
+  // Subtlety: a naive slice(-MAX_LIVE_ITEMS) drops the oldest live items —
+  // which can include *still-running* tool calls during a parallel burst
+  // (e.g. an assistant spawning 15 read_file calls at once). Those tools
+  // stop receiving their phase-update render until the burst dies down.
+  //
+  // So we cap at MAX_LIVE_ITEMS *or* the count needed to retain every
+  // non-frozen item, whichever is larger. This way running work is never
+  // hidden; only frozen-but-not-yet-Static-promoted items are evicted.
   const liveTimeline = useMemo(() => {
     const all = timeline.slice(frozenCount);
-    return all.length > MAX_LIVE_ITEMS ? all.slice(-MAX_LIVE_ITEMS) : all;
+    if (all.length <= MAX_LIVE_ITEMS) return all;
+
+    let nonFrozenTotal = 0;
+    for (const it of all) if (!isTimelineItemFrozen(it)) nonFrozenTotal++;
+
+    let kept = 0;
+    let nonFrozenSeen = 0;
+    for (let i = all.length - 1; i >= 0; i--) {
+      kept++;
+      if (!isTimelineItemFrozen(all[i])) nonFrozenSeen++;
+      if (kept >= MAX_LIVE_ITEMS && nonFrozenSeen >= nonFrozenTotal) {
+        return all.slice(i);
+      }
+    }
+    return all;
   }, [timeline, frozenCount]);
 
   const renderItem = useCallback(
     (item: TimelineItem) => {
       switch (item.kind) {
         case "user":
-          return <UserBubble key={item.id} text={item.text} />;
+          return <UserBubble key={`user-${item.id}`} text={item.text} />;
         case "assistant":
           return (
             <Assistant
-              key={item.id}
+              key={`assistant-${item.id}`}
               content={item.content}
               reasoning={item.reasoning}
               streaming={item.streaming}
               showReasoning={session.verbose}
+              isLatest={item.id === lastAssistantId && !promptBusyRef.current}
+              cwd={session.cwd}
             />
           );
         case "tool":
           return (
             <ToolCard
-              key={item.id}
+              key={`tool-${item.id}`}
               name={item.name}
               category={item.category}
               args={item.args}
@@ -197,7 +230,7 @@ export function App({ python, cwd }: AppProps) {
         case "diff":
           return (
             <Diff
-              key={item.id}
+              key={`diff-${item.id}`}
               path={item.path}
               diff={item.diff}
               maxLineWidth={columns - 16}
@@ -207,7 +240,7 @@ export function App({ python, cwd }: AppProps) {
         case "error":
           return (
             <ErrorPanel
-              key={item.id}
+              key={`error-${item.id}`}
               category={item.category}
               message={item.message}
               hint={item.hint}
@@ -222,12 +255,12 @@ export function App({ python, cwd }: AppProps) {
           );
         case "toast":
           return (
-            <Toast key={item.id} level={item.level} message={item.message} />
+            <Toast key={`toast-${item.id}`} level={item.level} message={item.message} />
           );
         case "approval":
           return (
             <ApprovalPrompt
-              key={item.id}
+              key={`approval-${item.id}`}
               tool={item.tool}
               args={item.args}
               risk={item.risk}
@@ -238,7 +271,7 @@ export function App({ python, cwd }: AppProps) {
           );
       }
     },
-    [lastErrorId, pendingApprovalId, helpMenuOpen, approvalPending, columns, actions, session.verbose],
+    [lastErrorId, pendingApprovalId, lastAssistantId, helpMenuOpen, approvalPending, columns, actions, session.verbose, session.cwd],
   );
 
   const empty = timeline.length === 0;
@@ -304,6 +337,16 @@ export function App({ python, cwd }: AppProps) {
             }}
           />
         ) : null}
+
+        {searchOpen ? (
+          <SearchOverlay
+            timeline={timeline}
+            filter={searchFilter}
+            onFilterChange={actions.setSearchFilter}
+            onClose={actions.closeSearch}
+            maxWidth={columns}
+          />
+        ) : null}
       </Box>
 
       <AgentTree
@@ -316,6 +359,7 @@ export function App({ python, cwd }: AppProps) {
         <Prompt
           onSubmit={actions.send}
           disabled={promptBusy}
+          cwd={session.cwd}
           placeholder={
             helpMenuOpen
               ? "Esc closes command menu"
@@ -384,10 +428,33 @@ function WelcomeHero({
       {cwd && narrow ? (
         <Text color={theme.muted}>{cwd}</Text>
       ) : null}
-      <Text color={theme.faint}>/help for commands</Text>
+      <Box flexDirection="column" marginTop={1}>
+        <Text color={theme.textSoft}>Try:</Text>
+        {SUGGESTED_PROMPTS.map((p, i) => (
+          <Text key={i} color={theme.muted}>
+            {"  "}
+            <Text color={theme.faint}>{theme.glyph.arrowRun}</Text> {p}
+          </Text>
+        ))}
+        <Box marginTop={1}>
+          <Text color={theme.muted}>
+            Type <Text color={theme.accent} bold>/</Text> to browse commands{" "}
+            <Text color={theme.faint}>{theme.glyph.dot}</Text>{" "}
+            <Text color={theme.accent} bold>/help</Text> for shortcuts
+          </Text>
+        </Box>
+      </Box>
     </Box>
   );
 }
+
+/** Suggested first prompts shown on a fresh session. Kept short so a 72-col
+ *  terminal fits each on one line. */
+const SUGGESTED_PROMPTS = [
+  "explain what this codebase does",
+  "find and fix bugs in the recently changed files",
+  "add a test for <file>",
+];
 
 /**
  * Pick a short label describing what the agent is currently doing, for the

@@ -11,11 +11,9 @@ Index state lives under ``.coderAI/index/``:
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
-import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -77,11 +75,12 @@ class CodeIndexer:
         chroma_path = str(self._index_dir / "vectordb")
         client = chromadb.PersistentClient(path=chroma_path)
 
-        # Remove old collection so we can re-create with the right embedding dims.
-        try:
-            client.delete_collection(_COLLECTION_NAME)
-        except Exception:
-            pass
+        # Only delete and recreate collection for full re-index.
+        if not skip_if_unchanged:
+            try:
+                client.delete_collection(_COLLECTION_NAME)
+            except Exception:
+                pass
 
         self._collection = client.get_or_create_collection(
             name=_COLLECTION_NAME,
@@ -106,16 +105,28 @@ class CodeIndexer:
                     if should_index(fp):
                         files.append(fp)
 
-        # Filter unchanged
+        # Filter unchanged; separate genuinely new files from hash-changed ones
+        # so the returned stats are no longer misleading.
         to_index: list[Path] = []
         unchanged = 0
+        added = 0
+        updated = 0
         for fp in files:
             rel = str(fp.relative_to(self._root))
             fhash = _file_hash(fp)
-            if skip_if_unchanged and self._manifest.get(rel) == fhash:
-                unchanged += 1
-                continue
+            if skip_if_unchanged:
+                existing = self._manifest.get(rel)
+                if existing == fhash:
+                    unchanged += 1
+                    continue
+                if existing is None:
+                    added += 1
+                else:
+                    updated += 1
             to_index.append(fp)
+
+        if not skip_if_unchanged:
+            added = len(to_index)
 
         logger.info(
             "Indexing %d files (%d unchanged, %d total scanned)",
@@ -136,7 +147,7 @@ class CodeIndexer:
             self._save_manifest()
 
         if not to_index:
-            return {"added": 0, "removed": removed, "updated": 0, "unchanged": unchanged}
+            return {"added": added, "removed": removed, "updated": updated, "unchanged": unchanged}
 
         # Chunk
         all_chunks: list = []
@@ -149,7 +160,7 @@ class CodeIndexer:
                 file_hashes[rel] = result.file_hash
 
         if not all_chunks:
-            return {"added": 0, "removed": removed, "updated": 0, "unchanged": unchanged}
+            return {"added": added, "removed": removed, "updated": updated, "unchanged": unchanged}
 
         # Embed in batches
         ids: list[str] = []
@@ -192,9 +203,9 @@ class CodeIndexer:
         self._save_manifest()
 
         return {
-            "added": len(file_hashes),
+            "added": added,
             "removed": removed,
-            "updated": 0,
+            "updated": updated,
             "unchanged": unchanged,
         }
 
@@ -223,14 +234,8 @@ class CodeIndexer:
             self._connect()
 
         query_vec = await self._embed.embed([query])
-        where = None
-        if file_filter:
-            import fnmatch
-
-            # ChromaDB doesn't support glob filters natively, so we overfetch
-            # and filter client-side.
-            pass
-
+        # ChromaDB doesn't support glob filters natively, so when file_filter is
+        # set we overfetch and filter client-side below via _match_glob.
         results = self._collection.query(
             query_embeddings=query_vec,
             n_results=min(top_k * 2 if file_filter else top_k, 50),
@@ -342,7 +347,6 @@ def _file_hash(path: Path) -> str:
 
 def _match_glob(file_path: str, pattern: str) -> bool:
     """Simple glob match — supports ``*.py`` and ``**/*.py``."""
-    import fnmatch
     import re
 
     # Convert ** to a catch-all

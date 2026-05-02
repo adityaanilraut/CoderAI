@@ -2,7 +2,10 @@
 
 import asyncio
 import inspect
-from typing import Any, Callable, Dict, List
+import logging
+from typing import Any, Callable, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 class EventEmitter:
@@ -36,7 +39,7 @@ class EventEmitter:
         if not listeners:
             del self._listeners[event]
 
-    def remove_all_listeners(self, event: str = None) -> None:
+    def remove_all_listeners(self, event: Optional[str] = None) -> None:
         """Drop all listeners for *event*, or every event if *event* is None.
 
         Use this to prevent stale listeners from leaking across session or
@@ -65,33 +68,26 @@ class EventEmitter:
                         loop = asyncio.get_running_loop()
                         task = loop.create_task(callback(*args, **kwargs))
 
-                        # Log exceptions from fire-and-forget tasks so they
-                        # don't vanish silently.
                         def _on_task_done(t, _event=event, _cb=callback):
                             if t.cancelled():
                                 return
                             exc = t.exception()
                             if exc is not None:
-                                import logging
-                                _logger = logging.getLogger(__name__)
-                                _logger.error(
+                                logger.error(
                                     "Unhandled error in async listener for '%s' (%s): %s",
                                     _event, _cb, exc,
                                 )
+
                         task.add_done_callback(_on_task_done)
                     except RuntimeError:
                         # No running event loop — cannot dispatch async listener
-                        import logging
-                        _logger = logging.getLogger(__name__)
-                        _logger.debug(
+                        logger.debug(
                             "Skipping async listener for '%s' — no running event loop", event
                         )
                 else:
                     callback(*args, **kwargs)
-            except Exception as e:
-                import logging
-                logger = logging.getLogger(__name__)
-                logger.error(f"Error in event listener for '{event}': {e}")
+            except Exception:
+                logger.error("Error in event listener for '%s'", event, exc_info=True)
 
 
 # Global event emitter instance for app-wide events

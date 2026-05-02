@@ -10,113 +10,82 @@ from coderAI.context_controller import ContextController
 
 
 class TestTransientErrorDetection:
-    """Tests for Agent._is_transient_error."""
-
-    def _make_agent(self):
-        """Create an Agent with minimal mocking."""
-        with patch("coderAI.agent.config_manager") as cm:
-            from coderAI.config import Config
-
-            cm.load.return_value = Config()
-            cm.load_project_config.return_value = Config()
-            from coderAI.agent import Agent
-
-            agent = Agent.__new__(Agent)
-            agent._context_controller = ContextController(cm.load.return_value, MagicMock())
-            return agent
+    """Tests for the transient-error classifier in error_policy."""
 
     def test_timeout_is_transient(self):
-        agent = self._make_agent()
-        assert agent._is_transient_error(Exception("Request timed out")) is True
+        from coderAI.error_policy import is_transient_error
+        assert is_transient_error(Exception("Request timed out")) is True
 
     def test_rate_limit_is_transient(self):
-        agent = self._make_agent()
-        assert agent._is_transient_error(Exception("Rate limit exceeded (429)")) is True
+        from coderAI.error_policy import is_transient_error
+        assert is_transient_error(Exception("Rate limit exceeded (429)")) is True
 
     def test_server_error_is_transient(self):
-        agent = self._make_agent()
-        assert agent._is_transient_error(Exception("502 Bad Gateway")) is True
+        from coderAI.error_policy import is_transient_error
+        assert is_transient_error(Exception("502 Bad Gateway")) is True
 
     def test_auth_error_is_not_transient(self):
-        agent = self._make_agent()
-        assert agent._is_transient_error(Exception("Invalid API key")) is False
+        from coderAI.error_policy import is_transient_error
+        assert is_transient_error(Exception("Invalid API key")) is False
 
     def test_generic_error_is_not_transient(self):
-        agent = self._make_agent()
-        assert agent._is_transient_error(ValueError("bad value")) is False
+        from coderAI.error_policy import is_transient_error
+        assert is_transient_error(ValueError("bad value")) is False
 
     def test_connection_reset_is_transient(self):
-        agent = self._make_agent()
-        assert agent._is_transient_error(Exception("Connection reset by peer")) is True
+        from coderAI.error_policy import is_transient_error
+        assert is_transient_error(Exception("Connection reset by peer")) is True
 
 
 class TestSummarizeToolResult:
-    """Tests for Agent._summarize_tool_result."""
+    """Tests for ContextController.summarize_tool_result."""
 
-    def _make_agent(self):
-        with patch("coderAI.agent.config_manager") as cm:
-            from coderAI.config import Config
-
-            cfg = Config(max_tool_output=200)
-            cm.load.return_value = cfg
-            cm.load_project_config.return_value = cfg
-            from coderAI.agent import Agent
-
-            agent = Agent.__new__(Agent)
-            agent.config = cfg
-            agent._context_controller = ContextController(cfg, MagicMock())
-            return agent
+    def _make_controller(self):
+        from coderAI.config import Config
+        cfg = Config(max_tool_output=200)
+        return ContextController(cfg, MagicMock())
 
     def test_small_result_unchanged(self):
-        agent = self._make_agent()
+        ctrl = self._make_controller()
         result = {"success": True, "data": "short"}
-        assert agent._summarize_tool_result(result) == result
+        assert ctrl.summarize_tool_result(result) == result
 
     def test_large_string_truncated(self):
-        agent = self._make_agent()
+        ctrl = self._make_controller()
         result = {"success": True, "content": "x" * 5000}
-        summarized = agent._summarize_tool_result(result)
+        summarized = ctrl.summarize_tool_result(result)
         assert "truncated" in summarized["content"]
         assert len(summarized["content"]) < 5000
 
     def test_large_list_truncated(self):
-        agent = self._make_agent()
+        ctrl = self._make_controller()
         result = {"success": True, "items": list(range(100))}
-        summarized = agent._summarize_tool_result(result)
+        summarized = ctrl.summarize_tool_result(result)
         assert len(summarized["items"]) == 51
         assert "_note" in summarized["items"][-1]
 
 
 class TestTruncateMessages:
-    """Tests for Agent._manage_context_window."""
+    """Tests for ContextController.manage_context_window."""
 
-    def _make_agent(self):
-        with patch("coderAI.agent.config_manager") as cm:
-            from coderAI.config import Config
+    def _make_controller(self):
+        from coderAI.config import Config
 
-            cfg = Config(context_window=500)  # small window
-            cm.load.return_value = cfg
-            cm.load_project_config.return_value = cfg
-            from coderAI.agent import Agent
-
-            agent = Agent.__new__(Agent)
-            agent.config = cfg
-            # Mock provider.count_tokens as simple char/4
-            agent.provider = MagicMock()
-            agent.provider.count_tokens = lambda text: len(text) // 4
-            agent.provider.chat = AsyncMock(return_value={"choices": [{"message": {"content": "summary"}}]})
-            agent._context_controller = ContextController(cfg, agent.provider)
-            return agent
+        cfg = Config(context_window=500)  # small window
+        provider = MagicMock()
+        provider.count_tokens = lambda text: len(text) // 4
+        provider.chat = AsyncMock(return_value={"choices": [{"message": {"content": "summary"}}]})
+        return ContextController(cfg, provider)
 
     def test_preserves_system_messages(self):
-        agent = self._make_agent()
+        ctrl = self._make_controller()
         messages = [
             {"role": "system", "content": "You are a bot."},
             {"role": "user", "content": "x" * 2000},
             {"role": "assistant", "content": "y" * 2000},
             {"role": "user", "content": "recent question"},
         ]
-        result = asyncio.run(agent._manage_context_window(messages))
+        result = asyncio.run(ctrl.manage_context_window(messages))
         # System message must always be present
         system_msgs = [m for m in result if m["role"] == "system"]
         assert len(system_msgs) >= 1
@@ -230,6 +199,82 @@ class TestAgentPersonaSwitching:
         assert "## Strategy for Common Tasks" in content
         assert "read_file" in agent.tools.tools
         assert "write_file" not in agent.tools.tools
+
+
+class TestSessionResumeAndCompaction:
+    """Tests for resumed-session model activation and durable compaction."""
+
+    def test_activate_resumed_session_model_restores_saved_model(self):
+        from coderAI.ipc.entry import _activate_resumed_session_model
+
+        restored_provider = MagicMock()
+        session = MagicMock(model="claude-sonnet-4-6")
+        agent = MagicMock()
+        agent.session = session
+        agent.model = "gpt-5.4-mini"
+        agent.provider = MagicMock()
+        agent._create_provider.return_value = restored_provider
+
+        _activate_resumed_session_model(agent, requested_model=None)
+
+        assert agent.model == "claude-sonnet-4-6"
+        assert agent.provider is restored_provider
+        assert session.model == "claude-sonnet-4-6"
+        agent.realign_provider_usage_counters.assert_called_once()
+        agent._configure_delegate_tool_context.assert_called_once()
+
+    def test_activate_resumed_session_model_honors_explicit_override(self):
+        from coderAI.ipc.entry import _activate_resumed_session_model
+
+        override_provider = MagicMock()
+        session = MagicMock(model="claude-sonnet-4-6")
+        agent = MagicMock()
+        agent.session = session
+        agent.model = "claude-sonnet-4-6"
+        agent.provider = MagicMock()
+        agent._create_provider.return_value = override_provider
+
+        _activate_resumed_session_model(agent, requested_model="gpt-5.4-mini")
+
+        assert agent.model == "gpt-5.4-mini"
+        assert agent.provider is override_provider
+        assert session.model == "gpt-5.4-mini"
+        agent.realign_provider_usage_counters.assert_called_once()
+        agent._configure_delegate_tool_context.assert_called_once()
+
+    def test_compact_context_persists_successful_compaction(self):
+        with patch("coderAI.agent.config_manager") as cm:
+            from coderAI.config import Config
+
+            cfg = Config()
+            cm.load.return_value = cfg
+            cm.load_project_config.return_value = cfg
+            from coderAI.agent import Agent
+
+            provider = MagicMock()
+            provider.count_tokens = lambda text: max(1, len(str(text)) // 4)
+            with patch.object(Agent, "_create_provider", return_value=provider):
+                agent = Agent(model="gpt-5.4-mini", streaming=False)
+
+        agent.create_session()
+        agent.session.add_message("user", "older user message")
+        agent.session.add_message("assistant", "older assistant message")
+        agent.save_session = MagicMock()
+        agent.hooks_manager.load_hooks = MagicMock(return_value=None)
+        agent.context_controller.manage_context_window = AsyncMock(
+            return_value=[
+                {
+                    "role": "system",
+                    "content": "[Prior Conversation Summary]: condensed history",
+                },
+                {"role": "user", "content": "recent question"},
+            ]
+        )
+
+        success = asyncio.run(agent.compact_context())
+
+        assert success is True
+        agent.save_session.assert_called_once()
 
 
 class TestDelegateToolContext:
@@ -438,7 +483,11 @@ class TestProcessMessageAfterCancel:
             old_info.request_cancel()
             agent.tracker_info = old_info
 
-            with patch.object(agent, "_call_llm_with_retry", new_callable=AsyncMock) as mock_llm:
+            from coderAI.agent_loop import ExecutionLoop
+
+            with patch.object(
+                ExecutionLoop, "_call_llm_with_retry", new_callable=AsyncMock
+            ) as mock_llm:
                 mock_llm.return_value = {"content": "ok", "tool_calls": None}
                 result = asyncio.run(agent.process_message("hello again"))
 

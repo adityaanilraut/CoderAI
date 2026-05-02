@@ -1,9 +1,11 @@
 """Planning tool for structured plan-and-execute workflows."""
 
 import json
+import os
+import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -13,6 +15,22 @@ from ..config import config_manager
 _PLANS_DIR = ".coderAI"
 
 
+def _atomic_write_json(filepath: Path, data: dict) -> None:
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(filepath.parent), prefix=".plan-", suffix=".json.tmp"
+    )
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, filepath)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 def _get_plan_file(project_root: str = ".") -> Path:
     plan_dir = Path(project_root).resolve() / _PLANS_DIR
     plan_dir.mkdir(parents=True, exist_ok=True)
@@ -20,7 +38,7 @@ def _get_plan_file(project_root: str = ".") -> Path:
 
 
 class PlanParams(BaseModel):
-    action: str = Field(
+    action: Literal["create", "show", "advance", "update_step", "clear"] = Field(
         ...,
         description=(
             "Action: 'create' (make a new plan), 'show' (display current plan), "
@@ -29,19 +47,19 @@ class PlanParams(BaseModel):
         ),
     )
     title: Optional[str] = Field(
-        None,
+        default=None,
         description="Plan title (required for 'create').",
     )
     steps: Optional[List[str]] = Field(
-        None,
+        default=None,
         description="List of step descriptions (required for 'create').",
     )
     step_index: Optional[int] = Field(
-        None,
+        default=None,
         description="0-based step index (for 'update_step').",
     )
     new_description: Optional[str] = Field(
-        None,
+        default=None,
         description="New description for the step (for 'update_step').",
     )
 
@@ -77,18 +95,20 @@ class CreatePlanTool(Tool):
                 if not steps or len(steps) == 0:
                     return {"success": False, "error": "steps list is required for 'create'."}
 
-                # Preflight: verify the target directory is a real project
-                from ..safeguards import project_sanity_check
-                check = project_sanity_check(config.project_root)
-                if not check["is_valid_project"]:
-                    reasons = "; ".join(check["reasons"])
+                # Verify the target directory exists and is a directory
+                from pathlib import Path
+                target = Path(config.project_root).resolve()
+                if not target.exists():
                     return {
                         "success": False,
-                        "error": (
-                            f"Cannot create plan: target directory does not "
-                            f"appear to be a valid project. {reasons}"
-                        ),
-                        "error_code": "empty_project",
+                        "error": f"Cannot create plan: directory does not exist: {target}",
+                        "error_code": "missing_directory",
+                    }
+                if not target.is_dir():
+                    return {
+                        "success": False,
+                        "error": f"Cannot create plan: path is not a directory: {target}",
+                        "error_code": "not_a_directory",
                     }
 
                 plan = {
@@ -100,8 +120,7 @@ class CreatePlanTool(Tool):
                         for i, desc in enumerate(steps)
                     ],
                 }
-                with open(plan_file, "w") as f:
-                    json.dump(plan, f, indent=2)
+                _atomic_write_json(plan_file, plan)
 
                 return {
                     "success": True,
@@ -151,8 +170,7 @@ class CreatePlanTool(Tool):
                 plan["steps"][current]["completed_at"] = datetime.now().isoformat()
                 plan["current_step"] = current + 1
 
-                with open(plan_file, "w") as f:
-                    json.dump(plan, f, indent=2)
+                _atomic_write_json(plan_file, plan)
 
                 next_step = (
                     plan["steps"][current + 1]["description"]
@@ -183,8 +201,7 @@ class CreatePlanTool(Tool):
                     return {"success": False, "error": f"Invalid step_index: {step_index}"}
 
                 plan["steps"][step_index]["description"] = new_description
-                with open(plan_file, "w") as f:
-                    json.dump(plan, f, indent=2)
+                _atomic_write_json(plan_file, plan)
 
                 return {
                     "success": True,

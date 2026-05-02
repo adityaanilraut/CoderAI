@@ -44,7 +44,10 @@ export function HelpMenu({onPick, onClose, maxWidth}: HelpMenuProps) {
         if (row) onPick(row.slash);
         return;
       }
-      if (input === "?") {
+      // `?` toggles the CLI footer ONLY when the filter is empty. Once the
+      // user is typing, `?` becomes a normal filter character so a query like
+      // "what?" doesn't silently flip footer state every other keystroke.
+      if (input === "?" && filter === "") {
         setShowFooter((v) => !v);
         return;
       }
@@ -139,14 +142,14 @@ function HelpRow({row, selected, labelW, descW}: HelpRowProps) {
   return (
     <Box>
       <Text color={selected ? theme.accent : theme.faint}>{mark}</Text>
-      <Text
-        bold={selected}
-        color={selected ? "black" : theme.info}
-        backgroundColor={selected ? theme.accent : undefined}
-      >
-        {" "}
-        {lab.padEnd(labelW - 1)}
-      </Text>
+          <Text
+                  bold={selected}
+                  color={selected ? theme.bg : theme.info}
+                  backgroundColor={selected ? theme.accent : undefined}
+                >
+                  {" "}
+                  {lab.padEnd(labelW - 1)}
+                </Text>
       <Text color={selected ? theme.textSoft : theme.muted}> {rest}</Text>
     </Box>
   );

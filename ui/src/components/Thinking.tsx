@@ -1,7 +1,7 @@
 import React, {useEffect, useState} from "react";
 import {Box, Text} from "ink";
-import Spinner from "ink-spinner";
 import {theme} from "../theme.js";
+import {QuietSpinner} from "./QuietSpinner.js";
 
 export interface ThinkingProps {
   active: boolean;
@@ -37,7 +37,7 @@ export function Thinking({active, detail}: ThinkingProps) {
   return (
     <Box paddingLeft={theme.spacing.md} marginBottom={theme.spacing.sm}>
       <Text color={theme.accent}>
-        <Spinner type="dots" />
+        <QuietSpinner />
       </Text>
       <Text color={theme.textSoft}> thinking</Text>
       {detail ? (

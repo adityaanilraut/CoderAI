@@ -17,12 +17,9 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
-# ============================================================================
-# Interactive Command Detection
-# ============================================================================
 
 # Commands / binaries that are inherently interactive (REPLs, editors, TUIs)
-_INTERACTIVE_BINARIES: Set[str] = {
+_INTERACTIVE_BINARIES: frozenset[str] = frozenset({
     # REPLs / interpreters launched without arguments
     "python", "python3", "python2",
     "node", "bun",
@@ -46,42 +43,51 @@ _INTERACTIVE_BINARIES: Set[str] = {
     "bash", "zsh", "sh", "fish", "csh", "tcsh",
     # Package managers that open interactive prompts
     "nix-shell",
+    "ruby",
     # This project itself
     "coderai",
-}
+})
 
 # Sub-categories of _INTERACTIVE_BINARIES used in is_interactive_command()
 # to decide whether arguments make the command non-interactive.
 # Maintaining these here avoids duplicate inline tuples.
-_SHELL_BINARIES: Set[str] = {"bash", "zsh", "sh", "fish", "csh", "tcsh"}
-_INTERPRETER_BINARIES: Set[str] = {
+_SHELL_BINARIES: frozenset[str] = frozenset({"bash", "zsh", "sh", "fish", "csh", "tcsh"})
+_INTERPRETER_BINARIES: frozenset[str] = frozenset({
     "python", "python3", "python2", "node", "bun", "lua",
     "luajit", "julia", "ruby", "irb", "R", "r", "scala",
-}
-_ALWAYS_INTERACTIVE_BINARIES: Set[str] = {
+})
+_ALWAYS_INTERACTIVE_BINARIES: frozenset[str] = frozenset({
     "vim", "nvim", "vi", "nano", "emacs", "pico", "ed",
     "less", "more", "top", "htop", "btop", "glances", "nmon",
-}
+})
 
 # Patterns that indicate interactive flags (e.g. docker run -it, docker exec -it)
-_INTERACTIVE_FLAG_PATTERNS: List[re.Pattern] = [
-    re.compile(r"\bdocker\s+(run|exec)\b.*\s-[a-z]*i[a-z]*t"),
-    re.compile(r"\bdocker\s+(run|exec)\b.*\s-[a-z]*t[a-z]*i"),
-    re.compile(r"\bdocker\s+(run|exec)\b.*\s--interactive"),
-]
+_INTERACTIVE_FLAG_PATTERNS: tuple[re.Pattern, ...] = (
+    re.compile(r"\bdocker\s+(?:run|exec)(?:\s+-[a-zA-Z0-9=-]*)*\s+-[a-z]*i[a-z]*t\b"),
+    re.compile(r"\bdocker\s+(?:run|exec)(?:\s+-[a-zA-Z0-9=-]*)*\s+-[a-z]*t[a-z]*i\b"),
+    re.compile(r"\bdocker\s+(?:run|exec)(?:\s+-[a-zA-Z0-9=-]*)*\s+--interactive\b"),
+)
 
 # Flags / suffixes that make otherwise-interactive commands non-interactive
 _NON_INTERACTIVE_INDICATORS = (
     " -c ", " -c'", ' -c"',  # python -c, bash -c, etc.
     " -e ", " -e'", ' -e"',  # node -e, perl -e, ruby -e
     " --eval ", " --eval=",
-    " -m ",                   # python -m pytest
+    " -m  ",                  # python -m pytest (with space)
+    " -m",                    # python -mpytest (concatenated)
     " --version", " -V",
-    " --help", " -h",
+    " --help",                # --help is unambiguous (vs -h which may be a host flag)
     " --check", " --dry-run",
-    " -f ",                   # psql -f script.sql
+    " -f ",                   # psql -f script.sql, etc.
     "<<",                     # shell heredoc (finite script)
+    " <",                     # file redirect (e.g. psql < script.sql)
 )
+
+# Database / network CLIs where -h is typically a host flag (not --help)
+_DATABASE_NETWORK_CLIS: frozenset[str] = frozenset({
+    "psql", "mysql", "sqlite3", "mongosh", "mongo", "redis-cli",
+    "ssh", "telnet", "ftp", "sftp",
+})
 
 
 def _token_is_shell_dash_c(token: str) -> bool:
@@ -116,7 +122,7 @@ def is_interactive_command(command: str) -> bool:
 
     # Check if non-interactive indicators are present
     for indicator in _NON_INTERACTIVE_INDICATORS:
-        if indicator in cmd_stripped or indicator in cmd_lower:
+        if indicator in cmd_lower:
             return False
 
     # Extract the base binary name
@@ -125,15 +131,41 @@ def is_interactive_command(command: str) -> bool:
     if not parts:
         return False
 
-    # Skip env prefix (e.g. "env python")
+    # Skip prefix commands (e.g. "env python", "sudo python", "time python")
+    _PREFIX_COMMANDS: frozenset[str] = frozenset(
+        {"env", "/usr/bin/env", "sudo", "nohup", "time", "nice", "doas"}
+    )
     idx = 0
-    if parts[0] in ("env", "/usr/bin/env") and len(parts) > 1:
-        idx = 1
+    while idx < len(parts) and parts[idx] in _PREFIX_COMMANDS:
+        idx += 1
+
+    if idx >= len(parts):
+        return False
 
     binary = os.path.basename(parts[idx].strip("'\""))
+    binary_lower = binary.lower()
 
-    if binary not in _INTERACTIVE_BINARIES:
-        return False
+    # Check if binary matches an interactive binary (exact or versioned variant)
+    # e.g. "python3.12" starts with "python3", "vim.tiny" starts with "vim"
+    if binary not in _INTERACTIVE_BINARIES and binary_lower not in _INTERACTIVE_BINARIES:
+        # Also check for versioned/suffixed variants (e.g. python3.12, psql15, mysql80, vim.tiny)
+        matched = False
+        for base in _INTERACTIVE_BINARIES:
+            if binary_lower.startswith(base) and (
+                len(binary) == len(base)
+                or (len(binary) > len(base) and (
+                    binary[len(base)].isdigit() or binary[len(base)] in (".", "-")
+                ) and not binary[len(base)].isalpha())
+            ):
+                matched = True
+                break
+        if not matched:
+            return False
+
+    # Context-aware -h check: only treat -h as non-interactive for non-database/non-network binaries
+    if binary_lower not in _DATABASE_NETWORK_CLIS:
+        if any(arg in ("-h", "--help") for arg in parts):
+            return False
 
     # Binary IS in the interactive set — check if it has arguments that
     # make it non-interactive (e.g. a script filename)
@@ -149,7 +181,7 @@ def is_interactive_command(command: str) -> bool:
     first_arg = remaining_args[0]
 
     # For shells: -c / -lc / bash script.sh vs interactive shell
-    if binary in _SHELL_BINARIES:
+    if binary_lower in _SHELL_BINARIES:
         if any(_token_is_shell_dash_c(a) for a in remaining_args):
             return False
         if not first_arg.startswith("-"):
@@ -157,25 +189,20 @@ def is_interactive_command(command: str) -> bool:
         return True
 
     # For interpreters: stdin (-), script file, or flags
-    if binary in _INTERPRETER_BINARIES:
+    if binary_lower in _INTERPRETER_BINARIES:
         if first_arg == "-":
             return False  # read script from stdin (incl. heredoc after shell expansion)
+        if first_arg == "-c" or first_arg.startswith("-c"):
+            return False  # python -c "code", python -cprint(1), etc.
         if not first_arg.startswith("-"):
             return False  # script filename
         return True
 
-    # Editors / TUIs / monitors are always interactive regardless of args
-    if binary in _ALWAYS_INTERACTIVE_BINARIES:
-        return True
-
-    # Database CLIs and network tools: interactive by default
-    # (psql -f, mysql < script would have been caught by _NON_INTERACTIVE_INDICATORS)
+    # Remaining cases (TUIs, editors, DB/network CLIs) are interactive by
+    # default; non-interactive forms (e.g. ``psql -f``, ``mysql < script``)
+    # were filtered earlier by _NON_INTERACTIVE_INDICATORS.
     return True
 
-
-# ============================================================================
-# Project Preflight Validation
-# ============================================================================
 
 # Files that indicate a real project
 PROJECT_INDICATORS: Set[str] = {
@@ -247,8 +274,11 @@ def project_sanity_check(directory: str = ".") -> Dict[str, Any]:
     # Check for source directories
     for src_dir in SOURCE_DIRECTORIES:
         candidate = dir_path / src_dir
-        if candidate.is_dir() and any(candidate.iterdir()):
-            detected_source_dirs.append(src_dir)
+        try:
+            if candidate.is_dir() and any(candidate.iterdir()):
+                detected_source_dirs.append(src_dir)
+        except OSError:
+            pass
 
     # Check for any source code files (top-level scan only, for performance)
     has_source_files = False
@@ -270,20 +300,19 @@ def project_sanity_check(directory: str = ".") -> Dict[str, Any]:
     reasons: List[str] = []
     if not is_valid:
         # Build helpful reasons
-        all_items = []
         try:
             all_items = [
                 item.name for item in dir_path.iterdir()
                 if item.name not in JUNK_FILES and not item.name.startswith(".")
             ]
         except PermissionError:
-            pass
+            all_items = []
 
         if not all_items:
             reasons.append("Directory is empty or contains only junk/hidden files.")
         else:
             reasons.append(
-                f"No project indicators found ({', '.join(sorted(list(PROJECT_INDICATORS)[:5]))}...). "
+                f"No project indicators found ({', '.join(sorted(PROJECT_INDICATORS)[:5])}...). "
                 f"Directory contains: {', '.join(sorted(all_items[:10]))}"
             )
         if not has_git:
@@ -296,11 +325,6 @@ def project_sanity_check(directory: str = ".") -> Dict[str, Any]:
         "has_git": has_git,
         "reasons": reasons,
     }
-
-
-# ============================================================================
-# Git Root / Scope Safety
-# ============================================================================
 
 
 async def resolve_git_root(working_dir: str = ".") -> Dict[str, Any]:
@@ -329,7 +353,9 @@ async def resolve_git_root(working_dir: str = ".") -> Dict[str, Any]:
             }
 
         git_root = stdout.decode("utf-8", errors="replace").strip()
-        matches = os.path.normpath(git_root) == os.path.normpath(resolved_dir)
+        resolved_git_root = os.path.normpath(git_root)
+        resolved_target = os.path.normpath(resolved_dir)
+        matches = resolved_target.startswith(resolved_git_root)
 
         warning = None
         if not matches:
@@ -368,23 +394,17 @@ async def get_current_branch(working_dir: str = ".") -> Optional[str]:
             return branch if branch != "HEAD" else None  # detached HEAD
         return None
     except Exception as e:
-        logger.warning(f"Failed to get current branch: {e}", exc_info=True)
+        logger.warning(f"Failed to get current branch: {e}")
         return None
 
 
-# ============================================================================
-# Safer Staging Rules
-# ============================================================================
-
 # Patterns of files/directories that should NEVER be staged autonomously.
 # Uses fnmatch-style glob patterns.
-JUNK_PATTERNS: List[str] = [
+JUNK_PATTERNS: tuple[str, ...] = (
     ".DS_Store",
     "Thumbs.db",
     "desktop.ini",
     "__pycache__",
-    "*.pyc",
-    "*.pyo",
     "*.py[cod]",
     "*$py.class",
     ".pytest_cache",
@@ -410,7 +430,7 @@ JUNK_PATTERNS: List[str] = [
     "*.swp",
     "*.swo",
     "*~",
-]
+)
 
 
 def filter_stageable_files(
@@ -436,7 +456,7 @@ def filter_stageable_files(
 
         for part in parts:
             for pattern in JUNK_PATTERNS:
-                if fnmatch.fnmatch(part, pattern):
+                if fnmatch.fnmatch(part.lower(), pattern.lower()):
                     is_junk = True
                     break
             if is_junk:

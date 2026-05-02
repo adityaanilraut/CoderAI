@@ -19,7 +19,15 @@ def _truncate_output(text: str, max_bytes: int = MAX_GIT_OUTPUT_BYTES) -> tuple[
     encoded = text.encode("utf-8")
     if len(encoded) <= max_bytes:
         return text, False
-    head = encoded[:max_bytes].decode("utf-8", errors="replace")
+    head = encoded[:max_bytes]
+    # Avoid splitting a multi-byte UTF-8 codepoint
+    while head:
+        try:
+            head.decode("utf-8")
+            break
+        except UnicodeDecodeError:
+            head = head[:-1]
+    head = head.decode("utf-8")
     omitted = len(encoded) - max_bytes
     return head + f"\n\n[... truncated, {omitted} more bytes — re-run with a narrower scope ...]", True
 
@@ -62,12 +70,11 @@ class GitAddParams(BaseModel):
 
 
 class GitAddTool(Tool):
-    """Tool for staging files in git."""
-
     name = "git_add"
     description = "Stage specific files for the next git commit. You MUST list individual file paths — 'git add .' is not allowed."
     parameters_model = GitAddParams
     requires_confirmation = True
+    category = "git"
 
     async def execute(self, files: list, repo_path: str = ".") -> Dict[str, Any]:
         """Stage files for git commit with safety checks."""
@@ -145,15 +152,13 @@ class GitStatusParams(BaseModel):
 
 
 class GitStatusTool(Tool):
-    """Tool for checking git repository status."""
-
     name = "git_status"
     description = "Get the status of a git repository. Output truncated at 64KB."
     parameters_model = GitStatusParams
     is_read_only = True
+    category = "git"
 
     async def execute(self, repo_path: str = ".") -> Dict[str, Any]:
-        """Get git status."""
         try:
             process = await asyncio.create_subprocess_exec(
                 "git", "status", "--porcelain", "-b",
@@ -198,11 +203,11 @@ class GitDiffTool(Tool):
     description = "View git diff for changes. Output truncated at 64KB; use file_path to narrow scope on huge diffs."
     parameters_model = GitDiffParams
     is_read_only = True
+    category = "git"
 
     async def execute(
         self, repo_path: str = ".", file_path: str = None, staged: bool = False
     ) -> Dict[str, Any]:
-        """Get git diff."""
         try:
             cmd = ["git", "diff"]
             if staged:
@@ -242,17 +247,14 @@ class GitCommitParams(BaseModel):
 
 
 class GitCommitTool(Tool):
-    """Tool for creating git commits."""
-
     name = "git_commit"
     description = "Create a git commit with staged changes"
     parameters_model = GitCommitParams
     requires_confirmation = True
+    category = "git"
 
     async def execute(self, message: str, repo_path: str = ".") -> Dict[str, Any]:
-        """Create git commit with scope validation."""
         try:
-            # Validate git scope before committing
             scope_error = await _validate_git_scope(repo_path)
             if scope_error:
                 return scope_error
@@ -285,16 +287,18 @@ class GitLogParams(BaseModel):
 
 
 class GitLogTool(Tool):
-    """Tool for viewing git history."""
-
     name = "git_log"
     description = "View git commit history. Output truncated at 64KB."
     parameters_model = GitLogParams
     is_read_only = True
+    category = "git"
 
     async def execute(self, repo_path: str = ".", limit: int = 10) -> Dict[str, Any]:
-        """Get git log."""
         try:
+            if limit < 1:
+                limit = 1
+            elif limit > 1000:
+                limit = 1000
             process = await asyncio.create_subprocess_exec(
                 "git", "log", "--oneline", "-n", str(limit),
                 stdout=asyncio.subprocess.PIPE,
@@ -321,9 +325,6 @@ class GitLogTool(Tool):
             return {"success": False, "error": str(e)}
 
 
-# --- Extended Git Tools ---
-
-
 class GitBranchParams(BaseModel):
     action: str = Field(
         ...,
@@ -339,17 +340,20 @@ class GitBranchParams(BaseModel):
 
 
 class GitBranchTool(Tool):
-    """Tool for managing git branches."""
-
     name = "git_branch"
     description = "List, create, or delete git branches. Output truncated at 64KB."
     parameters_model = GitBranchParams
     requires_confirmation = True
+    category = "git"
 
     async def execute(
         self, action: str, branch_name: Optional[str] = None, repo_path: str = "."
     ) -> Dict[str, Any]:
         try:
+            scope_error = await _validate_git_scope(repo_path)
+            if scope_error:
+                return scope_error
+
             async with resource_manager.git_lock():
                 if action == "list":
                     process = await asyncio.create_subprocess_exec(
@@ -363,7 +367,7 @@ class GitBranchTool(Tool):
                         return {"success": False, "error": stderr.decode("utf-8", errors="replace")}
                     output, truncated = _truncate_output(stdout.decode("utf-8", errors="replace"))
                     branches = [
-                        b.strip().lstrip("* ") for b in output.strip().split("\n") if b.strip()
+                        b.strip().removeprefix("* ") for b in output.strip().split("\n") if b.strip()
                     ]
                     return {"success": True, "branches": branches, "count": len(branches), "truncated": truncated}
 
@@ -408,12 +412,11 @@ class GitCheckoutParams(BaseModel):
 
 
 class GitCheckoutTool(Tool):
-    """Tool for switching git branches."""
-
     name = "git_checkout"
     description = "Switch to a different git branch or create and switch to a new branch"
     parameters_model = GitCheckoutParams
     requires_confirmation = True
+    category = "git"
 
     async def execute(
         self, branch: str, create: bool = False, repo_path: str = "."
@@ -464,12 +467,11 @@ class GitStashParams(BaseModel):
 
 
 class GitStashTool(Tool):
-    """Tool for git stash operations."""
-
     name = "git_stash"
-    description = "Stash or restore uncommitted changes (push, pop, list, drop)"
+    description = "Stash, pop, list, or drop git stashes. Output truncated at 64KB."
     parameters_model = GitStashParams
     requires_confirmation = True
+    category = "git"
 
     async def execute(
         self,
@@ -479,6 +481,10 @@ class GitStashTool(Tool):
         repo_path: str = ".",
     ) -> Dict[str, Any]:
         try:
+            scope_error = await _validate_git_scope(repo_path)
+            if scope_error:
+                return scope_error
+
             async with resource_manager.git_lock():
                 if action == "push":
                     cmd = ["git", "stash", "push"]
@@ -508,17 +514,10 @@ class GitStashTool(Tool):
             return {"success": False, "error": str(e)}
 
 
-
-# ---------------------------------------------------------------------------
-# Extended git tools: push, pull, merge, rebase, revert, reset,
-#                     show, remote, blame, cherry-pick, tag
-# ---------------------------------------------------------------------------
-
-
 class GitPushParams(BaseModel):
     remote: str = Field("origin", description="Remote name (default: origin)")
     branch: Optional[str] = Field(None, description="Branch to push (default: current branch)")
-    force: bool = Field(False, description="Force push using --force-with-lease for safety")
+    force: bool = Field(False, description="Force push. NOTE: This uses --force-with-lease (not --force) to prevent overwriting upstream changes you haven't seen.")
     set_upstream: bool = Field(False, description="Set upstream tracking branch (-u)")
     repo_path: str = Field(".", description="Path to the git repository")
 
@@ -908,6 +907,10 @@ class GitRemoteTool(Tool):
         repo_path: str = ".",
     ) -> Dict[str, Any]:
         try:
+            scope_error = await _validate_git_scope(repo_path)
+            if scope_error:
+                return scope_error
+
             async with resource_manager.git_lock():
                 if action == "list":
                     cmd = ["git", "remote", "-v"]
@@ -965,9 +968,9 @@ class GitBlameTool(Tool):
     ) -> Dict[str, Any]:
         try:
             cmd = ["git", "blame", "--porcelain"]
-            if start_line and end_line:
+            if start_line is not None and end_line is not None:
                 cmd.extend([f"-L{start_line},{end_line}"])
-            elif start_line:
+            elif start_line is not None:
                 cmd.extend([f"-L{start_line},+30"])
             cmd.append(file_path)
 
@@ -993,7 +996,7 @@ class GitBlameTool(Tool):
                     current = {}
                 elif " " in line:
                     parts = line.split(" ", 3)
-                    if len(parts[0]) == 40:
+                    if len(parts[0]) >= 40 and all(c in '0123456789abcdef' for c in parts[0]):
                         current["commit"] = parts[0]
                         if len(parts) >= 3:
                             current["line"] = parts[2]
@@ -1081,6 +1084,10 @@ class GitTagTool(Tool):
         repo_path: str = ".",
     ) -> Dict[str, Any]:
         try:
+            scope_error = await _validate_git_scope(repo_path)
+            if scope_error:
+                return scope_error
+
             async with resource_manager.git_lock():
                 if action == "list":
                     cmd = ["git", "tag", "--list", "--sort=-version:refname"]
@@ -1119,11 +1126,6 @@ class GitTagTool(Tool):
             return {"success": False, "error": str(e)}
 
 
-# ---------------------------------------------------------------------------
-# Git fetch
-# ---------------------------------------------------------------------------
-
-
 class GitFetchParams(BaseModel):
     remote: str = Field("origin", description="Remote name (default: origin)")
     branch: Optional[str] = Field(None, description="Specific branch to fetch (default: all)")
@@ -1138,7 +1140,7 @@ class GitFetchTool(Tool):
     description = "Download objects and refs from a remote repository. Unlike git_pull, this does not merge changes."
     category = "git"
     parameters_model = GitFetchParams
-    is_read_only = True
+    is_read_only = False  # --prune deletes remote-tracking branches, so this is not read-only
 
     async def execute(
         self,

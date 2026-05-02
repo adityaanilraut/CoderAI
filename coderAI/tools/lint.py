@@ -84,7 +84,7 @@ class LintTool(Tool):
         "Auto-detects the linter (ruff, eslint, clippy, golangci-lint) based on the project type."
     )
     parameters_model = LintParams
-    is_read_only = True  # check mode is read-only; fix mode mutates but that's opt-in
+    is_read_only = False
 
     async def execute(
         self,

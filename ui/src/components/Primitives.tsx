@@ -139,7 +139,7 @@ export function ActionPill({label, selected = false, color}: ActionPillProps) {
   return (
     <Text
       backgroundColor={selected ? color : undefined}
-      color={selected ? "black" : color}
+      color={selected ? theme.bg : color}
       bold={selected}
     >
       {` ${label} `}

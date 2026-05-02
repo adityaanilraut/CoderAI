@@ -56,5 +56,11 @@ ui/out/
 *.log
 .cache/
 .claude/
-.coderAI/
+.coderAI/*
+!.coderAI/agents/
+!.coderAI/skills/
+!.coderAI/rules/
+.coderAI/current_plan.json
+.coderAI/index/
 .ruff_cache/
+session-*.md

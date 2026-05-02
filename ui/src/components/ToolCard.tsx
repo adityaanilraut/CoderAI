@@ -1,10 +1,10 @@
 import React from "react";
 import {Box, Text, useStdout} from "ink";
-import Spinner from "ink-spinner";
 import {theme} from "../theme.js";
 import type {ToolCategory, ToolRisk} from "../protocol.js";
 import {truncateSmart} from "../lib/format.js";
 import {RiskBadge} from "./Primitives.js";
+import {QuietSpinner} from "./QuietSpinner.js";
 
 export interface ToolCardProps {
   name: string;
@@ -35,7 +35,16 @@ export function ToolCard(props: ToolCardProps) {
   const narrow = columns < theme.layout.narrowCols;
 
   const status = props.ok === null ? "running" : props.ok ? "ok" : "error";
-  const summary = summarizeArgs(props.name, props.args, narrow ? 32 : 56);
+  // run_command/run_background's `command` field is the highest-signal arg —
+  // truncating it at 56 chars hides the dangerous tail of long pipelines.
+  // Give it more room when it's the focus arg.
+  const wideArg = props.name === "run_command" || props.name === "run_background";
+  const summary = summarizeArgs(
+    props.name,
+    props.args,
+    wideArg ? (narrow ? 60 : 100) : (narrow ? 32 : 56),
+  );
+  const categoryColor = theme.tool[props.category] ?? theme.tool.other;
   const icon =
     status === "ok"
       ? theme.glyph.tick
@@ -63,9 +72,13 @@ export function ToolCard(props: ToolCardProps) {
     return (
       <Box paddingX={2}>
         <Box flexGrow={1}>
+          {/* Category bullet — restores the at-a-glance category cue we
+              lost when the rail came off in non-verbose mode. One cell wide
+              so it doesn't push the icon column. */}
+          <Text color={categoryColor}>{theme.glyph.bullet} </Text>
           {status === "running" ? (
             <Text color={iconColor}>
-              <Spinner type="dots" />
+              <QuietSpinner staticGlyph={theme.glyph.cog} />
             </Text>
           ) : (
             <Text color={iconColor} bold>
@@ -103,7 +116,7 @@ export function ToolCard(props: ToolCardProps) {
       <Box>
         {status === "running" ? (
           <Text color={iconColor}>
-            <Spinner type="dots" />
+            <QuietSpinner staticGlyph={theme.glyph.cog} />
           </Text>
         ) : (
           <Text color={iconColor} bold>

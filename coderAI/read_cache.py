@@ -21,10 +21,6 @@ class FileReadCache:
         self._entries: Dict[str, Tuple[float, int, int]] = {}
         self._turn: int = 0
 
-    @property
-    def turn(self) -> int:
-        return self._turn
-
     def bump_turn(self) -> int:
         """Advance the turn counter. Call once per user prompt."""
         self._turn += 1
@@ -46,10 +42,9 @@ class FileReadCache:
 
     def record(self, path: str, mtime: float, size: int) -> None:
         """Record a fresh full-file read at the current turn."""
-        # Ensure a turn boundary exists even if bump_turn was never called
-        # (e.g. unit tests that exercise the tool directly).
-        turn = self._turn if self._turn > 0 else 1
-        self._entries[path] = (mtime, size, turn)
+        if self._turn == 0:
+            return
+        self._entries[path] = (mtime, size, self._turn)
 
     def clear(self) -> None:
         """Drop all entries and reset the turn counter."""

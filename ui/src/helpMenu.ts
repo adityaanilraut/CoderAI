@@ -27,9 +27,14 @@ export const HELP_MENU_ENTRIES: HelpMenuEntry[] = [
   {slash: "/verbose", desc: "Toggle reasoning + expanded tool cards"},
   {slash: "/agents", desc: "Refresh the agents panel"},
   {slash: "/show", desc: "Reference info · type /show then a topic"},
-  {slash: "/think", desc: "Reveal the latest hidden reasoning (also: Ctrl+R)"},
+  {slash: "/think", desc: "Reveal the latest hidden reasoning as a toast"},
+  {slash: "/search", desc: "Search conversation transcript · /search <query>"},
+  {slash: "/export", desc: "Export session to markdown · /export [path]"},
+  {slash: "/copy", desc: "Copy last assistant response to clipboard (OSC-52)"},
+  {slash: "/theme", desc: "Set dark/light theme · /theme <dark|light>"},
+  {slash: "/undo", desc: "Undo last tool action · /undo [count]"},
   {slash: "/tokens", desc: "Show token usage, cost & context stats"},
-  {slash: "/exit", desc: "Shut down the agent"},
+  {slash: "/exit", desc: "Shut down the agent (type twice to confirm)"},
 ];
 
 /** One line for the menu footer (CLI commands need a normal shell). */

@@ -16,34 +16,75 @@ IMAGE_TOKEN_FLOOR = 1500
 class ContextController:
     """Handles token estimation, context window truncation, and summarization."""
 
-    def __init__(self, config, provider):
+    def __init__(self, config, provider, cost_tracker=None):
         self.config = config
         self.provider = provider
-        self._token_cache: Dict[int, int] = {}
+        self.cost_tracker = cost_tracker
+        # Optional callback(agent, input_delta, output_delta) invoked after
+        # LLM summarization so the agent's cumulative token counters stay in
+        # sync with the cost tracker.
+        self._on_summary_tokens: Optional[callable] = None
+        # Cache keyed by content fingerprint. id(msg) was unsafe because
+        # CPython recycles freed object ids — Session.get_messages_for_api()
+        # rebuilds dicts each turn, so an id can land on a *different* message
+        # and serve a stale token count.
+        self._token_cache: Dict[str, int] = {}
         self._last_summary_time: float = 0.0
+        self._summary_snapshot_input: int = 0
+        self._summary_snapshot_output: int = 0
+
+    @staticmethod
+    def _msg_fingerprint(msg: Dict[str, Any]) -> str:
+        """Stable content-derived key for the token cache."""
+        return json.dumps(
+            {
+                "role": msg.get("role"),
+                "content": msg.get("content"),
+                "tool_calls": msg.get("tool_calls"),
+                "tool_call_id": msg.get("tool_call_id"),
+                "name": msg.get("name"),
+            },
+            default=str,
+            sort_keys=True,
+        )
 
     def _estimate_message_tokens(self, msg: Dict[str, Any]) -> int:
-        """Estimate tokens for a single message, populating the id-keyed cache."""
-        msg_id = id(msg)
-        if msg_id in self._token_cache:
-            return self._token_cache[msg_id]
+        """Estimate tokens for a single message, populating the cache."""
+        key = self._msg_fingerprint(msg)
+        cached = self._token_cache.get(key)
+        if cached is not None:
+            return cached
         total = 4  # per-message formatting overhead
         content = msg.get("content") or ""
         if isinstance(content, str) and content:
             total += self.provider.count_tokens(content)
         elif isinstance(content, list):
             for block in content:
-                if isinstance(block, dict) and block.get("type") in {"image", "input_image"}:
-                    total += IMAGE_TOKEN_FLOOR
+                if isinstance(block, dict):
+                    block_type = block.get("type", "")
+                    if block_type == "image" or block_type == "input_image":
+                        total += IMAGE_TOKEN_FLOOR
+                    elif block_type == "text" and "text" in block:
+                        total += self.provider.count_tokens(block["text"])
+                    elif block_type == "image_url":
+                        total += IMAGE_TOKEN_FLOOR
+                    elif block_type == "tool_result":
+                        content_text = block.get("content", "")
+                        if isinstance(content_text, str):
+                            total += self.provider.count_tokens(content_text)
+                        else:
+                            total += self.provider.count_tokens(json.dumps(block, default=str))
+                    else:
+                        total += self.provider.count_tokens(json.dumps(block, default=str))
                 else:
-                    total += self.provider.count_tokens(json.dumps(block, default=str))
+                    total += self.provider.count_tokens(str(block))
         if msg.get("tool_calls"):
             total += self.provider.count_tokens(json.dumps(msg["tool_calls"]))
         if msg.get("tool_call_id"):
             total += self.provider.count_tokens(msg["tool_call_id"])
         if msg.get("name"):
             total += self.provider.count_tokens(msg["name"])
-        self._token_cache[msg_id] = total
+        self._token_cache[key] = total
         return total
 
     def estimate_tokens(self, messages: List[Dict[str, Any]]) -> int:
@@ -51,23 +92,46 @@ class ContextController:
         total = 0
         for msg in messages:
             total += self._estimate_message_tokens(msg)
-        total += 3  # reply priming
+        total += 3  # 3 tokens reserved for assistant reply priming overhead
         return total
 
-    # Tag used to identify injected context messages for deduplication
+    # Structured marker key used to identify injected pinned-context messages.
+    # Using a dict-key marker (instead of a substring of ``content``) means a
+    # user message that happens to quote the literal "[Pinned Context]" text
+    # is no longer mis-stripped on the next inject pass.
     _CONTEXT_TAG = "[Pinned Context]"
+    _CONTEXT_MARKER_KEY = "_pinned_context"
+
+    @classmethod
+    def _is_pinned_injection(cls, msg: Dict[str, Any]) -> bool:
+        return bool(msg.get(cls._CONTEXT_MARKER_KEY)) and msg.get("role") == "system"
+
+    @classmethod
+    def strip_internal_markers(cls, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Return a copy of *messages* with internal-only keys removed.
+
+        Use this just before handing the list to a provider — providers reject
+        unknown top-level keys (OpenAI, Anthropic, etc.).
+        """
+        cleaned: List[Dict[str, Any]] = []
+        for m in messages:
+            if cls._CONTEXT_MARKER_KEY in m:
+                m = {k: v for k, v in m.items() if k != cls._CONTEXT_MARKER_KEY}
+            cleaned.append(m)
+        return cleaned
 
     def inject_context(
-        self, 
-        messages: List[Dict[str, Any]], 
+        self,
+        messages: List[Dict[str, Any]],
         context_manager: Any,
         query: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """Inject the pinned-context system message after the last system message.
 
         Returns a *new* list — the caller's list is never mutated. Any
-        previously injected context messages (identified by ``_CONTEXT_TAG``)
-        are stripped first to prevent accumulation across loop iterations.
+        previously injected context messages (identified by the
+        ``_CONTEXT_MARKER_KEY`` flag) are stripped first to prevent
+        accumulation across loop iterations.
         """
         context_msg = context_manager.get_system_message(
             query=query,
@@ -75,26 +139,24 @@ class ContextController:
         )
         if not context_msg:
             # Still strip stale context injections even when there's nothing new
-            return [
-                m for m in messages
-                if not (m.get("role") == "system" and isinstance(m.get("content"), str)
-                        and self._CONTEXT_TAG in m["content"])
-            ]
+            return [m for m in messages if not self._is_pinned_injection(m)]
 
         # Work on a copy and strip previous injections
-        result = [
-            m for m in messages
-            if not (m.get("role") == "system" and isinstance(m.get("content"), str)
-                    and self._CONTEXT_TAG in m["content"])
-        ]
+        result = [m for m in messages if not self._is_pinned_injection(m)]
 
         insert_idx = 0
         for i, msg in enumerate(result):
             if msg.get("role") == "system":
                 insert_idx = i + 1
 
+        # Keep the human-readable header in ``content`` so logs/transcripts
+        # remain readable; deduplication relies on the marker key, not the text.
         tagged_content = f"{self._CONTEXT_TAG}\n{context_msg}"
-        result.insert(insert_idx, {"role": "system", "content": tagged_content})
+        result.insert(insert_idx, {
+            "role": "system",
+            "content": tagged_content,
+            self._CONTEXT_MARKER_KEY: True,
+        })
         return result
 
     async def manage_context_window(
@@ -111,11 +173,20 @@ class ContextController:
         if max_content_tokens <= 0:
             max_content_tokens = context_limit // 2
 
-        # Single pass populates per-message cache; subsequent group sums reuse it
-        self._token_cache.clear()
+        total_chars = sum(len(str(m.get("content") or "")) for m in messages)
+        tool_call_chars = sum(
+            len(str(m.get("tool_calls") or "")) + len(str(m.get("tool_call_id") or ""))
+            for m in messages
+        )
+        estimated_tokens_cheap = (total_chars + tool_call_chars) // 4 + len(messages) * 4
+        if estimated_tokens_cheap < max_content_tokens * 0.75:
+            return messages
+
         total_tokens = self.estimate_tokens(messages)
         if total_tokens <= max_content_tokens:
             return messages
+
+        self._token_cache.clear()
 
         logger.info(
             f"Context window management: {total_tokens} tokens exceeds limit of {max_content_tokens}. Truncating old messages."
@@ -129,20 +200,23 @@ class ContextController:
         if non_system and non_system[0].get("role") == "user":
             first_task_message = non_system.pop(0)
 
-        system_tokens = sum(self._token_cache.get(id(m), self._estimate_message_tokens(m))
-                           for m in system_messages)
+        system_tokens = sum(self._estimate_message_tokens(m) for m in system_messages)
         if first_task_message:
-            system_tokens += self._token_cache.get(id(first_task_message),
-                                                   self._estimate_message_tokens(first_task_message))
+            system_tokens += self._estimate_message_tokens(first_task_message)
         remaining_budget = max_content_tokens - system_tokens
+
+        # A small slop on the budget so a single estimated token doesn't flip
+        # which message groups are kept. Token estimation is approximate, so a
+        # razor-sharp boundary is misleading.
+        CONTEXT_MARGIN_TOKENS = 200
+        effective_budget = max(0, remaining_budget - CONTEXT_MARGIN_TOKENS)
 
         groups = self._group_messages_for_truncation(non_system)
         kept_groups = []
         running_tokens = 0
         for group in reversed(groups):
-            group_tokens = sum(self._token_cache.get(id(m), self._estimate_message_tokens(m))
-                              for m in group)
-            if running_tokens + group_tokens > remaining_budget:
+            group_tokens = sum(self._estimate_message_tokens(m) for m in group)
+            if running_tokens + group_tokens > effective_budget:
                 break
             kept_groups.insert(0, group)
             running_tokens += group_tokens
@@ -193,6 +267,20 @@ class ContextController:
                     if "choices" in response and response["choices"]:
                         summary_content = response["choices"][0].get("message", {}).get("content", "")
 
+                    if summary_content and self.cost_tracker is not None:
+                        mi = self.provider.get_model_info()
+                        in_tok = mi.get("total_input_tokens", 0)
+                        out_tok = mi.get("total_output_tokens", 0)
+                        in_tok_delta = max(0, in_tok - self._summary_snapshot_input)
+                        out_tok_delta = max(0, out_tok - self._summary_snapshot_output)
+                        self._summary_snapshot_input = in_tok
+                        self._summary_snapshot_output = out_tok
+                        if in_tok_delta or out_tok_delta:
+                            model_for_cost = getattr(self.provider, "actual_model", self.config.default_model)
+                            self.cost_tracker.add_cost(model_for_cost, in_tok_delta, out_tok_delta)
+                            if self._on_summary_tokens is not None:
+                                self._on_summary_tokens(in_tok_delta, out_tok_delta)
+
                     if summary_content:
                         summary_notice = {
                             "role": "system",
@@ -240,6 +328,8 @@ class ContextController:
                 "error": str(result) if result is not None else "No result returned",
             }
 
+        import copy
+
         def truncate_recursive(val, max_len):
             if isinstance(val, str):
                 if len(val) > max_len:
@@ -255,19 +345,28 @@ class ContextController:
             return val
 
         per_string_max = self.config.max_tool_output // 2
-        summarized = truncate_recursive(result, per_string_max)
+        summarized = truncate_recursive(copy.deepcopy(result), per_string_max)
 
         aggregate_cap = self.config.max_tool_output * 2
         final_str = json.dumps(summarized)
         if len(final_str) > aggregate_cap:
+            safe_output = final_str[:aggregate_cap]
+            last_comma = safe_output.rfind('",')
+            last_brace = safe_output.rfind('}')
+            cut = max(last_comma, last_brace)
+            if cut > aggregate_cap // 2:
+                safe_output = safe_output[: cut + 1]
+            safe_output += "\n... [HARD TRUNCATED]"
+
             return {
+                "success": False,
                 "error": "TOOL OUTPUT TOO LARGE",
                 "warning": (
                     "Tool output was extremely large and was forcefully truncated. "
                     "DO NOT repeat the exact same tool call. Use a more specific "
                     "method to extract the data (like grep or specific search keywords)."
                 ),
-                "output": final_str[:aggregate_cap] + "\n... [HARD TRUNCATED]",
+                "output": safe_output,
             }
 
         return summarized

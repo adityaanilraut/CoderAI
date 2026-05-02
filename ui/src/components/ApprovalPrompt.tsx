@@ -40,8 +40,13 @@ export function ApprovalPrompt({
 
   useInput(
     (input, key) => {
+      // Single-key shortcuts: y allows once, n denies. YOLO ("always") is
+      // intentionally NOT bound to lowercase "a" — it flips global scope, so a
+      // typo of "a" instead of "y" should not silently auto-approve every
+      // future tool call. Capital A (shift+a) requires a deliberate keystroke;
+      // arrow-keys + Enter is the discoverable path.
       if (input === "y" || input === "Y") onDecide(true, false);
-      else if (input === "a" || input === "A") onDecide(true, true);
+      else if (input === "A") onDecide(true, true);
       else if (input === "n" || input === "N") onDecide(false, false);
       else if (key.leftArrow) {
         setFocus((f) => (f > 0 ? f - 1 : 2));
@@ -123,7 +128,7 @@ export function ApprovalPrompt({
             />
             <Text>   </Text>
             <ActionPill
-              label="Enable YOLO mode [a]"
+              label="Enable YOLO [⇧A]"
               selected={focus === 1}
               color={theme.warning}
             />
@@ -140,13 +145,14 @@ export function ApprovalPrompt({
               </Text>
             </Box>
           </Box>
-          {focus === 1 ? (
-            <Box marginTop={1}>
-              <Text color={theme.warning}>
-                {theme.glyph.warn} YOLO auto-approves <Text bold>all</Text> tools, not just this one.
-              </Text>
-            </Box>
-          ) : null}
+          {/* Always-visible scope warning: YOLO mode is global and persistent.
+              Showing it only on focus made it easy to miss before pressing the
+              key — now the warning is non-conditional. */}
+          <Box marginTop={1}>
+            <Text color={focus === 1 ? theme.warning : theme.faint}>
+              {theme.glyph.warn} YOLO auto-approves <Text bold>all</Text> future tools this session, not just this one.
+            </Text>
+          </Box>
         </Box>
       ) : (
         <Box marginTop={1}>

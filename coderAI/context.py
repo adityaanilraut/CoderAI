@@ -9,6 +9,15 @@ from .context_selector import build_focused_context, summarize_conversation_focu
 
 logger = logging.getLogger(__name__)
 
+# Total character budget for the pinned-context system message. Both the
+# focused (relevance-filtered) path and the fallback path share this so a
+# relevance-filter failure does not silently shrink the user's context.
+PINNED_CONTEXT_MAX_CHARS = 30_000
+# Per-file truncation cap inside the fallback path. Keeps any single huge
+# pinned file from monopolising the budget while still leaving room for
+# several smaller files.
+PINNED_CONTEXT_PER_FILE_CHARS = 10_000
+
 
 class ContextManager:
     """Manages project context and pinned files."""
@@ -42,8 +51,19 @@ class ContextManager:
         Returns:
             True if successful, False otherwise
         """
+        import os
         try:
             file_path = Path(path).resolve()
+
+            project_root = Path(self.config.project_root).resolve() if self.config.project_root else None
+            allow_outside = os.environ.get("CODERAI_ALLOW_OUTSIDE_PROJECT") == "1"
+            if project_root is not None and not allow_outside:
+                try:
+                    file_path.relative_to(project_root)
+                except ValueError:
+                    logger.warning(f"File {path} is outside project root, not pinning")
+                    return False
+
             if not file_path.exists():
                 return False
                 
@@ -153,11 +173,18 @@ class ContextManager:
                 files=self.pinned_files,
                 query=effective_query,
                 project_instructions=self.project_instructions,
-                max_total_chars=30_000,
+                max_total_chars=PINNED_CONTEXT_MAX_CHARS,
                 max_files=5,
             )
             if focused:
                 return focused
+
+        logger.debug(
+            "Focused context path produced no output (query=%s, pinned_files=%d); "
+            "falling back to full pinned context.",
+            effective_query[:80] if effective_query else "<none>",
+            len(self.pinned_files),
+        )
 
         # ---- Fallback: include everything (original behaviour) ----
         parts: List[str] = []
@@ -173,12 +200,14 @@ class ContextManager:
                 "The following files are pinned to the context and should be used as reference:"
             )
             total_chars = 0
-            MAX_FALLBACK_CHARS = 20_000
             for path, content in self.pinned_files.items():
-                if len(content) > 10_000:
-                    content = content[:10_000] + f"\n... [{len(content) - 10_000} chars truncated to save context]"
-                
-                if total_chars + len(content) > MAX_FALLBACK_CHARS:
+                if len(content) > PINNED_CONTEXT_PER_FILE_CHARS:
+                    content = (
+                        content[:PINNED_CONTEXT_PER_FILE_CHARS]
+                        + f"\n... [{len(content) - PINNED_CONTEXT_PER_FILE_CHARS} chars truncated to save context]"
+                    )
+
+                if total_chars + len(content) > PINNED_CONTEXT_MAX_CHARS:
                     parts.append(f"\n### File: {path}")
                     parts.append("```\n... [File omitted to save context. Ask specific questions to view this file.]\n```")
                     continue

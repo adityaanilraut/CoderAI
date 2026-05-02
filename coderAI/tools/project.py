@@ -37,7 +37,7 @@ PROJECT_INDICATORS = {
 
 class ProjectContextParams(BaseModel):
     path: str = Field(".", description="Project root directory (default: current directory)")
-    max_depth: int = Field(2, description="Maximum directory depth to scan for structure (default: 2)")
+    max_depth: int = Field(2, description="Maximum directory depth to scan for structure (default: 2)", ge=0, le=10)
 
 
 class ProjectContextTool(Tool):
@@ -167,7 +167,7 @@ class ProjectContextTool(Tool):
         return ctx
 
     def _get_directory_structure(
-        self, root: Path, max_depth: int = 2, current_depth: int = 0
+        self, root: Path, max_depth: int = 2, current_depth: int = 0, seen: set = None
     ) -> List[str]:
         """Get directory structure up to max_depth levels."""
         IGNORE_DIRS = {
@@ -177,6 +177,8 @@ class ProjectContextTool(Tool):
         }
 
         entries = []
+        if seen is None:
+            seen = set()
         if current_depth >= max_depth:
             return entries
 
@@ -189,9 +191,16 @@ class ProjectContextTool(Tool):
 
                 indent = "  " * current_depth
                 if item.is_dir():
+                    try:
+                        resolved = item.resolve()
+                    except (OSError, RuntimeError):
+                        continue
+                    if resolved in seen:
+                        continue
+                    seen.add(resolved)
                     entries.append(f"{indent}{item.name}/")
                     entries.extend(
-                        self._get_directory_structure(item, max_depth, current_depth + 1)
+                        self._get_directory_structure(item, max_depth, current_depth + 1, seen)
                     )
                 else:
                     entries.append(f"{indent}{item.name}")

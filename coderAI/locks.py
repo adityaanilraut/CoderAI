@@ -35,9 +35,8 @@ class ResourceManager:
         """Get or create an asyncio Lock for a specific absolute or relative filepath."""
         self._ensure_locks()
         try:
-            # Normalize path completely to ensure no aliases bypass the lock
             normalized_path = str(Path(filepath).resolve())
-        except Exception:
+        except (OSError, RuntimeError):
             normalized_path = str(filepath)
 
         async with self._file_locks_lock:

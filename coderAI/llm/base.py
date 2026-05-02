@@ -3,6 +3,9 @@
 from abc import ABC, abstractmethod
 from typing import Any, AsyncIterator, Dict, List, Optional
 
+# Shared reasoning-effort → budget-tokens mapping used by Anthropic and DeepSeek.
+REASONING_BUDGET_MAP = {"high": 16384, "medium": 8192, "low": 2048}
+
 
 class LLMProvider(ABC):
     """Abstract base class for LLM providers."""
@@ -78,14 +81,36 @@ class LLMProvider(ABC):
         return True
 
     def get_model_info(self) -> Dict[str, Any]:
-        """Get information about the current model.
-
-        Returns:
-            Dictionary with model information
-        """
+        """Get information about the current model."""
         return {
-            "model": self.model,
-            "supports_tools": self.supports_tools(),
             "provider": self.__class__.__name__,
+            "model": self.model,
+            "temperature": getattr(self, "temperature", 1.0),
         }
+
+    async def close(self) -> None:
+        """Clean up resources (sessions, connections, etc.)."""
+
+    def set_cumulative_usage(
+        self,
+        *,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cache_creation_tokens: int = 0,
+        cache_read_tokens: int = 0,
+    ) -> None:
+        """Realign cumulative usage counters after a model switch or reset.
+
+        Providers track different subsets of these (Anthropic exposes cache
+        counters, others don't), so each attribute is updated only when the
+        provider already defines it.
+        """
+        if hasattr(self, "total_input_tokens"):
+            self.total_input_tokens = max(0, int(input_tokens or 0))
+        if hasattr(self, "total_output_tokens"):
+            self.total_output_tokens = max(0, int(output_tokens or 0))
+        if hasattr(self, "total_cache_creation_tokens"):
+            self.total_cache_creation_tokens = max(0, int(cache_creation_tokens or 0))
+        if hasattr(self, "total_cache_read_tokens"):
+            self.total_cache_read_tokens = max(0, int(cache_read_tokens or 0))
 

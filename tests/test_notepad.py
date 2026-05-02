@@ -61,7 +61,7 @@ class TestNotepadTool:
             self.tool.execute(action="read", key="test_key")
         )
         assert result["success"]
-        assert result["value"] == "test_value"
+        assert result["note"]["value"] == "test_value"
 
     def test_list(self):
         result = asyncio.run(

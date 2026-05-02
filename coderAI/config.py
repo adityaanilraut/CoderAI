@@ -4,10 +4,11 @@ import json
 import logging
 import os
 import stat
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +21,7 @@ class Config(BaseModel):
     a schema change.
     """
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="ignore", validate_assignment=True)
 
     openai_api_key: Optional[str] = Field(default=None)
     anthropic_api_key: Optional[str] = Field(default=None)
@@ -47,7 +48,13 @@ class Config(BaseModel):
     max_command_output: int = Field(default=10_000)  # chars
     web_tools_in_main: bool = Field(default=True)  # Allow web tools in main agent
     project_root: str = Field(default=".")
+    allow_outside_project: bool = Field(default=False)
     approval_timeout_seconds: int = Field(default=300)  # 0 = wait forever
+    # When True, a denied tool request does NOT stop the agent loop — the model
+    # gets the denial as feedback and can try a different approach. When False,
+    # a denied tool stops the loop immediately (matching OpenCode's
+    # ``continue_loop_on_deny`` behavior).
+    continue_loop_on_deny: bool = Field(default=True)
 
 
 class ConfigManager:
@@ -68,8 +75,15 @@ class ConfigManager:
         # Load from file if exists
         config_data = {}
         if self.config_file.exists():
-            with open(self.config_file, "r") as f:
-                config_data = json.load(f)
+            try:
+                with open(self.config_file, "r") as f:
+                    config_data = json.load(f)
+            except json.JSONDecodeError as e:
+                logger.warning(
+                    "Config file %s is corrupted (JSON parse error: %s). "
+                    "Using defaults and environment variables.",
+                    self.config_file, e,
+                )
 
         # Override with environment variables
         env_mappings = {
@@ -81,7 +95,11 @@ class ConfigManager:
             "CODERAI_TEMPERATURE": "temperature",
             "CODERAI_MAX_TOKENS": "max_tokens",
             "LMSTUDIO_ENDPOINT": "lmstudio_endpoint",
+            "LMSTUDIO_MODEL": "lmstudio_model",
             "OLLAMA_ENDPOINT": "ollama_endpoint",
+            "OLLAMA_MODEL": "ollama_model",
+            "CODERAI_STREAMING": "streaming",
+            "CODERAI_CONTEXT_WINDOW": "context_window",
             "CODERAI_LOG_LEVEL": "log_level",
             "CODERAI_BUDGET_LIMIT": "budget_limit",
             "CODERAI_REASONING_EFFORT": "reasoning_effort",
@@ -89,18 +107,28 @@ class ConfigManager:
             "CODERAI_MAX_TOOL_OUTPUT": "max_tool_output",
             "CODERAI_PROJECT_INSTRUCTION_FILE": "project_instruction_file",
             "CODERAI_WEB_TOOLS_IN_MAIN": "web_tools_in_main",
+            "CODERAI_ALLOW_OUTSIDE_PROJECT": "allow_outside_project",
         }
 
         for env_var, config_key in env_mappings.items():
             value = os.getenv(env_var)
             if value is not None:
                 # Convert types if needed
-                if config_key in ("temperature", "budget_limit"):
-                    value = float(value)
-                elif config_key in ["max_tokens", "max_iterations", "max_tool_output"]:
-                    value = int(value)
-                elif config_key == "web_tools_in_main":
-                    value = value.strip().lower() in ("true", "1", "yes", "on")
+                try:
+                    if config_key in ("temperature", "budget_limit"):
+                        value = float(value)
+                    elif config_key in ("max_tokens", "max_iterations", "max_tool_output"):
+                        value = int(value)
+                    elif config_key == "web_tools_in_main":
+                        value = value.strip().lower() in ("true", "1", "yes", "on")
+                    elif config_key == "allow_outside_project":
+                        value = value.strip().lower() in ("true", "1", "yes", "on")
+                except (ValueError, TypeError):
+                    logger.warning(
+                        "Invalid value for %s=%r (from env %s), ignoring",
+                        config_key, value, env_var,
+                    )
+                    continue
                 config_data[config_key] = value
 
         # Warn about unknown keys (they'll be dropped by extra="ignore")
@@ -122,20 +150,26 @@ class ConfigManager:
         if config is None:
             return
 
-        with open(self.config_file, "w") as f:
-            json.dump(config.model_dump(exclude_none=True), f, indent=2)
-
-        # Set file permissions to owner-only read/write (0600)
-        # This protects API keys from being read by other users
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=str(self.config_dir), prefix=".config.")
         try:
-            self.config_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
-        except OSError as e:
-            logger.warning(f"Could not restrict config file permissions (API keys may be exposed): {e}")
+            os.fchmod(tmp_fd, stat.S_IRUSR | stat.S_IWUSR)
+            with open(tmp_fd, "w") as f:
+                json.dump(config.model_dump(exclude_none=True), f, indent=2)
+            os.replace(tmp_path, str(self.config_file))
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
     def set(self, key: str, value: Any) -> None:
         """Set a configuration value."""
         config = self.load()
-        setattr(config, key, value)
+        try:
+            setattr(config, key, value)
+        except ValidationError as e:
+            raise ValueError(f"Invalid value for '{key}': {e}") from e
         self._config = config
         self.save()
 
@@ -153,7 +187,7 @@ class ConfigManager:
             if key in data and data[key]:
                 val = data[key]
                 if len(val) > 16:
-                    data[key] = f"{'*' * 8}...{val[-4:]}"
+                    data[key] = f"{val[:7]}***"
                 else:
                     data[key] = "***"
         return data

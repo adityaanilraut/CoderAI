@@ -6,9 +6,8 @@ import pytest
 
 from coderAI.agent_loop import ExecutionLoop
 from coderAI.agent_tracker import AgentInfo, AgentStatus
-from coderAI.error_policy import MAX_CONSECUTIVE_ERRORS
 from coderAI.history import Session
-from coderAI.tool_executor import ToolExecutor
+from coderAI.tool_executor import DOOM_LOOP_HARD_THRESHOLD, ToolExecutor
 
 
 @pytest.mark.asyncio
@@ -25,6 +24,7 @@ async def test_denied_tool_skips_pre_hooks() -> None:
         tools=registry,
         tracker_info=None,
         _sync_tracker=MagicMock(),
+        _tool_approval_allowlist=set(),
     )
     hooks_manager = SimpleNamespace(run_hooks=AsyncMock())
     executor = ToolExecutor(agent)
@@ -127,8 +127,6 @@ async def test_all_failed_tool_calls_request_retry() -> None:
         user_message="inspect the file",
         hooks_data=None,
         hooks_manager=hooks_manager,
-        max_consecutive_errors=MAX_CONSECUTIVE_ERRORS,
-        current_errors=0,
     )
 
     assert did_error is True
@@ -195,6 +193,135 @@ async def test_pre_hook_errors_block_tool_execution() -> None:
     registry.execute.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_orchestrate_signals_doom_loop_after_hard_threshold() -> None:
+    """Same (tool, args) called >= DOOM_LOOP_HARD_THRESHOLD times must
+    surface the _doom_loop_stop signal so the agent loop can terminate.
+
+    Real-world repro: gpt-5.4-mini called `plan action=show` 14+ times in
+    one turn. The plan tool isn't is_read_only, so the cached short-circuit
+    never fired — only this hard cap stops it.
+    """
+    registry = SimpleNamespace(
+        get=MagicMock(
+            return_value=SimpleNamespace(
+                requires_confirmation=False,
+                # Mark non-read-only on purpose: the hard cap MUST apply
+                # even to mutating tools, otherwise tools like `plan` (which
+                # has is_read_only=False) escape the existing cache check.
+                is_read_only=False,
+                max_parallel_invocations=0,
+            )
+        ),
+        execute=AsyncMock(return_value={"success": True, "result": "ok"}),
+    )
+    session = Session(session_id="session_1234567890_deadbeef")
+    agent = SimpleNamespace(
+        auto_approve=True,
+        ipc_server=None,
+        tools=registry,
+        tracker_info=None,
+        session=session,
+        context_controller=SimpleNamespace(summarize_tool_result=lambda r: r),
+        provider=SimpleNamespace(get_model_info=lambda: {"total_tokens": 0}),
+        _sync_tracker=MagicMock(),
+        _finish_tracker=MagicMock(),
+        save_session=MagicMock(),
+    )
+    hooks_manager = SimpleNamespace(run_hooks=AsyncMock(return_value=[]))
+    executor = ToolExecutor(agent)
+
+    last_did_error = False
+    last_fatal_res = None
+    for i in range(DOOM_LOOP_HARD_THRESHOLD):
+        tool_calls = [{
+            "id": f"t{i}",
+            "type": "function",
+            "function": {"name": "plan", "arguments": '{"action":"show"}'},
+        }]
+        session.add_message("assistant", None, tool_calls=tool_calls)
+        last_did_error, last_fatal_res = await executor.orchestrate_tool_calls(
+            tool_calls=tool_calls,
+            messages=session.get_messages_for_api(),
+            user_message="complete it",
+            hooks_data=None,
+            hooks_manager=hooks_manager,
+        )
+
+    assert last_did_error is True
+    assert isinstance(last_fatal_res, dict)
+    assert last_fatal_res.get("_doom_loop_stop") is True
+    assert last_fatal_res["tool_name"] == "plan"
+    assert last_fatal_res["count"] == DOOM_LOOP_HARD_THRESHOLD
+
+
+def test_doom_loop_terminates_execution_loop_with_explanatory_message() -> None:
+    """End-to-end: when the executor signals _doom_loop_stop, ExecutionLoop
+    must exit immediately (not run to max_iterations) and surface a message
+    that names the offending tool."""
+    with patch("coderAI.agent.config_manager") as cm:
+        from coderAI.config import Config
+
+        cfg = Config(max_iterations=50, budget_limit=0, save_history=False)
+        cm.load.return_value = cfg
+        cm.load_project_config.return_value = cfg
+        from coderAI.agent import Agent
+
+        mock_provider = MagicMock()
+        mock_provider.supports_tools.return_value = False
+        mock_provider.count_tokens = lambda text: max(1, len(str(text)) // 4)
+        mock_provider.get_model_info.return_value = {
+            "total_input_tokens": 0,
+            "total_output_tokens": 0,
+            "total_tokens": 0,
+        }
+
+        with patch.object(Agent, "_create_provider", return_value=mock_provider):
+            agent = Agent(model="gpt-5.4-mini", streaming=False)
+
+    agent.save_session = MagicMock()
+    loop = ExecutionLoop(agent)
+    loop._call_llm_with_retry = AsyncMock(
+        return_value={
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_plan",
+                    "type": "function",
+                    "function": {"name": "plan", "arguments": '{"action":"show"}'},
+                }
+            ],
+        }
+    )
+
+    call_count = 0
+
+    async def fake_orchestrate(
+        tool_calls, messages, user_message, hooks_data, hooks_manager,
+    ):
+        nonlocal call_count
+        call_count += 1
+        if call_count >= DOOM_LOOP_HARD_THRESHOLD:
+            return True, {
+                "_doom_loop_stop": True,
+                "tool_name": "plan",
+                "count": call_count,
+            }
+        return False, None
+
+    loop.tool_executor.orchestrate_tool_calls = AsyncMock(side_effect=fake_orchestrate)
+
+    result = asyncio.run(loop.run("complete it"))
+
+    assert call_count == DOOM_LOOP_HARD_THRESHOLD, (
+        "loop should exit immediately on _doom_loop_stop, not retry"
+    )
+    assert "plan" in result["content"]
+    assert "looping" in result["content"].lower() or "loop" in result["content"].lower()
+    # Critically: did NOT run to max_iterations.
+    assert "maximum number of iterations" not in result["content"]
+
+
 def test_failed_tool_iterations_accumulate_in_execution_loop() -> None:
     with patch("coderAI.agent.config_manager") as cm:
         from coderAI.config import Config
@@ -231,7 +358,7 @@ def test_failed_tool_iterations_accumulate_in_execution_loop() -> None:
         }
     )
 
-    seen_error_counts = []
+    call_count = 0
 
     async def fake_orchestrate(
         tool_calls,
@@ -239,21 +366,17 @@ def test_failed_tool_iterations_accumulate_in_execution_loop() -> None:
         user_message,
         hooks_data,
         hooks_manager,
-        max_consecutive_errors,
-        current_errors,
     ):
-        seen_error_counts.append(current_errors)
-        if current_errors + 1 >= max_consecutive_errors:
-            return True, {
-                "content": "Stopped after repeated failed tool iterations.",
-                "messages": agent.session.messages,
-                "model_info": agent.provider.get_model_info(),
-            }
+        nonlocal call_count
+        call_count += 1
+        # Always signal a tool error. The loop's consecutive_errors counter
+        # resets on each successful LLM call, so tool failures during a
+        # working LLM session run until max_iterations is exhausted.
         return True, {"retry": True}
 
     loop.tool_executor.orchestrate_tool_calls = AsyncMock(side_effect=fake_orchestrate)
 
     result = asyncio.run(loop.run("hello"))
 
-    assert result["content"] == "Stopped after repeated failed tool iterations."
-    assert seen_error_counts == list(range(MAX_CONSECUTIVE_ERRORS))
+    assert "maximum number of iterations" in result["content"]
+    assert call_count == cfg.max_iterations

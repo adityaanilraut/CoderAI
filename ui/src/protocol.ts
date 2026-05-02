@@ -4,11 +4,12 @@
  */
 
 export type ToolCategory =
-  | "fs"
+  | "filesystem"
   | "git"
-  | "shell"
+  | "terminal"
   | "web"
   | "search"
+  | "memory"
   | "agent"
   | "mcp"
   | "other";
@@ -50,6 +51,7 @@ export type AgentEvent =
       provider: string;
       cwd: string;
       version: string;
+      protocolVersion: 2;
       contextLimit: number;
       budgetLimit: number;
       autoApprove: boolean;
@@ -103,25 +105,26 @@ export const AGENT_EVENT_NAMES: readonly string[] = [
   "goodbye",
 ];
 
-export type UIEnvelope = { v: 1; kind: "event" } & AgentEvent;
+export type UIEnvelope = { v: 2; kind: "event" } & AgentEvent;
 
 export type VerbosityLevel = "quiet" | "normal" | "verbose";
 
 // AgentCommand lists every command the UI may send over the NDJSON bridge;
 // see `AgentClient.send()` for the runtime envelope shape.
 export type AgentCommand =
-  | { cmd: "send_message"; text: string }
-  | { cmd: "cancel"; agentId?: string }
-  | { cmd: "tool_approval_resp"; toolId: string; approve: boolean }
-  | { cmd: "set_model"; model: string }
-  | { cmd: "set_reasoning"; effort: ReasoningEffort }
-  | { cmd: "set_default_model"; model: string }
-  | { cmd: "set_verbosity"; level: VerbosityLevel }
-  | { cmd: "toggle_auto_approve" }
-  | { cmd: "compact_context" }
-  | { cmd: "clear_context" }
-  | { cmd: "get_state" }
-  | { cmd: "get_plan" }
-  | { cmd: "list_models" }
-  | { cmd: "reference"; topic: string }
-  | { cmd: "exit" };
+  | { cmd: "handshake"; payload: { protocolVersion: 2 }; id?: string }
+  | { cmd: "send_message"; text: string; id?: string }
+  | { cmd: "cancel"; agentId?: string; id?: string }
+  | { cmd: "tool_approval_resp"; toolId: string; approve: boolean; id?: string }
+  | { cmd: "set_model"; model: string; id?: string }
+  | { cmd: "set_reasoning"; effort: ReasoningEffort; id?: string }
+  | { cmd: "set_default_model"; model: string; id?: string }
+  | { cmd: "set_verbosity"; level: VerbosityLevel; id?: string }
+  | { cmd: "toggle_auto_approve"; id?: string }
+  | { cmd: "compact_context"; id?: string }
+  | { cmd: "clear_context"; id?: string }
+  | { cmd: "get_state"; id?: string }
+  | { cmd: "get_plan"; id?: string }
+  | { cmd: "list_models"; id?: string }
+  | { cmd: "reference"; topic: string; id?: string }
+  | { cmd: "exit"; id?: string };

@@ -203,14 +203,14 @@ class TestResolveGitRoot:
             assert result["matches_expected"] is False
             assert result["warning"] is not None
 
-    def test_nested_dir_scope_mismatch(self, git_repo):
-        """A subdirectory inside a git repo should report scope mismatch."""
+    def test_nested_dir_scope_match(self, git_repo):
+        """A subdirectory inside a git repo should be considered in scope (the git root is an ancestor)."""
         sub_dir = os.path.join(git_repo, "sub", "nested")
         os.makedirs(sub_dir)
         result = asyncio.run(resolve_git_root(sub_dir))
         assert result["git_root"] is not None
-        assert result["matches_expected"] is False
-        assert "mismatch" in result["warning"].lower()
+        assert result["matches_expected"] is True
+        assert result["warning"] is None
 
     def test_get_current_branch(self, git_repo):
         # Create an initial commit so HEAD exists

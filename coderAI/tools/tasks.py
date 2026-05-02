@@ -1,6 +1,8 @@
 """Task management tool for persistent planning across invocations."""
 
 import json
+import os
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -195,8 +197,21 @@ class ManageTasksTool(Tool):
             return []
 
     def _save_tasks(self, filepath: Path, tasks: List[Dict[str, Any]]) -> None:
-        with open(filepath, "w") as f:
-            json.dump(tasks, f, indent=2)
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(filepath.parent), prefix=".tasks-", suffix=".json.tmp"
+        )
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(tasks, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, filepath)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
     def _format_tasks(self, tasks: List[Dict[str, Any]]) -> Dict[str, Any]:
         if not tasks:

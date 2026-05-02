@@ -1,4 +1,4 @@
-import React from "react";
+import React, {useMemo} from "react";
 import {Box, Text, useStdout} from "ink";
 import {theme} from "../theme.js";
 
@@ -44,9 +44,12 @@ export function Diff({
   const {stdout} = useStdout();
   const columns = stdout?.columns ?? 100;
   const narrow = columns < theme.layout.narrowCols;
-  const stats = countStats(diff);
-  const parsed = parseDiff(diff);
-  const rows = elide(parsed, contextLines);
+  // Memoize on the diff string: parents re-render frequently while streaming
+  // (status ticks, sibling timeline updates) and parseDiff/elide are O(n) over
+  // every line. A 1k-line diff used to be re-walked on every parent tick.
+  const stats = useMemo(() => countStats(diff), [diff]);
+  const parsed = useMemo(() => parseDiff(diff), [diff]);
+  const rows = useMemo(() => elide(parsed, contextLines), [parsed, contextLines]);
   const cap = Math.max(40, maxLineWidth);
 
   if (!verbose) {

@@ -19,6 +19,8 @@ from .llm.factory import create_provider
 from .system_prompt import (
     SYSTEM_PROMPT_INTRO,
     SYSTEM_PROMPT_TAIL,
+    SYSTEM_PROMPT_OUTPUT_STYLE,
+    build_environment_section,
     compose_default_system_prompt,
     format_tools_markdown,
 )
@@ -58,6 +60,7 @@ class Agent:
         auto_approve: bool = True,
         persona_name: Optional[str] = None,
         is_subagent: bool = False,
+        delegation_depth: int = 0,
     ):
         """Initialize the agent.
 
@@ -68,6 +71,11 @@ class Agent:
                 (--auto-approve / --yolo)
             persona_name: Name of a specific persona to load from
                 .coderAI/agents/
+            is_subagent: True when constructed by ``DelegateTaskTool``.
+            delegation_depth: How deep this agent sits in the delegation
+                tree. Root agent = 0, sub-agent of root = 1, etc. The tool
+                registry's ``delegate_task`` reads this from the agent's
+                ``SubagentContext`` to enforce ``MAX_DELEGATION_DEPTH``.
         """
         self.config = config_manager.load_project_config(".")
 
@@ -84,6 +92,7 @@ class Agent:
         self.streaming = streaming and self.config.streaming
         self.auto_approve = auto_approve  # Can be toggled via /auto-approve
         self.is_subagent = is_subagent
+        self.delegation_depth = int(delegation_depth)
 
         # Initialize context manager
         self.context_manager = ContextManager(config=self.config)
@@ -105,6 +114,8 @@ class Agent:
         # (optionally filtered by persona tools)
         self.tools = ToolRegistry()
         self.cost_tracker = CostTracker()
+        self._context_controller.cost_tracker = self.cost_tracker
+        self._context_controller._on_summary_tokens = self._add_summary_tokens
         self._rebuild_tool_registry()
 
         # Token accounting snapshot for the current tracking step
@@ -136,6 +147,8 @@ class Agent:
         # Per-command approval cache for project hooks. Keyed by command string
         # so new or changed hooks re-prompt instead of inheriting an approval.
         self._hooks_approved: Dict[str, bool] = {}
+        # Initialized eagerly here so the tool executor's _approval_allowlist
+        # property never races on first access.
         self._tool_approval_allowlist: set[str] = set()
 
         self.hooks_manager = HooksManager(self)
@@ -207,6 +220,7 @@ class Agent:
             parent_auto_approve=self.auto_approve,
             parent_ipc_server=getattr(self, "ipc_server", None),
             parent_session=getattr(self, "session", None),
+            delegation_depth=getattr(self, "delegation_depth", 0),
         )
 
     def _rebuild_tool_registry(self) -> None:
@@ -257,6 +271,12 @@ class Agent:
             self.provider = self._create_provider()
             if self.session:
                 self.session.model = self.model
+            self.provider.set_cumulative_usage(
+                input_tokens=self.total_prompt_tokens,
+                output_tokens=self.total_completion_tokens,
+                cache_creation_tokens=getattr(self, "total_cache_creation_tokens", 0),
+                cache_read_tokens=getattr(self, "total_cache_read_tokens", 0),
+            )
 
         self._cached_system_prompt = None  # invalidate before rebuild
         self._rebuild_tool_registry()
@@ -289,17 +309,33 @@ class Agent:
         return persona
 
     def _filter_tools_for_persona(self, allowed_tools: list) -> None:
-        """Apply the persona's mutating-tool policy.
+        """Apply the persona's tool policy.
 
         Persona frontmatter uses high-level tool labels like `Read` and `Edit`.
         These are expanded into concrete tool IDs, but read-only tools remain
         available so specialist personas can still inspect the codebase.
 
+        When the persona has ``permission`` rules (e.g. ``{"write_file": "deny"}``),
+        those are applied on top of the whitelist — a ``"deny"`` entry removes
+        the tool even if it would otherwise survive the filter.
+
         ``delegate_task`` is always kept available so personas can still
         orchestrate further sub-agents — it's foundational to the multi-agent
         workflow rather than a persona-specific mutation.
         """
+        # Apply explicit permission rules first (deny takes precedence).
+        if self.persona and self.persona.permission:
+            for tool_name, action in self.persona.permission.items():
+                if action == "deny" and tool_name in self.tools.tools:
+                    del self.tools.tools[tool_name]
+                elif action == "allow":
+                    pass  # tool is already present; nothing to change
+
         allowed_set = expand_persona_tools(allowed_tools)
+        if not allowed_set:
+            # No tool whitelist = keep everything
+            return
+
         # Tools that must remain available regardless of persona frontmatter.
         always_available = {"delegate_task"}
         to_remove = [
@@ -349,17 +385,33 @@ class Agent:
             seen_hashes.add(digest)
             sections.append(text)
 
+        import os
+        import platform as _platform
+
+        # Build environment section (model ID, working dir, git status, platform, date)
+        project_root = getattr(self.config, "project_root", os.getcwd())
+        is_git = os.path.isdir(os.path.join(project_root, ".git"))
+        env_section = build_environment_section(
+            model=self.model,
+            working_directory=os.getcwd(),
+            workspace_root=project_root,
+            is_git_repo=is_git,
+            platform=_platform.system(),
+        )
+
         if self.persona:
             # Keep core principles, strategy, and safety — not only persona
-            # text + tool names.
+            # text + tool names. Environment block goes first.
             _append_once(
+                f"{env_section}\n\n"
                 f"{SYSTEM_PROMPT_INTRO}\n\n"
                 f"{self.persona.instructions}\n\n"
                 f"{format_tools_markdown(self.tools)}\n\n"
+                f"{SYSTEM_PROMPT_OUTPUT_STYLE}\n\n"
                 f"{SYSTEM_PROMPT_TAIL}"
             )
         else:
-            _append_once(compose_default_system_prompt(self.tools))
+            _append_once(compose_default_system_prompt(self.tools, env_section=env_section))
 
         # Look for project rules and append them
         try:
@@ -370,11 +422,6 @@ class Agent:
                 rules = []
                 for rule_file in sorted(rules_dir.glob("*.md")):
                     try:
-                        try:
-                            resolved = rule_file.resolve()
-                            resolved.relative_to(rules_dir.resolve())
-                        except Exception:
-                            resolved = rule_file
                         content = rule_file.read_text(encoding="utf-8").strip()
                         if content:
                             quoted = "\n".join(
@@ -388,7 +435,7 @@ class Agent:
                             )
                     except Exception as e:
                         logger.warning(
-                            f"Failed to read rule file {rule_file.name}: {e}"
+                            "Failed to read rule file %s: %s", rule_file.name, e
                         )
 
                 if rules:
@@ -406,16 +453,6 @@ class Agent:
         self._system_prompt_cache_key = cache_key
         return result
 
-    def _inject_context_message(
-        self, messages: List[Dict[str, Any]], query: str
-    ) -> List[Dict[str, Any]]:
-        """Inject the pinned-context system message after the last system message."""
-        return self.context_controller.inject_context(
-            messages=messages,
-            context_manager=self.context_manager,
-            query=query
-        )
-
     def _reset_session_accounting(self) -> None:
         """Reset cost, token, and hook-approval state at session boundaries.
 
@@ -432,27 +469,32 @@ class Agent:
         allowlist = getattr(self, "_tool_approval_allowlist", None)
         if allowlist is not None:
             allowlist.clear()
-        # Drop per-session read cache so a new conversation starts with
-        # fresh file reads rather than placeholders pointing at turns from
-        # the prior session.
+        # Swap rather than clear: a concurrent read_file task (asyncio.gather)
+        # may still hold the old cache reference; the new session gets a clean one.
         if hasattr(self, "read_cache") and self.read_cache is not None:
-            self.read_cache.clear()
-        # Re-align provider-side cumulative counters with the zeroed agent
-        # counters so subsequent deltas read correctly.
+            self.read_cache = FileReadCache()
+            self._wire_read_cache()
         provider = getattr(self, "provider", None)
         if provider is not None:
-            if hasattr(provider, "total_input_tokens"):
-                provider.total_input_tokens = 0
-            if hasattr(provider, "total_output_tokens"):
-                provider.total_output_tokens = 0
-            if hasattr(provider, "total_cache_creation_tokens"):
-                provider.total_cache_creation_tokens = 0
-            if hasattr(provider, "total_cache_read_tokens"):
-                provider.total_cache_read_tokens = 0
+            provider.set_cumulative_usage()
 
     def create_session(self) -> Session:
         """Create a new conversation session."""
         self._reset_session_accounting()
+        # Clear any stale plan from a previous session so a new terminal
+        # session does not show the old plan on /plan.
+        try:
+            from .project_layout import find_dot_coderai_subdir
+            from pathlib import Path
+            pr = str(self.config.project_root)
+            dot_dir = find_dot_coderai_subdir("", pr)
+            if dot_dir is None:
+                dot_dir = Path(pr).resolve() / ".coderAI"
+            plan_path = dot_dir / "current_plan.json"
+            if plan_path.exists():
+                plan_path.unlink()
+        except Exception:
+            pass
         self.session = history_manager.create_session(model=self.model)
         # Add system prompt as the first message
         self.session.add_message("system", self._get_system_prompt())
@@ -463,6 +505,20 @@ class Agent:
         self._reset_session_accounting()
         self.session = history_manager.load_session(session_id)
         return self.session
+
+    def realign_provider_usage_counters(self) -> None:
+        """Sync provider cumulative counters to the agent's current totals."""
+        provider = getattr(self, "provider", None)
+        if provider is None:
+            return
+        provider.set_cumulative_usage(
+            input_tokens=self.total_prompt_tokens,
+            output_tokens=self.total_completion_tokens,
+            cache_creation_tokens=getattr(
+                self, "total_cache_creation_tokens", 0
+            ),
+            cache_read_tokens=getattr(self, "total_cache_read_tokens", 0),
+        )
 
     def save_session(self):
         """Save current session."""
@@ -482,6 +538,12 @@ class Agent:
         limit = self.config.context_window
         return used_tokens, limit
 
+    def _add_summary_tokens(self, input_delta: int, output_delta: int):
+        """Update cumulative token counters after a context summarization LLM call."""
+        self.total_prompt_tokens += input_delta
+        self.total_completion_tokens += output_delta
+        self.total_tokens += input_delta + output_delta
+
     async def compact_context(self) -> bool:
         """Force the context to be compacted by summarizing history."""
         if not self.session:
@@ -493,6 +555,7 @@ class Agent:
         )
 
         # Use a local override instead of mutating the shared config object
+        # Reserve ~1.5k tokens for the compaction response itself
         compact_limit = RESPONSE_TOKEN_RESERVE + TOOL_OVERHEAD_TOKENS + 1500
 
         try:
@@ -555,10 +618,11 @@ class Agent:
                         new_messages.append(Message(**msg_args))
                     self.session.messages = new_messages
                     self.session.updated_at = now
+                    self.save_session()
                     # Run on_compact hooks
                     hooks_data = self.hooks_manager.load_hooks()
                     if hooks_data:
-                         await self.hooks_manager.run_hooks("*", "on_compact", {}, hooks_data)
+                        await self.hooks_manager.run_hooks("*", "on_compact", {}, hooks_data)
 
                     event_emitter.emit(
                         "agent_status",
@@ -627,34 +691,6 @@ class Agent:
         event_emitter.emit("agent_lifecycle", action="finished", info=info)
 
 
-    def _is_transient_error(self, exc: Exception) -> bool:
-        """Thin delegator for backward compatibility and testing."""
-        from .error_policy import is_transient_error
-        return is_transient_error(exc)
-
-    def _summarize_tool_result(self, result: Any) -> Dict[str, Any]:
-        """Thin delegator for backward compatibility and testing."""
-        return self.context_controller.summarize_tool_result(result)
-
-    async def _manage_context_window(
-        self,
-        messages: List[Dict[str, Any]],
-        context_limit_override: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
-        """Thin delegator for backward compatibility and testing."""
-        return await self.context_controller.manage_context_window(
-            messages, context_limit_override=context_limit_override
-        )
-
-    async def _call_llm_with_retry(
-        self,
-        messages: List[Dict[str, Any]],
-        tool_schemas: Optional[List[Dict[str, Any]]],
-    ) -> Dict[str, Any]:
-        """Thin delegator for backward compatibility and testing."""
-        from .agent_loop import ExecutionLoop
-        return await ExecutionLoop(self)._call_llm_with_retry(messages, tool_schemas)
-
     async def process_message(
         self, user_message: str, progress_callback=None
     ) -> Dict[str, Any]:
@@ -676,5 +712,10 @@ class Agent:
 
     async def close(self) -> None:
         """Clean up resources (HTTP sessions, background processes, etc.)."""
+        if hasattr(self, "streaming_handler") and self.streaming_handler is not None:
+            if hasattr(self.streaming_handler, "close"):
+                await self.streaming_handler.close()
         if hasattr(self.provider, "close"):
             await self.provider.close()
+        if self.tracker_info:
+            self._finish_tracker()

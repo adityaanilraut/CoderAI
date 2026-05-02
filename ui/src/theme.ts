@@ -1,86 +1,129 @@
 /**
- * Central theme tokens — CoderAI Design System (Tokyo Night palette).
- * Ink uses the `chalk` color vocabulary; truecolor is supported as hex.
+ * Central theme tokens — CoderAI Design System.
  *
- * Design thesis: "quiet rails, loud signals".  Borders are expensive
+ * Two palettes ship: a Tokyo Night dark theme (default) and a paper-light
+ * theme for light terminals. Pick at startup with `CODERAI_THEME=light`. The
+ * shape is identical so components don't need conditional logic — they just
+ * import `theme` and read tokens.
+ *
+ * Design thesis: "quiet rails, loud signals". Borders are expensive
  * cognitively — a left-edge colored rail groups a block with a tenth the
- * visual weight.  Colors are earned: muted by default, semantic colors
- * only when something genuinely needs attention.
+ * visual weight. Colors are earned: muted by default, semantic colors only
+ * when something genuinely needs attention.
  */
 
-export const theme = {
-  // Brand / Accent — Tokyo Night blues
-  accent: "#7aa2f7",      // Primary blue — headers, cursor, active states
-  accentDim: "#3d59a1",   // Dimmed blue — quiet borders, reasoning block
+interface ThemeShape {
+  accent: string;
+  accentDim: string;
+  success: string;
+  warning: string;
+  danger: string;
+  info: string;
+  muted: string;
+  faint: string;
+  text: string;
+  textSoft: string;
+  bg: string;
+  bgElevated: string;
+  link: string;
+  codeBlock: {bg: string; label: string};
+  diff: {addBg: string; delBg: string};
+  tool: {
+    filesystem: string;
+    git: string;
+    terminal: string;
+    web: string;
+    search: string;
+    memory: string;
+    agent: string;
+    mcp: string;
+    other: string;
+  };
+  risk: {low: string; medium: string; high: string};
+  role: {user: string; assistant: string; system: string};
+  spacing: {sm: number; md: number};
+  layout: {narrowCols: number};
+  glyph: {
+    separator: string;
+    dot: string;
+    bullet: string;
+    diamond: string;
+    caret: string;
+    sentCaret: string;
+    arrowRun: string;
+    rail: string;
+    tick: string;
+    cross: string;
+    warn: string;
+    wait: string;
+    cog: string;
+    pulse: string;
+    info: string;
+    cancelled: string;
+  };
+}
 
-  // Semantic states
-  success: "#9ece6a",     // Green — user bubble, ✓ icons, safe/low-risk
-  warning: "#e0af68",     // Amber — git tools, ⚠ approval, YOLO mode
-  danger: "#f7768e",      // Pink-red — shell tools, ✗ errors, high-risk
-  info: "#7dcfff",        // Cyan — fs tools, help menu, waiting state
-  muted: "#565f89",       // Slate — secondary text, quiet borders
-  faint: "#525985",       // Dim slate — tertiary chrome, dividers (raised from #414868 for contrast)
+const dark: ThemeShape = {
+  accent: "#7aa2f7",
+  accentDim: "#3d59a1",
 
-  // Main text (Tokyo Night foreground)
+  success: "#9ece6a",
+  warning: "#e0af68",
+  danger: "#f7768e",
+  info: "#7dcfff",
+  muted: "#565f89",
+  faint: "#525985",
+
   text: "#c0caf5",
-  textSoft: "#a9b1d6",    // Slightly dimmed primary text for body copy
+  textSoft: "#a9b1d6",
 
-  // Surfaces
-  bg: "#1a1b26",          // App background
-  bgElevated: "#24283b",  // Emphasis surface — selected rows, dialog headers
+  bg: "#1a1b26",
+  bgElevated: "#24283b",
+  link: "#bb9af7",
+  codeBlock: {bg: "#16161e", label: "#565f89"},
 
-  // Diff viewer backgrounds
   diff: {
     addBg: "#1d3a1d",
     delBg: "#3a1d1d",
   },
 
-  // Tool category colors — used for left rails on tool blocks
   tool: {
-    fs: "#7dcfff",
+    filesystem: "#7dcfff",
     git: "#e0af68",
-    shell: "#f7768e",
+    terminal: "#f7768e",
     web: "#bb9af7",
     search: "#7aa2f7",
+    memory: "#ad8ee6",
     agent: "#9ece6a",
     mcp: "#ff9e64",
     other: "#a9b1d6",
   },
 
-  // Risk badge colors
   risk: {
     low: "#9ece6a",
     medium: "#e0af68",
     high: "#f7768e",
   },
 
-  // Chat role identity — rail + label color per participant
   role: {
-    user: "#9ece6a",       // Green — the human
-    assistant: "#7aa2f7",  // Blue — Claude
-    system: "#bb9af7",     // Violet — tool/notices
+    user: "#9ece6a",
+    assistant: "#7aa2f7",
+    system: "#bb9af7",
   },
 
-  spacing: {
-    sm: 1,
-    md: 2,
-  },
+  spacing: {sm: 1, md: 2},
 
-  // Shared layout breakpoints. Components that adapt to width should read
-  // `theme.layout.narrowCols` rather than redeclaring their own threshold.
-  layout: {
-    narrowCols: 72,
-  },
+  layout: {narrowCols: 72},
 
   glyph: {
-    separator: "  ",           // Two-space field separator (no more `│`)
-    dot: "·",                  // Inline metadata separator
-    bullet: "●",               // Generic marker
-    diamond: "◆",              // Brand/agent mark
-    caret: "❯",                // Live prompt
-    sentCaret: "›",             // Echoed user message in transcript
-    arrowRun: "→",             // Progress/hint arrow
-    rail: "▌",                 // Left rail glyph (display only; rails use Ink borders)
+    separator: "  ",
+    dot: "·",
+    bullet: "●",
+    diamond: "◆",
+    caret: "❯",
+    sentCaret: "›",
+    arrowRun: "→",
+    rail: "▌",
     tick: "✓",
     cross: "✗",
     warn: "⚠",
@@ -90,4 +133,79 @@ export const theme = {
     info: "ℹ",
     cancelled: "⊘",
   },
-} as const;
+};
+
+/**
+ * Light variant — paper background, GitHub-Light-style accents. Keeps the
+ * same semantic mapping as dark (success=green, danger=red, warning=amber)
+ * but pushes saturation down and contrast up so the colors read on white.
+ * Glyphs and spacing are shared.
+ */
+const light: ThemeShape = {
+  ...dark,
+
+  accent: "#0969da",
+  accentDim: "#54aeff",
+
+  success: "#1a7f37",
+  warning: "#9a6700",
+  danger: "#cf222e",
+  info: "#0550ae",
+  muted: "#57606a",
+  faint: "#8c959f",
+
+  text: "#1f2328",
+  textSoft: "#424a53",
+
+  bg: "#ffffff",
+  bgElevated: "#f6f8fa",
+  link: "#0550ae",
+  codeBlock: {bg: "#f3f4f6", label: "#8c959f"},
+
+  diff: {
+    addBg: "#dafbe1",
+    delBg: "#ffebe9",
+  },
+
+  tool: {
+    filesystem: "#0550ae",
+    git: "#9a6700",
+    terminal: "#cf222e",
+    web: "#8250df",
+    search: "#0969da",
+    memory: "#7c4dbd",
+    agent: "#1a7f37",
+    mcp: "#bc4c00",
+    other: "#57606a",
+  },
+
+  risk: {
+    low: "#1a7f37",
+    medium: "#9a6700",
+    high: "#cf222e",
+  },
+
+  role: {
+    user: "#1a7f37",
+    assistant: "#0969da",
+    system: "#8250df",
+  },
+};
+
+function resolveVariant(): ThemeShape {
+  const requested = process.env.CODERAI_THEME?.toLowerCase();
+  if (requested === "light") return light;
+  // COLORFGBG is set by some terminals as "fg;bg" (e.g. "0;15" = black on
+  // white). When bg index is 7 or 15 (white-ish), fall back to light. Cheap
+  // best-effort detection — a one-liner override via CODERAI_THEME beats
+  // any heuristic.
+  const colorFgBg = process.env.COLORFGBG;
+  if (colorFgBg && requested !== "dark") {
+    const parts = colorFgBg.split(";");
+    const bg = Number(parts[parts.length - 1]);
+    if (bg === 7 || bg === 15) return light;
+  }
+  return dark;
+}
+
+export const theme = resolveVariant();

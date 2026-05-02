@@ -47,6 +47,10 @@ MODEL_PRICING: Dict[str, Dict[str, float]] = {
     # Groq
     "openai/gpt-oss-120b": {"input": 0.15, "output": 0.60},
     "openai/gpt-oss-20b": {"input": 0.075, "output": 0.30},
+    "llama3-70b-8192": {"input": 0.59, "output": 0.79},
+    "llama3-8b-8192": {"input": 0.05, "output": 0.08},
+    "mixtral-8x7b-32768": {"input": 0.27, "output": 0.27},
+    "gemma-7b-it": {"input": 0.07, "output": 0.07},
     "llama-3.3-70b-versatile": {"input": 0.59, "output": 0.79},
     "llama-3.1-8b-instant": {"input": 0.05, "output": 0.08},
 
@@ -75,13 +79,29 @@ class CostTracker:
 
     @staticmethod
     def get_model_pricing(model: str) -> Dict[str, float]:
-        """Get the pricing for a model (USD per 1M tokens)."""
+        """Get the pricing for a model (USD per 1M tokens).
+
+        Resolves via: exact key → friendly-alias normalization → longest-substring match.
+        Model IDs with date suffixes (e.g. ``claude-haiku-4-5-20251001``) are
+        normalised by stripping trailing ``-YYYYMMDD`` segments before lookup.
+        """
         base_model = model.lower()
 
+        def _strip_date_suffixes(s: str) -> str:
+            """Strip one or more ``-YYYYMMDD`` suffixes from a model ID."""
+            import re as _re
+            while True:
+                stripped = _re.sub(r"-\d{8,}$", "", s)
+                if stripped == s:
+                    return stripped
+                s = stripped
+
+        base_model = _strip_date_suffixes(base_model)
+
+        # Friendly-alias normalisation: claude-4-5-haiku → claude-4.5-haiku
         if base_model.startswith("claude-"):
-            import re
-            base_model = re.sub(r"-\d{8}$", "", base_model)
-            base_model = re.sub(
+            import re as _re
+            base_model = _re.sub(
                 r"^(claude-)(\d+)-(\d+)(-\w+)$",
                 lambda m: f"{m.group(1)}{m.group(2)}.{m.group(3)}{m.group(4)}",
                 base_model,
@@ -89,27 +109,28 @@ class CostTracker:
 
         pricing = MODEL_PRICING.get(base_model)
         if not pricing:
-            # Match longest key first so "o1-pro" matches "o1-pro" before "o1"
             for k in sorted(MODEL_PRICING, key=len, reverse=True):
                 if k in base_model:
                     pricing = MODEL_PRICING[k]
                     break
 
         if not pricing:
-            logger.debug(f"Unknown pricing for model '{model}'. Cost will be 0.")
+            logger.warning(
+                "Unknown pricing for model '%s' (resolved to '%s'). "
+                "Cost will be recorded as $0.00 — this is likely a new model "
+                "that needs a pricing entry in MODEL_PRICING.",
+                model, base_model,
+            )
             return {"input": 0.0, "output": 0.0}
-            
+
         return pricing
 
     @staticmethod
     def calculate_cost_for_tokens(model: str, input_tokens: int, output_tokens: int) -> float:
         """Calculate cost without adding to total."""
         pricing = CostTracker.get_model_pricing(model)
-
-        if not pricing:
-            logger.debug(f"Unknown pricing for model '{model}'. Cost will be 0.")
-            return 0.0
-
+        # ``get_model_pricing`` always returns a dict (zero-cost sentinel when
+        # unknown), so ``pricing`` is always truthy here.
         input_cost = (input_tokens / 1_000_000) * pricing["input"]
         output_cost = (output_tokens / 1_000_000) * pricing["output"]
         return input_cost + output_cost

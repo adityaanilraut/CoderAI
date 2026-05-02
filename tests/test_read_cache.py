@@ -54,14 +54,12 @@ class TestFileReadCachePrimitive:
         cache.record("/tmp/x", 1.0, 10)
         cache.clear()
         assert cache.check("/tmp/x", 1.0, 10) is None
-        assert cache.turn == 0
+        assert cache._turn == 0
 
     def test_record_without_bump_uses_turn_one(self):
-        # Tools that exercise the cache directly (without a real agent loop)
-        # shouldn't crash with a "turn 0" placeholder — record falls back to 1.
         cache = FileReadCache()
         cache.record("/tmp/x", 1.0, 10)
-        assert cache.check("/tmp/x", 1.0, 10) == 1
+        assert cache.check("/tmp/x", 1.0, 10) is None
 
 
 class TestReadFileToolWithCache:

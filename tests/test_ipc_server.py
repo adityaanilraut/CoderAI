@@ -6,6 +6,7 @@ import pytest
 
 from coderAI.ipc.jsonrpc_server import (
     _cmd_clear_context,
+    _cmd_handshake,
     _cmd_send_message,
     _cmd_set_model,
 )
@@ -41,8 +42,20 @@ async def test_send_message_is_serialized_per_server() -> None:
 
 @pytest.mark.asyncio
 async def test_set_model_aligns_provider_usage_counters() -> None:
-    old_provider = SimpleNamespace(total_input_tokens=3, total_output_tokens=4)
-    new_provider = SimpleNamespace(total_input_tokens=0, total_output_tokens=0)
+    def _make_provider() -> SimpleNamespace:
+        ns = SimpleNamespace(total_input_tokens=0, total_output_tokens=0)
+
+        def _set(*, input_tokens=0, output_tokens=0, **_kw):
+            ns.total_input_tokens = max(0, int(input_tokens or 0))
+            ns.total_output_tokens = max(0, int(output_tokens or 0))
+
+        ns.set_cumulative_usage = _set
+        return ns
+
+    old_provider = _make_provider()
+    old_provider.total_input_tokens = 3
+    old_provider.total_output_tokens = 4
+    new_provider = _make_provider()
     agent = SimpleNamespace(
         model="old-model",
         provider=old_provider,
@@ -86,6 +99,7 @@ async def test_clear_context_invokes_session_reset() -> None:
         agent=agent,
         emit=MagicMock(),
         emit_status=MagicMock(),
+        _turn_lock=asyncio.Lock(),
     )
 
     await _cmd_clear_context(server, {})
@@ -95,11 +109,33 @@ async def test_clear_context_invokes_session_reset() -> None:
     assert agent.session is None
 
 
+@pytest.mark.asyncio
+async def test_handshake_warns_on_protocol_mismatch() -> None:
+    server = SimpleNamespace(
+        emit=MagicMock(),
+        _handshake_done=False,
+    )
+
+    await _cmd_handshake(server, {"payload": {"protocolVersion": 1}})
+
+    server.emit.assert_called_once()
+    args, kwargs = server.emit.call_args
+    assert args == ("warning",)
+    assert "Protocol version mismatch" in kwargs["message"]
+    assert server._handshake_done is True
+
+
 def test_reset_session_accounting_zeros_counters() -> None:
     from coderAI.agent import Agent
     from coderAI.cost import CostTracker
 
     provider = SimpleNamespace(total_input_tokens=21, total_output_tokens=8)
+
+    def _set(*, input_tokens=0, output_tokens=0, **_kw):
+        provider.total_input_tokens = max(0, int(input_tokens or 0))
+        provider.total_output_tokens = max(0, int(output_tokens or 0))
+
+    provider.set_cumulative_usage = _set
     # Build an ``Agent``-shaped namespace without invoking __init__ so the
     # test doesn't require real provider config.
     agent = Agent.__new__(Agent)
