@@ -120,7 +120,7 @@ class RecallMemoryParams(BaseModel):
     key: Optional[str] = Field(None, description="Memory key to recall (optional, omit to search)")
     query: Optional[str] = Field(None, description="Search query to find related memories")
 
-    @model_validator(mode='after')
+    @model_validator(mode="after")
     def check_at_least_one(self):
         if not self.key and not self.query:
             raise ValueError("Must provide either 'key' or 'query'")
@@ -171,7 +171,6 @@ class RecallMemoryTool(Tool):
                 }
         except Exception as e:
             return {"success": False, "error": str(e)}
-
 
 
 class DeleteMemoryParams(BaseModel):

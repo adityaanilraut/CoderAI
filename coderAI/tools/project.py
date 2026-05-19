@@ -37,7 +37,9 @@ PROJECT_INDICATORS = {
 
 class ProjectContextParams(BaseModel):
     path: str = Field(".", description="Project root directory (default: current directory)")
-    max_depth: int = Field(2, description="Maximum directory depth to scan for structure (default: 2)", ge=0, le=10)
+    max_depth: int = Field(
+        2, description="Maximum directory depth to scan for structure (default: 2)", ge=0, le=10
+    )
 
 
 class ProjectContextTool(Tool):
@@ -171,9 +173,21 @@ class ProjectContextTool(Tool):
     ) -> List[str]:
         """Get directory structure up to max_depth levels."""
         IGNORE_DIRS = {
-            ".git", "node_modules", "__pycache__", ".venv", "venv",
-            ".tox", ".mypy_cache", ".pytest_cache", "dist", "build",
-            ".next", ".nuxt", "target", ".idea", ".vscode",
+            ".git",
+            "node_modules",
+            "__pycache__",
+            ".venv",
+            "venv",
+            ".tox",
+            ".mypy_cache",
+            ".pytest_cache",
+            "dist",
+            "build",
+            ".next",
+            ".nuxt",
+            "target",
+            ".idea",
+            ".vscode",
         }
 
         entries = []

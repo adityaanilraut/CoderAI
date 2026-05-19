@@ -9,9 +9,7 @@ from coderAI.tools.project import ProjectContextTool
 
 @pytest.fixture
 def python_project(tmp_path):
-    (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "myapp"\nversion = "0.1.0"\n'
-    )
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "myapp"\nversion = "0.1.0"\n')
     (tmp_path / "requirements.txt").write_text("requests>=2.0\nclick>=8.0\n")
     (tmp_path / ".gitignore").write_text("__pycache__/\n*.pyc\n.venv/\n")
     return tmp_path

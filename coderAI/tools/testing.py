@@ -119,7 +119,12 @@ def detect_test_framework(project_root: str = ".") -> Optional[str]:
             if (start_path / td).exists():
                 if name in ("jest", "vitest") and shutil.which("npx"):
                     # Check for jest/vitest config
-                    for jf in ("jest.config.js", "jest.config.ts", "vitest.config.ts", "vitest.config.js"):
+                    for jf in (
+                        "jest.config.js",
+                        "jest.config.ts",
+                        "vitest.config.ts",
+                        "vitest.config.js",
+                    ):
                         if (start_path / jf).exists():
                             return "vitest" if "vitest" in jf else "jest"
                     return "jest"
@@ -182,13 +187,18 @@ def _parse_go_test_output(stdout: str) -> Dict[str, Any]:
         "errors": 0,
         "skipped": len([line for line in stdout.splitlines() if "--- SKIP:" in line]),
         "duration_seconds": None,
-        "failures": [{"test": line.split("--- FAIL:")[1].split()[0], "output": line} for line in fail_lines[:20]],
+        "failures": [
+            {"test": line.split("--- FAIL:")[1].split()[0], "output": line}
+            for line in fail_lines[:20]
+        ],
         "passed_clean": len(fail_lines) == 0,
     }
 
 
 def _parse_cargo_test_output(stdout: str) -> Dict[str, Any]:
-    test_result = re.findall(r"test result: (ok|FAILED)\.\s+(\d+)\s+passed;\s+(\d+)\s+failed", stdout)
+    test_result = re.findall(
+        r"test result: (ok|FAILED)\.\s+(\d+)\s+passed;\s+(\d+)\s+failed", stdout
+    )
     passed = sum(int(m[1]) for m in test_result)
     failed = sum(int(m[2]) for m in test_result)
     return {
@@ -214,7 +224,9 @@ def _parse_jest_vitest_output(stdout: str, framework: str) -> Dict[str, Any]:
 
     failures = []
     for match in re.finditer(r"(FAIL|×)\s+(.+?)(?=\n\s{4,})", stdout, re.DOTALL | re.MULTILINE):
-        failures.append({"test": match.group(2).strip().split("\n")[0], "output": match.group(2).strip()[:2000]})
+        failures.append(
+            {"test": match.group(2).strip().split("\n")[0], "output": match.group(2).strip()[:2000]}
+        )
 
     return {
         "total": total,
@@ -255,9 +267,17 @@ def _parse_unittest_output(stdout: str, stderr: str) -> Dict[str, Any]:
 
 
 class RunTestsParams(BaseModel):
-    path: str = Field(".", description="File, directory, or test pattern to run (default: all tests)")
-    framework: Optional[str] = Field(None, description="Test framework to use (pytest, jest, vitest, go_test, cargo_test, unittest). Auto-detected if omitted.")
-    filter: Optional[str] = Field(None, description="Run only tests matching this substring or pattern (e.g., 'test_login' or path to test file)")
+    path: str = Field(
+        ".", description="File, directory, or test pattern to run (default: all tests)"
+    )
+    framework: Optional[str] = Field(
+        None,
+        description="Test framework to use (pytest, jest, vitest, go_test, cargo_test, unittest). Auto-detected if omitted.",
+    )
+    filter: Optional[str] = Field(
+        None,
+        description="Run only tests matching this substring or pattern (e.g., 'test_login' or path to test file)",
+    )
     verbose: bool = Field(True, description="Show verbose test output (default: true)")
     timeout: Optional[int] = Field(None, description="Override default timeout in seconds")
 
@@ -412,7 +432,9 @@ class RunTestsTool(Tool):
                 "framework": framework_name,
                 "returncode": process.returncode,
                 "results": parsed,
-                "stdout": stdout_str if verbose else (stdout_str[-4000:] if len(stdout_str) > 4000 else stdout_str),
+                "stdout": stdout_str
+                if verbose
+                else (stdout_str[-4000:] if len(stdout_str) > 4000 else stdout_str),
                 "stderr": stderr_str if stderr_str.strip() else None,
                 "summary": (
                     f"{parsed['total']} tests: {parsed['passed']} passed, "

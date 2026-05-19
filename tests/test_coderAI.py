@@ -125,9 +125,7 @@ class TestSearchReplaceTool:
         from coderAI.tools.filesystem import SearchReplaceTool
 
         tool = SearchReplaceTool()
-        result = asyncio.run(
-            tool.execute(path="", search="x", replace="y")
-        )
+        result = asyncio.run(tool.execute(path="", search="x", replace="y"))
         assert result["success"] is False
         assert "path is required" in result["error"].lower()
 
@@ -135,9 +133,7 @@ class TestSearchReplaceTool:
         from coderAI.tools.filesystem import SearchReplaceTool
 
         tool = SearchReplaceTool()
-        result = asyncio.run(
-            tool.execute(path=sample_file, search="", replace="y")
-        )
+        result = asyncio.run(tool.execute(path=sample_file, search="", replace="y"))
         assert result["success"] is False
         assert "search text" in result["error"].lower()
 
@@ -243,18 +239,31 @@ class TestGitTools:
 
     async def _init_repo(self, path):
         proc = await asyncio.create_subprocess_exec(
-            "git", "init", cwd=path,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            "git",
+            "init",
+            cwd=path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
         await proc.communicate()
         proc = await asyncio.create_subprocess_exec(
-            "git", "config", "user.email", "test@test.com", cwd=path,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            "git",
+            "config",
+            "user.email",
+            "test@test.com",
+            cwd=path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
         await proc.communicate()
         proc = await asyncio.create_subprocess_exec(
-            "git", "config", "user.name", "Test", cwd=path,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            "git",
+            "config",
+            "user.name",
+            "Test",
+            cwd=path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
         await proc.communicate()
 
@@ -293,8 +302,12 @@ class TestGitTools:
 
     async def _stage_file(self, repo_path, filepath):
         proc = await asyncio.create_subprocess_exec(
-            "git", "add", filepath, cwd=repo_path,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            "git",
+            "add",
+            filepath,
+            cwd=repo_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
         await proc.communicate()
 
@@ -319,9 +332,7 @@ class TestTextSearchTool:
         from coderAI.tools.search import TextSearchTool
 
         tool = TextSearchTool()
-        result = asyncio.run(
-            tool.execute(query="NONEXISTENT_TEXT_xyz123", base_path=temp_dir)
-        )
+        result = asyncio.run(tool.execute(query="NONEXISTENT_TEXT_xyz123", base_path=temp_dir))
         assert result["success"] is True
         assert result["count"] == 0
 
@@ -329,9 +340,7 @@ class TestTextSearchTool:
         from coderAI.tools.search import TextSearchTool
 
         tool = TextSearchTool()
-        result = asyncio.run(
-            tool.execute(query="test", base_path="/nonexistent/path/xyz")
-        )
+        result = asyncio.run(tool.execute(query="test", base_path="/nonexistent/path/xyz"))
         assert result["success"] is False
 
 
@@ -505,6 +514,7 @@ class TestMemoryTools:
         recall_tool = RecallMemoryTool()
 
         import coderAI.tools.memory as mem_module
+
         original_store = mem_module._memory_store
         mem_module._memory_store = store
 
@@ -778,10 +788,9 @@ class TestPathProtection:
 
         tool = WriteFileTool()
         # Attempt to write to ~/.ssh (protected)
-        result = asyncio.run(tool.execute(
-            path=os.path.expanduser("~/.ssh/injected_key"),
-            content="malicious"
-        ))
+        result = asyncio.run(
+            tool.execute(path=os.path.expanduser("~/.ssh/injected_key"), content="malicious")
+        )
         assert result["success"] is False
         assert "protected" in result["error"].lower()
 
@@ -789,11 +798,13 @@ class TestPathProtection:
         from coderAI.tools.filesystem import SearchReplaceTool
 
         tool = SearchReplaceTool()
-        result = asyncio.run(tool.execute(
-            path=os.path.expanduser("~/.ssh/config"),
-            search="Host",
-            replace="Evil",
-        ))
+        result = asyncio.run(
+            tool.execute(
+                path=os.path.expanduser("~/.ssh/config"),
+                search="Host",
+                replace="Evil",
+            )
+        )
         assert result["success"] is False
         assert "protected" in result["error"].lower()
 
@@ -928,7 +939,9 @@ class TestProjectContextTool:
 
         tool = ProjectContextTool()
         with open(os.path.join(temp_dir, "package.json"), "w") as f:
-            json.dump({"name": "test-app", "version": "1.0.0", "dependencies": {"express": "^4.0.0"}}, f)
+            json.dump(
+                {"name": "test-app", "version": "1.0.0", "dependencies": {"express": "^4.0.0"}}, f
+            )
 
         result = asyncio.run(tool.execute(path=temp_dir))
         assert result["success"] is True
@@ -980,7 +993,9 @@ class TestAnthropicProvider:
     def test_thinking_payload_uses_budget_tokens_format(self):
         from coderAI.llm.anthropic import AnthropicProvider
 
-        provider = AnthropicProvider(model="claude-4-sonnet", api_key="test-key", reasoning_effort="medium")
+        provider = AnthropicProvider(
+            model="claude-4-sonnet", api_key="test-key", reasoning_effort="medium"
+        )
         payload = provider._build_payload(messages=[{"role": "user", "content": "hi"}], tools=None)
         thinking = payload["thinking"]
         assert thinking["type"] == "enabled"
@@ -992,7 +1007,9 @@ class TestAnthropicProvider:
     def test_thinking_payload_disabled_when_effort_none(self):
         from coderAI.llm.anthropic import AnthropicProvider
 
-        provider = AnthropicProvider(model="claude-4-sonnet", api_key="test-key", reasoning_effort="none")
+        provider = AnthropicProvider(
+            model="claude-4-sonnet", api_key="test-key", reasoning_effort="none"
+        )
         payload = provider._build_payload(messages=[{"role": "user", "content": "hi"}], tools=None)
         assert "thinking" not in payload
         assert "output_config" not in payload

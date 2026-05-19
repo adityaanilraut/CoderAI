@@ -13,7 +13,6 @@ from coderAI.cost import CostTracker
 logger = logging.getLogger(__name__)
 
 
-
 class OpenAIProvider(LLMProvider):
     """OpenAI LLM provider for GPT models."""
 
@@ -86,13 +85,16 @@ class OpenAIProvider(LLMProvider):
         in /v1/chat/completions, so we omit it for that model.
         """
         return (
-            self._rejects_temperature
-            and self.actual_model not in self._NO_REASONING_EFFORT_MODELS
+            self._rejects_temperature and self.actual_model not in self._NO_REASONING_EFFORT_MODELS
         )
 
     def _apply_temp_and_reasoning(self, params: Dict[str, Any], **kwargs) -> None:
         if self._rejects_temperature:
-            if self._supports_reasoning_effort and self.reasoning_effort and self.reasoning_effort != "none":
+            if (
+                self._supports_reasoning_effort
+                and self.reasoning_effort
+                and self.reasoning_effort != "none"
+            ):
                 params["reasoning_effort"] = self.reasoning_effort
         else:
             params["temperature"] = kwargs.get("temperature", self.temperature)

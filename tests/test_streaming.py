@@ -27,17 +27,13 @@ class _FakeServer:
 
 def _text_deltas(events):
     return "".join(
-        d.get("delta", "")
-        for name, d in events
-        if name == "turn" and d.get("phase") == "text"
+        d.get("delta", "") for name, d in events if name == "turn" and d.get("phase") == "text"
     )
 
 
 def _reasoning_deltas(events):
     return "".join(
-        d.get("delta", "")
-        for name, d in events
-        if name == "turn" and d.get("phase") == "reasoning"
+        d.get("delta", "") for name, d in events if name == "turn" and d.get("phase") == "reasoning"
     )
 
 
@@ -99,25 +95,33 @@ class TestIPCStreamingHandler:
 
         chunks = [
             {
-                "choices": [{
-                    "delta": {
-                        "tool_calls": [{
-                            "index": 0,
-                            "id": "call_1",
-                            "function": {"name": "read_file", "arguments": '{"pa'},
-                        }]
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "function": {"name": "read_file", "arguments": '{"pa'},
+                                }
+                            ]
+                        }
                     }
-                }]
+                ]
             },
             {
-                "choices": [{
-                    "delta": {
-                        "tool_calls": [{
-                            "index": 0,
-                            "function": {"arguments": 'th": "x.py"}'},
-                        }]
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "function": {"arguments": 'th": "x.py"}'},
+                                }
+                            ]
+                        }
                     }
-                }]
+                ]
             },
             {"choices": [{"delta": {}}]},
         ]
@@ -138,16 +142,20 @@ class TestIPCStreamingHandler:
         chunks = [
             {"choices": [{"delta": {"content": "Let me check"}}]},
             {
-                "choices": [{
-                    "delta": {
-                        "content": None,
-                        "tool_calls": [{
-                            "index": 0,
-                            "id": "call_2",
-                            "function": {"name": "git_status", "arguments": "{}"},
-                        }],
+                "choices": [
+                    {
+                        "delta": {
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_2",
+                                    "function": {"name": "git_status", "arguments": "{}"},
+                                }
+                            ],
+                        }
                     }
-                }]
+                ]
             },
             {"choices": [{"delta": {}}]},
         ]
@@ -206,11 +214,13 @@ class TestIPCStreamingHandler:
         chunks = [
             {"choices": [{"delta": {"content": "before <think>inner"}}]},
             {
-                "choices": [{
-                    "delta": {
-                        "content": "before <think>inner thoughts</think> after",
+                "choices": [
+                    {
+                        "delta": {
+                            "content": "before <think>inner thoughts</think> after",
+                        }
                     }
-                }]
+                ]
             },
             {"choices": [{"delta": {}}]},
         ]
@@ -232,9 +242,9 @@ class TestIPCStreamingHandler:
         handler = IPCStreamingHandler(server)
 
         chunks = [
-            {"choices": [{"delta": {"content": "Hello"}}]},            # delta
-            {"choices": [{"delta": {"content": "Hello, world"}}]},     # cumulative
-            {"choices": [{"delta": {"content": "!"}}]},                # delta again
+            {"choices": [{"delta": {"content": "Hello"}}]},  # delta
+            {"choices": [{"delta": {"content": "Hello, world"}}]},  # cumulative
+            {"choices": [{"delta": {"content": "!"}}]},  # delta again
             {"choices": [{"delta": {}}]},
         ]
 
@@ -251,9 +261,9 @@ class TestIPCStreamingHandler:
         handler = IPCStreamingHandler(server)
 
         chunks = [
-            {"choices": [{"delta": {"content": "Hello, "}}]},           # first cumulative == content
-            {"choices": [{"delta": {"content": "Hello, world"}}]},      # cumulative
-            {"choices": [{"delta": {"content": "!"}}]},                 # delta
+            {"choices": [{"delta": {"content": "Hello, "}}]},  # first cumulative == content
+            {"choices": [{"delta": {"content": "Hello, world"}}]},  # cumulative
+            {"choices": [{"delta": {"content": "!"}}]},  # delta
             {"choices": [{"delta": {}}]},
         ]
 

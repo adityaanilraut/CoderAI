@@ -185,8 +185,10 @@ class TestResolveGitRoot:
             ["git", "config", "user.name", "Test"],
         ]:
             proc = await asyncio.create_subprocess_exec(
-                *cmd_args, cwd=path,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                *cmd_args,
+                cwd=path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
             await proc.communicate()
 
@@ -230,8 +232,10 @@ class TestResolveGitRoot:
             ["git", "commit", "-m", "init"],
         ]:
             proc = await asyncio.create_subprocess_exec(
-                *cmd_args, cwd=repo_path,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                *cmd_args,
+                cwd=repo_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
             await proc.communicate()
 
@@ -283,9 +287,7 @@ class TestFilterStageableFiles:
         assert "config.py" in allowed
 
     def test_node_modules_filtered(self):
-        allowed, rejected = filter_stageable_files(
-            ["node_modules/lodash/index.js", "src/app.js"]
-        )
+        allowed, rejected = filter_stageable_files(["node_modules/lodash/index.js", "src/app.js"])
         assert "node_modules/lodash/index.js" in rejected
         assert "src/app.js" in allowed
 

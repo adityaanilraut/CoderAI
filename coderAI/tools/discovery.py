@@ -10,9 +10,10 @@ from .base import Tool, ToolRegistry
 
 logger = logging.getLogger(__name__)
 
+
 def discover_tools(registry: ToolRegistry, package_name: str = "coderAI.tools") -> None:
     """Dynamically discover and register all Tool subclasses in the given package.
-    
+
     This function scans the specified package for any subclasses of Tool and
     attempts to instantiate and register them. Tools that require initialization
     arguments (like ManageContextTool) are skipped and should be registered
@@ -24,21 +25,21 @@ def discover_tools(registry: ToolRegistry, package_name: str = "coderAI.tools") 
         logger.error(f"Could not import package {package_name}: {e}")
         return
 
-    # Keep track of what we've registered to avoid duplicates if multiple 
+    # Keep track of what we've registered to avoid duplicates if multiple
     # paths lead to the same class.
     registered_classes: Set[Type[Tool]] = set()
 
     for loader, module_name, is_pkg in pkgutil.walk_packages(pkg.__path__, pkg.__name__ + "."):
         if is_pkg or module_name.endswith(".base") or module_name.endswith(".discovery"):
             continue
-            
+
         try:
             module = importlib.import_module(module_name)
             for name, obj in inspect.getmembers(module):
                 if (
-                    inspect.isclass(obj) 
-                    and issubclass(obj, Tool) 
-                    and obj is not Tool 
+                    inspect.isclass(obj)
+                    and issubclass(obj, Tool)
+                    and obj is not Tool
                     and obj not in registered_classes
                 ):
                     try:
@@ -51,7 +52,9 @@ def discover_tools(registry: ToolRegistry, package_name: str = "coderAI.tools") 
                     except TypeError:
                         # Log that we skipped it because it needs args.
                         # These must be handled manually in Agent._create_tool_registry.
-                        logger.warning(f"Skipping auto-registration for {module_name}.{name} (requires arguments)")
+                        logger.warning(
+                            f"Skipping auto-registration for {module_name}.{name} (requires arguments)"
+                        )
         except (ImportError, TypeError, ValueError, AttributeError) as e:
             # Don't let one bad module kill the whole discovery.
             logger.warning(f"Failed to load tools from {module_name}: {e}")

@@ -19,7 +19,13 @@ LINTERS = {
         "check_args": ["check", "--output-format=json"],
         "fix_args": ["check", "--fix"],
         "extensions": {".py"},
-        "detect_files": {"pyproject.toml", "setup.py", "requirements.txt", "ruff.toml", ".ruff.toml"},
+        "detect_files": {
+            "pyproject.toml",
+            "setup.py",
+            "requirements.txt",
+            "ruff.toml",
+            ".ruff.toml",
+        },
     },
     "eslint": {
         "cmd": "npx",
@@ -70,7 +76,9 @@ def detect_linter(project_root: str = ".") -> Optional[str]:
 
 
 class LintParams(BaseModel):
-    path: str = Field(".", description="File or directory path to lint (default: current directory)")
+    path: str = Field(
+        ".", description="File or directory path to lint (default: current directory)"
+    )
     fix: bool = Field(False, description="Attempt to auto-fix lint issues (default: false)")
     linter: Optional[str] = Field(None, description="Linter to use (auto-detected if omitted)")
 
@@ -134,9 +142,7 @@ class LintTool(Tool):
             )
 
             try:
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(), timeout=60
-                )
+                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=60)
             except asyncio.TimeoutError:
                 process.kill()
                 return {"success": False, "error": "Linter timed out after 60 seconds."}

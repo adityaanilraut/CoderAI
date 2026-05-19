@@ -64,6 +64,7 @@ async def _main() -> None:
 
     if continue_ and not resume_id:
         from ..history import history_manager
+
         resume_id = history_manager.get_latest_session_id()
 
     agent = Agent(
@@ -120,12 +121,16 @@ async def _main() -> None:
             try:
                 ppid = os.getppid()
                 if ppid == 1:
-                    logging.getLogger(__name__).warning("Parent process is PID 1; shutting down IPC server.")
+                    logging.getLogger(__name__).warning(
+                        "Parent process is PID 1; shutting down IPC server."
+                    )
                     server._exit.set()
                     return
                 os.kill(ppid, 0)
             except OSError:
-                logging.getLogger(__name__).warning("Parent process disappeared; shutting down IPC server.")
+                logging.getLogger(__name__).warning(
+                    "Parent process disappeared; shutting down IPC server."
+                )
                 server._exit.set()
                 return
 

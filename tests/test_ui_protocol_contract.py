@@ -56,12 +56,12 @@ def test_python_emits_subset_of_typescript_protocol() -> None:
     assert py, "expected to find emit() calls in ipc sources"
     assert ts, "expected event names in protocol.ts"
     assert const_names == ts, (
-        "AGENT_EVENT_NAMES list must match every `event: \"…\"` in the AgentEvent union: "
+        'AGENT_EVENT_NAMES list must match every `event: "…"` in the AgentEvent union: '
         f"ts-only {sorted(ts - const_names)} const-only {sorted(const_names - ts)}"
     )
-    assert py.issubset(
-        ts
-    ), f"Python IPC emits event names not declared in protocol.ts: {sorted(py - ts)}"
+    assert py.issubset(ts), (
+        f"Python IPC emits event names not declared in protocol.ts: {sorted(py - ts)}"
+    )
 
 
 GOLDEN = ROOT / "tests/fixtures/ndjson_protocol_golden.jsonl"
@@ -107,7 +107,7 @@ def test_protocol_declares_hello_protocol_version_and_handshake_command() -> Non
     docs = (ROOT / "ui/PROTOCOL.md").read_text(encoding="utf-8")
 
     assert re.search(r'event:\s*"hello"[\s\S]*protocolVersion:\s*2;', ts)
-    assert re.search(r'\|\s*`handshake`\s*\|', docs)
+    assert re.search(r"\|\s*`handshake`\s*\|", docs)
     assert re.search(r'\{\s*cmd:\s*"handshake";\s*payload:\s*\{\s*protocolVersion:\s*2\s*\};', ts)
     assert re.search(r'event:\s*"hello"[\s\S]*reasoning:\s*ReasoningEffort;', ts)
     assert "autoApprove, reasoning" in docs

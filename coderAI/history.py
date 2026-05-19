@@ -35,11 +35,13 @@ def _default_session_model() -> str:
     """
     try:
         from .config import config_manager
+
         return config_manager.load().default_model
     except Exception:
         # Fall back to the Config field default rather than an invalid literal.
         try:
             from .config import Config
+
             return Config.model_fields["default_model"].default
         except Exception:
             return "claude-4-sonnet"
@@ -147,10 +149,16 @@ def _sanitize_session_data(data: Dict[str, Any]) -> Dict[str, Any]:
                         try:
                             parsed = json.loads(args)
                         except json.JSONDecodeError:
-                            logger.warning("Dropping malformed stored tool arguments in session %s", data.get("session_id"))
+                            logger.warning(
+                                "Dropping malformed stored tool arguments in session %s",
+                                data.get("session_id"),
+                            )
                             continue
                         if not isinstance(parsed, dict):
-                            logger.warning("Dropping non-object stored tool arguments in session %s", data.get("session_id"))
+                            logger.warning(
+                                "Dropping non-object stored tool arguments in session %s",
+                                data.get("session_id"),
+                            )
                             continue
                         fn_copy["arguments"] = json.dumps(parsed)
                     elif isinstance(args, dict):
@@ -174,7 +182,11 @@ def _sanitize_session_data(data: Dict[str, Any]) -> Dict[str, Any]:
         if msg.get("role") == "tool":
             tool_call_id = msg.get("tool_call_id")
             if tool_call_id and tool_call_id not in seen_tool_ids:
-                logger.warning("Dropping orphaned tool_result %s from session %s", tool_call_id, data.get("session_id"))
+                logger.warning(
+                    "Dropping orphaned tool_result %s from session %s",
+                    tool_call_id,
+                    data.get("session_id"),
+                )
                 continue
 
         sanitized_messages.append(msg)
@@ -261,10 +273,8 @@ class HistoryManager:
                     index_file,
                 )
             except OSError as e:
-                logger.warning(
-                    "Could not read session index %s: %s", index_file, e
-                )
-                
+                logger.warning("Could not read session index %s: %s", index_file, e)
+
         index[session.session_id] = {
             "session_id": session.session_id,
             "created_at": datetime.fromtimestamp(session.created_at).strftime("%Y-%m-%d %H:%M:%S"),
@@ -273,7 +283,7 @@ class HistoryManager:
             "model": session.model,
         }
         try:
-            tmp_file = index_file.with_suffix('.json.tmp')
+            tmp_file = index_file.with_suffix(".json.tmp")
             with open(tmp_file, "w") as f:
                 json.dump(index, f)
             os.replace(tmp_file, index_file)
@@ -291,18 +301,18 @@ class HistoryManager:
                     index = json.load(f)
             except Exception as e:
                 logger.warning(f"Failed to read session index, rebuilding: {e}")
-                
+
         session_files = list(self.history_dir.glob("session_*.json"))
         valid_ids = {f.stem for f in session_files}
-        
+
         needs_save = False
-        
+
         # Clean deleted
         for sid in list(index.keys()):
             if sid not in valid_ids:
                 del index[sid]
                 needs_save = True
-                
+
         # Rebuild missing
         for session_file in session_files:
             sid = session_file.stem
@@ -312,18 +322,22 @@ class HistoryManager:
                         data = json.load(f)
                         index[sid] = {
                             "session_id": data.get("session_id", sid),
-                            "created_at": datetime.fromtimestamp(data.get("created_at", time.time())).strftime("%Y-%m-%d %H:%M:%S"),
-                            "updated_at": datetime.fromtimestamp(data.get("updated_at", time.time())).strftime("%Y-%m-%d %H:%M:%S"),
+                            "created_at": datetime.fromtimestamp(
+                                data.get("created_at", time.time())
+                            ).strftime("%Y-%m-%d %H:%M:%S"),
+                            "updated_at": datetime.fromtimestamp(
+                                data.get("updated_at", time.time())
+                            ).strftime("%Y-%m-%d %H:%M:%S"),
                             "messages": len(data.get("messages", [])),
                             "model": data.get("model", "unknown"),
                         }
                         needs_save = True
                 except Exception:
                     continue
-                    
+
         if needs_save:
             try:
-                tmp_file = index_file.with_suffix('.json.tmp')
+                tmp_file = index_file.with_suffix(".json.tmp")
                 with open(tmp_file, "w") as f:
                     json.dump(index, f)
                 os.replace(tmp_file, index_file)
@@ -375,7 +389,7 @@ class HistoryManager:
                 index = json.load(f)
             if session_id in index:
                 del index[session_id]
-                tmp_file = index_file.with_suffix('.json.tmp')
+                tmp_file = index_file.with_suffix(".json.tmp")
                 with open(tmp_file, "w") as f:
                     json.dump(index, f)
                 os.replace(tmp_file, index_file)

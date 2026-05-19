@@ -58,7 +58,7 @@ export type AgentEvent =
       reasoning: ReasoningEffort;
     }
   | { event: "ready" }
-  | { event: "turn"; phase: "start" | "reasoning" | "text" | "end"; delta?: string; elapsedMs?: number }
+  | { event: "turn"; phase: "start" | "reasoning" | "text" | "end"; delta?: string; elapsedMs?: number; reasoningActive?: boolean }
   | { event: "tool"; id: string; phase: "queued" | "awaiting_approval" | "running" | "ok" | "err" | "cancelled"; payload: Record<string, any> }
   | { event: "file_diff"; path: string; diff: string }
   | {
@@ -71,7 +71,7 @@ export type AgentEvent =
       completionTokens: number;
       totalTokens: number;
     }
-  | { event: "agent"; phase: "update"; info: AgentInfo; parentId: string | null }
+  | { event: "agent"; phase: "update" | "started" | "finished"; info: AgentInfo; parentId: string | null }
   | {
       event: "error";
       category: "provider" | "tool" | "internal" | "protocol";
@@ -81,6 +81,9 @@ export type AgentEvent =
     }
   | { event: "session_patch"; model?: string; provider?: string; autoApprove?: boolean; reasoning?: ReasoningEffort }
   | { event: "available_models"; current: string; models: Record<string, string[]> }
+  | { event: "available_personas"; current: string | null; personas: string[] }
+  | { event: "available_skills"; skills: { name: string; description: string }[] }
+  | { event: "context_state"; files: { path: string; size: number }[] }
   | { event: "progress"; label: string; current?: number; total?: number; progressKind: "tokens" | "files" | "steps" }
   | { event: "info"; message: string }
   | { event: "warning"; message: string }
@@ -99,6 +102,9 @@ export const AGENT_EVENT_NAMES: readonly string[] = [
   "error",
   "session_patch",
   "available_models",
+  "available_personas",
+  "available_skills",
+  "context_state",
   "progress",
   "info",
   "warning",
@@ -116,8 +122,10 @@ export type AgentCommand =
   | { cmd: "handshake"; payload: { protocolVersion: 2 }; id?: string }
   | { cmd: "send_message"; text: string; id?: string }
   | { cmd: "cancel"; agentId?: string; id?: string }
+  | { cmd: "cancel_agent"; payload: { agentId: string }; id?: string }
   | { cmd: "tool_approval_resp"; toolId: string; approve: boolean; id?: string }
   | { cmd: "set_model"; model: string; id?: string }
+  | { cmd: "set_persona"; persona?: string; payload?: { persona?: string }; id?: string }
   | { cmd: "set_reasoning"; effort: ReasoningEffort; id?: string }
   | { cmd: "set_default_model"; model: string; id?: string }
   | { cmd: "set_verbosity"; level: VerbosityLevel; id?: string }
@@ -127,5 +135,8 @@ export type AgentCommand =
   | { cmd: "get_state"; id?: string }
   | { cmd: "get_plan"; id?: string }
   | { cmd: "list_models"; id?: string }
+  | { cmd: "list_personas"; id?: string }
+  | { cmd: "list_skills"; id?: string }
+  | { cmd: "search_codebase"; query: string; id?: string }
   | { cmd: "reference"; topic: string; id?: string }
   | { cmd: "exit"; id?: string };

@@ -10,6 +10,7 @@ from coderAI.cost import CostTracker
 
 logger = logging.getLogger(__name__)
 
+
 class GroqProvider(LLMProvider):
     """Groq LLM provider."""
 
@@ -78,9 +79,7 @@ class GroqProvider(LLMProvider):
         try:
             response = await self.client.chat.completions.create(**params)
         except Exception as e:
-            raise RuntimeError(
-                f"Groq API error: {e}"
-            ) from e
+            raise RuntimeError(f"Groq API error: {e}") from e
         result = response.model_dump()
 
         usage = result.get("usage", {})
@@ -120,12 +119,10 @@ class GroqProvider(LLMProvider):
         try:
             stream = await self.client.chat.completions.create(**params)
         except Exception as e:
-            raise RuntimeError(
-                f"Groq API streaming error: {e}"
-            ) from e
+            raise RuntimeError(f"Groq API streaming error: {e}") from e
         async for chunk in stream:
             chunk_data = chunk.model_dump()
-            
+
             # Groq streaming may include usage in the chunk data dict.
             usage = chunk_data.get("x_groq", {}).get("usage")
             if usage:

@@ -37,6 +37,7 @@ class SubagentContext:
     delegation_depth: int = 0
     parent_config: Optional[Any] = None  # Config — drives subagent_timeout_seconds
 
+
 # Number of recent parent tool calls to summarise for the sub-agent so it
 # doesn't repeat inspection work the parent has already done.
 RECENT_TOOL_HISTORY_LIMIT = 10
@@ -134,9 +135,7 @@ def _summarize_parent_tool_history(
 
     lines: List[str] = []
     if recoverable_errors:
-        lines.append(
-            "RECENT RECOVERABLE ERRORS (parent agent had to recover from these):"
-        )
+        lines.append("RECENT RECOVERABLE ERRORS (parent agent had to recover from these):")
         for note in recoverable_errors:
             preview = note.replace("\n", " ")
             if len(preview) > 320:
@@ -162,6 +161,7 @@ def _summarize_parent_tool_history(
             lines.append(line)
 
     return "\n".join(lines).rstrip()
+
 
 def _get_role_instructions(role: Optional[str]) -> str:
     """Get role-specific instructions."""
@@ -317,7 +317,13 @@ class DelegateTaskTool(Tool):
             }
 
         return await self._run_delegation(
-            task_description, agent_role, context_hints, model, inherit_project_context, read_only_task, task_id
+            task_description,
+            agent_role,
+            context_hints,
+            model,
+            inherit_project_context,
+            read_only_task,
+            task_id,
         )
 
     async def _run_delegation(
@@ -367,7 +373,8 @@ class DelegateTaskTool(Tool):
                             }
                         logger.info(
                             "Resuming sub-agent session %s for task_id=%s",
-                            task_id, task_id,
+                            task_id,
+                            task_id,
                         )
                         event_emitter.emit(
                             "agent_status",
@@ -376,12 +383,11 @@ class DelegateTaskTool(Tool):
                 except Exception as e:
                     logger.warning(
                         "Failed to resume sub-agent session %s: %s — starting fresh",
-                        task_id, e,
+                        task_id,
+                        e,
                     )
 
-            logger.info(
-                f"Sub-agent delegation: depth={child_depth}/{MAX_DELEGATION_DEPTH}"
-            )
+            logger.info(f"Sub-agent delegation: depth={child_depth}/{MAX_DELEGATION_DEPTH}")
 
             role_label = f" ({agent_role})" if agent_role else ""
             action = "Resuming" if resumed_session else "Spawning"
@@ -420,10 +426,7 @@ class DelegateTaskTool(Tool):
 
                 sub_agent._configure_delegate_tool_context()
 
-                if (
-                    inherit_project_context
-                    and ctx.parent_context_manager is not None
-                ):
+                if inherit_project_context and ctx.parent_context_manager is not None:
                     sub_agent.context_manager.pinned_files = dict(
                         ctx.parent_context_manager.pinned_files
                     )
@@ -518,15 +521,19 @@ class DelegateTaskTool(Tool):
                     )
 
                 if role_instructions:
-                    system_preamble_parts.extend(["", f"ROLE-SPECIFIC GUIDANCE ({agent_role}):", role_instructions])
+                    system_preamble_parts.extend(
+                        ["", f"ROLE-SPECIFIC GUIDANCE ({agent_role}):", role_instructions]
+                    )
 
                 parent_history_note = _summarize_parent_tool_history(ctx.parent_session)
                 if parent_history_note:
-                    system_preamble_parts.extend([
-                        "",
-                        "PARENT AGENT TOOL HISTORY (recent):",
-                        parent_history_note,
-                    ])
+                    system_preamble_parts.extend(
+                        [
+                            "",
+                            "PARENT AGENT TOOL HISTORY (recent):",
+                            parent_history_note,
+                        ]
+                    )
 
                 system_preamble = "\n".join(system_preamble_parts)
 
@@ -544,7 +551,9 @@ class DelegateTaskTool(Tool):
                 hint_parts = ["CONTEXT PROVIDED BY PARENT AGENT:"]
                 for hint in context_hints:
                     hint_parts.append(f"  - {hint}")
-                task_description = "\n".join(hint_parts) + "\n\n---\n\nTASK DESCRIPTION:\n" + task_description
+                task_description = (
+                    "\n".join(hint_parts) + "\n\n---\n\nTASK DESCRIPTION:\n" + task_description
+                )
 
             truncated_desc = task_description[:80] + ("..." if len(task_description) > 80 else "")
             event_emitter.emit(
@@ -558,8 +567,10 @@ class DelegateTaskTool(Tool):
                 if not info:
                     return
                 if tool_calls:
-                    names = [tc.get("function", {}).get("name", tc.get("name", "?"))
-                            for tc in tool_calls[:3]]
+                    names = [
+                        tc.get("function", {}).get("name", tc.get("name", "?"))
+                        for tc in tool_calls[:3]
+                    ]
                     info.current_tool = ", ".join(names)
                     if len(tool_calls) > 3:
                         info.current_tool += f" +{len(tool_calls) - 3} more"
@@ -575,9 +586,7 @@ class DelegateTaskTool(Tool):
 
                 # Retry: if the report is empty, ask once more for a summary
                 if not (final_report and final_report.strip()):
-                    logger.warning(
-                        "Sub-agent returned empty report — requesting summary retry."
-                    )
+                    logger.warning("Sub-agent returned empty report — requesting summary retry.")
                     event_emitter.emit(
                         "agent_status",
                         message=f"[dim]Sub-Agent{role_label} report was empty — retrying summary…[/dim]",
@@ -605,35 +614,25 @@ class DelegateTaskTool(Tool):
                         # Snapshot provider counters before the retry call so
                         # we can attribute incremental tokens to this retry.
                         mi_before = sub_agent.provider.get_model_info()
-                        retry_resp = await sub_agent.provider.chat(
-                            retry_messages, tools=None
-                        )
+                        retry_resp = await sub_agent.provider.chat(retry_messages, tools=None)
                         mi_after = sub_agent.provider.get_model_info()
                         new_in = mi_after.get("total_input_tokens", 0) - mi_before.get(
                             "total_input_tokens", 0
                         )
-                        new_out = mi_after.get(
-                            "total_output_tokens", 0
-                        ) - mi_before.get("total_output_tokens", 0)
-                        sub_agent.total_prompt_tokens = mi_after.get(
-                            "total_input_tokens", 0
-                        )
-                        sub_agent.total_completion_tokens = mi_after.get(
+                        new_out = mi_after.get("total_output_tokens", 0) - mi_before.get(
                             "total_output_tokens", 0
                         )
+                        sub_agent.total_prompt_tokens = mi_after.get("total_input_tokens", 0)
+                        sub_agent.total_completion_tokens = mi_after.get("total_output_tokens", 0)
                         sub_agent.total_tokens = mi_after.get("total_tokens", 0)
                         if (new_in > 0 or new_out > 0) and sub_agent.cost_tracker is not None:
                             model_for_cost = getattr(
                                 sub_agent.provider, "actual_model", sub_agent.model
                             )
-                            sub_agent.cost_tracker.add_cost(
-                                model_for_cost, new_in, new_out
-                            )
+                            sub_agent.cost_tracker.add_cost(model_for_cost, new_in, new_out)
                         choices = retry_resp.get("choices", [])
                         if choices:
-                            final_report = (
-                                choices[0].get("message", {}).get("content") or ""
-                            )
+                            final_report = choices[0].get("message", {}).get("content") or ""
                             # Persist the retry reply so a later task_id resume
                             # doesn't see a dangling user prompt with no answer.
                             if final_report:
@@ -658,6 +657,7 @@ class DelegateTaskTool(Tool):
                 logger.error(f"Sub-agent failed: {e}")
                 wasted_tokens = getattr(sub_agent, "total_tokens", 0) if sub_agent else 0
                 from ..cost import CostTracker
+
                 wasted_cost = self._final_cost_for(sub_agent)
                 event_emitter.emit(
                     "agent_error",
@@ -692,12 +692,14 @@ class DelegateTaskTool(Tool):
             hooks_data = parent_hooks_manager.load_hooks() if parent_hooks_manager else None
             if hooks_data:
                 await parent_hooks_manager.run_hooks(
-                    "delegate_task", "on_subagent_stop",
+                    "delegate_task",
+                    "on_subagent_stop",
                     {"task": task_description, "report": final_report, "tokens": tokens_used},
                     hooks_data,
                 )
 
             from ..cost import CostTracker
+
             event_emitter.emit(
                 "agent_status",
                 message=(
@@ -716,7 +718,10 @@ class DelegateTaskTool(Tool):
                 "tokens_used": tokens_used,
                 "cost_usd": cost_usd,
                 **(
-                    {"task_id": task_session_id, "note": "Pass this task_id to future delegate_task calls with the same subagent_type to resume this session."}
+                    {
+                        "task_id": task_session_id,
+                        "note": "Pass this task_id to future delegate_task calls with the same subagent_type to resume this session.",
+                    }
                     if task_session_id
                     else {}
                 ),
@@ -747,10 +752,9 @@ class DelegateTaskTool(Tool):
         if sub_agent is None:
             return 0.0
         from ..cost import CostTracker
+
         provider = getattr(sub_agent, "provider", None)
-        model_for_cost = getattr(provider, "actual_model", None) or getattr(
-            sub_agent, "model", ""
-        )
+        model_for_cost = getattr(provider, "actual_model", None) or getattr(sub_agent, "model", "")
         try:
             return CostTracker.calculate_cost_for_tokens(
                 model_for_cost,
@@ -780,11 +784,7 @@ class DelegateTaskTool(Tool):
         assistant_texts: List[str] = []
 
         for msg in sub_agent.session.messages:
-            if (
-                msg.role == "assistant"
-                and isinstance(msg.content, str)
-                and msg.content.strip()
-            ):
+            if msg.role == "assistant" and isinstance(msg.content, str) and msg.content.strip():
                 assistant_texts.append(msg.content.strip())
 
             if msg.role == "tool" and msg.content:
@@ -793,9 +793,7 @@ class DelegateTaskTool(Tool):
                     try:
                         parsed = _json.loads(msg.content)
                         success = parsed.get("success", "?")
-                        detail = str(
-                            parsed.get("output", parsed.get("error", ""))
-                        )[:300]
+                        detail = str(parsed.get("output", parsed.get("error", "")))[:300]
                     except (_json.JSONDecodeError, AttributeError):
                         success = "?"
                         detail = str(msg.content)[:300]
@@ -803,8 +801,7 @@ class DelegateTaskTool(Tool):
                     success = "?"
                     detail = str(msg.content)[:300]
                 tool_summaries.append(
-                    f"- **{tool_name}**: success={success}"
-                    + (f" — {detail}" if detail else "")
+                    f"- **{tool_name}**: success={success}" + (f" — {detail}" if detail else "")
                 )
 
         if not tool_summaries and not assistant_texts:
@@ -828,8 +825,6 @@ class DelegateTaskTool(Tool):
             parts.append(f"### Tool Activity ({len(tool_summaries)} calls)")
             parts.extend(tool_summaries[-30:])  # Cap to avoid giant reports
             if len(tool_summaries) > 30:
-                parts.append(
-                    f"_(… and {len(tool_summaries) - 30} earlier tool calls omitted)_"
-                )
+                parts.append(f"_(… and {len(tool_summaries) - 30} earlier tool calls omitted)_")
 
         return "\n".join(parts)

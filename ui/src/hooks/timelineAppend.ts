@@ -21,10 +21,9 @@ export function appendCapped(
   const tailKeep = TRIM_TO - 2; // marker + new item account for the other two
   const dropped = prev.length - tailKeep;
   const marker: TimelineItem = {
-    kind: "toast",
+    kind: "separator",
     id: nextId ? nextId() : `trim_${Date.now().toString(36)}`,
-    level: "warning",
-    message: `… ${dropped} earlier entries trimmed · keeping most recent ${TRIM_TO} …`,
+    message: `${dropped} earlier entries trimmed · keeping most recent ${TRIM_TO}`,
   };
   return [marker, ...prev.slice(-tailKeep), item];
 }

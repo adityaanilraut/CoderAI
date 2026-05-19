@@ -75,9 +75,7 @@ class TestCreatePlanTool:
                 steps=["A", "B"],
             )
         )
-        result = asyncio.run(
-            self.tool.execute(action="show")
-        )
+        result = asyncio.run(self.tool.execute(action="show"))
         assert result["success"]
         assert result["plan"]["title"] == "Show Test"
 
@@ -89,26 +87,20 @@ class TestCreatePlanTool:
                 steps=["A", "B"],
             )
         )
-        result = asyncio.run(
-            self.tool.execute(action="advance")
-        )
+        result = asyncio.run(self.tool.execute(action="advance"))
         assert result["success"]
         assert "A" in result["message"]
 
     def test_show_no_plan(self):
         # Fresh tool with no plan
         tool = CreatePlanTool()
-        result = asyncio.run(
-            tool.execute(action="show")
-        )
+        result = asyncio.run(tool.execute(action="show"))
         # Behavior depends on whether a plan was previously persisted
         # Either success with a plan or success with no_plan message
         assert isinstance(result, dict)
 
     def test_unknown_action(self):
-        result = asyncio.run(
-            self.tool.execute(action="invalid")
-        )
+        result = asyncio.run(self.tool.execute(action="invalid"))
         assert not result["success"]
 
     def test_plan_tool_uses_configured_project_root(self, tmp_path, monkeypatch):
@@ -121,13 +113,10 @@ class TestCreatePlanTool:
         tool = CreatePlanTool()
         tool.project_root = str(project)
 
-        result = asyncio.run(
-            tool.execute(action="create", title="Rooted Plan", steps=["A"])
-        )
+        result = asyncio.run(tool.execute(action="create", title="Rooted Plan", steps=["A"]))
 
         assert result["success"]
         plan_path = _get_plan_file(str(project))
         assert plan_path.exists()
         assert json.loads(plan_path.read_text())["title"] == "Rooted Plan"
         assert not (cwd / ".coderAI" / "current_plan.json").exists()
-

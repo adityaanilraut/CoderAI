@@ -138,13 +138,16 @@ def compute_retry_delay(exc: Exception, attempt: int) -> float:
                 # Try parsing as HTTP-date
                 try:
                     from email.utils import parsedate_to_datetime
+
                     dt = parsedate_to_datetime(retry_after)
                     now_dt = None
                     try:
                         from datetime import datetime, timezone
+
                         now_dt = datetime.now(timezone.utc)
                     except ImportError:
                         from datetime import datetime
+
                         now_dt = datetime.utcnow()
                     delta = (dt - now_dt).total_seconds()
                     if delta > 0:

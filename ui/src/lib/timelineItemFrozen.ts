@@ -20,6 +20,8 @@ export function isTimelineItemFrozen(item: TimelineItem): boolean {
       return true;
     case "toast":
       return true;
+    case "separator":
+      return true;
     case "approval":
       return item.decided !== "pending";
   }

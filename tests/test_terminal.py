@@ -87,6 +87,7 @@ class TestIsCommandDangerous:
 class TestRewriteCommandAliases:
     def test_no_rewrite_when_original_exists(self):
         import shutil
+
         if shutil.which("python3"):
             # If python3 exists but python also exists, no rewrite needed
             result = _rewrite_command_aliases("python3 foo.py")
@@ -143,6 +144,7 @@ class TestRunCommandTool:
         # Default behavior: reject a working_dir outside the project root.
         # The session-wide opt-out in conftest must be cleared for this test.
         from coderAI.config import config_manager
+
         monkeypatch.delenv("CODERAI_ALLOW_OUTSIDE_PROJECT", raising=False)
         config_manager._config = None  # clear cache so load() re-reads env/file
         result = asyncio.run(self.tool.execute(command="pwd", working_dir=str(tmp_path)))
@@ -168,7 +170,9 @@ class TestRunCommandTool:
 
     def test_input_payload_is_sent_to_stdin(self):
         result = asyncio.run(
-            self.tool.execute(command="python3 -c 'import sys; print(sys.stdin.read())'", input="hello")
+            self.tool.execute(
+                command="python3 -c 'import sys; print(sys.stdin.read())'", input="hello"
+            )
         )
         assert result["success"], result
         assert "hello" in result["stdout"]
@@ -198,6 +202,7 @@ class TestRunBackgroundTool:
         asyncio.run(self.tool.execute(command="sleep 0"))
         # Give process time to finish
         import time
+
         time.sleep(0.2)
         removed = self.tool.cleanup_finished()
         assert isinstance(removed, int)

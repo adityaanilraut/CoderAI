@@ -1,4 +1,4 @@
-import React, {useState, useMemo} from "react";
+import React, {useEffect, useState, useMemo} from "react";
 import {Box, Text, useInput} from "ink";
 import {theme} from "../theme.js";
 import {truncateSmart} from "../lib/format.js";
@@ -42,12 +42,22 @@ export function ModelMenu({models, current, onPick, onClose, maxWidth}: ModelMen
     return pos >= 0 ? pos : 0;
   });
 
+  useEffect(() => {
+    if (flat.length === 0) {
+      setIndex(0);
+      return;
+    }
+    const pos = flat.findIndex((e) => e.model === current);
+    setIndex(pos >= 0 ? pos : 0);
+  }, [flat, current]);
+
   useInput(
     (input, key) => {
       if (key.escape) {
         onClose();
         return;
       }
+      if (flat.length === 0) return;
       if (key.upArrow) {
         setIndex((i) => (i - 1 + flat.length) % flat.length);
         return;

@@ -63,9 +63,7 @@ def detect_platform() -> str:
     elif system in ("windows", "win32"):
         os_slug = "windows"
     else:
-        raise UnsupportedPlatformError(
-            f"Unsupported operating system: {platform.system()}"
-        )
+        raise UnsupportedPlatformError(f"Unsupported operating system: {platform.system()}")
 
     if machine in ("arm64", "aarch64"):
         arch_slug = "arm64"
@@ -77,8 +75,7 @@ def detect_platform() -> str:
     # We don't publish windows-arm64 yet; future-proof the error message.
     if os_slug == "windows" and arch_slug != "x64":
         raise UnsupportedPlatformError(
-            f"No prebuilt binary for windows-{arch_slug}. "
-            "Build from source with `make ui-compile`."
+            f"No prebuilt binary for windows-{arch_slug}. Build from source with `make ui-compile`."
         )
 
     return f"{os_slug}-{arch_slug}"
@@ -234,15 +231,11 @@ def _repo() -> str:
 
 
 def _release_url(version: str, plat: str) -> str:
-    return RELEASES_URL.format(
-        repo=_repo(), version=version, asset=_asset_name(plat)
-    )
+    return RELEASES_URL.format(repo=_repo(), version=version, asset=_asset_name(plat))
 
 
 def _checksum_url(version: str, plat: str) -> str:
-    return RELEASES_URL.format(
-        repo=_repo(), version=version, asset=_asset_name(plat) + ".sha256"
-    )
+    return RELEASES_URL.format(repo=_repo(), version=version, asset=_asset_name(plat) + ".sha256")
 
 
 def _make_executable(path: Path) -> None:

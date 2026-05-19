@@ -17,12 +17,10 @@ MODEL_PRICING: Dict[str, Dict[str, float]] = {
     "o1-pro": {"input": 150.00, "output": 600.00},
     "o3": {"input": 2.00, "output": 8.00},
     "o3-mini": {"input": 1.10, "output": 4.40},
-
     # Anthropic — Claude 4.X API model IDs
     "claude-opus-4-7": {"input": 5.00, "output": 25.00},
     "claude-sonnet-4-6": {"input": 3.00, "output": 15.00},
     "claude-haiku-4-5": {"input": 1.00, "output": 5.00},
-
     # Anthropic — Claude 4.X friendly aliases
     "claude-4.7-opus": {"input": 5.00, "output": 25.00},
     "claude-4.6-sonnet": {"input": 3.00, "output": 15.00},
@@ -30,7 +28,6 @@ MODEL_PRICING: Dict[str, Dict[str, float]] = {
     "claude-4-sonnet": {"input": 3.00, "output": 15.00},
     "claude-4-opus": {"input": 5.00, "output": 25.00},
     "claude-4-haiku": {"input": 1.00, "output": 5.00},
-
     # Anthropic — legacy 3.X
     "claude-3-7-sonnet-20250219": {"input": 3.00, "output": 15.00},
     "claude-3-5-sonnet-20241022": {"input": 3.00, "output": 15.00},
@@ -38,12 +35,10 @@ MODEL_PRICING: Dict[str, Dict[str, float]] = {
     "claude-3.7-sonnet": {"input": 3.00, "output": 15.00},
     "claude-3.5-sonnet": {"input": 3.00, "output": 15.00},
     "claude-3.5-haiku": {"input": 0.80, "output": 4.00},
-
     # Anthropic — short aliases
     "sonnet": {"input": 3.00, "output": 15.00},
     "haiku": {"input": 1.00, "output": 5.00},
     "opus": {"input": 5.00, "output": 25.00},
-
     # Groq
     "openai/gpt-oss-120b": {"input": 0.15, "output": 0.60},
     "openai/gpt-oss-20b": {"input": 0.075, "output": 0.30},
@@ -53,7 +48,6 @@ MODEL_PRICING: Dict[str, Dict[str, float]] = {
     "gemma-7b-it": {"input": 0.07, "output": 0.07},
     "llama-3.3-70b-versatile": {"input": 0.59, "output": 0.79},
     "llama-3.1-8b-instant": {"input": 0.05, "output": 0.08},
-
     # DeepSeek
     "deepseek-v4-flash": {"input": 0.14, "output": 0.28},
     "deepseek-v4-pro": {"input": 1.74, "output": 3.48},
@@ -62,12 +56,10 @@ MODEL_PRICING: Dict[str, Dict[str, float]] = {
     "deepseek-v3": {"input": 0.27, "output": 1.10},
     "deepseek-v3.2": {"input": 0.27, "output": 1.10},
     "deepseek-r1": {"input": 0.55, "output": 2.19},
-
     # Local
     "lmstudio": {"input": 0.0, "output": 0.0},
     "ollama": {"input": 0.0, "output": 0.0},
 }
-
 
 
 class CostTracker:
@@ -90,6 +82,7 @@ class CostTracker:
         def _strip_date_suffixes(s: str) -> str:
             """Strip one or more ``-YYYYMMDD`` suffixes from a model ID."""
             import re as _re
+
             while True:
                 stripped = _re.sub(r"-\d{8,}$", "", s)
                 if stripped == s:
@@ -101,6 +94,7 @@ class CostTracker:
         # Friendly-alias normalisation: claude-4-5-haiku → claude-4.5-haiku
         if base_model.startswith("claude-"):
             import re as _re
+
             base_model = _re.sub(
                 r"^(claude-)(\d+)-(\d+)(-\w+)$",
                 lambda m: f"{m.group(1)}{m.group(2)}.{m.group(3)}{m.group(4)}",
@@ -119,7 +113,8 @@ class CostTracker:
                 "Unknown pricing for model '%s' (resolved to '%s'). "
                 "Cost will be recorded as $0.00 — this is likely a new model "
                 "that needs a pricing entry in MODEL_PRICING.",
-                model, base_model,
+                model,
+                base_model,
             )
             return {"input": 0.0, "output": 0.0}
 

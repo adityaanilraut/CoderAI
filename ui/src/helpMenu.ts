@@ -31,11 +31,13 @@ export const HELP_MENU_ENTRIES: HelpMenuEntry[] = [
   {slash: "/show", desc: "Reference info · type /show then a topic"},
   {slash: "/think", desc: "Reveal the latest hidden reasoning as a toast"},
   {slash: "/search", desc: "Search conversation transcript · /search <query>"},
+  {slash: "/code-search", desc: "Search the codebase semantically · /code-search <query>"},
   {slash: "/export", desc: "Export session to markdown · /export [path]"},
   {slash: "/copy", desc: "Copy last assistant response to clipboard (OSC-52)"},
-  {slash: "/theme", desc: "Set dark/light theme · /theme <dark|light>"},
+  {slash: "/theme", desc: "Persist dark/light theme · /theme <dark|light> (next launch)"},
   {slash: "/undo", desc: "Undo last tool action · /undo [count]"},
   {slash: "/tokens", desc: "Show token usage, cost & context stats"},
+  {slash: "/context", desc: "View files currently pinned to the context window"},
   {slash: "/exit", desc: "Shut down the agent (type twice to confirm)"},
 ];
 

@@ -78,16 +78,24 @@ def _infer_error_hint(category: str, message: str) -> Optional[str]:
         if any(k in lower for k in ("api key", "401", "unauthorized", "authentication")):
             return "Missing/invalid API key — run `coderAI setup` or `coderAI doctor`."
         if any(k in lower for k in ("rate limit", "429", "too many requests")):
-            return "Rate limited — wait a few seconds and retry, or switch models with /model <name>."
+            return (
+                "Rate limited — wait a few seconds and retry, or switch models with /model <name>."
+            )
         if "context" in lower and "length" in lower:
             return "Context window exceeded. Try /compact to summarize, or /clear to reset."
         if any(k in lower for k in ("quota", "insufficient", "billing")):
             return "Provider reports quota/billing exhausted. Top up credits or switch providers."
         if "timeout" in lower or "timed out" in lower:
             return "Request timed out. Try again; if persistent, check your network and /model."
-        if any(k in lower for k in (
-            "cannot connect", "connection refused", "econnrefused", "getaddrinfo",
-        )):
+        if any(
+            k in lower
+            for k in (
+                "cannot connect",
+                "connection refused",
+                "econnrefused",
+                "getaddrinfo",
+            )
+        ):
             return "Network/service unreachable. Check the endpoint URL, DNS, and firewall."
         if "ssl" in lower or "certificate" in lower:
             return "TLS handshake failed. Check your system clock and corporate proxy/CA certs."
@@ -133,14 +141,30 @@ _TOOL_CATEGORY_FALLBACK["mcp_call_tool"] = "mcp"
 _TOOL_CATEGORY_FALLBACK["mcp_list"] = "mcp"
 
 _HIGH_RISK = {
-    "run_command", "run_background", "write_file", "search_replace",
-    "apply_diff", "git_commit", "git_checkout", "git_stash",
-    "git_push", "git_reset", "git_rebase", "git_revert",
-    "delete_file", "move_file", "kill_process",
+    "run_command",
+    "run_background",
+    "write_file",
+    "search_replace",
+    "apply_diff",
+    "git_commit",
+    "git_checkout",
+    "git_stash",
+    "git_push",
+    "git_reset",
+    "git_rebase",
+    "git_revert",
+    "delete_file",
+    "move_file",
+    "kill_process",
 }
 _MEDIUM_RISK = {
-    "delegate_task", "download_file", "mcp_call_tool",
-    "git_merge", "git_cherry_pick", "copy_file", "http_request",
+    "delegate_task",
+    "download_file",
+    "mcp_call_tool",
+    "git_merge",
+    "git_cherry_pick",
+    "copy_file",
+    "http_request",
 }
 
 
@@ -188,14 +212,14 @@ def _preview_args_for_approval(arguments: Dict[str, Any]) -> Dict[str, Any]:
 
 # --- AgentInfo serialization -------------------------------------------------
 
+
 def _agent_info_dict(info: AgentInfo) -> Dict[str, Any]:
     return {
         "id": info.agent_id,
         "name": info.name,
         "role": info.role,
         "parentId": info.parent_id,
-        "status": info.status.value if isinstance(info.status, AgentStatus)
-                   else str(info.status),
+        "status": info.status.value if isinstance(info.status, AgentStatus) else str(info.status),
         "task": info.current_task,
         "tool": info.current_tool,
         "model": info.model,
@@ -208,6 +232,7 @@ def _agent_info_dict(info: AgentInfo) -> Dict[str, Any]:
 
 
 # --- The server -------------------------------------------------------------
+
 
 class IPCServer:
     """Drives the NDJSON transport for the Ink UI.
@@ -242,11 +267,10 @@ class IPCServer:
 
         # Verbosity filter — set by the UI via the ``set_verbosity`` command.
         # ``normal`` (default) emits the structured protocol but suppresses
-        # the chattier ``success`` toasts. ``verbose`` re-enables them and
-        # forwards ``agent_status`` narration. ``quiet`` additionally drops
-        # transient ``info``/``warning`` toasts triggered by state changes
-        # (long-form ``info`` payloads from ``/show`` are always passed
-        # through — see ``_should_emit_event``).
+        # the chattier ``success`` toasts. ``verbose`` re-enables them.
+        # ``quiet`` additionally drops transient ``info``/``warning`` toasts
+        # triggered by state changes (long-form ``info`` payloads from ``/show``
+        # are always passed through — see ``_should_emit_event``).
         self._verbosity: str = "normal"
 
         # Track our own event_emitter subscriptions so we can detach them at
@@ -300,8 +324,14 @@ class IPCServer:
             return v != "quiet"
         return True
 
-    def _emit_error(self, category: str, message: str, *,
-                    hint: Optional[str] = None, details: Optional[str] = None) -> None:
+    def _emit_error(
+        self,
+        category: str,
+        message: str,
+        *,
+        hint: Optional[str] = None,
+        details: Optional[str] = None,
+    ) -> None:
         """Emit an ``error`` event with a canonical hint if one isn't supplied."""
         payload: Dict[str, Any] = {"category": category, "message": message}
         resolved_hint = hint if hint is not None else _infer_error_hint(category, message)
@@ -332,7 +362,7 @@ class IPCServer:
         loop = asyncio.get_running_loop()
         fut: asyncio.Future = loop.create_future()
         self._approval_waiters[tool_id] = fut
-        
+
         payload = {
             "name": tool_name,
             "args": _preview_args_for_approval(arguments),
@@ -340,27 +370,20 @@ class IPCServer:
         }
         if diff is not None:
             payload["diff"] = diff
-            
-        self.emit(
-            "tool",
-            id=tool_id,
-            phase="awaiting_approval",
-            payload=payload
-        )
+
+        self.emit("tool", id=tool_id, phase="awaiting_approval", payload=payload)
         timeout_s = int(getattr(self.agent.config, "approval_timeout_seconds", 300) or 0)
         try:
             if timeout_s > 0:
                 return bool(await asyncio.wait_for(fut, timeout=timeout_s))
             return bool(await fut)
         except asyncio.TimeoutError:
-            logger.warning(
-                "Approval for %s timed out after %ss; denying.", tool_name, timeout_s
-            )
+            logger.warning("Approval for %s timed out after %ss; denying.", tool_name, timeout_s)
             self.emit(
                 "tool",
                 id=tool_id,
                 phase="cancelled",
-                payload={"reason": "timeout", "timeoutSeconds": timeout_s}
+                payload={"reason": "timeout", "timeoutSeconds": timeout_s},
             )
             return False
         except asyncio.CancelledError:
@@ -429,14 +452,19 @@ class IPCServer:
         # "Calling tool…"). The Ink UI shows the same information via
         # tool_call / agent_update events, so we no longer forward it as
         # a persistent toast. Re-enabled only when verbose flag flips.
-        _bind("agent_error", lambda message:
-              self._emit_error("internal", _strip_rich_markup(message)))
-        _bind("agent_paused", lambda message:
-              self.emit("info", message=_strip_rich_markup(message)))
-        _bind("agent_warning", lambda message:
-              self.emit("warning", message=_strip_rich_markup(message)))
-        _bind("file_diff", lambda path, diff:
-              self.emit("file_diff", path=str(path), diff=str(diff)))
+        _bind(
+            "agent_error", lambda message: self._emit_error("internal", _strip_rich_markup(message))
+        )
+        _bind(
+            "agent_paused", lambda message: self.emit("info", message=_strip_rich_markup(message))
+        )
+        _bind(
+            "agent_warning",
+            lambda message: self.emit("warning", message=_strip_rich_markup(message)),
+        )
+        _bind(
+            "file_diff", lambda path, diff: self.emit("file_diff", path=str(path), diff=str(diff))
+        )
         _bind("agent_lifecycle", self._on_agent_lifecycle)
         _bind("agent_tracker_sync", self._on_agent_tracker_sync)
         _bind("tool_progress", self._on_tool_progress)
@@ -459,7 +487,7 @@ class IPCServer:
                 "category": _tool_category(tool_name, getattr(self.agent, "tools", None)),
                 "args": _arg_preview(arguments),
                 "risk": _tool_risk(tool_name),
-            }
+            },
         )
 
     def _on_tool_result(self, tool_name: str, result: Dict[str, Any], tool_id: str = None) -> None:
@@ -476,7 +504,7 @@ class IPCServer:
                 "preview": preview,
                 "fullAvailable": len(str(result)) > len(preview),
                 "error": error,
-            }
+            },
         )
 
     def _on_agent_lifecycle(self, action: str, info: AgentInfo) -> None:
@@ -527,8 +555,6 @@ class IPCServer:
         if elapsed is not None:
             payload["elapsed"] = elapsed
         self.emit("progress", **payload)
-
-
 
     # -- inbound (stdin) ------------------------------------------------------
 
@@ -706,6 +732,7 @@ def _result_preview(result: Dict[str, Any]) -> str:
 
 # --- Persona / skills slash helpers ----------------------------------------
 
+
 def _handle_persona_slash(server: "IPCServer", arg: str) -> None:
     """Inline ``/persona [name|default|list]`` handler.
 
@@ -729,9 +756,7 @@ def _handle_persona_slash(server: "IPCServer", arg: str) -> None:
                 ),
             )
             return
-        current = (
-            server.agent.persona.name if server.agent.persona else "(default)"
-        )
+        current = server.agent.persona.name if server.agent.persona else "(default)"
         listing = "\n".join(f"  • {n}" for n in sorted(available))
         server.emit(
             "info",
@@ -747,9 +772,7 @@ def _handle_persona_slash(server: "IPCServer", arg: str) -> None:
 
     resolved = resolve_persona_name(arg, project_root)
     if not resolved:
-        hint = (
-            f"Persona '{arg}' not found. Available: {', '.join(sorted(available)) or '(none)'}"
-        )
+        hint = f"Persona '{arg}' not found. Available: {', '.join(sorted(available)) or '(none)'}"
         server.emit("warning", message=hint)
         return
 
@@ -793,6 +816,7 @@ def _handle_skills_slash(server: "IPCServer") -> None:
 
 
 # --- Command handlers -------------------------------------------------------
+
 
 async def _cmd_send_message(server: IPCServer, msg: Dict[str, Any]) -> None:
     text = msg.get("text", "")
@@ -859,11 +883,7 @@ async def _cmd_cancel(server: IPCServer, msg: Dict[str, Any]) -> None:
     else:
         active = agent_tracker.get_active()
         agent_tracker.cancel_all()
-        suffix = (
-            f" and {approvals_cancelled} pending approval(s)"
-            if approvals_cancelled
-            else ""
-        )
+        suffix = f" and {approvals_cancelled} pending approval(s)" if approvals_cancelled else ""
         server.emit("info", message=f"Cancelled {len(active)} active agent(s){suffix}")
 
 
@@ -905,7 +925,7 @@ async def _cmd_set_persona(server: IPCServer, msg: Dict[str, Any]) -> None:
 
     Payload: ``{"persona": "<name>"}``; empty/omitted/``"default"`` clears it.
     """
-    raw = (msg.get("persona") or (msg.get("payload") or {}).get("persona") or "")
+    raw = msg.get("persona") or (msg.get("payload") or {}).get("persona") or ""
     _handle_persona_slash(server, str(raw).strip())
     server.emit_ready()
 
@@ -919,9 +939,7 @@ async def _cmd_toggle_auto_approve(server: IPCServer, msg: Dict[str, Any]) -> No
     server.emit(
         "success",
         message=(
-            "Auto-approve enabled (YOLO)"
-            if server.agent.auto_approve
-            else "Auto-approve disabled"
+            "Auto-approve enabled (YOLO)" if server.agent.auto_approve else "Auto-approve disabled"
         ),
     )
 
@@ -976,6 +994,21 @@ async def _cmd_clear_context(server: IPCServer, msg: Dict[str, Any]) -> None:
         server.agent.session = None
         server.agent.context_manager.clear()
         server.agent.create_session()
+    main_info = getattr(server.agent, "tracker_info", None)
+    if main_info is not None:
+        agent_tracker.clear_except({main_info.agent_id})
+        main_info.status = AgentStatus.IDLE
+        main_info.current_task = ""
+        main_info.current_tool = None
+        main_info.finished_at = None
+        server.emit(
+            "agent",
+            phase="update",
+            info=_agent_info_dict(main_info),
+            parentId=main_info.parent_id,
+        )
+    else:
+        agent_tracker.clear_except()
     server.emit("success", message="Session cleared")
     server.emit_status()
 
@@ -995,6 +1028,12 @@ async def _cmd_get_state(server: IPCServer, msg: Dict[str, Any]) -> None:
     for info in agent_tracker.get_all():
         server.emit("agent", phase="update", info=_agent_info_dict(info), parentId=info.parent_id)
 
+    context_files = []
+    pinned = server.agent.context_manager.pinned_files
+    for path_str, content in pinned.items():
+        context_files.append({"path": path_str, "size": len(content)})
+    server.emit("context_state", files=context_files)
+
 
 def _format_plan_message(plan: Dict[str, Any]) -> str:
     """Plain-text summary for UI toast (matches `plan` tool show semantics)."""
@@ -1006,11 +1045,7 @@ def _format_plan_message(plan: Dict[str, Any]) -> str:
     except (TypeError, ValueError):
         current = 0
     completed = sum(1 for s in steps if s.get("status") == "done")
-    cur_desc = (
-        steps[current]["description"]
-        if current < total
-        else "All steps completed"
-    )
+    cur_desc = steps[current]["description"] if current < total else "All steps completed"
     lines = [
         f"Plan: {title}",
         f"Progress: {completed}/{total} steps · current: {cur_desc}",
@@ -1047,6 +1082,45 @@ async def _cmd_get_plan(server: IPCServer, msg: Dict[str, Any]) -> None:
         server.emit("warning", message="Invalid plan file.")
         return
     server.emit("info", message=_format_plan_message(plan))
+
+
+async def _cmd_list_personas(server: IPCServer, _msg: Dict[str, Any]) -> None:
+    from ..agents import get_available_personas
+
+    project_root = getattr(server.agent.config, "project_root", ".")
+    available = get_available_personas(project_root)
+    current = server.agent.persona.name if server.agent.persona else None
+    server.emit("available_personas", current=current, personas=sorted(available))
+
+
+async def _cmd_list_skills(server: IPCServer, _msg: Dict[str, Any]) -> None:
+    from ..tools.skills import get_available_skills
+
+    project_root = getattr(server.agent.config, "project_root", ".")
+    skills = get_available_skills(project_root)
+    server.emit("available_skills", skills=skills)
+
+
+async def _cmd_search_codebase(server: IPCServer, msg: Dict[str, Any]) -> None:
+    query = msg.get("query", "")
+    if not query:
+        return
+    try:
+        from ..cli.search import semantic_search
+
+        results = semantic_search(
+            query, project_root=getattr(server.agent.config, "project_root", "."), n_results=10
+        )
+        if not results:
+            server.emit("info", message=f"No semantic search results found for '{query}'.")
+            return
+        out = [f"Semantic search results for '{query}':\n"]
+        for r in results:
+            preview = r.content.strip().split(chr(10))[0][:80]
+            out.append(f"• {r.filepath} (score: {r.score:.2f})\n  {preview}...")
+        server.emit("info", message="\n".join(out))
+    except Exception as e:
+        server.emit("warning", message=f"Codebase search failed: {e}")
 
 
 async def _cmd_list_models(server: IPCServer, _msg: Dict[str, Any]) -> None:
@@ -1192,7 +1266,7 @@ async def _cmd_handshake(server: IPCServer, msg: Dict[str, Any]) -> None:
         server.emit(
             "warning",
             message=f"Protocol version mismatch: agent v{PROTOCOL_VERSION}, UI v{ui_version}. "
-                    f"Some features may not work correctly.",
+            f"Some features may not work correctly.",
         )
     server._handshake_done = True
 
@@ -1211,6 +1285,9 @@ _COMMAND_HANDLERS: Dict[str, Callable[[IPCServer, Dict[str, Any]], Awaitable[Non
     "get_state": _cmd_get_state,
     "get_plan": _cmd_get_plan,
     "list_models": _cmd_list_models,
+    "list_personas": _cmd_list_personas,
+    "list_skills": _cmd_list_skills,
+    "search_codebase": _cmd_search_codebase,
     "reference": _cmd_reference,
     "set_default_model": _cmd_set_default_model,
     "set_verbosity": _cmd_set_verbosity,

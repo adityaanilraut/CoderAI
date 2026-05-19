@@ -9,6 +9,7 @@ export interface SearchOverlayProps {
   filter: string;
   onFilterChange: (f: string) => void;
   onClose: () => void;
+  onJumpToIndex: (index: number) => void;
   maxWidth: number;
 }
 
@@ -23,6 +24,7 @@ export function SearchOverlay({
   filter,
   onFilterChange,
   onClose,
+  onJumpToIndex,
   maxWidth,
 }: SearchOverlayProps) {
   const [selectedIdx, setSelectedIdx] = useState(0);
@@ -53,6 +55,9 @@ export function SearchOverlay({
         case "toast":
           text = item.message;
           break;
+        case "separator":
+          text = item.message;
+          break;
         case "approval":
           text = item.tool;
           break;
@@ -75,7 +80,12 @@ export function SearchOverlay({
         return;
       }
       if (key.return) {
-        onClose();
+        const hit = hits[selectedIdx];
+        if (hit) {
+          onJumpToIndex(hit.index);
+        } else {
+          onClose();
+        }
         return;
       }
       if (key.upArrow) {
@@ -120,7 +130,7 @@ export function SearchOverlay({
         </Text>
         <Text color={theme.faint}>
           type to filter
-          {theme.glyph.separator}↵ close
+          {theme.glyph.separator}↵ jump
           {theme.glyph.separator}esc close
         </Text>
       </Box>
@@ -212,6 +222,8 @@ function summarizeHit(item: TimelineItem, max: number): string {
     case "error":
       return item.message.slice(0, max);
     case "toast":
+      return item.message.slice(0, max);
+    case "separator":
       return item.message.slice(0, max);
     case "approval":
       return item.tool;

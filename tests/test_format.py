@@ -10,7 +10,7 @@ from coderAI.tools.format import FormatTool, detect_formatter, FORMATTERS
 @pytest.fixture
 def python_project(tmp_path):
     (tmp_path / "pyproject.toml").write_text("[tool.ruff]\n")
-    (tmp_path / "main.py").write_text('x=1\ny=2\n')
+    (tmp_path / "main.py").write_text("x=1\ny=2\n")
     return tmp_path
 
 
@@ -41,9 +41,7 @@ class TestFormatTool:
         self.tool = FormatTool()
 
     def test_unknown_formatter_returns_error(self):
-        result = asyncio.run(
-            self.tool.execute(path=".", formatter="nonexistent_formatter_xyz")
-        )
+        result = asyncio.run(self.tool.execute(path=".", formatter="nonexistent_formatter_xyz"))
         assert not result["success"]
         assert "Unknown formatter" in result["error"]
 
@@ -52,9 +50,7 @@ class TestFormatTool:
         assert not result["success"]
 
     def test_missing_binary_returns_error(self):
-        result = asyncio.run(
-            self.tool.execute(path=".", formatter="gofmt")
-        )
+        result = asyncio.run(self.tool.execute(path=".", formatter="gofmt"))
         if not shutil.which("gofmt"):
             assert not result["success"]
             assert "not found" in result["error"]

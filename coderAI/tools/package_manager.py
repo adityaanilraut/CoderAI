@@ -131,7 +131,9 @@ def _validate_package_name(package: str, manager: str) -> Optional[str]:
     dangerous_chars = [";", "|", "&", "$", "`", "(", ")", "{", "}", "<", ">", "\n", "\r", "'", '"']
     for ch in dangerous_chars:
         if ch in package:
-            return f"Package name contains unsafe character: {ch!r}. Use a simple package name only."
+            return (
+                f"Package name contains unsafe character: {ch!r}. Use a simple package name only."
+            )
     if len(package) > 256:
         return "Package name too long (max 256 characters)."
     return None
@@ -139,9 +141,16 @@ def _validate_package_name(package: str, manager: str) -> Optional[str]:
 
 class PackageManagerParams(BaseModel):
     action: str = Field(..., description="Action: install, uninstall, list, outdated, info")
-    package: Optional[str] = Field(None, description="Package name (required for install/uninstall/info)")
-    version: Optional[str] = Field(None, description="Package version constraint (e.g., '>=2.0', '@latest', '@1.2.3')")
-    manager: Optional[str] = Field(None, description="Package manager (pip, pip3, npm, yarn, pnpm, bun, cargo, go). Auto-detected if omitted.")
+    package: Optional[str] = Field(
+        None, description="Package name (required for install/uninstall/info)"
+    )
+    version: Optional[str] = Field(
+        None, description="Package version constraint (e.g., '>=2.0', '@latest', '@1.2.3')"
+    )
+    manager: Optional[str] = Field(
+        None,
+        description="Package manager (pip, pip3, npm, yarn, pnpm, bun, cargo, go). Auto-detected if omitted.",
+    )
     dev: bool = Field(False, description="Install as a dev dependency (default: false)")
     max_results: int = Field(20, description="Maximum packages to list (default: 20)")
 
@@ -220,9 +229,17 @@ class PackageManagerTool(Tool):
                 validation_error = _validate_package_name(package, manager_name)
                 if validation_error:
                     return {"success": False, "error": validation_error}
-                pkg_with_version = f"{package}@{version}" if version and manager_name in ("npm", "yarn", "pnpm", "bun") else package
+                pkg_with_version = (
+                    f"{package}@{version}"
+                    if version and manager_name in ("npm", "yarn", "pnpm", "bun")
+                    else package
+                )
                 if version and manager_name not in ("npm", "yarn", "pnpm", "bun"):
-                    if version.startswith(">=") or version.startswith("==") or version.startswith("~"):
+                    if (
+                        version.startswith(">=")
+                        or version.startswith("==")
+                        or version.startswith("~")
+                    ):
                         pkg_with_version = f"{package}{version}"
                     else:
                         pkg_with_version = f"{package}>={version}"
@@ -254,7 +271,10 @@ class PackageManagerTool(Tool):
             elif action == "uninstall":
                 if manager_name == "go":
                     if not package:
-                        return {"success": False, "error": "go modules use 'go get package@none' for removal; specify a package."}
+                        return {
+                            "success": False,
+                            "error": "go modules use 'go get package@none' for removal; specify a package.",
+                        }
                     cmd = [cmd_binary, "get", f"{package}@none"]
                 else:
                     uninstall_cmd = list(config["uninstall_cmd"])
@@ -359,18 +379,24 @@ class PackageManagerTool(Tool):
                 try:
                     parsed = json.loads(stdout_str)
                     if isinstance(parsed, (dict, list)):
-                        result["outdated"] = parsed if isinstance(parsed, list) else list(parsed.keys())
+                        result["outdated"] = (
+                            parsed if isinstance(parsed, list) else list(parsed.keys())
+                        )
                 except (json.JSONDecodeError, TypeError):
                     pass
 
-            result["message"] = self._format_message(action, manager_name, package, process.returncode == 0)
+            result["message"] = self._format_message(
+                action, manager_name, package, process.returncode == 0
+            )
             return result
 
         except Exception as e:
             logger.exception("package_manager failed")
             return {"success": False, "error": str(e)}
 
-    def _format_message(self, action: str, manager: str, package: Optional[str], success: bool) -> str:
+    def _format_message(
+        self, action: str, manager: str, package: Optional[str], success: bool
+    ) -> str:
         if action == "install":
             return (
                 f"Successfully installed {package} with {manager}."

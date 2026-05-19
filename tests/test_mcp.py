@@ -55,9 +55,7 @@ class TestMCPClient:
         assert "server_name" in result["error"].lower() or "__" in result["error"]
 
     def test_call_tool_not_connected(self):
-        result = asyncio.run(
-            self.client.call_tool("notconnected", "sometool", {})
-        )
+        result = asyncio.run(self.client.call_tool("notconnected", "sometool", {}))
         assert not result["success"]
         assert "not connected" in result["error"]
 
@@ -147,6 +145,7 @@ class TestMCPListTool:
 
     def test_list_empty(self):
         import coderAI.tools.mcp as mcp_mod
+
         original = mcp_mod.mcp_client
         mcp_mod.mcp_client = MCPClient()
         try:
@@ -159,6 +158,7 @@ class TestMCPListTool:
 
     def test_list_with_servers(self):
         import coderAI.tools.mcp as mcp_mod
+
         fake_client = MCPClient()
         fake_client.servers = {
             "srv1": {"tools": [{"name": "t1"}, {"name": "t2"}], "server_info": {}}
@@ -186,6 +186,7 @@ class TestMCPCallTool:
 
     def test_call_not_connected_server(self):
         import coderAI.tools.mcp as mcp_mod
+
         original = mcp_mod.mcp_client
         mcp_mod.mcp_client = MCPClient()
         try:
@@ -204,6 +205,7 @@ class TestMCPConnectTool:
 
     def test_connect_missing_binary(self):
         import coderAI.tools.mcp as mcp_mod
+
         original = mcp_mod.mcp_client
         mcp_mod.mcp_client = MCPClient()
         try:

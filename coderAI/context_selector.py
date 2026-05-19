@@ -11,23 +11,144 @@ from typing import Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
-_STOP_WORDS = frozenset({
-    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
-    "have", "has", "had", "do", "does", "did", "will", "would", "could",
-    "should", "may", "might", "can", "shall", "to", "of", "in", "for",
-    "on", "with", "at", "by", "from", "as", "into", "through", "during",
-    "before", "after", "above", "below", "between", "out", "off", "over",
-    "under", "again", "further", "then", "once", "here", "there", "when",
-    "where", "why", "how", "all", "each", "every", "both", "few", "more",
-    "most", "other", "some", "such", "no", "nor", "not", "only", "own",
-    "same", "so", "than", "too", "very", "just", "because", "but", "and",
-    "or", "if", "while", "about", "up", "also", "this", "that", "these",
-    "those", "it", "its", "i", "me", "my", "we", "our", "you", "your",
-    "he", "him", "his", "she", "her", "they", "them", "their", "what",
-    "which", "who", "whom", "make", "please", "help", "want", "need",
-    "look", "like", "use", "get", "let", "put", "take", "give", "go",
-    "come", "see", "know", "think", "say", "tell", "show", "try", "ask"
-})
+_STOP_WORDS = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "have",
+        "has",
+        "had",
+        "do",
+        "does",
+        "did",
+        "will",
+        "would",
+        "could",
+        "should",
+        "may",
+        "might",
+        "can",
+        "shall",
+        "to",
+        "of",
+        "in",
+        "for",
+        "on",
+        "with",
+        "at",
+        "by",
+        "from",
+        "as",
+        "into",
+        "through",
+        "during",
+        "before",
+        "after",
+        "above",
+        "below",
+        "between",
+        "out",
+        "off",
+        "over",
+        "under",
+        "again",
+        "further",
+        "then",
+        "once",
+        "here",
+        "there",
+        "when",
+        "where",
+        "why",
+        "how",
+        "all",
+        "each",
+        "every",
+        "both",
+        "few",
+        "more",
+        "most",
+        "other",
+        "some",
+        "such",
+        "no",
+        "nor",
+        "not",
+        "only",
+        "own",
+        "same",
+        "so",
+        "than",
+        "too",
+        "very",
+        "just",
+        "because",
+        "but",
+        "and",
+        "or",
+        "if",
+        "while",
+        "about",
+        "up",
+        "also",
+        "this",
+        "that",
+        "these",
+        "those",
+        "it",
+        "its",
+        "i",
+        "me",
+        "my",
+        "we",
+        "our",
+        "you",
+        "your",
+        "he",
+        "him",
+        "his",
+        "she",
+        "her",
+        "they",
+        "them",
+        "their",
+        "what",
+        "which",
+        "who",
+        "whom",
+        "make",
+        "please",
+        "help",
+        "want",
+        "need",
+        "look",
+        "like",
+        "use",
+        "get",
+        "let",
+        "put",
+        "take",
+        "give",
+        "go",
+        "come",
+        "see",
+        "know",
+        "think",
+        "say",
+        "tell",
+        "show",
+        "try",
+        "ask",
+    }
+)
 
 # Regex for block-starting statements across common languages
 _BLOCK_START_RE = re.compile(
@@ -65,18 +186,12 @@ def extract_keywords(text: str) -> List[str]:
 
     # Quoted strings often hold specific references
     for q in re.findall(r"""["\']([^"\']+)["\']""", text):
-        keywords.extend(
-            w.lower()
-            for w in q.split()
-            if w.lower() not in _STOP_WORDS and len(w) > 1
-        )
+        keywords.extend(w.lower() for w in q.split() if w.lower() not in _STOP_WORDS and len(w) > 1)
 
     return keywords
 
 
-def score_relevance(
-    keywords: List[str], content: str, file_path: str = ""
-) -> float:
+def score_relevance(keywords: List[str], content: str, file_path: str = "") -> float:
     """Score how relevant *content* is to *keywords* (0.0 – 1.0)."""
     if not keywords or not content:
         return 0.0
@@ -96,7 +211,7 @@ def score_relevance(
                 matched_weight += count * 2.0
         elif kw in content_lower:
             matched_weight += count * 1.0
-            
+
     # Guarantee highly specific paths pass the threshold naturally
     raw = matched_weight / (total_weight * 1.5) if total_weight else 0.0
     return min(1.0, raw)
@@ -152,9 +267,7 @@ def extract_relevant_snippets(
             else:
                 break
 
-        bs_idx = (
-            block_starts.index(enclosing_start) if enclosing_start in block_starts else -1
-        )
+        bs_idx = block_starts.index(enclosing_start) if enclosing_start in block_starts else -1
         if bs_idx >= 0 and bs_idx + 1 < len(block_starts):
             enclosing_end = block_starts[bs_idx + 1]
         else:
@@ -258,16 +371,14 @@ def build_focused_context(
     return "\n\n".join(parts) if parts else None
 
 
-def summarize_conversation_focus(
-    messages: List[Dict[str, str]], recent_count: int = 6
-) -> str:
+def summarize_conversation_focus(messages: List[Dict[str, str]], recent_count: int = 6) -> str:
     """Derive a short textual summary of the conversation's current focus.
 
     Used as the *query* when deciding which context files are relevant.
     """
     recent = messages[-recent_count:] if len(messages) > recent_count else messages
     parts: List[str] = []
-    
+
     # Always include the very first user message to preserve the main task context
     if len(messages) > recent_count:
         first_msg = next((m for m in messages if m.get("role") == "user"), None)

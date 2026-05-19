@@ -12,11 +12,15 @@ import { Thinking } from "./components/Thinking.js";
 import { Toast } from "./components/Toast.js";
 import { ProgressBar } from "./components/ProgressBar.js";
 import { HelpMenu } from "./components/HelpMenu.js";
+import { Separator } from "./components/Separator.js";
 import { ModelMenu } from "./components/ModelMenu.js";
 import { ReasoningMenu } from "./components/ReasoningMenu.js";
 import { ApprovalPrompt } from "./components/ApprovalPrompt.js";
 import { theme } from "./theme.js";
 import { isTimelineItemFrozen } from "./lib/timelineItemFrozen.js";
+import { ContextOverlay } from "./components/ContextOverlay.js";
+import { PersonaMenu } from "./components/PersonaMenu.js";
+import { SkillsMenu } from "./components/SkillsMenu.js";
 import { SearchOverlay } from "./components/SearchOverlay.js";
 import type { TimelineItem } from "./hooks/useAgent.js";
 
@@ -25,7 +29,6 @@ export interface AppProps {
   cwd?: string;
 }
 
-const CTRL_C_WINDOW_MS = 1500;
 // Cap of timeline items kept in the live (re-rendered) region. Anything
 // older is moved into the Static (write-once) prefix to keep Ink's per-tick
 // redraw cheap. See `staticTimelineEpoch` for how resize handling stays
@@ -33,33 +36,19 @@ const CTRL_C_WINDOW_MS = 1500;
 const MAX_LIVE_ITEMS = 12;
 
 export function App({ python, cwd }: AppProps) {
-  const { session, timeline, actions, helpMenuOpen, modelMenuOpen, reasoningMenuOpen, searchOpen, searchFilter } = useAgent({ python, cwd });
+  const { session, timeline, actions, helpMenuOpen, modelMenuOpen, reasoningMenuOpen, searchOpen, contextOpen, personaMenuOpen, skillsMenuOpen, searchFilter, highlightTimelineIndex, exitArmed, gcFinishedAgent } = useAgent({ python, cwd });
   const { exit } = useApp();
   const { stdout } = useStdout();
   const columns = stdout?.columns ?? 100;
   const narrow = columns < theme.layout.narrowCols;
 
-  const lastCtrlC = useRef(0);
   const lastColumns = useRef<number | null>(null);
-  const [exitArmed, setExitArmed] = useState(false);
   // Bumping the epoch invalidates the existing Static block (Ink keys it on
   // a hidden internal counter — but our slice math depends on this epoch to
   // re-establish a fresh frozen prefix). Bumped on terminal resize so the
   // post-resize layout is computed from current widths, without falling
   // back to "everything is live" forever.
   const [staticTimelineEpoch, setStaticTimelineEpoch] = useState(0);
-  const armTimer = useRef<NodeJS.Timeout | null>(null);
-
-  useEffect(() => {
-    if (!exitArmed) return;
-    armTimer.current = setTimeout(
-      () => setExitArmed(false),
-      CTRL_C_WINDOW_MS,
-    );
-    return () => {
-      if (armTimer.current) clearTimeout(armTimer.current);
-    };
-  }, [exitArmed]);
 
   const { lastErrorId, pendingApprovalId, lastAssistantId } = useMemo(() => {
     let errId: string | null = null;
@@ -89,6 +78,9 @@ export function App({ python, cwd }: AppProps) {
     modelMenuOpen ||
     reasoningMenuOpen ||
     searchOpen ||
+    contextOpen ||
+    personaMenuOpen ||
+    skillsMenuOpen ||
     approvalPending;
 
   // Ref so renderItem can read the latest value without being in its dep array.
@@ -99,30 +91,40 @@ export function App({ python, cwd }: AppProps) {
 
   useInput(
     (input, key) => {
+      // Esc during tool approval is handled by ApprovalPrompt (deny once).
+      // Do not fall through to turn-wide cancel here.
+      if (key.escape && approvalPending) {
+        return;
+      }
+
       if (key.escape && (session.thinking || session.streaming)) {
         actions.cancel();
         return;
       }
 
-      // Ctrl+R is now owned by the Prompt (reverse-i-search). Reveal
-      // reasoning still has the /think slash command and the inline
-      // "▸ reasoning" hint surfaced under the latest assistant turn —
-      // no keystroke is needed.
-
       if (key.ctrl && input === "c") {
-        const now = Date.now();
-        const withinWindow = now - lastCtrlC.current < CTRL_C_WINDOW_MS;
-        if (withinWindow) {
-          actions.exit();
+        // Shared armed flag with /exit so the two routes can't disagree:
+        // confirmExit returns true when the window was already open (and it
+        // shut the agent down for us); false means we just armed it.
+        const finalized = actions.confirmExit();
+        if (finalized) {
           setTimeout(() => exit(), 200);
           return;
         }
-        lastCtrlC.current = now;
-        setExitArmed(true);
         if (session.thinking || session.streaming) actions.cancel();
       }
     },
-    { isActive: !helpMenuOpen && !modelMenuOpen && !reasoningMenuOpen && !searchOpen },
+    {
+      isActive:
+        !helpMenuOpen &&
+        !modelMenuOpen &&
+        !reasoningMenuOpen &&
+        !searchOpen &&
+        !contextOpen &&
+        !personaMenuOpen &&
+        !skillsMenuOpen &&
+        !approvalPending,
+    },
   );
 
   // Split timeline into a frozen prefix (handed to Static — printed once, never
@@ -196,12 +198,22 @@ export function App({ python, cwd }: AppProps) {
   }, [timeline, frozenCount]);
 
   const renderItem = useCallback(
-    (item: TimelineItem) => {
+    (item: TimelineItem, timelineIndex: number) => {
+      const highlighted = timelineIndex === highlightTimelineIndex;
+      const wrap = (node: React.ReactNode) =>
+        highlighted ? (
+          <Box borderStyle="round" borderColor={theme.accent} paddingX={1}>
+            {node}
+          </Box>
+        ) : (
+          node
+        );
+
       switch (item.kind) {
         case "user":
-          return <UserBubble key={`user-${item.id}`} text={item.text} />;
+          return wrap(<UserBubble key={`user-${item.id}`} text={item.text} />);
         case "assistant":
-          return (
+          return wrap(
             <Assistant
               key={`assistant-${item.id}`}
               content={item.content}
@@ -210,10 +222,10 @@ export function App({ python, cwd }: AppProps) {
               showReasoning={session.verbose}
               isLatest={item.id === lastAssistantId && !promptBusyRef.current}
               cwd={session.cwd}
-            />
+            />,
           );
         case "tool":
-          return (
+          return wrap(
             <ToolCard
               key={`tool-${item.id}`}
               name={item.name}
@@ -225,20 +237,20 @@ export function App({ python, cwd }: AppProps) {
               error={item.error}
               fullAvailable={item.fullAvailable}
               verbose={session.verbose}
-            />
+            />,
           );
         case "diff":
-          return (
+          return wrap(
             <Diff
               key={`diff-${item.id}`}
               path={item.path}
               diff={item.diff}
               maxLineWidth={columns - 16}
               verbose={session.verbose}
-            />
+            />,
           );
         case "error":
-          return (
+          return wrap(
             <ErrorPanel
               key={`error-${item.id}`}
               category={item.category}
@@ -251,27 +263,32 @@ export function App({ python, cwd }: AppProps) {
                 !approvalPending
               }
               promptActive={!promptBusyRef.current}
-            />
+            />,
           );
         case "toast":
-          return (
-            <Toast key={`toast-${item.id}`} level={item.level} message={item.message} />
+          return wrap(
+            <Toast key={`toast-${item.id}`} level={item.level} message={item.message} />,
+          );
+        case "separator":
+          return wrap(
+            <Separator key={`sep-${item.id}`} message={item.message} />,
           );
         case "approval":
-          return (
+          return wrap(
             <ApprovalPrompt
               key={`approval-${item.id}`}
               tool={item.tool}
               args={item.args}
               risk={item.risk}
               decided={item.decided}
+              diff={item.diff}
               active={item.id === pendingApprovalId}
               onDecide={(approve, always) => actions.approveTool(item.id, approve, always)}
-            />
+            />,
           );
       }
     },
-    [lastErrorId, pendingApprovalId, lastAssistantId, helpMenuOpen, approvalPending, columns, actions, session.verbose, session.cwd],
+    [lastErrorId, pendingApprovalId, lastAssistantId, helpMenuOpen, approvalPending, highlightTimelineIndex, columns, actions, session.verbose, session.cwd],
   );
 
   const empty = timeline.length === 0;
@@ -285,11 +302,11 @@ export function App({ python, cwd }: AppProps) {
             `key={staticTimelineEpoch}` re-mounts the block after a terminal
             resize so the new layout is computed with current widths. */}
         <Static key={staticTimelineEpoch} items={frozenTimeline}>
-          {(item) => renderItem(item)}
+          {(item, index) => renderItem(item, index)}
         </Static>
 
         {/* Active items — re-rendered freely as they update. */}
-        {liveTimeline.map((item) => renderItem(item))}
+        {liveTimeline.map((item, i) => renderItem(item, frozenCount + i))}
 
         <Thinking active={session.thinking} detail={thinkingDetail(session.agents)} />
 
@@ -344,7 +361,41 @@ export function App({ python, cwd }: AppProps) {
             filter={searchFilter}
             onFilterChange={actions.setSearchFilter}
             onClose={actions.closeSearch}
+            onJumpToIndex={actions.jumpToTimelineIndex}
             maxWidth={columns}
+          />
+        ) : null}
+
+        {contextOpen ? (
+          <ContextOverlay
+            files={session.contextFiles}
+            onClose={actions.closeContext}
+            maxWidth={columns}
+          />
+        ) : null}
+
+        {personaMenuOpen ? (
+          <PersonaMenu
+            personas={session.availablePersonas}
+            current={session.agents["main"]?.name || null}
+            maxWidth={columns}
+            onClose={actions.closePersonaMenu}
+            onPick={(persona) => {
+              actions.closePersonaMenu();
+              actions.send(`/persona ${persona}`);
+            }}
+          />
+        ) : null}
+
+        {skillsMenuOpen ? (
+          <SkillsMenu
+            skills={session.availableSkills}
+            maxWidth={columns}
+            onClose={actions.closeSkillsMenu}
+            onPick={(skill) => {
+              actions.closeSkillsMenu();
+              actions.send(`/skills ${skill}`);
+            }}
           />
         ) : null}
       </Box>
@@ -353,6 +404,7 @@ export function App({ python, cwd }: AppProps) {
         agents={session.agents}
         finishedAt={session.agentsFinishedAt}
         width={columns}
+        onGcFinished={gcFinishedAgent}
       />
 
       <Box marginTop={1}>
@@ -367,7 +419,13 @@ export function App({ python, cwd }: AppProps) {
                 ? "Esc closes model picker"
                 : reasoningMenuOpen
                   ? "Esc closes reasoning picker"
-                  : !session.connected
+                  : contextOpen
+                    ? "Esc closes context viewer"
+                    : personaMenuOpen
+                      ? "Esc closes persona picker"
+                      : skillsMenuOpen
+                        ? "Esc closes skills picker"
+                        : !session.connected
                 ? "starting agent…"
                 : session.thinking
                   ? "thinking…"

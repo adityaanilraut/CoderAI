@@ -19,7 +19,13 @@ FORMATTERS: Dict[str, Dict[str, Any]] = {
         "args": ["format"],
         "check_args": ["format", "--check", "--diff"],
         "extensions": {".py"},
-        "detect_files": {"pyproject.toml", "setup.py", "requirements.txt", "ruff.toml", ".ruff.toml"},
+        "detect_files": {
+            "pyproject.toml",
+            "setup.py",
+            "requirements.txt",
+            "ruff.toml",
+            ".ruff.toml",
+        },
     },
     "black": {
         "cmd": "black",
@@ -32,8 +38,25 @@ FORMATTERS: Dict[str, Dict[str, Any]] = {
         "cmd": "npx",
         "args": ["prettier", "--write"],
         "check_args": ["prettier", "--check"],
-        "extensions": {".js", ".jsx", ".ts", ".tsx", ".css", ".html", ".json", ".md", ".yaml", ".yml"},
-        "detect_files": {"package.json", ".prettierrc", ".prettierrc.json", ".prettierrc.js", ".prettierrc.yml"},
+        "extensions": {
+            ".js",
+            ".jsx",
+            ".ts",
+            ".tsx",
+            ".css",
+            ".html",
+            ".json",
+            ".md",
+            ".yaml",
+            ".yml",
+        },
+        "detect_files": {
+            "package.json",
+            ".prettierrc",
+            ".prettierrc.json",
+            ".prettierrc.js",
+            ".prettierrc.yml",
+        },
     },
     "gofmt": {
         "cmd": "gofmt",
@@ -75,9 +98,16 @@ def detect_formatter(project_root: str = ".") -> Optional[str]:
 
 
 class FormatParams(BaseModel):
-    path: str = Field(".", description="File or directory path to format (default: current directory)")
-    check: bool = Field(False, description="Check formatting without writing changes (default: false)")
-    formatter: Optional[str] = Field(None, description="Formatter to use: ruff, black, prettier, gofmt (auto-detected if omitted)")
+    path: str = Field(
+        ".", description="File or directory path to format (default: current directory)"
+    )
+    check: bool = Field(
+        False, description="Check formatting without writing changes (default: false)"
+    )
+    formatter: Optional[str] = Field(
+        None,
+        description="Formatter to use: ruff, black, prettier, gofmt (auto-detected if omitted)",
+    )
 
 
 class FormatTool(Tool):

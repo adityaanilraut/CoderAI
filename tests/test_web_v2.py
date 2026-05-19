@@ -362,18 +362,14 @@ class TestReadURLFormat:
 
     def test_html_format_returns_raw(self, monkeypatch):
         self._stub(monkeypatch, "<h1>Hi</h1>")
-        result = asyncio.run(
-            ReadURLTool().execute(url="https://example.com", format="html")
-        )
+        result = asyncio.run(ReadURLTool().execute(url="https://example.com", format="html"))
         assert result["success"] is True
         assert result["format"] == "html"
         assert "<h1>" in result["content"]
 
     def test_text_format_strips_markup(self, monkeypatch):
         self._stub(monkeypatch, "<h1>Hi</h1><p>body</p>")
-        result = asyncio.run(
-            ReadURLTool().execute(url="https://example.com", format="text")
-        )
+        result = asyncio.run(ReadURLTool().execute(url="https://example.com", format="text"))
         assert result["success"] is True
         assert result["format"] == "text"
         assert "<" not in result["content"]
@@ -388,9 +384,7 @@ class TestReadURLFormat:
         assert "# Hi" in result["content"]
 
     def test_invalid_format_rejected(self, monkeypatch):
-        result = asyncio.run(
-            ReadURLTool().execute(url="https://example.com", format="bogus")
-        )
+        result = asyncio.run(ReadURLTool().execute(url="https://example.com", format="bogus"))
         assert result["success"] is False
         assert "Invalid format" in result["error"]
 

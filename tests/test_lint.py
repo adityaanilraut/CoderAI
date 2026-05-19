@@ -43,16 +43,12 @@ class TestLintTool:
         self.tool = LintTool()
 
     def test_unknown_linter_returns_error(self):
-        result = asyncio.run(
-            self.tool.execute(path=".", linter="nonexistent_linter_xyz")
-        )
+        result = asyncio.run(self.tool.execute(path=".", linter="nonexistent_linter_xyz"))
         assert not result["success"]
         assert "Unknown linter" in result["error"]
 
     def test_no_linter_detected_returns_error(self, tmp_path):
-        result = asyncio.run(
-            self.tool.execute(path=str(tmp_path))
-        )
+        result = asyncio.run(self.tool.execute(path=str(tmp_path)))
         assert not result["success"]
 
     def test_ruff_check_on_python_file(self, tmp_path):
@@ -60,9 +56,7 @@ class TestLintTool:
             pytest.skip("ruff not installed")
         py_file = tmp_path / "bad.py"
         py_file.write_text("import os\nimport sys\nx=1\n")
-        result = asyncio.run(
-            self.tool.execute(path=str(py_file), linter="ruff")
-        )
+        result = asyncio.run(self.tool.execute(path=str(py_file), linter="ruff"))
         assert result["success"]
         assert result["linter"] == "ruff"
         assert result["mode"] == "check"
@@ -72,16 +66,12 @@ class TestLintTool:
             pytest.skip("ruff not installed")
         py_file = tmp_path / "fixable.py"
         py_file.write_text("import os\nx=1\n")
-        result = asyncio.run(
-            self.tool.execute(path=str(py_file), linter="ruff", fix=True)
-        )
+        result = asyncio.run(self.tool.execute(path=str(py_file), linter="ruff", fix=True))
         assert result["success"]
         assert result["mode"] == "fix"
 
     def test_missing_binary_returns_error(self):
-        result = asyncio.run(
-            self.tool.execute(path=".", linter="golangci-lint")
-        )
+        result = asyncio.run(self.tool.execute(path=".", linter="golangci-lint"))
         # Either detected or error about binary not found
         if not shutil.which("golangci-lint"):
             assert not result["success"]

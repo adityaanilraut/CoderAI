@@ -60,9 +60,7 @@ class FileBackupStore:
         temp file in the same directory, then ``os.replace`` — which is
         atomic on both POSIX and Windows.
         """
-        fd, tmp_path = tempfile.mkstemp(
-            dir=str(self.backup_dir), prefix=".index-", suffix=".tmp"
-        )
+        fd, tmp_path = tempfile.mkstemp(dir=str(self.backup_dir), prefix=".index-", suffix=".tmp")
         try:
             with os.fdopen(fd, "w") as f:
                 json.dump(self.index, f, indent=2)
@@ -254,7 +252,7 @@ class FileBackupStore:
         """Remove old backups beyond MAX_BACKUPS_PER_FILE."""
         file_entries = [e for e in self.index if e["filepath"] == filepath]
         if len(file_entries) > MAX_BACKUPS_PER_FILE:
-            excess = file_entries[:len(file_entries) - MAX_BACKUPS_PER_FILE]
+            excess = file_entries[: len(file_entries) - MAX_BACKUPS_PER_FILE]
             to_remove = set(id(e) for e in excess)
             # Rebuild and save index first so a crash during file deletion
             # doesn't leave dangling index entries.
@@ -311,7 +309,10 @@ backup_store: FileBackupStore = _LazyBackupStore()  # type: ignore[assignment]
 
 
 class UndoParams(BaseModel):
-    index: Optional[int] = Field(None, description="Index of the operation to undo (0 = most recent). Use undo_history to see available indices.")
+    index: Optional[int] = Field(
+        None,
+        description="Index of the operation to undo (0 = most recent). Use undo_history to see available indices.",
+    )
 
 
 class UndoTool(Tool):

@@ -75,7 +75,9 @@ class EventEmitter:
                             if exc is not None:
                                 logger.error(
                                     "Unhandled error in async listener for '%s' (%s): %s",
-                                    _event, _cb, exc,
+                                    _event,
+                                    _cb,
+                                    exc,
                                 )
 
                         task.add_done_callback(_on_task_done)

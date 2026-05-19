@@ -56,19 +56,13 @@ class TestUseSkillTool:
 
     def test_list_action(self):
         # Will use the project's actual .coderAI/skills/ dir
-        result = asyncio.run(
-            self.tool.execute(action="list")
-        )
+        result = asyncio.run(self.tool.execute(action="list"))
         assert result["success"]
 
     def test_unknown_action(self):
-        result = asyncio.run(
-            self.tool.execute(action="invalid")
-        )
+        result = asyncio.run(self.tool.execute(action="invalid"))
         assert not result["success"]
 
     def test_use_without_name(self):
-        result = asyncio.run(
-            self.tool.execute(action="use")
-        )
+        result = asyncio.run(self.tool.execute(action="use"))
         assert not result["success"]

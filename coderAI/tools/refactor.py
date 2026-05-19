@@ -13,16 +13,35 @@ from .filesystem import _enforce_project_scope
 
 logger = logging.getLogger(__name__)
 
-_IGNORE_PARTS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".tox", ".mypy_cache", ".pytest_cache"}
+_IGNORE_PARTS = {
+    ".git",
+    "node_modules",
+    "__pycache__",
+    ".venv",
+    "venv",
+    "dist",
+    "build",
+    ".tox",
+    ".mypy_cache",
+    ".pytest_cache",
+}
 
 
 class RefactorParams(BaseModel):
-    action: str = Field("find_references", description="Refactoring action: rename_symbol, find_references")
+    action: str = Field(
+        "find_references", description="Refactoring action: rename_symbol, find_references"
+    )
     symbol: str = Field(..., description="Symbol name to refactor (function, class, variable name)")
-    new_name: Optional[str] = Field(None, description="New name for the symbol (required for rename_symbol)")
-    path: str = Field(".", description="Directory or file to scope the refactoring (default: current project)")
+    new_name: Optional[str] = Field(
+        None, description="New name for the symbol (required for rename_symbol)"
+    )
+    path: str = Field(
+        ".", description="Directory or file to scope the refactoring (default: current project)"
+    )
     kind: str = Field("any", description="Symbol kind filter: any, function, class, variable")
-    dry_run: bool = Field(False, description="Preview changes without applying them (default: false)")
+    dry_run: bool = Field(
+        False, description="Preview changes without applying them (default: false)"
+    )
 
 
 class RefactorTool(Tool):
@@ -194,7 +213,9 @@ class RefactorTool(Tool):
             }
         return None
 
-    def _find_all_references(self, files: List[Path], symbol: str, kind: str) -> List[Dict[str, Any]]:
+    def _find_all_references(
+        self, files: List[Path], symbol: str, kind: str
+    ) -> List[Dict[str, Any]]:
         results: List[Dict[str, Any]] = []
         for file_path in files:
             refs = self._find_references_in_file(file_path, symbol, kind)
@@ -202,7 +223,9 @@ class RefactorTool(Tool):
                 results.append({"file": str(file_path), "references": refs})
         return results
 
-    def _find_references_in_file(self, file_path: Path, symbol: str, kind: str) -> List[Dict[str, Any]]:
+    def _find_references_in_file(
+        self, file_path: Path, symbol: str, kind: str
+    ) -> List[Dict[str, Any]]:
         suffix = file_path.suffix.lower()
         try:
             source = file_path.read_text(encoding="utf-8", errors="ignore")
@@ -265,7 +288,10 @@ class RefactorTool(Tool):
                 if wanted not in {"any", ref_kind, "function", "class", "variable"}:
                     if ref_kind == "attribute_access" and wanted != "any":
                         continue
-                    if ref_kind in ("definition", "reference") and wanted not in ("any", "variable"):
+                    if ref_kind in ("definition", "reference") and wanted not in (
+                        "any",
+                        "variable",
+                    ):
                         continue
 
                 dedup_key = (line_no, col)
@@ -273,13 +299,15 @@ class RefactorTool(Tool):
                     continue
 
                 line_text = lines[line_no - 1] if 1 <= line_no <= len(lines) else ""
-                refs.append({
-                    "line": line_no,
-                    "column": col,
-                    "kind": ref_kind,
-                    "symbol": ref_name,
-                    "line_content": line_text.strip()[:200],
-                })
+                refs.append(
+                    {
+                        "line": line_no,
+                        "column": col,
+                        "kind": ref_kind,
+                        "symbol": ref_name,
+                        "line_content": line_text.strip()[:200],
+                    }
+                )
 
         return refs
 
@@ -303,7 +331,11 @@ class RefactorTool(Tool):
         for line_no, line in enumerate(lines, 1):
             masked = masked_lines[line_no - 1] if line_no - 1 < len(masked_lines) else line
             for ref_kind, pattern in patterns:
-                if wanted != "any" and ref_kind != wanted and ref_kind not in ("reference", "method"):
+                if (
+                    wanted != "any"
+                    and ref_kind != wanted
+                    and ref_kind not in ("reference", "method")
+                ):
                     if wanted in ("function", "class") and ref_kind != "definition":
                         continue
                     if wanted == "variable" and ref_kind not in ("definition", "reference"):
@@ -317,13 +349,15 @@ class RefactorTool(Tool):
                     dedup_key = (line_no, col)
                     if dedup_key in {(r["line"], r["column"]) for r in refs}:
                         continue
-                    refs.append({
-                        "line": line_no,
-                        "column": col,
-                        "kind": ref_kind,
-                        "symbol": symbol,
-                        "line_content": line.strip()[:200],
-                    })
+                    refs.append(
+                        {
+                            "line": line_no,
+                            "column": col,
+                            "kind": ref_kind,
+                            "symbol": symbol,
+                            "line_content": line.strip()[:200],
+                        }
+                    )
         return refs
 
     @staticmethod
@@ -425,7 +459,9 @@ class RefactorTool(Tool):
             original_content = content
             lines = content.splitlines(keepends=True)
 
-            for ref in sorted(file_info["references"], key=lambda r: (r["line"], r["column"]), reverse=True):
+            for ref in sorted(
+                file_info["references"], key=lambda r: (r["line"], r["column"]), reverse=True
+            ):
                 line_no = ref["line"]
                 if line_no < 1 or line_no > len(lines):
                     continue
@@ -437,30 +473,32 @@ class RefactorTool(Tool):
                 after = line[col:]
 
                 if after.startswith(symbol):
-                    next_char = after[len(symbol):len(symbol) + 1]
+                    next_char = after[len(symbol) : len(symbol) + 1]
                     prev_char = before[-1:] if before else ""
-                    if (
-                        (prev_char and re.match(r"[A-Za-z0-9_$]", prev_char))
-                        or (next_char and re.match(r"[A-Za-z0-9_$]", next_char))
+                    if (prev_char and re.match(r"[A-Za-z0-9_$]", prev_char)) or (
+                        next_char and re.match(r"[A-Za-z0-9_$]", next_char)
                     ):
                         continue
                     if ref["kind"] == "attribute_access":
-                        new_line = before + new_name + after[len(symbol):]
+                        new_line = before + new_name + after[len(symbol) :]
                     else:
-                        new_line = before + new_name + after[len(symbol):]
+                        new_line = before + new_name + after[len(symbol) :]
                     lines[idx] = new_line
 
             new_content = "".join(lines)
             if new_content != original_content:
                 from .undo import backup_store
+
                 try:
                     backup_store.backup_file(str(file_path), "modify")
                 except Exception:
                     pass
                 file_path.write_text(new_content, encoding="utf-8")
-                modified.append({
-                    "file": str(file_path),
-                    "changes_applied": len(file_info["references"]),
-                })
+                modified.append(
+                    {
+                        "file": str(file_path),
+                        "changes_applied": len(file_info["references"]),
+                    }
+                )
 
         return modified

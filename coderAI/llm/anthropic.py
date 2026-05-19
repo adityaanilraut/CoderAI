@@ -21,20 +21,24 @@ def _create_ssl_context() -> ssl.SSLContext:
     """
     try:
         import certifi
+
         return ssl.create_default_context(cafile=certifi.where())
     except ImportError:
         return ssl.create_default_context()
 
+
 # Models that support prompt caching (cache_control on system/tools/messages).
-CACHING_SUPPORTED_MODELS = frozenset({
-    "claude-opus-4-7",
-    "claude-sonnet-4-6",
-    "claude-haiku-4-5-20251001",
-    "claude-3-7-sonnet-20250219",
-    "claude-3-5-sonnet-20241022",
-    "claude-3-5-haiku-20241022",
-    "claude-3-opus-20240229",
-})
+CACHING_SUPPORTED_MODELS = frozenset(
+    {
+        "claude-opus-4-7",
+        "claude-sonnet-4-6",
+        "claude-haiku-4-5-20251001",
+        "claude-3-7-sonnet-20250219",
+        "claude-3-5-sonnet-20241022",
+        "claude-3-5-haiku-20241022",
+        "claude-3-opus-20240229",
+    }
+)
 
 # Friendly-name → API model ID.
 # Update the right-hand side when the API retires a dated snapshot.
@@ -60,11 +64,13 @@ MODEL_ALIASES = {
 }
 
 # Models that support extended thinking with a token budget.
-_THINKING_SUPPORTED_MODELS = frozenset({
-    "claude-opus-4-7",
-    "claude-sonnet-4-6",
-    "claude-3-7-sonnet-20250219",
-})
+_THINKING_SUPPORTED_MODELS = frozenset(
+    {
+        "claude-opus-4-7",
+        "claude-sonnet-4-6",
+        "claude-3-7-sonnet-20250219",
+    }
+)
 
 
 class AnthropicProvider(LLMProvider):
@@ -165,12 +171,14 @@ class AnthropicProvider(LLMProvider):
                                 f"must decode to a JSON object, got "
                                 f"{type(tool_input).__name__}"
                             )
-                        content_blocks.append({
-                            "type": "tool_use",
-                            "id": tc.get("id", ""),
-                            "name": func.get("name", ""),
-                            "input": tool_input,
-                        })
+                        content_blocks.append(
+                            {
+                                "type": "tool_use",
+                                "id": tc.get("id", ""),
+                                "name": func.get("name", ""),
+                                "input": tool_input,
+                            }
+                        )
                     anthropic_messages.append({"role": "assistant", "content": content_blocks})
                 else:
                     anthropic_messages.append({"role": "assistant", "content": content or ""})
@@ -193,10 +201,12 @@ class AnthropicProvider(LLMProvider):
                     # Append to existing user message
                     anthropic_messages[-1]["content"].append(tool_result_block)
                 else:
-                    anthropic_messages.append({
-                        "role": "user",
-                        "content": [tool_result_block],
-                    })
+                    anthropic_messages.append(
+                        {
+                            "role": "user",
+                            "content": [tool_result_block],
+                        }
+                    )
             elif role == "user":
                 # Anthropic requires strictly alternating user/assistant turns.
                 # Merge into the previous user message when adjacent user turns occur
@@ -207,13 +217,17 @@ class AnthropicProvider(LLMProvider):
                     if isinstance(prev_content, list):
                         prev_content.append({"type": "text", "text": content or ""})
                     else:
-                        anthropic_messages[-1]["content"] = (prev_content or "") + "\n" + (content or "")
+                        anthropic_messages[-1]["content"] = (
+                            (prev_content or "") + "\n" + (content or "")
+                        )
                 else:
                     anthropic_messages.append({"role": "user", "content": content})
 
         return system_prompt.strip(), anthropic_messages
 
-    def _convert_tools(self, tools: Optional[List[Dict[str, Any]]]) -> Optional[List[Dict[str, Any]]]:
+    def _convert_tools(
+        self, tools: Optional[List[Dict[str, Any]]]
+    ) -> Optional[List[Dict[str, Any]]]:
         """Convert OpenAI tool format to Anthropic format."""
         if not tools:
             return None
@@ -221,11 +235,13 @@ class AnthropicProvider(LLMProvider):
         anthropic_tools = []
         for tool in tools:
             func = tool.get("function", {})
-            anthropic_tools.append({
-                "name": func.get("name", ""),
-                "description": func.get("description", ""),
-                "input_schema": func.get("parameters", {}),
-            })
+            anthropic_tools.append(
+                {
+                    "name": func.get("name", ""),
+                    "description": func.get("description", ""),
+                    "input_schema": func.get("parameters", {}),
+                }
+            )
         return anthropic_tools
 
     def _convert_response(self, response: Dict[str, Any]) -> Dict[str, Any]:
@@ -238,14 +254,16 @@ class AnthropicProvider(LLMProvider):
             if block.get("type") == "text":
                 text_content += block.get("text", "")
             elif block.get("type") == "tool_use":
-                tool_calls.append({
-                    "id": block.get("id", ""),
-                    "type": "function",
-                    "function": {
-                        "name": block.get("name", ""),
-                        "arguments": json.dumps(block.get("input", {})),
-                    },
-                })
+                tool_calls.append(
+                    {
+                        "id": block.get("id", ""),
+                        "type": "function",
+                        "function": {
+                            "name": block.get("name", ""),
+                            "arguments": json.dumps(block.get("input", {})),
+                        },
+                    }
+                )
 
         message = {"content": text_content or None, "role": "assistant"}
         if tool_calls:
@@ -307,7 +325,9 @@ class AnthropicProvider(LLMProvider):
             msg = dict(messages_payload[idx])
             content = msg["content"]
             if isinstance(content, str):
-                content = [{"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}]
+                content = [
+                    {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}
+                ]
             else:
                 content = [dict(b) for b in content]
                 if content:
@@ -384,9 +404,7 @@ class AnthropicProvider(LLMProvider):
         ) as response:
             if response.status != 200:
                 error_body = await response.text()
-                raise RuntimeError(
-                    f"Anthropic API error {response.status}: {error_body[:200]}"
-                )
+                raise RuntimeError(f"Anthropic API error {response.status}: {error_body[:200]}")
             result = await response.json()
 
             usage = result.get("usage", {})
@@ -404,7 +422,9 @@ class AnthropicProvider(LLMProvider):
         **kwargs,
     ) -> AsyncIterator[Dict[str, Any]]:
         """Stream response from Anthropic (SSE-based)."""
-        payload = self._build_payload(messages, tools, max_tokens=kwargs.get("max_tokens"), stream=True)
+        payload = self._build_payload(
+            messages, tools, max_tokens=kwargs.get("max_tokens"), stream=True
+        )
         session = await self._get_session()
         async with session.post(
             self.API_URL,
@@ -414,9 +434,7 @@ class AnthropicProvider(LLMProvider):
         ) as response:
             if response.status != 200:
                 error_body = await response.text()
-                raise RuntimeError(
-                    f"Anthropic API error {response.status}: {error_body[:200]}"
-                )
+                raise RuntimeError(f"Anthropic API error {response.status}: {error_body[:200]}")
 
             buffer = ""
             current_event = ""
@@ -444,10 +462,14 @@ class AnthropicProvider(LLMProvider):
                         if current_event == "message_start":
                             usage = parsed.get("message", {}).get("usage", {})
                             self.total_input_tokens += usage.get("input_tokens", 0)
-                            self.total_cache_creation_tokens += usage.get("cache_creation_input_tokens", 0)
+                            self.total_cache_creation_tokens += usage.get(
+                                "cache_creation_input_tokens", 0
+                            )
                             self.total_cache_read_tokens += usage.get("cache_read_input_tokens", 0)
                         elif current_event == "message_delta":
-                            self.total_output_tokens += parsed.get("usage", {}).get("output_tokens", 0)
+                            self.total_output_tokens += parsed.get("usage", {}).get(
+                                "output_tokens", 0
+                            )
                             if "delta" in parsed and "stop_reason" in parsed["delta"]:
                                 final_stop_reason = parsed["delta"]["stop_reason"]
                         elif current_event == "content_block_start":
@@ -461,37 +483,47 @@ class AnthropicProvider(LLMProvider):
                                 }
                                 # Emit the tool call start in OpenAI format
                                 yield {
-                                    "choices": [{
-                                        "delta": {
-                                            "tool_calls": [{
-                                                "index": index,
-                                                "id": block.get("id", ""),
-                                                "type": "function",
-                                                "function": {
-                                                    "name": block.get("name", ""),
-                                                    "arguments": "",
-                                                },
-                                            }]
-                                        },
-                                        "finish_reason": None,
-                                    }]
+                                    "choices": [
+                                        {
+                                            "delta": {
+                                                "tool_calls": [
+                                                    {
+                                                        "index": index,
+                                                        "id": block.get("id", ""),
+                                                        "type": "function",
+                                                        "function": {
+                                                            "name": block.get("name", ""),
+                                                            "arguments": "",
+                                                        },
+                                                    }
+                                                ]
+                                            },
+                                            "finish_reason": None,
+                                        }
+                                    ]
                                 }
                         elif current_event == "content_block_delta":
                             delta = parsed.get("delta", {})
                             index = parsed.get("index", 0)
                             if delta.get("type") == "text_delta":
                                 yield {
-                                    "choices": [{
-                                        "delta": {"content": delta.get("text", "")},
-                                        "finish_reason": None,
-                                    }]
+                                    "choices": [
+                                        {
+                                            "delta": {"content": delta.get("text", "")},
+                                            "finish_reason": None,
+                                        }
+                                    ]
                                 }
                             elif delta.get("type") == "thinking_delta":
                                 yield {
-                                    "choices": [{
-                                        "delta": {"reasoning_content": delta.get("thinking", "")},
-                                        "finish_reason": None,
-                                    }]
+                                    "choices": [
+                                        {
+                                            "delta": {
+                                                "reasoning_content": delta.get("thinking", "")
+                                            },
+                                            "finish_reason": None,
+                                        }
+                                    ]
                                 }
                             elif delta.get("type") == "input_json_delta":
                                 partial_json = delta.get("partial_json", "")
@@ -500,20 +532,24 @@ class AnthropicProvider(LLMProvider):
                                 # Emit the argument chunk in OpenAI format
                                 block_info = tool_call_blocks.get(index, {})
                                 yield {
-                                    "choices": [{
-                                        "delta": {
-                                            "tool_calls": [{
-                                                "index": index,
-                                                "id": block_info.get("id", ""),
-                                                "type": "function",
-                                                "function": {
-                                                    "name": block_info.get("name", ""),
-                                                    "arguments": partial_json,
-                                                },
-                                            }]
-                                        },
-                                        "finish_reason": None,
-                                    }]
+                                    "choices": [
+                                        {
+                                            "delta": {
+                                                "tool_calls": [
+                                                    {
+                                                        "index": index,
+                                                        "id": block_info.get("id", ""),
+                                                        "type": "function",
+                                                        "function": {
+                                                            "name": block_info.get("name", ""),
+                                                            "arguments": partial_json,
+                                                        },
+                                                    }
+                                                ]
+                                            },
+                                            "finish_reason": None,
+                                        }
+                                    ]
                                 }
                         elif current_event == "message_stop":
                             saw_message_stop = True
@@ -528,10 +564,12 @@ class AnthropicProvider(LLMProvider):
                             else:
                                 final_reason = "stop"
                             yield {
-                                "choices": [{
-                                    "delta": {},
-                                    "finish_reason": final_reason,
-                                }]
+                                "choices": [
+                                    {
+                                        "delta": {},
+                                        "finish_reason": final_reason,
+                                    }
+                                ]
                             }
             if not saw_message_stop:
                 logger.warning(
@@ -548,6 +586,7 @@ class AnthropicProvider(LLMProvider):
         Claude uses about 1 token per 4 characters on average.
         """
         from ._token_counter import count_tokens_anthropic
+
         return count_tokens_anthropic(text, self.actual_model, self.api_key)
 
     def supports_tools(self) -> bool:
@@ -557,6 +596,7 @@ class AnthropicProvider(LLMProvider):
     def get_cost(self) -> Dict[str, Any]:
         """Get current session cost estimate."""
         from ..cost import CostTracker
+
         pricing = CostTracker.get_model_pricing(self.actual_model)
         # MODEL_PRICING is per-million tokens.
         input_per_token = pricing["input"] / 1_000_000
@@ -564,7 +604,12 @@ class AnthropicProvider(LLMProvider):
         # Cache write costs 1.25x input; cache read costs 0.1x input.
         cache_write_cost = self.total_cache_creation_tokens * input_per_token * 1.25
         cache_read_cost = self.total_cache_read_tokens * input_per_token * 0.1
-        uncached_input = max(0, self.total_input_tokens - self.total_cache_creation_tokens - self.total_cache_read_tokens)
+        uncached_input = max(
+            0,
+            self.total_input_tokens
+            - self.total_cache_creation_tokens
+            - self.total_cache_read_tokens,
+        )
         uncached_input_cost = uncached_input * input_per_token
         output_cost = self.total_output_tokens * output_per_token
         total_cost = uncached_input_cost + output_cost + cache_write_cost + cache_read_cost

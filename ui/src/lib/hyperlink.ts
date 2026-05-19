@@ -22,16 +22,20 @@ export function hyperlink(href: string, label: string): string {
 }
 
 /**
- * Match `path/to/file.ts:42` or `path/to/file.ts:42:7` (line:col), with the
- * file portion permissive enough for typical project paths but bounded so
- * inline code blocks aren't accidentally turned into links.
+ * Match file references in two flavours:
  *
- *   - alphanumerics, `_`, `-`, `.`, `/` in the path
- *   - must contain at least one `/` OR an extension to avoid matching plain words
- *   - colon-separated 1- to 6-digit line number (col optional)
+ *   1. `path/to/file.ts[:line[:col]]` — any path that has at least one `/`.
+ *      Line/col are optional. The slash is enough signal to be sure this is
+ *      a file ref and not a generic word.
+ *   2. `file.ts:42[:col]` — bare filename, but only when a line number is
+ *      attached. Without `:line`, `foo.bar` is too ambiguous (could be a
+ *      method call, an object key, etc.).
+ *
+ * Match groups: full match (always), so we use `match[0]` for the visible
+ * text — line/col are part of the href when present.
  */
 const FILE_LINE_RE =
-  /(\b(?:[\w.\-]+\/)+[\w.\-]+|\b[\w-]+\.[\w-]+)(:\d{1,6})(?::\d{1,4})?/g;
+  /(?:\b(?:[\w.\-]+\/)+[\w.\-]+(?::\d{1,6}(?::\d{1,4})?)?|\b[\w-]+\.[\w-]+:\d{1,6}(?::\d{1,4})?)/g;
 
 export interface TextSegment {
   text: string;
@@ -56,9 +60,15 @@ export function linkifyFileRefs(input: string, cwd?: string): TextSegment[] {
       segments.push({text: input.slice(lastIndex, start)});
     }
     const full = match[0];
-    const path = match[1];
-    const abs = cwd && !path.startsWith("/") ? `${cwd}/${path}` : path;
-    const href = `file://${abs}`;
+    // Split `path[:line[:col]]` into the path portion for resolving against
+    // cwd. The href keeps the full ref so terminals that support `file://…:N`
+    // can jump to the line directly.
+    const colonAt = indexOfPathLineSeparator(full);
+    const pathOnly = colonAt === -1 ? full : full.slice(0, colonAt);
+    const abs =
+      cwd && !pathOnly.startsWith("/") ? `${cwd}/${pathOnly}` : pathOnly;
+    const lineTail = colonAt === -1 ? "" : full.slice(colonAt);
+    const href = `file://${abs}${lineTail}`;
     segments.push({text: full, href});
     lastIndex = start + full.length;
   }
@@ -66,4 +76,17 @@ export function linkifyFileRefs(input: string, cwd?: string): TextSegment[] {
     segments.push({text: input.slice(lastIndex)});
   }
   return segments;
+}
+
+/**
+ * Find the colon that separates the path from `:line` in a match like
+ * `foo/bar.ts:42:7`. Returns -1 when there is no line annotation. We scan
+ * for the first `:` followed by a digit so a path containing `:` (rare on
+ * Windows-style refs we don't try to match anyway) doesn't trip us up.
+ */
+function indexOfPathLineSeparator(full: string): number {
+  for (let i = 0; i < full.length - 1; i++) {
+    if (full[i] === ":" && full[i + 1] >= "0" && full[i + 1] <= "9") return i;
+  }
+  return -1;
 }

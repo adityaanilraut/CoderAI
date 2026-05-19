@@ -172,7 +172,9 @@ These commands are typed inside an active `coderAI chat` session.
 | `/reasoning <high\|medium\|low\|none>` | Set thinking budget for reasoning models |
 | `/yolo` | Toggle auto-approve for high-risk tools |
 | `/verbose` | Toggle verbose mode (show all tool outputs) |
-| `/show` | Show the last assistant message / tool result |
+| `/show <topic>` | Show reference info (e.g. `/show plan`, `/show config`, `/show cost`) |
+| `/copy` | Copy the last assistant response to clipboard (via OSC-52) |
+| `/code-search <query>` | Search the codebase semantically and view results inline |
 | `/think` | Toggle thinking/reasoning display |
 | `/clear` | Clear the conversation history and start fresh |
 | `/exit` | End the session |

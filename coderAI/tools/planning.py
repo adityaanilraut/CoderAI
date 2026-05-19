@@ -17,9 +17,7 @@ _PLANS_DIR = ".coderAI"
 
 
 def _atomic_write_json(filepath: Path, data: dict) -> None:
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(filepath.parent), prefix=".plan-", suffix=".json.tmp"
-    )
+    fd, tmp_path = tempfile.mkstemp(dir=str(filepath.parent), prefix=".plan-", suffix=".json.tmp")
     try:
         with os.fdopen(fd, "w") as f:
             json.dump(data, f, indent=2)
@@ -32,6 +30,8 @@ def _atomic_write_json(filepath: Path, data: dict) -> None:
         except OSError:
             pass
         raise
+
+
 def _get_plan_file(project_root: str = ".") -> Path:
     plan_dir = find_dot_coderai_subdir("", project_root)
     if plan_dir is None:
@@ -107,6 +107,7 @@ class CreatePlanTool(Tool):
 
                 # Verify the target directory exists and is a directory
                 from pathlib import Path
+
                 target = Path(config.project_root).resolve()
                 if not target.exists():
                     return {
@@ -197,9 +198,7 @@ class CreatePlanTool(Tool):
                 else:
                     current_desc = steps[current].get("description", "")
                     next_desc = (
-                        steps[current + 1].get("description", "")
-                        if current + 1 < total
-                        else None
+                        steps[current + 1].get("description", "") if current + 1 < total else None
                     )
 
                 return {

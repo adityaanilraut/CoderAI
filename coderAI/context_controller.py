@@ -20,6 +20,7 @@ IMAGE_TOKEN_FLOOR = 1500
 # memory bounded while still serving hot messages from cache.
 _TOKEN_CACHE_MAX_SIZE = 2000
 
+
 class ContextController:
     """Handles token estimation, context window truncation, and summarization."""
 
@@ -147,10 +148,7 @@ class ContextController:
         return cleaned
 
     def inject_context(
-        self,
-        messages: List[Dict[str, Any]],
-        context_manager: Any,
-        query: Optional[str] = None
+        self, messages: List[Dict[str, Any]], context_manager: Any, query: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """Inject the pinned-context system message after the last system message.
 
@@ -178,11 +176,14 @@ class ContextController:
         # Keep the human-readable header in ``content`` so logs/transcripts
         # remain readable; deduplication relies on the marker key, not the text.
         tagged_content = f"{self._CONTEXT_TAG}\n{context_msg}"
-        result.insert(insert_idx, {
-            "role": "system",
-            "content": tagged_content,
-            self._CONTEXT_MARKER_KEY: True,
-        })
+        result.insert(
+            insert_idx,
+            {
+                "role": "system",
+                "content": tagged_content,
+                self._CONTEXT_MARKER_KEY: True,
+            },
+        )
         return result
 
     async def manage_context_window(
@@ -291,8 +292,7 @@ class ContextController:
                 tool_calls = msg.get("tool_calls")
                 if tool_calls:
                     text_to_summarize += (
-                        "ASSISTANT TOOL_CALLS: "
-                        f"{json.dumps(tool_calls, default=str)}\n"
+                        f"ASSISTANT TOOL_CALLS: {json.dumps(tool_calls, default=str)}\n"
                     )
 
             # Skip LLM summarization when it's unlikely to be worth the cost
@@ -322,10 +322,14 @@ class ContextController:
                 try:
                     self._last_summary_time = _time_module.time()
                     mi_before = self.provider.get_model_info()
-                    response = await self.provider.chat([{"role": "user", "content": prompt}], tools=None)
+                    response = await self.provider.chat(
+                        [{"role": "user", "content": prompt}], tools=None
+                    )
                     summary_content = ""
                     if "choices" in response and response["choices"]:
-                        summary_content = response["choices"][0].get("message", {}).get("content", "")
+                        summary_content = (
+                            response["choices"][0].get("message", {}).get("content", "")
+                        )
 
                     if summary_content and self.cost_tracker is not None:
                         mi_after = self.provider.get_model_info()
@@ -342,7 +346,9 @@ class ContextController:
                         self._summary_snapshot_input = mi_after.get("total_input_tokens", 0)
                         self._summary_snapshot_output = mi_after.get("total_output_tokens", 0)
                         if in_tok_delta or out_tok_delta:
-                            model_for_cost = getattr(self.provider, "actual_model", self.config.default_model)
+                            model_for_cost = getattr(
+                                self.provider, "actual_model", self.config.default_model
+                            )
                             if not isinstance(model_for_cost, str):
                                 model_for_cost = self.config.default_model
                             self.cost_tracker.add_cost(model_for_cost, in_tok_delta, out_tok_delta)
@@ -357,9 +363,16 @@ class ContextController:
                         }
                         summary_tokens = self._estimate_message_tokens(summary_notice)
                         if running_tokens + summary_tokens <= remaining_budget:
-                            result = system_messages + ([first_task_message] if first_task_message else []) + [summary_notice] + kept_messages
+                            result = (
+                                system_messages
+                                + ([first_task_message] if first_task_message else [])
+                                + [summary_notice]
+                                + kept_messages
+                            )
                             return result
-                        logger.info("Skipping generated summary because it would overflow the remaining context budget.")
+                        logger.info(
+                            "Skipping generated summary because it would overflow the remaining context budget."
+                        )
                 except Exception as e:
                     logger.warning(f"Failed to summarize context: {e}")
 
@@ -368,11 +381,20 @@ class ContextController:
                 "content": f"[Note: {len(removed_messages)} earlier messages were removed to fit the context window. The conversation continues from here.]",
                 self._TRUNCATION_MARKER_KEY: True,
             }
-            return system_messages + ([first_task_message] if first_task_message else []) + [truncation_notice] + kept_messages
+            return (
+                system_messages
+                + ([first_task_message] if first_task_message else [])
+                + [truncation_notice]
+                + kept_messages
+            )
 
-        return system_messages + ([first_task_message] if first_task_message else []) + kept_messages
+        return (
+            system_messages + ([first_task_message] if first_task_message else []) + kept_messages
+        )
 
-    def _group_messages_for_truncation(self, messages: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+    def _group_messages_for_truncation(
+        self, messages: List[Dict[str, Any]]
+    ) -> List[List[Dict[str, Any]]]:
         """Group messages into atomic units for safe truncation."""
         groups = []
         i = 0
@@ -404,11 +426,17 @@ class ContextController:
             if isinstance(val, str):
                 if len(val) > max_len:
                     half = max_len // 2
-                    return val[:half] + f"\n... [{len(val) - 2 * half} chars truncated] ...\n" + val[-half:]
+                    return (
+                        val[:half]
+                        + f"\n... [{len(val) - 2 * half} chars truncated] ...\n"
+                        + val[-half:]
+                    )
                 return val
             elif isinstance(val, list):
                 if len(val) > 50:
-                    return [truncate_recursive(v, max_len) for v in val[:50]] + [{"_note": f"Showing 50 of {len(val)} items"}]
+                    return [truncate_recursive(v, max_len) for v in val[:50]] + [
+                        {"_note": f"Showing 50 of {len(val)} items"}
+                    ]
                 return [truncate_recursive(v, max_len) for v in val]
             elif isinstance(val, dict):
                 return {k: truncate_recursive(v, max_len) for k, v in val.items()}
@@ -422,7 +450,7 @@ class ContextController:
         if len(final_str) > aggregate_cap:
             safe_output = final_str[:aggregate_cap]
             last_comma = safe_output.rfind('",')
-            last_brace = safe_output.rfind('}')
+            last_brace = safe_output.rfind("}")
             cut = max(last_comma, last_brace)
             if cut > aggregate_cap // 2:
                 safe_output = safe_output[: cut + 1]

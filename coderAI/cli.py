@@ -31,8 +31,7 @@ logger = logging.getLogger(__name__)
 )
 @click.option("--resume", "-r", help="Resume a previous session by ID")
 @click.option(
-    "--continue", "continue_", is_flag=True,
-    help="Resume the most recently updated session"
+    "--continue", "continue_", is_flag=True, help="Resume the most recently updated session"
 )
 @click.option("--version", "-v", is_flag=True, help="Show version")
 @click.option("--verbose", is_flag=True, help="Enable verbose/debug logging")
@@ -73,15 +72,18 @@ def cli(ctx, model, resume, continue_, version, verbose):
 @click.option("--model", "-m", help="Model to use")
 @click.option("--resume", "-r", help="Resume a previous session by ID")
 @click.option(
-    "--continue", "continue_", is_flag=True,
-    help="Resume the most recently updated session"
+    "--continue", "continue_", is_flag=True, help="Resume the most recently updated session"
 )
 @click.option("--auto-approve", "--yolo", is_flag=True, help="Skip tool confirmation prompts")
-@click.option("--python", default=None, help="Python interpreter for the agent (defaults to current)")
 @click.option(
-    "--persona", "-p", default=None,
+    "--python", default=None, help="Python interpreter for the agent (defaults to current)"
+)
+@click.option(
+    "--persona",
+    "-p",
+    default=None,
     help="Persona to load at startup (filename stem in .coderAI/agents/, e.g. 'code-reviewer'). "
-    "Personas can also be switched mid-session with /persona <name>."
+    "Personas can also be switched mid-session with /persona <name>.",
 )
 def chat(model, resume, continue_, auto_approve, python, persona):
     """Start an interactive chat session in the Ink UI.
@@ -195,9 +197,21 @@ def config_set(key, value):
         # Convert value types
         if key in ["temperature", "budget_limit", "subagent_timeout_seconds"]:
             value = float(value)
-        elif key in ["max_tokens", "context_window", "max_iterations", "max_tool_output", "approval_timeout_seconds"]:
+        elif key in [
+            "max_tokens",
+            "context_window",
+            "max_iterations",
+            "max_tool_output",
+            "approval_timeout_seconds",
+        ]:
             value = int(value)
-        elif key in ["streaming", "save_history", "web_tools_in_main", "continue_loop_on_deny", "allow_outside_project"]:
+        elif key in [
+            "streaming",
+            "save_history",
+            "web_tools_in_main",
+            "continue_loop_on_deny",
+            "allow_outside_project",
+        ]:
             value = value.lower() in ["true", "1", "yes"]
 
         config_manager.set(key, value)
@@ -254,22 +268,26 @@ def info(model):
     """Show information about the agent and model."""
     agent = Agent(model=model)
     model_info = agent.get_model_info()
-    
+
     display.print_header("CoderAI Information")
     display.print(f"\n[bold]Version:[/bold] {__version__}")
     display.print(f"[bold]Config Directory:[/bold] {config_manager.config_dir}")
     display.print(f"[bold]History Directory:[/bold] {history_manager.history_dir}")
-    
+
     display.print("\n[bold cyan]Model Information:[/bold cyan]")
     display.print_tree(model_info, "Current Model")
-    
+
     display.print("\n[bold cyan]Available Tools:[/bold cyan]")
     tools_info = []
     for tool in agent.tools.get_all():
-        tools_info.append({
-            "Tool": tool.name,
-            "Description": tool.description[:60] + "..." if len(tool.description) > 60 else tool.description
-        })
+        tools_info.append(
+            {
+                "Tool": tool.name,
+                "Description": tool.description[:60] + "..."
+                if len(tool.description) > 60
+                else tool.description,
+            }
+        )
     display.print_table(tools_info)
 
 
@@ -343,7 +361,9 @@ def setup():
 
     # Groq API Key
     display.print("[bold]3. Groq API Key[/bold]")
-    display.print("   Required for using Groq models (including openai/gpt-oss-120b and openai/gpt-oss-20b)")
+    display.print(
+        "   Required for using Groq models (including openai/gpt-oss-120b and openai/gpt-oss-20b)"
+    )
     groq_key = click.prompt(
         "   Enter your Groq API key (or press Enter to skip)",
         default="",
@@ -385,9 +405,7 @@ def setup():
             config_manager.set("default_model", model)
             display.print_success(f"   Default model set to {model}")
             break
-        display.print_error(
-            f"   Unknown model: {model}. Run `coderAI models` for the full list."
-        )
+        display.print_error(f"   Unknown model: {model}. Run `coderAI models` for the full list.")
     display.print()
 
     # Reasoning Effort — whitelisted.
@@ -418,9 +436,7 @@ def setup():
             if _valid_endpoint(endpoint):
                 config_manager.set("lmstudio_endpoint", endpoint)
                 break
-            display.print_error(
-                "   Endpoint must be a full http(s)://host:port/v1 URL."
-            )
+            display.print_error("   Endpoint must be a full http(s)://host:port/v1 URL.")
         model_name = click.prompt(
             "   LM Studio model name (optional)",
             default="local-model",
@@ -442,12 +458,8 @@ def setup():
             if _valid_endpoint(endpoint):
                 config_manager.set("ollama_endpoint", endpoint)
                 break
-            display.print_error(
-                "   Endpoint must be a full http(s)://host:port/v1 URL."
-            )
-        model_name = click.prompt(
-            "   Ollama model name", default="llama3", show_default=True
-        )
+            display.print_error("   Endpoint must be a full http(s)://host:port/v1 URL.")
+        model_name = click.prompt("   Ollama model name", default="llama3", show_default=True)
         config_manager.set("ollama_model", model_name)
         display.print_success("   Ollama configuration saved")
     display.print()
@@ -524,23 +536,27 @@ def set_model(model_name):
 def cost():
     """Show API cost tracking and pricing info."""
     from .cost import MODEL_PRICING, CostTracker
-    
+
     display.print_header("API Cost Tracking")
     display.print_info("Cost tracking is available during active chat sessions.")
     display.print_info("Use '/tokens' in chat to see current session costs.")
-    
+
     config = config_manager.load()
     if config.budget_limit > 0:
-        display.print(f"\n[bold blue]Active Budget Limit:[/bold blue] {CostTracker.format_cost(config.budget_limit)}")
-    
+        display.print(
+            f"\n[bold blue]Active Budget Limit:[/bold blue] {CostTracker.format_cost(config.budget_limit)}"
+        )
+
     display.print("\n[dim]Per-model pricing (per 1M tokens):[/dim]")
     for model, pricing in MODEL_PRICING.items():
         if pricing["input"] == 0 and pricing["output"] == 0:
             display.print(f"  [yellow]{model}[/yellow]: Free (local)")
         else:
-            display.print(f"  [yellow]{model}[/yellow]: "
-                          f"{CostTracker.format_cost(pricing['input'])} input / "
-                          f"{CostTracker.format_cost(pricing['output'])} output")
+            display.print(
+                f"  [yellow]{model}[/yellow]: "
+                f"{CostTracker.format_cost(pricing['input'])} input / "
+                f"{CostTracker.format_cost(pricing['output'])} output"
+            )
     display.print()
 
 
@@ -553,9 +569,7 @@ def _key_row(label: str, configured: bool, hint_key: str) -> None:
         display.print(f"  {label:<12}  ✓ key configured")
     else:
         display.print(f"  {label:<12}  ✗ key missing")
-        display.print(
-            f"                [dim]coderAI config set {hint_key} <YOUR_KEY>[/dim]"
-        )
+        display.print(f"                [dim]coderAI config set {hint_key} <YOUR_KEY>[/dim]")
 
 
 @cli.command()
@@ -651,9 +665,7 @@ def doctor():
     else:
         # Round-trip write test
         try:
-            with tempfile.NamedTemporaryFile(
-                dir=cfg_dir, prefix=".doctor-", delete=True
-            ):
+            with tempfile.NamedTemporaryFile(dir=cfg_dir, prefix=".doctor-", delete=True):
                 pass
             check_ok(f"{cfg_dir} writable")
         except OSError as e:
@@ -735,8 +747,10 @@ def tasks():
 @cli.command("index")
 @click.option("--force", is_flag=True, help="Re-index all files, ignoring the manifest cache")
 @click.option(
-    "--paths", "-p", multiple=True,
-    help="Specific files or directories to index (can be repeated). If omitted, indexes the whole project."
+    "--paths",
+    "-p",
+    multiple=True,
+    help="Specific files or directories to index (can be repeated). If omitted, indexes the whole project.",
 )
 def index_cmd(force, paths):
     """Build or update the semantic code search index.
@@ -812,18 +826,14 @@ def search_cmd(query, top_k, file_filter):
     config = config_manager.load()
     provider = create_embedding_provider(config)
     if provider is None:
-        display.print_error(
-            "No embedding provider available. Set openai_api_key."
-        )
+        display.print_error("No embedding provider available. Set openai_api_key.")
         sys.exit(1)
 
     project_root = str(Path(config.project_root).resolve())
     indexer = CodeIndexer(project_root, provider)
 
     try:
-        results = asyncio.run(
-            indexer.search(query=query, top_k=top_k, file_filter=file_filter)
-        )
+        results = asyncio.run(indexer.search(query=query, top_k=top_k, file_filter=file_filter))
     except Exception as e:
         display.print_error(f"Search failed: {e}")
         sys.exit(1)
@@ -832,7 +842,7 @@ def search_cmd(query, top_k, file_filter):
         display.print_warning("No results found. Is the index built? Run `coderAI index`.")
         return
 
-    display.print_header(f"Semantic search results for: \"{query}\"")
+    display.print_header(f'Semantic search results for: "{query}"')
     for i, r in enumerate(results, 1):
         display.print(
             f"\n[bold]{i}.[/bold] [cyan]{r['file_path']}[/cyan] "
@@ -851,7 +861,7 @@ def search_cmd(query, top_k, file_filter):
 def tasks_list():
     """List all tasks."""
     from .tools.tasks import ManageTasksTool
-    
+
     tool = ManageTasksTool()
     result = asyncio.run(tool.execute("list"))
     if not result.get("success"):
@@ -859,7 +869,7 @@ def tasks_list():
         return
 
     display.print_header(result.get("summary", "Tasks"))
-    
+
     for status, color in [("pending", "yellow"), ("completed", "green")]:
         task_list = result.get(status, [])
         if task_list:

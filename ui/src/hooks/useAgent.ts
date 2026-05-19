@@ -39,6 +39,9 @@ const INITIAL: SessionState = {
   promptTokens: 0,
   completionTokens: 0,
   availableModels: null,
+  availablePersonas: null,
+  availableSkills: null,
+  contextFiles: null,
   agents: {},
   agentsFinishedAt: {},
   progress: null,
@@ -56,18 +59,46 @@ export interface UseAgentResult {
   reasoningMenuOpen: boolean;
   /** When true, the transcript search overlay is open. */
   searchOpen: boolean;
+  /** When true, the context files overlay is open. */
+  contextOpen: boolean;
+  /** When true, the persona menu is open. */
+  personaMenuOpen: boolean;
+  /** When true, the skills menu is open. */
+  skillsMenuOpen: boolean;
   /** Current search filter string for the transcript search overlay. */
   searchFilter: string;
+  /** Timeline index to highlight after a search jump (null when inactive). */
+  highlightTimelineIndex: number | null;
+  /**
+   * Single source of truth for "exit is armed — next ^C or /exit confirms".
+   * Both the Ctrl+C handler in App.tsx and the /exit slash handler check
+   * and toggle this same flag, so the two routes can't disagree.
+   */
+  exitArmed: boolean;
+  /**
+   * Remove a finished-agent entry from the agentsFinishedAt map. Called by
+   * AgentTree once the grace window has elapsed so the map doesn't grow
+   * unboundedly across a long session.
+   */
+  gcFinishedAgent: (id: string) => void;
   actions: {
     send: (text: string) => void;
     cancel: () => void;
     approveTool: (toolId: string, approve: boolean, always?: boolean) => void;
     exit: () => void;
+    /** Arm the exit-confirmation window (5s). */
+    armExit: () => void;
+    /** If armed, finalize exit; otherwise arm. Returns true iff exit was sent. */
+    confirmExit: () => boolean;
     closeHelpMenu: () => void;
     closeModelMenu: () => void;
     closeReasoningMenu: () => void;
     closeSearch: () => void;
+    closeContext: () => void;
+    closePersonaMenu: () => void;
+    closeSkillsMenu: () => void;
     setSearchFilter: (f: string) => void;
+    jumpToTimelineIndex: (index: number) => void;
     toggleVerbose: () => void;
     revealReasoning: () => void;
   };
@@ -81,7 +112,20 @@ export function useAgent(opts: {python?: string; cwd?: string} = {}): UseAgentRe
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [reasoningMenuOpen, setReasoningMenuOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [contextOpen, setContextOpen] = useState(false);
+  const [personaMenuOpen, setPersonaMenuOpen] = useState(false);
+  const [skillsMenuOpen, setSkillsMenuOpen] = useState(false);
   const [searchFilter, setSearchFilter] = useState("");
+  const [highlightTimelineIndex, setHighlightTimelineIndex] = useState<number | null>(null);
+  const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Reactive armed flag — used to render the prompt's "^C again to exit" hint
+  // AND consulted by the /exit handler so both confirmation routes share state.
+  const [exitArmed, setExitArmed] = useState(false);
+  const exitArmedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Mirror of `exitArmed` for the memoized actions object to read without
+  // being re-created on every armed-state flip.
+  const exitArmedRefMirror = useRef(false);
+  exitArmedRefMirror.current = exitArmed;
 
   // Mirror of the latest session state, kept on a ref so memoised actions can
   // read fresh values without re-creating their closures on every render. The
@@ -106,8 +150,6 @@ export function useAgent(opts: {python?: string; cwd?: string} = {}): UseAgentRe
   const statusThrottleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
-  const exitArmedRef = useRef(false);
-  const exitArmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const timelineRef = useRef<TimelineItem[]>([]);
   timelineRef.current = timeline;
 
@@ -170,14 +212,33 @@ export function useAgent(opts: {python?: string; cwd?: string} = {}): UseAgentRe
       const closeModelMenu = () => setModelMenuOpen(false);
       const closeReasoningMenu = () => setReasoningMenuOpen(false);
       const closeSearch = () => { setSearchOpen(false); setSearchFilter(""); };
+      const closeContext = () => setContextOpen(false);
+      const closePersonaMenu = () => setPersonaMenuOpen(false);
+      const closeSkillsMenu = () => setSkillsMenuOpen(false);
       const setSearchFilterAction = (f: string) => setSearchFilter(f);
 
       const armExit = () => {
-        if (exitArmTimerRef.current) clearTimeout(exitArmTimerRef.current);
-        exitArmedRef.current = true;
-        exitArmTimerRef.current = setTimeout(() => {
-          exitArmedRef.current = false;
+        if (exitArmedTimerRef.current) clearTimeout(exitArmedTimerRef.current);
+        setExitArmed(true);
+        exitArmedTimerRef.current = setTimeout(() => {
+          setExitArmed(false);
+          exitArmedTimerRef.current = null;
         }, 5000);
+      };
+
+      const confirmExit = (): boolean => {
+        // If the window is still open, finalize. Otherwise arm and toast,
+        // mirroring the /exit flow so Ctrl+C and /exit can't disagree about
+        // whether shutdown has been requested.
+        if (exitArmedTimerRef.current) clearTimeout(exitArmedTimerRef.current);
+        exitArmedTimerRef.current = null;
+        if (exitArmedRefMirror.current) {
+          setExitArmed(false);
+          clientRef.current?.exit();
+          return true;
+        }
+        armExit();
+        return false;
       };
 
       const clearContext = () => {
@@ -191,6 +252,16 @@ export function useAgent(opts: {python?: string; cwd?: string} = {}): UseAgentRe
         clientRef.current?.clearContext();
         setTimeline([]);
         currentAssistantId.current = null;
+        setHighlightTimelineIndex(null);
+        if (highlightTimerRef.current !== null) {
+          clearTimeout(highlightTimerRef.current);
+          highlightTimerRef.current = null;
+        }
+        setSession((s) => ({
+          ...s,
+          agents: {},
+          agentsFinishedAt: {},
+        }));
         // Empty transcript is the primary signal, but a brief confirmation
         // helps a user who mis-typed verify the action landed.
         push({
@@ -260,10 +331,37 @@ export function useAgent(opts: {python?: string; cwd?: string} = {}): UseAgentRe
         });
       };
 
+      const jumpToTimelineIndex = (index: number) => {
+        closeSearch();
+        setHighlightTimelineIndex(index);
+        if (highlightTimerRef.current !== null) {
+          clearTimeout(highlightTimerRef.current);
+        }
+        highlightTimerRef.current = setTimeout(() => {
+          setHighlightTimelineIndex(null);
+          highlightTimerRef.current = null;
+        }, 8000);
+        const item = timelineRef.current[index];
+        if (item) {
+          push({
+            kind: "toast",
+            id: nextId(),
+            level: "info",
+            message: `jumped to match ↓\n${summarizeTimelineItem(item)}`,
+          });
+        }
+      };
+
       return {
         send: (text: string) => {
           const client = clientRef.current;
           if (!client) return;
+
+          setHighlightTimelineIndex(null);
+          if (highlightTimerRef.current !== null) {
+            clearTimeout(highlightTimerRef.current);
+            highlightTimerRef.current = null;
+          }
 
           const trimmed = text.trim();
           if (!trimmed) return;
@@ -288,12 +386,13 @@ export function useAgent(opts: {python?: string; cwd?: string} = {}): UseAgentRe
               showModelMenu: () => setModelMenuOpen(true),
               showReasoningMenu: () => setReasoningMenuOpen(true),
               showSearch: () => { setSearchOpen(true); setSearchFilter(""); },
+              showContext: () => setContextOpen(true),
+              showPersonaMenu: () => setPersonaMenuOpen(true),
+              showSkillsMenu: () => setSkillsMenuOpen(true),
               closeSearch,
               setSearchFilterAction,
-              armExit,
+              confirmExit,
             }, {
-              exitArmedRef,
-              exitArmTimerRef,
               timelineRef,
             });
             return;
@@ -319,11 +418,17 @@ export function useAgent(opts: {python?: string; cwd?: string} = {}): UseAgentRe
           );
         },
         exit: () => clientRef.current?.exit(),
+        armExit,
+        confirmExit,
         closeHelpMenu,
         closeModelMenu,
         closeReasoningMenu,
         closeSearch,
+        closeContext,
+        closePersonaMenu,
+        closeSkillsMenu,
         setSearchFilter: setSearchFilterAction,
+        jumpToTimelineIndex,
         toggleVerbose,
         revealReasoning,
       };
@@ -332,7 +437,16 @@ export function useAgent(opts: {python?: string; cwd?: string} = {}): UseAgentRe
     [],
   );
 
-  return {session, timeline, helpMenuOpen, modelMenuOpen, reasoningMenuOpen, searchOpen, searchFilter, actions};
+  const gcFinishedAgent = (id: string) => {
+    setSession((s) => {
+      if (!(id in s.agentsFinishedAt)) return s;
+      const next = {...s.agentsFinishedAt};
+      delete next[id];
+      return {...s, agentsFinishedAt: next};
+    });
+  };
+
+  return {session, timeline, helpMenuOpen, modelMenuOpen, reasoningMenuOpen, searchOpen, contextOpen, personaMenuOpen, skillsMenuOpen, searchFilter, highlightTimelineIndex, exitArmed, gcFinishedAgent, actions};
 }
 
 interface SlashHandlers {
@@ -344,14 +458,16 @@ interface SlashHandlers {
   showModelMenu: () => void;
   showReasoningMenu: () => void;
   showSearch: () => void;
+  showContext: () => void;
+  showPersonaMenu: () => void;
+  showSkillsMenu: () => void;
   closeSearch: () => void;
   setSearchFilterAction: (f: string) => void;
-  armExit: () => void;
+  /** Returns true iff the exit was finalized; false means "armed". */
+  confirmExit: () => boolean;
 }
 
 interface SlashRefs {
-  exitArmedRef: React.MutableRefObject<boolean>;
-  exitArmTimerRef: React.MutableRefObject<ReturnType<typeof setTimeout> | null>;
   timelineRef: React.MutableRefObject<TimelineItem[]>;
 }
 
@@ -363,9 +479,9 @@ function handleSlashCommand(
   handlers: SlashHandlers,
   refs: SlashRefs,
 ): void {
-  const {showHelp, clearContext, toggleVerbose, revealReasoning, refreshAgents, showModelMenu, showReasoningMenu, showSearch, closeSearch, setSearchFilterAction, armExit} =
+  const {showHelp, clearContext, toggleVerbose, revealReasoning, refreshAgents, showModelMenu, showReasoningMenu, showSearch, showContext, showPersonaMenu, showSkillsMenu, closeSearch, setSearchFilterAction, confirmExit} =
     handlers;
-  const {exitArmedRef, exitArmTimerRef, timelineRef} = refs;
+  const {timelineRef} = refs;
   const [head, ...rest] = raw.slice(1).split(/\s+/);
   const arg = rest.join(" ").trim();
   const cmd = head.toLowerCase();
@@ -385,6 +501,7 @@ function handleSlashCommand(
       return;
     case "compact":
       client.compactContext();
+      toast("info", "compacting context…");
       return;
     case "model":
     case "change-model":
@@ -440,9 +557,23 @@ function handleSlashCommand(
     case "allow-tool":
     case "disallow-tool":
     case "allowed-tools":
-    case "persona":
-    case "skills":
       client.sendMessage(raw);
+      return;
+    case "persona":
+      if (!arg || arg === "list") {
+        client.listPersonas();
+        showPersonaMenu();
+      } else {
+        client.sendMessage(raw);
+      }
+      return;
+    case "skills":
+      if (!arg || arg === "list") {
+        client.listSkills();
+        showSkillsMenu();
+      } else {
+        client.sendMessage(raw);
+      }
       return;
     case "verbose":
       toggleVerbose();
@@ -455,6 +586,16 @@ function handleSlashCommand(
     case "status":
     case "context":
       client.getState();
+      showContext();
+      return;
+    case "code-search":
+    case "search-code":
+    case "cs":
+      if (!arg) {
+        toast("warning", "Usage: /code-search <query>");
+      } else {
+        client.searchCodebase(arg);
+      }
       return;
     case "agents":
       // The panel updates live in the status region; the toast is the
@@ -497,13 +638,8 @@ function handleSlashCommand(
       return;
     case "exit":
     case "quit":
-      if (exitArmedRef.current) {
-        if (exitArmTimerRef.current) clearTimeout(exitArmTimerRef.current);
-        exitArmedRef.current = false;
-        client.exit();
-      } else {
-        armExit();
-        toast("warning", "Type /exit again to confirm shutdown (resets in 5s)");
+      if (!confirmExit()) {
+        toast("warning", "Type /exit (or press ^C) again to confirm shutdown (resets in 5s)");
       }
       return;
     case "export":
@@ -535,17 +671,47 @@ function handleSlashCommand(
         toast("warning", "No assistant response to copy");
       } else {
         copyToClipboard(lastAsst);
-        toast("success", "Copied last response to clipboard");
+        // OSC-52 is fire-and-forget: terminals that don't honour it just
+        // discard the escape sequence. Phrase the toast so the user knows
+        // the clipboard *might* not have updated on every terminal.
+        toast(
+          "info",
+          `Sent ${lastAsst.length.toLocaleString()} chars via OSC-52 — paste to verify (requires iTerm2/kitty/WezTerm/etc.)`,
+        );
       }
       return;
     }
     case "theme": {
       const themeName = arg.toLowerCase();
-      if (themeName === "dark" || themeName === "light") {
-        process.env.CODERAI_THEME = themeName;
-        toast("success", `Theme set to ${themeName}. Restart chat to apply.`);
-      } else {
-        toast("warning", "Usage: /theme <dark|light>  (requires restart)");
+      if (themeName !== "dark" && themeName !== "light") {
+        toast("warning", "Usage: /theme <dark|light>");
+        return;
+      }
+      // Persist to ~/.coderAI/config.json so the setting survives restart.
+      // The previous implementation only set process.env, which died with
+      // the process — `Restart chat to apply` was a lie. We still mutate
+      // process.env so a future re-resolve in the same session would pick
+      // it up, but the source of truth is the config file.
+      process.env.CODERAI_THEME = themeName;
+      try {
+        const cfgPath = path.join(os.homedir(), ".coderAI", "config.json");
+        let cfg: Record<string, unknown> = {};
+        try {
+          const raw = fs.readFileSync(cfgPath, "utf8");
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === "object") cfg = parsed as Record<string, unknown>;
+        } catch {
+          // Missing or unreadable — start fresh.
+        }
+        cfg.theme = themeName;
+        fs.mkdirSync(path.dirname(cfgPath), {recursive: true});
+        fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + "\n", "utf8");
+        toast(
+          "success",
+          `Theme persisted as ${themeName}. Restart chat to see it applied.`,
+        );
+      } catch (e: any) {
+        toast("warning", `Theme save failed: ${e?.message ?? e}`);
       }
       return;
     }
@@ -607,4 +773,25 @@ function findLastAssistant(items: TimelineItem[]): string | null {
 function copyToClipboard(text: string): void {
   const base64 = Buffer.from(text, "utf8").toString("base64");
   process.stdout.write(`${ESC}]52;c;${base64}${BEL}`);
+}
+
+function summarizeTimelineItem(item: TimelineItem, max = 120): string {
+  switch (item.kind) {
+    case "user":
+      return item.text.slice(0, max);
+    case "assistant":
+      return item.content.slice(0, max);
+    case "tool":
+      return `${item.name} ${item.preview || item.error || ""}`.trim().slice(0, max);
+    case "diff":
+      return `${item.path}: ${item.diff.slice(0, max)}`;
+    case "error":
+      return item.message.slice(0, max);
+    case "toast":
+      return item.message.slice(0, max);
+    case "separator":
+      return item.message.slice(0, max);
+    case "approval":
+      return item.tool.slice(0, max);
+  }
 }

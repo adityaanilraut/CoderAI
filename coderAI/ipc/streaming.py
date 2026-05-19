@@ -151,11 +151,13 @@ class IPCStreamingHandler:
                     for tcd in delta["tool_calls"]:
                         idx = tcd.get("index", 0)
                         while len(self.tool_calls) <= idx:
-                            self.tool_calls.append({
-                                "id": f"call_{uuid.uuid4().hex[:24]}",
-                                "type": "function",
-                                "function": {"name": "", "arguments": ""},
-                            })
+                            self.tool_calls.append(
+                                {
+                                    "id": f"call_{uuid.uuid4().hex[:24]}",
+                                    "type": "function",
+                                    "function": {"name": "", "arguments": ""},
+                                }
+                            )
                         if tcd.get("id"):
                             self.tool_calls[idx]["id"] = tcd["id"]
                         if "function" in tcd:
@@ -226,7 +228,7 @@ class IPCStreamingHandler:
             return ""
         if previous and len(chunk) > len(previous) and chunk.startswith(previous):
             setattr(self, attr, chunk)
-            return chunk[len(previous):]
+            return chunk[len(previous) :]
 
         setattr(self, attr, previous + chunk)
         return chunk

@@ -13,9 +13,7 @@ from coderAI.tool_executor import DOOM_LOOP_HARD_THRESHOLD, ToolExecutor
 @pytest.mark.asyncio
 async def test_denied_tool_skips_pre_hooks() -> None:
     registry = SimpleNamespace(
-        get=MagicMock(
-            return_value=SimpleNamespace(requires_confirmation=True)
-        ),
+        get=MagicMock(return_value=SimpleNamespace(requires_confirmation=True)),
         execute=AsyncMock(),
     )
     agent = SimpleNamespace(
@@ -152,7 +150,12 @@ async def test_tool_result_normalization_wraps_strings() -> None:
     executor = ToolExecutor(agent)
 
     result = await executor.execute_single_tool(
-        {"tool_id": "t1", "tool_name": "read_file", "arguments": {"path": "x"}, "parse_error": None},
+        {
+            "tool_id": "t1",
+            "tool_name": "read_file",
+            "arguments": {"path": "x"},
+            "parse_error": None,
+        },
         hooks_data=None,
         hooks_manager=hooks_manager,
     )
@@ -175,15 +178,22 @@ async def test_pre_hook_errors_block_tool_execution() -> None:
         _sync_tracker=MagicMock(),
     )
     hooks_manager = SimpleNamespace(
-        run_hooks=AsyncMock(side_effect=[
-            ["[PreToolUse Hook ERROR]: blocked"],
-            [],
-        ])
+        run_hooks=AsyncMock(
+            side_effect=[
+                ["[PreToolUse Hook ERROR]: blocked"],
+                [],
+            ]
+        )
     )
     executor = ToolExecutor(agent)
 
     result = await executor.execute_single_tool(
-        {"tool_id": "t1", "tool_name": "write_file", "arguments": {"path": "x", "content": "y"}, "parse_error": None},
+        {
+            "tool_id": "t1",
+            "tool_name": "write_file",
+            "arguments": {"path": "x", "content": "y"},
+            "parse_error": None,
+        },
         hooks_data=None,
         hooks_manager=hooks_manager,
     )
@@ -234,11 +244,13 @@ async def test_orchestrate_signals_doom_loop_after_hard_threshold() -> None:
     last_did_error = False
     last_fatal_res = None
     for i in range(DOOM_LOOP_HARD_THRESHOLD):
-        tool_calls = [{
-            "id": f"t{i}",
-            "type": "function",
-            "function": {"name": "plan", "arguments": '{"action":"show"}'},
-        }]
+        tool_calls = [
+            {
+                "id": f"t{i}",
+                "type": "function",
+                "function": {"name": "plan", "arguments": '{"action":"show"}'},
+            }
+        ]
         session.add_message("assistant", None, tool_calls=tool_calls)
         last_did_error, last_fatal_res = await executor.orchestrate_tool_calls(
             tool_calls=tool_calls,
@@ -285,11 +297,13 @@ async def test_cached_read_only_repeats_trip_doom_loop_hard_threshold() -> None:
 
     last_did_error, last_fatal_res = False, None
     for i in range(DOOM_LOOP_HARD_THRESHOLD):
-        tool_calls = [{
-            "id": f"t{i}",
-            "type": "function",
-            "function": {"name": "read_file", "arguments": '{"path":"README.md"}'},
-        }]
+        tool_calls = [
+            {
+                "id": f"t{i}",
+                "type": "function",
+                "function": {"name": "read_file", "arguments": '{"path":"README.md"}'},
+            }
+        ]
         session.add_message("assistant", None, tool_calls=tool_calls)
         last_did_error, last_fatal_res = await executor.orchestrate_tool_calls(
             tool_calls=tool_calls,
@@ -382,7 +396,11 @@ def test_doom_loop_terminates_execution_loop_with_explanatory_message() -> None:
     call_count = 0
 
     async def fake_orchestrate(
-        tool_calls, messages, user_message, hooks_data, hooks_manager,
+        tool_calls,
+        messages,
+        user_message,
+        hooks_data,
+        hooks_manager,
     ):
         nonlocal call_count
         call_count += 1
@@ -444,14 +462,16 @@ async def test_denied_calls_do_not_count_toward_doom_loop_hard_threshold() -> No
 
     last_did_error, last_fatal_res = False, None
     for i in range(DOOM_LOOP_HARD_THRESHOLD + 2):
-        tool_calls = [{
-            "id": f"t{i}",
-            "type": "function",
-            "function": {
-                "name": "write_file",
-                "arguments": '{"path":"a.txt","content":"x"}',
-            },
-        }]
+        tool_calls = [
+            {
+                "id": f"t{i}",
+                "type": "function",
+                "function": {
+                    "name": "write_file",
+                    "arguments": '{"path":"a.txt","content":"x"}',
+                },
+            }
+        ]
         session.add_message("assistant", None, tool_calls=tool_calls)
         last_did_error, last_fatal_res = await executor.orchestrate_tool_calls(
             tool_calls=tool_calls,

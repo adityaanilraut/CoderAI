@@ -8,32 +8,37 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from coderAI.context_controller import ContextController
 
 
-
 class TestTransientErrorDetection:
     """Tests for the transient-error classifier in error_policy."""
 
     def test_timeout_is_transient(self):
         from coderAI.error_policy import is_transient_error
+
         assert is_transient_error(Exception("Request timed out")) is True
 
     def test_rate_limit_is_transient(self):
         from coderAI.error_policy import is_transient_error
+
         assert is_transient_error(Exception("Rate limit exceeded (429)")) is True
 
     def test_server_error_is_transient(self):
         from coderAI.error_policy import is_transient_error
+
         assert is_transient_error(Exception("502 Bad Gateway")) is True
 
     def test_auth_error_is_not_transient(self):
         from coderAI.error_policy import is_transient_error
+
         assert is_transient_error(Exception("Invalid API key")) is False
 
     def test_generic_error_is_not_transient(self):
         from coderAI.error_policy import is_transient_error
+
         assert is_transient_error(ValueError("bad value")) is False
 
     def test_connection_reset_is_transient(self):
         from coderAI.error_policy import is_transient_error
+
         assert is_transient_error(Exception("Connection reset by peer")) is True
 
 
@@ -42,6 +47,7 @@ class TestSummarizeToolResult:
 
     def _make_controller(self):
         from coderAI.config import Config
+
         cfg = Config(max_tool_output=200)
         return ContextController(cfg, MagicMock())
 
@@ -97,10 +103,12 @@ class TestTruncateMessages:
         ctrl = self._make_controller()
         ctrl.cost_tracker = CostTracker()
         ctrl._last_summary_time = -10_000
-        seen = iter([
-            {"total_input_tokens": 1000, "total_output_tokens": 500},
-            {"total_input_tokens": 1050, "total_output_tokens": 520},
-        ])
+        seen = iter(
+            [
+                {"total_input_tokens": 1000, "total_output_tokens": 500},
+                {"total_input_tokens": 1050, "total_output_tokens": 520},
+            ]
+        )
         ctrl.provider.get_model_info = lambda: next(seen)
         ctrl.config.context_window = 300
         ctrl._on_summary_tokens = MagicMock()
@@ -256,7 +264,6 @@ class TestRecoverableErrorMarker:
         system_contents = [m.content for m in session.messages if m.role == "system"]
         assert any(RECOVERABLE_ERROR_MARKER in c for c in system_contents)
 
-
     def test_project_config_is_loaded(self):
         with patch("coderAI.agent.config_manager") as cm:
             from coderAI.config import Config
@@ -277,16 +284,17 @@ class TestRecoverableErrorMarker:
 
 class TestAgentsPersonas:
     """Tests for the Agents module personas."""
-    
+
     def test_load_agent_persona_no_dir(self):
         from coderAI.agents import load_agent_persona
+
         with patch("pathlib.Path.exists", return_value=False):
             persona = load_agent_persona("planner")
             assert persona is None
 
     def test_load_agent_persona_success(self):
         from coderAI.agents import load_agent_persona
-        
+
         mock_md = """---
 name: Planner Agent
 description: Plans tasks
@@ -294,7 +302,7 @@ tools: [manage_tasks]
 model: claude-3-5-sonnet-20241022
 ---
 You are a planner."""
-        
+
         with patch("pathlib.Path.exists", return_value=True):
             with patch("pathlib.Path.read_text", return_value=mock_md):
                 persona = load_agent_persona("planner")
@@ -502,6 +510,7 @@ class TestAgentProjectRules:
     def _make_agent(self):
         with patch("coderAI.agent.config_manager") as cm:
             from coderAI.config import Config
+
             cfg = Config()
             cm.load.return_value = cfg
             cm.load_project_config.return_value = cfg
@@ -512,11 +521,11 @@ class TestAgentProjectRules:
 
     def test_get_system_prompt_with_rules(self):
         agent = self._make_agent()
-        
+
         mock_rule_file = MagicMock()
         mock_rule_file.name = "testing.md"
         mock_rule_file.read_text.return_value = "Always write pytest tests."
-        
+
         mock_rules_dir = MagicMock()
         mock_rules_dir.exists.return_value = True
         mock_rules_dir.is_dir.return_value = True
@@ -524,7 +533,10 @@ class TestAgentProjectRules:
 
         from coderAI.system_prompt import SYSTEM_PROMPT_INTRO
 
-        with patch("pathlib.Path", side_effect=lambda *args: mock_rules_dir if ".coderAI" in args else MagicMock()):
+        with patch(
+            "pathlib.Path",
+            side_effect=lambda *args: mock_rules_dir if ".coderAI" in args else MagicMock(),
+        ):
             prompt = agent._get_system_prompt()
             assert SYSTEM_PROMPT_INTRO in prompt
             assert "## Available Tools" in prompt
@@ -631,8 +643,12 @@ class TestRepositoryPromptHygiene:
             if not text.startswith("---"):
                 continue
             frontmatter = text.split("---", 2)[1].lower()
-            assert "must be used" not in frontmatter, f"{path.name} description overpromises routing"
-            assert "automatically activated" not in frontmatter, f"{path.name} description overpromises routing"
+            assert "must be used" not in frontmatter, (
+                f"{path.name} description overpromises routing"
+            )
+            assert "automatically activated" not in frontmatter, (
+                f"{path.name} description overpromises routing"
+            )
 
 
 class TestProcessMessageAfterCancel:
@@ -649,7 +665,9 @@ class TestProcessMessageAfterCancel:
             from coderAI.agent_tracker import AgentStatus, agent_tracker
 
             mock_provider = MagicMock()
-            mock_provider.chat = AsyncMock(return_value={"choices": [{"message": {"content": "ok"}}]})
+            mock_provider.chat = AsyncMock(
+                return_value={"choices": [{"message": {"content": "ok"}}]}
+            )
             mock_provider.supports_tools.return_value = False
             mock_provider.count_tokens = lambda text: max(1, len(text) // 4)
             mock_provider.get_model_info.return_value = {

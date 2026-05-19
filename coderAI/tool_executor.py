@@ -14,7 +14,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .agent_tracker import AgentStatus
 from .events import event_emitter
-from .tool_routing import call_mcp_tool_by_function_name, is_mcp_function_name, coerce_tool_arguments
+from .tool_routing import (
+    call_mcp_tool_by_function_name,
+    is_mcp_function_name,
+    coerce_tool_arguments,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,12 +84,12 @@ class ToolExecutor:
         if isinstance(result, dict):
             normalized = dict(result)
             if "success" not in normalized:
-                has_useful_output = bool(normalized.get("result") or normalized.get("output") or normalized.get("data"))
+                has_useful_output = bool(
+                    normalized.get("result") or normalized.get("output") or normalized.get("data")
+                )
                 normalized["success"] = "error" not in normalized and has_useful_output
             if normalized.get("success") is False:
-                normalized["error"] = str(
-                    normalized.get("error") or f"Tool '{tool_name}' failed."
-                )
+                normalized["error"] = str(normalized.get("error") or f"Tool '{tool_name}' failed.")
                 normalized.setdefault("error_code", default_error_code)
             return normalized
 
@@ -117,9 +121,7 @@ class ToolExecutor:
         self.agent._sync_tracker()
         return previous
 
-    def _exit_waiting_for_user(
-        self, previous: Optional[Tuple[AgentStatus, Optional[str]]]
-    ) -> None:
+    def _exit_waiting_for_user(self, previous: Optional[Tuple[AgentStatus, Optional[str]]]) -> None:
         info = self.agent.tracker_info
         if not info or previous is None:
             return
@@ -154,7 +156,12 @@ class ToolExecutor:
             path_obj = Path(path).expanduser().resolve()
 
             import os
-            if self.agent and self.agent.config and os.environ.get("CODERAI_ALLOW_OUTSIDE_PROJECT") != "1":
+
+            if (
+                self.agent
+                and self.agent.config
+                and os.environ.get("CODERAI_ALLOW_OUTSIDE_PROJECT") != "1"
+            ):
                 project_root = Path(self.agent.config.project_root).resolve()
                 try:
                     path_obj.relative_to(project_root)
@@ -195,17 +202,16 @@ class ToolExecutor:
             elif tool_name == "multi_edit":
                 edits = arguments.get("edits", [])
                 for edit in edits:
-                    new_content = new_content.replace(edit.get("search", ""), edit.get("replace", ""))
+                    new_content = new_content.replace(
+                        edit.get("search", ""), edit.get("replace", "")
+                    )
             elif tool_name == "apply_diff":
                 raw_diff = arguments.get("diff", "")
                 if len(raw_diff) > 32768:
                     hidden = len(raw_diff) - 32768
-                    return (
-                        raw_diff[:32768]
-                        + f"\n... (diff truncated) {hidden} chars hidden"
-                    )
+                    return raw_diff[:32768] + f"\n... (diff truncated) {hidden} chars hidden"
                 return raw_diff
-            
+
             diff_lines = list(
                 difflib.unified_diff(
                     original_content.splitlines(keepends=True),
@@ -218,18 +224,13 @@ class ToolExecutor:
             diff_text = "".join(diff_lines)
             if len(diff_text) > 32768:
                 hidden = len(diff_text) - 32768
-                return (
-                    diff_text[:32768]
-                    + f"\n... (diff truncated) {hidden} chars hidden"
-                )
+                return diff_text[:32768] + f"\n... (diff truncated) {hidden} chars hidden"
             return diff_text
         except Exception as e:
             logger.debug("Preview diff computation failed for %s: %s", tool_name, e)
             return None
 
-    async def _precompute_diffs(
-        self, parsed_calls: list
-    ) -> Dict[int, Optional[str]]:
+    async def _precompute_diffs(self, parsed_calls: list) -> Dict[int, Optional[str]]:
         gated: List[Tuple[int, dict]] = []
         for i, pc in enumerate(parsed_calls):
             if pc.get("parse_error") or pc.get("arguments") is None:
@@ -275,9 +276,9 @@ class ToolExecutor:
             args_preview = json.dumps(arguments, indent=2)
             if len(args_preview) > 300:
                 args_preview = args_preview[:300] + "\n  ... (truncated)"
-            
+
             diff_preview = f"\n\nDiff Preview:\n{diff}" if diff else ""
-            
+
             event_emitter.emit(
                 "agent_status",
                 message=(
@@ -299,12 +300,15 @@ class ToolExecutor:
 
             try:
                 from prompt_toolkit import PromptSession
+
                 prompt_session = PromptSession()
                 answer = await prompt_session.prompt_async("Allow this tool? (y/n) > ")
             except (ImportError, EOFError, KeyboardInterrupt):
                 try:
                     loop = asyncio.get_running_loop()
-                    answer = await loop.run_in_executor(None, lambda: input("Allow this tool? (y/n) > "))
+                    answer = await loop.run_in_executor(
+                        None, lambda: input("Allow this tool? (y/n) > ")
+                    )
                 except (EOFError, KeyboardInterrupt):
                     answer = "n"
 
@@ -342,10 +346,7 @@ class ToolExecutor:
             needs_confirmation = (
                 not self.agent.auto_approve
                 and tool_name not in self._approval_allowlist()
-                and (
-                    is_mcp_proxy
-                    or bool(tool and getattr(tool, "requires_confirmation", False))
-                )
+                and (is_mcp_proxy or bool(tool and getattr(tool, "requires_confirmation", False)))
             )
             if needs_confirmation:
                 # Check permission hooks first (can auto-allow or auto-deny)
@@ -378,9 +379,9 @@ class ToolExecutor:
                             "error_code": "denied",
                         }
 
-            pre_hooks = await hooks_manager.run_hooks(
-                tool_name, "PreToolUse", arguments, hooks_data
-            ) or []
+            pre_hooks = (
+                await hooks_manager.run_hooks(tool_name, "PreToolUse", arguments, hooks_data) or []
+            )
             for hook_msg in pre_hooks:
                 if hook_msg.startswith("[PreToolUse Hook ERROR]"):
                     return {
@@ -415,7 +416,10 @@ class ToolExecutor:
             post_hook_args = dict(arguments or {})
             if tool_timed_out:
                 post_hook_args["_tool_timed_out"] = True
-            post_hooks = await hooks_manager.run_hooks(tool_name, "PostToolUse", post_hook_args, hooks_data) or []
+            post_hooks = (
+                await hooks_manager.run_hooks(tool_name, "PostToolUse", post_hook_args, hooks_data)
+                or []
+            )
             result = self._normalize_tool_result(result, tool_name=tool_name)
 
             if isinstance(result, dict) and (pre_hooks or post_hooks):
@@ -449,9 +453,18 @@ class ToolExecutor:
             args, arg_err = coerce_tool_arguments(raw_args)
             if arg_err is not None:
                 parse_failures += 1
-                parsed_calls.append({"tool_id": tool_id, "tool_name": name, "arguments": None, "parse_error": arg_err})
+                parsed_calls.append(
+                    {
+                        "tool_id": tool_id,
+                        "tool_name": name,
+                        "arguments": None,
+                        "parse_error": arg_err,
+                    }
+                )
             else:
-                parsed_calls.append({"tool_id": tool_id, "tool_name": name, "arguments": args, "parse_error": None})
+                parsed_calls.append(
+                    {"tool_id": tool_id, "tool_name": name, "arguments": args, "parse_error": None}
+                )
 
         if parse_failures == len(parsed_calls):
             # All tools failed to parse — record the synthetic tool replies and
@@ -477,14 +490,21 @@ class ToolExecutor:
 
         if self.agent.tracker_info:
             self.agent.tracker_info.status = AgentStatus.TOOL_CALL
-            self.agent.tracker_info.current_tool = ", ".join(pc["tool_name"] for pc in parsed_calls if pc["arguments"])
+            self.agent.tracker_info.current_tool = ", ".join(
+                pc["tool_name"] for pc in parsed_calls if pc["arguments"]
+            )
             self.agent._sync_tracker()
 
         for pc in parsed_calls:
             if pc["parse_error"] is not None:
                 event_emitter.emit("tool_error", tool_name=pc["tool_name"], error=pc["parse_error"])
             elif pc["arguments"] is not None:
-                event_emitter.emit("tool_call", tool_name=pc["tool_name"], arguments=pc["arguments"], tool_id=pc["tool_id"])
+                event_emitter.emit(
+                    "tool_call",
+                    tool_name=pc["tool_name"],
+                    arguments=pc["arguments"],
+                    tool_id=pc["tool_id"],
+                )
 
         dup_results: Dict[int, Dict[str, Any]] = {}
         batch_seen: Dict[str, int] = {}
@@ -510,7 +530,11 @@ class ToolExecutor:
             prior_count = self._call_counts.get(fp, 0)
             tool = self.agent.tools.get(pc["tool_name"])
             is_read_only = bool(tool and getattr(tool, "is_read_only", False))
-            if is_read_only and prior_count >= DUPLICATE_CALL_THRESHOLD and fp in self._last_results:
+            if (
+                is_read_only
+                and prior_count >= DUPLICATE_CALL_THRESHOLD
+                and fp in self._last_results
+            ):
                 repeated_count = prior_count + 1
                 self._call_counts[fp] = repeated_count
                 pc["_cached_repeat_count"] = repeated_count
@@ -540,7 +564,11 @@ class ToolExecutor:
         for i, placeholder in dup_results.items():
             src = placeholder.pop("_dup_of_batch_index", None)
             if src is not None and results[src] is not None:
-                cloned = dict(results[src]) if isinstance(results[src], dict) else {"output": results[src]}
+                cloned = (
+                    dict(results[src])
+                    if isinstance(results[src], dict)
+                    else {"output": results[src]}
+                )
                 cloned["_warning"] = placeholder.get("_warning", "Duplicate result reused.")
                 results[i] = cloned
             else:
@@ -587,8 +615,12 @@ class ToolExecutor:
         for pc, res in zip(parsed_calls, results):
             res = self.agent.context_controller.summarize_tool_result(res)
             res = self._normalize_tool_result(res, tool_name=pc["tool_name"])
-            event_emitter.emit("tool_result", tool_name=pc["tool_name"], result=res, tool_id=pc["tool_id"])
-            self.agent.session.add_message("tool", json.dumps(res), tool_call_id=pc["tool_id"], name=pc["tool_name"])
+            event_emitter.emit(
+                "tool_result", tool_name=pc["tool_name"], result=res, tool_id=pc["tool_id"]
+            )
+            self.agent.session.add_message(
+                "tool", json.dumps(res), tool_call_id=pc["tool_id"], name=pc["tool_name"]
+            )
 
         if self.agent.tracker_info:
             self.agent.tracker_info.current_tool = None
@@ -605,15 +637,14 @@ class ToolExecutor:
                 denied_tools.append(pc.get("tool_name", "unknown"))
 
         all_tool_calls_failed = bool(results) and all(
-            not (isinstance(res, dict) and res.get("success") is True)
-            for res in results
+            not (isinstance(res, dict) and res.get("success") is True) for res in results
         )
         if all_tool_calls_failed:
             if denied_tools:
                 event_emitter.emit(
                     "agent_warning",
                     message=f"Tool(s) denied by user: {', '.join(denied_tools)}. "
-                            "Asking the model to try a different approach.",
+                    "Asking the model to try a different approach.",
                 )
                 return True, {"retry": True, "_denied": True, "_denied_tools": denied_tools}
             event_emitter.emit(
@@ -638,7 +669,9 @@ class ToolExecutor:
 
         return False, None
 
-    async def run_tool_batch(self, parsed_calls: list, hooks_data: Optional[Dict[str, Any]], hooks_manager) -> list:
+    async def run_tool_batch(
+        self, parsed_calls: list, hooks_data: Optional[Dict[str, Any]], hooks_manager
+    ) -> list:
         ro_indices: list = []
         capped_groups: Dict[str, list] = {}
         sub_ro_indices: list = []
@@ -712,20 +745,22 @@ class ToolExecutor:
             return raw
 
         if ro_indices:
+
             async def _run_ro(idx):
                 async with self._read_only_semaphore:
                     return await _run(parsed_calls[idx], diff=precomputed_diffs.get(idx))
-            res = await asyncio.gather(
-                *(_run_ro(i) for i in ro_indices), return_exceptions=True
-            )
+
+            res = await asyncio.gather(*(_run_ro(i) for i in ro_indices), return_exceptions=True)
             for i, r in zip(ro_indices, res):
                 results[i] = _coerce_gather_result(i, r)
                 _emit_progress(i)
 
         if sub_ro_indices:
+
             async def _run_sub_ro(idx):
                 async with self._read_only_subagent_semaphore:
                     return await _run(parsed_calls[idx], diff=precomputed_diffs.get(idx))
+
             res = await asyncio.gather(
                 *(_run_sub_ro(i) for i in sub_ro_indices), return_exceptions=True
             )
@@ -739,7 +774,8 @@ class ToolExecutor:
             for start in range(0, len(indices), size):
                 chunk = indices[start : start + size]
                 res = await asyncio.gather(
-                    *(_run(parsed_calls[i], diff=precomputed_diffs.get(i)) for i in chunk), return_exceptions=True
+                    *(_run(parsed_calls[i], diff=precomputed_diffs.get(i)) for i in chunk),
+                    return_exceptions=True,
                 )
                 for i, r in zip(chunk, res):
                     results[i] = _coerce_gather_result(i, r)

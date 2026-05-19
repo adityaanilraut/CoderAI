@@ -70,9 +70,7 @@ def test_search_replace_refuses_symlink_leaf(real_and_link, monkeypatch):
     _allow_outside_project(monkeypatch)
     real, link = real_and_link
     tool = SearchReplaceTool()
-    result = asyncio.run(
-        tool.execute(path=str(link), search="real", replace="bogus")
-    )
+    result = asyncio.run(tool.execute(path=str(link), search="real", replace="bogus"))
     assert result["success"] is False
     assert result.get("error_code") == "symlink"
     # The real file's contents must remain untouched.

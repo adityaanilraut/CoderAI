@@ -21,19 +21,70 @@ logger = logging.getLogger(__name__)
 
 # Files whose content is mostly structure, not meaning — skip them.
 _SKIP_SUFFIXES: set[str] = {
-    ".lock", ".min.js", ".min.css", ".map", ".json", ".yaml", ".yml",
-    ".toml", ".cfg", ".ini", ".xml", ".svg", ".png", ".jpg", ".jpeg",
-    ".gif", ".webp", ".ico", ".woff", ".woff2", ".ttf", ".eot", ".pdf",
-    ".zip", ".tar", ".gz", ".bz2", ".7z", ".mp3", ".mp4", ".mov",
-    ".pyc", ".pyo", ".so", ".dylib", ".dll", ".exe", ".bin", ".dat",
-    ".db", ".sqlite", ".sqlite3",
+    ".lock",
+    ".min.js",
+    ".min.css",
+    ".map",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".cfg",
+    ".ini",
+    ".xml",
+    ".svg",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".ico",
+    ".woff",
+    ".woff2",
+    ".ttf",
+    ".eot",
+    ".pdf",
+    ".zip",
+    ".tar",
+    ".gz",
+    ".bz2",
+    ".7z",
+    ".mp3",
+    ".mp4",
+    ".mov",
+    ".pyc",
+    ".pyo",
+    ".so",
+    ".dylib",
+    ".dll",
+    ".exe",
+    ".bin",
+    ".dat",
+    ".db",
+    ".sqlite",
+    ".sqlite3",
 }
 
 _SKIP_DIRS: set[str] = {
-    ".git", "node_modules", "__pycache__", ".venv", "venv", "dist",
-    "build", ".next", ".nuxt", "target", ".tox", ".eggs", ".mypy_cache",
-    ".pytest_cache", ".ruff_cache", "vendor", "bower_components",
-    ".coderAI", ".claude",
+    ".git",
+    "node_modules",
+    "__pycache__",
+    ".venv",
+    "venv",
+    "dist",
+    "build",
+    ".next",
+    ".nuxt",
+    "target",
+    ".tox",
+    ".eggs",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    "vendor",
+    "bower_components",
+    ".coderAI",
+    ".claude",
 }
 
 # File suffixes we attempt to chunk.
@@ -221,7 +272,11 @@ def _chunk_python(source: str, rel_path: str, language: str) -> list[Chunk]:
 
     # Preamble chunk: everything before the first class/function, not
     # including entity bodies (which are already their own chunks).
-    preamble_limit = first_entity_line - 1 if first_entity_line is not None else (preamble_end if preamble_end > 0 else None)
+    preamble_limit = (
+        first_entity_line - 1
+        if first_entity_line is not None
+        else (preamble_end if preamble_end > 0 else None)
+    )
     if preamble_limit is not None:
         preamble = "\n".join(lines[:preamble_limit]).strip()
         if preamble:

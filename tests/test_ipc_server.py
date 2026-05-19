@@ -1,6 +1,6 @@
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import ANY, MagicMock
 
 import pytest
 
@@ -84,31 +84,58 @@ async def test_clear_context_invokes_session_reset() -> None:
     ``Agent.create_session`` (which runs ``_reset_session_accounting``).
     This test asserts the orchestration — ``Agent._reset_session_accounting``
     is covered in its own unit test."""
-    provider = SimpleNamespace(total_input_tokens=21, total_output_tokens=8)
-    context_manager = SimpleNamespace(clear=MagicMock())
-    cost_tracker = SimpleNamespace(total_cost_usd=12.5)
-    agent = SimpleNamespace(
-        session=object(),
-        provider=provider,
-        context_manager=context_manager,
-        total_prompt_tokens=21,
-        total_completion_tokens=8,
-        total_tokens=29,
-        cost_tracker=cost_tracker,
-        create_session=MagicMock(),
-    )
-    server = SimpleNamespace(
-        agent=agent,
-        emit=MagicMock(),
-        emit_status=MagicMock(),
-        _turn_lock=asyncio.Lock(),
-    )
+    from coderAI.agent_tracker import AgentInfo, AgentStatus, agent_tracker
 
-    await _cmd_clear_context(server, {})
+    prev_agents = dict(agent_tracker._agents)
+    try:
+        provider = SimpleNamespace(total_input_tokens=21, total_output_tokens=8)
+        context_manager = SimpleNamespace(clear=MagicMock())
+        cost_tracker = SimpleNamespace(total_cost_usd=12.5)
+        main_info = AgentInfo(agent_id="agent_main1234", name="main")
+        main_info.status = AgentStatus.THINKING
+        main_info.current_task = "old task"
+        sub_info = AgentInfo(
+            agent_id="agent_sub5678", name="reviewer", parent_id=main_info.agent_id
+        )
+        agent_tracker._agents.clear()
+        agent_tracker._agents[main_info.agent_id] = main_info
+        agent_tracker._agents[sub_info.agent_id] = sub_info
+        agent = SimpleNamespace(
+            session=object(),
+            provider=provider,
+            context_manager=context_manager,
+            total_prompt_tokens=21,
+            total_completion_tokens=8,
+            total_tokens=29,
+            cost_tracker=cost_tracker,
+            create_session=MagicMock(),
+            tracker_info=main_info,
+        )
+        server = SimpleNamespace(
+            agent=agent,
+            emit=MagicMock(),
+            emit_status=MagicMock(),
+            _turn_lock=asyncio.Lock(),
+        )
 
-    context_manager.clear.assert_called_once()
-    agent.create_session.assert_called_once()
-    assert agent.session is None
+        await _cmd_clear_context(server, {})
+
+        context_manager.clear.assert_called_once()
+        agent.create_session.assert_called_once()
+        assert agent.session is None
+        assert sub_info.agent_id not in agent_tracker._agents
+        assert main_info.agent_id in agent_tracker._agents
+        assert main_info.status == AgentStatus.IDLE
+        assert main_info.current_task == ""
+        server.emit.assert_any_call(
+            "agent",
+            phase="update",
+            info=ANY,
+            parentId=main_info.parent_id,
+        )
+    finally:
+        agent_tracker._agents.clear()
+        agent_tracker._agents.update(prev_agents)
 
 
 @pytest.mark.asyncio

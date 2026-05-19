@@ -1,18 +1,24 @@
 import React, { useMemo } from "react";
 import { Box, Text } from "ink";
 import { theme } from "../theme.js";
-import { hyperlink, linkifyFileRefs } from "../lib/hyperlink.js";
-
-interface CodeBlock {
-  lang: string;
-  code: string;
-}
+import { hyperlink, linkifyFileRefs, type TextSegment } from "../lib/hyperlink.js";
 
 interface ContentChunk {
   kind: "text" | "code";
   text: string;
   lang?: string;
 }
+
+/**
+ * Inline span produced by the lightweight markdown pass. We don't aim for
+ * CommonMark — just the formatting the model actually emits in
+ * conversational answers: backtick-wrapped code, **bold**, *italic*. Inside
+ * a `code` span we never run linkify or further formatting (matching how
+ * other markdown renderers behave).
+ */
+type InlineSpan =
+  | { kind: "text"; text: string; bold?: boolean; italic?: boolean }
+  | { kind: "code"; text: string };
 
 export interface AssistantProps {
   content: string;
@@ -56,14 +62,25 @@ export function Assistant({
   // Parse content into text/code chunks (``` fences).
   const chunks = useMemo(() => parseCodeFences(content), [content]);
 
-  // Tokenize each text chunk for file:line hyperlinks.
+  // Two-pass tokenizer for text chunks:
+  //   1. Pull out inline markdown spans (`code`, **bold**, *italic*).
+  //   2. Within each non-code text span, run linkifyFileRefs so file:line
+  //      references inside narrative prose still become clickable.
   const linkedChunks = useMemo(
     () =>
-      chunks.map((chunk) =>
-        chunk.kind === "text"
-          ? { ...chunk, links: linkifyFileRefs(chunk.text, cwd) }
-          : chunk,
-      ),
+      chunks.map((chunk) => {
+        if (chunk.kind !== "text") return chunk;
+        const inline = parseInlineMarkdown(chunk.text);
+        const decorated = inline.map((span) =>
+          span.kind === "code"
+            ? span
+            : {
+                ...span,
+                links: linkifyFileRefs(span.text, cwd),
+              },
+        );
+        return { ...chunk, inline: decorated };
+      }),
     [chunks, cwd],
   );
 
@@ -103,18 +120,49 @@ export function Assistant({
               </Box>
             ) : (
               <Text key={ci}>
-                {(chunk as ContentChunk & { links: import("../lib/hyperlink.js").TextSegment[] }).links.map(
-                  (seg, si) =>
-                    seg.href ? (
-                      <Text key={si} color={theme.link}>
-                        {hyperlink(seg.href, seg.text)}
+                {(chunk as ContentChunk & {
+                  inline: Array<
+                    | { kind: "code"; text: string }
+                    | { kind: "text"; text: string; bold?: boolean; italic?: boolean; links: TextSegment[] }
+                  >;
+                }).inline.map((span, si) => {
+                  if (span.kind === "code") {
+                    return (
+                      <Text
+                        key={si}
+                        backgroundColor={theme.codeBlock.bg}
+                        color={theme.textSoft}
+                      >
+                        {span.text}
                       </Text>
-                    ) : (
-                      <Text key={si} color={theme.text}>
-                        {seg.text}
-                      </Text>
-                    ),
-                )}
+                    );
+                  }
+                  return (
+                    <Text key={si}>
+                      {span.links.map((seg, li) =>
+                        seg.href ? (
+                          <Text
+                            key={li}
+                            color={theme.link}
+                            bold={span.bold}
+                            italic={span.italic}
+                          >
+                            {hyperlink(seg.href, seg.text)}
+                          </Text>
+                        ) : (
+                          <Text
+                            key={li}
+                            color={theme.text}
+                            bold={span.bold}
+                            italic={span.italic}
+                          >
+                            {seg.text}
+                          </Text>
+                        ),
+                      )}
+                    </Text>
+                  );
+                })}
               </Text>
             ),
           )}
@@ -155,6 +203,106 @@ export function UserBubble({ text }: UserBubbleProps) {
       ))}
     </Box>
   );
+}
+
+/**
+ * Greedy left-to-right inline markdown tokenizer.
+ *
+ * Supported syntax (in match order — `code` wins over bold/italic so a
+ * snippet like `` `foo **bar** baz` `` renders as one code span):
+ *
+ *   `code`       → monospaced code span
+ *   **bold**     → bold
+ *   __bold__     → bold
+ *   *italic*     → italic
+ *   _italic_     → italic
+ *
+ * Unmatched markers are emitted verbatim so prose like "use *args" doesn't
+ * silently italicize the trailing text.
+ */
+function parseInlineMarkdown(input: string): InlineSpan[] {
+  const out: InlineSpan[] = [];
+  let buf = "";
+  const flushText = (bold?: boolean, italic?: boolean) => {
+    if (buf.length === 0) return;
+    out.push({ kind: "text", text: buf, bold, italic });
+    buf = "";
+  };
+
+  let i = 0;
+  while (i < input.length) {
+    const ch = input[i];
+
+    // Inline code: backtick-delimited; consume up to the next backtick.
+    if (ch === "`") {
+      const end = input.indexOf("`", i + 1);
+      if (end !== -1) {
+        flushText();
+        out.push({ kind: "code", text: input.slice(i + 1, end) });
+        i = end + 1;
+        continue;
+      }
+    }
+
+    // Bold: ** or __ . Require non-space immediately after the opener and
+    // before the closer so "use **args" doesn't accidentally bold half the
+    // sentence — same rule CommonMark uses for emphasis runs.
+    if (
+      (ch === "*" && input[i + 1] === "*") ||
+      (ch === "_" && input[i + 1] === "_")
+    ) {
+      const delim = ch + ch;
+      const start = i + 2;
+      if (start < input.length && input[start] !== " " && input[start] !== "\n") {
+        const end = input.indexOf(delim, start);
+        if (end > start && input[end - 1] !== " " && input[end - 1] !== "\n") {
+          flushText();
+          out.push({ kind: "text", text: input.slice(start, end), bold: true });
+          i = end + 2;
+          continue;
+        }
+      }
+    }
+
+    // Italic: * or _. Same non-space rule, plus avoid matching inside a word
+    // ("snake_case" must not italicize "case_" until the next underscore).
+    if ((ch === "*" || ch === "_") && input[i + 1] !== ch) {
+      const before = i === 0 ? " " : input[i - 1];
+      const start = i + 1;
+      const startsWord = ch === "_" ? !/\w/.test(before) : true;
+      if (
+        startsWord &&
+        start < input.length &&
+        input[start] !== " " &&
+        input[start] !== "\n"
+      ) {
+        // Walk to the matching closer; skip over backslash escapes.
+        let end = -1;
+        for (let j = start; j < input.length; j++) {
+          if (input[j] === "\n") break;
+          if (input[j] === ch) {
+            const after = j + 1 < input.length ? input[j + 1] : " ";
+            const endsWord = ch === "_" ? !/\w/.test(after) : true;
+            if (input[j - 1] !== " " && endsWord) {
+              end = j;
+              break;
+            }
+          }
+        }
+        if (end > start) {
+          flushText();
+          out.push({ kind: "text", text: input.slice(start, end), italic: true });
+          i = end + 1;
+          continue;
+        }
+      }
+    }
+
+    buf += ch;
+    i++;
+  }
+  flushText();
+  return out;
 }
 
 function parseCodeFences(text: string): ContentChunk[] {

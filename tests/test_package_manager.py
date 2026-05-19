@@ -37,7 +37,7 @@ class TestDetectPackageManager:
 
     def test_detects_cargo_for_rust_project(self, tmp_path):
         if shutil.which("cargo"):
-            (tmp_path / "Cargo.toml").write_text("[package]\nname = \"test\"\n")
+            (tmp_path / "Cargo.toml").write_text('[package]\nname = "test"\n')
             result = detect_package_manager(str(tmp_path))
             assert result == "cargo"
 
@@ -86,22 +86,16 @@ class TestPackageManagerTool:
         assert "Unknown package manager" in result["error"]
 
     def test_invalid_action_returns_error(self):
-        result = asyncio.run(
-            self.tool.execute(action="invalid_action_xyz")
-        )
+        result = asyncio.run(self.tool.execute(action="invalid_action_xyz"))
         assert not result["success"]
         assert "Unknown action" in result["error"]
 
     def test_install_without_package_returns_error(self):
-        result = asyncio.run(
-            self.tool.execute(action="install")
-        )
+        result = asyncio.run(self.tool.execute(action="install"))
         assert not result["success"]
 
     def test_uninstall_without_package_returns_error(self):
-        result = asyncio.run(
-            self.tool.execute(action="uninstall")
-        )
+        result = asyncio.run(self.tool.execute(action="uninstall"))
         assert not result["success"]
 
     def test_dangerous_package_name_rejected(self):

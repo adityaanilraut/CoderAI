@@ -59,9 +59,15 @@ class TestReadURLToolExecution:
     def setup(self):
         self.tool = ReadURLTool()
 
-    def _stub_safe_request(self, monkeypatch, *, status=200, content_type="text/html",
-                           text="<html><body>Hello world</body></html>",
-                           final_url="https://example.com/"):
+    def _stub_safe_request(
+        self,
+        monkeypatch,
+        *,
+        status=200,
+        content_type="text/html",
+        text="<html><body>Hello world</body></html>",
+        final_url="https://example.com/",
+    ):
         from coderAI.tools import web as web_mod
 
         async def fake(method, url, **kwargs):

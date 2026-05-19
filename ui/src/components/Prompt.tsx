@@ -90,6 +90,32 @@ function saveHistory(cwd: string, items: string[]) {
 const SLASH_NAMES = HELP_MENU_ENTRIES.map((e) => e.slash);
 
 /**
+ * Per-slash-command argument completion. Kept in sync with the topics the
+ * /show handler in useAgent.ts knows how to route (`version|models|cost|info
+ * |config|system|tasks|plan|...`). Tab in the argument position cycles
+ * through them.
+ */
+const SLASH_ARG_COMPLETIONS: Record<string, string[]> = {
+  "/show": [
+    "version",
+    "models",
+    "providers",
+    "cost",
+    "pricing",
+    "system",
+    "diag",
+    "diagnostics",
+    "config",
+    "info",
+    "tasks",
+    "plan",
+  ],
+  "/reasoning": ["high", "medium", "low", "none"],
+  "/thinking": ["high", "medium", "low", "none"],
+  "/theme": ["dark", "light"],
+};
+
+/**
  * Multi-line prompt with slash-command tab completion, Ctrl+R history
  * search, and project-scoped history.
  *
@@ -148,11 +174,45 @@ export function Prompt({onSubmit, disabled, placeholder, exitHint, cwd}: PromptP
     onSubmit(trimmed);
   };
 
-  // Tab-complete the active /command. If exactly one match remains, fill
-  // it in; otherwise advance to the longest common prefix.
+  // Tab-complete the active /command. Two modes:
+  //   - cursor in the command head ("/he"): complete to "/help "
+  //   - cursor in the argument ("/show co"): complete to a known topic
+  // Argument completion knows about /show, /reasoning, /theme — see
+  // SLASH_ARG_COMPLETIONS. Returns true if any text was inserted so the
+  // caller can suppress the literal tab.
   const tabComplete = () => {
     if (!value.startsWith("/")) return false;
-    const head = value.split(/\s/, 1)[0]; // "/he"
+
+    const headMatch = value.match(/^\/[\w-]*/);
+    const head = headMatch ? headMatch[0] : "/";
+    const afterHead = value.slice(head.length);
+
+    // Argument-position completion: only fires when the head is a known,
+    // fully-typed command and the cursor sits past the trailing space.
+    const argSpec = SLASH_ARG_COMPLETIONS[head];
+    const inArgPosition =
+      argSpec && afterHead.startsWith(" ") && cursor >= head.length + 1;
+    if (inArgPosition) {
+      const argSoFar = afterHead.slice(1); // strip the separating space
+      const argMatches = argSpec.filter((a) => a.startsWith(argSoFar));
+      if (argMatches.length === 0) return false;
+      if (argMatches.length === 1) {
+        const next = `${head} ${argMatches[0]}`;
+        setValue(next);
+        setCursor(next.length);
+        return true;
+      }
+      const lcp = longestCommonPrefix(argMatches);
+      if (lcp.length > argSoFar.length) {
+        const next = `${head} ${lcp}`;
+        setValue(next);
+        setCursor(next.length);
+        return true;
+      }
+      return false;
+    }
+
+    // Head completion (existing behaviour).
     const rest = value.slice(head.length);
     const matches = SLASH_NAMES.filter((n) => n.startsWith(head));
     if (matches.length === 0) return false;
@@ -425,9 +485,27 @@ export function Prompt({onSubmit, disabled, placeholder, exitHint, cwd}: PromptP
   return (
     <Box flexDirection="column" paddingX={theme.spacing.sm}>
       <Box flexDirection="row">
-        <Text color={disabled ? theme.faint : theme.accent} bold>
-          {theme.glyph.caret}{" "}
-        </Text>
+        {/* Caret column is rendered per-row alongside the text so multi-line
+            drafts get a continuation glyph aligned with the leading ❯. Without
+            this, line 2+ rendered flush-left and looked unaligned with the
+            user-bubble echo shown after submit. */}
+        <Box flexDirection="column">
+          {showPlaceholder
+            ? (
+                <Text color={disabled ? theme.faint : theme.accent} bold>
+                  {theme.glyph.caret}{" "}
+                </Text>
+              )
+            : renderedLines.map((_node, i) => (
+                <Text
+                  key={i}
+                  color={disabled ? theme.faint : theme.accent}
+                  bold={i === 0}
+                >
+                  {i === 0 ? `${theme.glyph.caret} ` : "  "}
+                </Text>
+              ))}
+        </Box>
         <Box flexDirection="column">
           {showPlaceholder ? (
             <Text color={theme.faint}>

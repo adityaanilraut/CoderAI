@@ -26,12 +26,28 @@ export type TimelineItem =
     }
   | {kind: "toast"; id: string; level: "info" | "warning" | "success"; message: string}
   | {
+      /**
+       * Visual separator inserted by `appendCapped` when the timeline is
+       * trimmed. Distinct from `toast` so it can render as a horizontal
+       * rule instead of an inline notice — important context that older
+       * history was dropped, not a transient message.
+       */
+      kind: "separator";
+      id: string;
+      message: string;
+    }
+  | {
       kind: "approval";
       id: string;
       tool: string;
       args: Record<string, unknown>;
       risk: ToolRisk;
       decided: "pending" | "approved" | "denied";
+      /**
+       * Unified-diff preview of the change about to be applied. Optional —
+       * filesystem-mutating tools include it, terminal commands don't.
+       */
+      diff?: string;
     };
 
 export interface SessionState {
@@ -56,6 +72,12 @@ export interface SessionState {
   completionTokens: number;
   /** Model catalogue grouped by provider (populated by /model picker request). */
   availableModels: Record<string, string[]> | null;
+  /** Available personas (populated by /persona command). */
+  availablePersonas: string[] | null;
+  /** Available skills (populated by /skills command). */
+  availableSkills: { name: string; description: string }[] | null;
+  /** Context files (populated by get_state). */
+  contextFiles: { path: string; size: number }[] | null;
   agents: Record<string, AgentInfo>;
   /**
    * Wall-clock ms (Date.now()) at which an agent most recently flipped to

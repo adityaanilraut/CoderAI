@@ -19,47 +19,107 @@ logger = logging.getLogger(__name__)
 
 
 # Commands / binaries that are inherently interactive (REPLs, editors, TUIs)
-_INTERACTIVE_BINARIES: frozenset[str] = frozenset({
-    # REPLs / interpreters launched without arguments
-    "python", "python3", "python2",
-    "node", "bun",
-    "irb", "pry",
-    "ghci",
-    "erl", "iex",
-    "lua", "luajit",
-    "r", "R",
-    "julia",
-    "scala",
-    # Editors / pagers
-    "vim", "nvim", "vi", "nano", "emacs", "pico", "ed",
-    "less", "more",
-    # System monitors / TUIs
-    "top", "htop", "btop", "glances", "nmon",
-    # Database CLIs
-    "psql", "mysql", "sqlite3", "mongosh", "mongo", "redis-cli",
-    # Network interactive tools
-    "ssh", "telnet", "ftp", "sftp",
-    # Shells
-    "bash", "zsh", "sh", "fish", "csh", "tcsh",
-    # Package managers that open interactive prompts
-    "nix-shell",
-    "ruby",
-    # This project itself
-    "coderai",
-})
+_INTERACTIVE_BINARIES: frozenset[str] = frozenset(
+    {
+        # REPLs / interpreters launched without arguments
+        "python",
+        "python3",
+        "python2",
+        "node",
+        "bun",
+        "irb",
+        "pry",
+        "ghci",
+        "erl",
+        "iex",
+        "lua",
+        "luajit",
+        "r",
+        "R",
+        "julia",
+        "scala",
+        # Editors / pagers
+        "vim",
+        "nvim",
+        "vi",
+        "nano",
+        "emacs",
+        "pico",
+        "ed",
+        "less",
+        "more",
+        # System monitors / TUIs
+        "top",
+        "htop",
+        "btop",
+        "glances",
+        "nmon",
+        # Database CLIs
+        "psql",
+        "mysql",
+        "sqlite3",
+        "mongosh",
+        "mongo",
+        "redis-cli",
+        # Network interactive tools
+        "ssh",
+        "telnet",
+        "ftp",
+        "sftp",
+        # Shells
+        "bash",
+        "zsh",
+        "sh",
+        "fish",
+        "csh",
+        "tcsh",
+        # Package managers that open interactive prompts
+        "nix-shell",
+        "ruby",
+        # This project itself
+        "coderai",
+    }
+)
 
 # Sub-categories of _INTERACTIVE_BINARIES used in is_interactive_command()
 # to decide whether arguments make the command non-interactive.
 # Maintaining these here avoids duplicate inline tuples.
 _SHELL_BINARIES: frozenset[str] = frozenset({"bash", "zsh", "sh", "fish", "csh", "tcsh"})
-_INTERPRETER_BINARIES: frozenset[str] = frozenset({
-    "python", "python3", "python2", "node", "bun", "lua",
-    "luajit", "julia", "ruby", "irb", "R", "r", "scala",
-})
-_ALWAYS_INTERACTIVE_BINARIES: frozenset[str] = frozenset({
-    "vim", "nvim", "vi", "nano", "emacs", "pico", "ed",
-    "less", "more", "top", "htop", "btop", "glances", "nmon",
-})
+_INTERPRETER_BINARIES: frozenset[str] = frozenset(
+    {
+        "python",
+        "python3",
+        "python2",
+        "node",
+        "bun",
+        "lua",
+        "luajit",
+        "julia",
+        "ruby",
+        "irb",
+        "R",
+        "r",
+        "scala",
+    }
+)
+_ALWAYS_INTERACTIVE_BINARIES: frozenset[str] = frozenset(
+    {
+        "vim",
+        "nvim",
+        "vi",
+        "nano",
+        "emacs",
+        "pico",
+        "ed",
+        "less",
+        "more",
+        "top",
+        "htop",
+        "btop",
+        "glances",
+        "nmon",
+    }
+)
 
 # Patterns that indicate interactive flags (e.g. docker run -it, docker exec -it)
 _INTERACTIVE_FLAG_PATTERNS: tuple[re.Pattern, ...] = (
@@ -70,24 +130,41 @@ _INTERACTIVE_FLAG_PATTERNS: tuple[re.Pattern, ...] = (
 
 # Flags / suffixes that make otherwise-interactive commands non-interactive
 _NON_INTERACTIVE_INDICATORS = (
-    " -c ", " -c'", ' -c"',  # python -c, bash -c, etc.
-    " -e ", " -e'", ' -e"',  # node -e, perl -e, ruby -e
-    " --eval ", " --eval=",
-    " -m  ",                  # python -m pytest (with space)
-    " -m",                    # python -mpytest (concatenated)
-    " --version", " -V",
-    " --help",                # --help is unambiguous (vs -h which may be a host flag)
-    " --check", " --dry-run",
-    " -f ",                   # psql -f script.sql, etc.
-    "<<",                     # shell heredoc (finite script)
-    " <",                     # file redirect (e.g. psql < script.sql)
+    " -c ",
+    " -c'",
+    ' -c"',  # python -c, bash -c, etc.
+    " -e ",
+    " -e'",
+    ' -e"',  # node -e, perl -e, ruby -e
+    " --eval ",
+    " --eval=",
+    " -m  ",  # python -m pytest (with space)
+    " -m",  # python -mpytest (concatenated)
+    " --version",
+    " -V",
+    " --help",  # --help is unambiguous (vs -h which may be a host flag)
+    " --check",
+    " --dry-run",
+    " -f ",  # psql -f script.sql, etc.
+    "<<",  # shell heredoc (finite script)
+    " <",  # file redirect (e.g. psql < script.sql)
 )
 
 # Database / network CLIs where -h is typically a host flag (not --help)
-_DATABASE_NETWORK_CLIS: frozenset[str] = frozenset({
-    "psql", "mysql", "sqlite3", "mongosh", "mongo", "redis-cli",
-    "ssh", "telnet", "ftp", "sftp",
-})
+_DATABASE_NETWORK_CLIS: frozenset[str] = frozenset(
+    {
+        "psql",
+        "mysql",
+        "sqlite3",
+        "mongosh",
+        "mongo",
+        "redis-cli",
+        "ssh",
+        "telnet",
+        "ftp",
+        "sftp",
+    }
+)
 
 
 def _token_is_shell_dash_c(token: str) -> bool:
@@ -153,9 +230,11 @@ def is_interactive_command(command: str) -> bool:
         for base in _INTERACTIVE_BINARIES:
             if binary_lower.startswith(base) and (
                 len(binary) == len(base)
-                or (len(binary) > len(base) and (
-                    binary[len(base)].isdigit() or binary[len(base)] in (".", "-")
-                ) and not binary[len(base)].isalpha())
+                or (
+                    len(binary) > len(base)
+                    and (binary[len(base)].isdigit() or binary[len(base)] in (".", "-"))
+                    and not binary[len(base)].isalpha()
+                )
             ):
                 matched = True
                 break
@@ -169,7 +248,7 @@ def is_interactive_command(command: str) -> bool:
 
     # Binary IS in the interactive set — check if it has arguments that
     # make it non-interactive (e.g. a script filename)
-    remaining_args = parts[idx + 1:]
+    remaining_args = parts[idx + 1 :]
 
     # Bare invocation (no args) → interactive
     if not remaining_args:
@@ -206,32 +285,64 @@ def is_interactive_command(command: str) -> bool:
 
 # Files that indicate a real project
 PROJECT_INDICATORS: Set[str] = {
-    "package.json", "tsconfig.json",
-    "pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "Pipfile",
+    "package.json",
+    "tsconfig.json",
+    "pyproject.toml",
+    "setup.py",
+    "setup.cfg",
+    "requirements.txt",
+    "Pipfile",
     "Cargo.toml",
-    "go.mod", "go.sum",
-    "pom.xml", "build.gradle", "build.gradle.kts",
-    "Gemfile", "Rakefile",
+    "go.mod",
+    "go.sum",
+    "pom.xml",
+    "build.gradle",
+    "build.gradle.kts",
+    "Gemfile",
+    "Rakefile",
     "mix.exs",
-    "CMakeLists.txt", "Makefile", "Justfile",
-    "docker-compose.yml", "docker-compose.yaml", "Dockerfile",
+    "CMakeLists.txt",
+    "Makefile",
+    "Justfile",
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    "Dockerfile",
     "composer.json",
-    ".sln", ".csproj",
-    "stack.yaml", "cabal.project",
+    ".sln",
+    ".csproj",
+    "stack.yaml",
+    "cabal.project",
 }
 
 # Directories that indicate source code
 SOURCE_DIRECTORIES: Set[str] = {
-    "src", "lib", "app", "pkg", "cmd", "internal",
-    "source", "sources",
-    "components", "pages", "routes", "views", "controllers", "models",
-    "test", "tests", "spec", "specs",
+    "src",
+    "lib",
+    "app",
+    "pkg",
+    "cmd",
+    "internal",
+    "source",
+    "sources",
+    "components",
+    "pages",
+    "routes",
+    "views",
+    "controllers",
+    "models",
+    "test",
+    "tests",
+    "spec",
+    "specs",
 }
 
 # Junk files that should be ignored when assessing directory content
 JUNK_FILES: Set[str] = {
-    ".DS_Store", "Thumbs.db", "desktop.ini",
-    ".gitkeep", ".keep",
+    ".DS_Store",
+    "Thumbs.db",
+    "desktop.ini",
+    ".gitkeep",
+    ".keep",
 }
 
 
@@ -283,9 +394,27 @@ def project_sanity_check(directory: str = ".") -> Dict[str, Any]:
     # Check for any source code files (top-level scan only, for performance)
     has_source_files = False
     source_extensions = {
-        ".py", ".js", ".ts", ".jsx", ".tsx", ".rs", ".go", ".java",
-        ".rb", ".ex", ".exs", ".c", ".cpp", ".h", ".hpp", ".cs",
-        ".swift", ".kt", ".scala", ".hs", ".ml",
+        ".py",
+        ".js",
+        ".ts",
+        ".jsx",
+        ".tsx",
+        ".rs",
+        ".go",
+        ".java",
+        ".rb",
+        ".ex",
+        ".exs",
+        ".c",
+        ".cpp",
+        ".h",
+        ".hpp",
+        ".cs",
+        ".swift",
+        ".kt",
+        ".scala",
+        ".hs",
+        ".ml",
     }
     try:
         for item in dir_path.iterdir():
@@ -302,7 +431,8 @@ def project_sanity_check(directory: str = ".") -> Dict[str, Any]:
         # Build helpful reasons
         try:
             all_items = [
-                item.name for item in dir_path.iterdir()
+                item.name
+                for item in dir_path.iterdir()
                 if item.name not in JUNK_FILES and not item.name.startswith(".")
             ]
         except PermissionError:
@@ -338,7 +468,9 @@ async def resolve_git_root(working_dir: str = ".") -> Dict[str, Any]:
     resolved_dir = str(Path(working_dir).resolve())
     try:
         process = await asyncio.create_subprocess_exec(
-            "git", "rev-parse", "--show-toplevel",
+            "git",
+            "rev-parse",
+            "--show-toplevel",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=working_dir,
@@ -383,7 +515,10 @@ async def get_current_branch(working_dir: str = ".") -> Optional[str]:
     """Get the current git branch name, or None if not in a repo / detached HEAD."""
     try:
         process = await asyncio.create_subprocess_exec(
-            "git", "rev-parse", "--abbrev-ref", "HEAD",
+            "git",
+            "rev-parse",
+            "--abbrev-ref",
+            "HEAD",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=working_dir,

@@ -11,6 +11,7 @@ from coderAI.tools.vision import ReadImageTool
 
 def _make_minimal_png(tmp_path, filename="test.png") -> str:
     """Write a valid 1×1 red PNG and return its path."""
+
     def _chunk(tag: bytes, data: bytes) -> bytes:
         length = struct.pack(">I", len(data))
         crc = struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
@@ -59,6 +60,7 @@ class TestReadImageTool:
         path = _make_minimal_png(tmp_path)
         # Patch the size check to simulate an oversized file
         import coderAI.tools.vision as vision_mod
+
         monkeypatch.setattr(vision_mod, "MAX_IMAGE_SIZE", 1)
         result = asyncio.run(self.tool.execute(path=path))
         assert not result["success"]

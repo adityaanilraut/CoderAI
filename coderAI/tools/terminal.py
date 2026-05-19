@@ -40,7 +40,7 @@ BLOCKED_PATTERNS = [
     "mkfs.",
     "dd if=/",
     "dd if ~",
-    ":(){:|:&};:",       # fork bomb
+    ":(){:|:&};:",  # fork bomb
     "> /dev/sda",
     "> /dev/sdb",
     "> /dev/hda",
@@ -59,7 +59,8 @@ BLOCKED_PATTERNS = [
     "bash -i >&",
 ]
 
-_RM_DESTRUCTIVE_REGEX = re.compile(r'\brm\s+.*(?:-r|-f|--recursive|--force).*(?:/|~)\b')
+_RM_DESTRUCTIVE_REGEX = re.compile(r"\brm\s+.*(?:-r|-f|--recursive|--force).*(?:/|~)\b")
+
 
 def _build_blocked_regexes(patterns):
     """Precompile blocked-pattern regexes with token-boundary matching.
@@ -67,10 +68,8 @@ def _build_blocked_regexes(patterns):
     The boundary anchors prevent a pattern like ``"rm -rf /"`` from matching
     against ``"rm -rf /tmp/build"`` while still catching the bare form.
     """
-    return [
-        re.compile(r'(?:^|\s)' + re.escape(p) + r'(?:\s|$)')
-        for p in patterns
-    ]
+    return [re.compile(r"(?:^|\s)" + re.escape(p) + r"(?:\s|$)") for p in patterns]
+
 
 _BLOCKED_REGEXES = _build_blocked_regexes(BLOCKED_PATTERNS)
 
@@ -109,10 +108,10 @@ _COMMAND_ALIASES = [
 
 def _normalize_command(command: str) -> str:
     """Normalize command for safety checks: strip, collapse whitespace, lowercase."""
-    return re.sub(r'\s+', ' ', command.strip()).lower()
+    return re.sub(r"\s+", " ", command.strip()).lower()
 
 
-_SHELL_METACHARS = re.compile(r'[|><&;$*?~`\\]')
+_SHELL_METACHARS = re.compile(r"[|><&;$*?~`\\]")
 
 
 def _needs_shell(command: str) -> bool:
@@ -135,7 +134,7 @@ def _extract_inner_command(cmd_lower: str) -> Optional[str]:
     """If the command invokes a shell wrapper, extract and return the inner command."""
     for prefix in _SHELL_WRAPPERS:
         if cmd_lower.startswith(prefix):
-            inner = cmd_lower[len(prefix):].strip()
+            inner = cmd_lower[len(prefix) :].strip()
             # Strip surrounding quotes if present
             if len(inner) >= 2 and inner[0] in ('"', "'") and inner[-1] == inner[0]:
                 inner = inner[1:-1]
@@ -187,7 +186,7 @@ def _resolve_working_dir(working_dir: str) -> "tuple[Optional[Path], Optional[st
 
     candidate = Path(working_dir).expanduser()
     if not candidate.is_absolute():
-        candidate = (project_root / candidate)
+        candidate = project_root / candidate
     try:
         resolved = candidate.resolve()
     except Exception as e:
@@ -239,7 +238,7 @@ def _rewrite_command_aliases(command: str) -> str:
         # missing from PATH while `replacement` is available.
         if command == original or command.startswith(original + " "):
             if shutil.which(original) is None and shutil.which(replacement) is not None:
-                command = replacement + command[len(original):]
+                command = replacement + command[len(original) :]
                 logger.debug(f"Rewrote '{original}' → '{replacement}' in command")
                 break
     return command
@@ -247,22 +246,31 @@ def _rewrite_command_aliases(command: str) -> str:
 
 class RunCommandParams(BaseModel):
     command: str = Field(..., description="Shell command to execute")
-    working_dir: str = Field(".", description="Working directory for the command (default: current)")
+    working_dir: str = Field(
+        ".", description="Working directory for the command (default: current)"
+    )
     timeout: int = Field(60, description="Timeout in seconds (default: 60)")
-    input: Optional[str] = Field(None, description="Optional text to send to the process stdin (max 64KB)")
+    input: Optional[str] = Field(
+        None, description="Optional text to send to the process stdin (max 64KB)"
+    )
 
 
 class RunCommandTool(Tool):
     """Tool for executing shell commands with safety checks."""
 
     name = "run_command"
-    description = "Execute a shell command and return its output. Dangerous commands require confirmation."
+    description = (
+        "Execute a shell command and return its output. Dangerous commands require confirmation."
+    )
     parameters_model = RunCommandParams
     requires_confirmation = True
     timeout = None
 
     async def execute(
-        self, command: str, working_dir: str = ".", timeout: int = 60,
+        self,
+        command: str,
+        working_dir: str = ".",
+        timeout: int = 60,
         input: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Execute shell command with safety checks.
@@ -289,6 +297,7 @@ class RunCommandTool(Tool):
 
             # Block interactive commands that would hang without a TTY
             from ..safeguards import is_interactive_command
+
             if is_interactive_command(command):
                 logger.warning(f"Blocked interactive command: {command}")
                 return {
@@ -394,15 +403,15 @@ class RunCommandTool(Tool):
             max_output = config_manager.load().max_command_output
             if len(stdout_str) > max_output:
                 stdout_str = (
-                    stdout_str[:max_output // 2]
+                    stdout_str[: max_output // 2]
                     + f"\n\n... [truncated {len(stdout_str) - max_output} chars] ...\n\n"
-                    + stdout_str[-max_output // 2:]
+                    + stdout_str[-max_output // 2 :]
                 )
             if len(stderr_str) > max_output:
                 stderr_str = (
-                    stderr_str[:max_output // 2]
+                    stderr_str[: max_output // 2]
                     + f"\n\n... [truncated {len(stderr_str) - max_output} chars] ...\n\n"
-                    + stderr_str[-max_output // 2:]
+                    + stderr_str[-max_output // 2 :]
                 )
 
             return {
@@ -418,8 +427,13 @@ class RunCommandTool(Tool):
 
 class RunBackgroundParams(BaseModel):
     command: str = Field(..., description="Shell command to execute in background")
-    working_dir: str = Field(".", description="Working directory for the command (default: current)")
-    capture_output: bool = Field(False, description="Capture stdout/stderr for later retrieval via read_bg_output (default: false)")
+    working_dir: str = Field(
+        ".", description="Working directory for the command (default: current)"
+    )
+    capture_output: bool = Field(
+        False,
+        description="Capture stdout/stderr for later retrieval via read_bg_output (default: false)",
+    )
 
 
 class BgProcessInfo:
@@ -460,8 +474,9 @@ class RunBackgroundTool(Tool):
         # Instance shares the module-level process registry
         self._processes = _tracked_bg_processes
 
-    async def execute(self, command: str, working_dir: str = ".",
-                      capture_output: bool = False) -> Dict[str, Any]:
+    async def execute(
+        self, command: str, working_dir: str = ".", capture_output: bool = False
+    ) -> Dict[str, Any]:
         """Start background process with tracking.
 
         Uses the same exec-vs-shell heuristic as ``run_command`` — plain
@@ -483,6 +498,7 @@ class RunBackgroundTool(Tool):
 
             # Block interactive commands that would hang without a TTY
             from ..safeguards import is_interactive_command
+
             if is_interactive_command(command):
                 logger.warning(f"Blocked interactive background command: {command}")
                 return {
@@ -501,8 +517,12 @@ class RunBackgroundTool(Tool):
             command = _rewrite_command_aliases(command)
             needs_shell = _needs_shell(command)
 
-            stdout_target = asyncio.subprocess.PIPE if capture_output else asyncio.subprocess.DEVNULL
-            stderr_target = asyncio.subprocess.PIPE if capture_output else asyncio.subprocess.DEVNULL
+            stdout_target = (
+                asyncio.subprocess.PIPE if capture_output else asyncio.subprocess.DEVNULL
+            )
+            stderr_target = (
+                asyncio.subprocess.PIPE if capture_output else asyncio.subprocess.DEVNULL
+            )
 
             if needs_shell:
                 process = await asyncio.create_subprocess_shell(
@@ -543,6 +563,7 @@ class RunBackgroundTool(Tool):
                         if not line_bytes:
                             break
                         info._append(buf_list, line_bytes.decode("utf-8", errors="replace"))
+
                 if process.stdout:
                     asyncio.create_task(_read_stream(process.stdout, info.stdout_buf))
                 if process.stderr:
@@ -564,8 +585,9 @@ class RunBackgroundTool(Tool):
 
     def cleanup_finished(self) -> int:
         """Clean up finished processes from tracking. Returns count removed."""
-        finished = [pid for pid, info in self._processes.items()
-                    if info.process.returncode is not None]
+        finished = [
+            pid for pid, info in self._processes.items() if info.process.returncode is not None
+        ]
         for pid in finished:
             del self._processes[pid]
         return len(finished)
@@ -603,6 +625,7 @@ def _ensure_atexit_cleanup():
     global _atexit_registered
     if not _atexit_registered:
         import atexit
+
         atexit.register(_cleanup_all_background)
         _atexit_registered = True
 
@@ -716,7 +739,9 @@ class ReadBgOutputTool(Tool):
     """Read captured output from a background process started with capture_output=True."""
 
     name = "read_bg_output"
-    description = "Read captured stdout/stderr from a background process started with capture_output=True"
+    description = (
+        "Read captured stdout/stderr from a background process started with capture_output=True"
+    )
     category = "terminal"
     parameters_model = ReadBgOutputParams
     is_read_only = True

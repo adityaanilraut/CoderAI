@@ -10,6 +10,7 @@ from coderAI.cost import CostTracker
 
 logger = logging.getLogger(__name__)
 
+
 class DeepSeekProvider(LLMProvider):
     """DeepSeek LLM provider."""
 
@@ -37,7 +38,7 @@ class DeepSeekProvider(LLMProvider):
             raise ValueError("DeepSeek API key is required")
 
         self.actual_model = self.SUPPORTED_MODELS.get(model.lower(), model.lower())
-        
+
         # DeepSeek uses OpenAI-compatible API
         self.client = AsyncOpenAI(
             api_key=api_key,
@@ -115,9 +116,7 @@ class DeepSeekProvider(LLMProvider):
         try:
             response = await self.client.chat.completions.create(**params)
         except Exception as e:
-            raise RuntimeError(
-                f"DeepSeek API error: {e}"
-            ) from e
+            raise RuntimeError(f"DeepSeek API error: {e}") from e
         result = response.model_dump()
 
         usage = result.get("usage", {})
@@ -147,12 +146,10 @@ class DeepSeekProvider(LLMProvider):
         try:
             stream = await self.client.chat.completions.create(**params)
         except Exception as e:
-            raise RuntimeError(
-                f"DeepSeek API streaming error: {e}"
-            ) from e
+            raise RuntimeError(f"DeepSeek API streaming error: {e}") from e
         async for chunk in stream:
             chunk_data = chunk.model_dump()
-            
+
             # OpenAI clients return usage in chunks when stream_options={"include_usage": True} is passed
             usage = chunk_data.get("usage")
             if usage:

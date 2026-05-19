@@ -92,8 +92,11 @@ class HooksManager:
             args_json = "{}"
         try:
             with tempfile.NamedTemporaryFile(
-                mode="w", prefix="coderai-hook-args-", suffix=".json",
-                delete=False, encoding="utf-8"
+                mode="w",
+                prefix="coderai-hook-args-",
+                suffix=".json",
+                delete=False,
+                encoding="utf-8",
             ) as f:
                 f.write(args_json)
                 args_file_path = f.name
@@ -109,9 +112,7 @@ class HooksManager:
         env["CODERAI_ARGS_JSON"] = args_json
 
         for i, (arg_key, arg_val) in enumerate(arguments.items()):
-            safe_key = "".join(
-                c if c.isalnum() or c == "_" else "_" for c in str(arg_key)
-            ).upper()
+            safe_key = "".join(c if c.isalnum() or c == "_" else "_" for c in str(arg_key)).upper()
             safe_val = _sanitize_env_value(arg_val)
             env[f"CODERAI_ARG_{safe_key}"] = safe_val
             env[f"CODERAI_ARG_{i}"] = safe_val
@@ -148,8 +149,10 @@ class HooksManager:
             from .tools.terminal import is_command_blocked
 
             matching_hooks = [
-                h for h in hooks_data.get("hooks", [])
-                if h.get("type") == hook_type and (h.get("tool") == "*" or h.get("tool") == tool_name)
+                h
+                for h in hooks_data.get("hooks", [])
+                if h.get("type") == hook_type
+                and (h.get("tool") == "*" or h.get("tool") == tool_name)
             ]
             if matching_hooks:
                 matching_hooks = [h for h in matching_hooks if h.get("command")]
@@ -192,8 +195,11 @@ class HooksManager:
                     runnable.append(cmd)
 
             if runnable:
+
                 async def _exec_hook(cmd: str):
-                    event_emitter.emit("agent_status", message=f"[dim]Running {hook_type} hook...[/dim]")
+                    event_emitter.emit(
+                        "agent_status", message=f"[dim]Running {hook_type} hook...[/dim]"
+                    )
                     proc = await asyncio.create_subprocess_shell(
                         cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env
                     )
@@ -206,7 +212,9 @@ class HooksManager:
                     return stdout_text or None
 
                 try:
-                    outputs = await asyncio.gather(*(_exec_hook(c) for c in runnable), return_exceptions=True)
+                    outputs = await asyncio.gather(
+                        *(_exec_hook(c) for c in runnable), return_exceptions=True
+                    )
                     for out in outputs:
                         if isinstance(out, Exception):
                             hooks_results.append(f"[{hook_type} Hook ERROR]: {out}")
@@ -227,8 +235,8 @@ class HooksManager:
         """Ask user for permission to run project hooks."""
         cmds_preview = ", ".join(h.get("command", "?")[:60] for h in matching_hooks)
         event_emitter.emit(
-            "agent_status", 
-            message=f"\n[bold yellow]⚠ Project hooks detected[/bold yellow]\n[dim]Commands: {cmds_preview}[/dim]"
+            "agent_status",
+            message=f"\n[bold yellow]⚠ Project hooks detected[/bold yellow]\n[dim]Commands: {cmds_preview}[/dim]",
         )
 
         info = getattr(self.agent, "tracker_info", None)
@@ -243,6 +251,7 @@ class HooksManager:
         try:
             if ipc_server:
                 import uuid
+
                 approved = await ipc_server.request_tool_approval(
                     tool_id=str(uuid.uuid4()),
                     tool_name="project_hooks",
@@ -252,6 +261,7 @@ class HooksManager:
 
             try:
                 from prompt_toolkit import PromptSession
+
                 ps = PromptSession()
                 answer = await ps.prompt_async("Allow project hooks to run? (y/n) > ")
             except Exception as e:
@@ -291,8 +301,10 @@ class HooksManager:
             from .tools.terminal import is_command_blocked
 
             matching_hooks = [
-                h for h in hooks_data.get("hooks", [])
-                if h.get("type") == hook_type and (h.get("tool") == "*" or h.get("tool") == tool_name)
+                h
+                for h in hooks_data.get("hooks", [])
+                if h.get("type") == hook_type
+                and (h.get("tool") == "*" or h.get("tool") == tool_name)
             ]
             if not matching_hooks:
                 return hooks_results
@@ -320,11 +332,12 @@ class HooksManager:
 
             env, args_file_path = self._prepare_hook_environment(tool_name, hook_type, arguments)
 
-            async def _exec_structured_hook(cmd: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+            async def _exec_structured_hook(
+                cmd: str,
+            ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
                 """Run a hook and attempt JSON parsing of stdout."""
                 proc = await asyncio.create_subprocess_shell(
-                    cmd, stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE, env=env
+                    cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env
                 )
                 stdout, stderr = await proc.communicate()
                 stdout_text = stdout.decode("utf-8", errors="replace").strip()
@@ -428,4 +441,3 @@ class HooksManager:
                 if status in VALID_PERMISSION_STATUSES:
                     return status
         return None
-

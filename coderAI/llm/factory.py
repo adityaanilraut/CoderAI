@@ -19,7 +19,9 @@ def create_provider(model: str, config: Any) -> Any:
     """
     model_lower = model.lower()
     if model_lower == "ollama" or model_lower.startswith("ollama/"):
-        actual_model = model.split("/", 1)[1] if model.startswith("ollama/") else config.ollama_model
+        actual_model = (
+            model.split("/", 1)[1] if model.startswith("ollama/") else config.ollama_model
+        )
         return OllamaProvider(
             model=actual_model,
             endpoint=config.ollama_endpoint,
@@ -27,7 +29,9 @@ def create_provider(model: str, config: Any) -> Any:
             max_tokens=config.max_tokens,
         )
     if model_lower == "lmstudio" or model_lower.startswith("lmstudio/"):
-        actual_model = model.split("/", 1)[1] if model.startswith("lmstudio/") else config.lmstudio_model
+        actual_model = (
+            model.split("/", 1)[1] if model.startswith("lmstudio/") else config.lmstudio_model
+        )
         return LMStudioProvider(
             model=actual_model,
             endpoint=config.lmstudio_endpoint,
@@ -54,15 +58,21 @@ def create_provider(model: str, config: Any) -> Any:
             temperature=config.temperature,
             max_tokens=config.max_tokens,
         )
-    if model_lower in (k.lower() for k in DeepSeekProvider.SUPPORTED_MODELS) or model_lower.startswith("deepseek/"):
-        actual_model = model.split("deepseek/", 1)[1] if model_lower.startswith("deepseek/") else model
+    if model_lower in (
+        k.lower() for k in DeepSeekProvider.SUPPORTED_MODELS
+    ) or model_lower.startswith("deepseek/"):
+        actual_model = (
+            model.split("deepseek/", 1)[1] if model_lower.startswith("deepseek/") else model
+        )
         return DeepSeekProvider(
             model=actual_model,
             api_key=config.deepseek_api_key,
             temperature=config.temperature,
             max_tokens=config.max_tokens,
         )
-    if model_lower in OpenAIProvider.SUPPORTED_MODELS or model_lower.startswith(("o1-", "o3", "gpt-", "openai/")):
+    if model_lower in OpenAIProvider.SUPPORTED_MODELS or model_lower.startswith(
+        ("o1-", "o3", "gpt-", "openai/")
+    ):
         actual_model = model.split("openai/", 1)[1] if model_lower.startswith("openai/") else model
         return OpenAIProvider(
             model=actual_model,

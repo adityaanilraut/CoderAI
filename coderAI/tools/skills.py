@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 # Skill loader (inlined from the former coderAI/skills.py)
 # ---------------------------------------------------------------------------
 
+
 class Skill:
     """Represents a skill loaded from a markdown file."""
 
@@ -45,7 +46,9 @@ def load_skill(skill_name: str, project_root: str = ".") -> Optional[Skill]:
     file_path = (skills_dir / f"{skill_name}.md").resolve()
     skills_dir_resolved = skills_dir.resolve()
 
-    if not str(file_path).startswith(str(skills_dir_resolved) + "/") and str(file_path) != str(skills_dir_resolved / f"{skill_name}.md"):
+    if not str(file_path).startswith(str(skills_dir_resolved) + "/") and str(file_path) != str(
+        skills_dir_resolved / f"{skill_name}.md"
+    ):
         logger.warning(f"Path traversal attempt blocked for skill: {skill_name}")
         return None
 
@@ -92,7 +95,6 @@ def get_available_skills(project_root: str = ".") -> List[Dict[str, str]]:
         if skill:
             skills.append({"name": skill.name, "description": skill.description})
     return skills
-
 
 
 class UseSkillParams(BaseModel):
@@ -170,7 +172,10 @@ class UseSkillTool(Tool):
                 }
 
             else:
-                return {"success": False, "error": f"Unknown action: {action}. Use 'list' or 'use'."}
+                return {
+                    "success": False,
+                    "error": f"Unknown action: {action}. Use 'list' or 'use'.",
+                }
 
         except Exception as e:
             return {"success": False, "error": str(e)}

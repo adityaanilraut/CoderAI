@@ -90,7 +90,8 @@ class ConfigManager:
                 logger.warning(
                     "Config file %s is corrupted (JSON parse error: %s). "
                     "Using defaults and environment variables.",
-                    self.config_file, e,
+                    self.config_file,
+                    e,
                 )
 
         # Override with environment variables
@@ -135,7 +136,9 @@ class ConfigManager:
                 except (ValueError, TypeError):
                     logger.warning(
                         "Invalid value for %s=%r (from env %s), ignoring",
-                        config_key, value, env_var,
+                        config_key,
+                        value,
+                        env_var,
                     )
                     continue
                 config_data[config_key] = value
@@ -264,9 +267,14 @@ class ConfigManager:
                 if key == "temperature":
                     value = float(value)
                 elif key in {
-                    "max_tokens", "max_iterations", "context_window",
-                    "max_tool_output", "max_file_size", "max_glob_results",
-                    "max_command_output", "approval_timeout_seconds",
+                    "max_tokens",
+                    "max_iterations",
+                    "context_window",
+                    "max_tool_output",
+                    "max_file_size",
+                    "max_glob_results",
+                    "max_command_output",
+                    "approval_timeout_seconds",
                 }:
                     value = int(value)
                 elif key in ("budget_limit", "subagent_timeout_seconds"):

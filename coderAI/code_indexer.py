@@ -92,9 +92,7 @@ class CodeIndexer:
         # Gather files
         if paths:
             files = [
-                (self._root / p).resolve()
-                for p in paths
-                if (self._root / p).resolve().is_file()
+                (self._root / p).resolve() for p in paths if (self._root / p).resolve().is_file()
             ]
         else:
             files = []
@@ -330,9 +328,7 @@ class CodeIndexer:
 
     def _save_manifest(self) -> None:
         self._manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        self._manifest_path.write_text(
-            json.dumps(self._manifest, indent=2, sort_keys=True)
-        )
+        self._manifest_path.write_text(json.dumps(self._manifest, indent=2, sort_keys=True))
 
 
 def _file_hash(path: Path) -> str:
@@ -350,5 +346,10 @@ def _match_glob(file_path: str, pattern: str) -> bool:
     import re
 
     # Convert ** to a catch-all
-    regex = re.escape(pattern).replace(r"\*\*", "___DOUBLESTAR___").replace(r"\*", "[^/]*").replace("___DOUBLESTAR___", ".*")
+    regex = (
+        re.escape(pattern)
+        .replace(r"\*\*", "___DOUBLESTAR___")
+        .replace(r"\*", "[^/]*")
+        .replace("___DOUBLESTAR___", ".*")
+    )
     return bool(re.match(regex, file_path))

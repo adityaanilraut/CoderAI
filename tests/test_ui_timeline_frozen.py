@@ -20,6 +20,7 @@ _TIMELINE_ITEM_KINDS = frozenset(
         "diff",
         "error",
         "toast",
+        "separator",
         "approval",
     }
 )
@@ -35,7 +36,6 @@ def _case_kinds_from_frozen_module() -> set[str]:
 
 def test_timeline_item_frozen_handles_all_timeline_kinds() -> None:
     cases = _case_kinds_from_frozen_module()
-    assert (
-        cases == _TIMELINE_ITEM_KINDS
-    ), f"isTimelineItemFrozen must handle each TimelineItem kind: missing {_TIMELINE_ITEM_KINDS - cases} extra {cases - _TIMELINE_ITEM_KINDS}"
-
+    assert cases == _TIMELINE_ITEM_KINDS, (
+        f"isTimelineItemFrozen must handle each TimelineItem kind: missing {_TIMELINE_ITEM_KINDS - cases} extra {cases - _TIMELINE_ITEM_KINDS}"
+    )

@@ -5,6 +5,7 @@ from coderAI.agent_loop import ExecutionLoop
 from coderAI.agent import Agent
 from coderAI.history import Session
 
+
 @pytest.fixture
 def mock_agent():
     agent = MagicMock(spec=Agent)
@@ -33,59 +34,51 @@ def mock_agent():
     agent.streaming = False
     return agent
 
+
 @pytest.mark.asyncio
 async def test_anthropic_refusal(mock_agent):
     loop = ExecutionLoop(mock_agent)
-    
+
     # Mock provider returning refusal
     mock_agent.provider.chat.return_value = {
-        "choices": [{
-            "message": {"content": "I cannot help with that."},
-            "finish_reason": "refusal"
-        }],
-        "usage": {}
+        "choices": [
+            {"message": {"content": "I cannot help with that."}, "finish_reason": "refusal"}
+        ],
+        "usage": {},
     }
-    
+
     with pytest.MonkeyPatch.context() as m:
         # Check that event_emitter is called with agent_warning
         mock_emitter = MagicMock()
         m.setattr("coderAI.agent_loop.event_emitter", mock_emitter)
-        
+
         result = await loop.run("build a malware")
-        
+
         # It should exit without looping and return the refusal text
         assert result["content"] == "I cannot help with that."
         assert mock_emitter.emit.call_count >= 1
         warning_calls = [c for c in mock_emitter.emit.call_args_list if c[0][0] == "agent_warning"]
         assert "refused this request" in warning_calls[0][1]["message"]
-        
+
         # Provider should be called exactly once
         assert mock_agent.provider.chat.call_count == 1
+
 
 @pytest.mark.asyncio
 async def test_anthropic_pause_turn(mock_agent):
     loop = ExecutionLoop(mock_agent)
-    
+
     # Provider returns pause_turn first, then end_turn (stop)
     mock_agent.provider.chat.side_effect = [
         {
-            "choices": [{
-                "message": {"content": "Thinking..."},
-                "finish_reason": "pause_turn"
-            }],
-            "usage": {}
+            "choices": [{"message": {"content": "Thinking..."}, "finish_reason": "pause_turn"}],
+            "usage": {},
         },
-        {
-            "choices": [{
-                "message": {"content": " Done."},
-                "finish_reason": "stop"
-            }],
-            "usage": {}
-        }
+        {"choices": [{"message": {"content": " Done."}, "finish_reason": "stop"}], "usage": {}},
     ]
-    
+
     result = await loop.run("solve complex math")
-    
+
     # Both parts of the content should be accumulated and returned
     assert result["content"] == "Thinking...\n\nDone."
     # Provider should be called twice

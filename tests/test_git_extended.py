@@ -14,8 +14,12 @@ def git_repo(tmp_path):
     repo = tmp_path / "test_repo"
     repo.mkdir()
     subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
-    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True, capture_output=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@test.com"], cwd=repo, check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test"], cwd=repo, check=True, capture_output=True
+    )
     # Create initial commit
     (repo / "file.txt").write_text("hello")
     subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True)
@@ -29,9 +33,7 @@ class TestGitBranchTool:
         self.tool = GitBranchTool()
 
     def test_list_branches(self, git_repo):
-        result = asyncio.run(
-            self.tool.execute(action="list", repo_path=git_repo)
-        )
+        result = asyncio.run(self.tool.execute(action="list", repo_path=git_repo))
         assert result["success"]
         assert len(result["branches"]) >= 1
 
@@ -42,16 +44,12 @@ class TestGitBranchTool:
         assert result["success"]
 
     def test_create_branch_missing_name(self, git_repo):
-        result = asyncio.run(
-            self.tool.execute(action="create", repo_path=git_repo)
-        )
+        result = asyncio.run(self.tool.execute(action="create", repo_path=git_repo))
         assert not result["success"]
 
     def test_delete_branch(self, git_repo):
         # Create then delete
-        asyncio.run(
-            self.tool.execute(action="create", branch_name="to-delete", repo_path=git_repo)
-        )
+        asyncio.run(self.tool.execute(action="create", branch_name="to-delete", repo_path=git_repo))
         result = asyncio.run(
             self.tool.execute(action="delete", branch_name="to-delete", repo_path=git_repo)
         )
@@ -72,9 +70,7 @@ class TestGitCheckoutTool:
     def test_checkout_existing_branch(self, git_repo):
         # Create branch first
         subprocess.run(["git", "branch", "existing"], cwd=git_repo, check=True, capture_output=True)
-        result = asyncio.run(
-            self.tool.execute(branch="existing", repo_path=git_repo)
-        )
+        result = asyncio.run(self.tool.execute(branch="existing", repo_path=git_repo))
         assert result["success"]
 
 
@@ -84,9 +80,7 @@ class TestGitStashTool:
         self.tool = GitStashTool()
 
     def test_stash_list_empty(self, git_repo):
-        result = asyncio.run(
-            self.tool.execute(action="list", repo_path=git_repo)
-        )
+        result = asyncio.run(self.tool.execute(action="list", repo_path=git_repo))
         assert result["success"]
 
     def test_stash_push_and_pop(self, git_repo):
@@ -98,7 +92,5 @@ class TestGitStashTool:
         )
         assert result["success"]
         # Pop it back
-        result = asyncio.run(
-            self.tool.execute(action="pop", repo_path=git_repo)
-        )
+        result = asyncio.run(self.tool.execute(action="pop", repo_path=git_repo))
         assert result["success"]

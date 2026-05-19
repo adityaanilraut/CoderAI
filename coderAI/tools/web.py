@@ -36,10 +36,7 @@ _HEADERS_CHROME = {
 }
 
 _HEADERS_FIREFOX = {
-    "User-Agent": (
-        "Mozilla/5.0 (X11; Linux x86_64; rv:136.0) "
-        "Gecko/20100101 Firefox/136.0"
-    ),
+    "User-Agent": ("Mozilla/5.0 (X11; Linux x86_64; rv:136.0) Gecko/20100101 Firefox/136.0"),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.5",
 }
@@ -63,6 +60,7 @@ def _get_ssl_ctx() -> ssl.SSLContext:
         return _ssl_ctx
     try:
         import certifi
+
         _ssl_ctx = ssl.create_default_context(cafile=certifi.where())
     except ImportError:
         _ssl_ctx = ssl.create_default_context()
@@ -82,19 +80,19 @@ class _PinnedResolver(aiohttp.abc.AbstractResolver):
         self._ip = ip
         self._family = family
 
-    async def resolve(
-        self, host: str, port: int = 0, family: int = socket.AF_INET
-    ):  # type: ignore[override]
+    async def resolve(self, host: str, port: int = 0, family: int = socket.AF_INET):  # type: ignore[override]
         if host.lower() != self._host:
             raise OSError(f"SSRF guard: host {host!r} not in pinned allowlist")
-        return [{
-            "hostname": host,
-            "host": self._ip,
-            "port": port,
-            "family": self._family,
-            "proto": 0,
-            "flags": 0,
-        }]
+        return [
+            {
+                "hostname": host,
+                "host": self._ip,
+                "port": port,
+                "family": self._family,
+                "proto": 0,
+                "flags": 0,
+            }
+        ]
 
     async def close(self) -> None:  # type: ignore[override]
         return None
@@ -133,9 +131,7 @@ _MULTI_SP = re.compile(r"[ \t]{2,}")
 
 def _strip_blocks(html: str) -> str:
     for tag in _STRIP_BLOCKS:
-        html = re.sub(
-            rf"<{tag}[^>]*>.*?</{tag}>", "", html, flags=re.DOTALL | re.IGNORECASE
-        )
+        html = re.sub(rf"<{tag}[^>]*>.*?</{tag}>", "", html, flags=re.DOTALL | re.IGNORECASE)
     return re.sub(r"<!--.*?-->", "", html, flags=re.DOTALL)
 
 
@@ -169,19 +165,23 @@ def _html_to_markdown(html: str) -> str:
 
     html = re.sub(
         r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>',
-        _link_repl, html, flags=re.DOTALL | re.IGNORECASE,
+        _link_repl,
+        html,
+        flags=re.DOTALL | re.IGNORECASE,
     )
 
     # Code blocks
     html = re.sub(
         r"<pre[^>]*>(.*?)</pre>",
         lambda m: f"\n```\n{_strip_tags(m.group(1))}\n```\n",
-        html, flags=re.DOTALL | re.IGNORECASE,
+        html,
+        flags=re.DOTALL | re.IGNORECASE,
     )
     html = re.sub(
         r"<code[^>]*>(.*?)</code>",
         lambda m: f"`{_strip_tags(m.group(1))}`",
-        html, flags=re.DOTALL | re.IGNORECASE,
+        html,
+        flags=re.DOTALL | re.IGNORECASE,
     )
 
     # Inline emphasis
@@ -189,17 +189,22 @@ def _html_to_markdown(html: str) -> str:
         html = re.sub(
             rf"<{tag}[^>]*>(.*?)</{tag}>",
             lambda m, mk=marker: f"{mk}{_strip_tags(m.group(1))}{mk}",
-            html, flags=re.DOTALL | re.IGNORECASE,
+            html,
+            flags=re.DOTALL | re.IGNORECASE,
         )
 
     # Block-level breaks
     html = re.sub(
         r"<(?:br|/p|/div|/li|/tr|/blockquote|/section|/article)[^>]*>",
-        "\n", html, flags=re.IGNORECASE,
+        "\n",
+        html,
+        flags=re.IGNORECASE,
     )
     html = re.sub(
         r"<(?:p|div|tr|blockquote|section|article)\b[^>]*>",
-        "\n", html, flags=re.IGNORECASE,
+        "\n",
+        html,
+        flags=re.IGNORECASE,
     )
     html = re.sub(r"<(?:td|th)[^>]*>", "\t", html, flags=re.IGNORECASE)
 
@@ -216,7 +221,9 @@ def _html_to_plain(html: str) -> str:
     # Block-level → newline
     html = re.sub(
         r"<(?:br|/p|/div|/li|/tr|/h[1-6]|/blockquote|/section|/article)[^>]*>",
-        "\n", html, flags=re.IGNORECASE,
+        "\n",
+        html,
+        flags=re.IGNORECASE,
     )
     text = _TAG_RE.sub("", html)
     text = html_lib.unescape(text)
@@ -251,8 +258,12 @@ def _is_ip_public(ip_str: str) -> bool:
     except ValueError:
         return False
     return not (
-        ip.is_loopback or ip.is_private or ip.is_link_local
-        or ip.is_multicast or ip.is_reserved or ip.is_unspecified
+        ip.is_loopback
+        or ip.is_private
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_reserved
+        or ip.is_unspecified
     )
 
 
@@ -266,9 +277,7 @@ def _allow_local(allow_local: bool) -> bool:
     return bool(allow_local) or os.getenv("CODERAI_ALLOW_LOCAL_URLS") == "1"
 
 
-async def _resolve_and_validate(
-    url: str, *, allow_local: bool = False
-) -> Optional[Dict[str, Any]]:
+async def _resolve_and_validate(url: str, *, allow_local: bool = False) -> Optional[Dict[str, Any]]:
     """Resolve hostname once and validate the IP.
 
     Returns ``{"host", "ip", "family"}`` on success, or ``None`` if the URL
@@ -336,9 +345,7 @@ async def _safe_request(
             # ``None`` is reserved for SSRF / validation failures — callers
             # surface this as "blocked". Network errors raise instead.
             return None
-        connector = _pinned_connector(
-            resolved["host"], resolved["ip"], resolved["family"]
-        )
+        connector = _pinned_connector(resolved["host"], resolved["ip"], resolved["family"])
         async with aiohttp.ClientSession(connector=connector) as session:
             async with session.request(
                 method,
@@ -355,15 +362,11 @@ async def _safe_request(
                         return None
                     next_url = urljoin(current, loc)
                     if next_url in seen_urls:
-                        logger.warning(
-                            f"SSRF guard: redirect loop at {next_url}"
-                        )
+                        logger.warning(f"SSRF guard: redirect loop at {next_url}")
                         return None
                     seen_urls.add(next_url)
                     if not next_url.startswith(("http://", "https://")):
-                        logger.warning(
-                            f"SSRF guard: non-http redirect to {next_url}"
-                        )
+                        logger.warning(f"SSRF guard: non-http redirect to {next_url}")
                         return None
                     current = next_url
                     continue
@@ -437,9 +440,7 @@ async def _safe_request_cf(
     return await _safe_request(method, url, headers=fallback_headers, **kwargs)
 
 
-async def _fetch_page_text(
-    url: str, max_length: int, fmt: str = "markdown"
-) -> Optional[str]:
+async def _fetch_page_text(url: str, max_length: int, fmt: str = "markdown") -> Optional[str]:
     """Fetch a single URL and return cleaned text, or None on failure."""
     resp = await _safe_request_cf("GET", url, timeout_s=15.0)
     if resp is None or resp["status"] != 200:
@@ -503,9 +504,7 @@ class _TavilyBackend(_SearchBackend):
         if blocked_domains:
             body["exclude_domains"] = blocked_domains
 
-        resp = await _safe_request(
-            "POST", self.ENDPOINT, json_body=body, timeout_s=20.0
-        )
+        resp = await _safe_request("POST", self.ENDPOINT, json_body=body, timeout_s=20.0)
         if resp is None:
             raise RuntimeError("Tavily request blocked by SSRF guard")
         if resp["status"] != 200:
@@ -615,7 +614,7 @@ class _DDGBackend(_SearchBackend):
                     status = resp["status"] if resp else "blocked"
                     last_error = f"HTTP {status}"
                     logger.debug(f"DDG attempt {attempt + 1}: {last_error}")
-                elif (results := _parse_ddg_results(resp["text"], wanted)):
+                elif results := _parse_ddg_results(resp["text"], wanted):
                     return results
                 else:
                     last_error = "Empty results returned"
@@ -624,7 +623,7 @@ class _DDGBackend(_SearchBackend):
                 logger.debug(f"DDG attempt {attempt + 1}: {e}")
 
             if attempt < len(header_sets) - 1:
-                await asyncio.sleep(2 ** attempt)
+                await asyncio.sleep(2**attempt)
 
         raise RuntimeError(
             f"Search failed after {len(header_sets)} attempts. Last error: {last_error}"
@@ -659,7 +658,9 @@ def _select_search_backend() -> _SearchBackend:
     if explicit == "tavily":
         if tavily_key:
             return _TavilyBackend(tavily_key)
-        logger.warning("CODERAI_SEARCH_BACKEND=tavily but TAVILY_API_KEY unset; falling back to DDG")
+        logger.warning(
+            "CODERAI_SEARCH_BACKEND=tavily but TAVILY_API_KEY unset; falling back to DDG"
+        )
         return _DDGBackend()
     if explicit == "exa":
         if exa_key:
@@ -714,9 +715,7 @@ def _filter_by_domain(
 
 class WebSearchParams(BaseModel):
     query: str = Field(..., description="Search query string")
-    num_results: int = Field(
-        5, description="Number of results to return (default 5, max 10)"
-    )
+    num_results: int = Field(5, description="Number of results to return (default 5, max 10)")
     fetch_content: bool = Field(
         False,
         description=(
@@ -945,9 +944,7 @@ class DownloadFileParams(BaseModel):
     url: str = Field(..., description="URL of the file to download")
     destination_path: str = Field(
         ...,
-        description=(
-            "Absolute path where the file should be saved."
-        ),
+        description=("Absolute path where the file should be saved."),
     )
 
 
@@ -964,9 +961,7 @@ class DownloadFileTool(Tool):
     parameters_model = DownloadFileParams
     timeout = 300.0
 
-    async def execute(
-        self, url: str, destination_path: str
-    ) -> Dict[str, Any]:
+    async def execute(self, url: str, destination_path: str) -> Dict[str, Any]:
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
 
@@ -974,9 +969,7 @@ class DownloadFileTool(Tool):
             # Allow larger downloads here than the default 5MB ceiling — this
             # tool's contract is "save the file"; ZIPs and binaries can exceed
             # the read-time guardrail.
-            resp = await _safe_request_cf(
-                "GET", url, timeout_s=60.0, max_bytes=50 * 1024 * 1024
-            )
+            resp = await _safe_request_cf("GET", url, timeout_s=60.0, max_bytes=50 * 1024 * 1024)
         except asyncio.TimeoutError:
             return {"success": False, "error": f"Timeout downloading {url}"}
         except Exception as e:
@@ -1083,7 +1076,10 @@ class HTTPRequestTool(Tool):
         method = method.upper()
         allowed_methods = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"}
         if method not in allowed_methods:
-            return {"success": False, "error": f"Method '{method}' not allowed. Use one of: {allowed_methods}"}
+            return {
+                "success": False,
+                "error": f"Method '{method}' not allowed. Use one of: {allowed_methods}",
+            }
 
         req_headers = dict(_HEADERS_CHROME)
         if headers:

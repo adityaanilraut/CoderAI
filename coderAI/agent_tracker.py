@@ -10,7 +10,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import AbstractSet, Dict, Iterable, List, Optional
 
 
 class AgentStatus(str, Enum):
@@ -124,7 +124,8 @@ class AgentTracker:
         it has no living children still in the map.
         """
         finished = [
-            a for a in self._agents.values()
+            a
+            for a in self._agents.values()
             if a.status in (AgentStatus.DONE, AgentStatus.ERROR, AgentStatus.CANCELLED)
         ]
         if len(finished) <= _MAX_FINISHED_AGENTS:
@@ -133,9 +134,10 @@ class AgentTracker:
         finished.sort(key=lambda a: a.finished_at or 0.0)
         to_evict = len(finished) - _MAX_FINISHED_AGENTS
         live_parent_ids = {
-            a.parent_id for a in self._agents.values()
-            if a.parent_id and a.status not in
-                (AgentStatus.DONE, AgentStatus.ERROR, AgentStatus.CANCELLED)
+            a.parent_id
+            for a in self._agents.values()
+            if a.parent_id
+            and a.status not in (AgentStatus.DONE, AgentStatus.ERROR, AgentStatus.CANCELLED)
         }
         for a in finished:
             if to_evict <= 0:
@@ -194,6 +196,14 @@ class AgentTracker:
                     continue
                 cur.request_cancel()
             return True
+
+    def clear_except(self, keep_ids: Optional[Iterable[str]] = None) -> None:
+        """Remove tracked agents except those in *keep_ids*."""
+        keep: AbstractSet[str] = set(keep_ids or [])
+        with self._lock:
+            for aid in list(self._agents.keys()):
+                if aid not in keep:
+                    self._agents.pop(aid, None)
 
 
 # Global singleton

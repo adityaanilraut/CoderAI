@@ -58,6 +58,7 @@ class ReadImageTool(Tool):
             filepath = Path(path).resolve()
 
             from .filesystem import _is_path_protected, _enforce_project_scope
+
             if _is_path_protected(filepath):
                 return {"success": False, "error": f"Refusing to read protected path: {path}"}
             scope_err = _enforce_project_scope(filepath, "read_image")
@@ -85,8 +86,8 @@ class ReadImageTool(Tool):
                 return {
                     "success": False,
                     "error": (
-                        f"Image too large: {file_size / (1024*1024):.1f} MB "
-                        f"(max {MAX_IMAGE_SIZE / (1024*1024):.0f} MB)"
+                        f"Image too large: {file_size / (1024 * 1024):.1f} MB "
+                        f"(max {MAX_IMAGE_SIZE / (1024 * 1024):.0f} MB)"
                     ),
                 }
 

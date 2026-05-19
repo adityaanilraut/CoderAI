@@ -3,7 +3,12 @@ import os
 import shutil
 
 from coderAI.tools import ToolRegistry
-from coderAI.tools.filesystem import ReadFileTool, WriteFileTool, SearchReplaceTool, ListDirectoryTool
+from coderAI.tools.filesystem import (
+    ReadFileTool,
+    WriteFileTool,
+    SearchReplaceTool,
+    ListDirectoryTool,
+)
 from coderAI.tools.terminal import RunCommandTool
 
 
@@ -12,13 +17,13 @@ def sandbox_dir(tmp_path):
     """Create a temporary sandbox directory for testing."""
     sandbox = tmp_path / "sandbox"
     sandbox.mkdir()
-    
+
     # Change current working directory to the sandbox
     original_cwd = os.getcwd()
     os.chdir(sandbox)
-    
+
     yield sandbox
-    
+
     # Restore original working directory
     os.chdir(original_cwd)
     shutil.rmtree(sandbox, ignore_errors=True)
@@ -41,28 +46,25 @@ async def test_filesystem_tools_integration(sandbox_dir, tool_registry):
     """End-to-end integration test of filesystem tools."""
     test_file = sandbox_dir / "test.txt"
     content = "Hello, Integration World!"
-    
+
     # Test WriteFileTool
     write_result = await tool_registry.execute("write_file", path=str(test_file), content=content)
     assert write_result["success"] is True
     assert test_file.exists()
     assert test_file.read_text() == content
-    
+
     # Test ReadFileTool
     read_result = await tool_registry.execute("read_file", path=str(test_file))
     assert read_result["success"] is True
     assert read_result["content"] == content
-    
+
     # Test SearchReplaceTool
     replace_result = await tool_registry.execute(
-        "search_replace", 
-        path=str(test_file), 
-        search="World", 
-        replace="Testing"
+        "search_replace", path=str(test_file), search="World", replace="Testing"
     )
     assert replace_result["success"] is True
     assert test_file.read_text() == "Hello, Integration Testing!"
-    
+
     # Test ListDirectoryTool
     list_result = await tool_registry.execute("list_directory", path=str(sandbox_dir))
     assert list_result["success"] is True
@@ -73,7 +75,9 @@ async def test_filesystem_tools_integration(sandbox_dir, tool_registry):
 @pytest.mark.asyncio
 async def test_terminal_tool_integration(sandbox_dir, tool_registry):
     """Integration test for the terminal tool."""
-    cmd_result = await tool_registry.execute("run_command", command="echo 'integration testing'", working_dir=str(sandbox_dir))
+    cmd_result = await tool_registry.execute(
+        "run_command", command="echo 'integration testing'", working_dir=str(sandbox_dir)
+    )
     assert cmd_result["success"] is True
     assert "integration testing" in cmd_result["stdout"]
 

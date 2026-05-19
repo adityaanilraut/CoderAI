@@ -31,6 +31,12 @@ export interface AgentTreeProps {
    * sensible default when not provided.
    */
   width?: number;
+  /**
+   * Called when an agent's grace window has elapsed and its entry should be
+   * removed from the `finishedAt` map. Without GC, the map grows forever
+   * over a long session and the 1Hz tick below never stops.
+   */
+  onGcFinished?: (id: string) => void;
 }
 
 interface TreeNode {
@@ -44,15 +50,28 @@ export function AgentTree({
   finishedGraceMs = 5000,
   finishedAt = {},
   width = 100,
+  onGcFinished,
 }: AgentTreeProps) {
   // Drive grace-window filtering off a 1Hz tick rather than recomputing on
-  // every parent render. Without this, the panel rebuilt its visibility set
-  // on every status patch / stream delta — finished children could flicker
-  // in or out at frame boundaries depending on whether a re-render happened
-  // to land on the wrong side of `now - flippedAt > graceMs`. The tick
-  // pauses when nothing is finished, so idle sessions stay quiet.
+  // every parent render. The tick stops as soon as every finishedAt entry
+  // is older than the grace window — without that, a single sub-agent
+  // finishing kept the timer running indefinitely (and grew the map across
+  // the entire session, since entries were never GC'd).
   const [now, setNow] = useState(() => Date.now());
-  const hasPending = Object.keys(finishedAt).length > 0;
+  const hasPending = Object.values(finishedAt).some(
+    (t) => now - t < finishedGraceMs,
+  );
+
+  // Garbage-collect entries that are well past grace. We let the parent
+  // own the map; `onGcFinished` notifies it so the next render sees a
+  // smaller map and `hasPending` can flip false.
+  useEffect(() => {
+    if (!onGcFinished) return;
+    for (const [id, t] of Object.entries(finishedAt)) {
+      if (now - t >= finishedGraceMs) onGcFinished(id);
+    }
+  }, [now, finishedAt, finishedGraceMs, onGcFinished]);
+
   useEffect(() => {
     if (!hasPending) return;
     const id = setInterval(() => setNow(Date.now()), 1000);

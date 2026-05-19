@@ -22,7 +22,15 @@ class TestDetectTestFramework:
         assert result is None
 
     def test_all_registered_frameworks_have_required_keys(self):
-        required = {"cmd", "args", "results_patterns", "detect_files", "test_suffixes", "extensions", "timeout"}
+        required = {
+            "cmd",
+            "args",
+            "results_patterns",
+            "detect_files",
+            "test_suffixes",
+            "extensions",
+            "timeout",
+        }
         for name, config in TEST_FRAMEWORKS.items():
             missing = required - set(config.keys())
             assert not missing, f"Framework {name} missing keys: {missing}"
@@ -52,16 +60,12 @@ class TestRunTestsTool:
         assert self.tool.requires_confirmation is True
 
     def test_unknown_framework_returns_error(self):
-        result = asyncio.run(
-            self.tool.execute(framework="nonexistent_framework_xyz")
-        )
+        result = asyncio.run(self.tool.execute(framework="nonexistent_framework_xyz"))
         assert not result["success"]
         assert "Unknown test framework" in result["error"]
 
     def test_no_framework_detected_returns_error(self, tmp_path):
-        result = asyncio.run(
-            self.tool.execute(path=str(tmp_path))
-        )
+        result = asyncio.run(self.tool.execute(path=str(tmp_path)))
         assert not result["success"]
 
     def test_pytest_with_passing_tests(self, tmp_path):
@@ -72,9 +76,7 @@ class TestRunTestsTool:
         test_file = tmp_path / "test_example.py"
         test_file.write_text("def test_pass():\n    assert True\n")
 
-        result = asyncio.run(
-            self.tool.execute(path=str(tmp_path), framework="pytest")
-        )
+        result = asyncio.run(self.tool.execute(path=str(tmp_path), framework="pytest"))
         assert result["success"]
         assert result["framework"] == "pytest"
         assert result["results"]["passed"] >= 1
@@ -88,9 +90,7 @@ class TestRunTestsTool:
         test_file = tmp_path / "test_fail.py"
         test_file.write_text("def test_fail():\n    assert False\n")
 
-        result = asyncio.run(
-            self.tool.execute(path=str(tmp_path), framework="pytest")
-        )
+        result = asyncio.run(self.tool.execute(path=str(tmp_path), framework="pytest"))
         assert result["success"]
         assert result["results"]["failed"] >= 1
         # Failure details should include the test name
@@ -145,9 +145,7 @@ class TestRunTestsTool:
             lambda _root: SimpleNamespace(project_root=tmp_path),
         )
 
-        result = asyncio.run(
-            self.tool.execute(path="tests/test_example.py", framework="pytest")
-        )
+        result = asyncio.run(self.tool.execute(path="tests/test_example.py", framework="pytest"))
 
         assert result["success"]
         assert result["results"]["passed"] >= 1

@@ -23,19 +23,23 @@ unknown phases are ignored.
 
 | event           | payload                                                                                       | notes                                                                                |
 | --------------- | --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| `hello`         | `{model, provider, cwd, version, protocolVersion, projectSummary?, contextLimit, budgetLimit, autoApprove, reasoning}` | First message after handshake                                                        |
+| `hello`         | `{model, provider, cwd, version, protocolVersion, contextLimit, budgetLimit, autoApprove, reasoning}` | First message after handshake                                                        |
 | `ready`         | `{}`                                                                                          | Agent is idle and accepting `send_message`                                           |
-| `turn`          | `{phase: "start" | "reasoning" | "text" | "end", delta?, elapsedMs?}`                          | One streamed assistant turn. `delta` carries incremental tokens for `reasoning`/`text`. |
-| `tool`          | `{id, phase: "queued" | "awaiting_approval" | "running" | "ok" | "err" | "cancelled", payload}` | Lifecycle of a single tool call. `payload` shape depends on phase (see below).      |
+| `turn`          | `{phase: "start" \| "reasoning" \| "text" \| "end", delta?, elapsedMs?, reasoningActive?}`     | One streamed assistant turn. `delta` carries incremental tokens for `reasoning`/`text`. `reasoningActive` hints whether extended thinking is in flight. |
+| `tool`          | `{id, phase: "queued" \| "awaiting_approval" \| "running" \| "ok" \| "err" \| "cancelled", payload}` | Lifecycle of a single tool call. `payload` shape depends on phase (see below). `queued` is reserved for future use — Python currently emits `running` first. |
 | `file_diff`     | `{path, diff}`                                                                                | Unified diff string                                                                  |
 | `status`        | `{ctxUsed, ctxLimit, costUsd, budgetUsd, promptTokens, completionTokens, totalTokens}`        | Emitted after every turn                                                             |
-| `agent`         | `{phase: "update", info: AgentInfo, parentId}`                                                | Per-agent snapshot; multiple agents possible                                         |
+| `agent`         | `{phase: "update" \| "started" \| "finished", info: AgentInfo, parentId}`                     | Per-agent snapshot; `started`/`finished` are lifecycle edges, `update` is throttled live sync |
 | `session_patch` | `{model?, provider?, autoApprove?, reasoning?}`                                               | Partial session-state update — only changed fields are present                       |
+| `available_models`| `{current, models: Record<string, string[]>}`                                                 | Emitted for the model picker                                                         |
+| `available_personas`| `{current, personas: string[]}`                                                             | Emitted for the persona picker                                                       |
+| `available_skills`| `{skills: {name: string, description: string}[]}`                                             | Emitted for the skill picker                                                         |
+| `context_state` | `{files: {path: string, size: number}[]}`                                                     | Emitted during get_state to show pinned context files                                |
 | `info`          | `{message}`                                                                                   | Long-form reference output (`/show <topic>`, `/plan`) and short notices             |
 | `warning`       | `{message}`                                                                                   | Non-fatal user-facing problem (unknown command, bad input)                           |
 | `success`       | `{message}`                                                                                   | Positive confirmation toast (state change, async ack)                                |
-| `error`         | `{category: "provider" | "tool" | "internal" | "protocol", message, hint?, details?}`         | Renders ErrorPanel, not a traceback dump                                             |
-| `progress`      | `{label, current?, total?, progressKind: "tokens" | "files" | "steps"}`                       | Tool progress updates forwarded from the Python executor                             |
+| `error`         | `{category: "provider" \| "tool" \| "internal" \| "protocol", message, hint?, details?}`         | Renders ErrorPanel, not a traceback dump                                             |
+| `progress`      | `{label, current?, total?, progressKind: "tokens" \| "files" \| "steps"}`                       | Tool progress updates forwarded from the Python executor                             |
 | `goodbye`       | `{reason?}`                                                                                   | Agent is shutting down                                                               |
 
 ### `tool` phases — `payload` shape
@@ -79,18 +83,23 @@ unknown phases are ignored.
 | ---------------------- | ------------------------------------------------------ | ---------------------------------------------------------------------- |
 | `handshake`            | `{payload: {protocolVersion}}`                         | Optional version negotiation; the server warns on mismatch             |
 | `send_message`         | `{text}`                                               | User input (raw or slash-prefixed)                                     |
-| `cancel`               | `{agentId?}`                                           | Cancel one agent or all if omitted (Esc key)                           |
+| `cancel`               | `{agentId?}`                                           | Cancel one agent or all if omitted (Esc key). `agentId` is top-level.  |
+| `cancel_agent`         | `{payload: {agentId}}`                                 | Cancel a specific sub-agent by tracker id                              |
 | `tool_approval_resp`   | `{toolId, approve}`                                    | Responds to a `tool` `awaiting_approval` (id matches the tool id)      |
 | `set_model`            | `{model}`                                              |                                                                        |
-| `set_reasoning`        | `{effort: "high" | "medium" | "low" | "none"}`        |                                                                        |
+| `set_persona`          | `{persona?}` or `{payload: {persona?}}`                | Switch persona; empty/`default` clears. UI usually uses `/persona` via `send_message`. |
+| `set_reasoning`        | `{effort: "high" \| "medium" \| "low" \| "none"}`        |                                                                        |
 | `set_default_model`    | `{model}`                                              | Persists default model for new sessions                                |
-| `set_verbosity`        | `{level: "quiet" | "normal" | "verbose"}`             | Server-side filter (see below)                                         |
+| `set_verbosity`        | `{level: "quiet" \| "normal" \| "verbose"}`             | Server-side filter (see below)                                         |
 | `toggle_auto_approve`  | `{}`                                                   | Flip YOLO mode                                                         |
 | `compact_context`      | `{}`                                                   | Triggers summarization                                                 |
-| `clear_context`        | `{}`                                                   | Fresh session                                                          |
+| `clear_context`        | `{}`                                                   | Fresh session; clears sub-agents from tracker, resets main to idle     |
 | `get_state`            | `{}`                                                   | Re-emit `status` + `agent` updates                                     |
 | `get_plan`             | `{}`                                                   | Emits `info` with `.coderAI/current_plan.json` or a short notice       |
 | `list_models`          | `{}`                                                   | Emits `available_models` for the model picker                          |
+| `list_personas`        | `{}`                                                   | Emits `available_personas` for the persona picker                      |
+| `list_skills`          | `{}`                                                   | Emits `available_skills` for the skills picker                         |
+| `search_codebase`      | `{query}`                                              | Emits `info` with codebase search results                              |
 | `reference`            | `{topic}`                                              | Long-form help (`version`, `models`, `cost`, `system`, `config`, …)    |
 | `exit`                 | `{}`                                                   | Graceful shutdown                                                      |
 
@@ -100,7 +109,8 @@ All commands carry an `id` for correlation.
 
 `normal` (default) drops `success` toasts at the source; `quiet` also drops
 single-line `info`/`warning`; `verbose` passes everything. Multi-line `info`
-(reference output) always passes regardless of level.
+(reference output) always passes regardless of level. Structural events
+(`turn`, `tool`, `agent`, `status`, etc.) are never filtered.
 
 ---
 
@@ -111,7 +121,7 @@ single-line `info`/`warning`; `verbose` passes everything. Multi-line `info`
 {"v":2,"kind":"event","event":"hello","model":"claude-sonnet-4-6","provider":"AnthropicProvider","cwd":"/Users/a/proj","version":"0.1.0","protocolVersion":2,"contextLimit":200000,"budgetLimit":5.0,"autoApprove":false,"reasoning":"medium"}
 {"v":2,"kind":"event","event":"ready"}
 {"v":2,"kind":"cmd","cmd":"send_message","id":"c1","text":"rename getCwd to getCurrentWorkingDirectory"}
-{"v":2,"kind":"event","event":"turn","phase":"start"}
+{"v":2,"kind":"event","event":"turn","phase":"start","reasoningActive":false}
 {"v":2,"kind":"event","event":"turn","phase":"text","delta":"I'll search the codebase…"}
 {"v":2,"kind":"event","event":"tool","id":"t1","phase":"running","payload":{"name":"grep","category":"search","args":{"pattern":"getCwd"},"risk":"low"}}
 {"v":2,"kind":"event","event":"tool","id":"t1","phase":"ok","payload":{"preview":"15 matches in 8 files","fullAvailable":true}}

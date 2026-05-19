@@ -117,9 +117,7 @@ class MCPClient:
 
             # Read response with timeout (skips any interleaved notifications)
             try:
-                init_response = await self._read_response(
-                    process.stdout, init_id, timeout=10
-                )
+                init_response = await self._read_response(process.stdout, init_id, timeout=10)
             except asyncio.TimeoutError:
                 return {
                     "success": False,
@@ -145,9 +143,7 @@ class MCPClient:
             await process.stdin.drain()
 
             try:
-                tools_response = await self._read_response(
-                    process.stdout, tools_id, timeout=10
-                )
+                tools_response = await self._read_response(process.stdout, tools_id, timeout=10)
             except asyncio.TimeoutError:
                 return {
                     "success": False,
@@ -165,12 +161,14 @@ class MCPClient:
 
             # Store discovered tools
             for tool in server_info:
-                self.discovered_tools.append({
-                    "server": server_name,
-                    "name": tool.get("name", ""),
-                    "description": tool.get("description", ""),
-                    "input_schema": tool.get("inputSchema", {}),
-                })
+                self.discovered_tools.append(
+                    {
+                        "server": server_name,
+                        "name": tool.get("name", ""),
+                        "description": tool.get("description", ""),
+                        "input_schema": tool.get("inputSchema", {}),
+                    }
+                )
 
             return {
                 "success": True,
@@ -239,9 +237,7 @@ class MCPClient:
             await process.stdin.drain()
 
             try:
-                response = await self._read_response(
-                    process.stdout, call_id, timeout=30
-                )
+                response = await self._read_response(process.stdout, call_id, timeout=30)
             except asyncio.TimeoutError:
                 return {
                     "success": False,
@@ -310,9 +306,7 @@ class MCPClient:
                 process.kill()
 
         del self.servers[server_name]
-        self.discovered_tools = [
-            t for t in self.discovered_tools if t.get("server") != server_name
-        ]
+        self.discovered_tools = [t for t in self.discovered_tools if t.get("server") != server_name]
 
         return {"success": True, "message": f"Disconnected from {server_name}"}
 
@@ -368,6 +362,7 @@ class MCPClient:
                 if not message_url:
                     # Fallback: derive message URL from SSE URL
                     from urllib.parse import urlparse, urlunparse
+
                     parsed = list(urlparse(url))
                     parsed[2] = parsed[2].replace("/sse", "/messages") or "/messages"
                     message_url = urlunparse(parsed)
@@ -389,10 +384,13 @@ class MCPClient:
                 init_response = await resp.json()
 
             # Send initialized notification
-            await session.post(message_url, json={
-                "jsonrpc": "2.0",
-                "method": "notifications/initialized",
-            })
+            await session.post(
+                message_url,
+                json={
+                    "jsonrpc": "2.0",
+                    "method": "notifications/initialized",
+                },
+            )
 
             # Request tool list
             tools_id = self._get_next_id()
@@ -414,12 +412,14 @@ class MCPClient:
             }
 
             for tool in server_info:
-                self.discovered_tools.append({
-                    "server": server_name,
-                    "name": tool.get("name", ""),
-                    "description": tool.get("description", ""),
-                    "input_schema": tool.get("inputSchema", {}),
-                })
+                self.discovered_tools.append(
+                    {
+                        "server": server_name,
+                        "name": tool.get("name", ""),
+                        "description": tool.get("description", ""),
+                        "input_schema": tool.get("inputSchema", {}),
+                    }
+                )
 
             return {
                 "success": True,
@@ -462,7 +462,9 @@ class MCPClient:
                 "method": "tools/call",
                 "params": {"name": tool_name, "arguments": arguments},
             }
-            async with session.post(message_url, json=request, timeout=_aiohttp.ClientTimeout(total=30)) as resp:
+            async with session.post(
+                message_url, json=request, timeout=_aiohttp.ClientTimeout(total=30)
+            ) as resp:
                 response = await resp.json()
 
             result = response.get("result", {})
@@ -529,6 +531,7 @@ def _normalize_parameters_schema(schema: Any) -> Dict[str, Any]:
 # Global MCP client instance
 mcp_client = MCPClient()
 
+
 def _cleanup_mcp_servers():
     """Synchronous cleanup of MCP servers on exit."""
     for name, info in list(mcp_client.servers.items()):
@@ -540,15 +543,21 @@ def _cleanup_mcp_servers():
             pass
     mcp_client.servers.clear()
 
+
 atexit.register(_cleanup_mcp_servers)
 
 
 class MCPConnectParams(BaseModel):
     server_name: str = Field(..., description="Friendly name for this server connection")
-    command: str = Field("", description="Command to start the MCP server (e.g., 'npx'), for stdio transport")
+    command: str = Field(
+        "", description="Command to start the MCP server (e.g., 'npx'), for stdio transport"
+    )
     args: Optional[List[str]] = Field(None, description="Arguments for the server command")
     transport: str = Field("stdio", description="Transport type: 'stdio' or 'sse' (default: stdio)")
-    url: Optional[str] = Field(None, description="SSE endpoint URL (required for SSE transport, e.g., http://host:port/sse)")
+    url: Optional[str] = Field(
+        None,
+        description="SSE endpoint URL (required for SSE transport, e.g., http://host:port/sse)",
+    )
 
 
 class MCPConnectTool(Tool):
@@ -562,8 +571,12 @@ class MCPConnectTool(Tool):
     _ALLOWED_MCP_LAUNCHERS = {"npx", "node", "python", "python3", "uvx", "bun", "deno"}
 
     async def execute(
-        self, server_name: str, command: str = "", args: list = None,
-        transport: str = "stdio", url: Optional[str] = None,
+        self,
+        server_name: str,
+        command: str = "",
+        args: list = None,
+        transport: str = "stdio",
+        url: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Connect to an MCP server."""
         if transport == "sse":
@@ -574,8 +587,10 @@ class MCPConnectTool(Tool):
             return {"success": False, "error": "Command is required for stdio transport"}
 
         cmd_lower = command.lower()
-        allowed = any(cmd_lower == launcher or cmd_lower.endswith("/" + launcher)
-                      for launcher in self._ALLOWED_MCP_LAUNCHERS)
+        allowed = any(
+            cmd_lower == launcher or cmd_lower.endswith("/" + launcher)
+            for launcher in self._ALLOWED_MCP_LAUNCHERS
+        )
         if not allowed:
             return {
                 "success": False,
@@ -583,11 +598,15 @@ class MCPConnectTool(Tool):
             }
 
         from .terminal import is_command_blocked, is_interactive_command
+
         full_cmd = command + " " + " ".join(args) if args else command
         if is_command_blocked(full_cmd):
             return {"success": False, "error": "MCP server command is blocked for safety"}
         if is_interactive_command(full_cmd):
-            return {"success": False, "error": "MCP server command appears interactive, which is not allowed"}
+            return {
+                "success": False,
+                "error": "MCP server command appears interactive, which is not allowed",
+            }
 
         return await mcp_client.connect_stdio(server_name, command, args)
 

@@ -4,7 +4,6 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
-
 class TestWebSearchToolSchema:
     """Parameter schema tests."""
 
@@ -31,8 +30,10 @@ class TestWebSearchExecution:
         from coderAI.tools.web import WebSearchTool
 
         tool = WebSearchTool()
-        with patch("coderAI.tools.web.aiohttp.ClientSession") as MockSession, \
-             patch("coderAI.tools.web.asyncio.sleep", new_callable=AsyncMock):
+        with (
+            patch("coderAI.tools.web.aiohttp.ClientSession") as MockSession,
+            patch("coderAI.tools.web.asyncio.sleep", new_callable=AsyncMock),
+        ):
             mock_resp = AsyncMock()
             mock_resp.status = 200
             mock_resp.headers = {}
@@ -57,10 +58,10 @@ class TestWebSearchExecution:
         from coderAI.tools.web import WebSearchTool
 
         html_body = (
-            '<html><body>'
+            "<html><body>"
             '<a href="https://example.com" class="result-link">Example</a>'
             '<a class="result-snippet">A test snippet.</a>'
-            '</body></html>'
+            "</body></html>"
         )
 
         mock_resp = AsyncMock()
@@ -107,9 +108,7 @@ class TestWebSearchExecution:
         from coderAI.tools.web import WebSearchTool
 
         tool = WebSearchTool()
-        with patch.object(
-            tool, "_search", side_effect=Exception("boom")
-        ):
+        with patch.object(tool, "_search", side_effect=Exception("boom")):
             result = asyncio.run(tool.execute(query="test"))
             # The exception propagates to the outer try/except
             assert result["success"] is False
@@ -186,8 +185,9 @@ class TestDownloadFileExecution:
         monkeypatch.setattr(web_mod, "_safe_request", fake_safe_request)
 
         tool = DownloadFileTool()
-        result = asyncio.run(tool.execute(url="https://example.com/notfound.bin", destination_path="notfound.bin"))
+        result = asyncio.run(
+            tool.execute(url="https://example.com/notfound.bin", destination_path="notfound.bin")
+        )
 
         assert result["success"] is False
         assert "HTTP 404" in result["error"]
-

@@ -83,9 +83,7 @@ class Agent:
         # Load custom persona if requested
         self.persona: Optional[AgentPersona] = None
         if persona_name:
-            self.persona = load_agent_persona(
-                persona_name, self.config.project_root
-            )
+            self.persona = load_agent_persona(persona_name, self.config.project_root)
             if self.persona and self.persona.model:
                 model = self.persona.model
 
@@ -103,9 +101,7 @@ class Agent:
 
         # Initialize context controller
         # (via private attribute to support lazy property)
-        self._context_controller = ContextController(
-            config=self.config, provider=self.provider
-        )
+        self._context_controller = ContextController(config=self.config, provider=self.provider)
 
         # Per-session file-read dedup cache (created before tool registry
         # build so the read_file tool picks it up via _wire_read_cache below).
@@ -220,6 +216,7 @@ class Agent:
         if delegate_tool is None:
             return
         from .tools.subagent import SubagentContext
+
         tracker_info = getattr(self, "tracker_info", None)
         delegate_tool.context = SubagentContext(
             parent_agent_id=tracker_info.agent_id if tracker_info else None,
@@ -262,9 +259,7 @@ class Agent:
         if self.session.messages and self.session.messages[0].role == "system":
             self.session.messages[0].content = prompt
         else:
-            self.session.messages.insert(
-                0, Message(role="system", content=prompt)
-            )
+            self.session.messages.insert(0, Message(role="system", content=prompt))
         self.session.updated_at = _time.time()
 
     def apply_persona(
@@ -293,12 +288,8 @@ class Agent:
         self._refresh_session_system_prompt()
 
         if self.tracker_info:
-            self.tracker_info.name = (
-                self.persona.name if self.persona else "main"
-            )
-            self.tracker_info.role = (
-                self.persona.description if self.persona else None
-            )
+            self.tracker_info.name = self.persona.name if self.persona else "main"
+            self.tracker_info.role = self.persona.description if self.persona else None
 
         return old_model if self.model != old_model else None
 
@@ -310,9 +301,7 @@ class Agent:
         """
         persona = None
         if persona_name:
-            persona = load_agent_persona(
-                persona_name, self.config.project_root
-            )
+            persona = load_agent_persona(persona_name, self.config.project_root)
             if persona is None:
                 return None
         self.apply_persona(persona, update_model=update_model)
@@ -351,9 +340,7 @@ class Agent:
         to_remove = [
             name
             for name, tool in self.tools.tools.items()
-            if name not in allowed_set
-            and name not in always_available
-            and not tool.is_read_only
+            if name not in allowed_set and name not in always_available and not tool.is_read_only
         ]
         for name in to_remove:
             del self.tools.tools[name]
@@ -362,6 +349,7 @@ class Agent:
         """Build a cache key that changes when rules, tools, or persona change."""
         from pathlib import Path
         from .project_layout import find_dot_coderai_subdir
+
         parts: List[str] = []
         parts.append(self.model)
         if self.persona:
@@ -388,6 +376,7 @@ class Agent:
             plan_path = dot_dir / "current_plan.json"
             if plan_path.exists():
                 import json as _json
+
                 mtime = plan_path.stat().st_mtime
                 try:
                     with open(plan_path, "r") as _pf:
@@ -405,10 +394,7 @@ class Agent:
     def _get_system_prompt(self) -> str:
         """Get base prompt and append rules from .coderAI/rules/."""
         cache_key = self._compute_system_prompt_cache_key()
-        if (
-            self._cached_system_prompt is not None
-            and self._system_prompt_cache_key == cache_key
-        ):
+        if self._cached_system_prompt is not None and self._system_prompt_cache_key == cache_key:
             return self._cached_system_prompt
 
         sections: List[str] = []
@@ -442,6 +428,7 @@ class Agent:
             plan_path = dot_dir / "current_plan.json"
             if plan_path.exists():
                 import json as _json
+
                 with open(plan_path, "r") as _pf:
                     _plan_data = _json.load(_pf)
                 _steps = _plan_data.get("steps", []) or []
@@ -470,9 +457,7 @@ class Agent:
             platform=_platform.system(),
             auto_approve=self.auto_approve,
             persona_name=self.persona.name if self.persona else None,
-            persona_description=(
-                self.persona.description if self.persona else None
-            ),
+            persona_description=(self.persona.description if self.persona else None),
             active_plan=active_plan,
         )
 
@@ -514,16 +499,13 @@ class Agent:
                                 "[END PROJECT RULE]"
                             )
                     except Exception as e:
-                        logger.warning(
-                            "Failed to read rule file %s: %s", rule_file.name, e
-                        )
+                        logger.warning("Failed to read rule file %s: %s", rule_file.name, e)
 
                 if rules:
                     _append_once(
                         "\n\n## Project Specific Rules\n\n"
                         "The following rules are specific to this project "
-                        "and MUST be followed:\n\n"
-                        + "\n\n".join(rules)
+                        "and MUST be followed:\n\n" + "\n\n".join(rules)
                     )
         except Exception as e:
             logger.warning(f"Error loading project rules: {e}")
@@ -574,6 +556,7 @@ class Agent:
             try:
                 from .project_layout import find_dot_coderai_subdir
                 from pathlib import Path
+
                 pr = str(self.config.project_root)
                 dot_dir = find_dot_coderai_subdir("", pr)
                 if dot_dir is None:
@@ -602,9 +585,7 @@ class Agent:
         provider.set_cumulative_usage(
             input_tokens=self.total_prompt_tokens,
             output_tokens=self.total_completion_tokens,
-            cache_creation_tokens=getattr(
-                self, "total_cache_creation_tokens", 0
-            ),
+            cache_creation_tokens=getattr(self, "total_cache_creation_tokens", 0),
             cache_read_tokens=getattr(self, "total_cache_read_tokens", 0),
         )
 
@@ -618,9 +599,7 @@ class Agent:
         messages = self.session.get_messages_for_api() if self.session else []
 
         # Inject system message if exists to get an accurate count
-        messages = self.context_controller.inject_context(
-            messages, self.context_manager
-        )
+        messages = self.context_controller.inject_context(messages, self.context_manager)
 
         used_tokens = self.context_controller.estimate_tokens(messages)
         limit = self.config.context_window
@@ -649,10 +628,8 @@ class Agent:
         try:
             messages = self.session.get_messages_for_api()
 
-            compacted_messages = (
-                await self.context_controller.manage_context_window(
-                    messages, context_limit_override=compact_limit
-                )
+            compacted_messages = await self.context_controller.manage_context_window(
+                messages, context_limit_override=compact_limit
             )
 
             for compacted_msg in compacted_messages:
@@ -680,9 +657,7 @@ class Agent:
                             orig.tool_call_id,
                             orig.name,
                         )
-                        originals_by_identity.setdefault(key, []).append(
-                            orig.timestamp
-                        )
+                        originals_by_identity.setdefault(key, []).append(orig.timestamp)
 
                     new_messages = []
                     for cm in compacted_messages:
@@ -778,18 +753,13 @@ class Agent:
         info.finished_at = _time.time()
         event_emitter.emit("agent_lifecycle", action="finished", info=info)
 
-
-    async def process_message(
-        self, user_message: str, progress_callback=None
-    ) -> Dict[str, Any]:
+    async def process_message(self, user_message: str, progress_callback=None) -> Dict[str, Any]:
         """Process a user message using ExecutionLoop."""
         from .agent_loop import ExecutionLoop
 
         return await ExecutionLoop(self, progress_callback=progress_callback).run(user_message)
 
-    async def process_single_shot(
-        self, user_message: str, progress_callback=None
-    ) -> str:
+    async def process_single_shot(self, user_message: str, progress_callback=None) -> str:
         """Process a single message and return the assistant's text response."""
         result = await self.process_message(user_message, progress_callback=progress_callback)
         return result.get("content", "")

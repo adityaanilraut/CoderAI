@@ -12,8 +12,12 @@ logger = logging.getLogger(__name__)
 
 
 class ManageContextParams(BaseModel):
-    action: Literal["add", "remove", "list", "clear"] = Field(..., description="Action to perform on context")
-    path: Optional[str] = Field(None, description="File path to add or remove (required for add/remove)")
+    action: Literal["add", "remove", "list", "clear"] = Field(
+        ..., description="Action to perform on context"
+    )
+    path: Optional[str] = Field(
+        None, description="File path to add or remove (required for add/remove)"
+    )
 
 
 class ManageContextTool(Tool):
@@ -31,30 +35,25 @@ class ManageContextTool(Tool):
         super().__init__()
         self.context_manager = context_manager
 
-    async def execute(
-        self, action: str, path: Optional[str] = None
-    ) -> Dict[str, Any]:
+    async def execute(self, action: str, path: Optional[str] = None) -> Dict[str, Any]:
         """Execute context management action."""
         if action == "add":
             if not path:
                 return {"success": False, "error": "Path required for add action"}
-            
+
             success = self.context_manager.add_file(path)
             if success:
-                return {
-                    "success": True, 
-                    "message": f"Added {path} to pinned context."
-                }
+                return {"success": True, "message": f"Added {path} to pinned context."}
             else:
                 return {
-                    "success": False, 
-                    "error": f"Failed to add {path}. File may not exist or be too large."
+                    "success": False,
+                    "error": f"Failed to add {path}. File may not exist or be too large.",
                 }
 
         elif action == "remove":
             if not path:
                 return {"success": False, "error": "Path required for remove action"}
-            
+
             success = self.context_manager.remove_file(path)
             if success:
                 return {"success": True, "message": f"Removed {path} from context."}
@@ -65,7 +64,7 @@ class ManageContextTool(Tool):
             files = self.context_manager.pinned_files
             instructions = self.context_manager.project_instructions
             token_est = self.context_manager.get_token_usage_estimate()
-            
+
             return {
                 "success": True,
                 "pinned_files": list(files.keys()),

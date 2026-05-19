@@ -6,24 +6,35 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from .base import Tool
-from .filesystem import _is_path_protected, _enforce_project_scope, _emit_diff, _reject_symlink_leaf, _safe_open_no_symlink
+from .filesystem import (
+    _is_path_protected,
+    _enforce_project_scope,
+    _emit_diff,
+    _reject_symlink_leaf,
+    _safe_open_no_symlink,
+)
 from .undo import backup_store
 from ..locks import resource_manager
 
 logger = logging.getLogger(__name__)
+
 
 class EditChunk(BaseModel):
     search: str = Field(..., description="Exact text to search for")
     replace: str = Field(..., description="Text to replace it with")
     expected_count: int = Field(1, description="Expected number of occurrences to replace")
 
+
 class MultiEditParams(BaseModel):
     path: str = Field(..., description="Path to the file to edit")
-    edits: List[EditChunk] = Field(..., description="List of search/replace operations to apply sequentially")
+    edits: List[EditChunk] = Field(
+        ..., description="List of search/replace operations to apply sequentially"
+    )
+
 
 class MultiEditTool(Tool):
     """Tool for applying multiple string replacements in a single atomic write."""
-    
+
     name = "multi_edit"
     description = "Apply multiple search/replace edits to a file in a single atomic operation."
     parameters_model = MultiEditParams
@@ -49,7 +60,7 @@ class MultiEditTool(Tool):
                     original_content = f.read()
 
                 new_content = original_content
-                
+
                 for i, edit in enumerate(edits):
                     search = edit["search"]
                     replace = edit["replace"]
@@ -59,19 +70,20 @@ class MultiEditTool(Tool):
                     if actual_count == 0:
                         return {
                             "success": False,
-                            "error": f"Edit {i+1} failed: expected to find search text, found 0 occurrences.",
-                            "hint": "Check the file contents and make sure the search text exactly matches what's in the file."
+                            "error": f"Edit {i + 1} failed: expected to find search text, found 0 occurrences.",
+                            "hint": "Check the file contents and make sure the search text exactly matches what's in the file.",
                         }
                     if expected_count == 1 and actual_count > 1:
                         logger.warning(
                             "multi_edit: edit %d matches %d occurrences but expected_count=1",
-                            i + 1, actual_count,
+                            i + 1,
+                            actual_count,
                         )
 
                     new_content = new_content.replace(search, replace)
 
                 backup_store.backup_file(str(path_obj), "modify")
-                
+
                 fd, tmp_path = tempfile.mkstemp(dir=path_obj.parent, prefix=".tmp-")
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
                     f.write(new_content)

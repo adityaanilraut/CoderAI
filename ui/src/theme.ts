@@ -192,15 +192,42 @@ const light: ThemeShape = {
   },
 };
 
+function readPersistedTheme(): string | undefined {
+  // Persisted via `/theme <dark|light>` (see useAgent.ts). Best-effort —
+  // any error means "fall back to env / heuristics" rather than crash.
+  try {
+    // Lazy node imports so this stays browser-safe in tests/bundlers.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fs = require("node:fs") as typeof import("node:fs");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const os = require("node:os") as typeof import("node:os");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const path = require("node:path") as typeof import("node:path");
+    const cfg = JSON.parse(
+      fs.readFileSync(path.join(os.homedir(), ".coderAI", "config.json"), "utf8"),
+    );
+    const v = cfg?.theme;
+    if (typeof v === "string") return v.toLowerCase();
+  } catch {
+    // ignore
+  }
+  return undefined;
+}
+
 function resolveVariant(): ThemeShape {
-  const requested = process.env.CODERAI_THEME?.toLowerCase();
+  // Priority: explicit env var > persisted config > terminal heuristic > dark.
+  // Env var beats config so a transient `CODERAI_THEME=light coderai chat`
+  // still works without rewriting the user's config.
+  const requested =
+    process.env.CODERAI_THEME?.toLowerCase() ?? readPersistedTheme();
   if (requested === "light") return light;
+  if (requested === "dark") return dark;
   // COLORFGBG is set by some terminals as "fg;bg" (e.g. "0;15" = black on
   // white). When bg index is 7 or 15 (white-ish), fall back to light. Cheap
   // best-effort detection — a one-liner override via CODERAI_THEME beats
   // any heuristic.
   const colorFgBg = process.env.COLORFGBG;
-  if (colorFgBg && requested !== "dark") {
+  if (colorFgBg) {
     const parts = colorFgBg.split(";");
     const bg = Number(parts[parts.length - 1]);
     if (bg === 7 || bg === 15) return light;

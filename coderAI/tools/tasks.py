@@ -24,8 +24,7 @@ class ManageTasksParams(BaseModel):
     action: str = Field(
         ...,
         description=(
-            "Action to perform: 'list', 'add', 'update', 'start', "
-            "'complete', 'delete', or 'clear'"
+            "Action to perform: 'list', 'add', 'update', 'start', 'complete', 'delete', or 'clear'"
         ),
     )
     task_id: Optional[int] = Field(
@@ -119,9 +118,7 @@ class ManageTasksTool(Tool):
                         "error": f"task_id is required for '{action}' action",
                     }
 
-                task_idx = next(
-                    (i for i, t in enumerate(tasks) if t["id"] == task_id), None
-                )
+                task_idx = next((i for i, t in enumerate(tasks) if t["id"] == task_id), None)
                 if task_idx is None:
                     return {
                         "success": False,
@@ -223,12 +220,8 @@ class ManageTasksTool(Tool):
         def _sort_key(t: Dict[str, Any]) -> int:
             return _PRIORITY_ORDER.get(t.get("priority", "medium"), 1)
 
-        in_progress = sorted(
-            [t for t in tasks if t.get("status") == "in_progress"], key=_sort_key
-        )
-        pending = sorted(
-            [t for t in tasks if t.get("status") == "pending"], key=_sort_key
-        )
+        in_progress = sorted([t for t in tasks if t.get("status") == "in_progress"], key=_sort_key)
+        pending = sorted([t for t in tasks if t.get("status") == "pending"], key=_sort_key)
         completed = [t for t in tasks if t.get("status") == "completed"]
 
         return {

@@ -13,7 +13,9 @@ from .base import Tool
 
 class TextSearchParams(BaseModel):
     query: str = Field(..., description="Search query")
-    regex: bool = Field(False, description="Treat query as a regex (default: false → literal match)")
+    regex: bool = Field(
+        False, description="Treat query as a regex (default: false → literal match)"
+    )
     base_path: str = Field(".", description="Base path to search from (default: current directory)")
     file_pattern: str = Field("*", description="File pattern to include (e.g., '*.py', '*.js')")
     max_results: int = Field(20, description="Maximum number of results (default: 20)")
@@ -185,15 +187,21 @@ class GrepTool(Tool):
                 "next_offset": len(matches) if truncated else None,
             }
             if truncated:
-                result["note"] = f"Results capped at {max_results}. Use a more specific pattern to narrow results."
+                result["note"] = (
+                    f"Results capped at {max_results}. Use a more specific pattern to narrow results."
+                )
             return result
         except Exception as e:
             return {"success": False, "error": str(e)}
 
 
 class SymbolSearchParams(BaseModel):
-    symbol: str = Field(..., description="Symbol name to find, such as a function, class, or variable.")
-    kind: str = Field("any", description="Optional symbol kind filter: any, function, class, method, variable.")
+    symbol: str = Field(
+        ..., description="Symbol name to find, such as a function, class, or variable."
+    )
+    kind: str = Field(
+        "any", description="Optional symbol kind filter: any, function, class, method, variable."
+    )
     path: str = Field(".", description="File or directory to search.")
     max_results: int = Field(20, description="Maximum number of results to return.")
 
@@ -226,7 +234,18 @@ class SymbolSearchTool(Tool):
             results: List[Dict[str, Any]] = []
             was_truncated = False
             for file_path in files:
-                if any(part in file_path.parts for part in (".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build")):
+                if any(
+                    part in file_path.parts
+                    for part in (
+                        ".git",
+                        "node_modules",
+                        "__pycache__",
+                        ".venv",
+                        "venv",
+                        "dist",
+                        "build",
+                    )
+                ):
                     continue
                 suffix = file_path.suffix.lower()
                 if suffix == ".py":
@@ -274,24 +293,28 @@ class SymbolSearchTool(Tool):
                 node_kind = "variable"
                 targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
                 if symbol in targets and wanted in {"any", "variable"}:
-                    results.append({
-                        "file": str(file_path),
-                        "line": getattr(node, "lineno", 1),
-                        "column": getattr(node, "col_offset", 0),
-                        "name": symbol,
-                        "kind": "variable",
-                    })
+                    results.append(
+                        {
+                            "file": str(file_path),
+                            "line": getattr(node, "lineno", 1),
+                            "column": getattr(node, "col_offset", 0),
+                            "name": symbol,
+                            "kind": "variable",
+                        }
+                    )
                 continue
 
             if node_kind and getattr(node, "name", None) == symbol:
                 if wanted in {"any", node_kind, "method"}:
-                    results.append({
-                        "file": str(file_path),
-                        "line": getattr(node, "lineno", 1),
-                        "column": getattr(node, "col_offset", 0),
-                        "name": symbol,
-                        "kind": node_kind,
-                    })
+                    results.append(
+                        {
+                            "file": str(file_path),
+                            "line": getattr(node, "lineno", 1),
+                            "column": getattr(node, "col_offset", 0),
+                            "name": symbol,
+                            "kind": node_kind,
+                        }
+                    )
         return results
 
     def _search_jsts(self, file_path: Path, symbol: str, kind: str) -> List[Dict[str, Any]]:
@@ -300,23 +323,33 @@ class SymbolSearchTool(Tool):
         except Exception:
             return []
         patterns = [
-            ("class", rf"^\s*export\s+class\s+{re.escape(symbol)}\b|^\s*class\s+{re.escape(symbol)}\b"),
-            ("function", rf"^\s*export\s+function\s+{re.escape(symbol)}\b|^\s*function\s+{re.escape(symbol)}\b|^\s*const\s+{re.escape(symbol)}\s*=\s*(async\s*)?\("),
+            (
+                "class",
+                rf"^\s*export\s+class\s+{re.escape(symbol)}\b|^\s*class\s+{re.escape(symbol)}\b",
+            ),
+            (
+                "function",
+                rf"^\s*export\s+function\s+{re.escape(symbol)}\b|^\s*function\s+{re.escape(symbol)}\b|^\s*const\s+{re.escape(symbol)}\s*=\s*(async\s*)?\(",
+            ),
             ("variable", rf"^\s*(export\s+)?(const|let|var)\s+{re.escape(symbol)}\b"),
         ]
         wanted = kind.lower()
         results: List[Dict[str, Any]] = []
         for line_no, line in enumerate(source.splitlines(), 1):
             for node_kind, pattern in patterns:
-                if wanted not in {"any", node_kind, "method"} and not (wanted == "function" and node_kind == "function"):
+                if wanted not in {"any", node_kind, "method"} and not (
+                    wanted == "function" and node_kind == "function"
+                ):
                     continue
                 if re.search(pattern, line):
-                    results.append({
-                        "file": str(file_path),
-                        "line": line_no,
-                        "column": 0,
-                        "name": symbol,
-                        "kind": node_kind,
-                    })
+                    results.append(
+                        {
+                            "file": str(file_path),
+                            "line": line_no,
+                            "column": 0,
+                            "name": symbol,
+                            "kind": node_kind,
+                        }
+                    )
                     break
         return results

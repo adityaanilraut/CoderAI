@@ -161,6 +161,18 @@ export class AgentClient extends EventEmitter {
     return this.send({cmd: "list_models"});
   }
 
+  listPersonas(): string {
+    return this.send({cmd: "list_personas"});
+  }
+
+  listSkills(): string {
+    return this.send({cmd: "list_skills"});
+  }
+
+  searchCodebase(query: string): string {
+    return this.send({cmd: "search_codebase", query});
+  }
+
   reference(topic: string): string {
     return this.send({cmd: "reference", topic});
   }

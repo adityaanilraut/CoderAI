@@ -113,4 +113,3 @@ class LLMProvider(ABC):
             self.total_cache_creation_tokens = max(0, int(cache_creation_tokens or 0))
         if hasattr(self, "total_cache_read_tokens"):
             self.total_cache_read_tokens = max(0, int(cache_read_tokens or 0))
-

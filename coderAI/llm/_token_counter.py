@@ -6,6 +6,7 @@ character-count heuristic rather than blocking the loop with a synchronous
 HTTP call.  The per-fingerprint cache ensures exact counts obtained during
 asyncio-safe invocations are reused.
 """
+
 from __future__ import annotations
 import asyncio
 import hashlib

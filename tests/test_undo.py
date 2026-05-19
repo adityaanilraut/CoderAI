@@ -77,9 +77,12 @@ class TestFileBackupStore:
 
     def test_max_backups_per_file_enforced(self, backup_store, sample_file):
         from coderAI.tools.undo import MAX_BACKUPS_PER_FILE
+
         for _ in range(MAX_BACKUPS_PER_FILE + 3):
             backup_store.backup_file(str(sample_file))
-        file_entries = [e for e in backup_store.index if e["filepath"] == str(sample_file.resolve())]
+        file_entries = [
+            e for e in backup_store.index if e["filepath"] == str(sample_file.resolve())
+        ]
         assert len(file_entries) <= MAX_BACKUPS_PER_FILE
 
 

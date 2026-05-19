@@ -37,14 +37,8 @@ class TestCallMcpToolByFunctionName:
     def test_dispatches(self):
         from coderAI.tools import mcp as mcp_module
 
-        with patch.object(
-            mcp_module.mcp_client, "call_tool", new_callable=AsyncMock
-        ) as mock_call:
+        with patch.object(mcp_module.mcp_client, "call_tool", new_callable=AsyncMock) as mock_call:
             mock_call.return_value = {"success": True, "content": "ok"}
-            r = asyncio.run(
-                call_mcp_tool_by_function_name(
-                    "mcp__myserver__do_thing", {"a": 1}
-                )
-            )
+            r = asyncio.run(call_mcp_tool_by_function_name("mcp__myserver__do_thing", {"a": 1}))
         assert r["success"] is True
         mock_call.assert_awaited_once_with("myserver", "do_thing", {"a": 1})

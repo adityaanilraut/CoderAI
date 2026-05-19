@@ -46,9 +46,7 @@ class TestDelegateTaskDepthLimit:
         tool = DelegateTaskTool()
         tool._current_depth = MAX_DELEGATION_DEPTH  # already at limit
 
-        result = asyncio.run(
-            tool.execute(task_description="do something")
-        )
+        result = asyncio.run(tool.execute(task_description="do something"))
         assert not result["success"]
         assert "depth" in result["error"].lower() or "limit" in result["error"].lower()
 
@@ -78,12 +76,11 @@ class TestDelegateTaskDepthLimit:
         mock_agent.close = AsyncMock()
 
         with patch("coderAI.agent.Agent", return_value=mock_agent):
-            result = asyncio.run(
-                tool.execute(task_description="simple task")
-            )
+            result = asyncio.run(tool.execute(task_description="simple task"))
         # Should NOT be a depth error
         if not result["success"]:
             assert "depth" not in result.get("error", "").lower()
+
 
 class TestDelegateTaskSchema:
     def test_schema_has_required_fields(self):
@@ -211,8 +208,9 @@ class TestDelegateTaskParentState:
         mock_agent._configure_delegate_tool_context = MagicMock()
         mock_agent.close = AsyncMock()
 
-        with patch("coderAI.agent.Agent", return_value=mock_agent), patch(
-            "coderAI.history.history_manager.load_session", return_value=resumed
+        with (
+            patch("coderAI.agent.Agent", return_value=mock_agent),
+            patch("coderAI.history.history_manager.load_session", return_value=resumed),
         ):
             result = asyncio.run(
                 tool.execute(task_description="resume task", task_id=resumed.session_id)
@@ -229,9 +227,7 @@ class TestDelegateTaskParentState:
         tool = DelegateTaskTool()
         tool.context = SubagentContext(parent_session=parent)
 
-        with patch(
-            "coderAI.history.history_manager.load_session", return_value=parent
-        ):
+        with patch("coderAI.history.history_manager.load_session", return_value=parent):
             result = asyncio.run(
                 tool.execute(task_description="resume task", task_id=parent.session_id)
             )

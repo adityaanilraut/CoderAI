@@ -50,6 +50,7 @@ class ExecutionLoop:
         # Use the agent's hooks manager for consistent state (e.g. approval cache)
         self.hooks_manager = getattr(agent, "hooks_manager", None)
         if self.hooks_manager is None:
+
             class _NoopHooksManager:
                 def load_hooks(self):
                     return None
@@ -128,10 +129,7 @@ class ExecutionLoop:
             current_step = plan_info["current_step"]
             total_steps = plan_info["total_steps"]
             description = plan_info["description"]
-            advanced = (
-                self._last_plan_step is not None
-                and current_step != self._last_plan_step
-            )
+            advanced = self._last_plan_step is not None and current_step != self._last_plan_step
             if (not self._plan_reminder_emitted) or advanced:
                 self._plan_reminder_emitted = True
                 self._last_plan_step = current_step
@@ -145,7 +143,7 @@ class ExecutionLoop:
                 else:
                     parts.append(
                         f"A plan is active. Currently on step {current_step + 1} "
-                        f"of {total_steps}: \"{description}\". Consult it with "
+                        f'of {total_steps}: "{description}". Consult it with '
                         f"`plan` action='show' before changing course and "
                         f"advance it with `plan` action='advance' once the step "
                         f"is finished."
@@ -161,11 +159,7 @@ class ExecutionLoop:
             )
 
         if parts:
-            combined = (
-                "<system-reminder>\n"
-                + "\n\n".join(parts)
-                + "\n</system-reminder>"
-            )
+            combined = "<system-reminder>\n" + "\n\n".join(parts) + "\n</system-reminder>"
             result.append({"role": "system", "content": combined})
         return result
 
@@ -190,10 +184,12 @@ class ExecutionLoop:
         # 2. Run on_user_prompt and chat.message hooks
         hooks_data = self.hooks_manager.load_hooks()
         if hooks_data:
-            await self.hooks_manager.run_hooks("*", "on_user_prompt", {"text": user_message}, hooks_data)
-            transformed = await getattr(self.hooks_manager, "run_chat_message_hooks", lambda *a, **kw: None)(
-                user_message, hooks_data
+            await self.hooks_manager.run_hooks(
+                "*", "on_user_prompt", {"text": user_message}, hooks_data
             )
+            transformed = await getattr(
+                self.hooks_manager, "run_chat_message_hooks", lambda *a, **kw: None
+            )(user_message, hooks_data)
             if transformed:
                 user_message = transformed
 
@@ -243,15 +239,12 @@ class ExecutionLoop:
             delay = compute_iteration_backoff(consecutive_errors)
             if delay > 0:
                 cancel_event = (
-                    self.agent.tracker_info._cancel_event
-                    if self.agent.tracker_info
-                    else None
+                    self.agent.tracker_info._cancel_event if self.agent.tracker_info else None
                 )
                 event_emitter.emit(
                     "agent_status",
                     message=(
-                        f"Backing off {delay:.1f}s after "
-                        f"{consecutive_errors} consecutive error(s)…"
+                        f"Backing off {delay:.1f}s after {consecutive_errors} consecutive error(s)…"
                     ),
                 )
                 if cancel_event is not None:
@@ -329,7 +322,7 @@ class ExecutionLoop:
                 if finish_reason == "refusal":
                     event_emitter.emit(
                         "agent_warning",
-                        message="Model refused this request (stop_reason=refusal). Returning model text without further tool calls."
+                        message="Model refused this request (stop_reason=refusal). Returning model text without further tool calls.",
                     )
                     # Return the refusal content as final response — do NOT loop
                     self.agent._finish_tracker()
@@ -337,7 +330,9 @@ class ExecutionLoop:
 
                     # Run on_stop hooks
                     if hooks_data:
-                        await self.hooks_manager.run_hooks("*", "on_stop", {"iterations": iteration}, hooks_data)
+                        await self.hooks_manager.run_hooks(
+                            "*", "on_stop", {"iterations": iteration}, hooks_data
+                        )
 
                     joined = "\n\n".join(self.agent._assistant_reply_parts)
                     return {
@@ -388,11 +383,17 @@ class ExecutionLoop:
                     consecutive_pauses = 0
 
                 if not tool_calls:
-                    if tools_were_used and not (content or "").strip() and not self.agent._assistant_reply_parts:
+                    if (
+                        tools_were_used
+                        and not (content or "").strip()
+                        and not self.agent._assistant_reply_parts
+                    ):
                         try:
                             summary = await self._post_tool_closing_message(user_message)
                         except BudgetExceededError:
-                            return self._handle_budget_exceeded(BudgetExceededError("Budget exceeded during closing summary."))
+                            return self._handle_budget_exceeded(
+                                BudgetExceededError("Budget exceeded during closing summary.")
+                            )
                         if summary:
                             msgs = self.agent.session.messages
                             if (
@@ -410,7 +411,9 @@ class ExecutionLoop:
 
                     # Run on_stop hooks
                     if hooks_data:
-                        await self.hooks_manager.run_hooks("*", "on_stop", {"iterations": iteration}, hooks_data)
+                        await self.hooks_manager.run_hooks(
+                            "*", "on_stop", {"iterations": iteration}, hooks_data
+                        )
 
                     joined = "\n\n".join(self.agent._assistant_reply_parts)
                     reply_text = joined if joined else (content or "")
@@ -476,7 +479,8 @@ class ExecutionLoop:
                         self.agent.save_session()
                         if hooks_data:
                             await self.hooks_manager.run_hooks(
-                                "*", "on_stop",
+                                "*",
+                                "on_stop",
                                 {"iterations": iteration, "error": "doom_loop"},
                                 hooks_data,
                             )
@@ -493,9 +497,7 @@ class ExecutionLoop:
                     # with a different approach). When False, treat denial as
                     # a terminal stop.
                     has_denials = (
-                        fatal_res
-                        and isinstance(fatal_res, dict)
-                        and bool(fatal_res.get("_denied"))
+                        fatal_res and isinstance(fatal_res, dict) and bool(fatal_res.get("_denied"))
                     )
                     if has_denials:
                         if not self.agent.config.continue_loop_on_deny:
@@ -522,7 +524,11 @@ class ExecutionLoop:
                         consecutive_errors += 1
                         # {"retry": True} means the messages were updated with error
                         # feedback and the loop should retry the LLM call — not exit.
-                        if fatal_res and fatal_res is not True and fatal_res.get("retry") is not True:
+                        if (
+                            fatal_res
+                            and fatal_res is not True
+                            and fatal_res.get("retry") is not True
+                        ):
                             return fatal_res
                         if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
                             return self._handle_fatal_error(
@@ -534,7 +540,9 @@ class ExecutionLoop:
                     consecutive_errors = 0
 
                 # Manage context window after tool results (or error messages) are added
-                messages = self.agent.context_controller.inject_context(messages, self.agent.context_manager, query=user_message)
+                messages = self.agent.context_controller.inject_context(
+                    messages, self.agent.context_manager, query=user_message
+                )
                 messages = await self.agent.context_controller.manage_context_window(messages)
             except BudgetExceededError as e:
                 # Terminal: budget is a hard stop, not a transient failure.
@@ -705,9 +713,12 @@ class ExecutionLoop:
 
     def _get_tool_schemas(self) -> Optional[List[Dict[str, Any]]]:
         """Collect tool schemas from built-in registry and MCP."""
-        tool_schemas = self.agent.tools.get_schemas() if self.agent.provider.supports_tools() else None
+        tool_schemas = (
+            self.agent.tools.get_schemas() if self.agent.provider.supports_tools() else None
+        )
         try:
             from .tools.mcp import mcp_client
+
             mcp_schemas = mcp_client.get_tools_as_openai_format()
             if mcp_schemas:
                 if tool_schemas is None:
@@ -755,7 +766,9 @@ class ExecutionLoop:
         # other terminal paths (refusal, normal stop, max_iterations).
         hooks_data = self.hooks_manager.load_hooks()
         if hooks_data:
-            await self.hooks_manager.run_hooks("*", "on_stop", {"iterations": 0, "error": "cancelled"}, hooks_data)
+            await self.hooks_manager.run_hooks(
+                "*", "on_stop", {"iterations": 0, "error": "cancelled"}, hooks_data
+            )
 
         self.agent._finish_tracker()
         self.agent.save_session()
@@ -769,7 +782,9 @@ class ExecutionLoop:
         }
 
     def _handle_fatal_error(self, e: Exception, count: int) -> Dict[str, Any]:
-        event_emitter.emit("agent_error", message=f"Too many consecutive errors ({count}). Last: {e}")
+        event_emitter.emit(
+            "agent_error", message=f"Too many consecutive errors ({count}). Last: {e}"
+        )
         self.agent._finish_tracker(error=True)
         self.agent.save_session()
         return {
@@ -778,18 +793,30 @@ class ExecutionLoop:
             "model_info": self.agent.provider.get_model_info(),
         }
 
-    async def _handle_recoverable_error(self, e: Exception, count: int, user_message: str) -> List[Dict[str, Any]]:
+    async def _handle_recoverable_error(
+        self, e: Exception, count: int, user_message: str
+    ) -> List[Dict[str, Any]]:
         # Sanitize error message to avoid leaking sensitive info (API keys, tracebacks)
         error_str = str(e)
         # Truncate long error messages and strip potential key/token patterns
         if len(error_str) > 200:
             error_str = error_str[:200] + "..."
         import re
-        error_str = re.sub(r'(sk-|key-|token-|Bearer\s+|x-api-key[=:]\s*|Authorization:\s*Bearer\s+)[A-Za-z0-9_\-]{8,}', r'\1[REDACTED]', error_str, flags=re.IGNORECASE)
 
-        event_emitter.emit("agent_error", message=f"Error (attempt {count}/{MAX_CONSECUTIVE_ERRORS}): {error_str}")
+        error_str = re.sub(
+            r"(sk-|key-|token-|Bearer\s+|x-api-key[=:]\s*|Authorization:\s*Bearer\s+)[A-Za-z0-9_\-]{8,}",
+            r"\1[REDACTED]",
+            error_str,
+            flags=re.IGNORECASE,
+        )
+
+        event_emitter.emit(
+            "agent_error", message=f"Error (attempt {count}/{MAX_CONSECUTIVE_ERRORS}): {error_str}"
+        )
         self._repair_unpaired_tool_calls()
-        self._last_repaired_msg_count = len(self.agent.session.messages) if self.agent.session else 0
+        self._last_repaired_msg_count = (
+            len(self.agent.session.messages) if self.agent.session else 0
+        )
 
         # Persist the recovery feedback into the session so it survives the
         # next ``messages.clear(); messages.extend(session.get_messages_for_api())``
@@ -807,7 +834,9 @@ class ExecutionLoop:
             messages = self.agent.session.get_messages_for_api()
         else:
             messages = [{"role": "system", "content": feedback}]
-        messages = self.agent.context_controller.inject_context(messages, self.agent.context_manager, query=user_message)
+        messages = self.agent.context_controller.inject_context(
+            messages, self.agent.context_manager, query=user_message
+        )
         return await self.agent.context_controller.manage_context_window(messages)
 
     def _handle_budget_exceeded(self, e: BudgetExceededError) -> Dict[str, Any]:
@@ -831,7 +860,12 @@ class ExecutionLoop:
         # Run on_stop hooks
         hooks_data = self.hooks_manager.load_hooks()
         if hooks_data:
-            await self.hooks_manager.run_hooks("*", "on_stop", {"iterations": self.agent.config.max_iterations, "error": "max_iterations"}, hooks_data)
+            await self.hooks_manager.run_hooks(
+                "*",
+                "on_stop",
+                {"iterations": self.agent.config.max_iterations, "error": "max_iterations"},
+                hooks_data,
+            )
 
         return {
             "content": msg,
@@ -857,17 +891,23 @@ class ExecutionLoop:
                 # Update tokens and cost
                 model_info = self.agent.provider.get_model_info()
                 new_in = model_info.get("total_input_tokens", 0) - self.agent.total_prompt_tokens
-                new_out = model_info.get("total_output_tokens", 0) - self.agent.total_completion_tokens
+                new_out = (
+                    model_info.get("total_output_tokens", 0) - self.agent.total_completion_tokens
+                )
 
                 if new_in < 0 or new_out < 0:
-                    logger.warning("Token counters appear to have reset (negative delta). Realigning agent counters to provider.")
+                    logger.warning(
+                        "Token counters appear to have reset (negative delta). Realigning agent counters to provider."
+                    )
                     self.agent.total_prompt_tokens = model_info.get("total_input_tokens", 0)
                     self.agent.total_completion_tokens = model_info.get("total_output_tokens", 0)
                     self.agent.total_tokens = model_info.get("total_tokens", 0)
                 else:
                     if new_in > 0 or new_out > 0:
                         self.agent.total_prompt_tokens = model_info.get("total_input_tokens", 0)
-                        self.agent.total_completion_tokens = model_info.get("total_output_tokens", 0)
+                        self.agent.total_completion_tokens = model_info.get(
+                            "total_output_tokens", 0
+                        )
                         self.agent.total_tokens = model_info.get("total_tokens", 0)
                     model_for_cost = getattr(self.agent.provider, "actual_model", self.agent.model)
                     if new_in > 0 or new_out > 0:
@@ -875,7 +915,8 @@ class ExecutionLoop:
 
                     if (
                         self.agent.config.budget_limit > 0
-                        and self.agent.cost_tracker.get_total_cost() > self.agent.config.budget_limit
+                        and self.agent.cost_tracker.get_total_cost()
+                        > self.agent.config.budget_limit
                     ):
                         msg = (
                             f"Budget limit of {CostTracker.format_cost(self.agent.config.budget_limit)} exceeded "
@@ -912,14 +953,8 @@ class ExecutionLoop:
             raw = await self.agent.provider.chat(messages, tools=tools)
             return self._extract_response_data(raw)
         stream = self.agent.provider.stream(messages, tools=tools)
-        cancel_event = (
-            self.agent.tracker_info._cancel_event
-            if self.agent.tracker_info
-            else None
-        )
-        result = await self.agent.streaming_handler.handle_stream(
-            stream, cancel_event=cancel_event
-        )
+        cancel_event = self.agent.tracker_info._cancel_event if self.agent.tracker_info else None
+        result = await self.agent.streaming_handler.handle_stream(stream, cancel_event=cancel_event)
         return result
 
     def _extract_response_data(self, response: Dict[str, Any]) -> Dict[str, Any]:

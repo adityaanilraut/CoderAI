@@ -4,6 +4,7 @@ import {theme} from "../theme.js";
 import type {ToolRisk} from "../protocol.js";
 import {truncateSmart} from "../lib/format.js";
 import {ActionPill, RiskBadge} from "./Primitives.js";
+import {Diff} from "./Diff.js";
 
 export interface ApprovalPromptProps {
   tool: string;
@@ -11,6 +12,13 @@ export interface ApprovalPromptProps {
   risk: ToolRisk;
   decided: "pending" | "approved" | "denied";
   active: boolean;
+  /**
+   * Optional unified-diff preview of the change about to land. When set we
+   * render it inside the approval box so the user can review before
+   * deciding — the previous behaviour silently dropped diffs sent by the
+   * server.
+   */
+  diff?: string;
   onDecide: (approve: boolean, always?: boolean) => void;
 }
 
@@ -34,6 +42,7 @@ export function ApprovalPrompt({
   risk,
   decided,
   active,
+  diff,
   onDecide,
 }: ApprovalPromptProps) {
   const [focus, setFocus] = React.useState(0);
@@ -45,6 +54,10 @@ export function ApprovalPrompt({
       // typo of "a" instead of "y" should not silently auto-approve every
       // future tool call. Capital A (shift+a) requires a deliberate keystroke;
       // arrow-keys + Enter is the discoverable path.
+      if (key.escape) {
+        onDecide(false, false);
+        return;
+      }
       if (input === "y" || input === "Y") onDecide(true, false);
       else if (input === "A") onDecide(true, true);
       else if (input === "n" || input === "N") onDecide(false, false);
@@ -117,6 +130,20 @@ export function ApprovalPrompt({
         {secondary ? <Text color={theme.muted}>{secondary}</Text> : null}
       </Box>
 
+      {/* Diff preview — shown only when the server attached one. Reviewing the
+          actual change is the whole point of the approval gate for file
+          mutations; without this the user is approving blind. */}
+      {diff && diff.trim() ? (
+        <Box marginTop={1} flexDirection="column">
+          <Text color={theme.faint}>{theme.glyph.dot} change preview</Text>
+          <Diff
+            path={(primaryKey && String(args[primaryKey])) || tool}
+            diff={diff}
+            verbose={false}
+          />
+        </Box>
+      ) : null}
+
       {/* Decision row */}
       {decided === "pending" ? (
         <Box flexDirection="column" marginTop={1}>
@@ -151,6 +178,16 @@ export function ApprovalPrompt({
           <Box marginTop={1}>
             <Text color={focus === 1 ? theme.warning : theme.faint}>
               {theme.glyph.warn} YOLO auto-approves <Text bold>all</Text> future tools this session, not just this one.
+            </Text>
+          </Box>
+          {/* The Shift+A shortcut only works on layouts where shift-a maps to
+              capital A in the input stream. Layouts where Shift acts as a
+              modifier separately (some non-US keyboards, screen readers) send
+              just "a", which we intentionally do NOT bind to YOLO. Tell users
+              the keyboard-independent path so they're never stuck. */}
+          <Box>
+            <Text color={theme.faint}>
+              {"  "}use ←→ ↵ if ⇧A doesn't register on your keyboard layout.
             </Text>
           </Box>
         </Box>

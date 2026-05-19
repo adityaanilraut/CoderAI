@@ -57,6 +57,8 @@ export function Diff({
     // user can see the *shape* of the change without flipping verbose on.
     // Empty diffs (deletes only) gracefully degrade to the header line.
     const previewLines = firstChangePreview(parsed, 3);
+    const totalHunks = countHunks(parsed);
+    const moreHunks = Math.max(0, totalHunks - 1);
     return (
       <Box flexDirection="column" paddingX={2}>
         <Box>
@@ -67,6 +69,9 @@ export function Diff({
             <Text color={theme.success}>+{stats.adds}</Text>
             {" "}
             <Text color={theme.danger}>-{stats.dels}</Text>
+            {totalHunks > 1 ? (
+              <Text color={theme.faint}>{"   "}{totalHunks} hunks</Text>
+            ) : null}
           </Text>
         </Box>
         {previewLines.length > 0 ? (
@@ -84,7 +89,9 @@ export function Diff({
             ))}
             {hasMoreThanPreview(parsed, previewLines.length) ? (
               <Text color={theme.faint} italic>
-                /verbose to see the full diff
+                {moreHunks > 0
+                  ? `+ ${moreHunks} more hunk${moreHunks === 1 ? "" : "s"} hidden — /verbose to see the full diff`
+                  : "/verbose to see the full diff"}
               </Text>
             ) : null}
           </Box>
@@ -273,6 +280,23 @@ function hasMoreThanPreview(parsed: ParsedLine[], shown: number): boolean {
     (l) => l.kind === "add" || l.kind === "del",
   ).length;
   return totalChanges > shown;
+}
+
+/**
+ * Total number of `@@` hunks in the diff. Used by the compact view to tell
+ * the user how many distinct change regions were collapsed behind the
+ * single-hunk preview. Diffs without explicit hunk headers (rare — usually
+ * means the generator stripped them) count as one hunk if there's any
+ * change at all.
+ */
+function countHunks(parsed: ParsedLine[]): number {
+  let count = 0;
+  for (const l of parsed) if (l.kind === "hunk") count++;
+  if (count === 0) {
+    const hasChange = parsed.some((l) => l.kind === "add" || l.kind === "del");
+    return hasChange ? 1 : 0;
+  }
+  return count;
 }
 
 function colorFor(k: LineKind): string {

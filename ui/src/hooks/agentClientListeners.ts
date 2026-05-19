@@ -310,14 +310,30 @@ export function attachAgentClientListeners(
         args: m.payload.args || {},
         risk: m.payload.risk || "low",
         decided: "pending",
+        diff: typeof m.payload.diff === "string" ? m.payload.diff : undefined,
       });
     } else if (m.phase === "cancelled") {
+      // A cancelled tool can be in one of two states:
+      //   1. Pending approval — flip the dialog to "denied" so it stops asking.
+      //   2. Already running — patch its card to ok=false with the reason so
+      //      the spinner doesn't spin forever. Without this, a timeout or
+      //      user-cancelled run leaves a phantom in-flight tool in the timeline.
+      const reasonRaw =
+        (m.payload?.reason as string | undefined) ??
+        (typeof m.payload?.timeoutSeconds === "number"
+          ? `timed out after ${m.payload.timeoutSeconds}s`
+          : null);
+      const reason = reasonRaw ?? "cancelled";
       setTimeline((prev) =>
-        prev.map((it) =>
-          it.kind === "approval" && it.id === m.id && it.decided === "pending"
-            ? {...it, decided: "denied"}
-            : it,
-        ),
+        prev.map((it) => {
+          if (it.kind === "approval" && it.id === m.id && it.decided === "pending") {
+            return {...it, decided: "denied"};
+          }
+          if (it.kind === "tool" && it.id === m.id && it.ok === null) {
+            return {...it, ok: false, error: reason, preview: null};
+          }
+          return it;
+        }),
       );
     }
   });
@@ -330,6 +346,27 @@ export function attachAgentClientListeners(
     setSession((s) => ({
       ...s,
       availableModels: m.models,
+    }));
+  });
+
+  add("available_personas", (m: Extract<AgentEvent, {event: "available_personas"}>) => {
+    setSession((s) => ({
+      ...s,
+      availablePersonas: m.personas,
+    }));
+  });
+
+  add("available_skills", (m: Extract<AgentEvent, {event: "available_skills"}>) => {
+    setSession((s) => ({
+      ...s,
+      availableSkills: m.skills,
+    }));
+  });
+
+  add("context_state", (m: Extract<AgentEvent, {event: "context_state"}>) => {
+    setSession((s) => ({
+      ...s,
+      contextFiles: m.files,
     }));
   });
 

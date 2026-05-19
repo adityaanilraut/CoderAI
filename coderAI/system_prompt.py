@@ -24,9 +24,7 @@ logger = logging.getLogger(__name__)
 # (e.g. web_search + fetch_content), not only short class ``description`` strings.
 _TOOL_HELP: Dict[str, str] = {
     # --- Filesystem ---
-    "read_file": (
-        "Read file contents (max 1MB; use `start_line`/`end_line` for large files)"
-    ),
+    "read_file": ("Read file contents (max 1MB; use `start_line`/`end_line` for large files)"),
     "write_file": "Create or overwrite files (protected system paths are blocked)",
     "search_replace": "Find and replace text in a file (reads → verifies match → writes)",
     "multi_edit": "Apply multiple search/replace edits to a file in a single atomic operation.",
@@ -55,9 +53,7 @@ _TOOL_HELP: Dict[str, str] = {
     "run_command": (
         "Execute a shell command and get stdout/stderr (dangerous commands need user confirmation)"
     ),
-    "run_background": (
-        "Start long-running processes (servers, watchers) in the background"
-    ),
+    "run_background": ("Start long-running processes (servers, watchers) in the background"),
     "list_processes": (
         "List all background processes currently tracked by the agent (started via run_background). "
         "Shows PID, command, and running status."
@@ -102,9 +98,7 @@ _TOOL_HELP: Dict[str, str] = {
         "Display the commit message, author, date, and diff for a specific commit or ref. "
         "Use stat_only=true for a summary without the full patch."
     ),
-    "git_remote": (
-        "Manage remote connections: list, add, remove, or change the URL of a remote."
-    ),
+    "git_remote": ("Manage remote connections: list, add, remove, or change the URL of a remote."),
     "git_blame": (
         "Annotate each line of a file with the commit hash and author that last changed it. "
         "Supports line-range filtering."
@@ -112,16 +106,10 @@ _TOOL_HELP: Dict[str, str] = {
     "git_cherry_pick": (
         "Apply one or more specific commits from another branch onto the current branch."
     ),
-    "git_tag": (
-        "List, create (lightweight or annotated), or delete git tags."
-    ),
-    "git_fetch": (
-        "Fetch objects and refs from a remote repository without merging."
-    ),
+    "git_tag": ("List, create (lightweight or annotated), or delete git tags."),
+    "git_fetch": ("Fetch objects and refs from a remote repository without merging."),
     # --- Search ---
-    "text_search": (
-        "Search for text across files in a directory (fast, recursive)"
-    ),
+    "text_search": ("Search for text across files in a directory (fast, recursive)"),
     "grep": "Advanced pattern matching with regex support and context lines",
     "symbol_search": (
         "Find function, class, method, or variable definitions by name in Python and TypeScript files. "
@@ -136,9 +124,7 @@ _TOOL_HELP: Dict[str, str] = {
         "ranges, and relevance scores."
     ),
     # --- Code quality ---
-    "lint": (
-        "Auto-detect and run the project linter (ruff, eslint, clippy, golangci-lint)"
-    ),
+    "lint": ("Auto-detect and run the project linter (ruff, eslint, clippy, golangci-lint)"),
     "format": (
         "Run a formatter on source files (ruff format, black, prettier, gofmt); "
         "auto-detected by project type. Use check=true to preview without writing."
@@ -166,9 +152,7 @@ _TOOL_HELP: Dict[str, str] = {
         "Safe: validates package names to prevent shell injection."
     ),
     # --- Vision ---
-    "read_image": (
-        "Read and base64-encode an image for visual analysis (PNG, JPEG, GIF, WebP)"
-    ),
+    "read_image": ("Read and base64-encode an image for visual analysis (PNG, JPEG, GIF, WebP)"),
     # --- Web ---
     "web_search": (
         "Search the web using DuckDuckGo. Set `fetch_content=true` to automatically read "
@@ -189,15 +173,9 @@ _TOOL_HELP: Dict[str, str] = {
         "a non-GET method. SSRF protection blocks requests to private/loopback IPs."
     ),
     # --- Memory ---
-    "save_memory": (
-        "Store key-value information that persists across sessions"
-    ),
-    "recall_memory": (
-        "Retrieve or search previously saved memories"
-    ),
-    "delete_memory": (
-        "Delete a previously saved memory entry by its key."
-    ),
+    "save_memory": ("Store key-value information that persists across sessions"),
+    "recall_memory": ("Retrieve or search previously saved memories"),
+    "delete_memory": ("Delete a previously saved memory entry by its key."),
     # --- Project / context ---
     "project_context": (
         "Auto-detect project type and load config, dependencies, and directory structure"
@@ -307,6 +285,7 @@ SYSTEM_PROMPT_OUTPUT_STYLE = """\
 - Follow existing code conventions, avoid unnecessary comments, and never expose secrets.
 """
 
+
 def build_environment_section(
     model: str = "",
     working_directory: str = "",
@@ -346,9 +325,7 @@ def build_environment_section(
     lines.append(f"  Git repo: {'yes' if is_git_repo else 'no'}")
     lines.append(f"  Platform: {platform}")
     lines.append(f"  Date: {datetime.date.today().isoformat()}")
-    lines.append(
-        f"  Mode: {'YOLO (auto-approve)' if auto_approve else 'confirm-on-mutate'}"
-    )
+    lines.append(f"  Mode: {'YOLO (auto-approve)' if auto_approve else 'confirm-on-mutate'}")
     if persona_name:
         if persona_description:
             lines.append(f"  Persona: {persona_name} — {persona_description}")
@@ -359,10 +336,7 @@ def build_environment_section(
         completed = active_plan.get("completed", 0)
         total = active_plan.get("total", 0)
         current_desc = active_plan.get("current_desc") or "—"
-        lines.append(
-            f"  Active plan: {title} "
-            f"({completed}/{total} steps, current: {current_desc})"
-        )
+        lines.append(f"  Active plan: {title} ({completed}/{total} steps, current: {current_desc})")
     lines.append("</env>")
     return "\n".join(lines)
 
@@ -430,7 +404,10 @@ _TOOL_SECTIONS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
             "file_readlink",
         ),
     ),
-    ("Terminal", ("run_command", "run_background", "list_processes", "kill_process", "read_bg_output")),
+    (
+        "Terminal",
+        ("run_command", "run_background", "list_processes", "kill_process", "read_bg_output"),
+    ),
     (
         "Git",
         (
@@ -470,7 +447,10 @@ _TOOL_SECTIONS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
     ("Python REPL", ("python_repl",)),
     ("Planning", ("plan",)),
     ("Inter-Agent Notepad", ("notepad",)),
-    ("MCP (Model Context Protocol)", ("mcp_connect", "mcp_disconnect", "mcp_call_tool", "mcp_list")),
+    (
+        "MCP (Model Context Protocol)",
+        ("mcp_connect", "mcp_disconnect", "mcp_call_tool", "mcp_list"),
+    ),
     ("Undo / Rollback", ("undo", "undo_history")),
 )
 
@@ -492,11 +472,7 @@ def format_tools_markdown(registry: ToolRegistry) -> str:
             if tool is None:
                 continue
             seen.add(name)
-            desc = (
-                _TOOL_HELP.get(name)
-                or (tool.description or "").strip()
-                or "(no description)"
-            )
+            desc = _TOOL_HELP.get(name) or (tool.description or "").strip() or "(no description)"
             chunk.append(f"- **{name}** — {desc}")
         if chunk:
             lines.append(f"### {heading}")
@@ -509,11 +485,7 @@ def format_tools_markdown(registry: ToolRegistry) -> str:
         if name in seen:
             continue
         tool = registry.tools[name]
-        desc = (
-            _TOOL_HELP.get(name)
-            or (tool.description or "").strip()
-            or "(no description)"
-        )
+        desc = _TOOL_HELP.get(name) or (tool.description or "").strip() or "(no description)"
         other.append(f"- **{name}** — {desc}")
 
     if other:
@@ -571,11 +543,13 @@ def compose_default_system_prompt(
     parts = []
     if env_section:
         parts.append(env_section)
-    parts.extend([
-        SYSTEM_PROMPT_INTRO,
-        format_tools_markdown(registry),
-        SYSTEM_PROMPT_INTERACTION,
-        SYSTEM_PROMPT_OUTPUT_STYLE,
-        SYSTEM_PROMPT_TAIL,
-    ])
+    parts.extend(
+        [
+            SYSTEM_PROMPT_INTRO,
+            format_tools_markdown(registry),
+            SYSTEM_PROMPT_INTERACTION,
+            SYSTEM_PROMPT_OUTPUT_STYLE,
+            SYSTEM_PROMPT_TAIL,
+        ]
+    )
     return "\n\n".join(parts)

@@ -84,6 +84,7 @@ class TestSaveMemoryTool:
         store.memory_file = store.memory_dir / "memories.json"
         store._memories = {}
         import coderAI.tools.memory as mem_mod
+
         monkeypatch.setattr(mem_mod, "_memory_store", store)
         self.tool = SaveMemoryTool()
 
@@ -100,6 +101,7 @@ class TestSaveMemoryTool:
         asyncio.run(self.tool.execute(key="k", value="old"))
         asyncio.run(self.tool.execute(key="k", value="new"))
         import coderAI.tools.memory as mem_mod
+
         assert mem_mod._memory_store.get("k") == "new"
 
 
@@ -112,6 +114,7 @@ class TestRecallMemoryTool:
         store.memory_file = store.memory_dir / "memories.json"
         store._memories = {"existing": "found_it"}
         import coderAI.tools.memory as mem_mod
+
         monkeypatch.setattr(mem_mod, "_memory_store", store)
         self.tool = RecallMemoryTool()
 

@@ -13,6 +13,7 @@ from typing import Any, Dict, Optional, Tuple
 
 MCP_FUNCTION_PREFIX = "mcp__"
 
+
 def coerce_tool_arguments(raw: Any) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """Parse tool ``function.arguments`` from providers (string JSON or dict)."""
     if raw is None:

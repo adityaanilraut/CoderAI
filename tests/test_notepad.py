@@ -54,30 +54,20 @@ class TestNotepadTool:
         self.tool = NotepadTool()
 
     def test_write_and_read(self):
-        asyncio.run(
-            self.tool.execute(action="write", key="test_key", value="test_value")
-        )
-        result = asyncio.run(
-            self.tool.execute(action="read", key="test_key")
-        )
+        asyncio.run(self.tool.execute(action="write", key="test_key", value="test_value"))
+        result = asyncio.run(self.tool.execute(action="read", key="test_key"))
         assert result["success"]
         assert result["note"]["value"] == "test_value"
 
     def test_list(self):
-        result = asyncio.run(
-            self.tool.execute(action="list")
-        )
+        result = asyncio.run(self.tool.execute(action="list"))
         assert result["success"]
         assert isinstance(result["keys"], list)
 
     def test_write_missing_key(self):
-        result = asyncio.run(
-            self.tool.execute(action="write", value="no_key")
-        )
+        result = asyncio.run(self.tool.execute(action="write", value="no_key"))
         assert not result["success"]
 
     def test_unknown_action(self):
-        result = asyncio.run(
-            self.tool.execute(action="invalid")
-        )
+        result = asyncio.run(self.tool.execute(action="invalid"))
         assert not result["success"]

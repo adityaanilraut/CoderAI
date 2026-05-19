@@ -75,7 +75,7 @@ class Tool(ABC):
             # Pydantic puts things in $defs sometimes, but LLMs handle flat mostly.
             # model_json_schema is usually fine.
             return schema
-            
+
         return {"type": "object", "properties": {}}
 
 
@@ -172,8 +172,7 @@ class ToolRegistry:
                 return {
                     "success": False,
                     "error": f"Validation error for tool '{name}':\n{str(e)}",
-                    "error_code": "validation_error"
+                    "error_code": "validation_error",
                 }
-                
-        return await tool.execute(**kwargs)
 
+        return await tool.execute(**kwargs)

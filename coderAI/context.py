@@ -44,18 +44,21 @@ class ContextManager:
 
     def add_file(self, path: str) -> bool:
         """Add a file to pinned context.
-        
+
         Args:
             path: Path to the file to pin
-            
+
         Returns:
             True if successful, False otherwise
         """
         import os
+
         try:
             file_path = Path(path).resolve()
 
-            project_root = Path(self.config.project_root).resolve() if self.config.project_root else None
+            project_root = (
+                Path(self.config.project_root).resolve() if self.config.project_root else None
+            )
             allow_outside = os.environ.get("CODERAI_ALLOW_OUTSIDE_PROJECT") == "1"
             if project_root is not None and not allow_outside:
                 try:
@@ -66,12 +69,12 @@ class ContextManager:
 
             if not file_path.exists():
                 return False
-                
+
             # Basic size check - don't pin huge files
             if file_path.stat().st_size > 100 * 1024:  # 100KB limit for now
                 logger.warning(f"File {path} too large to pin")
                 return False
-                
+
             content = file_path.read_text(encoding="utf-8")
             self.pinned_files[str(file_path)] = content
             self._pinned_mtimes[str(file_path)] = file_path.stat().st_mtime
@@ -82,10 +85,10 @@ class ContextManager:
 
     def remove_file(self, path: str) -> bool:
         """Remove a file from pinned context.
-        
+
         Args:
             path: Path to remove
-            
+
         Returns:
             True if removed, False if not found
         """
@@ -95,14 +98,14 @@ class ContextManager:
                 del self.pinned_files[path]
                 self._pinned_mtimes.pop(path, None)
                 return True
-                
+
             # Try resolved path
             resolved = str(Path(path).resolve())
             if resolved in self.pinned_files:
                 del self.pinned_files[resolved]
                 self._pinned_mtimes.pop(resolved, None)
                 return True
-                
+
             return False
         except Exception:
             return False
@@ -119,6 +122,7 @@ class ContextManager:
         stat-check every file on every single LLM call.
         """
         import time
+
         now = time.monotonic()
         if hasattr(self, "_last_refresh_at") and (now - self._last_refresh_at) < 2.0:
             return  # Skip — checked recently
@@ -209,7 +213,9 @@ class ContextManager:
 
                 if total_chars + len(content) > PINNED_CONTEXT_MAX_CHARS:
                     parts.append(f"\n### File: {path}")
-                    parts.append("```\n... [File omitted to save context. Ask specific questions to view this file.]\n```")
+                    parts.append(
+                        "```\n... [File omitted to save context. Ask specific questions to view this file.]\n```"
+                    )
                     continue
 
                 total_chars += len(content)

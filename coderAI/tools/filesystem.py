@@ -37,6 +37,7 @@ def _emit_diff(path_obj: Path, before: str, after: str) -> None:
     if diff:
         event_emitter.emit("file_diff", path=str(path_obj), diff=diff)
 
+
 # Defaults (overridden by config if set)
 DEFAULT_MAX_FILE_SIZE = 1_048_576
 DEFAULT_MAX_GLOB_RESULTS = 200
@@ -79,7 +80,7 @@ PROTECTED_SYSTEM_PATHS = [
     "/bin",
     "/sbin",
     "/boot",
-    "/System",   # macOS system dir
+    "/System",  # macOS system dir
     "/Library",  # macOS shared library dir
     "/private/etc",
     "/var/log",
@@ -87,12 +88,14 @@ PROTECTED_SYSTEM_PATHS = [
 ]
 
 if sys.platform == "win32":
-    PROTECTED_SYSTEM_PATHS.extend([
-        "C:\\Windows",
-        "C:\\Windows\\System32",
-        "C:\\Program Files",
-        "C:\\Program Files (x86)",
-    ])
+    PROTECTED_SYSTEM_PATHS.extend(
+        [
+            "C:\\Windows",
+            "C:\\Windows\\System32",
+            "C:\\Program Files",
+            "C:\\Program Files (x86)",
+        ]
+    )
 
 
 def _is_path_protected(path: Path) -> bool:
@@ -348,7 +351,7 @@ class WriteFileTool(Tool):
         """Write content to file with path protection."""
         try:
             path_obj = Path(path).expanduser()
-            
+
             # Acquire lock for this specific file
             lock = await resource_manager.get_file_lock(str(path_obj))
             async with lock:
@@ -406,6 +409,7 @@ class WriteFileTool(Tool):
                 try:
                     if mode == "w":
                         import tempfile
+
                         fd, tmp_path = tempfile.mkstemp(
                             dir=str(path_obj.parent), prefix="." + path_obj.name + "."
                         )
@@ -535,6 +539,7 @@ class SearchReplaceTool(Tool):
 
                 try:
                     import tempfile
+
                     fd, tmp_path = tempfile.mkstemp(
                         dir=str(path_obj.parent), prefix="." + path_obj.name + "."
                     )
@@ -715,7 +720,7 @@ class ApplyDiffTool(Tool):
         """Apply a unified diff to a file."""
         try:
             path_obj = Path(path).expanduser()
-            
+
             lock = await resource_manager.get_file_lock(str(path_obj))
             async with lock:
                 if not path_obj.exists():
@@ -821,6 +826,7 @@ class ApplyDiffTool(Tool):
                 # leaving the target in a partial-write state.
                 try:
                     import tempfile
+
                     fd, tmp_path = tempfile.mkstemp(
                         dir=str(path_obj.parent), prefix="." + path_obj.name + "."
                     )
@@ -989,14 +995,19 @@ class MoveFileTool(Tool):
             if scope_err:
                 return scope_err
             if _is_path_protected(dst):
-                return {"success": False, "error": f"Destination is in a protected path: {destination}"}
+                return {
+                    "success": False,
+                    "error": f"Destination is in a protected path: {destination}",
+                }
             scope_err = _enforce_project_scope(dst, "move/copy")
             if scope_err:
                 return scope_err
             # Refuse symlink leaves on either side. ``_is_path_protected``
             # resolves through symlinks, so a swap between check and move
             # could otherwise redirect the operation onto a protected target.
-            symlink_err = _reject_symlink_leaf(src, "move from") or _reject_symlink_leaf(dst, "move to")
+            symlink_err = _reject_symlink_leaf(src, "move from") or _reject_symlink_leaf(
+                dst, "move to"
+            )
             if symlink_err:
                 return symlink_err
 
@@ -1063,7 +1074,10 @@ class CopyFileTool(Tool):
             if scope_err:
                 return scope_err
             if _is_path_protected(dst):
-                return {"success": False, "error": f"Destination is in a protected path: {destination}"}
+                return {
+                    "success": False,
+                    "error": f"Destination is in a protected path: {destination}",
+                }
             scope_err = _enforce_project_scope(dst, "move/copy")
             if scope_err:
                 return scope_err
@@ -1071,7 +1085,9 @@ class CopyFileTool(Tool):
             # *target's* contents — a swapped src symlink would otherwise let
             # us copy ``/etc/passwd`` into the project. Refuse symlink leaves
             # on either side.
-            symlink_err = _reject_symlink_leaf(src, "copy from") or _reject_symlink_leaf(dst, "copy to")
+            symlink_err = _reject_symlink_leaf(src, "copy from") or _reject_symlink_leaf(
+                dst, "copy to"
+            )
             if symlink_err:
                 return symlink_err
 
@@ -1202,7 +1218,10 @@ class CreateDirectoryTool(Tool):
             target = Path(os.path.expanduser(path))
 
             if _is_path_protected(target):
-                return {"success": False, "error": f"Refusing to create directory in protected path: {path}"}
+                return {
+                    "success": False,
+                    "error": f"Refusing to create directory in protected path: {path}",
+                }
             scope_err = _enforce_project_scope(target, "create_directory")
             if scope_err:
                 return scope_err
@@ -1305,12 +1324,16 @@ class FileChownTool(Tool):
     """Change file ownership (requires appropriate privileges)."""
 
     name = "file_chown"
-    description = "Change file or directory owner and/or group. Typically requires root/sudo. POSIX only."
+    description = (
+        "Change file or directory owner and/or group. Typically requires root/sudo. POSIX only."
+    )
     category = "filesystem"
     parameters_model = FileChownParams
     requires_confirmation = True
 
-    async def execute(self, path: str, owner: Optional[str] = None, group: Optional[str] = None) -> dict[str, Any]:
+    async def execute(
+        self, path: str, owner: Optional[str] = None, group: Optional[str] = None
+    ) -> dict[str, Any]:
         if sys.platform == "win32":
             return {
                 "success": False,
@@ -1319,7 +1342,10 @@ class FileChownTool(Tool):
             }
         try:
             if not owner and not group:
-                return {"success": False, "error": "At least one of 'owner' or 'group' must be specified"}
+                return {
+                    "success": False,
+                    "error": "At least one of 'owner' or 'group' must be specified",
+                }
             target = Path(path).expanduser()
             if not target.exists():
                 return {"success": False, "error": f"Path does not exist: {path}"}
@@ -1332,6 +1358,7 @@ class FileChownTool(Tool):
             gid = int(group) if (group and group.isdigit()) else -1
             import pwd
             import grp
+
             if owner and uid == -1:
                 uid = pwd.getpwnam(owner).pw_uid
             if group and gid == -1:

@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 MAX_GIT_OUTPUT_BYTES = 64_000
 
+
 def _truncate_output(text: str, max_bytes: int = MAX_GIT_OUTPUT_BYTES) -> tuple[str, bool]:
     """Truncate text to max_bytes, returning (text, was_truncated)."""
     encoded = text.encode("utf-8")
@@ -29,7 +30,10 @@ def _truncate_output(text: str, max_bytes: int = MAX_GIT_OUTPUT_BYTES) -> tuple[
             head = head[:-1]
     head = head.decode("utf-8")
     omitted = len(encoded) - max_bytes
-    return head + f"\n\n[... truncated, {omitted} more bytes — re-run with a narrower scope ...]", True
+    return (
+        head + f"\n\n[... truncated, {omitted} more bytes — re-run with a narrower scope ...]",
+        True,
+    )
 
 
 async def _validate_git_scope(repo_path: str) -> Optional[Dict[str, Any]]:
@@ -39,6 +43,7 @@ async def _validate_git_scope(repo_path: str) -> Optional[Dict[str, Any]]:
     Mutating git operations should call this before proceeding.
     """
     from ..safeguards import resolve_git_root
+
     result = await resolve_git_root(repo_path)
 
     if result["git_root"] is None:
@@ -65,8 +70,13 @@ async def _validate_git_scope(repo_path: str) -> Optional[Dict[str, Any]]:
 
 
 class GitAddParams(BaseModel):
-    files: List[str] = Field(..., description="List of explicit file paths to stage. Do NOT use ['.'] — specify individual files.")
-    repo_path: str = Field(".", description="Path to the git repository (default: current directory)")
+    files: List[str] = Field(
+        ...,
+        description="List of explicit file paths to stage. Do NOT use ['.'] — specify individual files.",
+    )
+    repo_path: str = Field(
+        ".", description="Path to the git repository (default: current directory)"
+    )
 
 
 class GitAddTool(Tool):
@@ -98,12 +108,11 @@ class GitAddTool(Tool):
 
             # Filter out junk files
             from ..safeguards import filter_stageable_files
+
             allowed, rejected = filter_stageable_files(files, repo_path)
 
             if rejected:
-                logger.info(
-                    f"git_add: filtered {len(rejected)} junk file(s): {rejected}"
-                )
+                logger.info(f"git_add: filtered {len(rejected)} junk file(s): {rejected}")
 
             if not allowed:
                 return {
@@ -148,7 +157,9 @@ class GitAddTool(Tool):
 
 
 class GitStatusParams(BaseModel):
-    repo_path: str = Field(".", description="Path to the git repository (default: current directory)")
+    repo_path: str = Field(
+        ".", description="Path to the git repository (default: current directory)"
+    )
 
 
 class GitStatusTool(Tool):
@@ -161,7 +172,10 @@ class GitStatusTool(Tool):
     async def execute(self, repo_path: str = ".") -> Dict[str, Any]:
         try:
             process = await asyncio.create_subprocess_exec(
-                "git", "status", "--porcelain", "-b",
+                "git",
+                "status",
+                "--porcelain",
+                "-b",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=repo_path,
@@ -191,7 +205,9 @@ class GitStatusTool(Tool):
 
 
 class GitDiffParams(BaseModel):
-    repo_path: str = Field(".", description="Path to the git repository (default: current directory)")
+    repo_path: str = Field(
+        ".", description="Path to the git repository (default: current directory)"
+    )
     file_path: Optional[str] = Field(None, description="Optional specific file to diff")
     staged: bool = Field(False, description="Show staged changes only (default: false)")
 
@@ -243,7 +259,9 @@ class GitDiffTool(Tool):
 
 class GitCommitParams(BaseModel):
     message: str = Field(..., description="Commit message")
-    repo_path: str = Field(".", description="Path to the git repository (default: current directory)")
+    repo_path: str = Field(
+        ".", description="Path to the git repository (default: current directory)"
+    )
 
 
 class GitCommitTool(Tool):
@@ -262,7 +280,10 @@ class GitCommitTool(Tool):
             async with resource_manager.git_lock():
                 # Use create_subprocess_exec to avoid shell injection
                 process = await asyncio.create_subprocess_exec(
-                    "git", "commit", "-m", message,
+                    "git",
+                    "commit",
+                    "-m",
+                    message,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=repo_path,
@@ -282,7 +303,9 @@ class GitCommitTool(Tool):
 
 
 class GitLogParams(BaseModel):
-    repo_path: str = Field(".", description="Path to the git repository (default: current directory)")
+    repo_path: str = Field(
+        ".", description="Path to the git repository (default: current directory)"
+    )
     limit: int = Field(10, description="Number of commits to show (default: 10)")
 
 
@@ -300,7 +323,11 @@ class GitLogTool(Tool):
             elif limit > 1000:
                 limit = 1000
             process = await asyncio.create_subprocess_exec(
-                "git", "log", "--oneline", "-n", str(limit),
+                "git",
+                "log",
+                "--oneline",
+                "-n",
+                str(limit),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=repo_path,
@@ -329,14 +356,15 @@ class GitBranchParams(BaseModel):
     action: str = Field(
         ...,
         description=(
-            "Action: 'list' (show branches), 'create' (new branch), "
-            "'delete' (remove branch)."
+            "Action: 'list' (show branches), 'create' (new branch), 'delete' (remove branch)."
         ),
     )
     branch_name: Optional[str] = Field(
         None, description="Branch name (required for 'create' and 'delete')."
     )
-    repo_path: str = Field(".", description="Path to the git repository (default: current directory)")
+    repo_path: str = Field(
+        ".", description="Path to the git repository (default: current directory)"
+    )
 
 
 class GitBranchTool(Tool):
@@ -357,7 +385,9 @@ class GitBranchTool(Tool):
             async with resource_manager.git_lock():
                 if action == "list":
                     process = await asyncio.create_subprocess_exec(
-                        "git", "branch", "-a",
+                        "git",
+                        "branch",
+                        "-a",
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.PIPE,
                         cwd=repo_path,
@@ -367,15 +397,24 @@ class GitBranchTool(Tool):
                         return {"success": False, "error": stderr.decode("utf-8", errors="replace")}
                     output, truncated = _truncate_output(stdout.decode("utf-8", errors="replace"))
                     branches = [
-                        b.strip().removeprefix("* ") for b in output.strip().split("\n") if b.strip()
+                        b.strip().removeprefix("* ")
+                        for b in output.strip().split("\n")
+                        if b.strip()
                     ]
-                    return {"success": True, "branches": branches, "count": len(branches), "truncated": truncated}
+                    return {
+                        "success": True,
+                        "branches": branches,
+                        "count": len(branches),
+                        "truncated": truncated,
+                    }
 
                 elif action == "create":
                     if not branch_name:
                         return {"success": False, "error": "branch_name is required for 'create'."}
                     process = await asyncio.create_subprocess_exec(
-                        "git", "branch", branch_name,
+                        "git",
+                        "branch",
+                        branch_name,
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.PIPE,
                         cwd=repo_path,
@@ -389,13 +428,18 @@ class GitBranchTool(Tool):
                     if not branch_name:
                         return {"success": False, "error": "branch_name is required for 'delete'."}
                     process = await asyncio.create_subprocess_exec(
-                        "git", "branch", "-d", branch_name,
+                        "git",
+                        "branch",
+                        "-d",
+                        branch_name,
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.PIPE,
                         cwd=repo_path,
                     )
                     stdout, stderr = await process.communicate()
-                    output = stdout.decode("utf-8", errors="replace") + stderr.decode("utf-8", errors="replace")
+                    output = stdout.decode("utf-8", errors="replace") + stderr.decode(
+                        "utf-8", errors="replace"
+                    )
                     return {"success": process.returncode == 0, "output": output}
 
                 else:
@@ -408,7 +452,9 @@ class GitBranchTool(Tool):
 class GitCheckoutParams(BaseModel):
     branch: str = Field(..., description="Branch name or commit hash to checkout")
     create: bool = Field(False, description="Create the branch if it doesn't exist (-b flag)")
-    repo_path: str = Field(".", description="Path to the git repository (default: current directory)")
+    repo_path: str = Field(
+        ".", description="Path to the git repository (default: current directory)"
+    )
 
 
 class GitCheckoutTool(Tool):
@@ -430,6 +476,7 @@ class GitCheckoutTool(Tool):
             async with resource_manager.git_lock():
                 # Log branch before switching
                 from ..safeguards import get_current_branch
+
                 branch_before = await get_current_branch(repo_path)
                 logger.info(
                     f"git_checkout: branch_before={branch_before} "
@@ -448,7 +495,9 @@ class GitCheckoutTool(Tool):
                     cwd=repo_path,
                 )
                 stdout, stderr = await process.communicate()
-                output = stdout.decode("utf-8", errors="replace") + stderr.decode("utf-8", errors="replace")
+                output = stdout.decode("utf-8", errors="replace") + stderr.decode(
+                    "utf-8", errors="replace"
+                )
 
             return {"success": process.returncode == 0, "output": output.strip()}
 
@@ -462,8 +511,12 @@ class GitStashParams(BaseModel):
         description="Action: 'push' (stash changes), 'pop' (apply and remove top stash), 'list' (show stashes), 'drop' (remove a stash entry).",
     )
     message: Optional[str] = Field(None, description="Optional message for 'push' action.")
-    stash_index: int = Field(0, description="Stash index for 'pop' or 'drop' (default: 0 = latest).")
-    repo_path: str = Field(".", description="Path to the git repository (default: current directory)")
+    stash_index: int = Field(
+        0, description="Stash index for 'pop' or 'drop' (default: 0 = latest)."
+    )
+    repo_path: str = Field(
+        ".", description="Path to the git repository (default: current directory)"
+    )
 
 
 class GitStashTool(Tool):
@@ -506,7 +559,9 @@ class GitStashTool(Tool):
                     cwd=repo_path,
                 )
                 stdout, stderr = await process.communicate()
-                output = stdout.decode("utf-8", errors="replace") + stderr.decode("utf-8", errors="replace")
+                output = stdout.decode("utf-8", errors="replace") + stderr.decode(
+                    "utf-8", errors="replace"
+                )
 
             return {"success": process.returncode == 0, "output": output.strip()}
 
@@ -517,7 +572,10 @@ class GitStashTool(Tool):
 class GitPushParams(BaseModel):
     remote: str = Field("origin", description="Remote name (default: origin)")
     branch: Optional[str] = Field(None, description="Branch to push (default: current branch)")
-    force: bool = Field(False, description="Force push. NOTE: This uses --force-with-lease (not --force) to prevent overwriting upstream changes you haven't seen.")
+    force: bool = Field(
+        False,
+        description="Force push. NOTE: This uses --force-with-lease (not --force) to prevent overwriting upstream changes you haven't seen.",
+    )
     set_upstream: bool = Field(False, description="Set upstream tracking branch (-u)")
     repo_path: str = Field(".", description="Path to the git repository")
 
@@ -565,7 +623,9 @@ class GitPushTool(Tool):
                 )
                 stdout, stderr = await process.communicate()
 
-            output = stdout.decode("utf-8", errors="replace") + stderr.decode("utf-8", errors="replace")
+            output = stdout.decode("utf-8", errors="replace") + stderr.decode(
+                "utf-8", errors="replace"
+            )
             return {"success": process.returncode == 0, "output": output.strip()}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -573,7 +633,9 @@ class GitPushTool(Tool):
 
 class GitPullParams(BaseModel):
     remote: str = Field("origin", description="Remote name (default: origin)")
-    branch: Optional[str] = Field(None, description="Branch to pull (default: current tracking branch)")
+    branch: Optional[str] = Field(
+        None, description="Branch to pull (default: current tracking branch)"
+    )
     rebase: bool = Field(False, description="Pull with rebase instead of merge")
     repo_path: str = Field(".", description="Path to the git repository")
 
@@ -582,7 +644,9 @@ class GitPullTool(Tool):
     """Fetch and integrate changes from a remote repository."""
 
     name = "git_pull"
-    description = "Fetch and merge (or rebase) changes from a remote repository into the current branch."
+    description = (
+        "Fetch and merge (or rebase) changes from a remote repository into the current branch."
+    )
     category = "git"
     parameters_model = GitPullParams
     requires_confirmation = True
@@ -615,7 +679,9 @@ class GitPullTool(Tool):
                 )
                 stdout, stderr = await process.communicate()
 
-            output = stdout.decode("utf-8", errors="replace") + stderr.decode("utf-8", errors="replace")
+            output = stdout.decode("utf-8", errors="replace") + stderr.decode(
+                "utf-8", errors="replace"
+            )
             return {"success": process.returncode == 0, "output": output.strip()}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -669,7 +735,9 @@ class GitMergeTool(Tool):
                 )
                 stdout, stderr = await process.communicate()
 
-            output = stdout.decode("utf-8", errors="replace") + stderr.decode("utf-8", errors="replace")
+            output = stdout.decode("utf-8", errors="replace") + stderr.decode(
+                "utf-8", errors="replace"
+            )
             return {"success": process.returncode == 0, "output": output.strip()}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -722,7 +790,9 @@ class GitRebaseTool(Tool):
                 )
                 stdout, stderr = await process.communicate()
 
-            output = stdout.decode("utf-8", errors="replace") + stderr.decode("utf-8", errors="replace")
+            output = stdout.decode("utf-8", errors="replace") + stderr.decode(
+                "utf-8", errors="replace"
+            )
             return {"success": process.returncode == 0, "output": output.strip()}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -771,7 +841,9 @@ class GitRevertTool(Tool):
                 )
                 stdout, stderr = await process.communicate()
 
-            output = stdout.decode("utf-8", errors="replace") + stderr.decode("utf-8", errors="replace")
+            output = stdout.decode("utf-8", errors="replace") + stderr.decode(
+                "utf-8", errors="replace"
+            )
             return {"success": process.returncode == 0, "output": output.strip()}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -814,7 +886,10 @@ class GitResetTool(Tool):
                 return scope_error
 
             if mode not in ("soft", "mixed", "hard"):
-                return {"success": False, "error": f"Invalid mode '{mode}'. Use soft, mixed, or hard."}
+                return {
+                    "success": False,
+                    "error": f"Invalid mode '{mode}'. Use soft, mixed, or hard.",
+                }
 
             cmd = ["git", "reset", f"--{mode}", ref]
 
@@ -827,7 +902,9 @@ class GitResetTool(Tool):
                 )
                 stdout, stderr = await process.communicate()
 
-            output = stdout.decode("utf-8", errors="replace") + stderr.decode("utf-8", errors="replace")
+            output = stdout.decode("utf-8", errors="replace") + stderr.decode(
+                "utf-8", errors="replace"
+            )
             return {"success": process.returncode == 0, "output": output.strip()}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -924,7 +1001,10 @@ class GitRemoteTool(Tool):
                     cmd = ["git", "remote", "remove", name]
                 elif action == "set-url":
                     if not name or not url:
-                        return {"success": False, "error": "'name' and 'url' required for 'set-url'."}
+                        return {
+                            "success": False,
+                            "error": "'name' and 'url' required for 'set-url'.",
+                        }
                     cmd = ["git", "remote", "set-url", name, url]
                 else:
                     return {"success": False, "error": f"Unknown action: {action}"}
@@ -937,7 +1017,9 @@ class GitRemoteTool(Tool):
                 )
                 stdout, stderr = await process.communicate()
 
-            output = stdout.decode("utf-8", errors="replace") + stderr.decode("utf-8", errors="replace")
+            output = stdout.decode("utf-8", errors="replace") + stderr.decode(
+                "utf-8", errors="replace"
+            )
             return {"success": process.returncode == 0, "output": output.strip()}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -996,7 +1078,7 @@ class GitBlameTool(Tool):
                     current = {}
                 elif " " in line:
                     parts = line.split(" ", 3)
-                    if len(parts[0]) >= 40 and all(c in '0123456789abcdef' for c in parts[0]):
+                    if len(parts[0]) >= 40 and all(c in "0123456789abcdef" for c in parts[0]):
                         current["commit"] = parts[0]
                         if len(parts) >= 3:
                             current["line"] = parts[2]
@@ -1004,7 +1086,13 @@ class GitBlameTool(Tool):
                         key, _, value = line.partition(" ")
                         current[key] = value
 
-            return {"success": True, "file": file_path, "annotations": lines, "count": len(lines), "truncated": truncated}
+            return {
+                "success": True,
+                "file": file_path,
+                "annotations": lines,
+                "count": len(lines),
+                "truncated": truncated,
+            }
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -1049,7 +1137,9 @@ class GitCherryPickTool(Tool):
                 )
                 stdout, stderr = await process.communicate()
 
-            output = stdout.decode("utf-8", errors="replace") + stderr.decode("utf-8", errors="replace")
+            output = stdout.decode("utf-8", errors="replace") + stderr.decode(
+                "utf-8", errors="replace"
+            )
             return {"success": process.returncode == 0, "output": output.strip()}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -1061,7 +1151,9 @@ class GitTagParams(BaseModel):
         description="Action: 'list' (show tags), 'create' (add tag), 'delete' (remove tag).",
     )
     tag_name: Optional[str] = Field(None, description="Tag name (required for create/delete)")
-    message: Optional[str] = Field(None, description="Annotated tag message (omit for lightweight tag)")
+    message: Optional[str] = Field(
+        None, description="Annotated tag message (omit for lightweight tag)"
+    )
     ref: str = Field("HEAD", description="Commit to tag (default: HEAD, only for create)")
     repo_path: str = Field(".", description="Path to the git repository")
 
@@ -1070,7 +1162,9 @@ class GitTagTool(Tool):
     """List, create, or delete git tags."""
 
     name = "git_tag"
-    description = "Manage git tags: list existing tags, create lightweight or annotated tags, or delete tags."
+    description = (
+        "Manage git tags: list existing tags, create lightweight or annotated tags, or delete tags."
+    )
     category = "git"
     parameters_model = GitTagParams
     requires_confirmation = True
@@ -1129,7 +1223,9 @@ class GitTagTool(Tool):
 class GitFetchParams(BaseModel):
     remote: str = Field("origin", description="Remote name (default: origin)")
     branch: Optional[str] = Field(None, description="Specific branch to fetch (default: all)")
-    prune: bool = Field(False, description="Remove remote-tracking branches that no longer exist on the remote (-p)")
+    prune: bool = Field(
+        False, description="Remove remote-tracking branches that no longer exist on the remote (-p)"
+    )
     repo_path: str = Field(".", description="Path to the git repository")
 
 
@@ -1170,7 +1266,9 @@ class GitFetchTool(Tool):
                 )
                 stdout, stderr = await process.communicate()
 
-            output = stdout.decode("utf-8", errors="replace") + stderr.decode("utf-8", errors="replace")
+            output = stdout.decode("utf-8", errors="replace") + stderr.decode(
+                "utf-8", errors="replace"
+            )
             return {"success": process.returncode == 0, "output": output.strip()}
         except Exception as e:
             return {"success": False, "error": str(e)}

@@ -1,11 +1,13 @@
 import pytest
 from coderAI.tools.search import TextSearchTool
 
+
 @pytest.fixture
 def temp_codebase(tmp_path):
     file_path = tmp_path / "test_file.txt"
     file_path.write_text("class Foo:\n    pass\n")
     return tmp_path
+
 
 @pytest.mark.asyncio
 async def test_text_search_literal(temp_codebase):
@@ -15,6 +17,7 @@ async def test_text_search_literal(temp_codebase):
     assert result["success"] is True
     assert result["count"] == 0
 
+
 @pytest.mark.asyncio
 async def test_text_search_regex(temp_codebase):
     tool = TextSearchTool()
@@ -23,6 +26,7 @@ async def test_text_search_regex(temp_codebase):
     assert result["success"] is True
     assert result["count"] == 1
     assert result["results"][0]["content"] == "class Foo:"
+
 
 @pytest.mark.asyncio
 async def test_text_search_invalid_regex(temp_codebase):

@@ -17,9 +17,7 @@ class TestRefactorToolProperties:
         assert self.tool.requires_confirmation is True
 
     def test_unknown_action_returns_error(self):
-        result = asyncio.run(
-            self.tool.execute(action="invalid_action_xyz", symbol="foo")
-        )
+        result = asyncio.run(self.tool.execute(action="invalid_action_xyz", symbol="foo"))
         assert not result["success"]
         assert "Unknown action" in result["error"]
 
