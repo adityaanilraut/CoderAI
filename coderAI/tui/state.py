@@ -3,15 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Literal, Optional, Union
+from typing import Any, Dict, List, Literal, Optional
 
-ToolCategory = Literal[
-    "filesystem", "git", "terminal", "web", "search", "memory", "agent", "mcp", "other"
-]
-ToolRisk = Literal["low", "medium", "high"]
 ReasoningEffort = Literal["high", "medium", "low", "none"]
-ToastLevel = Literal["info", "warning", "success"]
-ErrorCategory = Literal["provider", "tool", "internal", "protocol"]
 
 
 @dataclass
@@ -47,11 +41,6 @@ class AgentInfo:
             ctx_limit=int(info.get("ctxLimit") or 0),
             elapsed_ms=int(info.get("elapsedMs") or 0),
         )
-
-
-TimelineItem = Union[
-    Dict[str, Any],  # flexible dicts keyed by "kind"
-]
 
 
 @dataclass

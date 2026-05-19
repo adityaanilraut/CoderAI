@@ -1083,18 +1083,24 @@ async def _cmd_search_codebase(server: IPCServer, msg: Dict[str, Any]) -> None:
     if not query:
         return
     try:
-        from ..cli.search import semantic_search
+        from ..embeddings.factory import create_embedding_provider
+        from ..code_indexer import CodeIndexer
 
-        results = semantic_search(
-            query, project_root=getattr(server.agent.config, "project_root", "."), n_results=10
-        )
+        project_root = getattr(server.agent.config, "project_root", ".")
+        config = config_manager.load()
+        provider = create_embedding_provider(config)
+        if provider is None:
+            server.emit("warning", message="No embedding provider available for code search. Set openai_api_key.")
+            return
+        indexer = CodeIndexer(str(Path(project_root).resolve()), provider)
+        results = await indexer.search(query=query, top_k=10)
         if not results:
             server.emit("info", message=f"No semantic search results found for '{query}'.")
             return
         out = [f"Semantic search results for '{query}':\n"]
         for r in results:
-            preview = r.content.strip().split(chr(10))[0][:80]
-            out.append(f"• {r.filepath} (score: {r.score:.2f})\n  {preview}...")
+            snippet = r["text"].strip().split("\n")[0][:80]
+            out.append(f"• {r['file_path']} L{r['start_line']}-{r['end_line']} (score: {r['score']:.2f})\n  {snippet}...")
         server.emit("info", message="\n".join(out))
     except Exception as e:
         server.emit("warning", message=f"Codebase search failed: {e}")
