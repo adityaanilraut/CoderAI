@@ -78,7 +78,12 @@ def cli(ctx, model, resume, continue_, version, verbose):
 )
 @click.option("--auto-approve", "--yolo", is_flag=True, help="Skip tool confirmation prompts")
 @click.option("--python", default=None, help="Python interpreter for the agent (defaults to current)")
-def chat(model, resume, continue_, auto_approve, python):
+@click.option(
+    "--persona", "-p", default=None,
+    help="Persona to load at startup (filename stem in .coderAI/agents/, e.g. 'code-reviewer'). "
+    "Personas can also be switched mid-session with /persona <name>."
+)
+def chat(model, resume, continue_, auto_approve, python, persona):
     """Start an interactive chat session in the Ink UI.
 
     On first run, downloads the prebuilt UI binary for the current platform
@@ -150,6 +155,8 @@ def chat(model, resume, continue_, auto_approve, python):
             "This includes run_command, delete_file, and git_push. "
             "Press Ctrl+C to abort."
         )
+    if persona:
+        env["CODERAI_PERSONA"] = persona
     env["CODERAI_PYTHON"] = python or sys.executable
 
     try:
@@ -186,11 +193,11 @@ def config_set(key, value):
     """Set a configuration value."""
     try:
         # Convert value types
-        if key in ["temperature"]:
+        if key in ["temperature", "budget_limit", "subagent_timeout_seconds"]:
             value = float(value)
-        elif key in ["max_tokens", "context_window", "max_iterations", "max_tool_output"]:
+        elif key in ["max_tokens", "context_window", "max_iterations", "max_tool_output", "approval_timeout_seconds"]:
             value = int(value)
-        elif key in ["streaming", "save_history", "web_tools_in_main"]:
+        elif key in ["streaming", "save_history", "web_tools_in_main", "continue_loop_on_deny", "allow_outside_project"]:
             value = value.lower() in ["true", "1", "yes"]
 
         config_manager.set(key, value)

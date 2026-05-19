@@ -88,6 +88,22 @@ def is_transient_error(exc: Exception) -> bool:
     return False
 
 
+def compute_iteration_backoff(consecutive_errors: int) -> float:
+    """Return a per-iteration back-off delay (seconds) after recoverable errors.
+
+    The execution loop calls this just before starting a new iteration. When
+    ``consecutive_errors == 0`` (the previous iteration succeeded) the result
+    is ``0.0`` and the next iteration runs immediately. Otherwise the delay
+    grows exponentially starting at 0.5s and is capped at half of
+    :data:`RETRY_MAX_DELAY` so a run of failures cannot stall the loop for
+    the full per-call retry budget.
+    """
+    if consecutive_errors <= 0:
+        return 0.0
+    base = 0.5 * (2 ** (consecutive_errors - 1))
+    return min(base, RETRY_MAX_DELAY / 2)
+
+
 def compute_retry_delay(exc: Exception, attempt: int) -> float:
     """Compute a retry delay in seconds for a given exception and attempt.
 

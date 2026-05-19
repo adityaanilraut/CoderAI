@@ -311,10 +311,12 @@ class RunCommandTool(Tool):
 
             # Try to use exec (no shell) for simple commands
             needs_shell = _needs_shell(command)
+            stdin_pipe = asyncio.subprocess.PIPE if input is not None else None
 
             if needs_shell:
                 process = await asyncio.create_subprocess_shell(
                     command,
+                    stdin=stdin_pipe,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=working_dir,
@@ -324,6 +326,7 @@ class RunCommandTool(Tool):
                     args = shlex.split(command)
                     process = await asyncio.create_subprocess_exec(
                         *args,
+                        stdin=stdin_pipe,
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.PIPE,
                         cwd=working_dir,

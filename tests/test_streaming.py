@@ -286,3 +286,27 @@ class TestIPCStreamingHandler:
         result = asyncio.run(run())
         assert result["content"] == "use <T> as a type"
         assert _text_deltas(server.events) == "use <T> as a type"
+
+    def test_cancel_event_stops_streaming_iteration(self):
+        server = _FakeServer()
+        handler = IPCStreamingHandler(server)
+
+        async def stream():
+            yield {"choices": [{"delta": {"content": "first"}}]}
+            yield {"choices": [{"delta": {"content": "second"}}]}
+
+        class CancelAfterFirst:
+            def __init__(self):
+                self.calls = 0
+
+            def is_set(self):
+                self.calls += 1
+                return self.calls > 1
+
+        async def run():
+            return await handler.handle_stream(stream(), cancel_event=CancelAfterFirst())
+
+        result = asyncio.run(run())
+        assert result["finish_reason"] == "cancelled"
+        assert result["content"] == "first"
+        assert _text_deltas(server.events) == "first"

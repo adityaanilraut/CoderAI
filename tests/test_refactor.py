@@ -31,8 +31,47 @@ class TestRefactorToolProperties:
             )
         )
         assert not result["success"]
+        assert result["error_code"] == "validation_error"
+
+    def test_symbol_is_required_in_schema_and_runtime(self):
+        schema = self.tool.get_schema()["function"]["parameters"]
+        assert "symbol" in schema.get("required", [])
+
+        result = asyncio.run(self.tool.execute(action="find_references"))
+        assert not result["success"]
+        assert result["error_code"] == "validation_error"
+
+    def test_invalid_new_name_returns_validation_error(self, tmp_path):
+        py_file = tmp_path / "module.py"
+        py_file.write_text("def old_name():\n    return old_name()\n")
+        result = asyncio.run(
+            self.tool.execute(
+                action="rename_symbol",
+                symbol="old_name",
+                new_name="not-valid",
+                path=str(tmp_path),
+            )
+        )
+        assert not result["success"]
+        assert result["error_code"] == "validation_error"
+
+    def test_path_outside_project_is_rejected_without_opt_out(self, tmp_path, monkeypatch):
+        from coderAI.config import config_manager
+
+        monkeypatch.delenv("CODERAI_ALLOW_OUTSIDE_PROJECT", raising=False)
+        config_manager._config = None
+        (tmp_path / "module.py").write_text("x = 1\n")
+
+        result = asyncio.run(
+            self.tool.execute(action="find_references", symbol="x", path=str(tmp_path))
+        )
+
+        assert not result["success"]
+        assert result["error_code"] == "scope"
 
     def test_extract_to_module_returns_unsupported(self):
+        # ``extract_to_module`` was never implemented; the refactor tool now
+        # rejects it as an unknown action rather than advertising a stub.
         result = asyncio.run(
             self.tool.execute(
                 action="extract_to_module",
@@ -40,7 +79,8 @@ class TestRefactorToolProperties:
             )
         )
         assert not result["success"]
-        assert "not yet supported" in result["error"]
+        assert "Unknown action" in result["error"]
+        assert "extract_to_module" in result["error"]
 
 
 class TestRefactorPython:
@@ -183,6 +223,31 @@ def make_widget():
         assert "NewWidget" in new_content
         assert "OldWidget" not in new_content
 
+    def test_rename_python_attribute_access(self, tmp_path):
+        py_file = tmp_path / "models.py"
+        py_file.write_text("""\
+class User:
+    def __init__(self):
+        self.old_attr = 1
+
+def read(user):
+    return user.old_attr
+""")
+        result = asyncio.run(
+            self.tool.execute(
+                action="rename_symbol",
+                symbol="old_attr",
+                new_name="new_attr",
+                path=str(tmp_path),
+                dry_run=False,
+            )
+        )
+        assert result["success"]
+        new_content = py_file.read_text()
+        assert "self.new_attr = 1" in new_content
+        assert "user.new_attr" in new_content
+        assert "old_attr" not in new_content
+
 
 class TestRefactorJavaScript:
     @pytest.fixture(autouse=True)
@@ -236,6 +301,31 @@ function main() {
         new_content = js_file.read_text()
         assert "newFunc" in new_content
         assert "oldFunc" not in new_content
+
+    def test_rename_js_ignores_strings_and_comments(self, tmp_path):
+        js_file = tmp_path / "utils.js"
+        js_file.write_text("""\
+// oldFunc should stay in this comment
+const label = "oldFunc should stay in this string";
+function oldFunc() {
+  return oldFunc();
+}
+""")
+        result = asyncio.run(
+            self.tool.execute(
+                action="rename_symbol",
+                symbol="oldFunc",
+                new_name="newFunc",
+                path=str(tmp_path),
+                dry_run=False,
+            )
+        )
+        assert result["success"]
+        new_content = js_file.read_text()
+        assert "// oldFunc should stay in this comment" in new_content
+        assert '"oldFunc should stay in this string"' in new_content
+        assert "function newFunc()" in new_content
+        assert "return newFunc()" in new_content
 
     def test_find_references_no_matches(self, tmp_path):
         js_file = tmp_path / "empty.js"

@@ -440,6 +440,8 @@ function handleSlashCommand(
     case "allow-tool":
     case "disallow-tool":
     case "allowed-tools":
+    case "persona":
+    case "skills":
       client.sendMessage(raw);
       return;
     case "verbose":

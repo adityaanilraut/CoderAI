@@ -5,6 +5,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from coderAI.ipc.jsonrpc_server import (
+    IPCServer,
+    _cmd_cancel,
     _cmd_clear_context,
     _cmd_handshake,
     _cmd_send_message,
@@ -123,6 +125,58 @@ async def test_handshake_warns_on_protocol_mismatch() -> None:
     assert args == ("warning",)
     assert "Protocol version mismatch" in kwargs["message"]
     assert server._handshake_done is True
+
+
+@pytest.mark.asyncio
+async def test_cancel_resolves_pending_approval_waiters(monkeypatch) -> None:
+    fut = asyncio.get_running_loop().create_future()
+    server = SimpleNamespace(
+        _approval_waiters={"tool_1": fut},
+        emit=MagicMock(),
+    )
+    server._cancel_pending_approvals = lambda reason: IPCServer._cancel_pending_approvals(
+        server, reason
+    )
+    tracker = MagicMock()
+    tracker.get_active.return_value = []
+    monkeypatch.setattr("coderAI.ipc.jsonrpc_server.agent_tracker", tracker)
+
+    await _cmd_cancel(server, {})
+
+    assert fut.done()
+    assert fut.result() is False
+    server.emit.assert_any_call(
+        "tool",
+        id="tool_1",
+        phase="cancelled",
+        payload={"reason": "cancelled_by_user"},
+    )
+    server.emit.assert_any_call(
+        "info",
+        message="Cancelled 0 active agent(s) and 1 pending approval(s)",
+    )
+
+
+def test_hello_includes_initial_reasoning_state() -> None:
+    server = IPCServer.__new__(IPCServer)
+    server.agent = SimpleNamespace(
+        config=SimpleNamespace(
+            context_window=1234,
+            budget_limit=1.5,
+            reasoning_effort="medium",
+        ),
+        model="claude",
+        provider=SimpleNamespace(),
+        auto_approve=False,
+    )
+    server.emit = MagicMock()
+
+    IPCServer.emit_hello(server)
+
+    server.emit.assert_called_once()
+    event, payload = server.emit.call_args.args[0], server.emit.call_args.kwargs
+    assert event == "hello"
+    assert payload["reasoning"] == "medium"
 
 
 def test_reset_session_accounting_zeros_counters() -> None:

@@ -26,6 +26,8 @@ export const HELP_MENU_ENTRIES: HelpMenuEntry[] = [
   {slash: "/allowed-tools", desc: "List tools already allowlisted this session"},
   {slash: "/verbose", desc: "Toggle reasoning + expanded tool cards"},
   {slash: "/agents", desc: "Refresh the agents panel"},
+  {slash: "/persona", desc: "List or switch persona · /persona <name> · /persona default"},
+  {slash: "/skills", desc: "List workflows available under .coderAI/skills/"},
   {slash: "/show", desc: "Reference info · type /show then a topic"},
   {slash: "/think", desc: "Reveal the latest hidden reasoning as a toast"},
   {slash: "/search", desc: "Search conversation transcript · /search <query>"},

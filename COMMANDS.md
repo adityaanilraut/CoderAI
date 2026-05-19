@@ -167,6 +167,8 @@ These commands are typed inside an active `coderAI chat` session.
 | `/context` | List files currently pinned to the context window |
 | `/compact` | Force-compress conversation history to reclaim context space |
 | `/agents` | Show all active agents (main + any sub-agents) and their status |
+| `/persona [name\|default\|list]` | List, apply, or clear an agent persona |
+| `/skills` | List available project skill workflows |
 | `/reasoning <high\|medium\|low\|none>` | Set thinking budget for reasoning models |
 | `/yolo` | Toggle auto-approve for high-risk tools |
 | `/verbose` | Toggle verbose mode (show all tool outputs) |
@@ -246,6 +248,7 @@ Environment variables take precedence over `~/.coderAI/config.json`.
 | `CODERAI_RESUME` | Session ID to resume (IPC entry point) |
 | `CODERAI_AUTO_APPROVE` | `"1"` to skip all tool confirmations |
 | `CODERAI_ALLOW_LOCAL_URLS` | `"1"` to allow SSRF-protected web tools to reach localhost |
+| `CODERAI_ALLOW_OUTSIDE_PROJECT` | `"1"` to allow file/terminal/refactor tools outside the project root |
 
 ---
 
@@ -267,7 +270,7 @@ All 56+ tools available to the agent. Confirmation required (`✓`) means the ag
 | `copy_file` | ✓ | Copy a file or directory tree |
 | `delete_file` | ✓ | Delete a file or directory |
 | `multi_edit` | ✓ | Apply multiple edits to a file atomically |
-| `create_directory` | — | Create directories (like `mkdir -p`) |
+| `create_directory` | ✓ | Create directories (like `mkdir -p`) |
 | `file_stat` | — | Get file metadata (size, permissions, mtime) |
 | `file_chmod` | ✓ | Change file permissions |
 | `file_chown` | ✓ | Change file ownership |
@@ -305,7 +308,7 @@ All 56+ tools available to the agent. Confirmation required (`✓`) means the ag
 | `git_blame` | — | Annotate lines with commit/author |
 | `git_cherry_pick` | ✓ | Apply specific commits |
 | `git_tag` | ✓ | List/create/delete tags |
-| `git_fetch` | — | Fetch objects and refs from a remote |
+| `git_fetch` | ✓ | Fetch objects and refs from a remote |
 
 ### Search
 
@@ -322,8 +325,8 @@ All 56+ tools available to the agent. Confirmation required (`✓`) means the ag
 |---|---|---|
 | `web_search` | — | DuckDuckGo search |
 | `read_url` | — | Fetch a URL and return text |
-| `download_file` | — | Download a file from a URL |
-| `http_request` | — | Generic HTTP client (any method, headers, body) |
+| `download_file` | ✓ | Download a file from a URL |
+| `http_request` | ✓ | Generic HTTP client (any method, headers, body) |
 
 ### Memory
 
@@ -337,7 +340,8 @@ All 56+ tools available to the agent. Confirmation required (`✓`) means the ag
 
 | Tool | Confirm | Description |
 |---|---|---|
-| `lint` | — | Auto-detect and run linter |
+| `lint` | ✓ | Auto-detect and run linter |
+| `run_tests` | ✓ | Auto-detect and run project tests |
 | `format` | ✓ | Auto-detect and run formatter |
 
 ### Project, Context & Tasks
@@ -374,7 +378,7 @@ All 56+ tools available to the agent. Confirmation required (`✓`) means the ag
 | Tool | Confirm | Description |
 |---|---|---|
 | `mcp_connect` | ✓ | Connect to an external MCP server |
-| `mcp_disconnect` | — | Disconnect from an MCP server |
+| `mcp_disconnect` | ✓ | Disconnect from an MCP server |
 | `mcp_call_tool` | ✓ | Call a tool on a connected server |
 | `mcp_list` | — | List connected servers and tools |
 

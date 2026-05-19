@@ -960,6 +960,7 @@ class DownloadFileTool(Tool):
         "local destination. Returns the absolute path to the downloaded file."
     )
     is_read_only = False
+    requires_confirmation = True
     parameters_model = DownloadFileParams
     timeout = 300.0
 
@@ -1063,6 +1064,7 @@ class HTTPRequestTool(Tool):
         "requests to private/loopback IPs."
     )
     is_read_only = False
+    requires_confirmation = True
     parameters_model = HTTPRequestParams
 
     async def execute(

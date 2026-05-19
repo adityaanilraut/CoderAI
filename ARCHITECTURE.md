@@ -32,8 +32,8 @@ sequenceDiagram
     
     rect rgb(240, 240, 240)
         Note over Agent, Tools: If Tool Calls received
-        Agent->>IPC: tool_approval_req (via events)
-        IPC-->>UI: {"event": "tool_approval_req", ...}
+        Agent->>IPC: tool event phase=awaiting_approval
+        IPC-->>UI: {"event": "tool", "phase": "awaiting_approval", ...}
         UI-->>User: Show Approval Dialog
         User->>UI: Approve/Deny
         UI->>IPC: {"cmd": "tool_approval_resp", ...}
@@ -43,8 +43,8 @@ sequenceDiagram
         Agent->>LLM: chat(with tool_result)
     end
 
-    Agent->>IPC: stream_delta / assistant_end (via events)
-    IPC-->>UI: {"event": "stream_delta", ...}
+    Agent->>IPC: turn phase=text/end events
+    IPC-->>UI: {"event": "turn", "phase": "text", ...}
     UI-->>User: Render content
 ```
 
@@ -193,7 +193,7 @@ A comprehensive map of the CoderAI repository:
 **Key Components:**
 - `entry.py` - Sets up the `Agent` and `IPCServer`.
 - `jsonrpc_server.py` - Manages the stdio pipe, JSONRPC dispatch, and event emitting.
-- `streaming.py` - Intercepts LLM token deltas and converts them to IPC `stream_delta` events.
+- `streaming.py` - Intercepts LLM token deltas and converts them to phased IPC `turn` events.
 
 ### 5. Interactive UI (`ui/`)
 

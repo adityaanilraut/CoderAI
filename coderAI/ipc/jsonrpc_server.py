@@ -386,6 +386,7 @@ class IPCServer:
             contextLimit=getattr(config, "context_window", 200000),
             budgetLimit=getattr(config, "budget_limit", 0.0) or 0.0,
             autoApprove=bool(getattr(self.agent, "auto_approve", False)),
+            reasoning=str(getattr(config, "reasoning_effort", "none") or "none"),
         )
 
     def emit_ready(self) -> None:
@@ -438,6 +439,7 @@ class IPCServer:
               self.emit("file_diff", path=str(path), diff=str(diff)))
         _bind("agent_lifecycle", self._on_agent_lifecycle)
         _bind("agent_tracker_sync", self._on_agent_tracker_sync)
+        _bind("tool_progress", self._on_tool_progress)
 
     def _unwire_event_listeners(self) -> None:
         for name, cb in self._listener_refs:
@@ -508,6 +510,23 @@ class IPCServer:
         else:
             self._agent_update_last_ms.pop(info.agent_id, None)
         self.emit("agent", phase="update", info=_agent_info_dict(info), parentId=info.parent_id)
+
+    def _on_tool_progress(
+        self,
+        step: int,
+        total: int,
+        tool_name: str,
+        elapsed: Optional[float] = None,
+    ) -> None:
+        payload: Dict[str, Any] = {
+            "label": tool_name,
+            "current": step,
+            "total": total,
+            "progressKind": "steps",
+        }
+        if elapsed is not None:
+            payload["elapsed"] = elapsed
+        self.emit("progress", **payload)
 
 
 
@@ -633,6 +652,22 @@ class IPCServer:
                 fut.set_result(False)
         self._approval_waiters.clear()
 
+    def _cancel_pending_approvals(self, reason: str) -> int:
+        """Deny and wake all pending approval prompts."""
+        cancelled = 0
+        for tool_id, fut in list(self._approval_waiters.items()):
+            if fut.done():
+                continue
+            fut.set_result(False)
+            cancelled += 1
+            self.emit(
+                "tool",
+                id=tool_id,
+                phase="cancelled",
+                payload={"reason": reason},
+            )
+        return cancelled
+
 
 # --- Argument / result sanitization -----------------------------------------
 
@@ -669,6 +704,94 @@ def _result_preview(result: Dict[str, Any]) -> str:
     return s[:_RESULT_PREVIEW_LIMIT]
 
 
+# --- Persona / skills slash helpers ----------------------------------------
+
+def _handle_persona_slash(server: "IPCServer", arg: str) -> None:
+    """Inline ``/persona [name|default|list]`` handler.
+
+    - ``/persona``           — list available personas (also when arg=="list")
+    - ``/persona default``   — clear the active persona (also: ``none``, ``off``)
+    - ``/persona <name>``    — switch to the named persona (filename stem)
+    """
+    from ..agents import get_available_personas, resolve_persona_name
+
+    project_root = getattr(server.agent.config, "project_root", ".")
+    available = get_available_personas(project_root)
+
+    name = (arg or "").strip().lower()
+    if not name or name == "list":
+        if not available:
+            server.emit(
+                "info",
+                message=(
+                    "No personas found in .coderAI/agents/. "
+                    "Create <stem>.md files with YAML frontmatter to define one."
+                ),
+            )
+            return
+        current = (
+            server.agent.persona.name if server.agent.persona else "(default)"
+        )
+        listing = "\n".join(f"  • {n}" for n in sorted(available))
+        server.emit(
+            "info",
+            message=f"Available personas (current: {current}):\n{listing}\n\nUse /persona <name> to switch · /persona default to clear.",
+        )
+        return
+
+    if name in ("default", "none", "off", "clear"):
+        server.agent.set_persona(None)
+        server.emit("session_patch", model=server.agent.model)
+        server.emit("info", message="Persona cleared — back to the default agent.")
+        return
+
+    resolved = resolve_persona_name(arg, project_root)
+    if not resolved:
+        hint = (
+            f"Persona '{arg}' not found. Available: {', '.join(sorted(available)) or '(none)'}"
+        )
+        server.emit("warning", message=hint)
+        return
+
+    applied = server.agent.set_persona(resolved)
+    if applied is None:
+        server.emit("warning", message=f"Failed to apply persona '{resolved}'.")
+        return
+    # Persona may carry a model override that ``set_persona`` activated; surface
+    # the patch so the UI status bar refreshes.
+    server.emit(
+        "session_patch",
+        model=server.agent.model,
+        provider=server.agent.provider.__class__.__name__,
+    )
+    server.emit("info", message=f"Persona switched → {applied.name}")
+
+
+def _handle_skills_slash(server: "IPCServer") -> None:
+    """Inline ``/skills`` — list workflows found under ``.coderAI/skills/``."""
+    from ..tools.skills import get_available_skills
+
+    project_root = getattr(server.agent.config, "project_root", ".")
+    skills = get_available_skills(project_root)
+    if not skills:
+        server.emit(
+            "info",
+            message=(
+                "No skills found in .coderAI/skills/. "
+                "Create <name>.md files with YAML frontmatter to define skill workflows."
+            ),
+        )
+        return
+    listing = "\n".join(f"  • {s['name']} — {s['description']}" for s in skills)
+    server.emit(
+        "info",
+        message=(
+            f"Available skills ({len(skills)}):\n{listing}\n\n"
+            "Ask the agent to run one, e.g. 'use the security-audit skill'."
+        ),
+    )
+
+
 # --- Command handlers -------------------------------------------------------
 
 async def _cmd_send_message(server: IPCServer, msg: Dict[str, Any]) -> None:
@@ -702,6 +825,14 @@ async def _cmd_send_message(server: IPCServer, msg: Dict[str, Any]) -> None:
             server.emit("info", message=f"Always-allowed tools for this session: {names}")
             server.emit_ready()
             return
+        if cmd == "persona":
+            _handle_persona_slash(server, arg)
+            server.emit_ready()
+            return
+        if cmd == "skills":
+            _handle_skills_slash(server)
+            server.emit_ready()
+            return
     async with server._turn_lock:
         try:
             await server.agent.process_message(text)
@@ -717,6 +848,7 @@ async def _cmd_send_message(server: IPCServer, msg: Dict[str, Any]) -> None:
 
 
 async def _cmd_cancel(server: IPCServer, msg: Dict[str, Any]) -> None:
+    approvals_cancelled = server._cancel_pending_approvals("cancelled_by_user")
     agent_id = msg.get("agentId")
     if agent_id:
         ok = agent_tracker.cancel(agent_id)
@@ -727,7 +859,12 @@ async def _cmd_cancel(server: IPCServer, msg: Dict[str, Any]) -> None:
     else:
         active = agent_tracker.get_active()
         agent_tracker.cancel_all()
-        server.emit("info", message=f"Cancelled {len(active)} active agent(s)")
+        suffix = (
+            f" and {approvals_cancelled} pending approval(s)"
+            if approvals_cancelled
+            else ""
+        )
+        server.emit("info", message=f"Cancelled {len(active)} active agent(s){suffix}")
 
 
 async def _cmd_set_model(server: IPCServer, msg: Dict[str, Any]) -> None:
@@ -737,9 +874,15 @@ async def _cmd_set_model(server: IPCServer, msg: Dict[str, Any]) -> None:
     server.agent.model = model
     try:
         server.agent.provider = server.agent._create_provider()
+        context_controller = getattr(server.agent, "context_controller", None)
+        if context_controller is not None:
+            context_controller.provider = server.agent.provider
     except Exception as e:
         server.agent.model = old_model
         server.agent.provider = old_provider
+        context_controller = getattr(server.agent, "context_controller", None)
+        if context_controller is not None:
+            context_controller.provider = old_provider
         server._emit_error("provider", f"Could not switch to {model}: {e}")
         return
     server.agent.provider.set_cumulative_usage(
@@ -755,6 +898,16 @@ async def _cmd_set_model(server: IPCServer, msg: Dict[str, Any]) -> None:
     server.emit("session_patch", model=model, provider=server.agent.provider.__class__.__name__)
     # Verbose-only confirmation; the status bar carries the change in normal mode.
     server.emit("success", message=f"Switched model → {model}")
+
+
+async def _cmd_set_persona(server: IPCServer, msg: Dict[str, Any]) -> None:
+    """Switch the active persona programmatically (used by future UI picker).
+
+    Payload: ``{"persona": "<name>"}``; empty/omitted/``"default"`` clears it.
+    """
+    raw = (msg.get("persona") or (msg.get("payload") or {}).get("persona") or "")
+    _handle_persona_slash(server, str(raw).strip())
+    server.emit_ready()
 
 
 async def _cmd_toggle_auto_approve(server: IPCServer, msg: Dict[str, Any]) -> None:
@@ -1050,6 +1203,7 @@ _COMMAND_HANDLERS: Dict[str, Callable[[IPCServer, Dict[str, Any]], Awaitable[Non
     "cancel_agent": _cmd_cancel_agent,
     "set_model": _cmd_set_model,
     "set_reasoning": _cmd_set_reasoning,
+    "set_persona": _cmd_set_persona,
     "toggle_auto_approve": _cmd_toggle_auto_approve,
     "tool_approval_resp": _cmd_tool_approval_resp,
     "clear_context": _cmd_clear_context,

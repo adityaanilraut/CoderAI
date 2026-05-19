@@ -604,6 +604,7 @@ class MCPCallTool(Tool):
     name = "mcp_call_tool"
     description = "Call a tool on a connected MCP server"
     parameters_model = MCPCallToolParams
+    requires_confirmation = True
 
     async def execute(
         self, server_name: str, tool_name: str, arguments: dict = None
@@ -658,6 +659,7 @@ class MCPDisconnectTool(Tool):
     category = "mcp"
     parameters_model = MCPDisconnectParams
     is_read_only = False
+    requires_confirmation = True
 
     async def execute(self, server_name: str) -> Dict[str, Any]:
         try:

@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 from .base import Tool
+from ..config import config_manager
 
 logger = logging.getLogger(__name__)
 
@@ -273,7 +274,7 @@ class RunTestsTool(Tool):
     )
     parameters_model = RunTestsParams
     is_read_only = False
-    requires_confirmation = False
+    requires_confirmation = True
     timeout = None
 
     async def execute(
@@ -285,7 +286,14 @@ class RunTestsTool(Tool):
         timeout: Optional[int] = None,
     ) -> Dict[str, Any]:
         try:
-            framework_name = framework or detect_test_framework(path)
+            cfg = config_manager.load_project_config(".")
+            project_root = Path(getattr(cfg, "project_root", ".") or ".").resolve()
+            requested_path = Path(path).expanduser()
+            if not requested_path.is_absolute():
+                requested_path = project_root / requested_path
+            requested_path = requested_path.resolve()
+
+            framework_name = framework or detect_test_framework(str(requested_path))
             if not framework_name:
                 return {
                     "success": False,
@@ -321,6 +329,7 @@ class RunTestsTool(Tool):
 
             if filter:
                 if framework_name == "pytest":
+                    cmd.append(str(requested_path))
                     cmd.append("-k")
                     cmd.append(filter)
                 elif framework_name in ("jest", "vitest"):
@@ -335,11 +344,11 @@ class RunTestsTool(Tool):
                 else:
                     cmd.append(filter)
             elif framework_name == "pytest":
-                cmd.append(path)
+                cmd.append(str(requested_path))
             elif framework_name in ("jest", "vitest") and path != ".":
-                cmd.append(path)
+                cmd.append(str(requested_path))
             elif framework_name == "unittest" and path != ".":
-                cmd = [cmd_binary, "-m", "unittest", "discover", "-s", path, "-v"]
+                cmd = [cmd_binary, "-m", "unittest", "discover", "-s", str(requested_path), "-v"]
 
             if verbose and framework_name in ("jest", "vitest"):
                 pass
@@ -347,10 +356,6 @@ class RunTestsTool(Tool):
                 pass
 
             effective_timeout = timeout or config.get("timeout", 120)
-
-            project_root = Path(path).resolve()
-            if project_root.is_file():
-                project_root = project_root.parent
 
             process = await asyncio.create_subprocess_exec(
                 *cmd,

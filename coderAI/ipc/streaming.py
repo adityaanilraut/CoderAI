@@ -44,7 +44,7 @@ class IPCStreamingHandler:
         self._raw_reasoning = ""
 
     async def handle_stream(
-        self, stream, initial_content: str = ""
+        self, stream, initial_content: str = "", cancel_event: Any = None
     ) -> Dict[str, Any]:
         self.current_content = initial_content
         self.current_reasoning = ""
@@ -64,6 +64,9 @@ class IPCStreamingHandler:
 
         try:
             async for chunk in stream:
+                if cancel_event is not None and cancel_event.is_set():
+                    finish_reason = "cancelled"
+                    break
                 choices = chunk.get("choices", [])
                 if not choices:
                     continue

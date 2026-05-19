@@ -18,8 +18,9 @@ def test_intro_carries_plan_first_principle() -> None:
 
 def test_tail_carries_plan_first_workflow_section() -> None:
     assert "### Plan-First Workflow" in SYSTEM_PROMPT_TAIL
-    assert "Build the plan." in SYSTEM_PROMPT_TAIL
-    assert "Maintain a task checklist while implementing." in SYSTEM_PROMPT_TAIL
+    assert "action='create'" in SYSTEM_PROMPT_TAIL
+    assert "action='status'" in SYSTEM_PROMPT_TAIL
+    assert "manage_tasks" in SYSTEM_PROMPT_TAIL
 
 
 def test_compose_default_system_prompt_includes_directives() -> None:
@@ -31,5 +32,6 @@ def test_compose_default_system_prompt_includes_directives() -> None:
 
     assert "Plan before you build." in rendered
     assert "### Plan-First Workflow" in rendered
-    assert "**Call this first**" in rendered
-    assert "Use this alongside `plan`" in rendered
+    assert "finish_reason=length" in rendered
+    assert "action='status'" in rendered
+    assert "Do not duplicate plan steps into `manage_tasks`" in rendered

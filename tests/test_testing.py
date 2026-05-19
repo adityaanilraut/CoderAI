@@ -2,6 +2,7 @@
 
 import asyncio
 import shutil
+from types import SimpleNamespace
 import pytest
 
 from coderAI.tools.testing import RunTestsTool, detect_test_framework, TEST_FRAMEWORKS
@@ -48,7 +49,7 @@ class TestRunTestsTool:
     def test_tool_properties(self):
         assert self.tool.name == "run_tests"
         assert self.tool.is_read_only is False
-        assert self.tool.requires_confirmation is False
+        assert self.tool.requires_confirmation is True
 
     def test_unknown_framework_returns_error(self):
         result = asyncio.run(
@@ -130,6 +131,26 @@ class TestRunTestsTool:
         assert result["success"]
         assert "stdout" in result
         assert len(result["stdout"]) > 0
+
+    def test_relative_file_path_runs_from_project_root(self, tmp_path, monkeypatch):
+        if not shutil.which("pytest"):
+            pytest.skip("pytest not installed")
+
+        (tmp_path / "pyproject.toml").write_text("[tool.pytest]\n")
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir()
+        (tests_dir / "test_example.py").write_text("def test_pass():\n    assert True\n")
+        monkeypatch.setattr(
+            "coderAI.tools.testing.config_manager.load_project_config",
+            lambda _root: SimpleNamespace(project_root=tmp_path),
+        )
+
+        result = asyncio.run(
+            self.tool.execute(path="tests/test_example.py", framework="pytest")
+        )
+
+        assert result["success"]
+        assert result["results"]["passed"] >= 1
 
     def test_missing_binary_returns_error(self):
         result = asyncio.run(

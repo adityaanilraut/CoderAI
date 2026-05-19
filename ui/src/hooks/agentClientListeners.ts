@@ -174,6 +174,7 @@ export function attachAgentClientListeners(
       ctxLimit: m.contextLimit,
       budgetUsd: m.budgetLimit,
       autoApprove: m.autoApprove,
+      reasoning: m.reasoning,
       sessionStartedAt: s.sessionStartedAt ?? Date.now(),
     }));
   });
@@ -310,6 +311,14 @@ export function attachAgentClientListeners(
         risk: m.payload.risk || "low",
         decided: "pending",
       });
+    } else if (m.phase === "cancelled") {
+      setTimeline((prev) =>
+        prev.map((it) =>
+          it.kind === "approval" && it.id === m.id && it.decided === "pending"
+            ? {...it, decided: "denied"}
+            : it,
+        ),
+      );
     }
   });
 

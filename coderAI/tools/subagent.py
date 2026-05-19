@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 from .base import Tool
+from ..agent_loop import RECOVERABLE_ERROR_MARKER
 from ..agent_tracker import AgentStatus
 from ..events import event_emitter
 
@@ -16,6 +17,10 @@ logger = logging.getLogger(__name__)
 
 # Maximum depth for nested sub-agent delegation to prevent infinite recursion
 MAX_DELEGATION_DEPTH = 3
+
+# How many recent recoverable-error notes from the parent session to surface
+# to the sub-agent. Keeps the preamble focused on the latest failures.
+RECENT_RECOVERABLE_ERRORS_LIMIT = 3
 
 
 @dataclass
@@ -30,10 +35,40 @@ class SubagentContext:
     parent_ipc_server: Optional[Any] = None
     parent_session: Optional[Any] = None  # Session
     delegation_depth: int = 0
+    parent_config: Optional[Any] = None  # Config — drives subagent_timeout_seconds
 
 # Number of recent parent tool calls to summarise for the sub-agent so it
 # doesn't repeat inspection work the parent has already done.
 RECENT_TOOL_HISTORY_LIMIT = 10
+
+
+def _collect_recent_recoverable_errors(
+    parent_session: Any, limit: int = RECENT_RECOVERABLE_ERRORS_LIMIT
+) -> List[str]:
+    """Return the most recent ``RECOVERABLE_ERROR_MARKER``-tagged system
+    messages from the parent session (most recent last).
+
+    The execution loop persists a system message tagged with
+    :data:`coderAI.agent_loop.RECOVERABLE_ERROR_MARKER` every time it
+    recovers from an unexpected error. Surfacing those notes to a spawned
+    sub-agent lets it avoid repeating whatever failed for the parent.
+    """
+    if parent_session is None or limit <= 0:
+        return []
+    messages = getattr(parent_session, "messages", None) or []
+    collected: List[str] = []
+    for msg in reversed(messages):
+        if getattr(msg, "role", None) != "system":
+            continue
+        content = getattr(msg, "content", None)
+        if not isinstance(content, str):
+            continue
+        if RECOVERABLE_ERROR_MARKER not in content:
+            continue
+        collected.append(content.strip())
+        if len(collected) >= limit:
+            break
+    return list(reversed(collected))
 
 
 def _summarize_parent_tool_history(
@@ -44,6 +79,11 @@ def _summarize_parent_tool_history(
     Returns ``None`` when there is nothing useful to share. Each entry shows
     the tool name, the arguments, and a very compact preview of the result so
     the sub-agent can see what has already been inspected.
+
+    When the parent session also contains recoverable-error markers (system
+    messages prefixed with :data:`RECOVERABLE_ERROR_MARKER`), the most recent
+    few are prepended under their own header so the sub-agent inherits the
+    parent's learned-the-hard-way lessons.
     """
     import json as _json
 
@@ -87,23 +127,41 @@ def _summarize_parent_tool_history(
             pairs.append((tool_name, args_preview, result))
         i -= 1
 
-    if not pairs:
+    recoverable_errors = _collect_recent_recoverable_errors(parent_session)
+
+    if not pairs and not recoverable_errors:
         return None
 
-    lines = [
-        "The parent agent has already made these tool calls during the current session.",
-        "Use them as prior knowledge — do NOT repeat these exact calls unless the state has demonstrably changed.",
-        "",
-    ]
-    for tool_name, args_preview, result in reversed(pairs):
-        line = f"- **{tool_name}**"
-        if args_preview:
-            line += f" `{args_preview}`"
-        if result:
-            preview = result.replace("\n", " ")
-            line += f" → {preview}"
-        lines.append(line)
-    return "\n".join(lines)
+    lines: List[str] = []
+    if recoverable_errors:
+        lines.append(
+            "RECENT RECOVERABLE ERRORS (parent agent had to recover from these):"
+        )
+        for note in recoverable_errors:
+            preview = note.replace("\n", " ")
+            if len(preview) > 320:
+                preview = preview[:320] + "…"
+            lines.append(f"- {preview}")
+        lines.append("")
+
+    if pairs:
+        lines.extend(
+            [
+                "The parent agent has already made these tool calls during the current session.",
+                "Use them as prior knowledge — do NOT repeat these exact calls unless the state has demonstrably changed.",
+                "",
+            ]
+        )
+        for tool_name, args_preview, result in reversed(pairs):
+            line = f"- **{tool_name}**"
+            if args_preview:
+                line += f" `{args_preview}`"
+            if result:
+                preview = result.replace("\n", " ")
+                line += f" → {preview}"
+            lines.append(line)
+
+    return "\n".join(lines).rstrip()
 
 def _get_role_instructions(role: Optional[str]) -> str:
     """Get role-specific instructions."""
@@ -200,13 +258,34 @@ class DelegateTaskTool(Tool):
     max_parallel_invocations = 1
     parameters_model = DelegateTaskParams
     is_read_only = False
-    timeout = 600.0  # 10 minutes; not yet configurable via standard Tool settings
+
+    # Fallback used when no parent config is available (e.g. during
+    # auto-discovery before ``_configure_delegate_tool_context`` runs).
+    # The live value resolves through ``self.timeout`` (a property).
+    DEFAULT_TIMEOUT_SECONDS = 600.0
 
     def __init__(self) -> None:
         super().__init__()
         # ``context`` is populated by ``Agent._configure_delegate_tool_context``
         # once the parent agent is fully constructed.
         self.context: SubagentContext = SubagentContext()
+
+    @property
+    def timeout(self) -> float:  # type: ignore[override]
+        """Per-invocation wall-clock cap, sourced from the parent agent's config.
+
+        ``ToolExecutor.execute_single_tool`` reads this via ``getattr(tool, "timeout")``
+        so a property is enough — no further plumbing required.
+        """
+        cfg = getattr(self.context, "parent_config", None)
+        if cfg is not None:
+            value = getattr(cfg, "subagent_timeout_seconds", None)
+            if value:
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    pass
+        return self.DEFAULT_TIMEOUT_SECONDS
 
     @property
     def _current_depth(self) -> int:
@@ -276,6 +355,16 @@ class DelegateTaskTool(Tool):
                 try:
                     resumed_session = history_manager.load_session(task_id)
                     if resumed_session is not None:
+                        parent_session_id = getattr(ctx.parent_session, "session_id", None)
+                        if parent_session_id and resumed_session.session_id == parent_session_id:
+                            return {
+                                "success": False,
+                                "error": (
+                                    "Refusing to resume delegate_task with the parent session id. "
+                                    "Pass the task_id returned by a previous delegate_task call."
+                                ),
+                                "error_code": "invalid_task_id",
+                            }
                         logger.info(
                             "Resuming sub-agent session %s for task_id=%s",
                             task_id, task_id,
@@ -304,16 +393,12 @@ class DelegateTaskTool(Tool):
             # Inherit the parent agent's model when no explicit override is given
             effective_model = model or ctx.parent_model
 
-            # Snapshot cost BEFORE spawning so we can attribute spend to this
-            # sub-agent. NOTE: the cost tracker is shared across all agents, so
-            # the delta ``final - snapshot`` may include cost from other
-            # concurrently running read-only sub-agents — the per-agent cost
-            # is therefore only accurate when no other sub-agents are active.
-            parent_cost_before = (
-                ctx.parent_cost_tracker.get_total_cost()
-                if ctx.parent_cost_tracker is not None
-                else 0.0
-            )
+            # Per-sub-agent cost is computed directly from this sub-agent's
+            # own provider counters at the end of the run, not from a delta on
+            # the shared cost tracker. The shared tracker drives the parent's
+            # budget enforcement and is updated by both agents, so its delta
+            # is unreliable when multiple read-only sub-agents run in parallel
+            # (``MAX_CONCURRENT_READ_ONLY_SUBAGENTS=4``). See _final_cost_for.
 
             def _build_sub_agent():
                 """Create and fully wire a fresh sub-agent."""
@@ -325,9 +410,6 @@ class DelegateTaskTool(Tool):
                     delegation_depth=child_depth,
                 )
                 sub_agent.ipc_server = ctx.parent_ipc_server
-
-                if ctx.parent_cost_tracker is not None:
-                    sub_agent.cost_tracker = ctx.parent_cost_tracker
 
                 persona = None
                 if agent_role:
@@ -366,13 +448,31 @@ class DelegateTaskTool(Tool):
                     for name in mutating:
                         del sub_agent.tools.tools[name]
 
-                sub_agent.create_session()
                 if resumed_session is not None:
-                    # Clone messages from the resumed session so the sub-agent
-                    # continues where it left off.
-                    sub_agent.session.messages = list(resumed_session.messages)
+                    # Continue the same persisted sub-agent session. Keep the
+                    # original session id and metadata so task_id remains
+                    # stable across repeated resume calls.
+                    sub_agent.session = resumed_session
                     sub_agent.session.model = effective_model
                     sub_agent.session.updated_at = _time.time()
+                else:
+                    # Sub-agents share project state with the parent, so their
+                    # session bootstrap must not clear the parent's active plan.
+                    sub_agent.create_session(clear_plan=False)
+                    sub_agent.session.metadata.update(
+                        {
+                            "purpose": "delegation",
+                            "parent_session_id": getattr(ctx.parent_session, "session_id", None),
+                            "delegation_depth": child_depth,
+                            "agent_role": agent_role,
+                        }
+                    )
+
+                if ctx.parent_cost_tracker is not None:
+                    # Assign after session bootstrap so create_session() never
+                    # resets the parent's shared budget tracker.
+                    sub_agent.cost_tracker = ctx.parent_cost_tracker
+                    sub_agent.context_controller.cost_tracker = sub_agent.cost_tracker
 
                 sub_agent._register_tracker(
                     task=task_description[:120],
@@ -411,6 +511,11 @@ class DelegateTaskTool(Tool):
                     "calling tools and write the report as text. An empty or "
                     "tool-call-only final turn is considered a failure.",
                 ]
+
+                if ctx.parent_cost_tracker is not None:
+                    system_preamble_parts.append(
+                        "- Your token spend counts against the parent's budget — be efficient."
+                    )
 
                 if role_instructions:
                     system_preamble_parts.extend(["", f"ROLE-SPECIFIC GUIDANCE ({agent_role}):", role_instructions])
@@ -552,13 +657,8 @@ class DelegateTaskTool(Tool):
             except Exception as e:
                 logger.error(f"Sub-agent failed: {e}")
                 wasted_tokens = getattr(sub_agent, "total_tokens", 0) if sub_agent else 0
-                wasted_cost = 0.0
-                if sub_agent is not None and getattr(sub_agent, "cost_tracker", None):
-                    try:
-                        wasted_cost = sub_agent.cost_tracker.get_total_cost() - parent_cost_before
-                    except Exception:
-                        pass
                 from ..cost import CostTracker
+                wasted_cost = self._final_cost_for(sub_agent)
                 event_emitter.emit(
                     "agent_error",
                     message=(
@@ -575,7 +675,7 @@ class DelegateTaskTool(Tool):
                 }
 
             tokens_used = sub_agent.total_tokens
-            cost_usd = sub_agent.cost_tracker.get_total_cost() - parent_cost_before
+            cost_usd = self._final_cost_for(sub_agent)
 
             sub_agent._finish_tracker()
 
@@ -607,7 +707,7 @@ class DelegateTaskTool(Tool):
                 ),
             )
 
-            task_session_id = getattr(sub_agent.session, "id", None)
+            task_session_id = getattr(sub_agent.session, "session_id", None)
             return {
                 "success": True,
                 "sub_agent_role": agent_role or "General Assistant",
@@ -633,6 +733,32 @@ class DelegateTaskTool(Tool):
                     await sub_agent.close()
                 except Exception:
                     pass
+
+    @staticmethod
+    def _final_cost_for(sub_agent: Any) -> float:
+        """Compute cost from the sub-agent's own provider token counters.
+
+        Reading the shared cost tracker delta is unreliable when multiple
+        sub-agents run in parallel — concurrent spend is cross-attributed.
+        Computing from this sub-agent's own ``total_prompt_tokens`` and
+        ``total_completion_tokens`` against its provider's model price gives
+        a clean per-agent number.
+        """
+        if sub_agent is None:
+            return 0.0
+        from ..cost import CostTracker
+        provider = getattr(sub_agent, "provider", None)
+        model_for_cost = getattr(provider, "actual_model", None) or getattr(
+            sub_agent, "model", ""
+        )
+        try:
+            return CostTracker.calculate_cost_for_tokens(
+                model_for_cost,
+                int(getattr(sub_agent, "total_prompt_tokens", 0) or 0),
+                int(getattr(sub_agent, "total_completion_tokens", 0) or 0),
+            )
+        except Exception:
+            return 0.0
 
     @staticmethod
     def _synthesize_fallback_report(

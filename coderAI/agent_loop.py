@@ -13,6 +13,7 @@ from .history import Message
 from .tool_executor import ToolExecutor
 from .error_policy import (
     BudgetExceededError,
+    compute_iteration_backoff,
     compute_retry_delay,
     is_transient_error,
     MAX_RETRIES_PER_ITERATION,
@@ -26,65 +27,17 @@ logger = logging.getLogger(__name__)
 # detection. OpenCode uses 3; we match that default.
 DOOM_LOOP_THRESHOLD = 3
 
-# Injected as a synthetic assistant message when within 5 steps of the max.
-MAX_STEPS_WARNING = (
-    "<system-reminder>\n"
-    "You are approaching the maximum number of iterations ({remaining} remaining). "
-    "Prioritize completing the most critical remaining work and provide a final "
-    "response to the user. Do not start any new multi-step processes.\n"
-    "</system-reminder>"
-)
+# Backward-compatible module-level default. The runtime value now lives on
+# :class:`coderAI.config.Config.max_iterations_hard_cap` and is read through
+# ``self.agent.config`` inside :class:`ExecutionLoop`. Importers that still
+# reference this constant continue to work but no longer drive the loop.
+MAX_ITERATIONS_HARD_CAP = 200
 
-# Injected when the plan tool was used and the agent should reference it.
-PLAN_MODE_REMINDER = (
-    "<system-reminder>\n"
-    "A plan exists for this task. Before making changes, consult the current plan "
-    "(use `plan` action='show') to see the current step. Advance the plan with "
-    "`plan` action='advance' after completing each step. If the plan is complete, "
-    "provide a final summary.\n"
-    "</system-reminder>"
-)
-
-
-def _is_plan_active(session) -> bool:
-    """Check whether the plan tool was invoked during this session."""
-    if session is None:
-        return False
-    for msg in session.messages:
-        if msg.role == "assistant" and msg.tool_calls:
-            for tc in msg.tool_calls:
-                func = (tc or {}).get("function", {}) or {}
-                if func.get("name") == "plan":
-                    return True
-    return False
-
-
-def _inject_step_reminders(
-    messages: List[Dict[str, Any]],
-    iteration: int,
-    max_iterations: int,
-    session,
-) -> List[Dict[str, Any]]:
-    """Insert system reminders into the message list for multi-step awareness.
-
-    - On iteration > 1 with plan active: inject a plan reminder.
-    - When within 5 steps of max_iterations: inject a step-limit warning.
-    """
-    result = list(messages)
-    reminders: List[str] = []
-
-    if iteration > 1 and _is_plan_active(session):
-        reminders.append(PLAN_MODE_REMINDER)
-
-    steps_left = max_iterations - iteration
-    if 1 <= steps_left <= 5:
-        reminders.append(MAX_STEPS_WARNING.format(remaining=steps_left))
-
-    if reminders:
-        combined = "\n\n".join(reminders)
-        result.append({"role": "user", "content": combined})
-
-    return result
+# Prefix used to tag synthetic system messages persisted into the session
+# after an unexpected recoverable error. The context controller and the
+# sub-agent bootstrap recognise this marker to preserve / propagate the
+# error feedback across iterations and into spawned sub-agents.
+RECOVERABLE_ERROR_MARKER = "[Recoverable Error]:"
 
 
 class ExecutionLoop:
@@ -106,9 +59,124 @@ class ExecutionLoop:
 
             self.hooks_manager = _NoopHooksManager()
         self._last_repaired_msg_count: int = 0
+        # Turn-scoped flags. ``run()`` resets these at the top of each call so
+        # state never leaks across user messages.
+        self._plan_reminder_emitted: bool = False
+        self._last_plan_step: Optional[int] = None
+        self._length_retry_used: bool = False
+        self._hard_cap_warned: bool = False
+
+    def _read_active_plan_step(self) -> Optional[Dict[str, Any]]:
+        """Return ``{current_step, total_steps, description}`` for the on-disk
+        plan, or ``None`` when no plan is active.
+
+        Reads ``.coderAI/current_plan.json`` directly via the same path that
+        the ``plan`` tool writes to. Failures (missing file, malformed JSON,
+        permission errors, etc.) are swallowed and treated as "no plan" — the
+        reminder is a nudge, not a critical path.
+        """
+        try:
+            from pathlib import Path
+
+            from .project_layout import find_dot_coderai_subdir
+
+            project_root = str(getattr(self.agent.config, "project_root", "."))
+            dot_dir = find_dot_coderai_subdir("", project_root)
+            if dot_dir is None:
+                dot_dir = Path(project_root).resolve() / ".coderAI"
+            plan_file = dot_dir / "current_plan.json"
+            if not plan_file.is_file():
+                return None
+            with open(plan_file, "r") as f:
+                plan = json.load(f)
+            steps = plan.get("steps") or []
+            total = len(steps)
+            if total == 0:
+                return None
+            current = int(plan.get("current_step", 0) or 0)
+            if current < 0:
+                current = 0
+            if current >= total:
+                desc = "All plan steps complete"
+            else:
+                desc = str(steps[current].get("description") or "")
+            return {"current_step": current, "total_steps": total, "description": desc}
+        except Exception:
+            return None
+
+    def _inject_step_reminders(
+        self,
+        messages: List[Dict[str, Any]],
+        iteration: int,
+        max_iterations: int,
+    ) -> List[Dict[str, Any]]:
+        """Append a single ``system`` reminder combining plan progress and the
+        approaching-step-limit warning, when applicable.
+
+        The plan reminder is emitted at most once per turn and re-emitted only
+        when the on-disk plan's ``current_step`` has advanced since the last
+        injection (tracked via ``self._plan_reminder_emitted`` /
+        ``self._last_plan_step``). The step-limit hint is emitted on every
+        iteration that falls inside the 5-step window so the model can see
+        the budget shrink in real time.
+        """
+        result = list(messages)
+        parts: List[str] = []
+
+        plan_info = self._read_active_plan_step()
+        if plan_info is not None:
+            current_step = plan_info["current_step"]
+            total_steps = plan_info["total_steps"]
+            description = plan_info["description"]
+            advanced = (
+                self._last_plan_step is not None
+                and current_step != self._last_plan_step
+            )
+            if (not self._plan_reminder_emitted) or advanced:
+                self._plan_reminder_emitted = True
+                self._last_plan_step = current_step
+                if current_step >= total_steps:
+                    parts.append(
+                        "A plan is active and every step is marked complete "
+                        "(use `plan` action='show' to confirm). If the work is "
+                        "really done, give the user a final summary; otherwise "
+                        "open a new plan or fix the remaining gaps."
+                    )
+                else:
+                    parts.append(
+                        f"A plan is active. Currently on step {current_step + 1} "
+                        f"of {total_steps}: \"{description}\". Consult it with "
+                        f"`plan` action='show' before changing course and "
+                        f"advance it with `plan` action='advance' once the step "
+                        f"is finished."
+                    )
+
+        steps_left = max_iterations - iteration
+        if 1 <= steps_left <= 5:
+            parts.append(
+                f"You are approaching the maximum number of iterations "
+                f"({steps_left} remaining). Prioritize completing the most "
+                f"critical remaining work and provide a final response to the "
+                f"user. Do not start any new multi-step processes."
+            )
+
+        if parts:
+            combined = (
+                "<system-reminder>\n"
+                + "\n\n".join(parts)
+                + "\n</system-reminder>"
+            )
+            result.append({"role": "system", "content": combined})
+        return result
 
     async def run(self, user_message: str) -> Dict[str, Any]:
         """Process a user message and return response."""
+
+        # Reset turn-scoped flags so state never leaks across user messages.
+        self._plan_reminder_emitted = False
+        self._last_plan_step = None
+        self._length_retry_used = False
+        self._hard_cap_warned = False
 
         # 1. Prepare session and check budget
         budget_block = self._prepare_session(user_message)
@@ -146,15 +214,56 @@ class ExecutionLoop:
 
         # Process with LLM (potentially multiple rounds for tool calls)
         max_iterations = self.agent.config.max_iterations
+        hard_cap = getattr(self.agent.config, "max_iterations_hard_cap", MAX_ITERATIONS_HARD_CAP)
         if max_iterations <= 0:
             logger.warning(f"max_iterations={max_iterations} is invalid, clamping to 1")
             max_iterations = 1
+        elif max_iterations > hard_cap:
+            clamp_msg = (
+                f"max_iterations={max_iterations} exceeds hard cap {hard_cap}; "
+                "clamping. Raise `max_iterations_hard_cap` in config if a higher "
+                "ceiling is intentional."
+            )
+            logger.warning(clamp_msg)
+            if not self._hard_cap_warned:
+                self._hard_cap_warned = True
+                event_emitter.emit("agent_warning", message=clamp_msg)
+            max_iterations = hard_cap
         iteration = 0
         consecutive_errors = 0
         consecutive_pauses = 0
 
         while iteration < max_iterations:
             iteration += 1
+
+            # Per-iteration back-off after recoverable errors so retries are
+            # paced rather than burned in milliseconds. Cancellation-aware:
+            # ``cancel_event.wait()`` short-circuits the sleep when the user
+            # hits /cancel.
+            delay = compute_iteration_backoff(consecutive_errors)
+            if delay > 0:
+                cancel_event = (
+                    self.agent.tracker_info._cancel_event
+                    if self.agent.tracker_info
+                    else None
+                )
+                event_emitter.emit(
+                    "agent_status",
+                    message=(
+                        f"Backing off {delay:.1f}s after "
+                        f"{consecutive_errors} consecutive error(s)…"
+                    ),
+                )
+                if cancel_event is not None:
+                    try:
+                        await asyncio.wait_for(cancel_event.wait(), timeout=delay)
+                        # cancel_event fired during back-off → user cancelled.
+                        return await self._handle_cancellation()
+                    except asyncio.TimeoutError:
+                        # Back-off elapsed; continue normally.
+                        pass
+                else:
+                    await asyncio.sleep(delay)
 
             if self.agent.tracker_info and self.agent.tracker_info.is_cancelled:
                 return await self._handle_cancellation()
@@ -166,11 +275,41 @@ class ExecutionLoop:
                         self.agent._sync_tracker()
 
                 # Inject step reminders (plan mode, step-limit warnings)
-                step_aware_messages = _inject_step_reminders(
-                    messages, iteration, max_iterations, self.agent.session
+                step_aware_messages = self._inject_step_reminders(
+                    messages, iteration, max_iterations
                 )
 
                 response_data = await self._call_llm_with_retry(step_aware_messages, tool_schemas)
+
+                # One-shot recovery when the model gets cut off mid-tool-loop:
+                # ask once for a concise final answer and re-issue the call.
+                # Second consecutive ``length`` is terminal (handled below).
+                if (
+                    response_data.get("finish_reason") == "length"
+                    and tools_were_used
+                    and not self._length_retry_used
+                ):
+                    self._length_retry_used = True
+                    event_emitter.emit(
+                        "agent_warning",
+                        message=(
+                            "Response truncated mid-tool-loop; retrying once with "
+                            "a concise-final-answer hint."
+                        ),
+                    )
+                    step_aware_messages = list(step_aware_messages) + [
+                        {
+                            "role": "system",
+                            "content": (
+                                "Previous reply was truncated by max_tokens. "
+                                "Respond concisely with the final answer for the "
+                                "user. Do NOT call any more tools."
+                            ),
+                        }
+                    ]
+                    response_data = await self._call_llm_with_retry(
+                        step_aware_messages, tool_schemas
+                    )
 
                 consecutive_errors = 0
 
@@ -178,10 +317,14 @@ class ExecutionLoop:
                 tool_calls = response_data.get("tool_calls")
                 finish_reason = response_data.get("finish_reason")
 
+                if finish_reason == "cancelled":
+                    return await self._handle_cancellation()
+
                 if content and content.strip():
                     self.agent._assistant_reply_parts.append(content.strip())
 
-                self.agent.session.add_message("assistant", content, tool_calls=tool_calls)
+                session_content = None if tool_calls else content
+                self.agent.session.add_message("assistant", session_content, tool_calls=tool_calls)
 
                 if finish_reason == "refusal":
                     event_emitter.emit(
@@ -645,17 +788,26 @@ class ExecutionLoop:
         error_str = re.sub(r'(sk-|key-|token-|Bearer\s+|x-api-key[=:]\s*|Authorization:\s*Bearer\s+)[A-Za-z0-9_\-]{8,}', r'\1[REDACTED]', error_str, flags=re.IGNORECASE)
 
         event_emitter.emit("agent_error", message=f"Error (attempt {count}/{MAX_CONSECUTIVE_ERRORS}): {error_str}")
-        messages = self.agent.session.get_messages_for_api()
+        self._repair_unpaired_tool_calls()
+        self._last_repaired_msg_count = len(self.agent.session.messages) if self.agent.session else 0
+
+        # Persist the recovery feedback into the session so it survives the
+        # next ``messages.clear(); messages.extend(session.get_messages_for_api())``
+        # cycle in the tool executor. The ``RECOVERABLE_ERROR_MARKER`` prefix
+        # lets the context controller (and downstream sub-agents) recognise
+        # and preserve these notes across summarization.
+        feedback = (
+            f"{RECOVERABLE_ERROR_MARKER} {error_str}. "
+            "Do NOT retry the exact same tool call with the same arguments — "
+            "that will fail the same way. Either change the arguments, use a "
+            "different tool, or explain why you cannot proceed."
+        )
+        if self.agent.session is not None:
+            self.agent.session.add_message("system", feedback)
+            messages = self.agent.session.get_messages_for_api()
+        else:
+            messages = [{"role": "system", "content": feedback}]
         messages = self.agent.context_controller.inject_context(messages, self.agent.context_manager, query=user_message)
-        messages.append({
-            "role": "system",
-            "content": (
-                f"[System Error Feedback: {error_str}.] "
-                "Do NOT retry the exact same tool call with the same arguments — "
-                "that will fail the same way. Either change the arguments, use a "
-                "different tool, or explain why you cannot proceed."
-            ),
-        })
         return await self.agent.context_controller.manage_context_window(messages)
 
     def _handle_budget_exceeded(self, e: BudgetExceededError) -> Dict[str, Any]:
@@ -760,7 +912,14 @@ class ExecutionLoop:
             raw = await self.agent.provider.chat(messages, tools=tools)
             return self._extract_response_data(raw)
         stream = self.agent.provider.stream(messages, tools=tools)
-        result = await self.agent.streaming_handler.handle_stream(stream)
+        cancel_event = (
+            self.agent.tracker_info._cancel_event
+            if self.agent.tracker_info
+            else None
+        )
+        result = await self.agent.streaming_handler.handle_stream(
+            stream, cancel_event=cancel_event
+        )
         return result
 
     def _extract_response_data(self, response: Dict[str, Any]) -> Dict[str, Any]:

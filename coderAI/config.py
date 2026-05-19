@@ -40,6 +40,10 @@ class Config(BaseModel):
     save_history: bool = Field(default=True)
     context_window: int = Field(default=128000)
     max_iterations: int = Field(default=50)
+    # Absolute upper bound that the execution loop will clamp ``max_iterations``
+    # to. Guards against a runaway ``max_iterations`` in a project config
+    # draining the budget before the cost-tracker hard stop kicks in.
+    max_iterations_hard_cap: int = Field(default=200, gt=0)
     max_tool_output: int = Field(default=8000)
     log_level: str = Field(default="WARNING")  # DEBUG, INFO, WARNING, ERROR
     project_instruction_file: str = Field(default="CODERAI.md")
@@ -55,6 +59,10 @@ class Config(BaseModel):
     # a denied tool stops the loop immediately (matching OpenCode's
     # ``continue_loop_on_deny`` behavior).
     continue_loop_on_deny: bool = Field(default=True)
+    # Maximum wall-clock seconds a single ``delegate_task`` invocation may run
+    # before the executor times it out. Defaults to 10 minutes; raise for
+    # long-running research/refactor sub-agents.
+    subagent_timeout_seconds: float = Field(default=600.0, gt=0.0)
 
 
 class ConfigManager:
@@ -108,6 +116,7 @@ class ConfigManager:
             "CODERAI_PROJECT_INSTRUCTION_FILE": "project_instruction_file",
             "CODERAI_WEB_TOOLS_IN_MAIN": "web_tools_in_main",
             "CODERAI_ALLOW_OUTSIDE_PROJECT": "allow_outside_project",
+            "CODERAI_SUBAGENT_TIMEOUT_SECONDS": "subagent_timeout_seconds",
         }
 
         for env_var, config_key in env_mappings.items():
@@ -115,7 +124,7 @@ class ConfigManager:
             if value is not None:
                 # Convert types if needed
                 try:
-                    if config_key in ("temperature", "budget_limit"):
+                    if config_key in ("temperature", "budget_limit", "subagent_timeout_seconds"):
                         value = float(value)
                     elif config_key in ("max_tokens", "max_iterations", "max_tool_output"):
                         value = int(value)
@@ -238,6 +247,7 @@ class ConfigManager:
             "reasoning_effort",
             "log_level",
             "approval_timeout_seconds",
+            "subagent_timeout_seconds",
         }
 
         try:
@@ -259,7 +269,7 @@ class ConfigManager:
                     "max_command_output", "approval_timeout_seconds",
                 }:
                     value = int(value)
-                elif key == "budget_limit":
+                elif key in ("budget_limit", "subagent_timeout_seconds"):
                     value = float(value)
                 elif key == "streaming":
                     # bool("false") is True in Python; handle string booleans explicitly

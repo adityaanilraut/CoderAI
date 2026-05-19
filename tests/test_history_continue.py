@@ -1,5 +1,6 @@
 import pytest
 from coderAI.history import HistoryManager
+import os
 import time
 import json
 import uuid
@@ -73,3 +74,66 @@ def test_load_session_drops_malformed_tool_call_args(temp_history):
     session = temp_history.load_session(sid)
     assert session is not None
     assert session.messages[0].tool_calls is None
+
+
+def test_load_session_preserves_provider_compatible_tool_arguments(temp_history):
+    sid = f"session_{int(time.time())}_{uuid.uuid4().hex[:8]}"
+    payload = {
+        "session_id": sid,
+        "updated_at": time.time(),
+        "messages": [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": '{"path": "README.md"}'},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "content": '{"success": true}',
+                "tool_call_id": "call_1",
+                "name": "read_file",
+            },
+        ],
+        "model": "claude",
+    }
+    with open(temp_history.history_dir / f"{sid}.json", "w") as f:
+        json.dump(payload, f)
+
+    session = temp_history.load_session(sid)
+    assert session is not None
+    args = session.messages[0].tool_calls[0]["function"]["arguments"]
+    assert isinstance(args, str)
+    assert json.loads(args) == {"path": "README.md"}
+
+    temp_history.save_session(session)
+    reloaded = temp_history.load_session(sid)
+    assert reloaded is not None
+    reloaded_args = reloaded.messages[0].tool_calls[0]["function"]["arguments"]
+    assert isinstance(reloaded_args, str)
+    assert json.loads(reloaded_args) == {"path": "README.md"}
+
+
+def test_cleanup_expired_sessions_removes_full_session_id_from_index(temp_history):
+    sid = f"session_{int(time.time())}_{uuid.uuid4().hex[:8]}"
+    session_file = temp_history.history_dir / f"{sid}.json"
+    with open(session_file, "w") as f:
+        json.dump({"session_id": sid, "updated_at": 1, "messages": [], "model": "claude"}, f)
+
+    index_file = temp_history.history_dir / "index.json"
+    with open(index_file, "w") as f:
+        json.dump({sid: {"session_id": sid}}, f)
+
+    old = time.time() - (31 * 24 * 60 * 60)
+    os.utime(session_file, (old, old))
+
+    temp_history._cleanup_expired_sessions()
+
+    assert not session_file.exists()
+    with open(index_file, "r") as f:
+        assert sid not in json.load(f)

@@ -511,9 +511,12 @@ class ToolExecutor:
             tool = self.agent.tools.get(pc["tool_name"])
             is_read_only = bool(tool and getattr(tool, "is_read_only", False))
             if is_read_only and prior_count >= DUPLICATE_CALL_THRESHOLD and fp in self._last_results:
+                repeated_count = prior_count + 1
+                self._call_counts[fp] = repeated_count
+                pc["_cached_repeat_count"] = repeated_count
                 cached = dict(self._last_results[fp])
                 cached["_warning"] = (
-                    f"This is call #{prior_count + 1} to '{pc['tool_name']}' with identical "
+                    f"This is call #{repeated_count} to '{pc['tool_name']}' with identical "
                     "arguments — returning the cached result. Stop repeating the same read; "
                     "either work with the data you already have or try a different approach."
                 )
@@ -549,11 +552,20 @@ class ToolExecutor:
         # has now been called >= DOOM_LOOP_HARD_THRESHOLD times, we'll
         # signal the loop to terminate after persisting the current results.
         doom_offender: Optional[Tuple[str, int]] = None  # (tool_name, count)
-        for pc, res in zip(parsed_calls, results):
+        executed_indices = set(to_run_indices)
+        for idx, (pc, res) in enumerate(zip(parsed_calls, results)):
             fp = pc.get("_fp")
             if not fp:
                 continue
+            if idx not in executed_indices:
+                continue
             res = self._normalize_tool_result(res, tool_name=pc["tool_name"])
+            # User-denied calls don't reflect a stuck model — the user can
+            # deny the same write 5× because they're reviewing each preview.
+            # Treating denials as doom-loop hits produces a misleading
+            # "stuck in a loop" stop instead of a clean "you keep denying".
+            if isinstance(res, dict) and res.get("error_code") == "denied":
+                continue
             self._call_counts[fp] = self._call_counts.get(fp, 0) + 1
             if isinstance(res, dict) and res.get("success") is True:
                 self._last_results[fp] = res
@@ -562,6 +574,15 @@ class ToolExecutor:
                 doom_offender is None or count > doom_offender[1]
             ):
                 doom_offender = (pc["tool_name"], count)
+
+        for pc in parsed_calls:
+            cached_count = pc.get("_cached_repeat_count")
+            if (
+                isinstance(cached_count, int)
+                and cached_count >= DOOM_LOOP_HARD_THRESHOLD
+                and (doom_offender is None or cached_count > doom_offender[1])
+            ):
+                doom_offender = (pc["tool_name"], cached_count)
 
         for pc, res in zip(parsed_calls, results):
             res = self.agent.context_controller.summarize_tool_result(res)

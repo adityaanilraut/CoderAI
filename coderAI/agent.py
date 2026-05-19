@@ -17,6 +17,7 @@ from .context_controller import (
 )
 from .llm.factory import create_provider
 from .system_prompt import (
+    SYSTEM_PROMPT_INTERACTION,
     SYSTEM_PROMPT_INTRO,
     SYSTEM_PROMPT_TAIL,
     SYSTEM_PROMPT_OUTPUT_STYLE,
@@ -57,7 +58,7 @@ class Agent:
         self,
         model: Optional[str] = None,
         streaming: bool = True,
-        auto_approve: bool = True,
+        auto_approve: bool = False,
         persona_name: Optional[str] = None,
         is_subagent: bool = False,
         delegation_depth: int = 0,
@@ -176,6 +177,11 @@ class Agent:
         """Create LLM provider using the centralized factory."""
         return create_provider(self.model, self.config)
 
+    def _replace_provider(self) -> None:
+        """Recreate provider and keep dependent controllers in sync."""
+        self.provider = self._create_provider()
+        self.context_controller.provider = self.provider
+
     def _create_tool_registry(self) -> ToolRegistry:
         """Create and populate tool registry using dynamic discovery."""
         registry = ToolRegistry()
@@ -186,6 +192,9 @@ class Agent:
         # Manually register tools that require specific initialization
         # arguments
         registry.register(ManageContextTool(self.context_manager))
+        plan_tool = registry.get("plan")
+        if plan_tool is not None:
+            plan_tool.project_root = self.config.project_root
 
         # Filter web tools if not allowed for main agent. Sub-agents always
         # keep web tools so research delegations work.
@@ -221,6 +230,7 @@ class Agent:
             parent_ipc_server=getattr(self, "ipc_server", None),
             parent_session=getattr(self, "session", None),
             delegation_depth=getattr(self, "delegation_depth", 0),
+            parent_config=self.config,
         )
 
     def _rebuild_tool_registry(self) -> None:
@@ -268,7 +278,7 @@ class Agent:
             self.model = persona.model
 
         if self.model != old_model:
-            self.provider = self._create_provider()
+            self._replace_provider()
             if self.session:
                 self.session.model = self.model
             self.provider.set_cumulative_usage(
@@ -351,11 +361,14 @@ class Agent:
     def _compute_system_prompt_cache_key(self) -> str:
         """Build a cache key that changes when rules, tools, or persona change."""
         from pathlib import Path
+        from .project_layout import find_dot_coderai_subdir
         parts: List[str] = []
         parts.append(self.model)
         if self.persona:
             parts.append(f"persona:{self.persona.name}")
         parts.append(f"tools:{len(self.tools.tools)}:{','.join(sorted(self.tools.tools.keys()))}")
+        parts.append(f"auto:{self.auto_approve}")
+        parts.append(f"web:{self.config.web_tools_in_main}")
         rules_dir = Path(self.config.project_root, ".coderAI", "rules")
         if rules_dir.exists() and rules_dir.is_dir():
             for rule_file in sorted(rules_dir.glob("*.md")):
@@ -364,6 +377,29 @@ class Agent:
                     parts.append(f"rule:{rule_file.name}:{mtime}")
                 except Exception:
                     pass
+        # Active-plan signature: include mtime + current step index so a plan
+        # advance forces a system-prompt rebuild (the <env> Active-plan line
+        # depends on it). Mirrors the rules try/except pattern above so a
+        # missing or unreadable file silently degrades to "plan:none".
+        try:
+            dot_dir = find_dot_coderai_subdir("", str(self.config.project_root))
+            if dot_dir is None:
+                dot_dir = Path(self.config.project_root).resolve() / ".coderAI"
+            plan_path = dot_dir / "current_plan.json"
+            if plan_path.exists():
+                import json as _json
+                mtime = plan_path.stat().st_mtime
+                try:
+                    with open(plan_path, "r") as _pf:
+                        _plan_data = _json.load(_pf)
+                    current_idx = int(_plan_data.get("current_step", 0))
+                except Exception:
+                    current_idx = -1
+                parts.append(f"plan:{mtime}:{current_idx}")
+            else:
+                parts.append("plan:none")
+        except Exception:
+            parts.append("plan:none")
         return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
     def _get_system_prompt(self) -> str:
@@ -387,26 +423,70 @@ class Agent:
 
         import os
         import platform as _platform
+        from pathlib import Path
+        from .project_layout import find_dot_coderai_subdir
 
         # Build environment section (model ID, working dir, git status, platform, date)
         project_root = getattr(self.config, "project_root", os.getcwd())
         is_git = os.path.isdir(os.path.join(project_root, ".git"))
+
+        # Surface the active plan (if any) as a single-line summary. We
+        # deliberately read only title, current_step, total, and the current
+        # step description — never the full step list — to keep the system
+        # prompt small even for big plans.
+        active_plan: Optional[Dict[str, Any]] = None
+        try:
+            dot_dir = find_dot_coderai_subdir("", str(project_root))
+            if dot_dir is None:
+                dot_dir = Path(project_root).resolve() / ".coderAI"
+            plan_path = dot_dir / "current_plan.json"
+            if plan_path.exists():
+                import json as _json
+                with open(plan_path, "r") as _pf:
+                    _plan_data = _json.load(_pf)
+                _steps = _plan_data.get("steps", []) or []
+                _total = len(_steps)
+                _completed = sum(1 for s in _steps if s.get("status") == "done")
+                _current = int(_plan_data.get("current_step", 0))
+                if _current < _total:
+                    _current_desc = _steps[_current].get("description", "")
+                else:
+                    _current_desc = "All steps completed"
+                active_plan = {
+                    "title": _plan_data.get("title", ""),
+                    "completed": _completed,
+                    "total": _total,
+                    "current_desc": _current_desc,
+                }
+        except Exception as e:
+            logger.debug("Failed to load active plan for system prompt: %s", e)
+            active_plan = None
+
         env_section = build_environment_section(
             model=self.model,
             working_directory=os.getcwd(),
             workspace_root=project_root,
             is_git_repo=is_git,
             platform=_platform.system(),
+            auto_approve=self.auto_approve,
+            persona_name=self.persona.name if self.persona else None,
+            persona_description=(
+                self.persona.description if self.persona else None
+            ),
+            active_plan=active_plan,
         )
 
         if self.persona:
-            # Keep core principles, strategy, and safety — not only persona
-            # text + tool names. Environment block goes first.
+            # Persona prompt mirrors the default ordering (env, INTRO, tools,
+            # INTERACTION, OUTPUT_STYLE, TAIL) with the persona instructions
+            # injected directly after the tool list so they read as a
+            # specialization layered on top of the base prompt.
             _append_once(
                 f"{env_section}\n\n"
                 f"{SYSTEM_PROMPT_INTRO}\n\n"
                 f"{self.persona.instructions}\n\n"
                 f"{format_tools_markdown(self.tools)}\n\n"
+                f"{SYSTEM_PROMPT_INTERACTION}\n\n"
                 f"{SYSTEM_PROMPT_OUTPUT_STYLE}\n\n"
                 f"{SYSTEM_PROMPT_TAIL}"
             )
@@ -453,7 +533,7 @@ class Agent:
         self._system_prompt_cache_key = cache_key
         return result
 
-    def _reset_session_accounting(self) -> None:
+    def _reset_session_accounting(self, *, reset_cost: bool = True) -> None:
         """Reset cost, token, and hook-approval state at session boundaries.
 
         The ``Agent`` outlives individual sessions (e.g. ``/clear`` creates a
@@ -461,7 +541,8 @@ class Agent:
         previous session's spend would count against the new session's
         budget, and prior hook approvals would carry over silently.
         """
-        self.cost_tracker.reset()
+        if reset_cost:
+            self.cost_tracker.reset()
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
         self.total_tokens = 0
@@ -478,23 +559,30 @@ class Agent:
         if provider is not None:
             provider.set_cumulative_usage()
 
-    def create_session(self) -> Session:
+    def create_session(
+        self,
+        *,
+        reset_accounting: bool = True,
+        clear_plan: bool = True,
+    ) -> Session:
         """Create a new conversation session."""
-        self._reset_session_accounting()
+        if reset_accounting:
+            self._reset_session_accounting()
         # Clear any stale plan from a previous session so a new terminal
         # session does not show the old plan on /plan.
-        try:
-            from .project_layout import find_dot_coderai_subdir
-            from pathlib import Path
-            pr = str(self.config.project_root)
-            dot_dir = find_dot_coderai_subdir("", pr)
-            if dot_dir is None:
-                dot_dir = Path(pr).resolve() / ".coderAI"
-            plan_path = dot_dir / "current_plan.json"
-            if plan_path.exists():
-                plan_path.unlink()
-        except Exception:
-            pass
+        if clear_plan:
+            try:
+                from .project_layout import find_dot_coderai_subdir
+                from pathlib import Path
+                pr = str(self.config.project_root)
+                dot_dir = find_dot_coderai_subdir("", pr)
+                if dot_dir is None:
+                    dot_dir = Path(pr).resolve() / ".coderAI"
+                plan_path = dot_dir / "current_plan.json"
+                if plan_path.exists():
+                    plan_path.unlink()
+            except Exception:
+                pass
         self.session = history_manager.create_session(model=self.model)
         # Add system prompt as the first message
         self.session.add_message("system", self._get_system_prompt())

@@ -109,6 +109,12 @@ from .semantic_search import SemanticSearchTool
 # Notepad (inter-agent communication)
 from .notepad import NotepadTool
 
+# Refactoring, testing, and package management (also auto-discovered, but
+# exported here so the import surface matches the registered tool list).
+from .refactor import RefactorTool
+from .testing import RunTestsTool
+from .package_manager import PackageManagerTool
+
 __all__ = [
     # Base
     "Tool",
@@ -204,6 +210,10 @@ __all__ = [
     "SemanticSearchTool",
     # Notepad
     "NotepadTool",
+    # Refactor, testing, packages
+    "RefactorTool",
+    "RunTestsTool",
+    "PackageManagerTool",
     # Factory imports (optional for external consumers)
 ]
 

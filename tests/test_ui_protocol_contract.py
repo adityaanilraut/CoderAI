@@ -109,6 +109,17 @@ def test_protocol_declares_hello_protocol_version_and_handshake_command() -> Non
     assert re.search(r'event:\s*"hello"[\s\S]*protocolVersion:\s*2;', ts)
     assert re.search(r'\|\s*`handshake`\s*\|', docs)
     assert re.search(r'\{\s*cmd:\s*"handshake";\s*payload:\s*\{\s*protocolVersion:\s*2\s*\};', ts)
+    assert re.search(r'event:\s*"hello"[\s\S]*reasoning:\s*ReasoningEffort;', ts)
+    assert "autoApprove, reasoning" in docs
+
+
+def test_protocol_documents_progress_forwarding() -> None:
+    docs = (ROOT / "ui/PROTOCOL.md").read_text(encoding="utf-8")
+    py = (ROOT / "coderAI/ipc/jsonrpc_server.py").read_text(encoding="utf-8")
+
+    assert "progressKind" in docs
+    assert '_bind("tool_progress", self._on_tool_progress)' in py
+    assert 'self.emit("progress"' in py
 
 
 def test_agent_client_sends_v2_handshake_on_start() -> None:

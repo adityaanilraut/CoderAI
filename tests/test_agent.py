@@ -91,6 +91,171 @@ class TestTruncateMessages:
         assert len(system_msgs) >= 1
         assert system_msgs[0]["content"] == "You are a bot."
 
+    def test_summary_cost_uses_incremental_provider_delta(self):
+        from coderAI.cost import CostTracker
+
+        ctrl = self._make_controller()
+        ctrl.cost_tracker = CostTracker()
+        ctrl._last_summary_time = -10_000
+        seen = iter([
+            {"total_input_tokens": 1000, "total_output_tokens": 500},
+            {"total_input_tokens": 1050, "total_output_tokens": 520},
+        ])
+        ctrl.provider.get_model_info = lambda: next(seen)
+        ctrl.config.context_window = 300
+        ctrl._on_summary_tokens = MagicMock()
+        messages = [
+            {"role": "system", "content": "You are a bot."},
+            {"role": "user", "content": "first " + "x" * 1000},
+            {"role": "assistant", "content": "second " + "y" * 1000},
+            {"role": "user", "content": "third " + "z" * 1000},
+            {"role": "assistant", "content": "fourth " + "q" * 1000},
+            {"role": "user", "content": "recent"},
+        ]
+
+        asyncio.run(ctrl.manage_context_window(messages))
+
+        ctrl._on_summary_tokens.assert_called_once_with(50, 20)
+
+    def test_summary_prompt_includes_tool_calls_without_content(self):
+        ctrl = self._make_controller()
+        ctrl._last_summary_time = -10_000
+        messages = [
+            {"role": "system", "content": "You are a bot."},
+            {"role": "user", "content": "initial task"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": '{"path":"README.md"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "name": "read_file",
+                "content": '{"success": true, "output": "' + ("x" * 900) + '"}',
+            },
+            {"role": "user", "content": "middle " + ("y" * 900)},
+            {"role": "assistant", "content": "middle response " + ("z" * 900)},
+            {"role": "user", "content": "recent question"},
+        ]
+
+        asyncio.run(ctrl.manage_context_window(messages))
+
+        prompt = ctrl.provider.chat.await_args.args[0][0]["content"]
+        assert "ASSISTANT TOOL_CALLS" in prompt
+        assert "read_file" in prompt
+        assert "README.md" in prompt
+
+    def test_strip_internal_markers_removes_truncation_notice(self):
+        cleaned = ContextController.strip_internal_markers(
+            [
+                {
+                    "role": "system",
+                    "content": "[Note: earlier messages removed]",
+                    ContextController._TRUNCATION_MARKER_KEY: True,
+                }
+            ]
+        )
+        assert ContextController._TRUNCATION_MARKER_KEY not in cleaned[0]
+        assert cleaned[0]["content"].startswith("[Note:")
+
+    def test_manage_context_window_drops_stale_truncation_notices(self):
+        ctrl = self._make_controller()
+        ctrl.config.context_window = 200
+        stale = {
+            "role": "system",
+            "content": "[Prior Conversation Summary]: old",
+            ContextController._TRUNCATION_MARKER_KEY: True,
+        }
+        messages = [
+            {"role": "system", "content": "You are a bot."},
+            stale,
+            {"role": "user", "content": "recent"},
+        ]
+        ctrl.estimate_tokens = MagicMock(return_value=50)
+        result = asyncio.run(ctrl.manage_context_window(messages))
+        assert not any(m.get(ContextController._TRUNCATION_MARKER_KEY) for m in result)
+        assert stale not in result
+
+    def test_aggressive_truncation_emits_warning(self):
+        from types import SimpleNamespace
+
+        ctrl = self._make_controller()
+        ctrl.config.context_window = 120
+        ctrl.estimate_tokens = MagicMock(return_value=10_000)
+        messages = [{"role": "system", "content": "sys"}]
+        for i in range(4):
+            messages.extend(
+                [
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": f"call_{i}",
+                                "type": "function",
+                                "function": {
+                                    "name": "read_file",
+                                    "arguments": f'{{"path":"f{i}.py"}}',
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": f"call_{i}",
+                        "name": "read_file",
+                        "content": "x" * 400,
+                    },
+                ]
+            )
+        emitter = SimpleNamespace(emit=MagicMock())
+        with patch("coderAI.context_controller.event_emitter", emitter):
+            asyncio.run(ctrl.manage_context_window(messages))
+        warning_msgs = [
+            c.kwargs.get("message", c.args[1] if len(c.args) > 1 else "")
+            for c in emitter.emit.call_args_list
+            if c.args and c.args[0] == "agent_warning"
+        ]
+        assert any("Context truncation aggressive" in msg for msg in warning_msgs)
+
+
+class TestRecoverableErrorMarker:
+    """Recoverable errors must persist tagged system feedback in the session."""
+
+    def test_handle_recoverable_error_adds_marker_to_session(self):
+        from types import SimpleNamespace
+
+        from coderAI.agent_loop import RECOVERABLE_ERROR_MARKER, ExecutionLoop
+        from coderAI.history import Session
+
+        session = Session(session_id="session_1234567890_marker01")
+        context_controller = SimpleNamespace(
+            inject_context=lambda messages, _cm, query=None: messages,
+            manage_context_window=AsyncMock(side_effect=lambda messages: messages),
+        )
+        agent = SimpleNamespace(
+            session=session,
+            context_controller=context_controller,
+            context_manager=SimpleNamespace(),
+            hooks_manager=None,
+        )
+        loop = ExecutionLoop(agent)
+
+        asyncio.run(loop._handle_recoverable_error(RuntimeError("disk full"), 1, "fix it"))
+
+        system_contents = [m.content for m in session.messages if m.role == "system"]
+        assert any(RECOVERABLE_ERROR_MARKER in c for c in system_contents)
+
 
     def test_project_config_is_loaded(self):
         with patch("coderAI.agent.config_manager") as cm:
@@ -200,6 +365,24 @@ class TestAgentPersonaSwitching:
         assert "read_file" in agent.tools.tools
         assert "write_file" not in agent.tools.tools
 
+    def test_persona_model_switch_updates_context_controller_provider(self):
+        from coderAI.agents import AgentPersona
+
+        agent = self._make_agent()
+        new_provider = MagicMock()
+        with patch.object(agent, "_create_provider", return_value=new_provider):
+            persona = AgentPersona(
+                name="Fast",
+                description="Uses another model",
+                tools=[],
+                model="claude-sonnet-4-6",
+                instructions="Use the fast model.",
+            )
+            agent.apply_persona(persona, update_model=True)
+
+        assert agent.provider is new_provider
+        assert agent.context_controller.provider is new_provider
+
 
 class TestSessionResumeAndCompaction:
     """Tests for resumed-session model activation and durable compaction."""
@@ -213,12 +396,14 @@ class TestSessionResumeAndCompaction:
         agent.session = session
         agent.model = "gpt-5.4-mini"
         agent.provider = MagicMock()
+        agent.context_controller = MagicMock()
         agent._create_provider.return_value = restored_provider
 
         _activate_resumed_session_model(agent, requested_model=None)
 
         assert agent.model == "claude-sonnet-4-6"
         assert agent.provider is restored_provider
+        assert agent.context_controller.provider is restored_provider
         assert session.model == "claude-sonnet-4-6"
         agent.realign_provider_usage_counters.assert_called_once()
         agent._configure_delegate_tool_context.assert_called_once()
@@ -232,12 +417,14 @@ class TestSessionResumeAndCompaction:
         agent.session = session
         agent.model = "claude-sonnet-4-6"
         agent.provider = MagicMock()
+        agent.context_controller = MagicMock()
         agent._create_provider.return_value = override_provider
 
         _activate_resumed_session_model(agent, requested_model="gpt-5.4-mini")
 
         assert agent.model == "gpt-5.4-mini"
         assert agent.provider is override_provider
+        assert agent.context_controller.provider is override_provider
         assert session.model == "gpt-5.4-mini"
         agent.realign_provider_usage_counters.assert_called_once()
         agent._configure_delegate_tool_context.assert_called_once()

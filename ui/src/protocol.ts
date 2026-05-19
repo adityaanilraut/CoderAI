@@ -55,6 +55,7 @@ export type AgentEvent =
       contextLimit: number;
       budgetLimit: number;
       autoApprove: boolean;
+      reasoning: ReasoningEffort;
     }
   | { event: "ready" }
   | { event: "turn"; phase: "start" | "reasoning" | "text" | "end"; delta?: string; elapsedMs?: number }

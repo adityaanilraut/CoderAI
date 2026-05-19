@@ -166,6 +166,13 @@ class TestRunCommandTool:
         assert result["success"], result
         assert "42" in result["stdout"]
 
+    def test_input_payload_is_sent_to_stdin(self):
+        result = asyncio.run(
+            self.tool.execute(command="python3 -c 'import sys; print(sys.stdin.read())'", input="hello")
+        )
+        assert result["success"], result
+        assert "hello" in result["stdout"]
+
 
 class TestRunBackgroundTool:
     @pytest.fixture(autouse=True)

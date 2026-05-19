@@ -2,6 +2,7 @@
 
 import json
 import logging
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional
 
 from .events import event_emitter
@@ -12,6 +13,12 @@ logger = logging.getLogger(__name__)
 RESPONSE_TOKEN_RESERVE = 1024
 TOOL_OVERHEAD_TOKENS = 512
 IMAGE_TOKEN_FLOOR = 1500
+
+# Hard cap on the per-controller token cache. Long-running sessions can
+# accumulate thousands of distinct message fingerprints (every tool result is
+# unique), so an unbounded dict slowly leaks. The cap + LRU eviction keeps
+# memory bounded while still serving hot messages from cache.
+_TOKEN_CACHE_MAX_SIZE = 2000
 
 class ContextController:
     """Handles token estimation, context window truncation, and summarization."""
@@ -28,7 +35,11 @@ class ContextController:
         # CPython recycles freed object ids — Session.get_messages_for_api()
         # rebuilds dicts each turn, so an id can land on a *different* message
         # and serve a stale token count.
-        self._token_cache: Dict[str, int] = {}
+        #
+        # OrderedDict + LRU eviction (see _TOKEN_CACHE_MAX_SIZE) prevents the
+        # cache from growing without bound across long sessions; cache hits
+        # move_to_end so hot fingerprints are kept resident.
+        self._token_cache: "OrderedDict[str, int]" = OrderedDict()
         self._last_summary_time: float = 0.0
         self._summary_snapshot_input: int = 0
         self._summary_snapshot_output: int = 0
@@ -53,6 +64,9 @@ class ContextController:
         key = self._msg_fingerprint(msg)
         cached = self._token_cache.get(key)
         if cached is not None:
+            # Mark this fingerprint as most-recently-used so frequently
+            # referenced messages survive LRU eviction below.
+            self._token_cache.move_to_end(key)
             return cached
         total = 4  # per-message formatting overhead
         content = msg.get("content") or ""
@@ -85,6 +99,11 @@ class ContextController:
         if msg.get("name"):
             total += self.provider.count_tokens(msg["name"])
         self._token_cache[key] = total
+        # Evict oldest entries once the cache exceeds the hard cap. This is an
+        # LRU policy: ``move_to_end`` on cache hits (above) keeps hot entries
+        # at the tail; ``popitem(last=False)`` drops the coldest from the head.
+        while len(self._token_cache) > _TOKEN_CACHE_MAX_SIZE:
+            self._token_cache.popitem(last=False)
         return total
 
     def estimate_tokens(self, messages: List[Dict[str, Any]]) -> int:
@@ -101,6 +120,12 @@ class ContextController:
     # is no longer mis-stripped on the next inject pass.
     _CONTEXT_TAG = "[Pinned Context]"
     _CONTEXT_MARKER_KEY = "_pinned_context"
+    # Marker for system messages we synthesize during ``manage_context_window``
+    # (the LLM-generated [Prior Conversation Summary] and the fallback
+    # truncation notice). Tagging them lets us drop stale notices on the next
+    # iteration so they don't pile up turn after turn, and strip the marker
+    # before sending to the provider.
+    _TRUNCATION_MARKER_KEY = "_truncation_notice"
 
     @classmethod
     def _is_pinned_injection(cls, msg: Dict[str, Any]) -> bool:
@@ -113,10 +138,11 @@ class ContextController:
         Use this just before handing the list to a provider — providers reject
         unknown top-level keys (OpenAI, Anthropic, etc.).
         """
+        internal_keys = (cls._CONTEXT_MARKER_KEY, cls._TRUNCATION_MARKER_KEY)
         cleaned: List[Dict[str, Any]] = []
         for m in messages:
-            if cls._CONTEXT_MARKER_KEY in m:
-                m = {k: v for k, v in m.items() if k != cls._CONTEXT_MARKER_KEY}
+            if any(k in m for k in internal_keys):
+                m = {k: v for k, v in m.items() if k not in internal_keys}
             cleaned.append(m)
         return cleaned
 
@@ -173,6 +199,15 @@ class ContextController:
         if max_content_tokens <= 0:
             max_content_tokens = context_limit // 2
 
+        # Drop any prior truncation notices (LLM summaries + fallback notices)
+        # before sizing the new budget. Without this, every iteration that
+        # triggers truncation would stack another "[Prior Conversation
+        # Summary]" or "[Note: N earlier messages were removed…]" system
+        # message on top of the last one. A fresh notice is re-added below if
+        # truncation actually fires this turn. We rebind to a new list so the
+        # caller's list is never mutated.
+        messages = [m for m in messages if not m.get(self._TRUNCATION_MARKER_KEY)]
+
         total_chars = sum(len(str(m.get("content") or "")) for m in messages)
         tool_call_chars = sum(
             len(str(m.get("tool_calls") or "")) + len(str(m.get("tool_call_id") or ""))
@@ -223,6 +258,18 @@ class ContextController:
 
         # Always keep at least the last group (most recent tool interaction)
         if not kept_groups and groups:
+            # Warn loudly when this collapse actually drops prior groups —
+            # the model loses tool history and may repeat work. A single
+            # group case isn't worth warning about (nothing was dropped).
+            if len(groups) > 1:
+                event_emitter.emit(
+                    "agent_warning",
+                    message=(
+                        f"Context truncation aggressive: dropped {len(groups) - 1} "
+                        "message groups, kept only the most recent. Model may lose "
+                        "prior tool context."
+                    ),
+                )
             kept_groups = [groups[-1]]
 
         kept_messages = [msg for group in kept_groups for msg in group]
@@ -232,9 +279,21 @@ class ContextController:
             text_to_summarize = ""
             for msg in removed_messages:
                 role = msg.get("role", "unknown")
+                name = msg.get("name")
+                label = role.upper()
+                if name:
+                    label += f"({name})"
                 content = msg.get("content")
                 if content and isinstance(content, str):
-                    text_to_summarize += f"{role.upper()}: {content}\n"
+                    text_to_summarize += f"{label}: {content}\n"
+                elif content:
+                    text_to_summarize += f"{label}: {json.dumps(content, default=str)}\n"
+                tool_calls = msg.get("tool_calls")
+                if tool_calls:
+                    text_to_summarize += (
+                        "ASSISTANT TOOL_CALLS: "
+                        f"{json.dumps(tool_calls, default=str)}\n"
+                    )
 
             # Skip LLM summarization when it's unlikely to be worth the cost
             should_summarize = (
@@ -262,21 +321,30 @@ class ContextController:
                 )
                 try:
                     self._last_summary_time = _time_module.time()
+                    mi_before = self.provider.get_model_info()
                     response = await self.provider.chat([{"role": "user", "content": prompt}], tools=None)
                     summary_content = ""
                     if "choices" in response and response["choices"]:
                         summary_content = response["choices"][0].get("message", {}).get("content", "")
 
                     if summary_content and self.cost_tracker is not None:
-                        mi = self.provider.get_model_info()
-                        in_tok = mi.get("total_input_tokens", 0)
-                        out_tok = mi.get("total_output_tokens", 0)
-                        in_tok_delta = max(0, in_tok - self._summary_snapshot_input)
-                        out_tok_delta = max(0, out_tok - self._summary_snapshot_output)
-                        self._summary_snapshot_input = in_tok
-                        self._summary_snapshot_output = out_tok
+                        mi_after = self.provider.get_model_info()
+                        in_tok_delta = max(
+                            0,
+                            mi_after.get("total_input_tokens", 0)
+                            - mi_before.get("total_input_tokens", 0),
+                        )
+                        out_tok_delta = max(
+                            0,
+                            mi_after.get("total_output_tokens", 0)
+                            - mi_before.get("total_output_tokens", 0),
+                        )
+                        self._summary_snapshot_input = mi_after.get("total_input_tokens", 0)
+                        self._summary_snapshot_output = mi_after.get("total_output_tokens", 0)
                         if in_tok_delta or out_tok_delta:
                             model_for_cost = getattr(self.provider, "actual_model", self.config.default_model)
+                            if not isinstance(model_for_cost, str):
+                                model_for_cost = self.config.default_model
                             self.cost_tracker.add_cost(model_for_cost, in_tok_delta, out_tok_delta)
                             if self._on_summary_tokens is not None:
                                 self._on_summary_tokens(in_tok_delta, out_tok_delta)
@@ -285,6 +353,7 @@ class ContextController:
                         summary_notice = {
                             "role": "system",
                             "content": f"[Prior Conversation Summary]: {summary_content}",
+                            self._TRUNCATION_MARKER_KEY: True,
                         }
                         summary_tokens = self._estimate_message_tokens(summary_notice)
                         if running_tokens + summary_tokens <= remaining_budget:
@@ -297,6 +366,7 @@ class ContextController:
             truncation_notice = {
                 "role": "system",
                 "content": f"[Note: {len(removed_messages)} earlier messages were removed to fit the context window. The conversation continues from here.]",
+                self._TRUNCATION_MARKER_KEY: True,
             }
             return system_messages + ([first_task_message] if first_task_message else []) + [truncation_notice] + kept_messages
 

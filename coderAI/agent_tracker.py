@@ -171,21 +171,29 @@ class AgentTracker:
 
     def cancel(self, agent_id: str) -> bool:
         with self._lock:
-            info = self._agents.get(agent_id)
-            if info:
-                info.request_cancel()
-                # Recursively cancel all children
-                children = [
-                    child for child in list(self._agents.values())
-                    if child.parent_id == agent_id
-                    and child.status not in (AgentStatus.DONE, AgentStatus.ERROR, AgentStatus.CANCELLED)
-                ]
-
-                for child in children:
-                    self.cancel(child.agent_id)
-                return True
-            else:
+            root = self._agents.get(agent_id)
+            if not root:
                 return False
+            # Build a parent → live-children map once so we descend the tree in
+            # O(n) instead of rescanning ``self._agents`` per recursive hop.
+            terminal = (AgentStatus.DONE, AgentStatus.ERROR, AgentStatus.CANCELLED)
+            children_by_parent: Dict[str, List[AgentInfo]] = {}
+            for info in self._agents.values():
+                if info.parent_id:
+                    children_by_parent.setdefault(info.parent_id, []).append(info)
+            # Iterative DFS — cheap and avoids re-entering the lock per child.
+            stack: List[AgentInfo] = [root]
+            visited: set[str] = set()
+            while stack:
+                cur = stack.pop()
+                if cur.agent_id in visited:
+                    continue
+                visited.add(cur.agent_id)
+                stack.extend(children_by_parent.get(cur.agent_id, []))
+                if cur.status in terminal:
+                    continue
+                cur.request_cancel()
+            return True
 
 
 # Global singleton

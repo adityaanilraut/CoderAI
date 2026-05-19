@@ -11,6 +11,7 @@ def mock_agent():
     agent.session = Session(session_id="test_session")
     agent.config = MagicMock()
     agent.config.max_iterations = 5
+    agent.config.max_iterations_hard_cap = 200
     agent.config.budget_limit = 0
     agent.cost_tracker = MagicMock()
     agent.cost_tracker.get_total_cost.return_value = 0

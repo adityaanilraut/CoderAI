@@ -320,6 +320,7 @@ class UndoTool(Tool):
     name = "undo"
     description = "Undo a file modification (restores previous version). Optionally specify an index from undo_history."
     parameters_model = UndoParams
+    requires_confirmation = True
 
     async def execute(self, index: int = None) -> Dict[str, Any]:
         """Undo a file operation."""

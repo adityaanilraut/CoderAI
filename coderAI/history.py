@@ -152,7 +152,18 @@ def _sanitize_session_data(data: Dict[str, Any]) -> Dict[str, Any]:
                         if not isinstance(parsed, dict):
                             logger.warning("Dropping non-object stored tool arguments in session %s", data.get("session_id"))
                             continue
-                    fn_copy["arguments"] = parsed
+                        fn_copy["arguments"] = json.dumps(parsed)
+                    elif isinstance(args, dict):
+                        fn_copy["arguments"] = json.dumps(args)
+                    elif args is None:
+                        fn_copy["arguments"] = "{}"
+                    else:
+                        logger.warning(
+                            "Dropping tool call with invalid argument type %s in session %s",
+                            type(args).__name__,
+                            data.get("session_id"),
+                        )
+                        continue
                     tc_copy["function"] = fn_copy
                 tc_id = tc_copy.get("id")
                 if isinstance(tc_id, str) and tc_id:
@@ -378,7 +389,7 @@ class HistoryManager:
         for session_file in self.history_dir.glob("session_*.json"):
             try:
                 if session_file.stat().st_mtime < cutoff:
-                    session_id = session_file.stem.replace("session_", "")
+                    session_id = session_file.stem
                     session_file.unlink()
                     removed_ids.append(session_id)
             except OSError:

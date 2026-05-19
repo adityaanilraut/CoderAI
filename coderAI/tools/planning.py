@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from .base import Tool
 from ..config import config_manager
+from ..project_layout import find_dot_coderai_subdir
 
 _PLANS_DIR = ".coderAI"
 
@@ -32,16 +33,19 @@ def _atomic_write_json(filepath: Path, data: dict) -> None:
             pass
         raise
 def _get_plan_file(project_root: str = ".") -> Path:
-    plan_dir = Path(project_root).resolve() / _PLANS_DIR
+    plan_dir = find_dot_coderai_subdir("", project_root)
+    if plan_dir is None:
+        plan_dir = Path(project_root).resolve() / _PLANS_DIR
     plan_dir.mkdir(parents=True, exist_ok=True)
     return plan_dir / "current_plan.json"
 
 
 class PlanParams(BaseModel):
-    action: Literal["create", "show", "advance", "update_step", "clear"] = Field(
+    action: Literal["create", "show", "status", "advance", "update_step", "clear"] = Field(
         ...,
         description=(
-            "Action: 'create' (make a new plan), 'show' (display current plan), "
+            "Action: 'create' (make a new plan), 'show' (display the full plan), "
+            "'status' (cheap progress snapshot: current/next step + counts), "
             "'advance' (mark current step done and move to next), "
             "'update_step' (modify a step), 'clear' (remove the plan)."
         ),
@@ -69,13 +73,19 @@ class CreatePlanTool(Tool):
 
     name = "plan"
     description = (
-        "Create and manage a structured execution plan. Use this when work has several "
-        "ordered steps and you need to track progress across them. Do not use it for "
-        "single-step tasks or scratch notes; use notepad for that. Example: action='create', "
+        "Create and manage a structured execution plan that the user can follow along with. "
+        "Use this when work has 3+ ordered steps. Actions: 'create' (once, at the start), "
+        "'status' (cheap progress check between steps), 'advance' (after finishing a step), "
+        "'show' (full plan), 'update_step' (amend mid-flight), 'clear'. Do not use it for "
+        "single-step tasks; use notepad for scratch notes. Example: action='create', "
         "title='Refactor auth flow', steps=['Map current flow', 'Patch backend', 'Add tests']."
     )
     parameters_model = PlanParams
     is_read_only = False
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.project_root = "."
 
     async def execute(
         self,
@@ -86,7 +96,7 @@ class CreatePlanTool(Tool):
         new_description: Optional[str] = None,
     ) -> Dict[str, Any]:
         try:
-            config = config_manager.load_project_config(".")
+            config = config_manager.load_project_config(self.project_root)
             plan_file = _get_plan_file(config.project_root)
 
             if action == "create":
@@ -111,7 +121,12 @@ class CreatePlanTool(Tool):
                         "error_code": "not_a_directory",
                     }
 
+                # schema_version=2 introduced when the `status` action landed.
+                # Plans written before this (no `schema_version`) are treated as
+                # v1 and remain readable — no migration needed because every
+                # other branch only touches fields that have always existed.
                 plan = {
+                    "schema_version": 2,
                     "title": title,
                     "created_at": datetime.now().isoformat(),
                     "current_step": 0,
@@ -149,6 +164,53 @@ class CreatePlanTool(Tool):
                     "plan": plan,
                     "progress": f"{completed}/{total} steps completed",
                     "current_step": current_desc,
+                }
+
+            elif action == "status":
+                # Cheap progress snapshot for between-step checks. Returns only
+                # counts + current/next descriptions, not the full step list,
+                # so the agent can call it frequently without bloating context.
+                if not plan_file.exists():
+                    return {
+                        "success": True,
+                        "done": True,
+                        "total_steps": 0,
+                        "completed_steps": 0,
+                        "current_step_index": 0,
+                        "current_step_description": "",
+                        "next_step_description": None,
+                        "title": "",
+                        "message": "No active plan.",
+                    }
+
+                with open(plan_file, "r") as f:
+                    plan = json.load(f)
+
+                steps = plan.get("steps", [])
+                total = len(steps)
+                completed = sum(1 for s in steps if s.get("status") == "done")
+                current = plan.get("current_step", 0)
+                done = current >= total
+                if done:
+                    current_desc = "All steps completed"
+                    next_desc = None
+                else:
+                    current_desc = steps[current].get("description", "")
+                    next_desc = (
+                        steps[current + 1].get("description", "")
+                        if current + 1 < total
+                        else None
+                    )
+
+                return {
+                    "success": True,
+                    "done": done,
+                    "total_steps": total,
+                    "completed_steps": completed,
+                    "current_step_index": current,
+                    "current_step_description": current_desc,
+                    "next_step_description": next_desc,
+                    "title": plan.get("title", ""),
                 }
 
             elif action == "advance":
@@ -217,7 +279,7 @@ class CreatePlanTool(Tool):
             else:
                 return {
                     "success": False,
-                    "error": f"Unknown action: {action}. Use 'create', 'show', 'advance', 'update_step', or 'clear'.",
+                    "error": f"Unknown action: {action}. Use 'create', 'show', 'status', 'advance', 'update_step', or 'clear'.",
                 }
 
         except Exception as e:

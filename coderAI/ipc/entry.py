@@ -46,6 +46,7 @@ def _activate_resumed_session_model(agent: Agent, requested_model: str | None) -
     if agent.model != effective_model:
         agent.model = effective_model
         agent.provider = agent._create_provider()
+        agent.context_controller.provider = agent.provider
 
     session.model = effective_model
     agent.realign_provider_usage_counters()
@@ -59,6 +60,7 @@ async def _main() -> None:
     auto_approve = os.environ.get("CODERAI_AUTO_APPROVE") == "1"
     resume_id = os.environ.get("CODERAI_RESUME") or None
     continue_ = os.environ.get("CODERAI_CONTINUE") == "1"
+    persona_name = os.environ.get("CODERAI_PERSONA") or None
 
     if continue_ and not resume_id:
         from ..history import history_manager
@@ -68,6 +70,7 @@ async def _main() -> None:
         model=model,
         streaming=True,
         auto_approve=auto_approve,
+        persona_name=persona_name,
     )
 
     # Resume an existing session when the CLI passed --resume; fall back to a

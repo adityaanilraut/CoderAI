@@ -38,7 +38,7 @@ def mock_hooks_file(tmp_path):
 @pytest.mark.asyncio
 async def test_hooks_lifecycle(tmp_path, mock_hooks_file):
     # Setup agent in the tmp_path project
-    agent = Agent()
+    agent = Agent(auto_approve=True)
     agent.config.project_root = str(tmp_path)
     agent.config.save_history = False # don't clutter
     

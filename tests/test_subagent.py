@@ -3,6 +3,7 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from coderAI.history import Session
 from coderAI.tools.subagent import (
     DelegateTaskTool,
     MAX_DELEGATION_DEPTH,
@@ -134,6 +135,149 @@ class TestDelegateTaskParentState:
         agent_cls.assert_called_once()
         assert agent_cls.call_args.kwargs["auto_approve"] is True
         assert mock_agent.ipc_server is ipc_server
+
+    def test_subagent_session_creation_does_not_reset_parent_cost_tracker(self):
+        tool = DelegateTaskTool()
+        parent_cost_tracker = MagicMock()
+        tool.context = SubagentContext(parent_cost_tracker=parent_cost_tracker)
+
+        child_cost_tracker = MagicMock()
+        mock_agent = MagicMock()
+        mock_agent.process_single_shot = AsyncMock(return_value="done")
+        mock_agent.total_tokens = 0
+        mock_agent.total_prompt_tokens = 0
+        mock_agent.total_completion_tokens = 0
+        mock_agent.cost_tracker = child_cost_tracker
+        mock_agent._finish_tracker = MagicMock()
+        mock_agent.session = Session(session_id="session_1000_aaaaaaaa", model="claude")
+        mock_agent.tools = MagicMock()
+        mock_agent.tools.get.return_value = None
+        mock_agent._register_tracker = MagicMock()
+        mock_agent.context_manager = MagicMock()
+        mock_agent.context_manager.pinned_files = {}
+        mock_agent.context_manager._pinned_mtimes = {}
+        mock_agent.context_manager.project_instructions = None
+        mock_agent.context_controller = MagicMock()
+        mock_agent.provider = MagicMock()
+        mock_agent.set_persona = MagicMock(return_value=None)
+        mock_agent._configure_delegate_tool_context = MagicMock()
+        mock_agent.close = AsyncMock()
+
+        def create_session(*, clear_plan=True, **_kwargs):
+            assert clear_plan is False
+            mock_agent.cost_tracker.reset()
+            mock_agent.session = Session(session_id="session_1001_bbbbbbbb", model="claude")
+            return mock_agent.session
+
+        mock_agent.create_session = MagicMock(side_effect=create_session)
+
+        with patch("coderAI.agent.Agent", return_value=mock_agent):
+            result = asyncio.run(tool.execute(task_description="simple task"))
+
+        assert result["success"] is True
+        child_cost_tracker.reset.assert_called_once()
+        parent_cost_tracker.reset.assert_not_called()
+        assert mock_agent.cost_tracker is parent_cost_tracker
+        assert mock_agent.context_controller.cost_tracker is parent_cost_tracker
+
+    def test_subagent_task_id_resume_reuses_existing_session(self):
+        tool = DelegateTaskTool()
+        resumed = Session(
+            session_id="session_1000_aaaaaaaa",
+            model="claude",
+            metadata={"purpose": "delegation"},
+        )
+        resumed.add_message("system", "existing prompt")
+
+        mock_agent = MagicMock()
+        mock_agent.process_single_shot = AsyncMock(return_value="done")
+        mock_agent.total_tokens = 0
+        mock_agent.total_prompt_tokens = 0
+        mock_agent.total_completion_tokens = 0
+        mock_agent.cost_tracker = MagicMock()
+        mock_agent._finish_tracker = MagicMock()
+        mock_agent.session = None
+        mock_agent.tools = MagicMock()
+        mock_agent.tools.get.return_value = None
+        mock_agent.create_session = MagicMock()
+        mock_agent._register_tracker = MagicMock()
+        mock_agent.context_manager = MagicMock()
+        mock_agent.context_manager.pinned_files = {}
+        mock_agent.context_manager._pinned_mtimes = {}
+        mock_agent.context_manager.project_instructions = None
+        mock_agent.context_controller = MagicMock()
+        mock_agent.provider = MagicMock()
+        mock_agent.set_persona = MagicMock(return_value=None)
+        mock_agent._configure_delegate_tool_context = MagicMock()
+        mock_agent.close = AsyncMock()
+
+        with patch("coderAI.agent.Agent", return_value=mock_agent), patch(
+            "coderAI.history.history_manager.load_session", return_value=resumed
+        ):
+            result = asyncio.run(
+                tool.execute(task_description="resume task", task_id=resumed.session_id)
+            )
+
+        assert result["success"] is True
+        assert result["task_id"] == resumed.session_id
+        assert mock_agent.session is resumed
+        assert mock_agent.session.metadata == {"purpose": "delegation"}
+        mock_agent.create_session.assert_not_called()
+
+    def test_subagent_task_id_rejects_parent_session_id(self):
+        parent = Session(session_id="session_1000_aaaaaaaa", model="claude")
+        tool = DelegateTaskTool()
+        tool.context = SubagentContext(parent_session=parent)
+
+        with patch(
+            "coderAI.history.history_manager.load_session", return_value=parent
+        ):
+            result = asyncio.run(
+                tool.execute(task_description="resume task", task_id=parent.session_id)
+            )
+
+        assert result["success"] is False
+        assert result["error_code"] == "invalid_task_id"
+
+    def test_new_subagent_session_is_marked_as_delegation(self):
+        parent = Session(session_id="session_1000_aaaaaaaa", model="claude")
+        tool = DelegateTaskTool()
+        tool.context = SubagentContext(parent_session=parent)
+
+        mock_agent = MagicMock()
+        mock_agent.process_single_shot = AsyncMock(return_value="done")
+        mock_agent.total_tokens = 0
+        mock_agent.total_prompt_tokens = 0
+        mock_agent.total_completion_tokens = 0
+        mock_agent.cost_tracker = MagicMock()
+        mock_agent._finish_tracker = MagicMock()
+        mock_agent.session = None
+        mock_agent.tools = MagicMock()
+        mock_agent.tools.get.return_value = None
+        mock_agent._register_tracker = MagicMock()
+        mock_agent.context_manager = MagicMock()
+        mock_agent.context_manager.pinned_files = {}
+        mock_agent.context_manager._pinned_mtimes = {}
+        mock_agent.context_manager.project_instructions = None
+        mock_agent.context_controller = MagicMock()
+        mock_agent.provider = MagicMock()
+        mock_agent.set_persona = MagicMock(return_value=None)
+        mock_agent._configure_delegate_tool_context = MagicMock()
+        mock_agent.close = AsyncMock()
+
+        def create_session(*, clear_plan=True, **_kwargs):
+            assert clear_plan is False
+            mock_agent.session = Session(session_id="session_1001_bbbbbbbb", model="claude")
+            return mock_agent.session
+
+        mock_agent.create_session = MagicMock(side_effect=create_session)
+
+        with patch("coderAI.agent.Agent", return_value=mock_agent):
+            result = asyncio.run(tool.execute(task_description="simple task"))
+
+        assert result["success"] is True
+        assert mock_agent.session.metadata["purpose"] == "delegation"
+        assert mock_agent.session.metadata["parent_session_id"] == parent.session_id
 
 
 class TestDelegateTaskDepthPropagation:

@@ -255,6 +255,91 @@ async def test_orchestrate_signals_doom_loop_after_hard_threshold() -> None:
     assert last_fatal_res["count"] == DOOM_LOOP_HARD_THRESHOLD
 
 
+@pytest.mark.asyncio
+async def test_cached_read_only_repeats_trip_doom_loop_hard_threshold() -> None:
+    registry = SimpleNamespace(
+        get=MagicMock(
+            return_value=SimpleNamespace(
+                requires_confirmation=False,
+                is_read_only=True,
+                max_parallel_invocations=0,
+            )
+        ),
+        execute=AsyncMock(return_value={"success": True, "result": "contents"}),
+    )
+    session = Session(session_id="session_1234567890_deadbeef")
+    agent = SimpleNamespace(
+        auto_approve=True,
+        ipc_server=None,
+        tools=registry,
+        tracker_info=None,
+        session=session,
+        context_controller=SimpleNamespace(summarize_tool_result=lambda r: r),
+        provider=SimpleNamespace(get_model_info=lambda: {"total_tokens": 0}),
+        _sync_tracker=MagicMock(),
+        _finish_tracker=MagicMock(),
+        save_session=MagicMock(),
+    )
+    hooks_manager = SimpleNamespace(run_hooks=AsyncMock(return_value=[]))
+    executor = ToolExecutor(agent)
+
+    last_did_error, last_fatal_res = False, None
+    for i in range(DOOM_LOOP_HARD_THRESHOLD):
+        tool_calls = [{
+            "id": f"t{i}",
+            "type": "function",
+            "function": {"name": "read_file", "arguments": '{"path":"README.md"}'},
+        }]
+        session.add_message("assistant", None, tool_calls=tool_calls)
+        last_did_error, last_fatal_res = await executor.orchestrate_tool_calls(
+            tool_calls=tool_calls,
+            messages=session.get_messages_for_api(),
+            user_message="read it",
+            hooks_data=None,
+            hooks_manager=hooks_manager,
+        )
+
+    assert registry.execute.await_count == 2
+    assert last_did_error is True
+    assert isinstance(last_fatal_res, dict)
+    assert last_fatal_res.get("_doom_loop_stop") is True
+    assert last_fatal_res["count"] == DOOM_LOOP_HARD_THRESHOLD
+
+
+@pytest.mark.asyncio
+async def test_recoverable_error_repairs_mid_turn_unpaired_tool_calls() -> None:
+    session = Session(session_id="session_1234567890_deadbeef")
+    session.add_message(
+        "assistant",
+        None,
+        tool_calls=[
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "read_file", "arguments": '{"path":"x"}'},
+            }
+        ],
+    )
+    context_controller = SimpleNamespace(
+        inject_context=lambda messages, _context_manager, query=None: messages,
+        manage_context_window=AsyncMock(side_effect=lambda messages: messages),
+    )
+    agent = SimpleNamespace(
+        session=session,
+        context_controller=context_controller,
+        context_manager=SimpleNamespace(),
+        hooks_manager=None,
+    )
+    loop = ExecutionLoop(agent)
+
+    messages = await loop._handle_recoverable_error(RuntimeError("boom"), 1, "read x")
+
+    tool_messages = [msg for msg in session.messages if msg.role == "tool"]
+    assert len(tool_messages) == 1
+    assert tool_messages[0].tool_call_id == "call_1"
+    assert any(msg.get("tool_call_id") == "call_1" for msg in messages)
+
+
 def test_doom_loop_terminates_execution_loop_with_explanatory_message() -> None:
     """End-to-end: when the executor signals _doom_loop_stop, ExecutionLoop
     must exit immediately (not run to max_iterations) and surface a message
@@ -320,6 +405,117 @@ def test_doom_loop_terminates_execution_loop_with_explanatory_message() -> None:
     assert "looping" in result["content"].lower() or "loop" in result["content"].lower()
     # Critically: did NOT run to max_iterations.
     assert "maximum number of iterations" not in result["content"]
+
+
+@pytest.mark.asyncio
+async def test_denied_calls_do_not_count_toward_doom_loop_hard_threshold() -> None:
+    """Repeated user denials of the same write must not trip the doom-loop stop.
+
+    Before the fix, ``_call_counts`` was incremented for every call regardless
+    of result. A user denying ``write_file`` 5× in a turn would surface a
+    misleading "stuck in a loop" message instead of a plain "you keep denying".
+    """
+    fake_tool = SimpleNamespace(
+        requires_confirmation=True,
+        is_read_only=False,
+        max_parallel_invocations=0,
+    )
+    registry = SimpleNamespace(
+        get=MagicMock(return_value=fake_tool),
+        execute=AsyncMock(),
+    )
+    session = Session(session_id="session_1234567890_denyloop")
+    agent = SimpleNamespace(
+        auto_approve=False,
+        ipc_server=None,
+        tools=registry,
+        tracker_info=None,
+        session=session,
+        context_controller=SimpleNamespace(summarize_tool_result=lambda r: r),
+        provider=SimpleNamespace(get_model_info=lambda: {"total_tokens": 0}),
+        _sync_tracker=MagicMock(),
+        _finish_tracker=MagicMock(),
+        save_session=MagicMock(),
+        _tool_approval_allowlist=set(),
+    )
+    hooks_manager = SimpleNamespace(run_hooks=AsyncMock(return_value=[]))
+    executor = ToolExecutor(agent)
+    executor._confirmation_callback = AsyncMock(return_value=False)
+
+    last_did_error, last_fatal_res = False, None
+    for i in range(DOOM_LOOP_HARD_THRESHOLD + 2):
+        tool_calls = [{
+            "id": f"t{i}",
+            "type": "function",
+            "function": {
+                "name": "write_file",
+                "arguments": '{"path":"a.txt","content":"x"}',
+            },
+        }]
+        session.add_message("assistant", None, tool_calls=tool_calls)
+        last_did_error, last_fatal_res = await executor.orchestrate_tool_calls(
+            tool_calls=tool_calls,
+            messages=session.get_messages_for_api(),
+            user_message="write the file",
+            hooks_data=None,
+            hooks_manager=hooks_manager,
+        )
+
+    # All calls denied → executor returns retry-with-denial, never doom_loop_stop.
+    assert last_did_error is True
+    assert isinstance(last_fatal_res, dict)
+    assert last_fatal_res.get("_doom_loop_stop") is not True
+    assert last_fatal_res.get("_denied") is True
+
+
+@pytest.mark.asyncio
+async def test_in_batch_duplicate_calls_do_not_count_toward_doom_loop() -> None:
+    registry = SimpleNamespace(
+        get=MagicMock(
+            return_value=SimpleNamespace(
+                requires_confirmation=False,
+                is_read_only=False,
+                max_parallel_invocations=0,
+            )
+        ),
+        execute=AsyncMock(return_value={"success": True, "result": "ok"}),
+    )
+    session = Session(session_id="session_1234567890_deadbeef")
+    agent = SimpleNamespace(
+        auto_approve=True,
+        ipc_server=None,
+        tools=registry,
+        tracker_info=None,
+        session=session,
+        context_controller=SimpleNamespace(summarize_tool_result=lambda r: r),
+        provider=SimpleNamespace(get_model_info=lambda: {"total_tokens": 0}),
+        _sync_tracker=MagicMock(),
+        _finish_tracker=MagicMock(),
+        save_session=MagicMock(),
+    )
+    hooks_manager = SimpleNamespace(run_hooks=AsyncMock(return_value=[]))
+    executor = ToolExecutor(agent)
+    tool_calls = [
+        {
+            "id": f"t{i}",
+            "type": "function",
+            "function": {"name": "plan", "arguments": '{"action":"show"}'},
+        }
+        for i in range(DOOM_LOOP_HARD_THRESHOLD)
+    ]
+    session.add_message("assistant", None, tool_calls=tool_calls)
+
+    did_error, fatal_res = await executor.orchestrate_tool_calls(
+        tool_calls=tool_calls,
+        messages=session.get_messages_for_api(),
+        user_message="complete it",
+        hooks_data=None,
+        hooks_manager=hooks_manager,
+    )
+
+    assert did_error is False
+    assert fatal_res is None
+    assert registry.execute.await_count == 1
 
 
 def test_failed_tool_iterations_accumulate_in_execution_loop() -> None:

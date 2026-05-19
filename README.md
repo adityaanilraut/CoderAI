@@ -74,6 +74,8 @@ Type a slash inside `coderAI chat`:
 | `/tokens` · `/status` · `/context` | Session bar refresh |
 | `/compact` | Force-compress conversation history |
 | `/agents` | Note about the live agents table |
+| `/persona [name\|default\|list]` | List, apply, or clear an agent persona |
+| `/skills` | List available project skill workflows |
 | `/clear` | Wipe conversation & context |
 | `/reasoning <high\|medium\|low\|none>` | Thinking budget for reasoning models |
 | `/yolo` | Toggle auto-approve for high-risk tools |
@@ -154,7 +156,7 @@ CoderAI-main/
 │   ├── ipc/                    # ─── NDJSON bridge for Ink UI (stdio) ───
 │   │   ├── entry.py            #   python -m coderAI.ipc.entry (spawned by UI binary)
 │   │   ├── jsonrpc_server.py   #   Event/command protocol
-│   │   └── streaming.py        #   IPCStreamingHandler → stream_delta events
+│   │   └── streaming.py        #   IPCStreamingHandler → phased turn events
 │   │
 │   ├── llm/                    # ─── LLM Provider Backends ───
 │   │   ├── base.py             #   Abstract LLMProvider interface
@@ -254,7 +256,7 @@ The heart of CoderAI is the **agentic loop** in `agent.py → process_message()`
 ┌─────────────────────────────────────────────────────────────────┐
 │  1. User sends message                                          │
 │  2. Inject pinned context + project instructions                │
-│  3. Proactive context compaction (if >70% of context window)    │
+│  3. Context compaction when the usable context budget is full    │
 │  4. ┌──────────────────── LOOP (max_iterations) ──────────────┐ │
 │     │  a. Check cancellation flag                              │ │
 │     │  b. Call LLM with messages + tool schemas                │ │

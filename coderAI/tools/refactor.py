@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field
 
 from .base import Tool
+from .filesystem import _enforce_project_scope
 
 logger = logging.getLogger(__name__)
 
@@ -16,8 +17,8 @@ _IGNORE_PARTS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist",
 
 
 class RefactorParams(BaseModel):
-    action: str = Field("find_references", description="Refactoring action: rename_symbol, find_references, extract_to_module")
-    symbol: Optional[str] = Field(None, description="Symbol name to refactor (function, class, variable name)")
+    action: str = Field("find_references", description="Refactoring action: rename_symbol, find_references")
+    symbol: str = Field(..., description="Symbol name to refactor (function, class, variable name)")
     new_name: Optional[str] = Field(None, description="New name for the symbol (required for rename_symbol)")
     path: str = Field(".", description="Directory or file to scope the refactoring (default: current project)")
     kind: str = Field("any", description="Symbol kind filter: any, function, class, variable")
@@ -44,7 +45,7 @@ class RefactorTool(Tool):
     async def execute(
         self,
         action: str,
-        symbol: str,
+        symbol: Optional[str] = None,
         new_name: Optional[str] = None,
         path: str = ".",
         kind: str = "any",
@@ -52,30 +53,33 @@ class RefactorTool(Tool):
     ) -> Dict[str, Any]:
         try:
             action = action.strip().lower()
-            if action not in ("rename_symbol", "find_references", "extract_to_module"):
+            if action not in ("rename_symbol", "find_references"):
                 return {
                     "success": False,
-                    "error": f"Unknown action: {action}. Supported: rename_symbol, find_references, extract_to_module.",
+                    "error": f"Unknown action: {action}. Supported: rename_symbol, find_references.",
                 }
+
+            if not symbol or not symbol.strip():
+                return {
+                    "success": False,
+                    "error": "symbol is required for refactor actions.",
+                    "error_code": "validation_error",
+                }
+            symbol = symbol.strip()
 
             if action == "rename_symbol" and not new_name:
                 return {
                     "success": False,
                     "error": "new_name is required for rename_symbol action.",
-                }
-
-            if action == "extract_to_module":
-                return {
-                    "success": False,
-                    "error": (
-                        "extract_to_module is not yet supported. "
-                        "Use find_references or rename_symbol instead."
-                    ),
+                    "error_code": "validation_error",
                 }
 
             base = Path(path).expanduser().resolve()
             if not base.exists():
                 return {"success": False, "error": f"Path not found: {path}"}
+            scope_err = _enforce_project_scope(base, "refactor")
+            if scope_err is not None:
+                return scope_err
 
             files = self._collect_files(base)
             if not files:
@@ -97,6 +101,9 @@ class RefactorTool(Tool):
                 }
 
             if action == "rename_symbol":
+                name_err = self._validate_new_name(str(new_name), files)
+                if name_err is not None:
+                    return name_err
                 all_refs = self._find_all_references(files, symbol, kind)
 
                 if sum(len(r["references"]) for r in all_refs) == 0:
@@ -163,6 +170,30 @@ class RefactorTool(Tool):
 
         return files
 
+    @staticmethod
+    def _validate_new_name(new_name: str, files: List[Path]) -> Optional[Dict[str, Any]]:
+        if not new_name or not new_name.strip():
+            return {
+                "success": False,
+                "error": "new_name must not be empty.",
+                "error_code": "validation_error",
+            }
+        new_name = new_name.strip()
+        if any(f.suffix.lower() == ".py" for f in files):
+            if not new_name.isidentifier():
+                return {
+                    "success": False,
+                    "error": f"new_name is not a valid Python identifier: {new_name!r}",
+                    "error_code": "validation_error",
+                }
+        elif not re.match(r"^[A-Za-z_$][A-Za-z0-9_$]*$", new_name):
+            return {
+                "success": False,
+                "error": f"new_name is not a valid JS/TS identifier: {new_name!r}",
+                "error_code": "validation_error",
+            }
+        return None
+
     def _find_all_references(self, files: List[Path], symbol: str, kind: str) -> List[Dict[str, Any]]:
         results: List[Dict[str, Any]] = []
         for file_path in files:
@@ -226,7 +257,8 @@ class RefactorTool(Tool):
                 if getattr(node, "attr", None) == symbol:
                     ref_name = node.attr
                     line_no = node.end_lineno if hasattr(node, "end_lineno") else 0
-                    col = node.end_col_offset if hasattr(node, "end_col_offset") else 0
+                    end_col = node.end_col_offset if hasattr(node, "end_col_offset") else 0
+                    col = max(0, end_col - len(symbol))
                     ref_kind = "attribute_access"
 
             if ref_name and line_no > 0:
@@ -257,7 +289,7 @@ class RefactorTool(Tool):
         escaped = re.escape(symbol)
 
         patterns: List[Tuple[str, str]] = [
-            ("definition", rf"\b{symbol}\s*[:=]"),
+            ("definition", rf"\b{escaped}\s*[:=]"),
             ("definition", rf"\b(function|class|const|let|var)\s+{escaped}\b"),
             ("definition", rf"\b(export\s+)?(function|class|const|let|var)\s+{escaped}\b"),
             ("method", rf"\b{escaped}\s*\("),
@@ -267,15 +299,21 @@ class RefactorTool(Tool):
         ]
 
         lines = source.splitlines()
+        masked_lines = self._mask_jsts_non_code(source).splitlines()
         for line_no, line in enumerate(lines, 1):
+            masked = masked_lines[line_no - 1] if line_no - 1 < len(masked_lines) else line
             for ref_kind, pattern in patterns:
                 if wanted != "any" and ref_kind != wanted and ref_kind not in ("reference", "method"):
                     if wanted in ("function", "class") and ref_kind != "definition":
                         continue
                     if wanted == "variable" and ref_kind not in ("definition", "reference"):
                         continue
-                for match in re.finditer(pattern, line):
-                    col = match.start()
+                for match in re.finditer(pattern, masked):
+                    matched = match.group(0)
+                    offset = matched.find(symbol)
+                    if offset < 0:
+                        continue
+                    col = match.start() + offset
                     dedup_key = (line_no, col)
                     if dedup_key in {(r["line"], r["column"]) for r in refs}:
                         continue
@@ -287,6 +325,87 @@ class RefactorTool(Tool):
                         "line_content": line.strip()[:200],
                     })
         return refs
+
+    @staticmethod
+    def _mask_jsts_non_code(source: str) -> str:
+        """Replace JS/TS comments and string contents with spaces.
+
+        The mask keeps byte positions stable, letting regex matches on the
+        masked text map back to columns in the original source.
+        """
+        out: List[str] = []
+        i = 0
+        n = len(source)
+        state: Optional[str] = None
+        while i < n:
+            ch = source[i]
+            nxt = source[i + 1] if i + 1 < n else ""
+
+            if state == "line_comment":
+                if ch == "\n":
+                    state = None
+                    out.append(ch)
+                else:
+                    out.append(" ")
+                i += 1
+                continue
+
+            if state == "block_comment":
+                if ch == "*" and nxt == "/":
+                    out.extend([" ", " "])
+                    i += 2
+                    state = None
+                else:
+                    out.append("\n" if ch == "\n" else " ")
+                    i += 1
+                continue
+
+            if state in {"single", "double", "template"}:
+                quote = {"single": "'", "double": '"', "template": "`"}[state]
+                if ch == "\\":
+                    out.append(" ")
+                    if i + 1 < n:
+                        out.append("\n" if source[i + 1] == "\n" else " ")
+                    i += 2
+                    continue
+                if ch == quote:
+                    out.append(" ")
+                    state = None
+                else:
+                    out.append("\n" if ch == "\n" else " ")
+                i += 1
+                continue
+
+            if ch == "/" and nxt == "/":
+                out.extend([" ", " "])
+                i += 2
+                state = "line_comment"
+                continue
+            if ch == "/" and nxt == "*":
+                out.extend([" ", " "])
+                i += 2
+                state = "block_comment"
+                continue
+            if ch == "'":
+                out.append(" ")
+                i += 1
+                state = "single"
+                continue
+            if ch == '"':
+                out.append(" ")
+                i += 1
+                state = "double"
+                continue
+            if ch == "`":
+                out.append(" ")
+                i += 1
+                state = "template"
+                continue
+
+            out.append(ch)
+            i += 1
+
+        return "".join(out)
 
     def _apply_rename(
         self, all_refs: List[Dict[str, Any]], symbol: str, new_name: str, base: Path
@@ -318,8 +437,15 @@ class RefactorTool(Tool):
                 after = line[col:]
 
                 if after.startswith(symbol):
+                    next_char = after[len(symbol):len(symbol) + 1]
+                    prev_char = before[-1:] if before else ""
+                    if (
+                        (prev_char and re.match(r"[A-Za-z0-9_$]", prev_char))
+                        or (next_char and re.match(r"[A-Za-z0-9_$]", next_char))
+                    ):
+                        continue
                     if ref["kind"] == "attribute_access":
-                        new_line = before + "." + new_name if before.rstrip().endswith(".") else before + new_name
+                        new_line = before + new_name + after[len(symbol):]
                     else:
                         new_line = before + new_name + after[len(symbol):]
                     lines[idx] = new_line

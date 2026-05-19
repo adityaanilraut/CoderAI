@@ -12,7 +12,7 @@ rules are an extension hook, not part of the static prompt body.
 
 from __future__ import annotations
 
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import logging
 
 from .tools.base import ToolRegistry
@@ -208,10 +208,11 @@ _TOOL_HELP: Dict[str, str] = {
     ),
     # --- Tasks ---
     "manage_tasks": (
-        "Maintain a persistent task checklist for the current implementation (priorities, status). "
-        "Use this alongside `plan` while executing multi-step work — record each granular action as a "
-        "task, mark it 'start' when you begin and 'complete' when done. The checklist is file-backed in "
-        "`.coderAI/tasks.json` and survives across agent-loop iterations."
+        "Optional granular checklist that survives across turns (file-backed at `.coderAI/tasks.json`). "
+        "Use only when you need fine-grained sub-actions independent of the user-facing plan — for example "
+        "a punch list of follow-ups, a per-file checklist, or items the user explicitly asked you to track. "
+        "Do not duplicate items between `plan` and `manage_tasks`: `plan` is the ordered narrative shown "
+        "to the user, this is a side checklist. Actions: list / add / start / complete / update / delete / clear."
     ),
     # --- Multi-agent ---
     "delegate_task": (
@@ -236,10 +237,13 @@ _TOOL_HELP: Dict[str, str] = {
         "testing snippets, or running one-off scripts."
     ),
     "plan": (
-        "**Call this first** for any multi-step task assigned by the user. Create a structured execution "
-        "plan (action='create' with title and ordered steps), then advance through it (action='advance') "
-        "as you complete each step. Use action='show' to recall current progress, 'update_step' to amend "
-        "a step mid-execution. Skip only for trivial one-shot asks."
+        "The user-facing ordered narrative for multi-step work — a checkpoint the user can follow. "
+        "Call `action='create'` ONCE at the start with a title and the ordered steps. Between steps, "
+        "call `action='status'` (cheap; returns current/next step + counts) to confirm where you are "
+        "before advancing. Call `action='advance'` as each step completes. Use `action='show'` for the "
+        "full plan, `action='update_step'` to amend a step mid-flight, `action='clear'` to discard. "
+        "Skip planning entirely for trivial work (single-tool reads, greetings, one-line answers). "
+        "Do not duplicate plan steps into `manage_tasks`."
     ),
     "notepad": (
         "Read and write to a shared notepad that persists across tool calls and is shared between agents. "
@@ -267,7 +271,7 @@ You are CoderAI, an AI coding agent running in the user's terminal. Help the use
 2. **Search before you assume (about the codebase).** Inspect the repository before guessing.
 3. **Read before you edit.** Understand the existing code and nearby call sites first.
 4. **Verify after you change.** Run the relevant checks when they exist.
-5. **Plan before you build.** For non-trivial work, call `plan` first and use `manage_tasks` while executing. Skip planning only for trivial asks.
+5. **Plan before you build.** For non-trivial multi-step work, call `plan` first (see Plan-First Workflow below).
 6. **Minimize diffs.** Preserve existing structure, style, and naming unless there is a good reason not to.
 7. **Stay capability-aware.** Only rely on tools listed under **Available Tools**. If a tool or workflow is not listed, do not imply that it exists.
 
@@ -279,6 +283,17 @@ You are CoderAI, an AI coding agent running in the user's terminal. Help the use
 - If web tools are listed under **Available Tools** and current information is needed, use them directly.
 - Personas and skills are opt-in.
 - Batch read-only tool calls together when it saves round-trips. Mutating tools run one at a time.
+"""
+
+SYSTEM_PROMPT_INTERACTION = """\
+## Interaction & Recovery
+
+- When essential information is missing, prefer ONE short clarifying question over guessing — do not stall on guessable defaults.
+- Verify file paths before referencing them. Use `list_directory` or `glob_search` rather than inventing paths.
+- Respect user denials. If a tool is denied, do not retry the same destructive action with reworded arguments — change approach or stop.
+- If a tool result includes `_warning: This is call #N to ... with identical arguments`, REUSE the previous result. Do not repeat the call.
+- In YOLO/auto-approve mode (see env block), destructive tools execute without prompting — be especially deliberate.
+- If `finish_reason=length` or you are warned about approaching the iteration limit, prioritize a final user-visible answer over starting new work.
 """
 
 SYSTEM_PROMPT_OUTPUT_STYLE = """\
@@ -298,12 +313,26 @@ def build_environment_section(
     workspace_root: str = "",
     is_git_repo: bool = False,
     platform: str = "unknown",
+    *,
+    auto_approve: bool = False,
+    persona_name: Optional[str] = None,
+    persona_description: Optional[str] = None,
+    active_plan: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Build an environment-info block injected at the top of the system prompt.
 
     Mirrors OpenCode's ``SystemPrompt.environment()`` pattern: model identity +
     a structured ``<env>`` block with workspace metadata so the LLM knows
     its runtime context without having to deduce it.
+
+    Optional keyword-only fields surface dynamic agent state:
+
+    - ``auto_approve``: emits ``Mode: YOLO (auto-approve)`` vs ``confirm-on-mutate``.
+    - ``persona_name`` / ``persona_description``: emits ``Persona: <name> — <desc>``.
+    - ``active_plan``: a small dict (e.g. ``{"title", "completed", "total",
+      "current_desc"}``) used to render ``Active plan: <title> (c/t steps,
+      current: <desc>)``. The caller is responsible for keeping this short —
+      we never dump the full step list here.
     """
     import datetime
 
@@ -317,6 +346,23 @@ def build_environment_section(
     lines.append(f"  Git repo: {'yes' if is_git_repo else 'no'}")
     lines.append(f"  Platform: {platform}")
     lines.append(f"  Date: {datetime.date.today().isoformat()}")
+    lines.append(
+        f"  Mode: {'YOLO (auto-approve)' if auto_approve else 'confirm-on-mutate'}"
+    )
+    if persona_name:
+        if persona_description:
+            lines.append(f"  Persona: {persona_name} — {persona_description}")
+        else:
+            lines.append(f"  Persona: {persona_name}")
+    if active_plan:
+        title = active_plan.get("title") or "(untitled)"
+        completed = active_plan.get("completed", 0)
+        total = active_plan.get("total", 0)
+        current_desc = active_plan.get("current_desc") or "—"
+        lines.append(
+            f"  Active plan: {title} "
+            f"({completed}/{total} steps, current: {current_desc})"
+        )
     lines.append("</env>")
     return "\n".join(lines)
 
@@ -332,12 +378,11 @@ SYSTEM_PROMPT_TAIL = """\
 
 ### Plan-First Workflow
 
-For any non-trivial task assigned by the user:
-
-1. **Build the plan.** Call `plan` with `action='create'` before editing.
-2. **Maintain a task checklist while implementing.** Use `manage_tasks` for granular actions and mark them as you go.
-3. **Advance the plan.** Call `plan` with `action='advance'` as steps complete; update steps instead of recreating the plan.
-4. **Skip planning only for trivial work.** Greetings, one-shot reads, and simple one-line answers do not need a plan.
+1. For multi-step work (3+ ordered steps), call `plan` with `action='create'` once, before editing.
+2. Between steps, call `plan` with `action='status'` (cheap) to check the current step before advancing.
+3. Call `plan` with `action='advance'` as each step completes; amend with `action='update_step'` instead of recreating.
+4. Use `manage_tasks` only if you need a separate checklist that survives across turns. Do not duplicate plan items into tasks.
+5. Skip planning entirely for trivial work (single-tool reads, greetings, one-line answers).
 
 ### Editing Code
 - Read the target file first.
@@ -519,13 +564,17 @@ def compose_default_system_prompt(
     registry: ToolRegistry,
     env_section: str = "",
 ) -> str:
-    """Default CoderAI system prompt: env (optional) + intro + dynamic tools + tail."""
+    """Default CoderAI system prompt.
+
+    Order: env (optional) → INTRO → dynamic tool list → INTERACTION → OUTPUT_STYLE → TAIL.
+    """
     parts = []
     if env_section:
         parts.append(env_section)
     parts.extend([
         SYSTEM_PROMPT_INTRO,
         format_tools_markdown(registry),
+        SYSTEM_PROMPT_INTERACTION,
         SYSTEM_PROMPT_OUTPUT_STYLE,
         SYSTEM_PROMPT_TAIL,
     ])

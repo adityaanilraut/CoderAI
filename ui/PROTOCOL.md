@@ -23,7 +23,7 @@ unknown phases are ignored.
 
 | event           | payload                                                                                       | notes                                                                                |
 | --------------- | --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| `hello`         | `{model, provider, cwd, version, protocolVersion, projectSummary?, contextLimit, budgetLimit, autoApprove}`    | First message after handshake                                                        |
+| `hello`         | `{model, provider, cwd, version, protocolVersion, projectSummary?, contextLimit, budgetLimit, autoApprove, reasoning}` | First message after handshake                                                        |
 | `ready`         | `{}`                                                                                          | Agent is idle and accepting `send_message`                                           |
 | `turn`          | `{phase: "start" | "reasoning" | "text" | "end", delta?, elapsedMs?}`                          | One streamed assistant turn. `delta` carries incremental tokens for `reasoning`/`text`. |
 | `tool`          | `{id, phase: "queued" | "awaiting_approval" | "running" | "ok" | "err" | "cancelled", payload}` | Lifecycle of a single tool call. `payload` shape depends on phase (see below).      |
@@ -35,7 +35,7 @@ unknown phases are ignored.
 | `warning`       | `{message}`                                                                                   | Non-fatal user-facing problem (unknown command, bad input)                           |
 | `success`       | `{message}`                                                                                   | Positive confirmation toast (state change, async ack)                                |
 | `error`         | `{category: "provider" | "tool" | "internal" | "protocol", message, hint?, details?}`         | Renders ErrorPanel, not a traceback dump                                             |
-| `progress`      | `{label, current?, total?, kind: "tokens" | "files" | "steps"}`                               | Reserved for future progress bars (currently no UI)                                  |
+| `progress`      | `{label, current?, total?, progressKind: "tokens" | "files" | "steps"}`                       | Tool progress updates forwarded from the Python executor                             |
 | `goodbye`       | `{reason?}`                                                                                   | Agent is shutting down                                                               |
 
 ### `tool` phases — `payload` shape
@@ -48,7 +48,7 @@ unknown phases are ignored.
 | `err`                | `{error, preview?}`                                           |
 | `cancelled`          | `{reason?, timeoutSeconds?}`                                  |
 
-`category` is one of `fs | git | shell | web | search | agent | mcp | other`.
+`category` is one of `filesystem | git | terminal | web | search | memory | agent | mcp | other`.
 `risk` is one of `low | medium | high`.
 
 ### `AgentInfo`
@@ -90,6 +90,7 @@ unknown phases are ignored.
 | `clear_context`        | `{}`                                                   | Fresh session                                                          |
 | `get_state`            | `{}`                                                   | Re-emit `status` + `agent` updates                                     |
 | `get_plan`             | `{}`                                                   | Emits `info` with `.coderAI/current_plan.json` or a short notice       |
+| `list_models`          | `{}`                                                   | Emits `available_models` for the model picker                          |
 | `reference`            | `{topic}`                                              | Long-form help (`version`, `models`, `cost`, `system`, `config`, …)    |
 | `exit`                 | `{}`                                                   | Graceful shutdown                                                      |
 
@@ -107,7 +108,7 @@ single-line `info`/`warning`; `verbose` passes everything. Multi-line `info`
 
 ```jsonl
 {"v":2,"kind":"cmd","cmd":"handshake","id":"c0","payload":{"protocolVersion":2}}
-{"v":2,"kind":"event","event":"hello","model":"claude-sonnet-4-6","provider":"AnthropicProvider","cwd":"/Users/a/proj","version":"0.1.0","protocolVersion":2,"contextLimit":200000,"budgetLimit":5.0,"autoApprove":false}
+{"v":2,"kind":"event","event":"hello","model":"claude-sonnet-4-6","provider":"AnthropicProvider","cwd":"/Users/a/proj","version":"0.1.0","protocolVersion":2,"contextLimit":200000,"budgetLimit":5.0,"autoApprove":false,"reasoning":"medium"}
 {"v":2,"kind":"event","event":"ready"}
 {"v":2,"kind":"cmd","cmd":"send_message","id":"c1","text":"rename getCwd to getCurrentWorkingDirectory"}
 {"v":2,"kind":"event","event":"turn","phase":"start"}

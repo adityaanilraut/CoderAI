@@ -1141,6 +1141,7 @@ class GitFetchTool(Tool):
     category = "git"
     parameters_model = GitFetchParams
     is_read_only = False  # --prune deletes remote-tracking branches, so this is not read-only
+    requires_confirmation = True
 
     async def execute(
         self,

@@ -85,6 +85,7 @@ class LintTool(Tool):
     )
     parameters_model = LintParams
     is_read_only = False
+    requires_confirmation = True
 
     async def execute(
         self,
