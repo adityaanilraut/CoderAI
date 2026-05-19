@@ -356,7 +356,7 @@ coderAI chat
 
 After installation:
 
-1. Read the [README.md](README.md) for feature overview
+1. Read the [README.md](../README.md) for feature overview
 2. Check [EXAMPLES.md](EXAMPLES.md) for usage examples
 3. Run `coderAI setup` for interactive configuration
 4. Start coding with `coderAI chat`

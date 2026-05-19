@@ -7,7 +7,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 import aiohttp
 
-from .base import LLMProvider, REASONING_BUDGET_MAP
+from coderAI.llm.base import LLMProvider, REASONING_BUDGET_MAP
 
 logger = logging.getLogger(__name__)
 
@@ -585,7 +585,7 @@ class AnthropicProvider(LLMProvider):
 
         Claude uses about 1 token per 4 characters on average.
         """
-        from ._token_counter import count_tokens_anthropic
+        from coderAI.llm._token_counter import count_tokens_anthropic
 
         return count_tokens_anthropic(text, self.actual_model, self.api_key)
 
@@ -595,7 +595,7 @@ class AnthropicProvider(LLMProvider):
 
     def get_cost(self) -> Dict[str, Any]:
         """Get current session cost estimate."""
-        from ..cost import CostTracker
+        from coderAI.system.cost import CostTracker
 
         pricing = CostTracker.get_model_pricing(self.actual_model)
         # MODEL_PRICING is per-million tokens.

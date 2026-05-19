@@ -1,10 +1,10 @@
-"""Chat controller: agent events and command dispatch.
+"""In-process chat controller (Textual UI bridge).
 
 Drives the Textual UI in ``coderAI/tui/`` via an in-process callback
-(``on_event``). The Textual app constructs an :class:`IPCServer`,
+(``on_event``). The Textual app constructs an :class:`UIBridge`,
 passes ``on_event`` to receive events on the UI thread, and pushes UI
-intent back through :meth:`IPCServer.enqueue_command` /
-:meth:`IPCServer.submit_command`.
+intent back through :meth:`UIBridge.enqueue_command` /
+:meth:`UIBridge.submit_command`.
 
 Subscribes to ``event_emitter`` and dispatches UI commands to the agent.
 See ``docs/CHAT_EVENTS.md`` for the event catalog.
@@ -17,34 +17,34 @@ import json
 import logging
 import os
 from pathlib import Path
-import re
 import time as _time
 import uuid
 from typing import Any, Awaitable, Callable, Dict, Optional
 
-from ..agent_tracker import AgentInfo, AgentStatus, agent_tracker
-from ..config import config_manager
-from ..events import event_emitter
-from ..project_layout import find_dot_coderai_subdir
-from ..system_prompt import _TOOL_SECTIONS
+from coderAI.core.agent_tracker import AgentInfo, AgentStatus, agent_tracker
+from coderAI.system.config import config_manager
+from coderAI.system.events import event_emitter
+from coderAI.system.project_layout import find_dot_coderai_subdir
+
+from coderAI.bridge.tool_metadata import (
+    arg_preview,
+    parse_skill_steps,
+    preview_args_for_approval,
+    result_preview,
+    strip_rich_markup,
+    tool_category,
+    tool_risk,
+)
 
 logger = logging.getLogger(__name__)
 
-# Strip Rich-style markup tags (e.g. ``[bold cyan]``, ``[/bold cyan]``,
-# ``[/]``) from message payloads before emitting. Some legacy event sources
-# inject Rich tags meant for the one-shot CLI; the Textual timeline renders
-# these payloads as plain text, so the tags would otherwise leak through.
-_RICH_TAG_RE = re.compile(r"\[/?[a-zA-Z][a-zA-Z0-9 _#\-/]*\]")
-
-
-def _strip_rich_markup(text: Any) -> str:
-    """Strip Rich markup tags from a string, returning plain text."""
-    if text is None:
-        return ""
-    s = str(text)
-    if "[" not in s:
-        return s
-    return _RICH_TAG_RE.sub("", s)
+_strip_rich_markup = strip_rich_markup
+_tool_category = tool_category
+_tool_risk = tool_risk
+_parse_skill_steps = parse_skill_steps
+_preview_args_for_approval = preview_args_for_approval
+_arg_preview = arg_preview
+_result_preview = result_preview
 
 
 def _infer_error_hint(category: str, message: str) -> Optional[str]:
@@ -104,108 +104,6 @@ def _infer_error_hint(category: str, message: str) -> Optional[str]:
     return None
 
 
-# --- Tool category inference ------------------------------------------------
-#
-# Primary source of truth is the ``category`` attribute on each ``Tool``
-# subclass (see ``coderAI/tools/base.py``). The fallback map below covers
-# MCP-proxy tools and anything that hasn't been tagged yet; tools looked
-# up in the registry override the map.
-
-_CATEGORY_MAP = {
-    "File Operations": "filesystem",
-    "Terminal": "terminal",
-    "Git": "git",
-    "Search & Analysis": "search",
-    "Web": "web",
-    "Memory (Persistent)": "memory",
-    "Multi-Agent Delegation": "agent",
-    "MCP (Model Context Protocol)": "mcp",
-}
-
-_TOOL_CATEGORY_FALLBACK = {}
-for _section_name, _tool_names in _TOOL_SECTIONS:
-    _cat = _CATEGORY_MAP.get(_section_name, "other")
-    for _t in _tool_names:
-        _TOOL_CATEGORY_FALLBACK[_t] = _cat
-
-# Ensure MCP proxy tools are covered even if missing from main prompt list
-_TOOL_CATEGORY_FALLBACK["mcp_connect"] = "mcp"
-_TOOL_CATEGORY_FALLBACK["mcp_call_tool"] = "mcp"
-_TOOL_CATEGORY_FALLBACK["mcp_list"] = "mcp"
-
-_HIGH_RISK = {
-    "run_command",
-    "run_background",
-    "write_file",
-    "search_replace",
-    "apply_diff",
-    "git_commit",
-    "git_checkout",
-    "git_stash",
-    "git_push",
-    "git_reset",
-    "git_rebase",
-    "git_revert",
-    "delete_file",
-    "move_file",
-    "kill_process",
-}
-_MEDIUM_RISK = {
-    "delegate_task",
-    "download_file",
-    "mcp_call_tool",
-    "git_merge",
-    "git_cherry_pick",
-    "copy_file",
-    "http_request",
-}
-
-
-def _tool_category(name: str, registry: Optional[Any] = None) -> str:
-    """Determine the UI category for ``name``.
-
-    Prefers the ``category`` attribute on the tool instance (if the registry
-    is supplied and the tool is registered). Falls back to the hardcoded
-    map for tools that haven't been tagged or for MCP-proxy names.
-    """
-    if registry is not None:
-        tool = registry.get(name)
-        if tool is not None:
-            cat = getattr(tool, "category", None)
-            if cat and cat != "other":
-                return cat
-    return _TOOL_CATEGORY_FALLBACK.get(name, "other")
-
-
-def _tool_risk(name: str) -> str:
-    if name in _HIGH_RISK:
-        return "high"
-    if name in _MEDIUM_RISK:
-        return "medium"
-    return "low"
-
-
-def _truncate_args(args: Dict[str, Any], limit: int, *, show_count: bool = False) -> Dict[str, Any]:
-    """Shrink large string arg values so the UI stays snappy."""
-    if not isinstance(args, dict):
-        return {"value": str(args)[:limit]}
-    out: Dict[str, Any] = {}
-    for k, v in args.items():
-        if isinstance(v, str) and len(v) > limit:
-            suffix = f"… ({len(v)} chars total)" if show_count else "…"
-            out[k] = v[:limit] + suffix
-        else:
-            out[k] = v
-    return out
-
-
-def _preview_args_for_approval(arguments: Dict[str, Any]) -> Dict[str, Any]:
-    return _truncate_args(arguments, 800, show_count=True)
-
-
-# --- AgentInfo serialization -------------------------------------------------
-
-
 def _agent_info_dict(info: AgentInfo) -> Dict[str, Any]:
     return {
         "id": info.agent_id,
@@ -221,18 +119,31 @@ def _agent_info_dict(info: AgentInfo) -> Dict[str, Any]:
         "ctxUsed": info.context_used_tokens,
         "ctxLimit": info.context_limit_tokens,
         "elapsedMs": int(info.elapsed_seconds * 1000),
+        "depth": _compute_agent_depth(info),
     }
+
+
+def _compute_agent_depth(info: AgentInfo) -> int:
+    depth = 0
+    pid = info.parent_id
+    while pid:
+        parent = agent_tracker.get(pid)
+        if parent is None:
+            break
+        depth += 1
+        pid = parent.parent_id
+    return depth
 
 
 # --- The server -------------------------------------------------------------
 
 
-class IPCServer:
+class UIBridge:
     """In-process controller for the Textual chat UI.
 
     Usage:
 
-        server = IPCServer(agent=agent, on_event=ui_callback)
+        server = UIBridge(agent=agent, on_event=ui_callback)
         await server.start()   # returns when ``request_shutdown`` is called
     """
 
@@ -249,6 +160,8 @@ class IPCServer:
         self._approval_waiters: Dict[str, asyncio.Future] = {}
         self._pending_tasks: set[asyncio.Task] = set()
         self._said_goodbye = False
+        self._session_start_ts: float = 0.0
+        self._iteration: int = 0
         # Captured at start() so command-enqueue calls from other threads
         # (the Textual UI runs on a different thread than the agent loop)
         # can schedule work on the agent's running loop.
@@ -270,7 +183,7 @@ class IPCServer:
 
         # Track our own event_emitter subscriptions so we can detach them at
         # shutdown — the emitter is a module-level singleton, so a stale
-        # IPCServer's listeners would otherwise keep firing after it exits.
+        # UIBridge's listeners would otherwise keep firing after it exits.
         self._listener_refs: list[tuple[str, Callable[..., Any]]] = []
 
         # Bind event_emitter listeners once.
@@ -351,10 +264,22 @@ class IPCServer:
         fut: asyncio.Future = loop.create_future()
         self._approval_waiters[tool_id] = fut
 
+        # Build requester info for the enhanced approval modal
+        tracker_info = getattr(self.agent, "tracker_info", None)
+        requested_by = tracker_info.name if tracker_info else "main"
+        parent_id = tracker_info.parent_id if tracker_info else None
+        iteration = self._iteration
+        prior_approved = self._count_prior_approved_this_turn()
+
         payload = {
             "name": tool_name,
             "args": _preview_args_for_approval(arguments),
             "risk": _tool_risk(tool_name),
+            "requestedBy": requested_by,
+            "parentId": parent_id,
+            "iteration": iteration,
+            "maxIterations": getattr(self.agent.config, "max_iterations", 50),
+            "priorApproved": prior_approved,
         }
         if diff is not None:
             payload["diff"] = diff
@@ -381,6 +306,21 @@ class IPCServer:
         finally:
             # Drop any leftover waiter (handler normally pops on approve/deny).
             self._approval_waiters.pop(tool_id, None)
+
+    def _count_prior_approved_this_turn(self) -> int:
+        """Count how many tools were already approved in the current turn."""
+        count = 0
+        track = getattr(self.agent, "tracker_info", None)
+        if track:
+            for info in agent_tracker.get_all():
+                if info.parent_id == track.agent_id and info.status not in (
+                    "done",
+                    "error",
+                    "cancelled",
+                    "idle",
+                ):
+                    count += 1
+        return count
 
     # -- lifecycle helpers ----------------------------------------------------
 
@@ -412,6 +352,7 @@ class IPCServer:
             cost = self.agent.cost_tracker.get_total_cost()
         except Exception:
             pass
+        elapsed = _time.time() - self._session_start_ts if self._session_start_ts else 0.0
         self.emit(
             "status",
             ctxUsed=used,
@@ -421,7 +362,13 @@ class IPCServer:
             promptTokens=getattr(self.agent, "total_prompt_tokens", 0),
             completionTokens=getattr(self.agent, "total_completion_tokens", 0),
             totalTokens=getattr(self.agent, "total_tokens", 0),
+            iteration=self._iteration,
+            maxIterations=getattr(self.agent.config, "max_iterations", 50),
+            elapsedSeconds=elapsed,
         )
+
+    def tick_iteration(self) -> None:
+        self._iteration += 1
 
     # -- event_emitter wiring -------------------------------------------------
 
@@ -435,10 +382,7 @@ class IPCServer:
         _bind("tool_call", self._on_tool_call)
         _bind("tool_result", self._on_tool_result)
         _bind("tool_error", self._emit_tool_error)
-        # `agent_status` is high-frequency narration ("Reading file…",
-        # "Calling tool…"). The Textual UI shows the same information via
-        # tool_call / agent_update events, so we no longer forward it as
-        # a persistent toast. Re-enabled only when verbose flag flips.
+        _bind("agent_status", self._on_agent_status)
         _bind(
             "agent_error", lambda message: self._emit_error("internal", _strip_rich_markup(message))
         )
@@ -460,6 +404,10 @@ class IPCServer:
         for name, cb in self._listener_refs:
             event_emitter.off(name, cb)
         self._listener_refs.clear()
+
+    def _on_agent_status(self, message: str) -> None:
+        if self._verbosity == "verbose":
+            self.emit("info", message=_strip_rich_markup(message))
 
     def _on_tool_call(self, tool_name: str, arguments: Dict[str, Any], tool_id: str = None) -> None:
         # Use provided tool_id if available, otherwise generate one
@@ -493,6 +441,19 @@ class IPCServer:
                 "error": error,
             },
         )
+        if tool_name == "use_skill" and ok:
+            skill_name = str(result.get("skill_name") or "")
+            skill_desc = str(result.get("description") or "")
+            instructions = str(result.get("instructions") or "")
+            steps = _parse_skill_steps(instructions)
+            if skill_name or steps:
+                self.emit(
+                    "skill_card",
+                    id=tool_id,
+                    name=skill_name,
+                    description=skill_desc,
+                    steps=steps,
+                )
 
     def _on_agent_lifecycle(self, action: str, info: AgentInfo) -> None:
         # Lifecycle transitions are rare and load-bearing — never throttled.
@@ -618,6 +579,7 @@ class IPCServer:
 
     async def _bootstrap_session(self) -> None:
         """Emit hello/ready and seed the agent tree."""
+        self._session_start_ts = _time.time()
         self.emit_hello()
         self.emit_ready()
         for info in agent_tracker.get_all():
@@ -672,52 +634,17 @@ class IPCServer:
         return cancelled
 
 
-# --- Argument / result sanitization -----------------------------------------
-
-_ARG_PREVIEW_LIMIT = 240
-_RESULT_PREVIEW_LIMIT = 400
-
-
-def _arg_preview(args: Dict[str, Any]) -> Dict[str, Any]:
-    """Truncate string values to keep tool-call args panel snappy."""
-    return _truncate_args(args, _ARG_PREVIEW_LIMIT)
-
-
-def _result_preview(result: Dict[str, Any]) -> str:
-    """Pick the most useful one-line preview we can out of a tool result."""
-    if not isinstance(result, dict):
-        return str(result)[:_RESULT_PREVIEW_LIMIT]
-
-    # Common fields, in priority order.
-    for key in ("summary", "preview", "message", "output", "content", "path"):
-        val = result.get(key)
-        if val:
-            s = str(val).splitlines()[0] if isinstance(val, str) else str(val)
-            if len(s) > _RESULT_PREVIEW_LIMIT:
-                s = s[:_RESULT_PREVIEW_LIMIT] + "…"
-            return s
-
-    # Fallback: count-like summaries for search/fs tools.
-    for key in ("count", "matches", "file_count"):
-        if key in result:
-            return f"{result[key]} {key.replace('_', ' ')}"
-
-    # Last resort: short stringification.
-    s = str({k: v for k, v in result.items() if k not in ("success", "error")})
-    return s[:_RESULT_PREVIEW_LIMIT]
-
-
 # --- Persona / skills slash helpers ----------------------------------------
 
 
-def _handle_persona_slash(server: "IPCServer", arg: str) -> None:
+def _handle_persona_slash(server: "UIBridge", arg: str) -> None:
     """Inline ``/persona [name|default|list]`` handler.
 
     - ``/persona``           — list available personas (also when arg=="list")
     - ``/persona default``   — clear the active persona (also: ``none``, ``off``)
     - ``/persona <name>``    — switch to the named persona (filename stem)
     """
-    from ..agents import get_available_personas, resolve_persona_name
+    from coderAI.core.agents import get_available_personas, resolve_persona_name
 
     project_root = getattr(server.agent.config, "project_root", ".")
     available = get_available_personas(project_root)
@@ -767,7 +694,7 @@ def _handle_persona_slash(server: "IPCServer", arg: str) -> None:
     server.emit("info", message=f"Persona switched → {applied.name}")
 
 
-def _handle_skills_slash(server: "IPCServer") -> None:
+def _handle_skills_slash(server: "UIBridge") -> None:
     """Inline ``/skills`` — list workflows found under ``.coderAI/skills/``."""
     from ..tools.skills import get_available_skills
 
@@ -795,46 +722,10 @@ def _handle_skills_slash(server: "IPCServer") -> None:
 # --- Command handlers -------------------------------------------------------
 
 
-async def _cmd_send_message(server: IPCServer, msg: Dict[str, Any]) -> None:
+async def _cmd_send_message(server: UIBridge, msg: Dict[str, Any]) -> None:
     text = msg.get("text", "")
-    stripped = str(text).strip()
-    if stripped.startswith("/"):
-        parts = stripped[1:].split(None, 1)
-        cmd = parts[0].lower() if parts else ""
-        arg = parts[1].strip() if len(parts) > 1 else ""
-        allowlist = getattr(server.agent, "_tool_approval_allowlist", set())
-        if cmd == "allow-tool":
-            if not arg:
-                server.emit("warning", message="Usage: /allow-tool <tool-name>")
-                server.emit_ready()
-                return
-            allowlist.add(arg)
-            server.emit("info", message=f"Tool approval memory enabled for {arg}.")
-            server.emit_ready()
-            return
-        if cmd == "disallow-tool":
-            if not arg:
-                server.emit("warning", message="Usage: /disallow-tool <tool-name>")
-                server.emit_ready()
-                return
-            allowlist.discard(arg)
-            server.emit("info", message=f"Tool approval memory removed for {arg}.")
-            server.emit_ready()
-            return
-        if cmd == "allowed-tools":
-            names = ", ".join(sorted(allowlist)) if allowlist else "(none)"
-            server.emit("info", message=f"Always-allowed tools for this session: {names}")
-            server.emit_ready()
-            return
-        if cmd == "persona":
-            _handle_persona_slash(server, arg)
-            server.emit_ready()
-            return
-        if cmd == "skills":
-            _handle_skills_slash(server)
-            server.emit_ready()
-            return
     async with server._turn_lock:
+        server.tick_iteration()
         try:
             await server.agent.process_message(text)
         except Exception as e:
@@ -848,7 +739,7 @@ async def _cmd_send_message(server: IPCServer, msg: Dict[str, Any]) -> None:
             server.emit_ready()
 
 
-async def _cmd_cancel(server: IPCServer, msg: Dict[str, Any]) -> None:
+async def _cmd_cancel(server: UIBridge, msg: Dict[str, Any]) -> None:
     approvals_cancelled = server._cancel_pending_approvals("cancelled_by_user")
     agent_id = msg.get("agentId")
     if agent_id:
@@ -864,7 +755,7 @@ async def _cmd_cancel(server: IPCServer, msg: Dict[str, Any]) -> None:
         server.emit("info", message=f"Cancelled {len(active)} active agent(s){suffix}")
 
 
-async def _cmd_set_model(server: IPCServer, msg: Dict[str, Any]) -> None:
+async def _cmd_set_model(server: UIBridge, msg: Dict[str, Any]) -> None:
     model = msg.get("model", "")
     old_model = server.agent.model
     old_provider = server.agent.provider
@@ -897,7 +788,33 @@ async def _cmd_set_model(server: IPCServer, msg: Dict[str, Any]) -> None:
     server.emit("success", message=f"Switched model → {model}")
 
 
-async def _cmd_set_persona(server: IPCServer, msg: Dict[str, Any]) -> None:
+async def _cmd_allow_tool(server: UIBridge, msg: Dict[str, Any]) -> None:
+    tool = str(msg.get("tool", "")).strip()
+    if not tool:
+        server.emit("warning", message="Usage: /allow-tool <tool-name>")
+        return
+    allowlist = getattr(server.agent, "_tool_approval_allowlist", set())
+    allowlist.add(tool)
+    server.emit("info", message=f"Tool approval memory enabled for {tool}.")
+
+
+async def _cmd_disallow_tool(server: UIBridge, msg: Dict[str, Any]) -> None:
+    tool = str(msg.get("tool", "")).strip()
+    if not tool:
+        server.emit("warning", message="Usage: /disallow-tool <tool-name>")
+        return
+    allowlist = getattr(server.agent, "_tool_approval_allowlist", set())
+    allowlist.discard(tool)
+    server.emit("info", message=f"Tool approval memory removed for {tool}.")
+
+
+async def _cmd_list_allowed_tools(server: UIBridge, _msg: Dict[str, Any]) -> None:
+    allowlist = getattr(server.agent, "_tool_approval_allowlist", set())
+    names = ", ".join(sorted(allowlist)) if allowlist else "(none)"
+    server.emit("info", message=f"Always-allowed tools for this session: {names}")
+
+
+async def _cmd_set_persona(server: UIBridge, msg: Dict[str, Any]) -> None:
     """Switch the active persona programmatically (used by future UI picker).
 
     Payload: ``{"persona": "<name>"}``; empty/omitted/``"default"`` clears it.
@@ -907,7 +824,7 @@ async def _cmd_set_persona(server: IPCServer, msg: Dict[str, Any]) -> None:
     server.emit_ready()
 
 
-async def _cmd_toggle_auto_approve(server: IPCServer, msg: Dict[str, Any]) -> None:
+async def _cmd_toggle_auto_approve(server: UIBridge, msg: Dict[str, Any]) -> None:
     server.agent.auto_approve = not server.agent.auto_approve
     server.agent._configure_delegate_tool_context()
     # Status bar's safe/YOLO pill is the indicator in normal mode; the
@@ -921,7 +838,7 @@ async def _cmd_toggle_auto_approve(server: IPCServer, msg: Dict[str, Any]) -> No
     )
 
 
-async def _cmd_set_reasoning(server: IPCServer, msg: Dict[str, Any]) -> None:
+async def _cmd_set_reasoning(server: UIBridge, msg: Dict[str, Any]) -> None:
     effort = str(msg.get("effort", "none")).lower()
     if effort not in ("high", "medium", "low", "none"):
         server.emit(
@@ -943,7 +860,7 @@ async def _cmd_set_reasoning(server: IPCServer, msg: Dict[str, Any]) -> None:
     # Status bar shows current reasoning level; no toast.
 
 
-async def _cmd_tool_approval_resp(server: IPCServer, msg: Dict[str, Any]) -> None:
+async def _cmd_tool_approval_resp(server: UIBridge, msg: Dict[str, Any]) -> None:
     tool_id = str(msg.get("toolId") or msg.get("id") or "")
     approve = bool(msg.get("approve", False))
     waiter = server._approval_waiters.pop(tool_id, None)
@@ -966,7 +883,7 @@ async def _cmd_tool_approval_resp(server: IPCServer, msg: Dict[str, Any]) -> Non
     waiter.set_result(approve)
 
 
-async def _cmd_clear_context(server: IPCServer, msg: Dict[str, Any]) -> None:
+async def _cmd_clear_context(server: UIBridge, msg: Dict[str, Any]) -> None:
     async with server._turn_lock:
         server.agent.session = None
         server.agent.context_manager.clear()
@@ -990,7 +907,7 @@ async def _cmd_clear_context(server: IPCServer, msg: Dict[str, Any]) -> None:
     server.emit_status()
 
 
-async def _cmd_compact_context(server: IPCServer, msg: Dict[str, Any]) -> None:
+async def _cmd_compact_context(server: UIBridge, msg: Dict[str, Any]) -> None:
     try:
         await server.agent.compact_context()
     except Exception as e:
@@ -1000,7 +917,7 @@ async def _cmd_compact_context(server: IPCServer, msg: Dict[str, Any]) -> None:
     server.emit_status()
 
 
-async def _cmd_get_state(server: IPCServer, msg: Dict[str, Any]) -> None:
+async def _cmd_get_state(server: UIBridge, msg: Dict[str, Any]) -> None:
     server.emit_status()
     for info in agent_tracker.get_all():
         server.emit("agent", phase="update", info=_agent_info_dict(info), parentId=info.parent_id)
@@ -1036,7 +953,32 @@ def _format_plan_message(plan: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-async def _cmd_get_plan(server: IPCServer, msg: Dict[str, Any]) -> None:
+def _serialize_plan_for_ui(plan: Dict[str, Any]) -> Dict[str, Any]:
+    """Serialize plan data into a structured payload for the plan_card UI event."""
+    steps = plan.get("steps") or []
+    total = len(steps)
+    try:
+        current = int(plan.get("current_step", 0))
+    except (TypeError, ValueError):
+        current = 0
+    completed = sum(1 for s in steps if s.get("status") == "done")
+    return {
+        "title": plan.get("title", "Untitled"),
+        "completed": completed,
+        "total": total,
+        "currentIdx": current,
+        "steps": [
+            {
+                "index": i + 1,
+                "description": s.get("description", ""),
+                "status": s.get("status", "pending"),
+            }
+            for i, s in enumerate(steps)
+        ],
+    }
+
+
+async def _cmd_get_plan(server: UIBridge, msg: Dict[str, Any]) -> None:
     pr = getattr(server.agent.config, "project_root", None) or "."
     config = config_manager.load_project_config(pr)
     dot_coderai_dir = find_dot_coderai_subdir("", str(config.project_root))
@@ -1058,11 +1000,12 @@ async def _cmd_get_plan(server: IPCServer, msg: Dict[str, Any]) -> None:
     if not isinstance(plan, dict):
         server.emit("warning", message="Invalid plan file.")
         return
+    server.emit("plan_card", plan=_serialize_plan_for_ui(plan))
     server.emit("info", message=_format_plan_message(plan))
 
 
-async def _cmd_list_personas(server: IPCServer, _msg: Dict[str, Any]) -> None:
-    from ..agents import get_available_personas
+async def _cmd_list_personas(server: UIBridge, _msg: Dict[str, Any]) -> None:
+    from coderAI.core.agents import get_available_personas
 
     project_root = getattr(server.agent.config, "project_root", ".")
     available = get_available_personas(project_root)
@@ -1070,7 +1013,7 @@ async def _cmd_list_personas(server: IPCServer, _msg: Dict[str, Any]) -> None:
     server.emit("available_personas", current=current, personas=sorted(available))
 
 
-async def _cmd_list_skills(server: IPCServer, _msg: Dict[str, Any]) -> None:
+async def _cmd_list_skills(server: UIBridge, _msg: Dict[str, Any]) -> None:
     from ..tools.skills import get_available_skills
 
     project_root = getattr(server.agent.config, "project_root", ".")
@@ -1078,19 +1021,22 @@ async def _cmd_list_skills(server: IPCServer, _msg: Dict[str, Any]) -> None:
     server.emit("available_skills", skills=skills)
 
 
-async def _cmd_search_codebase(server: IPCServer, msg: Dict[str, Any]) -> None:
+async def _cmd_search_codebase(server: UIBridge, msg: Dict[str, Any]) -> None:
     query = msg.get("query", "")
     if not query:
         return
     try:
         from ..embeddings.factory import create_embedding_provider
-        from ..code_indexer import CodeIndexer
+        from coderAI.context.code_indexer import CodeIndexer
 
         project_root = getattr(server.agent.config, "project_root", ".")
         config = config_manager.load()
         provider = create_embedding_provider(config)
         if provider is None:
-            server.emit("warning", message="No embedding provider available for code search. Set openai_api_key.")
+            server.emit(
+                "warning",
+                message="No embedding provider available for code search. Set openai_api_key.",
+            )
             return
         indexer = CodeIndexer(str(Path(project_root).resolve()), provider)
         results = await indexer.search(query=query, top_k=10)
@@ -1100,13 +1046,15 @@ async def _cmd_search_codebase(server: IPCServer, msg: Dict[str, Any]) -> None:
         out = [f"Semantic search results for '{query}':\n"]
         for r in results:
             snippet = r["text"].strip().split("\n")[0][:80]
-            out.append(f"• {r['file_path']} L{r['start_line']}-{r['end_line']} (score: {r['score']:.2f})\n  {snippet}...")
+            out.append(
+                f"• {r['file_path']} L{r['start_line']}-{r['end_line']} (score: {r['score']:.2f})\n  {snippet}..."
+            )
         server.emit("info", message="\n".join(out))
     except Exception as e:
         server.emit("warning", message=f"Codebase search failed: {e}")
 
 
-async def _cmd_list_models(server: IPCServer, _msg: Dict[str, Any]) -> None:
+async def _cmd_list_models(server: UIBridge, _msg: Dict[str, Any]) -> None:
     """Return all available models grouped by provider for the model-picker UI."""
     from ..llm.anthropic import MODEL_ALIASES
     from ..llm.deepseek import DeepSeekProvider
@@ -1126,9 +1074,9 @@ async def _cmd_list_models(server: IPCServer, _msg: Dict[str, Any]) -> None:
     )
 
 
-async def _cmd_reference(server: IPCServer, msg: Dict[str, Any]) -> None:
+async def _cmd_reference(server: UIBridge, msg: Dict[str, Any]) -> None:
     """Emit long-form help text (models, cost, system status, config, info, tasks)."""
-    from .chat_reference import build_tasks_text, resolve_reference_text
+    from coderAI.bridge.chat_reference import build_tasks_text, resolve_reference_text
 
     topic = str(msg.get("topic", "")).strip()
     if not topic:
@@ -1158,7 +1106,7 @@ async def _cmd_reference(server: IPCServer, msg: Dict[str, Any]) -> None:
     server.emit("info", message=text)
 
 
-async def _cmd_set_default_model(server: IPCServer, msg: Dict[str, Any]) -> None:
+async def _cmd_set_default_model(server: UIBridge, msg: Dict[str, Any]) -> None:
     """Persist default_model in global config (like ``coderAI set-model``)."""
     from ..llm.anthropic import MODEL_ALIASES
     from ..llm.deepseek import DeepSeekProvider
@@ -1204,7 +1152,7 @@ async def _cmd_set_default_model(server: IPCServer, msg: Dict[str, Any]) -> None
         )
 
 
-async def _cmd_set_verbosity(server: IPCServer, msg: Dict[str, Any]) -> None:
+async def _cmd_set_verbosity(server: UIBridge, msg: Dict[str, Any]) -> None:
     """Adjust the IPC server's event filter.
 
     Levels (least → most chatty):
@@ -1222,13 +1170,13 @@ async def _cmd_set_verbosity(server: IPCServer, msg: Dict[str, Any]) -> None:
     server._verbosity = level
 
 
-async def _cmd_exit(server: IPCServer, msg: Dict[str, Any]) -> None:
+async def _cmd_exit(server: UIBridge, msg: Dict[str, Any]) -> None:
     server.emit("goodbye", reason="user")
     server._said_goodbye = True
     server._exit.set()
 
 
-async def _cmd_cancel_agent(server: IPCServer, msg: Dict[str, Any]) -> None:
+async def _cmd_cancel_agent(server: UIBridge, msg: Dict[str, Any]) -> None:
     """Cancel a specific sub-agent by ID."""
     agent_id = (msg.get("payload") or {}).get("agentId")
     if not agent_id:
@@ -1241,8 +1189,11 @@ async def _cmd_cancel_agent(server: IPCServer, msg: Dict[str, Any]) -> None:
     )
 
 
-_COMMAND_HANDLERS: Dict[str, Callable[[IPCServer, Dict[str, Any]], Awaitable[None]]] = {
+_COMMAND_HANDLERS: Dict[str, Callable[[UIBridge, Dict[str, Any]], Awaitable[None]]] = {
     "send_message": _cmd_send_message,
+    "allow_tool": _cmd_allow_tool,
+    "disallow_tool": _cmd_disallow_tool,
+    "list_allowed_tools": _cmd_list_allowed_tools,
     "cancel": _cmd_cancel,
     "cancel_agent": _cmd_cancel_agent,
     "set_model": _cmd_set_model,

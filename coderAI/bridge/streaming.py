@@ -12,6 +12,9 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
+# Match EventReducer.STREAM_FLUSH_S so IPC and UI batch at the same cadence.
+STREAM_EMIT_S = 0.120
+
 
 def _partial_tag_suffix_len(buffer: str, tag: str) -> int:
     """Return the length of the longest suffix of ``buffer`` that is a strict
@@ -29,8 +32,8 @@ def _partial_tag_suffix_len(buffer: str, tag: str) -> int:
     return 0
 
 
-class IPCStreamingHandler:
-    """Consume an LLM stream and relay deltas through an ``IPCServer``."""
+class BridgeStreamingHandler:
+    """Consume an LLM stream and relay deltas through an ``UIBridge``."""
 
     def __init__(self, server) -> None:
         self.server = server
@@ -42,6 +45,9 @@ class IPCStreamingHandler:
         self._tag_buffer = ""
         self._raw_content = ""
         self._raw_reasoning = ""
+        self._batch_text = ""
+        self._batch_reasoning = ""
+        self._batch_last_flush = 0.0
 
     async def handle_stream(
         self, stream, initial_content: str = "", cancel_event: Any = None
@@ -54,13 +60,16 @@ class IPCStreamingHandler:
         self._tag_buffer = ""
         self._raw_content = initial_content
         self._raw_reasoning = ""
+        self._batch_text = ""
+        self._batch_reasoning = ""
+        self._batch_last_flush = time.monotonic()
 
         start_time = time.monotonic()
         finish_reason: Optional[str] = None
         self.server.emit("turn", phase="start", reasoningActive=False)
 
         if initial_content:
-            self._emit(initial_content, reasoning=False)
+            self._queue_emit(initial_content, reasoning=False)
 
         try:
             async for chunk in stream:
@@ -75,7 +84,6 @@ class IPCStreamingHandler:
                     finish_reason = choice["finish_reason"]
                 delta = choice.get("delta", {})
 
-                # Reasoning field (Anthropic / OpenAI o-series extensions)
                 reasoning_delta = self._coalesce_chunk(
                     delta.get("reasoning_content", "") or "",
                     attr="_raw_reasoning",
@@ -85,9 +93,8 @@ class IPCStreamingHandler:
                         self._in_reasoning = True
                         self._reasoning_type = "field"
                     self.current_reasoning += reasoning_delta
-                    self._emit(reasoning_delta, reasoning=True)
+                    self._queue_emit(reasoning_delta, reasoning=True)
 
-                # Regular content (may contain <think> tags inline)
                 content_chunk = self._coalesce_chunk(
                     delta.get("content", "") or "",
                     attr="_raw_content",
@@ -106,7 +113,7 @@ class IPCStreamingHandler:
                                 before, after = self._tag_buffer.split("<think>", 1)
                                 if before:
                                     self.current_content += before
-                                    self._emit(before, reasoning=False)
+                                    self._queue_emit(before, reasoning=False)
                                 self._in_reasoning = True
                                 self._reasoning_type = "tag"
                                 self._tag_buffer = after
@@ -116,7 +123,7 @@ class IPCStreamingHandler:
                             if "</think>" in self._tag_buffer:
                                 before, after = self._tag_buffer.split("</think>", 1)
                                 self.current_reasoning += before
-                                self._emit(before, reasoning=True)
+                                self._queue_emit(before, reasoning=True)
                                 self._in_reasoning = False
                                 self._reasoning_type = None
                                 self._tag_buffer = after
@@ -133,7 +140,7 @@ class IPCStreamingHandler:
                             self._tag_buffer = ""
                         if flush:
                             self.current_content += flush
-                            self._emit(flush, reasoning=False)
+                            self._queue_emit(flush, reasoning=False)
                     else:
                         hold = _partial_tag_suffix_len(self._tag_buffer, "</think>")
                         if hold:
@@ -144,9 +151,8 @@ class IPCStreamingHandler:
                             self._tag_buffer = ""
                         if flush:
                             self.current_reasoning += flush
-                            self._emit(flush, reasoning=True)
+                            self._queue_emit(flush, reasoning=True)
 
-                # Accumulate tool calls (emitted via event_emitter when executed)
                 if delta.get("tool_calls"):
                     for tcd in delta["tool_calls"]:
                         idx = tcd.get("index", 0)
@@ -167,11 +173,8 @@ class IPCStreamingHandler:
                             if fn.get("arguments"):
                                 self.tool_calls[idx]["function"]["arguments"] += fn["arguments"]
         finally:
-            # Always flush whatever's still in the tag buffer before we emit
-            # the final ``turn`` event. On cancellation (CancelledError raised
-            # mid-iteration by ``/clear``, ``/exit``, or budget abort) this
-            # would otherwise drop the last few sentences the model produced.
             self._flush_tag_buffer()
+            self._flush_emit_batch(force=True)
 
             elapsed_ms = int((time.monotonic() - start_time) * 1000)
             self.server.emit(
@@ -188,42 +191,56 @@ class IPCStreamingHandler:
         }
 
     def _flush_tag_buffer(self) -> None:
-        """Drain any pending characters held back for tag detection.
-
-        At buffer-drain time we no longer have the option of seeing more
-        characters, so partial tag prefixes (``<thi``, ``</thin``) are surfaced
-        as plain text on whichever channel we're currently in. Better to show
-        a stray ``<`` than to silently swallow real reply tail.
-        """
         leftover = self._tag_buffer
         self._tag_buffer = ""
         if not leftover:
             return
         if self._in_reasoning:
             self.current_reasoning += leftover
-            self._emit(leftover, reasoning=True)
+            self._queue_emit(leftover, reasoning=True)
         else:
             self.current_content += leftover
-            self._emit(leftover, reasoning=False)
+            self._queue_emit(leftover, reasoning=False)
 
-    def _emit(self, text: str, *, reasoning: bool) -> None:
+    def _queue_emit(self, text: str, *, reasoning: bool) -> None:
         if not text:
             return
-        self.server.emit(
-            "turn",
-            phase="reasoning" if reasoning else "text",
-            delta=text,
-            reasoningActive=bool(reasoning or self.current_reasoning),
-        )
+        if reasoning:
+            self._batch_reasoning += text
+        else:
+            self._batch_text += text
+        self._flush_emit_batch()
+
+    def _flush_emit_batch(self, *, force: bool = False) -> None:
+        now = time.monotonic()
+        pending = len(self._batch_text) + len(self._batch_reasoning)
+        if not force and pending == 0:
+            return
+        if not force and (now - self._batch_last_flush) < STREAM_EMIT_S and pending < 512:
+            return
+        if self._batch_text:
+            self.server.emit(
+                "turn",
+                phase="text",
+                delta=self._batch_text,
+                reasoningActive=bool(self.current_reasoning),
+            )
+            self._batch_text = ""
+        if self._batch_reasoning:
+            self.server.emit(
+                "turn",
+                phase="reasoning",
+                delta=self._batch_reasoning,
+                reasoningActive=True,
+            )
+            self._batch_reasoning = ""
+        self._batch_last_flush = now
 
     def _coalesce_chunk(self, chunk: str, *, attr: str) -> str:
-        """Trim provider-specific cumulative chunks down to only unseen text."""
         if not chunk:
             return ""
 
         previous = getattr(self, attr)
-        # Some providers re-send the same full cumulative `content` as a second
-        # delta; appending it again would double the user-visible text.
         if previous and chunk == previous:
             return ""
         if previous and len(chunk) > len(previous) and chunk.startswith(previous):

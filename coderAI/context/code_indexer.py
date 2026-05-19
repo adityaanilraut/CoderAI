@@ -87,7 +87,7 @@ class CodeIndexer:
             metadata={"hnsw:space": "cosine"},
         )
 
-        from .code_chunker import chunk_file, is_skip_dir, should_index
+        from coderAI.context.code_chunker import chunk_file, is_skip_dir, should_index
 
         # Gather files
         if paths:

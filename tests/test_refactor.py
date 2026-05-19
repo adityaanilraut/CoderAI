@@ -54,7 +54,7 @@ class TestRefactorToolProperties:
         assert result["error_code"] == "validation_error"
 
     def test_path_outside_project_is_rejected_without_opt_out(self, tmp_path, monkeypatch):
-        from coderAI.config import config_manager
+        from coderAI.system.config import config_manager
 
         monkeypatch.delenv("CODERAI_ALLOW_OUTSIDE_PROJECT", raising=False)
         config_manager._config = None

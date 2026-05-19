@@ -5,8 +5,8 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 from groq import AsyncGroq
 
-from .base import LLMProvider
-from coderAI.cost import CostTracker
+from coderAI.llm.base import LLMProvider
+from coderAI.system.cost import CostTracker
 
 logger = logging.getLogger(__name__)
 

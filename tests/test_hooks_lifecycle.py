@@ -1,8 +1,8 @@
 import json
 import pytest
 from unittest.mock import MagicMock, AsyncMock
-from coderAI.agent import Agent
-from coderAI.agent_loop import ExecutionLoop
+from coderAI.core.agent import Agent
+from coderAI.core.agent_loop import ExecutionLoop
 
 
 @pytest.fixture

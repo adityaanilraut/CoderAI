@@ -1,6 +1,6 @@
 """Tests for AgentTracker cancellation behavior."""
 
-from coderAI.agent_tracker import AgentStatus, AgentTracker
+from coderAI.core.agent_tracker import AgentStatus, AgentTracker
 
 
 def test_cancel_descends_through_finished_parent_to_live_child() -> None:

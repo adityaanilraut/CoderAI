@@ -61,7 +61,7 @@ instead — `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GROQ_API_KEY`, or
 `DEEPSEEK_API_KEY`. For local inference, run `coderAI config set default_model
 lmstudio` (or `ollama`).
 
-See [INSTALL.md](INSTALL.md) for platform-specific notes and offline builds.
+See [INSTALL.md](docs/INSTALL.md) for platform-specific notes and offline builds.
 
 ### Interactive chat commands
 
@@ -81,7 +81,7 @@ Type a slash inside `coderAI chat`:
 | `/yolo` | Toggle auto-approve for high-risk tools |
 | `/exit` | Shut down the agent |
 
-See [COMMANDS.md](COMMANDS.md) for the full CLI reference.
+See [COMMANDS.md](docs/COMMANDS.md) for the full CLI reference.
 
 ---
 
@@ -115,7 +115,7 @@ See [COMMANDS.md](COMMANDS.md) for the full CLI reference.
    └─────────┘   └────────────┘   └─────────────┘
 ```
 
-`coderAI/ipc/` is an in-process controller used by the Textual TUI: it
+`coderAI/bridge/` is an in-process controller used by the Textual TUI: it
 subscribes to `event_emitter`, forwards events to the UI via an
 `on_event` callback, and dispatches slash commands back into the agent.
 See [`docs/CHAT_EVENTS.md`](docs/CHAT_EVENTS.md) for the event catalog.
@@ -131,11 +131,6 @@ CoderAI-main/
 ├── Makefile                    # Dev shortcuts (test, lint, install)
 ├── LICENSE                     # MIT License
 ├── README.md                   # ← You are here
-├── ARCHITECTURE.md             # Detailed architecture documentation
-├── COMMANDS.md                 # CLI command reference
-├── EXAMPLES.md                 # Usage examples
-├── INSTALL.md                  # Installation guide
-├── CLAUDE.md                   # LLM-specific instructions
 │
 ├── coderAI/                    # ─── Main Python Package ───
 │   ├── __init__.py             # Package version
@@ -166,13 +161,14 @@ CoderAI-main/
 │   │   ├── listeners.py        #   EventReducer (agent events → timeline state)
 │   │   ├── slash.py            #   Slash-command routing
 │   │   ├── state.py            #   SessionState + AgentInfo dataclasses
-│   │   ├── session_setup.py    #   Agent + IPCServer bootstrap
+│   │   ├── session_setup.py    #   Agent + UIBridge bootstrap
 │   │   ├── help_menu.py        #   /help command catalog
 │   │   └── diff_render.py      #   Compact diff rendering
 │   │
 │   ├── ipc/                    # ─── In-process controller for the Textual UI ───
-│   │   ├── jsonrpc_server.py   #   IPCServer: event_emitter ↔ UI on_event ↔ slash commands
-│   │   ├── streaming.py        #   IPCStreamingHandler → phased turn events
+│   │   ├── controller.py       #   UIBridge: event_emitter ↔ UI on_event ↔ slash commands
+│   │   ├── tool_metadata.py    #   Tool category/risk/preview helpers
+│   │   ├── streaming.py        #   BridgeStreamingHandler → phased turn events
 │   │   └── chat_reference.py   #   Plain-text reference output for /show
 │   │
 │   ├── llm/                    # ─── LLM Provider Backends ───
@@ -214,7 +210,12 @@ CoderAI-main/
 │       └── display.py          #   Tables, markdown, panels for config/history/status
 │
 ├── docs/
-│   └── CHAT_EVENTS.md          # Textual UI event catalog (IPCServer ↔ TUI)
+│   ├── ARCHITECTURE.md         # Detailed architecture documentation
+│   ├── CHAT_EVENTS.md          # Textual UI event catalog (UIBridge ↔ TUI)
+│   ├── CLAUDE.md               # LLM-specific instructions
+│   ├── COMMANDS.md             # CLI command reference
+│   ├── EXAMPLES.md             # Usage examples
+│   └── INSTALL.md              # Installation guide
 │
 ├── .coderAI/                   # ─── Project Configuration ───
 │   ├── agents/                 #   17 agent personas (YAML frontmatter + markdown)

@@ -5,8 +5,8 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 from openai import AsyncOpenAI
 
-from .base import LLMProvider, REASONING_BUDGET_MAP
-from coderAI.cost import CostTracker
+from coderAI.llm.base import LLMProvider, REASONING_BUDGET_MAP
+from coderAI.system.cost import CostTracker
 
 logger = logging.getLogger(__name__)
 

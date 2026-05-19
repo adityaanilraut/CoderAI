@@ -1,4 +1,4 @@
-from coderAI.tool_executor import ToolExecutor
+from coderAI.core.tool_executor import ToolExecutor
 from unittest.mock import MagicMock
 
 

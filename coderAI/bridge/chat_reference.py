@@ -9,10 +9,10 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from .. import __version__
-from ..config import config_manager
-from ..cost import MODEL_PRICING, CostTracker
-from ..history import history_manager
+from coderAI import __version__
+from coderAI.system.config import config_manager
+from coderAI.system.cost import MODEL_PRICING, CostTracker
+from coderAI.system.history import history_manager
 
 _MAX_CHARS = 16_000
 

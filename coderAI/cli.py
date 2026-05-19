@@ -11,10 +11,10 @@ from dotenv import load_dotenv
 # Load .env file before anything else reads environment variables
 load_dotenv()
 
-from . import __version__
-from .agent import Agent
-from .config import config_manager
-from .history import history_manager
+from coderAI import __version__
+from coderAI.core.agent import Agent
+from coderAI.system.config import config_manager
+from coderAI.system.history import history_manager
 from .ui.display import display
 
 logger = logging.getLogger(__name__)
@@ -84,7 +84,7 @@ def cli(ctx, model, resume, continue_, version, verbose):
 )
 def chat(model, resume, continue_, auto_approve, persona):
     """Start an interactive chat session (Textual TUI)."""
-    from .tui import run_chat_app
+    from coderAI.tui import run_chat_app
 
     cfg = config_manager.load()
     has_cloud_key = any(
@@ -495,7 +495,7 @@ def set_model(model_name):
 @cli.command()
 def cost():
     """Show API cost tracking and pricing info."""
-    from .cost import MODEL_PRICING, CostTracker
+    from coderAI.system.cost import MODEL_PRICING, CostTracker
 
     display.print_header("API Cost Tracking")
     display.print_info("Cost tracking is available during active chat sessions.")
@@ -558,7 +558,7 @@ def status():
     display.print(f"  Ollama        endpoint {config.ollama_endpoint}")
     display.print(f"                model    {config.ollama_model}")
 
-    from .history import history_manager
+    from coderAI.system.history import history_manager
 
     sessions = history_manager.list_sessions()
     display.print("\n[bold cyan]History[/bold cyan]")
@@ -705,9 +705,9 @@ def index_cmd(force, paths):
     """
     import asyncio
 
-    from .config import config_manager
+    from coderAI.system.config import config_manager
     from .embeddings.factory import create_embedding_provider
-    from .code_indexer import CodeIndexer
+    from coderAI.context.code_indexer import CodeIndexer
     from .ui.display import display
 
     config = config_manager.load()
@@ -759,9 +759,9 @@ def search_cmd(query, top_k, file_filter):
     """
     import asyncio
 
-    from .config import config_manager
+    from coderAI.system.config import config_manager
     from .embeddings.factory import create_embedding_provider
-    from .code_indexer import CodeIndexer
+    from coderAI.context.code_indexer import CodeIndexer
     from .ui.display import display
 
     config = config_manager.load()

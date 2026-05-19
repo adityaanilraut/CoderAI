@@ -365,7 +365,7 @@ class TestConfig:
     """Tests for configuration management."""
 
     def test_config_defaults(self):
-        from coderAI.config import Config
+        from coderAI.system.config import Config
 
         config = Config()
         assert config.default_model == "claude-4-sonnet"
@@ -375,14 +375,14 @@ class TestConfig:
         assert config.log_level == "WARNING"
 
     def test_config_validation(self):
-        from coderAI.config import Config
+        from coderAI.system.config import Config
         from pydantic import ValidationError
 
         with pytest.raises(ValidationError):
             Config(temperature=3.0)
 
     def test_config_manager_save_load(self, temp_dir):
-        from coderAI.config import Config, ConfigManager
+        from coderAI.system.config import Config, ConfigManager
 
         manager = ConfigManager()
         manager.config_dir = Path(temp_dir)
@@ -401,7 +401,7 @@ class TestConfig:
         assert config.default_model == "gpt-5.4"
 
     def test_config_show_masks_keys(self):
-        from coderAI.config import Config, ConfigManager
+        from coderAI.system.config import Config, ConfigManager
 
         manager = ConfigManager()
         manager._config = Config(openai_api_key="sk-1234567890abcdef1234567890abcdef")
@@ -421,7 +421,7 @@ class TestHistory:
     """Tests for history management."""
 
     def test_message_creation(self):
-        from coderAI.history import Message
+        from coderAI.system.history import Message
 
         msg = Message(role="user", content="Hello")
         assert msg.role == "user"
@@ -429,7 +429,7 @@ class TestHistory:
         assert msg.timestamp > 0
 
     def test_session_creation(self):
-        from coderAI.history import HistoryManager
+        from coderAI.system.history import HistoryManager
 
         manager = HistoryManager()
         session = manager.create_session(model="test-model")
@@ -437,7 +437,7 @@ class TestHistory:
         assert len(session.messages) == 0
 
     def test_session_add_message(self):
-        from coderAI.history import HistoryManager
+        from coderAI.system.history import HistoryManager
 
         manager = HistoryManager()
         session = manager.create_session(model="test-model")
@@ -448,7 +448,7 @@ class TestHistory:
         assert session.messages[1].role == "assistant"
 
     def test_session_get_messages_for_api(self):
-        from coderAI.history import HistoryManager
+        from coderAI.system.history import HistoryManager
 
         manager = HistoryManager()
         session = manager.create_session(model="test-model")
@@ -460,7 +460,7 @@ class TestHistory:
         assert api_messages[0]["content"] == "Hello"
 
     def test_history_manager_save_load(self, temp_dir):
-        from coderAI.history import HistoryManager
+        from coderAI.system.history import HistoryManager
 
         manager = HistoryManager()
         manager.history_dir = Path(temp_dir)
@@ -475,7 +475,7 @@ class TestHistory:
         assert loaded.messages[0].content == "test message"
 
     def test_history_manager_list_sessions(self, temp_dir):
-        from coderAI.history import HistoryManager
+        from coderAI.system.history import HistoryManager
         import time
 
         manager = HistoryManager()
@@ -543,7 +543,7 @@ class TestSystemPrompt:
     @staticmethod
     def _full_tool_registry():
         """Registry with every discoverable tool plus ``manage_context``."""
-        from coderAI.context import ContextManager
+        from coderAI.context.context import ContextManager
         from coderAI.tools.base import ToolRegistry
         from coderAI.tools.context_manage import ManageContextTool
         from coderAI.tools.discovery import discover_tools
@@ -715,7 +715,7 @@ class TestDeepSeekProvider:
         assert "deepseek-v4-pro" in DeepSeekProvider.SUPPORTED_MODELS
 
     def test_v4_cost_pricing_is_registered(self):
-        from coderAI.cost import CostTracker
+        from coderAI.system.cost import CostTracker
 
         assert CostTracker.get_model_pricing("deepseek-v4-flash") == {
             "input": 0.14,
@@ -1074,13 +1074,13 @@ class TestConfigAnthropicKey:
     """Tests for Anthropic API key in config."""
 
     def test_config_has_anthropic_key(self):
-        from coderAI.config import Config
+        from coderAI.system.config import Config
 
         config = Config(anthropic_api_key="sk-ant-test1234567890abcdef")
         assert config.anthropic_api_key == "sk-ant-test1234567890abcdef"
 
     def test_anthropic_key_masked_in_show(self):
-        from coderAI.config import Config, ConfigManager
+        from coderAI.system.config import Config, ConfigManager
 
         manager = ConfigManager()
         manager._config = Config(anthropic_api_key="sk-ant-test1234567890abcdef1234567890")
@@ -1287,8 +1287,8 @@ class TestExecutionLoopRecovery:
     def test_repairs_unpaired_assistant_tool_calls(self):
         from types import SimpleNamespace
 
-        from coderAI.agent_loop import ExecutionLoop
-        from coderAI.history import Session
+        from coderAI.core.agent_loop import ExecutionLoop
+        from coderAI.system.history import Session
 
         session = Session(session_id="session_1234567890_deadbeef")
         session.add_message(

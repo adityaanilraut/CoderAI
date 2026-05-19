@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
-from .base import Tool
+from coderAI.tools.base import Tool
 
 logger = logging.getLogger(__name__)
 

@@ -1,15 +1,15 @@
-"""Bootstrap Agent + IPCServer for the Textual UI."""
+"""Bootstrap Agent + UIBridge for the Textual UI."""
 
 from __future__ import annotations
 
 import logging
 from typing import Any, Callable, Dict, Optional, Tuple
 
-from ..agent import Agent
-from ..agent_tracker import AgentStatus, agent_tracker
-from ..history import history_manager
-from ..ipc.jsonrpc_server import IPCServer
-from ..ipc.streaming import IPCStreamingHandler
+from coderAI.core.agent import Agent
+from coderAI.core.agent_tracker import AgentStatus, agent_tracker
+from coderAI.system.history import history_manager
+from ..bridge.controller import UIBridge
+from ..bridge.streaming import BridgeStreamingHandler
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +36,8 @@ def create_agent_session(
     auto_approve: bool = False,
     persona: Optional[str] = None,
     on_event: Callable[[str, Dict[str, Any]], None],
-) -> Tuple[Agent, IPCServer]:
-    """Create Agent and in-process IPCServer wired to ``on_event``."""
+) -> Tuple[Agent, UIBridge]:
+    """Create Agent and in-process UIBridge wired to ``on_event``."""
     if continue_ and not resume:
         resume = history_manager.get_latest_session_id()
 
@@ -61,7 +61,7 @@ def create_agent_session(
     else:
         agent.create_session()
 
-    controller = IPCServer(agent=agent, on_event=on_event)
+    controller = UIBridge(agent=agent, on_event=on_event)
     agent.ipc_server = controller
     agent._configure_delegate_tool_context()
 
@@ -76,5 +76,5 @@ def create_agent_session(
     agent._tracker_start_tokens = agent.total_tokens
     agent._tracker_start_cost = agent.cost_tracker.get_total_cost()
 
-    agent.streaming_handler = IPCStreamingHandler(controller)
+    agent.streaming_handler = BridgeStreamingHandler(controller)
     return agent, controller

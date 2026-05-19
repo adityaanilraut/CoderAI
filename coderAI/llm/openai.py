@@ -7,8 +7,8 @@ import openai
 import tiktoken
 from openai import AsyncOpenAI
 
-from .base import LLMProvider
-from coderAI.cost import CostTracker
+from coderAI.llm.base import LLMProvider
+from coderAI.system.cost import CostTracker
 
 logger = logging.getLogger(__name__)
 

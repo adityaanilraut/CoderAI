@@ -4,10 +4,11 @@ import asyncio
 import os
 import tempfile
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from coderAI.safeguards import (
+from coderAI.system.safeguards import (
     filter_stageable_files,
     is_interactive_command,
     project_sanity_check,
@@ -295,6 +296,93 @@ class TestFilterStageableFiles:
 # ============================================================================
 # Git Add Safety (Integration)
 # ============================================================================
+
+
+class TestFilesystemReadScope:
+    """Read-only filesystem tools reject paths outside the project root."""
+
+    @pytest.fixture(autouse=True)
+    def _scope_strict(self, monkeypatch):
+        monkeypatch.delenv("CODERAI_ALLOW_OUTSIDE_PROJECT", raising=False)
+        from coderAI.system.config import config_manager
+
+        config_manager._config = None
+
+    def test_read_file_outside_project_rejected(self, tmp_path):
+        from coderAI.tools.filesystem import ReadFileTool
+
+        outside = tmp_path / "secret.txt"
+        outside.write_text("nope\n")
+        result = asyncio.run(ReadFileTool().execute(path=str(outside)))
+        assert result["success"] is False
+        assert result.get("error_code") == "scope"
+
+    def test_list_directory_outside_project_rejected(self, tmp_path):
+        from coderAI.tools.filesystem import ListDirectoryTool
+
+        result = asyncio.run(ListDirectoryTool().execute(path=str(tmp_path)))
+        assert result["success"] is False
+        assert result.get("error_code") == "scope"
+
+    def test_glob_search_outside_project_rejected(self, tmp_path):
+        from coderAI.tools.filesystem import GlobSearchTool
+
+        (tmp_path / "a.py").write_text("x = 1\n")
+        result = asyncio.run(GlobSearchTool().execute(pattern="*.py", base_path=str(tmp_path)))
+        assert result["success"] is False
+        assert result.get("error_code") == "scope"
+
+
+class TestPythonREPLWorkingDirScope:
+    def test_python_repl_rejects_outside_project_cwd(self, tmp_path, monkeypatch):
+        from coderAI.system.config import config_manager
+        from coderAI.tools.repl import PythonREPLTool
+
+        monkeypatch.delenv("CODERAI_ALLOW_OUTSIDE_PROJECT", raising=False)
+        config_manager._config = None
+
+        result = asyncio.run(
+            PythonREPLTool().execute(code="print(1)", working_dir=str(tmp_path))
+        )
+        assert result["success"] is False
+        assert result.get("error_code") == "scope"
+
+
+class TestAgentProjectSanityWarning:
+    def test_invalid_project_emits_warning(self):
+        from unittest.mock import MagicMock
+
+        from coderAI.core.agent import Agent
+
+        with patch("coderAI.system.safeguards.project_sanity_check") as mock_check:
+            mock_check.return_value = {
+                "is_valid_project": False,
+                "reasons": ["Directory is empty."],
+            }
+            with patch("coderAI.core.agent.event_emitter") as mock_emit:
+                agent = object.__new__(Agent)
+                agent.config = MagicMock(project_root="/tmp/empty")
+                Agent._emit_project_sanity_warning(agent)
+                mock_emit.emit.assert_called_once_with(
+                    "agent_warning",
+                    message="Project sanity check: Directory is empty.",
+                )
+
+
+class TestGitReadScope:
+    def test_git_status_validates_scope(self):
+        from coderAI.tools.git import GitStatusTool
+
+        with patch("coderAI.tools.git._validate_git_scope", new_callable=AsyncMock) as mock_validate:
+            mock_validate.return_value = {
+                "success": False,
+                "error": "Git scope mismatch",
+                "error_code": "scope_mismatch",
+            }
+            result = asyncio.run(GitStatusTool().execute(repo_path="."))
+            assert result["success"] is False
+            assert result.get("error_code") == "scope_mismatch"
+            mock_validate.assert_awaited_once_with(".")
 
 
 class TestGitAddSafety:

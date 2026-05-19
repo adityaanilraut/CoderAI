@@ -1,5 +1,6 @@
 """Utility for tracking API token costs across different models."""
 
+import asyncio
 import logging
 from typing import Dict
 
@@ -68,6 +69,7 @@ class CostTracker:
     def __init__(self):
         """Initialize the cost tracker."""
         self.total_cost_usd: float = 0.0
+        self._lock = asyncio.Lock()
 
     @staticmethod
     def get_model_pricing(model: str) -> Dict[str, float]:
@@ -130,7 +132,7 @@ class CostTracker:
         output_cost = (output_tokens / 1_000_000) * pricing["output"]
         return input_cost + output_cost
 
-    def add_cost(self, model: str, input_tokens: int, output_tokens: int) -> float:
+    async def add_cost(self, model: str, input_tokens: int, output_tokens: int) -> float:
         """Calculate cost for a single interaction and add to total.
 
         Args:
@@ -141,10 +143,10 @@ class CostTracker:
         Returns:
             The cost of this specific interaction in USD
         """
-        interaction_cost = self.calculate_cost_for_tokens(model, input_tokens, output_tokens)
-
-        self.total_cost_usd += interaction_cost
-        return interaction_cost
+        async with self._lock:
+            interaction_cost = self.calculate_cost_for_tokens(model, input_tokens, output_tokens)
+            self.total_cost_usd += interaction_cost
+            return interaction_cost
 
     def get_total_cost(self) -> float:
         """Get the total accumulated cost in USD."""

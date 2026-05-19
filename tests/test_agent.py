@@ -5,39 +5,39 @@ import re
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from coderAI.context_controller import ContextController
+from coderAI.context.context_controller import ContextController
 
 
 class TestTransientErrorDetection:
     """Tests for the transient-error classifier in error_policy."""
 
     def test_timeout_is_transient(self):
-        from coderAI.error_policy import is_transient_error
+        from coderAI.system.error_policy import is_transient_error
 
         assert is_transient_error(Exception("Request timed out")) is True
 
     def test_rate_limit_is_transient(self):
-        from coderAI.error_policy import is_transient_error
+        from coderAI.system.error_policy import is_transient_error
 
         assert is_transient_error(Exception("Rate limit exceeded (429)")) is True
 
     def test_server_error_is_transient(self):
-        from coderAI.error_policy import is_transient_error
+        from coderAI.system.error_policy import is_transient_error
 
         assert is_transient_error(Exception("502 Bad Gateway")) is True
 
     def test_auth_error_is_not_transient(self):
-        from coderAI.error_policy import is_transient_error
+        from coderAI.system.error_policy import is_transient_error
 
         assert is_transient_error(Exception("Invalid API key")) is False
 
     def test_generic_error_is_not_transient(self):
-        from coderAI.error_policy import is_transient_error
+        from coderAI.system.error_policy import is_transient_error
 
         assert is_transient_error(ValueError("bad value")) is False
 
     def test_connection_reset_is_transient(self):
-        from coderAI.error_policy import is_transient_error
+        from coderAI.system.error_policy import is_transient_error
 
         assert is_transient_error(Exception("Connection reset by peer")) is True
 
@@ -46,7 +46,7 @@ class TestSummarizeToolResult:
     """Tests for ContextController.summarize_tool_result."""
 
     def _make_controller(self):
-        from coderAI.config import Config
+        from coderAI.system.config import Config
 
         cfg = Config(max_tool_output=200)
         return ContextController(cfg, MagicMock())
@@ -75,7 +75,7 @@ class TestTruncateMessages:
     """Tests for ContextController.manage_context_window."""
 
     def _make_controller(self):
-        from coderAI.config import Config
+        from coderAI.system.config import Config
 
         cfg = Config(context_window=500)  # small window
         provider = MagicMock()
@@ -98,7 +98,7 @@ class TestTruncateMessages:
         assert system_msgs[0]["content"] == "You are a bot."
 
     def test_summary_cost_uses_incremental_provider_delta(self):
-        from coderAI.cost import CostTracker
+        from coderAI.system.cost import CostTracker
 
         ctrl = self._make_controller()
         ctrl.cost_tracker = CostTracker()
@@ -194,6 +194,30 @@ class TestTruncateMessages:
         assert not any(m.get(ContextController._TRUNCATION_MARKER_KEY) for m in result)
         assert stale not in result
 
+    def test_budget_blocks_summarization_llm_call(self):
+        import pytest
+        from coderAI.system.cost import CostTracker
+        from coderAI.system.error_policy import BudgetExceededError
+
+        ctrl = self._make_controller()
+        ctrl.cost_tracker = CostTracker()
+        ctrl.config.budget_limit = 0.01
+        ctrl.cost_tracker.total_cost_usd = 0.02
+        ctrl._last_summary_time = -10_000
+        messages = [
+            {"role": "system", "content": "You are a bot."},
+            {"role": "user", "content": "first " + "x" * 1000},
+            {"role": "assistant", "content": "second " + "y" * 1000},
+            {"role": "user", "content": "third " + "z" * 1000},
+            {"role": "assistant", "content": "fourth " + "q" * 1000},
+            {"role": "user", "content": "recent"},
+        ]
+
+        with pytest.raises(BudgetExceededError):
+            asyncio.run(ctrl.manage_context_window(messages))
+
+        ctrl.provider.chat.assert_not_called()
+
     def test_aggressive_truncation_emits_warning(self):
         from types import SimpleNamespace
 
@@ -227,7 +251,7 @@ class TestTruncateMessages:
                 ]
             )
         emitter = SimpleNamespace(emit=MagicMock())
-        with patch("coderAI.context_controller.event_emitter", emitter):
+        with patch("coderAI.context.context_controller.event_emitter", emitter):
             asyncio.run(ctrl.manage_context_window(messages))
         warning_msgs = [
             c.kwargs.get("message", c.args[1] if len(c.args) > 1 else "")
@@ -237,14 +261,33 @@ class TestTruncateMessages:
         assert any("Context truncation aggressive" in msg for msg in warning_msgs)
 
 
+class TestCostTrackerConcurrency:
+    def test_concurrent_add_cost(self):
+        import pytest
+        from coderAI.system.cost import CostTracker
+
+        async def run() -> None:
+            tracker = CostTracker()
+            per_call = CostTracker.calculate_cost_for_tokens("gpt-5.4-mini", 1000, 100)
+
+            async def bump() -> float:
+                return await tracker.add_cost("gpt-5.4-mini", 1000, 100)
+
+            costs = await asyncio.gather(*(bump() for _ in range(50)))
+            assert tracker.get_total_cost() == pytest.approx(per_call * 50)
+            assert sum(costs) == pytest.approx(per_call * 50)
+
+        asyncio.run(run())
+
+
 class TestRecoverableErrorMarker:
     """Recoverable errors must persist tagged system feedback in the session."""
 
     def test_handle_recoverable_error_adds_marker_to_session(self):
         from types import SimpleNamespace
 
-        from coderAI.agent_loop import RECOVERABLE_ERROR_MARKER, ExecutionLoop
-        from coderAI.history import Session
+        from coderAI.core.agent_loop import RECOVERABLE_ERROR_MARKER, ExecutionLoop
+        from coderAI.system.history import Session
 
         session = Session(session_id="session_1234567890_marker01")
         context_controller = SimpleNamespace(
@@ -265,15 +308,15 @@ class TestRecoverableErrorMarker:
         assert any(RECOVERABLE_ERROR_MARKER in c for c in system_contents)
 
     def test_project_config_is_loaded(self):
-        with patch("coderAI.agent.config_manager") as cm:
-            from coderAI.config import Config
+        with patch("coderAI.core.agent.config_manager") as cm:
+            from coderAI.system.config import Config
 
             base = Config(temperature=0.7)
             project = Config(temperature=0.1)
             cm.load.return_value = base
             cm.load_project_config.return_value = project
 
-            from coderAI.agent import Agent
+            from coderAI.core.agent import Agent
 
             # Patch provider creation to avoid needing a real API key
             with patch.object(Agent, "_create_provider", return_value=MagicMock()):
@@ -286,14 +329,14 @@ class TestAgentsPersonas:
     """Tests for the Agents module personas."""
 
     def test_load_agent_persona_no_dir(self):
-        from coderAI.agents import load_agent_persona
+        from coderAI.core.agents import load_agent_persona
 
         with patch("pathlib.Path.exists", return_value=False):
             persona = load_agent_persona("planner")
             assert persona is None
 
     def test_load_agent_persona_success(self):
-        from coderAI.agents import load_agent_persona
+        from coderAI.core.agents import load_agent_persona
 
         mock_md = """---
 name: Planner Agent
@@ -312,17 +355,17 @@ You are a planner."""
                 assert "You are a planner." in persona.instructions
 
     def test_resolve_persona_name_alias(self):
-        from coderAI.agents import resolve_persona_name
+        from coderAI.core.agents import resolve_persona_name
 
-        with patch("coderAI.agents._find_agents_dir", return_value=Path("/tmp")):
+        with patch("coderAI.core.agents._find_agents_dir", return_value=Path("/tmp")):
             with patch(
-                "coderAI.agents.get_available_personas",
+                "coderAI.core.agents.get_available_personas",
                 return_value=["code-reviewer", "planner"],
             ):
                 assert resolve_persona_name("Code Reviewer") == "code-reviewer"
 
     def test_expand_persona_tools_aliases(self):
-        from coderAI.agents import expand_persona_tools
+        from coderAI.core.agents import expand_persona_tools
 
         expanded = expand_persona_tools(["Read", "Edit", "Bash"])
 
@@ -337,19 +380,19 @@ class TestAgentPersonaSwitching:
     """Tests for live persona switching on an existing agent session."""
 
     def _make_agent(self):
-        with patch("coderAI.agent.config_manager") as cm:
-            from coderAI.config import Config
+        with patch("coderAI.core.agent.config_manager") as cm:
+            from coderAI.system.config import Config
 
             cfg = Config()
             cm.load.return_value = cfg
             cm.load_project_config.return_value = cfg
-            from coderAI.agent import Agent
+            from coderAI.core.agent import Agent
 
             with patch.object(Agent, "_create_provider", return_value=MagicMock()):
                 return Agent(model="gpt-5.4-mini", streaming=False)
 
     def test_set_persona_updates_live_prompt_and_tools(self):
-        from coderAI.agents import AgentPersona
+        from coderAI.core.agents import AgentPersona
 
         agent = self._make_agent()
         agent.create_session()
@@ -362,7 +405,7 @@ class TestAgentPersonaSwitching:
             instructions="You are a reviewer.",
         )
 
-        with patch("coderAI.agent.load_agent_persona", return_value=persona):
+        with patch("coderAI.core.agent.load_agent_persona", return_value=persona):
             applied = agent.set_persona("reviewer")
 
         assert applied is persona
@@ -374,7 +417,7 @@ class TestAgentPersonaSwitching:
         assert "write_file" not in agent.tools.tools
 
     def test_persona_model_switch_updates_context_controller_provider(self):
-        from coderAI.agents import AgentPersona
+        from coderAI.core.agents import AgentPersona
 
         agent = self._make_agent()
         new_provider = MagicMock()
@@ -438,13 +481,13 @@ class TestSessionResumeAndCompaction:
         agent._configure_delegate_tool_context.assert_called_once()
 
     def test_compact_context_persists_successful_compaction(self):
-        with patch("coderAI.agent.config_manager") as cm:
-            from coderAI.config import Config
+        with patch("coderAI.core.agent.config_manager") as cm:
+            from coderAI.system.config import Config
 
             cfg = Config()
             cm.load.return_value = cfg
             cm.load_project_config.return_value = cfg
-            from coderAI.agent import Agent
+            from coderAI.core.agent import Agent
 
             provider = MagicMock()
             provider.count_tokens = lambda text: max(1, len(str(text)) // 4)
@@ -476,13 +519,13 @@ class TestDelegateToolContext:
     """Tests for delegate_task inheriting live parent agent state."""
 
     def _make_agent(self, *, auto_approve: bool = True):
-        with patch("coderAI.agent.config_manager") as cm:
-            from coderAI.config import Config
+        with patch("coderAI.core.agent.config_manager") as cm:
+            from coderAI.system.config import Config
 
             cfg = Config()
             cm.load.return_value = cfg
             cm.load_project_config.return_value = cfg
-            from coderAI.agent import Agent
+            from coderAI.core.agent import Agent
 
             with patch.object(Agent, "_create_provider", return_value=MagicMock()):
                 return Agent(
@@ -508,13 +551,13 @@ class TestAgentProjectRules:
     """Tests for rule injection in Agent system prompt."""
 
     def _make_agent(self):
-        with patch("coderAI.agent.config_manager") as cm:
-            from coderAI.config import Config
+        with patch("coderAI.core.agent.config_manager") as cm:
+            from coderAI.system.config import Config
 
             cfg = Config()
             cm.load.return_value = cfg
             cm.load_project_config.return_value = cfg
-            from coderAI.agent import Agent
+            from coderAI.core.agent import Agent
 
             with patch.object(Agent, "_create_provider", return_value=MagicMock()):
                 return Agent(model="gpt-5.4-mini", streaming=False)
@@ -545,13 +588,13 @@ class TestAgentProjectRules:
             assert "Always write pytest tests." in prompt
 
     def test_get_system_prompt_omits_web_tools_when_disabled(self):
-        with patch("coderAI.agent.config_manager") as cm:
-            from coderAI.config import Config
+        with patch("coderAI.core.agent.config_manager") as cm:
+            from coderAI.system.config import Config
 
             cfg = Config(web_tools_in_main=False)
             cm.load.return_value = cfg
             cm.load_project_config.return_value = cfg
-            from coderAI.agent import Agent
+            from coderAI.core.agent import Agent
 
             with patch.object(Agent, "_create_provider", return_value=MagicMock()):
                 agent = Agent(model="gpt-5.4-mini", streaming=False)
@@ -563,13 +606,13 @@ class TestAgentProjectRules:
         assert "If web tools are listed under **Available Tools**" in prompt
 
     def test_get_system_prompt_includes_web_tools_when_enabled(self):
-        with patch("coderAI.agent.config_manager") as cm:
-            from coderAI.config import Config
+        with patch("coderAI.core.agent.config_manager") as cm:
+            from coderAI.system.config import Config
 
             cfg = Config(web_tools_in_main=True)
             cm.load.return_value = cfg
             cm.load_project_config.return_value = cfg
-            from coderAI.agent import Agent
+            from coderAI.core.agent import Agent
 
             with patch.object(Agent, "_create_provider", return_value=MagicMock()):
                 agent = Agent(model="gpt-5.4-mini", streaming=False)
@@ -578,13 +621,13 @@ class TestAgentProjectRules:
         assert "read_url" in prompt
 
     def test_get_system_prompt_includes_web_tools_for_subagent_when_main_config_off(self):
-        with patch("coderAI.agent.config_manager") as cm:
-            from coderAI.config import Config
+        with patch("coderAI.core.agent.config_manager") as cm:
+            from coderAI.system.config import Config
 
             cfg = Config(web_tools_in_main=False)
             cm.load.return_value = cfg
             cm.load_project_config.return_value = cfg
-            from coderAI.agent import Agent
+            from coderAI.core.agent import Agent
 
             with patch.object(Agent, "_create_provider", return_value=MagicMock()):
                 agent = Agent(model="gpt-5.4-mini", streaming=False, is_subagent=True)
@@ -655,14 +698,14 @@ class TestProcessMessageAfterCancel:
     """Cancelled turns must not strand the asyncio.Event so the next message works."""
 
     def test_new_message_after_cancel_registers_fresh_tracker(self):
-        with patch("coderAI.agent.config_manager") as cm:
-            from coderAI.config import Config
+        with patch("coderAI.core.agent.config_manager") as cm:
+            from coderAI.system.config import Config
 
             cfg = Config(budget_limit=0)
             cm.load.return_value = cfg
             cm.load_project_config.return_value = cfg
-            from coderAI.agent import Agent
-            from coderAI.agent_tracker import AgentStatus, agent_tracker
+            from coderAI.core.agent import Agent
+            from coderAI.core.agent_tracker import AgentStatus, agent_tracker
 
             mock_provider = MagicMock()
             mock_provider.chat = AsyncMock(
@@ -688,7 +731,7 @@ class TestProcessMessageAfterCancel:
             old_info.request_cancel()
             agent.tracker_info = old_info
 
-            from coderAI.agent_loop import ExecutionLoop
+            from coderAI.core.agent_loop import ExecutionLoop
 
             with patch.object(
                 ExecutionLoop, "_call_llm_with_retry", new_callable=AsyncMock

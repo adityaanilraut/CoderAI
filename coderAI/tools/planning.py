@@ -9,9 +9,9 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-from .base import Tool
-from ..config import config_manager
-from ..project_layout import find_dot_coderai_subdir
+from coderAI.tools.base import Tool
+from coderAI.system.config import config_manager
+from coderAI.system.project_layout import find_dot_coderai_subdir
 
 _PLANS_DIR = ".coderAI"
 

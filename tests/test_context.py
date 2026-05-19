@@ -3,9 +3,9 @@
 import tempfile
 from pathlib import Path
 import pytest
-from coderAI.context import ContextManager
+from coderAI.context.context import ContextManager
 from coderAI.tools.context_manage import ManageContextTool
-from coderAI.config import config_manager
+from coderAI.system.config import config_manager
 
 
 class TestContextManager:
@@ -57,7 +57,7 @@ class TestContextManager:
         instruction_file = self.test_dir / "PROJECT.md"
         instruction_file.write_text("Project-scoped instructions", encoding="utf-8")
 
-        from coderAI.config import Config
+        from coderAI.system.config import Config
 
         cm = ContextManager(
             config=Config(

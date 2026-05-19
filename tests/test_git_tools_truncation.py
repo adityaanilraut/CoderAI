@@ -26,8 +26,10 @@ async def test_git_diff_truncation_small(mock_subprocess):
     small_output = b"diff --git a/file.txt b/file.txt\n"
     process_mock.communicate.return_value = (small_output, b"")
 
-    tool = GitDiffTool()
-    result = await tool.execute()
+    with patch("coderAI.tools.git._validate_git_scope", new_callable=AsyncMock) as mock_validate:
+        mock_validate.return_value = None
+        tool = GitDiffTool()
+        result = await tool.execute()
 
     assert result["success"] is True
     assert result["truncated"] is False
@@ -41,8 +43,10 @@ async def test_git_diff_truncation_large(mock_subprocess):
     large_output = b"a" * 200_000
     process_mock.communicate.return_value = (large_output, b"")
 
-    tool = GitDiffTool()
-    result = await tool.execute()
+    with patch("coderAI.tools.git._validate_git_scope", new_callable=AsyncMock) as mock_validate:
+        mock_validate.return_value = None
+        tool = GitDiffTool()
+        result = await tool.execute()
 
     assert result["success"] is True
     assert result["truncated"] is True
@@ -57,8 +61,10 @@ async def test_git_status_truncation_large(mock_subprocess):
     large_output = b" M file.txt\n" * 10_000  # ~120KB
     process_mock.communicate.return_value = (large_output, b"")
 
-    tool = GitStatusTool()
-    result = await tool.execute()
+    with patch("coderAI.tools.git._validate_git_scope", new_callable=AsyncMock) as mock_validate:
+        mock_validate.return_value = None
+        tool = GitStatusTool()
+        result = await tool.execute()
 
     assert result["success"] is True
     assert result["truncated"] is True
@@ -71,8 +77,10 @@ async def test_git_log_truncation_large(mock_subprocess):
     large_output = b"commit hash\n" * 10_000  # ~120KB
     process_mock.communicate.return_value = (large_output, b"")
 
-    tool = GitLogTool()
-    result = await tool.execute(limit=10000)
+    with patch("coderAI.tools.git._validate_git_scope", new_callable=AsyncMock) as mock_validate:
+        mock_validate.return_value = None
+        tool = GitLogTool()
+        result = await tool.execute(limit=10000)
 
     assert result["success"] is True
     assert result["truncated"] is True

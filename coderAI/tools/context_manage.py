@@ -5,8 +5,8 @@ from typing import Any, Dict, Optional, Literal
 
 from pydantic import BaseModel, Field
 
-from .base import Tool
-from ..context import ContextManager
+from coderAI.tools.base import Tool
+from coderAI.context.context import ContextManager
 
 logger = logging.getLogger(__name__)
 

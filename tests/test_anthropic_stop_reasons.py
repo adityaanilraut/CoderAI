@@ -1,9 +1,9 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from coderAI.agent_loop import ExecutionLoop
-from coderAI.agent import Agent
-from coderAI.history import Session
+from coderAI.core.agent_loop import ExecutionLoop
+from coderAI.core.agent import Agent
+from coderAI.system.history import Session
 
 
 @pytest.fixture
@@ -23,6 +23,7 @@ def mock_agent():
     agent.tools.get_schemas.return_value = []
     agent.context_controller = MagicMock()
     agent.context_controller.inject_context = lambda msgs, cm, query: msgs
+    agent.context_controller.strip_internal_markers = lambda msgs: msgs
     agent.context_controller.manage_context_window = AsyncMock(side_effect=lambda msgs: msgs)
     agent.context_manager = MagicMock()
     agent._assistant_reply_parts = []
@@ -50,7 +51,7 @@ async def test_anthropic_refusal(mock_agent):
     with pytest.MonkeyPatch.context() as m:
         # Check that event_emitter is called with agent_warning
         mock_emitter = MagicMock()
-        m.setattr("coderAI.agent_loop.event_emitter", mock_emitter)
+        m.setattr("coderAI.core.agent_loop.event_emitter", mock_emitter)
 
         result = await loop.run("build a malware")
 
@@ -83,3 +84,12 @@ async def test_anthropic_pause_turn(mock_agent):
     assert result["content"] == "Thinking...\n\nDone."
     # Provider should be called twice
     assert mock_agent.provider.chat.call_count == 2
+
+    # Second LLM call must include the pause_turn assistant message in history
+    second_call_messages = mock_agent.provider.chat.call_args_list[1][0][0]
+    assistant_contents = [
+        m.get("content")
+        for m in second_call_messages
+        if m.get("role") == "assistant" and m.get("content")
+    ]
+    assert "Thinking..." in assistant_contents

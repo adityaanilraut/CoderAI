@@ -7,7 +7,7 @@ from typing import List
 
 from openai import AsyncOpenAI
 
-from .base import EmbeddingProvider
+from coderAI.embeddings.base import EmbeddingProvider
 
 logger = logging.getLogger(__name__)
 

@@ -5,7 +5,8 @@ import logging
 from collections import OrderedDict
 from typing import Any, Dict, List, Optional
 
-from .events import event_emitter
+from coderAI.system.error_policy import check_budget_limit
+from coderAI.system.events import event_emitter
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,9 @@ class ContextController:
         self._last_summary_time: float = 0.0
         self._summary_snapshot_input: int = 0
         self._summary_snapshot_output: int = 0
+        # Cache pinned-context injection across tool-loop iterations when pins/query unchanged.
+        self._inject_cache_fp: Optional[tuple] = None
+        self._inject_cache_msg: Optional[str] = None
 
     @staticmethod
     def _msg_fingerprint(msg: Dict[str, Any]) -> str:
@@ -147,6 +151,21 @@ class ContextController:
             cleaned.append(m)
         return cleaned
 
+    @staticmethod
+    def _pinned_context_fingerprint(
+        context_manager: Any,
+        query: Optional[str],
+        messages: List[Dict[str, Any]],
+    ) -> tuple:
+        pins = tuple(sorted(context_manager.pinned_files.keys()))
+        mtimes = tuple(context_manager._pinned_mtimes.get(k, 0) for k in pins)
+        effective_query = query
+        if not effective_query and messages:
+            from coderAI.context.context_selector import summarize_conversation_focus
+
+            effective_query = summarize_conversation_focus(messages)
+        return (pins, mtimes, effective_query or "")
+
     def inject_context(
         self, messages: List[Dict[str, Any]], context_manager: Any, query: Optional[str] = None
     ) -> List[Dict[str, Any]]:
@@ -157,10 +176,16 @@ class ContextController:
         ``_CONTEXT_MARKER_KEY`` flag) are stripped first to prevent
         accumulation across loop iterations.
         """
-        context_msg = context_manager.get_system_message(
-            query=query,
-            messages=messages,
-        )
+        fp = self._pinned_context_fingerprint(context_manager, query, messages)
+        if fp == self._inject_cache_fp and self._inject_cache_msg is not None:
+            context_msg = self._inject_cache_msg
+        else:
+            context_msg = context_manager.get_system_message(
+                query=query,
+                messages=messages,
+            )
+            self._inject_cache_fp = fp
+            self._inject_cache_msg = context_msg
         if not context_msg:
             # Still strip stale context injections even when there's nothing new
             return [m for m in messages if not self._is_pinned_injection(m)]
@@ -303,6 +328,8 @@ class ContextController:
             )
 
             if should_summarize and text_to_summarize:
+                if self.cost_tracker is not None:
+                    check_budget_limit(self.config.budget_limit, self.cost_tracker)
                 event_emitter.emit(
                     "agent_status",
                     message="\n[dim]Context window filling up. Summarizing older conversations...[/dim]",
@@ -351,7 +378,9 @@ class ContextController:
                             )
                             if not isinstance(model_for_cost, str):
                                 model_for_cost = self.config.default_model
-                            self.cost_tracker.add_cost(model_for_cost, in_tok_delta, out_tok_delta)
+                            await self.cost_tracker.add_cost(
+                                model_for_cost, in_tok_delta, out_tok_delta
+                            )
                             if self._on_summary_tokens is not None:
                                 self._on_summary_tokens(in_tok_delta, out_tok_delta)
 

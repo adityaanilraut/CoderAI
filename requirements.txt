@@ -1,3 +1,4 @@
+textual>=0.80.0
 rich>=13.7.0
 click>=8.1.7
 openai>=1.10.0

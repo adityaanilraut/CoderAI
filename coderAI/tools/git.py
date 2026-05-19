@@ -7,8 +7,8 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
-from .base import Tool
-from ..locks import resource_manager
+from coderAI.tools.base import Tool
+from coderAI.system.locks import resource_manager
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ async def _validate_git_scope(repo_path: str) -> Optional[Dict[str, Any]]:
     Returns an error dict if scope is mismatched, or None if valid.
     Mutating git operations should call this before proceeding.
     """
-    from ..safeguards import resolve_git_root
+    from coderAI.system.safeguards import resolve_git_root
 
     result = await resolve_git_root(repo_path)
 
@@ -107,7 +107,7 @@ class GitAddTool(Tool):
                 return scope_error
 
             # Filter out junk files
-            from ..safeguards import filter_stageable_files
+            from coderAI.system.safeguards import filter_stageable_files
 
             allowed, rejected = filter_stageable_files(files, repo_path)
 
@@ -171,6 +171,10 @@ class GitStatusTool(Tool):
 
     async def execute(self, repo_path: str = ".") -> Dict[str, Any]:
         try:
+            scope_error = await _validate_git_scope(repo_path)
+            if scope_error:
+                return scope_error
+
             process = await asyncio.create_subprocess_exec(
                 "git",
                 "status",
@@ -225,6 +229,10 @@ class GitDiffTool(Tool):
         self, repo_path: str = ".", file_path: str = None, staged: bool = False
     ) -> Dict[str, Any]:
         try:
+            scope_error = await _validate_git_scope(repo_path)
+            if scope_error:
+                return scope_error
+
             cmd = ["git", "diff"]
             if staged:
                 cmd.append("--cached")
@@ -318,6 +326,10 @@ class GitLogTool(Tool):
 
     async def execute(self, repo_path: str = ".", limit: int = 10) -> Dict[str, Any]:
         try:
+            scope_error = await _validate_git_scope(repo_path)
+            if scope_error:
+                return scope_error
+
             if limit < 1:
                 limit = 1
             elif limit > 1000:
@@ -475,7 +487,7 @@ class GitCheckoutTool(Tool):
 
             async with resource_manager.git_lock():
                 # Log branch before switching
-                from ..safeguards import get_current_branch
+                from coderAI.system.safeguards import get_current_branch
 
                 branch_before = await get_current_branch(repo_path)
                 logger.info(

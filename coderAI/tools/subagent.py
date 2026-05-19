@@ -8,10 +8,10 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
-from .base import Tool
-from ..agent_loop import RECOVERABLE_ERROR_MARKER
-from ..agent_tracker import AgentStatus
-from ..events import event_emitter
+from coderAI.tools.base import Tool
+from coderAI.core.agent_loop import RECOVERABLE_ERROR_MARKER
+from coderAI.core.agent_tracker import AgentStatus
+from coderAI.system.events import event_emitter
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +50,7 @@ def _collect_recent_recoverable_errors(
     messages from the parent session (most recent last).
 
     The execution loop persists a system message tagged with
-    :data:`coderAI.agent_loop.RECOVERABLE_ERROR_MARKER` every time it
+    :data:`coderAI.core.agent_loop.RECOVERABLE_ERROR_MARKER` every time it
     recovers from an unexpected error. Surfacing those notes to a spawned
     sub-agent lets it avoid repeating whatever failed for the parent.
     """
@@ -339,8 +339,8 @@ class DelegateTaskTool(Tool):
         """Core sub-agent spawning and execution logic."""
         sub_agent = None
         try:
-            from ..agent import Agent
-            from ..history import history_manager
+            from coderAI.core.agent import Agent
+            from coderAI.system.history import history_manager
 
             cwd = os.getcwd()
             ctx = self.context
@@ -629,7 +629,7 @@ class DelegateTaskTool(Tool):
                             model_for_cost = getattr(
                                 sub_agent.provider, "actual_model", sub_agent.model
                             )
-                            sub_agent.cost_tracker.add_cost(model_for_cost, new_in, new_out)
+                            await sub_agent.cost_tracker.add_cost(model_for_cost, new_in, new_out)
                         choices = retry_resp.get("choices", [])
                         if choices:
                             final_report = choices[0].get("message", {}).get("content") or ""
@@ -656,7 +656,7 @@ class DelegateTaskTool(Tool):
             except Exception as e:
                 logger.error(f"Sub-agent failed: {e}")
                 wasted_tokens = getattr(sub_agent, "total_tokens", 0) if sub_agent else 0
-                from ..cost import CostTracker
+                from coderAI.system.cost import CostTracker
 
                 wasted_cost = self._final_cost_for(sub_agent)
                 event_emitter.emit(
@@ -698,7 +698,7 @@ class DelegateTaskTool(Tool):
                     hooks_data,
                 )
 
-            from ..cost import CostTracker
+            from coderAI.system.cost import CostTracker
 
             event_emitter.emit(
                 "agent_status",
@@ -751,7 +751,7 @@ class DelegateTaskTool(Tool):
         """
         if sub_agent is None:
             return 0.0
-        from ..cost import CostTracker
+        from coderAI.system.cost import CostTracker
 
         provider = getattr(sub_agent, "provider", None)
         model_for_cost = getattr(provider, "actual_model", None) or getattr(sub_agent, "model", "")

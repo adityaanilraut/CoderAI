@@ -8,8 +8,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
-from .base import Tool
-from .filesystem import _enforce_project_scope
+from coderAI.tools.base import Tool
+from coderAI.tools.filesystem import _enforce_project_scope
 
 logger = logging.getLogger(__name__)
 
@@ -487,7 +487,7 @@ class RefactorTool(Tool):
 
             new_content = "".join(lines)
             if new_content != original_content:
-                from .undo import backup_store
+                from coderAI.tools.undo import backup_store
 
                 try:
                     backup_store.backup_file(str(file_path), "modify")

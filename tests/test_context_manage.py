@@ -6,7 +6,7 @@ import tempfile
 
 import pytest
 
-from coderAI.context import ContextManager
+from coderAI.context.context import ContextManager
 from coderAI.tools.context_manage import ManageContextTool
 
 

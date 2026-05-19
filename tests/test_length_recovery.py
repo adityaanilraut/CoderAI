@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from coderAI.agent_loop import ExecutionLoop
+from coderAI.core.agent_loop import ExecutionLoop
 
 
 @pytest.fixture

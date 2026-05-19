@@ -18,6 +18,34 @@ class BudgetExceededError(RuntimeError):
     """
 
 
+def check_budget_limit(
+    budget_limit: float,
+    cost_tracker,
+    *,
+    emit_warning: bool = False,
+) -> None:
+    """Raise :class:`BudgetExceededError` when spend exceeds ``budget_limit``.
+
+    A limit of ``0`` means unlimited (disabled). Mirrors the post-LLM
+    budget gate in :meth:`ExecutionLoop._call_llm_with_retry`.
+    """
+    if budget_limit <= 0:
+        return
+    total = cost_tracker.get_total_cost()
+    if total > budget_limit:
+        from coderAI.system.cost import CostTracker
+
+        msg = (
+            f"Budget limit of {CostTracker.format_cost(budget_limit)} exceeded "
+            f"(current: {CostTracker.format_cost(total)}). Stopping."
+        )
+        if emit_warning:
+            from coderAI.system.events import event_emitter
+
+            event_emitter.emit("agent_warning", message=f"BUDGET LIMIT EXCEEDED! {msg}")
+        raise BudgetExceededError(msg)
+
+
 # Retry configuration for transient errors
 MAX_RETRIES_PER_ITERATION = 3
 RETRY_BASE_DELAY = 1  # seconds

@@ -143,7 +143,7 @@ class TestRunCommandTool:
     def test_working_dir_blocked_outside_project(self, tmp_path, monkeypatch):
         # Default behavior: reject a working_dir outside the project root.
         # The session-wide opt-out in conftest must be cleared for this test.
-        from coderAI.config import config_manager
+        from coderAI.system.config import config_manager
 
         monkeypatch.delenv("CODERAI_ALLOW_OUTSIDE_PROJECT", raising=False)
         config_manager._config = None  # clear cache so load() re-reads env/file

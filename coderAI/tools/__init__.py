@@ -25,10 +25,10 @@ Provides all available tools for the coding agent, including:
 - Semantic Search: natural-language codebase search via embeddings
 """
 
-from .base import Tool, ToolRegistry
+from coderAI.tools.base import Tool, ToolRegistry
 
 # Filesystem tools
-from .filesystem import (
+from coderAI.tools.filesystem import (
     ReadFileTool,
     WriteFileTool,
     SearchReplaceTool,
@@ -44,10 +44,10 @@ from .filesystem import (
     FileChownTool,
     FileReadlinkTool,
 )
-from .multi_edit import MultiEditTool
+from coderAI.tools.multi_edit import MultiEditTool
 
 # Terminal tools
-from .terminal import (
+from coderAI.tools.terminal import (
     RunCommandTool,
     RunBackgroundTool,
     ListProcessesTool,
@@ -56,7 +56,7 @@ from .terminal import (
 )
 
 # Git tools
-from .git import (
+from coderAI.tools.git import (
     GitAddTool,
     GitStatusTool,
     GitDiffTool,
@@ -80,61 +80,67 @@ from .git import (
 )
 
 # Search tools
-from .search import TextSearchTool, GrepTool, SymbolSearchTool
+from coderAI.tools.search import TextSearchTool, GrepTool, SymbolSearchTool
 
 # Memory tools
-from .memory import SaveMemoryTool, RecallMemoryTool, DeleteMemoryTool
+from coderAI.tools.memory import SaveMemoryTool, RecallMemoryTool, DeleteMemoryTool
 
 # Web search & URL reading & Download & HTTP
-from .web import WebSearchTool, ReadURLTool, DownloadFileTool, HTTPRequestTool
+from coderAI.tools.web import WebSearchTool, ReadURLTool, DownloadFileTool, HTTPRequestTool
 
 # MCP tools
-from .mcp import MCPConnectTool, MCPCallTool, MCPListTool, MCPDisconnectTool, mcp_client
+from coderAI.tools.mcp import (
+    MCPConnectTool,
+    MCPCallTool,
+    MCPListTool,
+    MCPDisconnectTool,
+    mcp_client,
+)
 
 # Undo / rollback tools
-from .undo import UndoTool, UndoHistoryTool, get_backup_store, backup_store
+from coderAI.tools.undo import UndoTool, UndoHistoryTool, get_backup_store, backup_store
 
 # Linter
-from .lint import LintTool
+from coderAI.tools.lint import LintTool
 
 # Formatter
-from .format import FormatTool
+from coderAI.tools.format import FormatTool
 
 # Project context
-from .project import ProjectContextTool
+from coderAI.tools.project import ProjectContextTool
 
 # Vision
-from .vision import ReadImageTool
+from coderAI.tools.vision import ReadImageTool
 
 # Context management
-from .context_manage import ManageContextTool
+from coderAI.tools.context_manage import ManageContextTool
 
 # Task management
-from .tasks import ManageTasksTool
+from coderAI.tools.tasks import ManageTasksTool
 
 # Multi-Agent Sub-agent
-from .subagent import DelegateTaskTool
+from coderAI.tools.subagent import DelegateTaskTool
 
 # Skills
-from .skills import UseSkillTool
+from coderAI.tools.skills import UseSkillTool
 
 # Python REPL
-from .repl import PythonREPLTool
+from coderAI.tools.repl import PythonREPLTool
 
 # Planning
-from .planning import CreatePlanTool
+from coderAI.tools.planning import CreatePlanTool
 
 # Semantic code search
-from .semantic_search import SemanticSearchTool
+from coderAI.tools.semantic_search import SemanticSearchTool
 
 # Notepad (inter-agent communication)
-from .notepad import NotepadTool
+from coderAI.tools.notepad import NotepadTool
 
 # Refactoring, testing, and package management (also auto-discovered, but
 # exported here so the import surface matches the registered tool list).
-from .refactor import RefactorTool
-from .testing import RunTestsTool
-from .package_manager import PackageManagerTool
+from coderAI.tools.refactor import RefactorTool
+from coderAI.tools.testing import RunTestsTool
+from coderAI.tools.package_manager import PackageManagerTool
 
 __all__ = [
     # Base

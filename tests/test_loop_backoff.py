@@ -6,10 +6,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from coderAI.agent_loop import ExecutionLoop
-from coderAI.agent_tracker import AgentInfo, AgentStatus
-from coderAI.error_policy import RETRY_MAX_DELAY, compute_iteration_backoff
-from coderAI.history import Session
+from coderAI.core.agent_loop import ExecutionLoop
+from coderAI.core.agent_tracker import AgentInfo, AgentStatus
+from coderAI.system.error_policy import RETRY_MAX_DELAY, compute_iteration_backoff
+from coderAI.system.history import Session
 
 
 class TestComputeIterationBackoff:
@@ -72,7 +72,7 @@ async def test_execution_loop_applies_backoff_after_errors(loop_agent):
 
     loop._call_llm_with_retry = flaky_llm
     sleep_mock = AsyncMock()
-    with patch("coderAI.agent_loop.asyncio.sleep", sleep_mock):
+    with patch("coderAI.core.agent_loop.asyncio.sleep", sleep_mock):
         result = await loop.run("hello")
 
     assert result["content"] == "ok"
@@ -113,7 +113,7 @@ async def test_cancellation_during_backoff_exits(loop_agent):
             loop_agent.tracker_info.request_cancel()
         return await real_wait_for(coro, timeout=timeout)
 
-    with patch("coderAI.agent_loop.asyncio.wait_for", side_effect=wait_for_cancel_during_backoff):
+    with patch("coderAI.core.agent_loop.asyncio.wait_for", side_effect=wait_for_cancel_during_backoff):
         result = await loop.run("hello")
 
     assert "stopped by user" in result["content"].lower()

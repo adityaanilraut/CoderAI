@@ -3,7 +3,7 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from coderAI.history import Session
+from coderAI.system.history import Session
 from coderAI.tools.subagent import (
     DelegateTaskTool,
     MAX_DELEGATION_DEPTH,
@@ -75,7 +75,7 @@ class TestDelegateTaskDepthLimit:
         mock_agent.set_persona = MagicMock(return_value=None)
         mock_agent.close = AsyncMock()
 
-        with patch("coderAI.agent.Agent", return_value=mock_agent):
+        with patch("coderAI.core.agent.Agent", return_value=mock_agent):
             result = asyncio.run(tool.execute(task_description="simple task"))
         # Should NOT be a depth error
         if not result["success"]:
@@ -125,7 +125,7 @@ class TestDelegateTaskParentState:
         mock_agent._configure_delegate_tool_context = MagicMock()
         mock_agent.close = AsyncMock()
 
-        with patch("coderAI.agent.Agent", return_value=mock_agent) as agent_cls:
+        with patch("coderAI.core.agent.Agent", return_value=mock_agent) as agent_cls:
             result = asyncio.run(tool.execute(task_description="simple task"))
 
         assert result["success"] is True
@@ -168,7 +168,7 @@ class TestDelegateTaskParentState:
 
         mock_agent.create_session = MagicMock(side_effect=create_session)
 
-        with patch("coderAI.agent.Agent", return_value=mock_agent):
+        with patch("coderAI.core.agent.Agent", return_value=mock_agent):
             result = asyncio.run(tool.execute(task_description="simple task"))
 
         assert result["success"] is True
@@ -209,8 +209,8 @@ class TestDelegateTaskParentState:
         mock_agent.close = AsyncMock()
 
         with (
-            patch("coderAI.agent.Agent", return_value=mock_agent),
-            patch("coderAI.history.history_manager.load_session", return_value=resumed),
+            patch("coderAI.core.agent.Agent", return_value=mock_agent),
+            patch("coderAI.system.history.history_manager.load_session", return_value=resumed),
         ):
             result = asyncio.run(
                 tool.execute(task_description="resume task", task_id=resumed.session_id)
@@ -227,7 +227,7 @@ class TestDelegateTaskParentState:
         tool = DelegateTaskTool()
         tool.context = SubagentContext(parent_session=parent)
 
-        with patch("coderAI.history.history_manager.load_session", return_value=parent):
+        with patch("coderAI.system.history.history_manager.load_session", return_value=parent):
             result = asyncio.run(
                 tool.execute(task_description="resume task", task_id=parent.session_id)
             )
@@ -268,7 +268,7 @@ class TestDelegateTaskParentState:
 
         mock_agent.create_session = MagicMock(side_effect=create_session)
 
-        with patch("coderAI.agent.Agent", return_value=mock_agent):
+        with patch("coderAI.core.agent.Agent", return_value=mock_agent):
             result = asyncio.run(tool.execute(task_description="simple task"))
 
         assert result["success"] is True
@@ -305,7 +305,7 @@ class TestDelegateTaskDepthPropagation:
         mock_agent._configure_delegate_tool_context = MagicMock()
         mock_agent.close = AsyncMock()
 
-        with patch("coderAI.agent.Agent", return_value=mock_agent) as agent_cls:
+        with patch("coderAI.core.agent.Agent", return_value=mock_agent) as agent_cls:
             asyncio.run(tool.execute(task_description="task"))
 
         assert agent_cls.call_args.kwargs["delegation_depth"] == 2
@@ -318,7 +318,7 @@ class TestDelegateTaskDepthPropagation:
         tool = DelegateTaskTool()
         tool.context = SubagentContext(delegation_depth=MAX_DELEGATION_DEPTH)
 
-        with patch("coderAI.agent.Agent") as agent_cls:
+        with patch("coderAI.core.agent.Agent") as agent_cls:
             result = asyncio.run(
                 tool._run_delegation(
                     task_description="x",

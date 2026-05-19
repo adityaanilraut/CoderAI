@@ -1,0 +1,226 @@
+"""Timeline row renderers for the Textual chat UI."""
+
+from __future__ import annotations
+
+from typing import Any, Dict
+
+from rich.markup import escape
+from rich.text import Text
+from textual.widgets import RichLog
+
+from coderAI.tui.diff_render import format_diff_gutter
+from coderAI.tui.theme import Glyphs, Styles, Tokens
+
+_TOAST_STYLES = {
+    "info": Tokens.INFO,
+    "success": Tokens.AGENT,
+    "warning": Tokens.WARN,
+    "error": Tokens.DANGER,
+}
+
+
+def write_timeline_item(log: RichLog, it: Dict[str, Any], *, verbose: bool) -> None:
+    kind = it.get("kind")
+    if kind == "user":
+        write_user(log, it)
+    elif kind == "assistant":
+        write_assistant(log, it, verbose)
+    elif kind == "tool":
+        write_tool(log, it)
+    elif kind == "diff":
+        write_diff(log, it, verbose)
+    elif kind == "error":
+        write_error(log, it)
+    elif kind == "toast":
+        write_toast(log, it)
+    elif kind == "separator":
+        log.write(Text(f"— {it.get('message')} —", style=Styles.TEXT_DIM))
+    elif kind == "approval":
+        write_approval(log, it)
+    elif kind == "skill_card":
+        write_skill_card(log, it)
+    elif kind == "plan_card":
+        write_plan_card(log, it)
+
+
+def build_stream_tail_markup(it: Dict[str, Any], *, verbose: bool) -> str:
+    """Rich markup for the live streaming assistant tail."""
+    lines: list[str] = []
+    reasoning = (it.get("reasoning") or "").strip()
+    if verbose and reasoning:
+        lines.append(
+            f"[{Styles.REASONING_GLYPH}]{Glyphs.REASONING}[/] "
+            f"[{Styles.REASONING_LABEL}]reasoning[/]"
+        )
+        lines.append(f"  [{Styles.REASONING}]{escape(reasoning)}[/]")
+        lines.append("")
+    lines.append(
+        f"[{Styles.ASSISTANT_GLYPH}]{Glyphs.ASSISTANT}[/] [{Styles.ASSISTANT}]assistant[/]"
+    )
+    content = it.get("content", "") or ""
+    if content:
+        lines.append(f"  [{Styles.TEXT}]{escape(content)}[/]")
+    lines.append(f"  [{Tokens.AGENT}]▌[/]")
+    return "\n".join(lines)
+
+
+def write_user(log: RichLog, it: Dict[str, Any]) -> None:
+    header = Text()
+    header.append(f"{Glyphs.USER} ", style=Styles.USER_GLYPH)
+    header.append("you", style=Styles.USER)
+    log.write(header)
+    body = Text("  " + (it.get("text", "") or ""), style=Styles.TEXT)
+    log.write(body)
+    log.write("")
+
+
+def write_assistant(log: RichLog, it: Dict[str, Any], verbose: bool) -> None:
+    reasoning = (it.get("reasoning") or "").strip()
+    if verbose and reasoning:
+        head = Text()
+        head.append(f"{Glyphs.REASONING} ", style=Styles.REASONING_GLYPH)
+        head.append("reasoning", style=Styles.REASONING_LABEL)
+        log.write(head)
+        log.write(Text("  " + reasoning, style=Styles.REASONING))
+        log.write("")
+    head = Text()
+    head.append(f"{Glyphs.ASSISTANT} ", style=Styles.ASSISTANT_GLYPH)
+    head.append("assistant", style=Styles.ASSISTANT)
+    log.write(head)
+    content = it.get("content", "")
+    if content:
+        log.write(Text("  " + content, style=Styles.TEXT))
+    if it.get("streaming"):
+        log.write(Text("  ▌", style=f"blink {Tokens.AGENT}"))
+    log.write("")
+
+
+def write_tool(log: RichLog, it: Dict[str, Any]) -> None:
+    ok = it.get("ok")
+    if ok is True:
+        glyph, glyph_color, border_color = Glyphs.TOOL_OK, Tokens.AGENT, Tokens.AGENT
+    elif ok is False:
+        glyph, glyph_color, border_color = Glyphs.ERROR, Tokens.DANGER, Tokens.DANGER
+    else:
+        glyph, glyph_color, border_color = Glyphs.TOOL_RUN, Tokens.THOUGHT, Tokens.THOUGHT
+
+    name = str(it.get("name") or "")
+    args = it.get("args") or {}
+    if isinstance(args, dict):
+        argbits = []
+        for k in ("path", "file_path", "command", "query", "url", "pattern", "target"):
+            if k in args:
+                argbits.append(str(args[k]))
+                break
+        args_str = argbits[0] if argbits else ""
+    else:
+        args_str = str(args)
+    args_str = args_str.replace("\n", " ")[:60]
+
+    preview = str(it.get("preview") or "")[:60]
+
+    row = Text()
+    row.append(f"[{border_color}]▎[/]", style="")
+    row.append(" ")
+    row.append(f"{glyph} ", style=glyph_color)
+    row.append(f"{name:<16}", style=Styles.TOOL_NAME)
+    if args_str:
+        row.append(f" {args_str}", style=Styles.TOOL_ARGS)
+    if preview:
+        row.append(f"   {preview}", style=Styles.TOOL_PREVIEW)
+    log.write(row)
+    if it.get("error"):
+        log.write(Text(f"    → {it['error']}", style=f"{Tokens.DANGER}"))
+
+
+def write_diff(log: RichLog, it: Dict[str, Any], verbose: bool) -> None:
+    path = it.get("path", "")
+    head = Text()
+    head.append(f"[{Tokens.LINE_SOFT}]▎[/] ", style="")
+    head.append(f"{Glyphs.TOOL_OK} ", style=Styles.TOOL_OK)
+    head.append("diff", style=Styles.TOOL_NAME)
+    head.append(f"  [{Tokens.TEXT_DIM}]{path}[/]", style="")
+    log.write(head)
+    body = it.get("diff", "")
+    max_lines = 40 if verbose else 12
+    rendered = format_diff_gutter(body, max_lines=max_lines)
+    log.write(Text.from_markup(rendered))
+
+
+def write_error(log: RichLog, it: Dict[str, Any]) -> None:
+    head = Text()
+    head.append(f"{Glyphs.ERROR} ", style=Tokens.DANGER)
+    head.append("error", style=Styles.DANGER)
+    log.write(head)
+    log.write(Text("  " + str(it.get("message", "")), style=Styles.TEXT))
+    if it.get("hint"):
+        log.write(Text("  " + str(it["hint"]), style=Styles.TEXT_DIM))
+
+
+def write_toast(log: RichLog, it: Dict[str, Any]) -> None:
+    level = it.get("level", "info")
+    color = _TOAST_STYLES.get(level, Tokens.TEXT_DIM)
+    log.write(Text("· " + str(it.get("message", "")), style=color))
+
+
+def write_approval(log: RichLog, it: Dict[str, Any]) -> None:
+    decided = it.get("decided", "pending")
+    head = Text()
+    head.append(f"{Glyphs.APPROVAL} ", style=Styles.APPROVAL_GLYPH)
+    head.append("approval required", style=Styles.APPROVAL_LABEL)
+    head.append(f"  {it.get('tool', '')}", style=Styles.TEXT)
+    head.append(f"  [{decided}]", style=Styles.TEXT_MUTED)
+    log.write(head)
+
+
+def write_skill_card(log: RichLog, it: Dict[str, Any]) -> None:
+    name = escape(str(it.get("name") or ""))
+    desc = escape(str(it.get("description") or ""))
+    steps = it.get("steps") or []
+    total = len(steps)
+
+    head = Text.from_markup(
+        f"[{Tokens.LINE_SOFT}]▎[/] [{Tokens.TEXT_DIM}]SKILL[/] · [{Tokens.TEXT}]{name}[/]"
+        + (f" · [{Tokens.TEXT_MUTED}]{total} steps[/]" if total else "")
+    )
+    log.write(head)
+    if desc:
+        log.write(Text.from_markup(f"  [{Tokens.TEXT_DIM}]{desc[:120]}[/]"))
+
+    if steps:
+        for s in steps[:12]:
+            idx = int(s.get("index", 0))
+            label = escape(str(s.get("label", ""))[:100])
+            log.write(
+                Text.from_markup(f"  [{Tokens.TEXT_MUTED}]{idx:>2}.[/] [{Tokens.TEXT}]{label}[/]")
+            )
+    log.write("")
+
+
+def write_plan_card(log: RichLog, it: Dict[str, Any]) -> None:
+    title = str(it.get("title") or "")
+    completed = int(it.get("completed") or 0)
+    total = int(it.get("total") or 0)
+    current = int(it.get("currentIdx") or 0)
+    steps = it.get("steps") or []
+
+    head = Text()
+    head.append(f"[{Tokens.LINE_SOFT}]▎[/] ", style="")
+    head.append(f"[{Tokens.TEXT_DIM}]PLAN[/] · [{Tokens.TEXT}]{title}[/]")
+    if total:
+        head.append(f" · [{Tokens.TEXT_MUTED}]{completed}/{total}[/]")
+    log.write(head)
+
+    for s in steps[:12]:
+        idx = int(s.get("index", 0))
+        status = str(s.get("status", "pending"))
+        desc = str(s.get("description", ""))[:100]
+        if status == "done":
+            g, c = Glyphs.TOOL_OK, Tokens.AGENT
+        elif idx == current + 1:
+            g, c = "▸", Tokens.WARN
+        else:
+            g, c = "·", Tokens.TEXT_MUTED
+        markup = f"[{c}]{g}[/] [{Tokens.TEXT_MUTED}]{idx}.[/] [{Tokens.TEXT}]{desc}[/]"
+        log.write(Text.from_markup(f"  {markup}"))
+    log.write("")

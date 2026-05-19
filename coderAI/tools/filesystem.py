@@ -12,11 +12,11 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
-from .base import Tool
-from .undo import backup_store
-from ..config import config_manager
-from ..events import event_emitter
-from ..locks import resource_manager
+from coderAI.tools.base import Tool
+from coderAI.tools.undo import backup_store
+from coderAI.system.config import config_manager
+from coderAI.system.events import event_emitter
+from coderAI.system.locks import resource_manager
 
 logger = logging.getLogger(__name__)
 
@@ -139,23 +139,27 @@ def _is_in_project_root(path: Path) -> bool:
         return False
 
 
+def _allows_outside_project() -> bool:
+    """True when config or ``CODERAI_ALLOW_OUTSIDE_PROJECT=1`` opts out of scope."""
+    if os.environ.get("CODERAI_ALLOW_OUTSIDE_PROJECT") == "1":
+        return True
+    try:
+        return bool(config_manager.get("allow_outside_project", False))
+    except Exception:
+        return False
+
+
 def _enforce_project_scope(path: Path, op: str) -> Optional[dict[str, Any]]:
-    """Reject writes outside the project root.
+    """Reject file operations outside the project root.
 
     Set ``CODERAI_ALLOW_OUTSIDE_PROJECT=1`` to opt out (e.g. when editing
     dotfiles or scratch files outside the repo).
     """
     if _is_in_project_root(path):
         return None
-    if os.environ.get("CODERAI_ALLOW_OUTSIDE_PROJECT") == "1":
-        logger.warning("%s outside project root: %s (allowed by env opt-out)", op, path)
+    if _allows_outside_project():
+        logger.warning("%s outside project root: %s (allowed by opt-out)", op, path)
         return None
-    try:
-        if config_manager.get("allow_outside_project", False):
-            logger.warning("%s outside project root: %s (allowed by config)", op, path)
-            return None
-    except Exception:
-        pass
     return {
         "success": False,
         "error": (
@@ -249,6 +253,9 @@ class ReadFileTool(Tool):
         """Read file contents with size limit."""
         try:
             path_obj = Path(path).expanduser()
+            scope_err = _enforce_project_scope(path_obj, "read")
+            if scope_err:
+                return scope_err
             if not path_obj.exists():
                 return {
                     "success": False,
@@ -588,6 +595,9 @@ class ListDirectoryTool(Tool):
         """List directory contents."""
         try:
             path_obj = Path(path).expanduser()
+            scope_err = _enforce_project_scope(path_obj, "list")
+            if scope_err:
+                return scope_err
             if not path_obj.exists():
                 return {
                     "success": False,
@@ -640,6 +650,9 @@ class GlobSearchTool(Tool):
         """Find files matching pattern with result limit."""
         try:
             base = Path(base_path).expanduser()
+            scope_err = _enforce_project_scope(base, "glob_search")
+            if scope_err:
+                return scope_err
             if not base.exists():
                 return {
                     "success": False,

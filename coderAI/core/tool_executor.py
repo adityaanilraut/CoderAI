@@ -12,9 +12,9 @@ import time as _time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
-from .agent_tracker import AgentStatus
-from .events import event_emitter
-from .tool_routing import (
+from coderAI.core.agent_tracker import AgentStatus
+from coderAI.system.events import event_emitter
+from coderAI.core.tool_routing import (
     call_mcp_tool_by_function_name,
     is_mcp_function_name,
     coerce_tool_arguments,
@@ -155,13 +155,9 @@ class ToolExecutor:
         try:
             path_obj = Path(path).expanduser().resolve()
 
-            import os
+            from coderAI.tools.filesystem import _allows_outside_project
 
-            if (
-                self.agent
-                and self.agent.config
-                and os.environ.get("CODERAI_ALLOW_OUTSIDE_PROJECT") != "1"
-            ):
+            if self.agent and self.agent.config and not _allows_outside_project():
                 project_root = Path(self.agent.config.project_root).resolve()
                 try:
                     path_obj.relative_to(project_root)

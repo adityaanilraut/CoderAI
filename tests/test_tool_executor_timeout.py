@@ -1,7 +1,7 @@
 import asyncio
 import pytest
 
-from coderAI.tool_executor import ToolExecutor
+from coderAI.core.tool_executor import ToolExecutor
 from coderAI.tools.base import Tool, ToolRegistry
 from unittest.mock import MagicMock, AsyncMock
 
@@ -80,10 +80,10 @@ async def test_module_default_timeout():
     executor = ToolExecutor(agent)
 
     # We monkeypatch the DEFAULT_TOOL_TIMEOUT_SECONDS for testing
-    import coderAI.tool_executor
+    import coderAI.core.tool_executor
 
-    old_default = coderAI.tool_executor.DEFAULT_TOOL_TIMEOUT_SECONDS
-    coderAI.tool_executor.DEFAULT_TOOL_TIMEOUT_SECONDS = 0.1
+    old_default = coderAI.core.tool_executor.DEFAULT_TOOL_TIMEOUT_SECONDS
+    coderAI.core.tool_executor.DEFAULT_TOOL_TIMEOUT_SECONDS = 0.1
 
     try:
         pc = {"tool_id": "3", "tool_name": "module_slow", "arguments": {}}
@@ -97,4 +97,4 @@ async def test_module_default_timeout():
             "error_code": "timeout",
         }
     finally:
-        coderAI.tool_executor.DEFAULT_TOOL_TIMEOUT_SECONDS = old_default
+        coderAI.core.tool_executor.DEFAULT_TOOL_TIMEOUT_SECONDS = old_default

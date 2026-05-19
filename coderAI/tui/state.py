@@ -23,6 +23,7 @@ class AgentInfo:
     ctx_used: int = 0
     ctx_limit: int = 0
     elapsed_ms: int = 0
+    depth: int = 0
 
     @classmethod
     def from_payload(cls, info: Dict[str, Any]) -> "AgentInfo":
@@ -40,6 +41,7 @@ class AgentInfo:
             ctx_used=int(info.get("ctxUsed") or 0),
             ctx_limit=int(info.get("ctxLimit") or 0),
             elapsed_ms=int(info.get("elapsedMs") or 0),
+            depth=int(info.get("depth") or 0),
         )
 
 
@@ -61,12 +63,14 @@ class SessionState:
     budget_usd: float = 0.0
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    iteration: int = 0
+    max_iterations: int = 50
+    elapsed_s: float = 0.0
     available_models: Optional[Dict[str, List[str]]] = None
     available_personas: Optional[List[str]] = None
     available_skills: Optional[List[Dict[str, str]]] = None
     context_files: Optional[List[Dict[str, Any]]] = None
     agents: Dict[str, AgentInfo] = field(default_factory=dict)
-    agents_finished_at: Dict[str, float] = field(default_factory=dict)
     progress: Optional[Dict[str, Any]] = None
     session_started_at: Optional[float] = None
     ready: bool = False

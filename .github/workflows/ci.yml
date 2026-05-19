@@ -32,11 +32,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
-      - name: Ruff
+      - name: Ruff Format
+        run: python -m ruff format --check coderAI/
+
+      - name: Ruff Lint
         run: python -m ruff check coderAI/
 
       - name: Pytest
-        run: pytest -q
+        run: pytest -q --cov=coderAI --cov-fail-under=50
 
       - name: CLI smoke test
         run: coderAI --version

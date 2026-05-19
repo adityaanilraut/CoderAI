@@ -2,7 +2,7 @@
 
 import inspect
 
-from coderAI.agent import Agent
+from coderAI.core.agent import Agent
 from coderAI.tools.git import GitFetchTool
 from coderAI.tools.lint import LintTool
 from coderAI.tools.mcp import MCPCallTool, MCPDisconnectTool

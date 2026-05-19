@@ -4,8 +4,8 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from .config import config_manager
-from .context_selector import build_focused_context, summarize_conversation_focus
+from coderAI.system.config import config_manager
+from coderAI.context.context_selector import build_focused_context, summarize_conversation_focus
 
 logger = logging.getLogger(__name__)
 

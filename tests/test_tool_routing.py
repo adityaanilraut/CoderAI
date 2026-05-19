@@ -3,7 +3,7 @@
 import asyncio
 from unittest.mock import AsyncMock, patch
 
-from coderAI.tool_routing import (
+from coderAI.core.tool_routing import (
     call_mcp_tool_by_function_name,
     is_mcp_function_name,
     parse_mcp_function_name,

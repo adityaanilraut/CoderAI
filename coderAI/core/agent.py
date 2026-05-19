@@ -6,17 +6,17 @@ import time as _time
 from typing import Any, Dict, List, Optional, Tuple
 
 
-from .config import config_manager
-from .context import ContextManager
-from .cost import CostTracker
-from .history import Message, Session, history_manager
-from .context_controller import (
+from coderAI.system.config import config_manager
+from coderAI.context.context import ContextManager
+from coderAI.system.cost import CostTracker
+from coderAI.system.history import Message, Session, history_manager
+from coderAI.context.context_controller import (
     ContextController,
     RESPONSE_TOKEN_RESERVE,
     TOOL_OVERHEAD_TOKENS,
 )
-from .llm.factory import create_provider
-from .system_prompt import (
+from coderAI.llm.factory import create_provider
+from coderAI.system_prompt import (
     SYSTEM_PROMPT_INTERACTION,
     SYSTEM_PROMPT_INTRO,
     SYSTEM_PROMPT_TAIL,
@@ -25,14 +25,14 @@ from .system_prompt import (
     compose_default_system_prompt,
     format_tools_markdown,
 )
-from .tools import ToolRegistry
-from .tools.discovery import discover_tools
-from .tools.context_manage import ManageContextTool
-from .events import event_emitter
-from .agents import load_agent_persona, AgentPersona, expand_persona_tools
-from .agent_tracker import agent_tracker, AgentStatus, AgentInfo
-from .hooks_manager import HooksManager
-from .read_cache import FileReadCache
+from coderAI.tools import ToolRegistry
+from coderAI.tools.discovery import discover_tools
+from coderAI.tools.context_manage import ManageContextTool
+from coderAI.system.events import event_emitter
+from coderAI.core.agents import load_agent_persona, AgentPersona, expand_persona_tools
+from coderAI.core.agent_tracker import agent_tracker, AgentStatus, AgentInfo
+from coderAI.system.hooks_manager import HooksManager
+from coderAI.system.read_cache import FileReadCache
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +160,24 @@ class Agent:
         self._cached_system_prompt: Optional[str] = None
         self._system_prompt_cache_key: Optional[str] = None
 
+        if not self.is_subagent:
+            self._emit_project_sanity_warning()
+
+    def _emit_project_sanity_warning(self) -> None:
+        """Warn when the project root does not look like a real codebase."""
+        from coderAI.system.safeguards import project_sanity_check
+
+        result = project_sanity_check(self.config.project_root)
+        if result.get("is_valid_project"):
+            return
+        reasons = result.get("reasons") or []
+        if not reasons:
+            return
+        event_emitter.emit(
+            "agent_warning",
+            message="Project sanity check: " + "; ".join(reasons),
+        )
+
     @property
     def context_controller(self) -> ContextController:
         """Context controller (always initialized in __init__)."""
@@ -215,7 +233,7 @@ class Agent:
         delegate_tool = self.tools.get("delegate_task")
         if delegate_tool is None:
             return
-        from .tools.subagent import SubagentContext
+        from coderAI.tools.subagent import SubagentContext
 
         tracker_info = getattr(self, "tracker_info", None)
         delegate_tool.context = SubagentContext(
@@ -348,7 +366,7 @@ class Agent:
     def _compute_system_prompt_cache_key(self) -> str:
         """Build a cache key that changes when rules, tools, or persona change."""
         from pathlib import Path
-        from .project_layout import find_dot_coderai_subdir
+        from coderAI.system.project_layout import find_dot_coderai_subdir
 
         parts: List[str] = []
         parts.append(self.model)
@@ -410,7 +428,7 @@ class Agent:
         import os
         import platform as _platform
         from pathlib import Path
-        from .project_layout import find_dot_coderai_subdir
+        from coderAI.system.project_layout import find_dot_coderai_subdir
 
         # Build environment section (model ID, working dir, git status, platform, date)
         project_root = getattr(self.config, "project_root", os.getcwd())
@@ -554,7 +572,7 @@ class Agent:
         # session does not show the old plan on /plan.
         if clear_plan:
             try:
-                from .project_layout import find_dot_coderai_subdir
+                from coderAI.system.project_layout import find_dot_coderai_subdir
                 from pathlib import Path
 
                 pr = str(self.config.project_root)
@@ -755,7 +773,7 @@ class Agent:
 
     async def process_message(self, user_message: str, progress_callback=None) -> Dict[str, Any]:
         """Process a user message using ExecutionLoop."""
-        from .agent_loop import ExecutionLoop
+        from coderAI.core.agent_loop import ExecutionLoop
 
         return await ExecutionLoop(self, progress_callback=progress_callback).run(user_message)
 

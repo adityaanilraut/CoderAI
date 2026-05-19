@@ -6,7 +6,7 @@ import logging
 import pkgutil
 from typing import Set, Type
 
-from .base import Tool, ToolRegistry
+from coderAI.tools.base import Tool, ToolRegistry
 
 logger = logging.getLogger(__name__)
 

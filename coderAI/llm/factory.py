@@ -1,12 +1,12 @@
 """LLM Provider Factory."""
 
 from typing import Any
-from .openai import OpenAIProvider
-from .anthropic import AnthropicProvider, MODEL_ALIASES as ANTHROPIC_MODEL_ALIASES
-from .lmstudio import LMStudioProvider
-from .ollama import OllamaProvider
-from .groq import GroqProvider
-from .deepseek import DeepSeekProvider
+from coderAI.llm.openai import OpenAIProvider
+from coderAI.llm.anthropic import AnthropicProvider, MODEL_ALIASES as ANTHROPIC_MODEL_ALIASES
+from coderAI.llm.lmstudio import LMStudioProvider
+from coderAI.llm.ollama import OllamaProvider
+from coderAI.llm.groq import GroqProvider
+from coderAI.llm.deepseek import DeepSeekProvider
 
 
 def create_provider(model: str, config: Any) -> Any:

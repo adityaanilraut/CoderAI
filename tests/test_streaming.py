@@ -1,6 +1,6 @@
 """Tests for the streaming handler that bridges LLM deltas into UI events.
 
-``IPCStreamingHandler`` emits a single phased ``turn`` event:
+``BridgeStreamingHandler`` emits a single phased ``turn`` event:
 ``("turn", phase="start" | "reasoning" | "text" | "end", delta?)``. These
 helpers extract the text/reasoning streams in that shape so the assertions
 read like the older ``stream_delta`` ones.
@@ -8,11 +8,11 @@ read like the older ``stream_delta`` ones.
 
 import asyncio
 
-from coderAI.ipc.streaming import IPCStreamingHandler
+from coderAI.bridge.streaming import BridgeStreamingHandler
 
 
 class _FakeServer:
-    """Minimal stand-in for ``IPCServer`` that records emitted events."""
+    """Minimal stand-in for ``UIBridge`` that records emitted events."""
 
     def __init__(self) -> None:
         self.events: list[tuple[str, dict]] = []
@@ -38,11 +38,11 @@ async def _fake_stream(chunks):
         yield chunk
 
 
-class TestIPCStreamingHandler:
+class TestBridgeStreamingHandler:
     """Contract tests: content accumulation, tool-call merging, emit events."""
 
     def test_empty_stream(self):
-        handler = IPCStreamingHandler(_FakeServer())
+        handler = BridgeStreamingHandler(_FakeServer())
 
         async def run():
             return await handler.handle_stream(_fake_stream([]))
@@ -53,7 +53,7 @@ class TestIPCStreamingHandler:
 
     def test_content_chunks(self):
         server = _FakeServer()
-        handler = IPCStreamingHandler(server)
+        handler = BridgeStreamingHandler(server)
 
         chunks = [
             {"choices": [{"delta": {"content": "Hello"}}]},
@@ -72,7 +72,7 @@ class TestIPCStreamingHandler:
     def test_ignores_duplicate_cumulative_resend(self):
         """Provider sometimes emits the same full `content` twice; must not double UI text."""
         server = _FakeServer()
-        handler = IPCStreamingHandler(server)
+        handler = BridgeStreamingHandler(server)
         text = "How can I help?"
         chunks = [
             {"choices": [{"delta": {"content": text}}]},
@@ -87,7 +87,7 @@ class TestIPCStreamingHandler:
         assert _text_deltas(server.events) == text
 
     def test_tool_call_accumulation(self):
-        handler = IPCStreamingHandler(_FakeServer())
+        handler = BridgeStreamingHandler(_FakeServer())
 
         chunks = [
             {
@@ -133,7 +133,7 @@ class TestIPCStreamingHandler:
         assert '"path": "x.py"' in tool_calls[0]["function"]["arguments"]
 
     def test_mixed_content_and_tool_calls(self):
-        handler = IPCStreamingHandler(_FakeServer())
+        handler = BridgeStreamingHandler(_FakeServer())
 
         chunks = [
             {"choices": [{"delta": {"content": "Let me check"}}]},
@@ -166,7 +166,7 @@ class TestIPCStreamingHandler:
     def test_reasoning_tags_split(self):
         """``<think>…</think>`` regions surface as reasoning-flagged deltas."""
         server = _FakeServer()
-        handler = IPCStreamingHandler(server)
+        handler = BridgeStreamingHandler(server)
 
         chunks = [
             {"choices": [{"delta": {"content": "before <think>inner"}}]},
@@ -188,7 +188,7 @@ class TestIPCStreamingHandler:
 
     def test_reasoning_field_stays_out_of_final_content(self):
         server = _FakeServer()
-        handler = IPCStreamingHandler(server)
+        handler = BridgeStreamingHandler(server)
 
         chunks = [
             {"choices": [{"delta": {"reasoning_content": "plan"}}]},
@@ -205,7 +205,7 @@ class TestIPCStreamingHandler:
 
     def test_cumulative_think_chunks_do_not_duplicate_reasoning(self):
         server = _FakeServer()
-        handler = IPCStreamingHandler(server)
+        handler = BridgeStreamingHandler(server)
 
         chunks = [
             {"choices": [{"delta": {"content": "before <think>inner"}}]},
@@ -235,7 +235,7 @@ class TestIPCStreamingHandler:
         seen must be re-emitted — not the whole prefix again.
         """
         server = _FakeServer()
-        handler = IPCStreamingHandler(server)
+        handler = BridgeStreamingHandler(server)
 
         chunks = [
             {"choices": [{"delta": {"content": "Hello"}}]},  # delta
@@ -254,7 +254,7 @@ class TestIPCStreamingHandler:
     def test_cumulative_then_delta_does_not_duplicate(self):
         """Provider starts cumulative, then switches to pure deltas."""
         server = _FakeServer()
-        handler = IPCStreamingHandler(server)
+        handler = BridgeStreamingHandler(server)
 
         chunks = [
             {"choices": [{"delta": {"content": "Hello, "}}]},  # first cumulative == content
@@ -279,7 +279,7 @@ class TestIPCStreamingHandler:
         ``<T>`` or ``<html>``.
         """
         server = _FakeServer()
-        handler = IPCStreamingHandler(server)
+        handler = BridgeStreamingHandler(server)
 
         chunks = [
             {"choices": [{"delta": {"content": "use <T> as a type"}}]},
@@ -295,7 +295,7 @@ class TestIPCStreamingHandler:
 
     def test_cancel_event_stops_streaming_iteration(self):
         server = _FakeServer()
-        handler = IPCStreamingHandler(server)
+        handler = BridgeStreamingHandler(server)
 
         async def stream():
             yield {"choices": [{"delta": {"content": "first"}}]}

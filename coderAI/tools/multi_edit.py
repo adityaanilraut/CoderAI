@@ -5,16 +5,16 @@ import tempfile
 from pathlib import Path
 from pydantic import BaseModel, Field
 
-from .base import Tool
-from .filesystem import (
+from coderAI.tools.base import Tool
+from coderAI.tools.filesystem import (
     _is_path_protected,
     _enforce_project_scope,
     _emit_diff,
     _reject_symlink_leaf,
     _safe_open_no_symlink,
 )
-from .undo import backup_store
-from ..locks import resource_manager
+from coderAI.tools.undo import backup_store
+from coderAI.system.locks import resource_manager
 
 logger = logging.getLogger(__name__)
 

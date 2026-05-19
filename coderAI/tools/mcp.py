@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
-from .base import Tool
+from coderAI.tools.base import Tool
 
 logger = logging.getLogger(__name__)
 
@@ -597,7 +597,7 @@ class MCPConnectTool(Tool):
                 "error": f"MCP server launcher '{command}' is not in the allowed set: {', '.join(sorted(self._ALLOWED_MCP_LAUNCHERS))}",
             }
 
-        from .terminal import is_command_blocked, is_interactive_command
+        from coderAI.tools.terminal import is_command_blocked, is_interactive_command
 
         full_cmd = command + " " + " ".join(args) if args else command
         if is_command_blocked(full_cmd):

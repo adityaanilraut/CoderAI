@@ -1,14 +1,15 @@
 # CoderAI chat event reference
 
 **Transport:** In-process callbacks from
-[`coderAI/ipc/jsonrpc_server.py`](../coderAI/ipc/jsonrpc_server.py)
-(`IPCServer`) to the Textual UI in
+[`coderAI/bridge/controller.py`](../coderAI/bridge/controller.py)
+(`UIBridge`) to the Textual UI in
 [`coderAI/tui/`](../coderAI/tui/).
-The Textual `CoderAIApp` constructs an `IPCServer` and passes an
+The Textual `CoderAIApp` constructs an `UIBridge` and passes an
 `on_event(name, data)` callback; the controller forwards `event_emitter`
-notifications and per-turn streaming through that callback. Event names
-are declared in
-[`coderAI/tui/protocol.py`](../coderAI/tui/protocol.py).
+notifications and per-turn streaming through that callback. The event
+catalog is documented here; outbound events are emitted by `UIBridge`
+and inbound events are reduced into session/timeline state by
+[`coderAI/tui/listeners.py`](../coderAI/tui/listeners.py) (`EventReducer`).
 
 ---
 
@@ -26,7 +27,9 @@ consumers because unknown phases are ignored.
 | `turn`          | `{phase: "start" \| "reasoning" \| "text" \| "end", delta?, elapsedMs?, reasoningActive?}`     | One streamed assistant turn. `delta` carries incremental tokens for `reasoning`/`text`. `reasoningActive` hints whether extended thinking is in flight. |
 | `tool`          | `{id, phase: "queued" \| "awaiting_approval" \| "running" \| "ok" \| "err" \| "cancelled", payload}` | Lifecycle of a single tool call. `payload` shape depends on phase (see below). `queued` is reserved for future use — Python currently emits `running` first. |
 | `file_diff`     | `{path, diff}`                                                                                | Unified diff string                                                                  |
-| `status`        | `{ctxUsed, ctxLimit, costUsd, budgetUsd, promptTokens, completionTokens, totalTokens}`        | Emitted after every turn                                                             |
+| `status`        | `{ctxUsed, ctxLimit, costUsd, budgetUsd, promptTokens, completionTokens, totalTokens, iteration, maxIterations, elapsedSeconds}` | Emitted after every turn. `iteration` is the current agent-loop pass (1-based after the first user message). `maxIterations` mirrors `config.max_iterations` (default 50). `elapsedSeconds` is wall time since session bootstrap. |
+| `plan_card`     | `{plan: {title, completed, total, currentIdx, steps: [{index, description, status}]}}`        | Structured plan snapshot for the timeline card (from `/plan` or the plan tool)       |
+| `skill_card`    | `{id?, name, description, steps: [{index, label}]}`                                           | Parsed skill workflow card emitted after a successful `use_skill` call               |
 | `agent`         | `{phase: "update" \| "started" \| "finished", info: AgentInfo, parentId}`                     | Per-agent snapshot; `started`/`finished` are lifecycle edges, `update` is throttled live sync |
 | `session_patch` | `{model?, provider?, autoApprove?, reasoning?}`                                               | Partial session-state update — only changed fields are present                       |
 | `available_models`| `{current, models: Record<string, string[]>}`                                                 | Emitted for the model picker                                                         |
@@ -37,7 +40,7 @@ consumers because unknown phases are ignored.
 | `warning`       | `{message}`                                                                                   | Non-fatal user-facing problem (unknown command, bad input)                           |
 | `success`       | `{message}`                                                                                   | Positive confirmation toast (state change, async ack)                                |
 | `error`         | `{category: "provider" \| "tool" \| "internal" \| "protocol", message, hint?, details?}`         | Renders in the timeline as a styled error row, not a traceback dump                  |
-| `progress`      | `{label, current?, total?, progressKind: "tokens" \| "files" \| "steps"}`                       | Tool progress updates forwarded from the Python executor                             |
+| `progress`      | `{label, current?, total?, progressKind: "tokens" \| "files" \| "steps", elapsed?}`             | Tool progress updates forwarded from the Python executor. `elapsed` (seconds) is set when the underlying tool reports it. |
 | `goodbye`       | `{reason?}`                                                                                   | Agent is shutting down                                                               |
 
 ### `tool` phases — `payload` shape
@@ -45,7 +48,7 @@ consumers because unknown phases are ignored.
 | phase                | payload keys                                                  |
 | -------------------- | ------------------------------------------------------------- |
 | `queued` / `running` | `{name, category, args, risk}`                                |
-| `awaiting_approval`  | `{name, args, risk, diff?}`                                   |
+| `awaiting_approval`  | `{name, args, risk, diff?, requestedBy, parentId?, iteration, maxIterations, priorApproved}` | Extended modal context: who requested approval, sub-agent parent, loop iteration counters, and how many tools were already approved this turn. |
 | `ok`                 | `{preview, fullAvailable}`                                    |
 | `err`                | `{error, preview?}`                                           |
 | `cancelled`          | `{reason?, timeoutSeconds?}`                                  |
@@ -69,15 +72,35 @@ consumers because unknown phases are ignored.
   "costUsd": 0.0213,
   "ctxUsed": 8200,
   "ctxLimit": 200000,
-  "elapsedMs": 4300
+  "elapsedMs": 4300,
+  "depth": 0                 // tree depth from main (0 = root agent, +1 per parent hop)
 }
 ```
+
+`depth` is computed server-side by walking the `parentId` chain in
+`agent_tracker`. The Textual reducer maps the same field onto
+`SessionState.agents[id].depth`.
+
+### Timeline kinds produced by `EventReducer`
+
+The reducer in `listeners.py` mirrors several wire events into timeline
+rows the Textual UI renders:
+
+| wire event   | timeline `kind` | notes                                              |
+| ------------ | ----------------- | -------------------------------------------------- |
+| `turn`       | `assistant`       | streaming text/reasoning coalesced ~120 ms         |
+| `tool`       | `tool` / `approval` | `awaiting_approval` becomes an `approval` row    |
+| `plan_card`  | `plan_card`       | title, step list, progress counters                |
+| `skill_card` | `skill_card`      | skill name, description, numbered steps            |
+| `file_diff`  | `diff`            | unified diff block                                 |
+| `info`/`warning`/`success` | `toast` | level mirrors the wire event name          |
+| `error`      | `error`           | also triggers incomplete-turn recovery             |
 
 ---
 
 ## Commands (UI → Agent)
 
-UI intent flows through `IPCServer.enqueue_command(cmd, **fields)` or
+UI intent flows through `UIBridge.enqueue_command(cmd, **fields)` or
 `submit_command(...)`. Each command is dispatched on the asyncio loop;
 `send_message` is serialised by the per-server `_turn_lock` so two user
 turns can't interleave.

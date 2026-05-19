@@ -12,8 +12,8 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
-from .base import Tool
-from ..config import config_manager
+from coderAI.tools.base import Tool
+from coderAI.system.config import config_manager
 
 logger = logging.getLogger(__name__)
 
@@ -296,7 +296,7 @@ class RunCommandTool(Tool):
                 }
 
             # Block interactive commands that would hang without a TTY
-            from ..safeguards import is_interactive_command
+            from coderAI.system.safeguards import is_interactive_command
 
             if is_interactive_command(command):
                 logger.warning(f"Blocked interactive command: {command}")
@@ -497,7 +497,7 @@ class RunBackgroundTool(Tool):
                 }
 
             # Block interactive commands that would hang without a TTY
-            from ..safeguards import is_interactive_command
+            from coderAI.system.safeguards import is_interactive_command
 
             if is_interactive_command(command):
                 logger.warning(f"Blocked interactive background command: {command}")

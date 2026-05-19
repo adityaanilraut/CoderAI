@@ -4,8 +4,8 @@ import logging
 from pathlib import Path
 from typing import List, Optional, Set, Dict
 
-from .config import config_manager
-from .project_layout import find_dot_coderai_subdir
+from coderAI.system.config import config_manager
+from coderAI.system.project_layout import find_dot_coderai_subdir
 
 logger = logging.getLogger(__name__)
 

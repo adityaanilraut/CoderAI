@@ -1,6 +1,6 @@
 # Makefile for CoderAI
 
-.PHONY: help install dev test clean run lint format setup install-dev quickstart dist
+.PHONY: help install dev test clean run lint format typecheck setup install-dev quickstart dist check
 
 help:
 	@echo "CoderAI Development Commands"
@@ -12,7 +12,8 @@ help:
 	@echo "make run         - Run 'coderAI chat' (Textual TUI)"
 	@echo "make lint        - Run ruff (required for CI)"
 	@echo "make typecheck   - Run mypy (optional; package not fully typed yet)"
-	@echo "make format      - Format code with black"
+	@echo "make format      - Format code with ruff"
+	@echo "make check       - Run format, lint, typecheck, and test"
 	@echo "make setup       - Run setup wizard"
 
 install:
@@ -51,8 +52,10 @@ typecheck:
 	python3 -m mypy coderAI/
 
 format:
-	python3 -m black coderAI/
-	@echo "Code formatted with black"
+	python3 -m ruff format coderAI/
+	@echo "Code formatted with ruff"
+
+check: format lint test
 
 setup:
 	coderAI setup

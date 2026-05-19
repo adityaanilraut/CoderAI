@@ -12,7 +12,7 @@ from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, Field
 
-from .base import Tool
+from coderAI.tools.base import Tool
 
 logger = logging.getLogger(__name__)
 
@@ -62,8 +62,8 @@ class SemanticSearchTool(Tool):
         top_k = min(top_k, 20)
 
         try:
-            from ..code_indexer import CodeIndexer
-            from ..config import config_manager
+            from coderAI.context.code_indexer import CodeIndexer
+            from coderAI.system.config import config_manager
             from ..embeddings.factory import create_embedding_provider
 
             config = config_manager.load()

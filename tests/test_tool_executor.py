@@ -4,10 +4,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from coderAI.agent_loop import ExecutionLoop
-from coderAI.agent_tracker import AgentInfo, AgentStatus
-from coderAI.history import Session
-from coderAI.tool_executor import DOOM_LOOP_HARD_THRESHOLD, ToolExecutor
+from coderAI.core.agent_loop import ExecutionLoop
+from coderAI.core.agent_tracker import AgentInfo, AgentStatus
+from coderAI.system.history import Session
+from coderAI.core.tool_executor import DOOM_LOOP_HARD_THRESHOLD, ToolExecutor
 
 
 @pytest.mark.asyncio
@@ -358,13 +358,13 @@ def test_doom_loop_terminates_execution_loop_with_explanatory_message() -> None:
     """End-to-end: when the executor signals _doom_loop_stop, ExecutionLoop
     must exit immediately (not run to max_iterations) and surface a message
     that names the offending tool."""
-    with patch("coderAI.agent.config_manager") as cm:
-        from coderAI.config import Config
+    with patch("coderAI.core.agent.config_manager") as cm:
+        from coderAI.system.config import Config
 
         cfg = Config(max_iterations=50, budget_limit=0, save_history=False)
         cm.load.return_value = cfg
         cm.load_project_config.return_value = cfg
-        from coderAI.agent import Agent
+        from coderAI.core.agent import Agent
 
         mock_provider = MagicMock()
         mock_provider.supports_tools.return_value = False
@@ -539,13 +539,13 @@ async def test_in_batch_duplicate_calls_do_not_count_toward_doom_loop() -> None:
 
 
 def test_failed_tool_iterations_accumulate_in_execution_loop() -> None:
-    with patch("coderAI.agent.config_manager") as cm:
-        from coderAI.config import Config
+    with patch("coderAI.core.agent.config_manager") as cm:
+        from coderAI.system.config import Config
 
         cfg = Config(max_iterations=20, budget_limit=0, save_history=False)
         cm.load.return_value = cfg
         cm.load_project_config.return_value = cfg
-        from coderAI.agent import Agent
+        from coderAI.core.agent import Agent
 
         mock_provider = MagicMock()
         mock_provider.supports_tools.return_value = False

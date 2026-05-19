@@ -62,7 +62,7 @@ async def call_mcp_tool_by_function_name(
     name: str, arguments: Optional[Dict[str, Any]]
 ) -> Dict[str, Any]:
     """Dispatch ``mcp__...`` tool calls to :func:`mcp_client.call_tool`."""
-    from .tools.mcp import mcp_client
+    from coderAI.tools.mcp import mcp_client
 
     parsed = parse_mcp_function_name(name)
     if not parsed:

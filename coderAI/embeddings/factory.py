@@ -6,8 +6,8 @@ import logging
 
 from typing import Optional
 
-from .base import EmbeddingProvider
-from .openai import OpenAIEmbeddingProvider
+from coderAI.embeddings.base import EmbeddingProvider
+from coderAI.embeddings.openai import OpenAIEmbeddingProvider
 
 logger = logging.getLogger(__name__)
 

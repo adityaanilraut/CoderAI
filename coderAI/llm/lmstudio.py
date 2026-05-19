@@ -6,7 +6,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 import aiohttp
 
-from .base import LLMProvider
+from coderAI.llm.base import LLMProvider
 
 logger = logging.getLogger(__name__)
 

@@ -9,8 +9,8 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
-from .base import Tool
-from ..config import config_manager
+from coderAI.tools.base import Tool
+from coderAI.system.config import config_manager
 
 logger = logging.getLogger(__name__)
 

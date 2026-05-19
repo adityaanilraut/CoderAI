@@ -17,9 +17,9 @@ from urllib.parse import quote_plus, unquote, urljoin, urlparse, parse_qs
 import aiohttp
 from pydantic import BaseModel, Field
 
-from .base import Tool
+from coderAI.tools.base import Tool
 
-from .filesystem import _enforce_project_scope, _is_path_protected
+from coderAI.tools.filesystem import _enforce_project_scope, _is_path_protected
 
 logger = logging.getLogger(__name__)
 

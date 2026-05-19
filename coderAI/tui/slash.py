@@ -8,16 +8,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 
-from .export import timeline_to_markdown
+from coderAI.tui.export import timeline_to_markdown
 
 if TYPE_CHECKING:
-    from ..ipc.jsonrpc_server import IPCServer
-    from .listeners import EventReducer
+    from ..bridge.controller import UIBridge
+    from coderAI.tui.listeners import EventReducer
 
 
 def handle_slash_command(
     raw: str,
-    controller: "IPCServer",
+    controller: "UIBridge",
     reducer: "EventReducer",
     *,
     show_help: Callable[[], None],
@@ -39,7 +39,11 @@ def handle_slash_command(
     arg = parts[1].strip() if len(parts) > 1 else ""
 
     def toast(level: str, message: str) -> None:
-        reducer._push({"kind": "toast", "id": reducer.next_id(), "level": level, "message": message})
+        reducer._push(
+            {"kind": "toast", "id": reducer.next_id(), "level": level, "message": message}
+        )
+        reducer._bump_refresh("append")
+        reducer._notify()
 
     if head in ("help", "?"):
         show_help()
@@ -82,7 +86,22 @@ def handle_slash_command(
     if head in ("yolo", "auto-approve", "autoapprove"):
         controller.enqueue_command("toggle_auto_approve")
         return True
-    if head in ("allow-tool", "disallow-tool", "allowed-tools", "undo"):
+    if head == "allow-tool":
+        if not arg:
+            toast("warning", "Usage: /allow-tool <tool-name>")
+            return True
+        controller.enqueue_command("allow_tool", tool=arg)
+        return True
+    if head == "disallow-tool":
+        if not arg:
+            toast("warning", "Usage: /disallow-tool <tool-name>")
+            return True
+        controller.enqueue_command("disallow_tool", tool=arg)
+        return True
+    if head == "allowed-tools":
+        controller.enqueue_command("list_allowed_tools")
+        return True
+    if head == "undo":
         controller.enqueue_command("send_message", text=raw)
         return True
     if head == "persona":
@@ -90,7 +109,7 @@ def handle_slash_command(
             controller.enqueue_command("list_personas")
             show_persona_menu()
         else:
-            controller.enqueue_command("send_message", text=raw)
+            controller.enqueue_command("set_persona", persona=arg)
         return True
     if head == "skills":
         if not arg or arg == "list":
@@ -129,7 +148,20 @@ def handle_slash_command(
         else:
             controller.enqueue_command("reference", topic=topic)
         return True
-    if head in ("version", "providers", "cost", "pricing", "system", "diag", "diagnostics", "config", "info", "tasks", "todos", "task"):
+    if head in (
+        "version",
+        "providers",
+        "cost",
+        "pricing",
+        "system",
+        "diag",
+        "diagnostics",
+        "config",
+        "info",
+        "tasks",
+        "todos",
+        "task",
+    ):
         topic = "models" if head == "providers" else head
         controller.enqueue_command("reference", topic=topic)
         return True
@@ -141,7 +173,9 @@ def handle_slash_command(
             toast("warning", "Type /exit again to confirm shutdown (resets in 5s)")
         return True
     if head in ("export", "save"):
-        default_name = f"coderAI-session-{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H-%M-%S')}.md"
+        default_name = (
+            f"coderAI-session-{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H-%M-%S')}.md"
+        )
         target = arg or str(Path.home() / "Desktop" / default_name)
         try:
             Path(target).parent.mkdir(parents=True, exist_ok=True)

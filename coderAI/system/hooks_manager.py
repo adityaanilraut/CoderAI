@@ -26,8 +26,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from .agent_tracker import AgentStatus
-from .events import event_emitter
+from coderAI.core.agent_tracker import AgentStatus
+from coderAI.system.events import event_emitter
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +146,7 @@ class HooksManager:
             return hooks_results
 
         try:
-            from .tools.terminal import is_command_blocked
+            from coderAI.tools.terminal import is_command_blocked
 
             matching_hooks = [
                 h
@@ -298,7 +298,7 @@ class HooksManager:
             return hooks_results
 
         try:
-            from .tools.terminal import is_command_blocked
+            from coderAI.tools.terminal import is_command_blocked
 
             matching_hooks = [
                 h

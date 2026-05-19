@@ -6,7 +6,6 @@ import time
 from typing import Any, Dict, List, Optional
 
 from rich.markup import escape
-from rich.text import Text
 from textual import events, on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -15,13 +14,14 @@ from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Button, Footer, Input, Label, RichLog, Static, TextArea
 
-from .diff_render import format_diff_compact
-from .help_menu import HELP_MENU_ENTRIES
-from .listeners import EventReducer
-from .session_setup import create_agent_session
-from .slash import handle_slash_command
-from .state import AgentInfo, SessionState
-from .theme import Glyphs, Styles, Tokens
+from coderAI.tui.diff_render import format_diff_compact
+from coderAI.tui.help_menu import HELP_MENU_ENTRIES
+from coderAI.tui.listeners import EventReducer, RefreshMode
+from coderAI.tui.session_setup import create_agent_session
+from coderAI.tui.slash import handle_slash_command
+from coderAI.tui.state import AgentInfo, SessionState
+from coderAI.tui.theme import Glyphs, Styles, Tokens
+from coderAI.tui.timeline_render import build_stream_tail_markup, write_timeline_item
 
 STREAM_TICK_S = 0.12
 
@@ -58,7 +58,7 @@ class PromptArea(TextArea):
 
 
 class ApprovalScreen(ModalScreen[tuple[bool, bool]]):
-    """Tool approval dialog. Dismisses with (approve, always)."""
+    """Enhanced tool approval dialog with risk breakdown."""
 
     DEFAULT_CSS = f"""
     ApprovalScreen {{
@@ -68,7 +68,7 @@ class ApprovalScreen(ModalScreen[tuple[bool, bool]]):
         width: 90%;
         max-width: 100;
         height: auto;
-        max-height: 80%;
+        max-height: 85%;
         border: round {Tokens.WARN};
         background: {Tokens.BG_RAISED};
         padding: 1 2;
@@ -78,10 +78,24 @@ class ApprovalScreen(ModalScreen[tuple[bool, bool]]):
         text-style: bold;
         margin-bottom: 1;
     }}
+    ApprovalScreen #approval-meta {{
+        color: {Tokens.TEXT_DIM};
+        margin-bottom: 1;
+    }}
+    ApprovalScreen #approval-command {{
+        background: {Tokens.BG_SUNK};
+        color: {Tokens.TEXT};
+        padding: 1;
+        margin: 1 0;
+        border: solid {Tokens.LINE_SOFT};
+    }}
     ApprovalScreen #approval-diff {{
         background: {Tokens.BG_SUNK};
         color: {Tokens.TEXT};
         padding: 1;
+        margin: 1 0;
+    }}
+    ApprovalScreen #approval-risk {{
         margin: 1 0;
     }}
     ApprovalScreen Label {{
@@ -97,22 +111,129 @@ class ApprovalScreen(ModalScreen[tuple[bool, bool]]):
     }}
     """
 
+    _RISK_FACTORS: Dict[str, List[tuple[str, bool]]] = {
+        "run_command": [
+            ("No network access by default", True),
+            ("Could spawn child processes", False),
+            ("Writes to filesystem", False),
+        ],
+        "run_background": [
+            ("No network access by default", True),
+            ("Long-running process", False),
+            ("Could consume resources", False),
+        ],
+        "write_file": [
+            ("Runs in project sandbox", True),
+            ("Writes to filesystem", False),
+            ("Could overwrite existing files", False),
+        ],
+        "search_replace": [
+            ("Runs in project sandbox", True),
+            ("Modifies files in place", False),
+            ("Could leave dirty working tree", False),
+        ],
+        "apply_diff": [
+            ("Runs in project sandbox", True),
+            ("Modifies files in place", False),
+            ("Could leave dirty working tree", False),
+        ],
+        "delete_file": [
+            ("Runs in project sandbox", True),
+            ("Permanently deletes files", False),
+            ("Irreversible without git", False),
+        ],
+        "git_commit": [
+            ("Runs in project sandbox", True),
+            ("Creates permanent git history", False),
+            ("Could push on next sync", False),
+        ],
+        "git_push": [
+            ("Runs in project sandbox", True),
+            ("Transmits data to remote", False),
+            ("Affects shared repository", False),
+        ],
+        "git_checkout": [
+            ("Runs in project sandbox", True),
+            ("Switches working tree", False),
+            ("Could cause merge conflicts", False),
+        ],
+        "git_reset": [
+            ("Runs in project sandbox", True),
+            ("Destroys uncommitted work", False),
+            ("Irreversible without reflog", False),
+        ],
+    }
+    _DEFAULT_RISK_FACTORS: List[tuple[str, bool]] = [
+        ("Runs in project sandbox", True),
+        ("May modify project files", False),
+    ]
+
     def __init__(self, approval: Dict[str, Any]) -> None:
         super().__init__()
         self.approval = approval
+        self._started = time.time()
 
     def compose(self) -> ComposeResult:
-        diff = self.approval.get("diff")
-        diff_text = format_diff_compact(diff) if diff else ""
+        a = self.approval
+        tool_name = str(a.get("tool", ""))
+        risk = str(a.get("risk", "low"))
+        args = a.get("args") or {}
+        diff = a.get("diff")
+        req_by = str(a.get("requestedBy", ""))
+        parent_id = a.get("parentId")
+        iteration = int(a.get("iteration") or 0)
+
         with Container(id="approval-box"):
             yield Label(
-                f"{Glyphs.APPROVAL}  Approve [bold]{escape(str(self.approval.get('tool', '')))}[/] "
-                f"· {self.approval.get('risk', 'low')} risk",
+                f"[bold {Tokens.WARN}]▲[/] Approve [bold {Tokens.TEXT}]{escape(tool_name)}[/]"
+                f" · [{Tokens.WARN}]▲ {risk.upper()}[/] risk",
                 id="approval-header",
             )
-            if diff_text:
+
+            # Metadata line
+            meta_parts = []
+            if req_by:
+                meta_parts.append(f"requested by [{Tokens.TEXT}]{escape(req_by)}[/]")
+            if parent_id:
+                meta_parts.append(f"sub-agent of [{Tokens.TEXT_MUTED}]{parent_id[-8:]}[/]")
+            if iteration:
+                meta_parts.append(f"iteration [{Tokens.TEXT_DIM}]{iteration}[/]")
+            if meta_parts:
+                yield Label(" · ".join(meta_parts), id="approval-meta")
+
+            # Command preview for run_command
+            if tool_name == "run_command" and args:
+                cmd_str = str(args.get("command", args.get("cmd", "")))
+                if cmd_str:
+                    yield Static(
+                        f"[{Tokens.AGENT}]$[/] [{Tokens.TEXT}]{escape(cmd_str)}[/]",
+                        id="approval-command",
+                    )
+
+            # Diff
+            if diff:
+                diff_text = format_diff_compact(diff, max_lines=14)
                 yield Static(diff_text, id="approval-diff")
-            yield Label(str(self.approval.get("args", {}))[:400])
+
+            # Arguments summary
+            args_text = str(args)[:400]
+            if not diff:
+                yield Label(args_text)
+
+            # Risk breakdown
+            risk_items = self._RISK_FACTORS.get(tool_name, self._DEFAULT_RISK_FACTORS)
+            risk_lines = []
+            for label, ok in risk_items[:6]:
+                g, c = (Glyphs.TOOL_OK, Tokens.AGENT) if ok else (Glyphs.APPROVAL, Tokens.WARN)
+                risk_lines.append(f"  [{c}]{g}[/] [{Tokens.TEXT}]{label}[/]")
+            if risk_lines:
+                yield Label(
+                    f"[{Tokens.TEXT_MUTED}]WHY IT'S {risk.upper()} RISK[/]\n"
+                    + "\n".join(risk_lines),
+                    id="approval-risk",
+                )
+
+            # Buttons
             with Horizontal():
                 yield Button("Apply (y)", id="approve-y", variant="success")
                 yield Button("Reject (n)", id="approve-n", variant="error")
@@ -253,6 +374,254 @@ class SearchScreen(ModalScreen[None]):
         self.dismiss(None)
 
 
+class CommandPaletteScreen(ModalScreen[Optional[str]]):
+    """Fuzzy-searchable command palette with grouped sections."""
+
+    DEFAULT_CSS = f"""
+    CommandPaletteScreen {{
+        align: center middle;
+    }}
+    CommandPaletteScreen #palette-box {{
+        width: 70%;
+        max-width: 80;
+        height: auto;
+        max-height: 85%;
+        border: round {Tokens.LINE};
+        background: {Tokens.BG_RAISED};
+        padding: 0;
+    }}
+    CommandPaletteScreen #palette-input {{
+        margin: 1 2;
+        background: {Tokens.BG_SUNK};
+        color: {Tokens.TEXT};
+        border: solid {Tokens.LINE_SOFT};
+    }}
+    CommandPaletteScreen VerticalScroll {{
+        height: auto;
+        max-height: 20;
+        margin: 1 0;
+        padding: 0 2;
+        background: {Tokens.BG_RAISED};
+    }}
+    CommandPaletteScreen #palette-list {{
+        height: auto;
+        background: {Tokens.BG_RAISED};
+    }}
+    CommandPaletteScreen #palette-footer {{
+        height: 1;
+        padding: 0 2;
+        background: {Tokens.BG_SUNK};
+        color: {Tokens.TEXT_MUTED};
+        border-top: solid {Tokens.LINE};
+    }}
+    """
+
+    def __init__(self, session: SessionState, only_section: Optional[str] = None) -> None:
+        super().__init__()
+        self._s = session
+        self._selected_idx = 0
+        self._query = ""
+        self._only_section = only_section
+
+    def compose(self) -> ComposeResult:
+        with Container(id="palette-box"):
+            yield Input(
+                value="",
+                placeholder="⌘ Type to search commands, models, personas…",
+                id="palette-input",
+            )
+            with VerticalScroll():
+                yield Static(self._build_list(""), id="palette-list", markup=True)
+            yield Static(
+                f"[{Tokens.TEXT_MUTED}]↑↓ navigate  ↵ select  ⇥ complete  ⎋ close[/]",
+                id="palette-footer",
+            )
+
+    def _gather_items(self, query: str) -> List[Dict[str, Any]]:
+        """Build sectioned, filtered results."""
+        q = query.lower().strip()
+        sections: List[Dict[str, Any]] = []
+        only = self._only_section
+
+        def add_section(title: str, items: List[Dict[str, Any]]) -> None:
+            if not items:
+                return
+            sections.append({"title": title, "items": items})
+
+        # Commands
+        if only is None or only == "commands":
+            cmds = []
+            for cmd, desc in HELP_MENU_ENTRIES:
+                if not q or q in cmd.lower() or q in desc.lower():
+                    cmds.append({"label": cmd, "desc": desc, "action": ("cmd", cmd)})
+            add_section("Commands", cmds)
+
+        # Personas
+        if only is None or only == "personas":
+            personas = []
+            avail = self._s.available_personas or []
+            for p in avail:
+                if not q or q in p.lower():
+                    personas.append(
+                        {
+                            "label": f"/persona {p}",
+                            "desc": "Switch persona",
+                            "action": ("persona", p),
+                        }
+                    )
+            add_section("Personas", personas)
+
+        # Models
+        if only is None or only == "models":
+            models = []
+            m = self._s.available_models or {}
+            for provider, names in m.items():
+                for n in names:
+                    if not q or q in n.lower() or q in provider.lower():
+                        models.append({"label": n, "desc": provider, "action": ("model", n)})
+            add_section("Models", models)
+
+        # Reasoning
+        if only is None or only == "reasoning":
+            reason = []
+            for e in ("high", "medium", "low", "none"):
+                if not q or q in e:
+                    reason.append(
+                        {
+                            "label": f"/reasoning {e}",
+                            "desc": "Set reasoning effort",
+                            "action": ("reasoning", e),
+                        }
+                    )
+            add_section("Reasoning", reason)
+
+        # Skills
+        if only is None or only == "skills":
+            skills = []
+            for s in self._s.available_skills or []:
+                name = s.get("name", "")
+                desc = s.get("description", "")
+                if not q or q in name.lower() or q in desc.lower():
+                    skills.append(
+                        {"label": f"/skills {name}", "desc": desc, "action": ("skills", name)}
+                    )
+            add_section("Skills", skills)
+
+        # Session
+        if only is None or only == "session":
+            session = []
+            session_items = [
+                ("/clear", "Wipe conversation & context", "clear"),
+                ("/compact", "Summarize long context", "compact"),
+                ("/yolo", "Toggle auto-approve", "yolo"),
+                ("/verbose", "Toggle verbose mode", "verbose"),
+                ("/agents", "Refresh agents panel", "agents"),
+                ("/export", "Export session to markdown", "export"),
+                ("/search", "Search timeline", "search"),
+            ]
+            for label, desc, action in session_items:
+                if not q or q in label.lower() or q in desc.lower():
+                    session.append({"label": label, "desc": desc, "action": ("cmd", label)})
+            add_section("Session", session)
+
+        return sections
+
+    def _build_list(self, query: str) -> str:
+        sections = self._gather_items(query)
+        lines: List[str] = []
+        flat_idx = 0
+        for sec in sections:
+            lines.append(f"[{Styles.SECTION}]{sec['title']}[/]")
+            for item in sec["items"]:
+                label = item["label"]
+                desc = item["desc"]
+                sel = ">" if flat_idx == self._selected_idx else " "
+                color = Tokens.AGENT if flat_idx == self._selected_idx else Tokens.TEXT
+                lines.append(
+                    f"  {sel} [{color}]{escape(label)}[/]  [{Tokens.TEXT_MUTED}]{escape(desc)}[/]"
+                )
+                flat_idx += 1
+            lines.append("")
+        if flat_idx == 0:
+            lines.append(f'[{Tokens.TEXT_MUTED}]  no matches for "{escape(query)}"[/]')
+        if flat_idx > 0:
+            self._selected_idx = min(self._selected_idx, flat_idx - 1)
+        else:
+            self._selected_idx = 0
+        return "\n".join(lines)
+
+    def _get_flat_items(self, query: str) -> List[Dict[str, Any]]:
+        sections = self._gather_items(query)
+        flat: List[Dict[str, Any]] = []
+        for sec in sections:
+            flat.extend(sec["items"])
+        return flat
+
+    @on(Input.Changed, "#palette-input")
+    def _on_input_changed(self, event: Input.Changed) -> None:
+        self._query = event.value or ""
+        self._selected_idx = 0
+        self.query_one("#palette-list", Static).update(self._build_list(self._query))
+
+    @on(events.Key)
+    def _on_key(self, event: events.Key) -> None:
+        key = event.key
+        flat = self._get_flat_items(self._query)
+        if key == "up":
+            event.stop()
+            event.prevent_default()
+            if flat:
+                self._selected_idx = (self._selected_idx - 1) % len(flat)
+                self.query_one("#palette-list", Static).update(self._build_list(self._query))
+        elif key == "down":
+            event.stop()
+            event.prevent_default()
+            if flat:
+                self._selected_idx = (self._selected_idx + 1) % len(flat)
+                self.query_one("#palette-list", Static).update(self._build_list(self._query))
+        elif key == "enter":
+            event.stop()
+            event.prevent_default()
+            if flat and 0 <= self._selected_idx < len(flat):
+                item = flat[self._selected_idx]
+                action_type = item["action"][0]
+                action_val = item["action"][1]
+                if action_type == "cmd":
+                    self.dismiss(action_val)
+                elif action_type == "model":
+                    self.dismiss(f"/model {action_val}")
+                elif action_type == "persona":
+                    self.dismiss(f"/persona {action_val}")
+                elif action_type == "reasoning":
+                    self.dismiss(f"/reasoning {action_val}")
+                elif action_type == "skills":
+                    self.dismiss(f"/skills {action_val}")
+        elif key == "escape":
+            event.stop()
+            event.prevent_default()
+            self.dismiss(None)
+        elif key == "tab":
+            event.stop()
+            event.prevent_default()
+            if flat and 0 <= self._selected_idx < len(flat):
+                item = flat[self._selected_idx]
+                action_type = item["action"][0]
+                action_val = item["action"][1]
+                if action_type == "cmd":
+                    text = action_val + " "
+                elif action_type == "model":
+                    text = f"/model {action_val}"
+                elif action_type == "persona":
+                    text = f"/persona {action_val}"
+                elif action_type == "reasoning":
+                    text = f"/reasoning {action_val}"
+                elif action_type == "skills":
+                    text = f"/skills {action_val}"
+                else:
+                    text = action_val
+                self.dismiss(text)
+
+
 class CoderAIApp(App[None]):
     """CoderAI Textual chat — Cockpit layout."""
 
@@ -300,6 +669,13 @@ class CoderAIApp(App[None]):
         background: {Tokens.BG};
         scrollbar-background: {Tokens.BG};
         scrollbar-color: {Tokens.LINE};
+    }}
+    #stream-tail {{
+        height: auto;
+        max-height: 40%;
+        padding: 0 2 1 2;
+        background: {Tokens.BG};
+        display: none;
     }}
     #composer-box {{
         height: auto;
@@ -362,6 +738,7 @@ class CoderAIApp(App[None]):
         Binding("escape", "cancel_turn", "Cancel", show=True),
         Binding("ctrl+c", "ctrl_c", "Exit", show=False),
         Binding("ctrl+shift+c, super+c", "copy_selection", "Copy", show=True),
+        Binding("ctrl+k", "command_palette", "Commands", show=True),
     ]
 
     def __init__(
@@ -384,7 +761,7 @@ class CoderAIApp(App[None]):
         self.controller = None
         self._exit_armed_at: Optional[float] = None
         self._search_filter = ""
-        self._stream_timer: Optional[float] = None
+        self._log_rendered_idx = 0
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="main"):
@@ -393,6 +770,7 @@ class CoderAIApp(App[None]):
             with Vertical(id="center"):
                 yield Static("", id="session-header", markup=True)
                 yield RichLog(id="timeline", highlight=True, markup=True, wrap=True)
+                yield Static("", id="stream-tail", markup=True)
                 with Vertical(id="composer-box"):
                     yield PromptArea(id="prompt-area")
                     yield Static("", id="composer-footer", markup=True)
@@ -415,17 +793,17 @@ class CoderAIApp(App[None]):
         return "\n\n".join(rows)
 
     def on_mount(self) -> None:
-        self.reducer.on_change = self._schedule_refresh
+        self.reducer.on_change = self._on_reducer_change
         prompt = self.query_one("#prompt-area", PromptArea)
         prompt.show_line_numbers = False
-        prompt.placeholder = "Message CoderAI…   / commands   @ pin file   Enter to send"
+        prompt.placeholder = "Message CoderAI…   / commands   @ pin   ⌘K palette   Enter to send"
         prompt.focus()
         footer = self.query_one("#composer-footer", Static)
         footer.update(self._composer_footer_markup())
-        self._refresh_ui()
+        self._refresh_ui("full")
         # Run the agent loop on its own thread (with its own asyncio loop)
         # so blocking provider work doesn't freeze the UI. The agent's loop
-        # is captured in IPCServer.start() so command dispatches from this
+        # is captured in UIBridge.start() so command dispatches from this
         # thread can hop over via call_soon_threadsafe.
         self.run_worker(
             self._run_agent,
@@ -435,26 +813,27 @@ class CoderAIApp(App[None]):
         )
         self.set_interval(STREAM_TICK_S, self._stream_tick)
 
-    def _schedule_refresh(self) -> None:
-        self.post_message(AgentEventMsg("__refresh__", {}))
+    def _on_reducer_change(self, mode: RefreshMode) -> None:
+        self.post_message(AgentEventMsg("__refresh__", {"mode": mode}))
 
     @on(AgentEventMsg)
     async def _on_agent_event(self, msg: AgentEventMsg) -> None:
         if msg.event == "__refresh__":
-            self._refresh_ui()
+            self._refresh_ui(str(msg.data.get("mode", "full")))
             return
         self.reducer.handle(msg.event, msg.data)
         if msg.event == "tool" and msg.data.get("phase") == "awaiting_approval":
             self.run_worker(self._maybe_show_approval())
-        if msg.event == "goodbye":
-            self._refresh_ui()
 
     def _stream_tick(self) -> None:
-        self.reducer._maybe_flush_stream()
+        flushed = self.reducer._maybe_flush_stream()
         if self.reducer._stream_flush_at is None and (
             self.reducer._stream_pending_content or self.reducer._stream_pending_reasoning
         ):
-            self.reducer._flush_stream_buffers()
+            flushed = self.reducer._flush_stream_buffers() or flushed
+        if flushed:
+            self.reducer._bump_refresh("stream")
+            self.reducer._notify()
 
     def _emit_bridge(self, event: str, data: Dict[str, Any]) -> None:
         try:
@@ -499,142 +878,88 @@ class CoderAIApp(App[None]):
         "error": Tokens.DANGER,
     }
 
-    def _refresh_ui(self) -> None:
+    def _refresh_ui(self, mode: str = "full") -> None:
         try:
             log = self.query_one("#timeline", RichLog)
         except Exception:
             return
-        log.clear()
         s = self.reducer.session
         verbose = s.verbose
-        for it in self.reducer.timeline:
-            kind = it.get("kind")
-            if kind == "user":
-                self._write_user(log, it)
-            elif kind == "assistant":
-                self._write_assistant(log, it, verbose)
-            elif kind == "tool":
-                self._write_tool(log, it)
-            elif kind == "diff":
-                self._write_diff(log, it, verbose)
-            elif kind == "error":
-                self._write_error(log, it)
-            elif kind == "toast":
-                self._write_toast(log, it)
-            elif kind == "separator":
-                log.write(Text(f"— {it.get('message')} —", style=Styles.TEXT_DIM))
-            elif kind == "approval":
-                self._write_approval(log, it)
-        self._render_session_header(s)
-        self._render_fleet(s)
-        self._render_context(s)
-        self._render_cost(s)
+        timeline = self.reducer.timeline
+
+        if mode == "chrome":
+            self._render_chrome(s)
+            return
+
+        if mode == "full":
+            log.clear()
+            self._log_rendered_idx = 0
+            self._hide_stream_tail()
+
+        if mode == "stream":
+            for it in reversed(timeline):
+                if it.get("kind") == "assistant" and it.get("streaming"):
+                    self._render_stream_tail(it, verbose)
+                    break
+            else:
+                self._hide_stream_tail()
+        else:
+            idx = self._log_rendered_idx
+            while idx < len(timeline):
+                it = timeline[idx]
+                if it.get("kind") == "assistant" and it.get("streaming"):
+                    self._render_stream_tail(it, verbose)
+                    break
+                write_timeline_item(log, it, verbose=verbose)
+                idx += 1
+            self._log_rendered_idx = idx
+            if idx >= len(timeline) or not (
+                timeline[idx].get("kind") == "assistant" and timeline[idx].get("streaming")
+            ):
+                if not any(
+                    it.get("kind") == "assistant" and it.get("streaming") for it in timeline
+                ):
+                    self._hide_stream_tail()
+
+        self._render_chrome(s)
         try:
+            prompt = self.query_one("#prompt-area", PromptArea)
+            prompt.disabled = not s.ready
+            if not s.ready:
+                prompt.placeholder = "Starting agent…"
+            elif s.progress:
+                label = str(s.progress.get("label") or "Working")
+                prompt.placeholder = f"{label}…"
+            else:
+                prompt.placeholder = (
+                    "Message CoderAI…   / commands   @ pin   ⌘K palette   Enter to send"
+                )
             footer = self.query_one("#composer-footer", Static)
             footer.update(self._composer_footer_markup())
         except Exception:
             pass
 
-    # ── timeline row writers ───────────────────────────────────────────
+    def _render_chrome(self, s: SessionState) -> None:
+        self._render_session_header(s)
+        self._render_fleet(s)
+        self._render_context(s)
+        self._render_cost(s)
 
-    def _write_user(self, log: RichLog, it: Dict[str, Any]) -> None:
-        header = Text()
-        header.append(f"{Glyphs.USER} ", style=Styles.USER_GLYPH)
-        header.append("you", style=Styles.USER)
-        log.write(header)
-        body = Text("  " + (it.get("text", "") or ""), style=Styles.TEXT)
-        log.write(body)
-        log.write("")
+    def _render_stream_tail(self, it: Dict[str, Any], verbose: bool) -> None:
+        try:
+            tail = self.query_one("#stream-tail", Static)
+        except Exception:
+            return
+        tail.update(build_stream_tail_markup(it, verbose=verbose))
+        tail.display = True
 
-    def _write_assistant(self, log: RichLog, it: Dict[str, Any], verbose: bool) -> None:
-        reasoning = (it.get("reasoning") or "").strip()
-        if verbose and reasoning:
-            head = Text()
-            head.append(f"{Glyphs.REASONING} ", style=Styles.REASONING_GLYPH)
-            head.append("reasoning", style=Styles.REASONING_LABEL)
-            log.write(head)
-            log.write(Text("  " + reasoning, style=Styles.REASONING))
-            log.write("")
-        head = Text()
-        head.append(f"{Glyphs.ASSISTANT} ", style=Styles.ASSISTANT_GLYPH)
-        head.append("assistant", style=Styles.ASSISTANT)
-        log.write(head)
-        content = it.get("content", "")
-        if content:
-            log.write(Text("  " + content, style=Styles.TEXT))
-        if it.get("streaming"):
-            log.write(Text("  ▌", style=f"blink {Tokens.AGENT}"))
-        log.write("")
-
-    def _write_tool(self, log: RichLog, it: Dict[str, Any]) -> None:
-        ok = it.get("ok")
-        if ok is True:
-            glyph, glyph_style = Glyphs.TOOL_OK, Styles.TOOL_OK
-        elif ok is False:
-            glyph, glyph_style = Glyphs.ERROR, Styles.TOOL_ERR
-        else:
-            glyph, glyph_style = Glyphs.TOOL_RUN, Styles.TOOL_RUN
-
-        name = str(it.get("name") or "")
-        args = it.get("args") or {}
-        # Show a compact summary of the arguments (first 60 chars).
-        if isinstance(args, dict):
-            argbits = []
-            for k in ("path", "file_path", "command", "query", "url", "pattern", "target"):
-                if k in args:
-                    argbits.append(str(args[k]))
-                    break
-            args_str = argbits[0] if argbits else ""
-        else:
-            args_str = str(args)
-        args_str = args_str.replace("\n", " ")[:60]
-
-        preview = str(it.get("preview") or "")[:60]
-
-        row = Text()
-        row.append("  ")
-        row.append(f"{glyph} ", style=glyph_style)
-        row.append(f"{name:<14} ", style=Styles.TOOL_NAME)
-        if args_str:
-            row.append(f"{args_str}", style=Styles.TOOL_ARGS)
-        if preview:
-            row.append(f"   {preview}", style=Styles.TOOL_PREVIEW)
-        log.write(row)
-        if it.get("error"):
-            log.write(Text(f"    → {it['error']}", style=Tokens.DANGER))
-
-    def _write_diff(self, log: RichLog, it: Dict[str, Any], verbose: bool) -> None:
-        head = Text()
-        head.append(f"{Glyphs.TOOL_OK} ", style=Styles.TOOL_OK)
-        head.append("diff", style=Styles.TOOL_NAME)
-        head.append(f"  {it.get('path', '')}", style=Styles.TOOL_ARGS)
-        log.write(head)
-        body = it.get("diff", "")
-        rendered = format_diff_compact(body) if not verbose else body[:8000]
-        log.write(Text(rendered, style=Styles.TEXT_DIM))
-
-    def _write_error(self, log: RichLog, it: Dict[str, Any]) -> None:
-        head = Text()
-        head.append(f"{Glyphs.ERROR} ", style=Tokens.DANGER)
-        head.append("error", style=Styles.DANGER)
-        log.write(head)
-        log.write(Text("  " + str(it.get("message", "")), style=Styles.TEXT))
-        if it.get("hint"):
-            log.write(Text("  " + str(it["hint"]), style=Styles.TEXT_DIM))
-
-    def _write_toast(self, log: RichLog, it: Dict[str, Any]) -> None:
-        level = it.get("level", "info")
-        color = self._TOAST_STYLES.get(level, Tokens.TEXT_DIM)
-        log.write(Text("· " + str(it.get("message", "")), style=color))
-
-    def _write_approval(self, log: RichLog, it: Dict[str, Any]) -> None:
-        decided = it.get("decided", "pending")
-        head = Text()
-        head.append(f"{Glyphs.APPROVAL} ", style=Styles.APPROVAL_GLYPH)
-        head.append("approval required", style=Styles.APPROVAL_LABEL)
-        head.append(f"  {it.get('tool', '')}", style=Styles.TEXT)
-        head.append(f"  [{decided}]", style=Styles.TEXT_MUTED)
-        log.write(head)
+    def _hide_stream_tail(self) -> None:
+        try:
+            tail = self.query_one("#stream-tail", Static)
+        except Exception:
+            return
+        tail.update("")
+        tail.display = False
 
     # ── session header + right pane ────────────────────────────────────
 
@@ -643,41 +968,55 @@ class CoderAIApp(App[None]):
             header = self.query_one("#session-header", Static)
         except Exception:
             return
-        # Left: session dot + model · provider · context fill
         status_color = Tokens.AGENT if s.streaming or s.thinking else Tokens.TEXT_DIM
         ctx_used = f"{s.ctx_used:,}" if s.ctx_used else "0"
         ctx_lim = f"{s.ctx_limit // 1000}k" if s.ctx_limit else "?"
         model_label = s.model or "…"
-        mode_tag = ""
-        if s.thinking:
-            mode_tag = f"  [{Tokens.THOUGHT}]thinking…[/]"
-        elif s.streaming:
-            mode_tag = f"  [{Tokens.AGENT}]streaming…[/]"
+        provider = s.provider or ""
 
-        flags = []
-        if s.auto_approve:
-            flags.append(f"[{Tokens.WARN}]{Glyphs.DOT} yolo[/]")
-        if s.verbose:
-            flags.append(f"[{Tokens.TEXT_DIM}]verbose[/]")
-        flag_str = "  ".join(flags)
+        def chip(label: str, value: str, color: str = Tokens.TEXT, bar: float = -1) -> str:
+            inner = f"[{Tokens.TEXT_MUTED}]{label}[/] [{color}]{value}[/]"
+            if bar >= 0:
+                w = 10
+                f = min(w, max(0, int(bar * w)))
+                b = f"[{color}]" + ("█" * f) + "[/]"
+                b += f"[{Tokens.LINE}]" + ("─" * (w - f)) + "[/]"
+                inner += f" {b}"
+            return inner
 
-        left = (
-            f"[{status_color}]{Glyphs.DOT}[/] "
-            f"[{Tokens.TEXT}]{model_label}[/]  "
-            f"[{Tokens.TEXT_MUTED}]{s.provider or ''}[/]  "
-            f"[{Tokens.TEXT_DIM}]ctx[/] [{Tokens.TEXT}]{ctx_used}[/] / {ctx_lim}"
-            f"{mode_tag}"
-        )
-        right = f"[{Tokens.TEXT_DIM}]${s.cost_usd:.4f}[/]"
-        if flag_str:
-            right = f"{flag_str}   {right}"
+        ctx_ratio = (s.ctx_used / max(1, s.ctx_limit)) if s.ctx_limit else 0
+        chips = [
+            f"[{status_color}]{Glyphs.DOT}[/] [{Tokens.TEXT}]{model_label}[/]",
+            chip("provider", provider, Tokens.TEXT_MUTED),
+            chip("ctx", f"{ctx_used} / {ctx_lim}", Tokens.TEXT, bar=ctx_ratio),
+            chip("$", f"{s.cost_usd:.4f}", Tokens.TEXT_DIM),
+            chip("iter", f"{s.iteration}/{s.max_iterations}", Tokens.TEXT_DIM),
+        ]
+        if s.elapsed_s > 0:
+            m, sec = divmod(int(s.elapsed_s), 60)
+            ts = f"{m}m {sec}s" if m > 0 else f"{sec}s"
+            chips.append(chip("t", ts, Tokens.TEXT_MUTED))
+        active = sum(1 for a in s.agents.values() if a.status not in ("done", "error", "cancelled"))
+        if active:
+            chips.append(chip("agents", f"{active} active", Tokens.AGENT))
+        yolo_c = Tokens.WARN if s.auto_approve else Tokens.TEXT_MUTED
+        yolo_v = "ON" if s.auto_approve else "off"
+        chips.append(chip("yolo", yolo_v, yolo_c))
+        if s.reasoning and s.reasoning != "none":
+            chips.append(chip("reason", s.reasoning, Tokens.THOUGHT))
+        if s.progress:
+            prog = s.progress
+            label = str(prog.get("label") or "Working")
+            current = prog.get("current")
+            total = prog.get("total")
+            if current is not None and total is not None:
+                chips.append(chip("progress", f"{label} {current}/{total}", Tokens.AGENT))
+            else:
+                chips.append(chip("progress", label, Tokens.AGENT))
 
-        # Compose as two lines so the header looks like a chip strip.
-        # First line: model/ctx/cost. Second line: keyboard hints.
-        hints = (
-            f"[{Tokens.TEXT_MUTED}]⌘K commands · ⎋ cancel · @ pin · / slash[/]"
-        )
-        header.update(f"{left}  {right}\n{hints}")
+        left = f"[{Tokens.TEXT_MUTED}]│[/] ".join(chips)
+        hints = f"[{Tokens.TEXT_MUTED}]⌘K palette · ⎋ cancel · @ pin · / slash[/]"
+        header.update(f"{left}\n{hints}")
 
     def _render_fleet(self, s: SessionState) -> None:
         try:
@@ -685,42 +1024,65 @@ class CoderAIApp(App[None]):
         except Exception:
             return
         active_count = sum(
-            1 for a in s.agents.values()
-            if a.status not in ("done", "error", "cancelled")
+            1 for a in s.agents.values() if a.status not in ("done", "error", "cancelled")
         )
         title = (
-            f"[{Styles.SECTION}]AGENT FLEET[/]  "
-            f"[{Tokens.TEXT_MUTED}]· {active_count} active[/]\n"
+            f"[{Styles.SECTION}]AGENT FLEET[/]  [{Tokens.TEXT_MUTED}]· {active_count} active[/]\n"
         )
         if not s.agents:
             fleet.update(title + f"[{Tokens.TEXT_MUTED}](no agents yet)[/]")
             return
 
-        lines = [title]
-        # Sort: main agent first, then by status priority, then by name.
-        def sort_key(info: AgentInfo) -> tuple:
-            is_root = 0 if info.parent_id is None else 1
-            prio = {"streaming": 0, "thinking": 1, "idle": 2, "done": 3, "error": 4, "cancelled": 5}
-            return (is_root, prio.get(info.status, 6), info.name)
+        # Build tree-ordered list: root first, then children in order
+        agents = list(s.agents.values())
+        root_ids = [a.id for a in agents if a.parent_id is None]
+        tree_order: List[AgentInfo] = []
+        seen: set[str] = set()
 
-        for info in sorted(s.agents.values(), key=sort_key):
-            lines.append(self._format_agent_card(info))
+        def add_tree(aid: str, depth: int) -> None:
+            if aid in seen:
+                return
+            info = s.agents.get(aid)
+            if info is None:
+                return
+            seen.add(aid)
+            info.depth = depth
+            tree_order.append(info)
+            children = [a for a in agents if a.parent_id == aid]
+            for c in sorted(children, key=lambda x: x.name):
+                add_tree(c.id, depth + 1)
+
+        for rid in root_ids:
+            add_tree(rid, 0)
+
+        lines = [title]
+        for i, info in enumerate(tree_order):
+            is_last = (i == len(tree_order) - 1) or (
+                i + 1 < len(tree_order) and tree_order[i + 1].depth < info.depth
+            )
+            lines.append(self._format_agent_card_tree(info, is_last))
             lines.append("")
         fleet.update("\n".join(lines).rstrip())
 
-    def _format_agent_card(self, info: AgentInfo) -> str:
+    def _format_agent_card_tree(self, info: AgentInfo, is_last: bool) -> str:
         status = info.status
-        if status == "streaming":
-            color = Tokens.AGENT
-        elif status == "thinking":
-            color = Tokens.THOUGHT
+        if status in ("thinking", "tool_call"):
+            color = Tokens.AGENT if status == "tool_call" else Tokens.THOUGHT
+            glow = True
+        elif status == "waiting_for_user":
+            color = Tokens.WARN
+            glow = True
         elif status in ("done", "cancelled"):
             color = Tokens.TEXT_MUTED
+            glow = False
         elif status == "error":
             color = Tokens.DANGER
+            glow = False
         else:
             color = Tokens.WARN
+            glow = False
 
+        depth = info.depth
         name = info.name or info.id
         role = info.role or info.model or ""
         task = (info.task or "")[:34]
@@ -728,29 +1090,51 @@ class CoderAIApp(App[None]):
         cost = f"${info.cost_usd:.4f}"
         ctx_k = f"{info.ctx_used // 1000}k" if info.ctx_used else "0"
 
-        line1 = (
-            f"[{color}]{Glyphs.DOT}[/] [{Tokens.TEXT}]{name}[/]  "
-            f"[{Tokens.TEXT_MUTED}]{role}[/]"
-        )
-        status_label = f"[{color}]{status.upper()}[/]"
-        line2 = (
-            f"  [{Tokens.TEXT_DIM}]{task}[/]"
-            if task else ""
-        )
+        # Build tree prefix
+        if depth > 0:
+            conn = Glyphs.TREE_END if is_last else Glyphs.TREE_MID
+            prefix = f"[{Tokens.TEXT_MUTED}]{'  ' * (depth - 1)}{conn}─[/]"
+        else:
+            prefix = ""
+
+        dot_glow = f"[{color}]" + ("●" if glow else Glyphs.DOT) + "[/]"
+        line1 = f"{prefix} [{color}]{dot_glow}[/] [{Tokens.TEXT}]{name}[/]"
+        if role:
+            line1 += f"  [{Tokens.TEXT_MUTED}]{role}[/]"
+
+        status_label = f"[{color}]{'▸' if glow else status.upper()}[/]"
+        line2 = f"  [{Tokens.TEXT_DIM}]{task}[/]" if task else ""
+
         parent_line = ""
-        if info.parent_id:
-            parent_line = f"  [{Tokens.TEXT_MUTED}]{Glyphs.PARENT} parent: {info.parent_id}[/]"
+        if info.parent_id and depth <= 1:
+            parent_line = f"  [{Tokens.TEXT_MUTED}]{Glyphs.PARENT} parent: {info.parent_id[-8:]}[/]"
+
+        ctx_bar_w = 8
+        ctx_fill = min(ctx_bar_w, max(0, int((info.ctx_used / max(1, info.ctx_limit)) * ctx_bar_w)))
+        ctx_bar = (
+            f"[{color}]"
+            + ("▌" * ctx_fill)
+            + f"[/][{Tokens.LINE}]"
+            + ("─" * (ctx_bar_w - ctx_fill))
+            + "[/]"
+        )
+
         line3 = (
             f"  [{Tokens.TEXT_MUTED}]{tool}[/]  "
-            f"[{Tokens.TEXT_MUTED}]{cost}  {ctx_k}[/]  "
+            f"[{Tokens.TEXT_MUTED}]{cost}  {ctx_k} {ctx_bar}[/]  "
             f"{status_label}"
         )
+
         parts = [line1]
         if parent_line:
             parts.append(parent_line)
         if line2:
             parts.append(line2)
         parts.append(line3)
+
+        if status in ("done", "cancelled"):
+            result = "\n".join(parts)
+            return f"[dim]{result}[/]"
         return "\n".join(parts)
 
     def _render_context(self, s: SessionState) -> None:
@@ -759,10 +1143,7 @@ class CoderAIApp(App[None]):
         except Exception:
             return
         files = s.context_files or []
-        title = (
-            f"[{Styles.SECTION}]PINNED CONTEXT[/]  "
-            f"[{Tokens.TEXT_MUTED}]· {len(files)} files[/]"
-        )
+        title = f"[{Styles.SECTION}]PINNED CONTEXT[/]  [{Tokens.TEXT_MUTED}]· {len(files)} files[/]"
         if not files:
             pane.update(f"{title}\n[{Tokens.TEXT_MUTED}](nothing pinned · /pin to add)[/]")
             return
@@ -790,7 +1171,13 @@ class CoderAIApp(App[None]):
             ratio = min(1.0, cost / budget)
             filled = max(0, min(30, int(ratio * 30)))
             color = Tokens.AGENT if ratio < 0.7 else Tokens.WARN if ratio < 0.95 else Tokens.DANGER
-            bar = f"[{color}]" + ("█" * filled) + f"[/][{Tokens.LINE}]" + ("─" * (30 - filled)) + "[/]"
+            bar = (
+                f"[{color}]"
+                + ("█" * filled)
+                + f"[/][{Tokens.LINE}]"
+                + ("─" * (30 - filled))
+                + "[/]"
+            )
             tail = f"[{Tokens.TEXT}]${cost:.4f}[/] [{Tokens.TEXT_DIM}]/ ${budget:.2f}[/]"
         else:
             bar = f"[{Tokens.LINE}]" + ("─" * 30) + "[/]"
@@ -810,10 +1197,21 @@ class CoderAIApp(App[None]):
     def _composer_footer_markup(self) -> str:
         s = self.reducer.session
         reasoning = s.reasoning or "none"
-        return (
-            f"[{Tokens.TEXT_MUTED}]↵ send · ⇧↵ newline · / commands · @ pin[/]   "
-            f"[{Tokens.TEXT_DIM}]reasoning:[/] [{Tokens.THOUGHT}]{reasoning}[/]"
-        )
+        hints = f"[{Tokens.TEXT_MUTED}]↵ send · ⇧↵ newline · / commands · ⌘K palette[/]"
+        meta = f"[{Tokens.TEXT_DIM}]reasoning:[/] [{Tokens.THOUGHT}]{reasoning}[/]"
+        if not s.ready:
+            return f"[{Tokens.TEXT_MUTED}]Waiting for agent…[/]   {hints}   {meta}"
+        if s.progress:
+            prog = s.progress
+            label = escape(str(prog.get("label") or "Working"))
+            current = prog.get("current")
+            total = prog.get("total")
+            if current is not None and total is not None:
+                progress = f"[{Tokens.AGENT}]{label}[/] [{Tokens.TEXT_DIM}]{current}/{total}[/]"
+            else:
+                progress = f"[{Tokens.AGENT}]{label}[/]"
+            return f"{progress}   {hints}   {meta}"
+        return f"{hints}   {meta}"
 
     async def _maybe_show_approval(self) -> None:
         pending = self.reducer.pending_approval()
@@ -831,7 +1229,7 @@ class CoderAIApp(App[None]):
             approve=approve,
         )
         pending["decided"] = "approved" if approve else "denied"
-        self._refresh_ui()
+        self._refresh_ui("full")
 
     def action_cancel_turn(self) -> None:
         if self.controller:
@@ -856,8 +1254,30 @@ class CoderAIApp(App[None]):
         else:
             self.notify("No text selected — use mouse to select text first")
 
+    def action_command_palette(self) -> None:
+        self.run_worker(self._show_palette(), exclusive=True)
+
+    async def _show_palette(self, only_section: Optional[str] = None) -> None:
+        result = await self.push_screen_wait(
+            CommandPaletteScreen(self.reducer.session, only_section)
+        )
+        if result is None or not self.controller:
+            return
+        # Handle command palette returns
+        r = result.strip()
+        if r.startswith("/"):
+            # Route through slash handler directly to avoid palette re-entry loop
+            if r in ("/help", "/?"):
+                return  # already in palette
+            self._submit(r)
+        else:
+            self.query_one("#prompt-area", TextArea).text = r
+            self.query_one("#prompt-area", PromptArea).focus()
+
     @on(PromptArea.Submitted)
     def _on_prompt_submitted(self, event: PromptArea.Submitted) -> None:
+        if not self.reducer.session.ready:
+            return
         prompt = self.query_one("#prompt-area", PromptArea)
         prompt.text = ""
         text = event.text.strip()
@@ -869,6 +1289,8 @@ class CoderAIApp(App[None]):
         if not self.controller:
             return
         self.reducer._push({"kind": "user", "id": self.reducer.next_id(), "text": text})
+        self.reducer._bump_refresh("append")
+        self.reducer._notify()
         if text.startswith("/"):
             handled = handle_slash_command(
                 text,
@@ -892,42 +1314,19 @@ class CoderAIApp(App[None]):
         self.controller.enqueue_command("send_message", text=text)
 
     def _show_help(self) -> None:
-        self.run_worker(self._pick_list("Commands", HELP_MENU_ENTRIES), exclusive=True)
+        self.run_worker(self._show_palette(), exclusive=True)
 
     def _show_model_menu(self) -> None:
-        models = self.reducer.session.available_models or self._fallback_models()
-        items: List[tuple[str, str]] = []
-        for provider, names in models.items():
-            for n in names:
-                items.append((n, provider))
-        if not items:
-            self.notify("No models available")
-            return
-        self.run_worker(self._pick_list("Models", items), exclusive=True)
+        self.run_worker(self._show_palette("models"), exclusive=True)
 
     def _show_reasoning_menu(self) -> None:
-        items = [(e, "") for e in ("high", "medium", "low", "none")]
-        self.run_worker(self._pick_list("Reasoning", items), exclusive=True)
+        self.run_worker(self._show_palette("reasoning"), exclusive=True)
 
     def _show_persona_menu(self) -> None:
-        personas = self.reducer.session.available_personas
-        if not personas:
-            personas = self._fallback_personas()
-        items = [(p, "") for p in personas]
-        if not items:
-            self.notify("No personas defined in .coderAI/agents/")
-            return
-        self.run_worker(self._pick_list("Personas", items), exclusive=True)
+        self.run_worker(self._show_palette("personas"), exclusive=True)
 
     def _show_skills_menu(self) -> None:
-        skills = self.reducer.session.available_skills
-        if not skills:
-            skills = self._fallback_skills()
-        items = [(s.get("name", ""), s.get("description", "")) for s in skills]
-        if not items:
-            self.notify("No skills defined in .coderAI/skills/")
-            return
-        self.run_worker(self._pick_list("Skills", items), exclusive=True)
+        self.run_worker(self._show_palette("skills"), exclusive=True)
 
     def _fallback_models(self) -> Dict[str, List[str]]:
         try:
@@ -935,6 +1334,7 @@ class CoderAIApp(App[None]):
             from ..llm.deepseek import DeepSeekProvider
             from ..llm.groq import GroqProvider
             from ..llm.openai import OpenAIProvider
+
             return {
                 "Anthropic": sorted(MODEL_ALIASES.keys()),
                 "OpenAI": sorted(OpenAIProvider.SUPPORTED_MODELS.keys()),
@@ -947,7 +1347,8 @@ class CoderAIApp(App[None]):
 
     def _fallback_personas(self) -> List[str]:
         try:
-            from ..agents import get_available_personas
+            from coderAI.core.agents import get_available_personas
+
             pr = getattr(self.agent.config, "project_root", ".") if self.agent else "."
             return sorted(get_available_personas(pr))
         except Exception:
@@ -956,6 +1357,7 @@ class CoderAIApp(App[None]):
     def _fallback_skills(self) -> List[Dict[str, str]]:
         try:
             from ..tools.skills import get_available_skills
+
             pr = getattr(self.agent.config, "project_root", ".") if self.agent else "."
             return list(get_available_skills(pr))
         except Exception:
@@ -989,12 +1391,15 @@ class CoderAIApp(App[None]):
                 "message": f"Pinned context:\n{msg}",
             }
         )
+        self.reducer._bump_refresh("append")
+        self.reducer._notify()
 
     def _clear_context(self) -> None:
         if self.controller:
             self.controller.enqueue_command("clear_context")
             self.reducer.timeline.clear()
-            self._refresh_ui()
+            self._log_rendered_idx = 0
+            self._refresh_ui("full")
 
     def _toggle_verbose(self) -> None:
         self.reducer.session.verbose = not self.reducer.session.verbose
@@ -1014,6 +1419,8 @@ class CoderAIApp(App[None]):
                         "message": it["reasoning"][:4000],
                     }
                 )
+                self.reducer._bump_refresh("append")
+                self.reducer._notify()
                 return
         self.notify("No reasoning to reveal")
 

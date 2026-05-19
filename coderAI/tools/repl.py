@@ -8,8 +8,9 @@ from typing import Any, Dict
 
 from pydantic import BaseModel, Field
 
-from .base import Tool
-from ..config import config_manager
+from coderAI.tools.base import Tool
+from coderAI.tools.terminal import _resolve_working_dir
+from coderAI.system.config import config_manager
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,10 @@ class PythonREPLTool(Tool):
     ) -> Dict[str, Any]:
         """Execute Python code in a subprocess."""
         try:
+            resolved_cwd, cwd_err = _resolve_working_dir(working_dir)
+            if cwd_err:
+                return {"success": False, "error": cwd_err, "error_code": "scope"}
+
             # Write code to a temp file to avoid shell escaping issues
             with tempfile.NamedTemporaryFile(
                 mode="w",
@@ -74,7 +79,7 @@ class PythonREPLTool(Tool):
                     script_path,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
-                    cwd=working_dir,
+                    cwd=str(resolved_cwd),
                 )
 
                 try:

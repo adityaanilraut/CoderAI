@@ -8,7 +8,7 @@ from typing import Any, Dict
 
 from pydantic import BaseModel, Field
 
-from .base import Tool
+from coderAI.tools.base import Tool
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,7 @@ class ReadImageTool(Tool):
         try:
             filepath = Path(path).resolve()
 
-            from .filesystem import _is_path_protected, _enforce_project_scope
+            from coderAI.tools.filesystem import _is_path_protected, _enforce_project_scope
 
             if _is_path_protected(filepath):
                 return {"success": False, "error": f"Refusing to read protected path: {path}"}

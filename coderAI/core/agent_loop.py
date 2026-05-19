@@ -6,13 +6,14 @@ import logging
 import time as _time
 from typing import Any, Dict, List, Optional
 
-from .agent_tracker import AgentStatus
-from .cost import CostTracker
-from .events import event_emitter
-from .history import Message
-from .tool_executor import ToolExecutor
-from .error_policy import (
+from coderAI.core.agent_tracker import AgentStatus
+from coderAI.system.cost import CostTracker
+from coderAI.system.events import event_emitter
+from coderAI.system.history import Message
+from coderAI.core.tool_executor import ToolExecutor
+from coderAI.system.error_policy import (
     BudgetExceededError,
+    check_budget_limit,
     compute_iteration_backoff,
     compute_retry_delay,
     is_transient_error,
@@ -28,7 +29,7 @@ logger = logging.getLogger(__name__)
 DOOM_LOOP_THRESHOLD = 3
 
 # Backward-compatible module-level default. The runtime value now lives on
-# :class:`coderAI.config.Config.max_iterations_hard_cap` and is read through
+# :class:`coderAI.system.config.Config.max_iterations_hard_cap` and is read through
 # ``self.agent.config`` inside :class:`ExecutionLoop`. Importers that still
 # reference this constant continue to work but no longer drive the loop.
 MAX_ITERATIONS_HARD_CAP = 200
@@ -79,7 +80,7 @@ class ExecutionLoop:
         try:
             from pathlib import Path
 
-            from .project_layout import find_dot_coderai_subdir
+            from coderAI.system.project_layout import find_dot_coderai_subdir
 
             project_root = str(getattr(self.agent.config, "project_root", "."))
             dot_dir = find_dot_coderai_subdir("", project_root)
@@ -162,6 +163,12 @@ class ExecutionLoop:
             combined = "<system-reminder>\n" + "\n\n".join(parts) + "\n</system-reminder>"
             result.append({"role": "system", "content": combined})
         return result
+
+    def _refresh_messages_from_session(self, messages: List[Dict[str, Any]]) -> None:
+        """Replace the in-memory message list with the session transcript."""
+        messages.clear()
+        if self.agent.session is not None:
+            messages.extend(self.agent.session.get_messages_for_api())
 
     async def run(self, user_message: str) -> Dict[str, Any]:
         """Process a user message and return response."""
@@ -316,8 +323,9 @@ class ExecutionLoop:
                 if content and content.strip():
                     self.agent._assistant_reply_parts.append(content.strip())
 
-                session_content = None if tool_calls else content
+                session_content = content if content and str(content).strip() else None
                 self.agent.session.add_message("assistant", session_content, tool_calls=tool_calls)
+                self._refresh_messages_from_session(messages)
 
                 if finish_reason == "refusal":
                     event_emitter.emit(
@@ -911,19 +919,13 @@ class ExecutionLoop:
                         self.agent.total_tokens = model_info.get("total_tokens", 0)
                     model_for_cost = getattr(self.agent.provider, "actual_model", self.agent.model)
                     if new_in > 0 or new_out > 0:
-                        self.agent.cost_tracker.add_cost(model_for_cost, new_in, new_out)
+                        await self.agent.cost_tracker.add_cost(model_for_cost, new_in, new_out)
 
-                    if (
-                        self.agent.config.budget_limit > 0
-                        and self.agent.cost_tracker.get_total_cost()
-                        > self.agent.config.budget_limit
-                    ):
-                        msg = (
-                            f"Budget limit of {CostTracker.format_cost(self.agent.config.budget_limit)} exceeded "
-                            f"(current: {CostTracker.format_cost(self.agent.cost_tracker.get_total_cost())}). Stopping."
-                        )
-                        event_emitter.emit("agent_warning", message=f"BUDGET LIMIT EXCEEDED! {msg}")
-                        raise BudgetExceededError(msg)
+                    check_budget_limit(
+                        self.agent.config.budget_limit,
+                        self.agent.cost_tracker,
+                        emit_warning=True,
+                    )
 
                 return result
             except BudgetExceededError:

@@ -34,13 +34,13 @@ def _default_session_model() -> str:
     ``agent``).
     """
     try:
-        from .config import config_manager
+        from coderAI.system.config import config_manager
 
         return config_manager.load().default_model
     except Exception:
         # Fall back to the Config field default rather than an invalid literal.
         try:
-            from .config import Config
+            from coderAI.system.config import Config
 
             return Config.model_fields["default_model"].default
         except Exception:
@@ -115,14 +115,6 @@ def _sanitize_session_data(data: Dict[str, Any]) -> Dict[str, Any]:
                 data.get("session_id"),
             )
             msg.pop("tool_calls", None)
-
-        # Nullify content when tool_calls are present (providers reject mixed messages)
-        if role == "assistant" and msg.get("tool_calls") and msg.get("content"):
-            logger.warning(
-                "Nullifying content on assistant message with tool_calls in session %s",
-                data.get("session_id"),
-            )
-            msg["content"] = None
 
         # Validate timestamp type
         ts = msg.get("timestamp")
