@@ -10,17 +10,11 @@ This guide will help you install and set up CoderAI on your system.
 
 ## How `coderAI` is packaged
 
-CoderAI ships as two halves:
-
-- A pure-Python wheel on PyPI (the agent, tools, and one-shot CLI commands
-  like `status`, `setup`, `history`, `models`, `config`, `info`, `cost`).
-- A per-platform standalone binary built with Bun from the Ink UI in `ui/`
-  and published as GitHub Release assets. `coderAI chat` downloads this
-  binary on first run and caches it at `~/.coderAI/bin/`.
-
-You do **not** need Node, Bun, or npm to use `coderAI`. The download is a
-single ~60 MB file, SHA256-verified against a sidecar published alongside
-the binary.
+CoderAI ships as a single pure-Python wheel on PyPI. The agent, tools,
+one-shot CLI commands (`status`, `setup`, `history`, `models`, `config`,
+`info`, `cost`, `doctor`, `index`, `search`), and the interactive Textual
+TUI all live inside the wheel. There are no native binaries or extra
+download steps — `pip install coderAI` is the whole story.
 
 ## Installation Methods
 
@@ -31,11 +25,8 @@ pip install coderAI
 coderAI chat
 ```
 
-The first `coderAI chat` run detects your platform
-(`darwin-arm64`, `darwin-x64`, `linux-x64`, `linux-arm64`, `windows-x64`),
-downloads the matching UI binary from GitHub Releases, verifies its
-SHA256, caches it at `~/.coderAI/bin/coderai-ui-<platform>-v<version>`,
-and launches it. Subsequent runs skip the download.
+This installs the agent and Textual TUI in one step. `coderAI chat`
+launches the interactive UI directly from Python.
 
 ### Method 2: Install from source (for contributors)
 
@@ -44,29 +35,11 @@ git clone https://github.com/adityaanilraut/CoderAI.git
 cd CoderAI
 python3 -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
-pip install -e .
+pip install -e ".[dev]"
 ```
 
-If you want to work on the Ink UI too, also build it locally:
-
-```bash
-make ui-install   # requires Bun (https://bun.sh)
-make ui-compile   # produces ui/dist/coderai-ui
-```
-
-The Python CLI prefers a local `ui/dist/coderai-ui` over any cached
-download, so an editable checkout always runs the code you just built.
-
-### Escape hatches
-
-- `CODERAI_UI_BINARY=/path/to/binary coderAI chat` — bypass the cache and
-  use your own build (useful when testing local changes, running on an
-  unsupported platform, or running from an air-gapped environment).
-- `CODERAI_UI_REPO=owner/repo` — pull UI binaries from a different GitHub
-  repo (default: `coderAI/coderAI`, where release assets are published).
-- Offline fallback: run `make ui-compile` in a checkout and either copy
-  the resulting binary into `~/.coderAI/bin/` or point
-  `$CODERAI_UI_BINARY` at it.
+`pip install -e ".[dev]"` adds pytest/ruff/black/mypy for the test and
+lint targets. `make dev` is a shortcut for the same install.
 
 ## Verify Installation
 
@@ -76,7 +49,7 @@ Check that CoderAI is installed correctly:
 coderAI --version
 ```
 
-You should see: `CoderAI version 0.2.0`
+You should see: `CoderAI version 0.3.0`
 
 ## Initial Setup
 
@@ -126,24 +99,19 @@ This will guide you through:
 
 ## Configuration Files
 
-CoderAI stores configuration, history, and the cached UI binary in `~/.coderAI/`:
+CoderAI stores configuration and history in `~/.coderAI/`:
 
 ```
 ~/.coderAI/
-├── config.json                              # Configuration settings
-├── bin/                                     # Auto-downloaded UI binaries
-│   └── coderai-ui-<platform>-v<version>     # (created on first `coderAI chat`)
-├── history/                                 # Conversation history
+├── config.json           # Configuration settings
+├── history/              # Conversation history
 │   └── session_*.json
-├── memory/                                  # Persistent memory store
+├── memory/               # Persistent memory store
 │   └── memories.json
-└── index/                                   # Semantic code search index
-    ├── manifest.json                        #   File-hash index manifest
-    └── vectordb/                            #   ChromaDB persistent store
+└── index/                # Semantic code search index
+    ├── manifest.json     #   File-hash index manifest
+    └── vectordb/         #   ChromaDB persistent store
 ```
-
-To force a re-download of the UI binary, delete `~/.coderAI/bin/` and
-run `coderAI chat` again.
 
 ## Getting Your OpenAI API Key
 
@@ -374,8 +342,6 @@ CoderAI supports these environment variables:
 - `CODERAI_LOG_LEVEL` - Python-side log level (default `WARNING`)
 - `LMSTUDIO_ENDPOINT` - LM Studio API endpoint
 - `OLLAMA_ENDPOINT` - Ollama API endpoint
-- `CODERAI_UI_BINARY` - Path to a locally built Ink UI binary (bypasses the auto-downloader)
-- `CODERAI_UI_REPO` - Override the GitHub `owner/repo` to pull UI binaries from (default: `coderAI/coderAI`)
 
 Example:
 

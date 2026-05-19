@@ -1,8 +1,7 @@
-"""Rich-based display helpers for one-shot CLI commands.
+"""Rich-based display helpers for one-shot CLI subcommands.
 
-The interactive chat UI now lives in the TypeScript Ink frontend (``ui/``)
-driven by ``coderAI.ipc``. Only the ``Display`` helpers are kept here for
-utility commands like ``coderAI status`` and ``coderAI setup``.
+Used by ``coderAI status``, ``coderAI setup``, ``coderAI models``, etc.
+The interactive chat UI lives in :mod:`coderAI.tui` (Textual).
 """
 
 from .display import Display, display

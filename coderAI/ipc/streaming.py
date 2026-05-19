@@ -1,9 +1,9 @@
 """Streaming handler that forwards LLM token deltas to the IPC server.
 
-Emits a single phased ``turn`` NDJSON event (``phase`` of ``start`` /
-``reasoning`` / ``text`` / ``end``) so the Ink UI can render streaming
-output in React. Used when ``agent.streaming_handler`` is set from
-``coderAI.ipc.entry`` (interactive mode).
+Emits a single phased ``turn`` event (``phase`` of ``start`` /
+``reasoning`` / ``text`` / ``end``) so the Textual UI can render streaming
+output incrementally. Set as ``agent.streaming_handler`` in
+``coderAI/tui/session_setup.py``.
 """
 
 from __future__ import annotations

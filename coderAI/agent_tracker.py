@@ -17,7 +17,6 @@ class AgentStatus(str, Enum):
     IDLE = "idle"
     THINKING = "thinking"
     TOOL_CALL = "tool_call"
-    # Kept in sync with `ui/src/protocol.ts` `AgentStatus` for agent cards / NDJSON.
     WAITING_FOR_USER = "waiting_for_user"
     CANCELLED = "cancelled"
     DONE = "done"

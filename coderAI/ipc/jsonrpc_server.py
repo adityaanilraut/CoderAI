@@ -1,17 +1,13 @@
-"""NDJSON bridge between the Python agent and the Ink UI.
+"""Chat controller: agent events and command dispatch.
 
-This module is intentionally decoupled from the Rich-based UI in
-``coderAI/ui/*``. It subscribes to the same ``event_emitter`` signals and
-serializes them as NDJSON lines to ``stdout``; the Ink UI parses those and
-renders them with React/Ink components.
+Drives the Textual UI in ``coderAI/tui/`` via an in-process callback
+(``on_event``). The Textual app constructs an :class:`IPCServer`,
+passes ``on_event`` to receive events on the UI thread, and pushes UI
+intent back through :meth:`IPCServer.enqueue_command` /
+:meth:`IPCServer.submit_command`.
 
-Commands from the UI arrive on ``stdin`` as NDJSON and are dispatched to the
-agent via an internal async queue.
-
-Wire format (see ``ui/PROTOCOL.md`` for the full spec):
-
-    {"v": 2, "kind": "event", "event": "<name>", ...payload}
-    {"v": 2, "kind": "cmd",   "cmd":   "<name>", "id": "...", ...payload}
+Subscribes to ``event_emitter`` and dispatches UI commands to the agent.
+See ``docs/CHAT_EVENTS.md`` for the event catalog.
 """
 
 from __future__ import annotations
@@ -22,8 +18,6 @@ import logging
 import os
 from pathlib import Path
 import re
-import sys
-import threading
 import time as _time
 import uuid
 from typing import Any, Awaitable, Callable, Dict, Optional
@@ -34,14 +28,12 @@ from ..events import event_emitter
 from ..project_layout import find_dot_coderai_subdir
 from ..system_prompt import _TOOL_SECTIONS
 
-# IPC protocol version. Increment when the wire format changes incompatibly.
-PROTOCOL_VERSION = 2
-
 logger = logging.getLogger(__name__)
 
-# Matches Rich-style markup tags, e.g. ``[bold cyan]``, ``[/bold cyan]``,
-# ``[/]``. These are meant for the Rich one-shot CLI UI and must be stripped
-# before crossing the NDJSON bridge to the Ink UI, which renders plain text.
+# Strip Rich-style markup tags (e.g. ``[bold cyan]``, ``[/bold cyan]``,
+# ``[/]``) from message payloads before emitting. Some legacy event sources
+# inject Rich tags meant for the one-shot CLI; the Textual timeline renders
+# these payloads as plain text, so the tags would otherwise leak through.
 _RICH_TAG_RE = re.compile(r"\[/?[a-zA-Z][a-zA-Z0-9 _#\-/]*\]")
 
 
@@ -58,8 +50,9 @@ def _strip_rich_markup(text: Any) -> str:
 def _infer_error_hint(category: str, message: str) -> Optional[str]:
     """Best-effort canonical hint for an error message.
 
-    Kept server-side so every consumer (Ink UI, logs, CLI fallbacks) sees the
-    same hint. The UI no longer tries to re-derive hints from message text.
+    Kept server-side so every consumer (Textual UI, logs, CLI fallbacks)
+    sees the same hint. The UI no longer tries to re-derive hints from
+    message text.
     """
     lower = (message or "").lower()
     if category == "provider":
@@ -235,29 +228,31 @@ def _agent_info_dict(info: AgentInfo) -> Dict[str, Any]:
 
 
 class IPCServer:
-    """Drives the NDJSON transport for the Ink UI.
+    """In-process controller for the Textual chat UI.
 
     Usage:
 
-        server = IPCServer(agent=agent)
-        await server.run()   # returns when the UI sends {"cmd": "exit"}
-                             # or stdin closes
+        server = IPCServer(agent=agent, on_event=ui_callback)
+        await server.start()   # returns when ``request_shutdown`` is called
     """
 
     def __init__(
         self,
         agent,
         *,
-        stdin: Optional[asyncio.StreamReader] = None,
+        on_event: Callable[[str, Dict[str, Any]], None],
     ):
         self.agent = agent
-        self._stdin_reader = stdin
-        self._send_lock = threading.Lock()
+        self._on_event = on_event
         self._turn_lock = asyncio.Lock()
         self._exit = asyncio.Event()
         self._approval_waiters: Dict[str, asyncio.Future] = {}
         self._pending_tasks: set[asyncio.Task] = set()
         self._said_goodbye = False
+        # Captured at start() so command-enqueue calls from other threads
+        # (the Textual UI runs on a different thread than the agent loop)
+        # can schedule work on the agent's running loop.
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
 
         # Per-agent-id timestamp (ms) of the last forwarded ``agent_update``.
         # The tracker fires high-frequency token/cost ticks; we coalesce them
@@ -281,23 +276,16 @@ class IPCServer:
         # Bind event_emitter listeners once.
         self._wire_event_listeners()
 
-    # -- outbound (stdout) ----------------------------------------------------
-
-    def _write(self, payload: Dict[str, Any]) -> None:
-        """Write one NDJSON line synchronously. Safe to call from any context."""
-        with self._send_lock:
-            try:
-                sys.__stdout__.write(json.dumps(payload, default=str) + "\n")
-                sys.__stdout__.flush()
-            except (BrokenPipeError, ValueError):
-                # UI closed the pipe; stop emitting.
-                self._exit.set()
+    # -- outbound -------------------------------------------------------------
 
     def emit(self, event: str, **data: Any) -> None:
-        """Emit one protocol event, honoring the current verbosity filter."""
+        """Emit one event to the UI, honoring the current verbosity filter."""
         if not self._should_emit_event(event, data):
             return
-        self._write({"v": PROTOCOL_VERSION, "kind": "event", "event": event, **data})
+        try:
+            self._on_event(event, dict(data))
+        except Exception:
+            logger.exception("on_event callback failed for %s", event)
 
     def _should_emit_event(self, event: str, data: Dict[str, Any]) -> bool:
         """Decide whether ``event`` survives the current verbosity filter.
@@ -405,7 +393,6 @@ class IPCServer:
             provider=self.agent.provider.__class__.__name__,
             cwd=os.getcwd(),
             version=getattr(self.agent, "version", "0.1.0"),
-            protocolVersion=PROTOCOL_VERSION,
             contextLimit=getattr(config, "context_window", 200000),
             budgetLimit=getattr(config, "budget_limit", 0.0) or 0.0,
             autoApprove=bool(getattr(self.agent, "auto_approve", False)),
@@ -449,7 +436,7 @@ class IPCServer:
         _bind("tool_result", self._on_tool_result)
         _bind("tool_error", self._emit_tool_error)
         # `agent_status` is high-frequency narration ("Reading file…",
-        # "Calling tool…"). The Ink UI shows the same information via
+        # "Calling tool…"). The Textual UI shows the same information via
         # tool_call / agent_update events, so we no longer forward it as
         # a persistent toast. Re-enabled only when verbose flag flips.
         _bind(
@@ -556,69 +543,7 @@ class IPCServer:
             payload["elapsed"] = elapsed
         self.emit("progress", **payload)
 
-    # -- inbound (stdin) ------------------------------------------------------
-
-    async def _read_commands(self) -> None:
-        """Read NDJSON commands from stdin and dispatch them."""
-        loop = asyncio.get_running_loop()
-
-        # Bump the per-line limit from the 64 KB default so pasted prompts
-        # or long tool_approval_resp frames don't trip LimitOverrunError.
-        reader = asyncio.StreamReader(limit=4 * 1024 * 1024)
-        protocol = asyncio.StreamReaderProtocol(reader)
-        try:
-            await loop.connect_read_pipe(lambda: protocol, sys.stdin)
-        except Exception as e:
-            logger.error("Failed to hook stdin: %s", e)
-            self._exit.set()
-            return
-
-        # Commands must dispatch concurrently: ``send_message`` holds the
-        # coroutine open for the entire agentic turn (including awaiting
-        # ``tool_approval_resp``), so if we awaited dispatch serially the
-        # approval reply would never be read and the turn would deadlock.
-        while not self._exit.is_set():
-            try:
-                line = await reader.readline()
-            except Exception as e:
-                if type(e).__name__ == "LimitOverrunError":
-                    consumed = getattr(e, "consumed", 0)
-                    try:
-                        await reader.readline()
-                    except Exception:
-                        pass
-                    logger.warning("stdin: oversized NDJSON frame (%s bytes); dropped.", consumed)
-                    self.emit(
-                        "error",
-                        category="protocol",
-                        message=f"Oversized NDJSON frame ({consumed} bytes) was dropped.",
-                    )
-                    continue
-                logger.error("stdin read failed: %s", e)
-                break
-            if not line:
-                # EOF — the UI closed the pipe; shut down gracefully.
-                self._exit.set()
-                break
-            decoded = line.decode("utf-8", errors="replace").strip()
-            if not decoded:
-                continue
-            try:
-                msg = json.loads(decoded)
-            except json.JSONDecodeError as e:
-                preview = decoded[:120] + ("…" if len(decoded) > 120 else "")
-                logger.warning("stdin: malformed NDJSON frame (%s): %s", e, preview)
-                self.emit(
-                    "error",
-                    category="protocol",
-                    message=f"Malformed NDJSON frame ignored: {e.msg} at col {e.colno}",
-                )
-                continue
-            if msg.get("kind") != "cmd":
-                continue
-            task = asyncio.create_task(self._dispatch(msg))
-            self._pending_tasks.add(task)
-            task.add_done_callback(self._pending_tasks.discard)
+    # -- inbound --------------------------------------------------------------
 
     async def _dispatch(self, msg: Dict[str, Any]) -> None:
         cmd = msg.get("cmd")
@@ -634,13 +559,67 @@ class IPCServer:
 
     # -- main loop ------------------------------------------------------------
 
-    async def run(self) -> None:
-        """Run until the UI exits or stdin closes."""
+    def enqueue_command(self, cmd: str, *, cmd_id: Optional[str] = None, **fields: Any) -> None:
+        """Schedule a UI command for async dispatch.
+
+        Safe to call from any thread. The agent runs in a worker thread with
+        its own event loop; callers from the Textual UI thread reach the
+        loop via :py:meth:`asyncio.AbstractEventLoop.call_soon_threadsafe`.
+        """
+        msg: Dict[str, Any] = {
+            "kind": "cmd",
+            "cmd": cmd,
+            "id": cmd_id or str(uuid.uuid4()),
+        }
+        msg.update(fields)
+
+        def _schedule() -> None:
+            task = asyncio.create_task(self._dispatch(msg))
+            self._pending_tasks.add(task)
+            task.add_done_callback(self._pending_tasks.discard)
+
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            # No loop yet (very early bootstrap) — try the current thread.
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                logger.warning("Dropping command %s: no event loop available", cmd)
+                return
+            _schedule()
+            return
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is loop:
+            _schedule()
+        else:
+            loop.call_soon_threadsafe(_schedule)
+
+    async def submit_command(
+        self, cmd: str, *, cmd_id: Optional[str] = None, **fields: Any
+    ) -> None:
+        """Dispatch one command and await completion."""
+        msg: Dict[str, Any] = {
+            "kind": "cmd",
+            "cmd": cmd,
+            "id": cmd_id or str(uuid.uuid4()),
+        }
+        msg.update(fields)
+        await self._dispatch(msg)
+
+    def request_shutdown(self, *, reason: str = "user") -> None:
+        """Signal the UI to exit."""
+        if not self._said_goodbye:
+            self.emit("goodbye", reason=reason)
+            self._said_goodbye = True
+        self._exit.set()
+
+    async def _bootstrap_session(self) -> None:
+        """Emit hello/ready and seed the agent tree."""
         self.emit_hello()
         self.emit_ready()
-        # Flush any agents already in the tracker (e.g. the idle root entry
-        # seeded by entry.py) so the Agents panel is populated from boot
-        # rather than only after the first turn registers a new agent.
         for info in agent_tracker.get_all():
             self.emit(
                 "agent",
@@ -648,28 +627,26 @@ class IPCServer:
                 info=_agent_info_dict(info),
                 parentId=info.parent_id,
             )
-        reader_task = asyncio.create_task(self._read_commands())
+
+    async def _shutdown(self) -> None:
+        for task in list(self._pending_tasks):
+            task.cancel()
+        if self._pending_tasks:
+            await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+        self._resolve_approval_waiters_on_shutdown()
+        if not self._said_goodbye:
+            self.emit("goodbye")
+            self._said_goodbye = True
+        self._unwire_event_listeners()
+
+    async def start(self) -> None:
+        """Bootstrap the session and wait until ``request_shutdown`` is called."""
+        self._loop = asyncio.get_running_loop()
+        await self._bootstrap_session()
         try:
             await self._exit.wait()
         finally:
-            reader_task.cancel()
-            # Cancel any in-flight command-dispatch tasks.
-            for task in list(self._pending_tasks):
-                task.cancel()
-            if self._pending_tasks:
-                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
-            self._resolve_approval_waiters_on_shutdown()
-            try:
-                await reader_task
-            except (asyncio.CancelledError, Exception):
-                pass
-            if not self._said_goodbye:
-                self.emit("goodbye")
-                self._said_goodbye = True
-            # Detach event_emitter listeners so a subsequent IPCServer
-            # instance (e.g. in tests) doesn't receive duplicate events
-            # from this one's lingering closures.
-            self._unwire_event_listeners()
+            await self._shutdown()
 
     def _resolve_approval_waiters_on_shutdown(self) -> None:
         """Resolve any pending tool-approval futures when the server shuts down."""
@@ -1258,19 +1235,6 @@ async def _cmd_cancel_agent(server: IPCServer, msg: Dict[str, Any]) -> None:
     )
 
 
-async def _cmd_handshake(server: IPCServer, msg: Dict[str, Any]) -> None:
-    """Handle UI handshake — negotiate protocol version."""
-    payload = msg.get("payload") or {}
-    ui_version = payload.get("protocolVersion", 1)
-    if ui_version != PROTOCOL_VERSION:
-        server.emit(
-            "warning",
-            message=f"Protocol version mismatch: agent v{PROTOCOL_VERSION}, UI v{ui_version}. "
-            f"Some features may not work correctly.",
-        )
-    server._handshake_done = True
-
-
 _COMMAND_HANDLERS: Dict[str, Callable[[IPCServer, Dict[str, Any]], Awaitable[None]]] = {
     "send_message": _cmd_send_message,
     "cancel": _cmd_cancel,
@@ -1292,5 +1256,4 @@ _COMMAND_HANDLERS: Dict[str, Callable[[IPCServer, Dict[str, Any]], Awaitable[Non
     "set_default_model": _cmd_set_default_model,
     "set_verbosity": _cmd_set_verbosity,
     "exit": _cmd_exit,
-    "handshake": _cmd_handshake,
 }

@@ -44,7 +44,7 @@ _HEADERS_FIREFOX = {
 # Used as a UA fallback when a CDN bot-detector (e.g. Cloudflare) blocks the
 # Chrome UA. Being honest with the UA name is more likely to be allowlisted
 # than rotating through more browser strings.
-_TRANSPARENT_UA = "coderai/0.2.0"
+_TRANSPARENT_UA = "coderai/0.3.0"
 
 # Hard cap on response bodies returned through ``_safe_request``. Pages above
 # this are reported as oversize without being read into memory in full when a

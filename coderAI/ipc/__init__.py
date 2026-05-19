@@ -1,8 +1,9 @@
-"""IPC bridge for the TypeScript Ink UI.
+"""In-process controller for the Textual chat UI.
 
-The Ink UI speaks NDJSON over stdio (see `ui/PROTOCOL.md`). The classes in
-this package translate between the existing `event_emitter` + `agent_tracker`
-world and that wire protocol so the Ink UI can be developed in isolation.
+``IPCServer`` (despite the legacy name) is no longer an inter-process
+boundary — it lives inside the Textual app and translates between the
+``event_emitter`` / ``agent_tracker`` world and the timeline state held
+by ``coderAI/tui/listeners.py``.
 """
 
 from .jsonrpc_server import IPCServer  # noqa: F401

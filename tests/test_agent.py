@@ -396,7 +396,7 @@ class TestSessionResumeAndCompaction:
     """Tests for resumed-session model activation and durable compaction."""
 
     def test_activate_resumed_session_model_restores_saved_model(self):
-        from coderAI.ipc.entry import _activate_resumed_session_model
+        from coderAI.tui.session_setup import _activate_resumed_session_model
 
         restored_provider = MagicMock()
         session = MagicMock(model="claude-sonnet-4-6")
@@ -417,7 +417,7 @@ class TestSessionResumeAndCompaction:
         agent._configure_delegate_tool_context.assert_called_once()
 
     def test_activate_resumed_session_model_honors_explicit_override(self):
-        from coderAI.ipc.entry import _activate_resumed_session_model
+        from coderAI.tui.session_setup import _activate_resumed_session_model
 
         override_provider = MagicMock()
         session = MagicMock(model="claude-sonnet-4-6")

@@ -9,15 +9,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 make dev          # or: pip install -e .
 
 # Run
-coderAI chat      # launches the Ink UI (downloads a prebuilt binary if missing)
+coderAI chat      # launches the Textual TUI (pure Python)
 make run          # alias for coderAI chat
-
-# Ink UI (TypeScript + React) — only needed when contributing to the UI
-make ui-install       # bun install
-make ui-dev           # bun run src/cli.tsx (hot-reload)
-make ui-compile       # single-platform standalone binary -> ui/dist/coderai-ui
-make ui-compile TARGET=bun-linux-x64   # cross-compile
-make ui-compile-all   # all supported platforms
 
 # Test
 make test         # or: pytest
@@ -37,16 +30,17 @@ make dist         # build Python distribution
 
 ## Architecture
 
-CoderAI is an AI coding agent CLI with a split-process UI: the Python
-package implements the agent and one-shot utility commands, and the
-interactive chat UI is a TypeScript + React (Ink) app compiled to a
-standalone per-platform binary. The two halves talk over NDJSON on stdio.
+CoderAI is a pure-Python AI coding agent CLI. The Click entry point in
+`coderAI/cli.py` dispatches one-shot subcommands (config, history, models,
+status, doctor, …) using Rich helpers in `coderAI/ui/`. `coderAI chat`
+launches an in-process Textual TUI (`coderAI/tui/`) that drives the
+agent loop and renders the streaming timeline.
 
 The orchestration is split across four modules so each concern is independently testable:
 
 - `coderAI/agent.py` — `Agent` class: lifecycle, persona loading, provider wiring, session state, sub-agent spawning.
 - `coderAI/agent_loop.py` — the per-turn execution loop (retry/backoff for transient LLM errors, JSON-arg coercion, iteration cap). Retry/error constants (`MAX_RETRIES_PER_ITERATION=3`, `MAX_CONSECUTIVE_ERRORS=5`, transient-error regex for 429/5xx) live in `coderAI/error_policy.py` and are imported from there.
-- `coderAI/tool_executor.py` — `ToolExecutor`: confirmation UX for gated tools. Routes through the IPC server when the Ink UI is attached, otherwise prompts in the terminal.
+- `coderAI/tool_executor.py` — `ToolExecutor`: confirmation UX for gated tools. Routes through the IPC server when the Textual UI is attached, otherwise prompts in the terminal.
 - `coderAI/tool_routing.py` — dispatches a tool-call `function.name` to either `ToolRegistry` or an MCP server. MCP functions use the wire format `mcp__<server>__<tool>` (server must not contain `__`; tool may).
 - `coderAI/context_controller.py` — token estimation, truncation, summarization. Reserves `RESPONSE_TOKEN_RESERVE=1024` and `TOOL_OVERHEAD_TOKENS=512` when budgeting.
 
@@ -60,29 +54,26 @@ Per-turn flow (`Agent.process_message()` → `agent_loop`):
 
 **Runtime shape of `coderAI chat`:**
 
-1. `coderAI/cli.py` → `chat()` calls `binary_manager.ensure_binary()` to
-   locate (or download + verify) the Ink binary.
-2. The Ink binary spawns `python -m coderAI.ipc.entry` as a subprocess.
-3. `coderAI/ipc/entry.py` creates an `Agent`, swaps its streaming handler
-   for `IPCStreamingHandler`, and starts `IPCServer.run()`.
-4. `IPCServer` subscribes to `event_emitter` and forwards events as
-   NDJSON on stdout; commands arrive as NDJSON on stdin.
-5. The Ink components in `ui/src/` render events and send commands via
-   `ui/src/rpc/agentClient.ts`.
+1. `coderAI/cli.py` → `chat()` calls `coderAI.tui.run_chat_app(...)`.
+2. The Textual app (`coderAI/tui/app.py::CoderAIApp`) creates an `Agent`
+   and an `IPCServer`, passing the app's `on_event` callback so events
+   land on the UI thread.
+3. `IPCStreamingHandler` forwards LLM token deltas as phased `turn` events.
+4. `IPCServer` subscribes to `event_emitter` and dispatches slash commands
+   queued by `coderAI/tui/slash.py`.
 
 **Key components:**
 - `coderAI/agent.py` — Core orchestrator (agentic loop, context management, sub-agent spawning, session lifecycle). Uses whatever `streaming_handler` the embedding process sets; defaults to `None` (non-streaming fallback).
-- `coderAI/cli.py` — Click CLI. `chat` launches the Ink binary; the remaining commands (`config`, `history`, `models`, `status`, `cost`, `tasks`, `setup`, `info`) still render with Rich.
-- `coderAI/binary_manager.py` — Resolves the Ink binary. Checks `$CODERAI_UI_BINARY`, then a local `ui/dist/coderai-ui` dev build, then a versioned cache at `~/.coderAI/bin/`, finally downloads from GitHub Releases with SHA256 verification.
-- `coderAI/ipc/jsonrpc_server.py` — NDJSON event/command bridge between the Python agent and the Ink UI. See [`ui/PROTOCOL.md`](ui/PROTOCOL.md).
-- `coderAI/ipc/streaming.py` — `IPCStreamingHandler`: mirrors the old Rich streaming-handler contract but emits `stream_delta` events over the bridge.
-- `coderAI/ipc/entry.py` — `python -m coderAI.ipc.entry` entry point invoked by the Ink binary. Honors `CODERAI_MODEL`, `CODERAI_RESUME`, `CODERAI_AUTO_APPROVE`.
+- `coderAI/cli.py` — Click CLI. `chat` launches the Textual TUI; other commands render with Rich.
+- `coderAI/tui/` — Textual interactive chat (`app.py`, `listeners.py` event reducer, `slash.py` slash routing, `state.py` session state, `session_setup.py` agent/controller bootstrap).
+- `coderAI/ipc/jsonrpc_server.py` — In-process controller: subscribes to `event_emitter`, forwards events to the UI via `on_event`, and dispatches slash commands back into the agent. See [`docs/CHAT_EVENTS.md`](docs/CHAT_EVENTS.md).
+- `coderAI/ipc/streaming.py` — `IPCStreamingHandler`: emits one phased `turn` event per assistant turn so the Textual timeline streams incrementally.
 - `coderAI/llm/` — LLM providers (openai, anthropic, groq, deepseek, lmstudio, ollama), all extending `base.LLMProvider`. Instantiation goes through `llm/factory.py::create_provider(model, config)` — do not construct providers directly from `agent.py`.
 - `coderAI/tools/` — 56+ tools extending `tools/base.Tool`. Registration is automatic via `tools/discovery.py::discover_tools()`, which walks the `coderAI.tools` package and instantiates every `Tool` subclass whose `__init__` takes no required args. Tools requiring constructor args (e.g. `ManageContextTool`, which needs the `Agent`) are registered manually in `Agent`.
 - `coderAI/safeguards.py` — reusable validators that run before dangerous actions: interactive-command detection (blocks REPLs invoked via non-interactive pipes), project-directory validation, git-scope guards (prevent operations leaking to a parent repo), staging blocklist for junk files (`.DS_Store`, `__pycache__`, `.coderAI/`, …).
 - `coderAI/project_layout.py` — `find_dot_coderai_subdir()` resolves `.coderAI/<subdir>` across project root, cwd, and the package dir (for dev installs). Use this instead of hardcoding `.coderAI/` paths.
-- `coderAI/ipc/chat_reference.py` — plain-text renderings of `models`, `cost`, `status`, `config show`, `info`, `tasks list` for the Ink UI slash commands (keeps Ink free of Rich dependencies).
-- `coderAI/ui/` — Rich helpers for one-shot CLI commands only (`display.py`). The interactive Rich chat loop was removed when Ink became the sole interactive UI.
+- `coderAI/ipc/chat_reference.py` — plain-text reference output for `/show <topic>` slash commands (`/show models`, `/show cost`, `/show status`, `/show config`, `/show info`, `/show tasks`).
+- `coderAI/ui/` — Rich helpers for one-shot CLI subcommands (`display.py`). Not used by the Textual chat UI.
 - `coderAI/config.py` — Pydantic-based `ConfigManager` reading from `~/.coderAI/config.json` then env vars.
 - `coderAI/agents.py` — `AgentPersona` loader for `.coderAI/agents/*.md` files with YAML frontmatter.
 - `coderAI/agent_tracker.py` — Singleton `AgentTracker` for observability (status, tokens, cost, cancellation).
@@ -96,9 +87,8 @@ Per-turn flow (`Agent.process_message()` → `agent_loop`):
 - `coderAI/code_chunker.py` — Splits source files into semantic chunks (AST-aware for Python, regex for JS/TS, sliding window fallback).
 - `coderAI/code_indexer.py` — ChromaDB-backed semantic code index with incremental updates via file-hash manifests.
 - `coderAI/embeddings/` — Embedding provider abstraction (OpenAI `text-embedding-3-small` by default).
-- `ui/` — TypeScript + Ink UI source. `ui/src/App.tsx` is the root component; `ui/src/rpc/agentClient.ts` spawns the Python agent; `ui/scripts/compile.ts` drives `bun build --compile` honoring `BUN_TARGET` / `PLATFORM` env vars.
 - `.github/workflows/ci.yml` — On push/PR: matrix of (ubuntu-latest, macos-latest) × (Python 3.10, 3.12). Installs `pip install -e ".[dev]"`, then runs `ruff check coderAI/`, `pytest -q`, and a `coderAI --version` smoke test. `make test` mirrors this (pytest + `coderAI --version`).
-- `.github/workflows/release.yml` — Cross-compiles the Ink binary for darwin-arm64/x64, linux-x64/arm64, windows-x64 on tagged releases, publishes GitHub Release assets with SHA256 sidecars, and uploads the pure-Python wheel to PyPI.
+- `.github/workflows/release.yml` — On tagged releases (`v*`), builds the Python wheel + sdist with `python -m build`, attaches them to the GitHub Release, and publishes the wheel to PyPI via trusted publishing.
 
 **Tool categories** (`coderAI/tools/`):
 - `filesystem.py` — read_file, write_file, search_replace, apply_diff, list_directory, glob_search, **move_file, copy_file, delete_file, create_directory**
@@ -130,12 +120,13 @@ Per-turn flow (`Agent.process_message()` → `agent_loop`):
 
 ## Interactive chat commands
 
-Inside `coderAI chat` (the Ink UI), slash commands are available:
+Inside `coderAI chat` (the Textual TUI), slash commands are available:
 `/help`, `/model <name>`, `/clear`, `/compact`, `/reasoning`, `/yolo`, `/verbose`, `/agents`, `/show`, `/think`, `/exit`.
-These are dispatched by the Ink frontend and map to commands in the
-NDJSON protocol at [`ui/PROTOCOL.md`](ui/PROTOCOL.md). Read-only reference output
-(`/models`, `/cost`, `/status`, `/info`, `/tasks`, `/config show`) is rendered
-by `coderAI/ipc/chat_reference.py` so Ink never imports Rich.
+They are routed by `coderAI/tui/slash.py` to the in-process `IPCServer`,
+which dispatches them to the agent. Reference output (`/show models`,
+`/show cost`, `/show status`, `/show info`, `/show tasks`, `/show config`)
+is rendered as plain text by `coderAI/ipc/chat_reference.py`. The full
+event catalog lives in [`docs/CHAT_EVENTS.md`](docs/CHAT_EVENTS.md).
 
 ## Model Aliases
 

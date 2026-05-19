@@ -1,13 +1,9 @@
-"""Tests for the Ink IPC streaming handler.
+"""Tests for the streaming handler that bridges LLM deltas into UI events.
 
-The Rich-based ``StreamingHandler`` was removed when the interactive UI
-migrated to Ink; ``IPCStreamingHandler`` replaces it and honors the same
-``handle_stream`` contract, so the same shape of tests applies.
-
-The streaming handler emits a single phased ``turn`` event:
+``IPCStreamingHandler`` emits a single phased ``turn`` event:
 ``("turn", phase="start" | "reasoning" | "text" | "end", delta?)``. These
 helpers extract the text/reasoning streams in that shape so the assertions
-read like the old ``stream_delta`` ones.
+read like the older ``stream_delta`` ones.
 """
 
 import asyncio

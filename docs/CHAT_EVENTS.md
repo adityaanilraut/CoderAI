@@ -1,29 +1,27 @@
-# CoderAI UI ↔ Agent IPC Protocol
+# CoderAI chat event reference
 
-**Transport:** NDJSON over stdio. Every line is exactly one JSON object
-terminated by `\n`. The Python agent writes events to `stdout`; the Ink UI
-writes commands to the agent's `stdin`. `stderr` is reserved for the Python
-logger and is captured by the UI for crash reports only.
-
-**Version:** `v=2`. Every message carries `{"v": 2, "kind": "event" | "cmd"}`.
-
-The canonical TypeScript shapes live in
-[`ui/src/protocol.ts`](src/protocol.ts); the Python emitter is
-[`coderAI/ipc/jsonrpc_server.py`](../coderAI/ipc/jsonrpc_server.py). When the
-two disagree the code wins — please update this file in the same PR.
+**Transport:** In-process callbacks from
+[`coderAI/ipc/jsonrpc_server.py`](../coderAI/ipc/jsonrpc_server.py)
+(`IPCServer`) to the Textual UI in
+[`coderAI/tui/`](../coderAI/tui/).
+The Textual `CoderAIApp` constructs an `IPCServer` and passes an
+`on_event(name, data)` callback; the controller forwards `event_emitter`
+notifications and per-turn streaming through that callback. Event names
+are declared in
+[`coderAI/tui/protocol.py`](../coderAI/tui/protocol.py).
 
 ---
 
 ## Events (Agent → UI)
 
-The protocol is intentionally narrow: there is one phased event for each of
-the long-running things (`turn`, `tool`, `agent`) instead of a `*_start` /
-`*_end` pair. New phases can be added without breaking older clients because
-unknown phases are ignored.
+The protocol is intentionally narrow: there is one phased event for each
+of the long-running things (`turn`, `tool`, `agent`) instead of a
+`*_start` / `*_end` pair. New phases can be added without breaking older
+consumers because unknown phases are ignored.
 
 | event           | payload                                                                                       | notes                                                                                |
 | --------------- | --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| `hello`         | `{model, provider, cwd, version, protocolVersion, contextLimit, budgetLimit, autoApprove, reasoning}` | First message after handshake                                                        |
+| `hello`         | `{model, provider, cwd, version, contextLimit, budgetLimit, autoApprove, reasoning}`          | First message emitted from `start()`                                                 |
 | `ready`         | `{}`                                                                                          | Agent is idle and accepting `send_message`                                           |
 | `turn`          | `{phase: "start" \| "reasoning" \| "text" \| "end", delta?, elapsedMs?, reasoningActive?}`     | One streamed assistant turn. `delta` carries incremental tokens for `reasoning`/`text`. `reasoningActive` hints whether extended thinking is in flight. |
 | `tool`          | `{id, phase: "queued" \| "awaiting_approval" \| "running" \| "ok" \| "err" \| "cancelled", payload}` | Lifecycle of a single tool call. `payload` shape depends on phase (see below). `queued` is reserved for future use — Python currently emits `running` first. |
@@ -38,7 +36,7 @@ unknown phases are ignored.
 | `info`          | `{message}`                                                                                   | Long-form reference output (`/show <topic>`, `/plan`) and short notices             |
 | `warning`       | `{message}`                                                                                   | Non-fatal user-facing problem (unknown command, bad input)                           |
 | `success`       | `{message}`                                                                                   | Positive confirmation toast (state change, async ack)                                |
-| `error`         | `{category: "provider" \| "tool" \| "internal" \| "protocol", message, hint?, details?}`         | Renders ErrorPanel, not a traceback dump                                             |
+| `error`         | `{category: "provider" \| "tool" \| "internal" \| "protocol", message, hint?, details?}`         | Renders in the timeline as a styled error row, not a traceback dump                  |
 | `progress`      | `{label, current?, total?, progressKind: "tokens" \| "files" \| "steps"}`                       | Tool progress updates forwarded from the Python executor                             |
 | `goodbye`       | `{reason?}`                                                                                   | Agent is shutting down                                                               |
 
@@ -79,11 +77,15 @@ unknown phases are ignored.
 
 ## Commands (UI → Agent)
 
-| cmd                    | payload                                                | notes                                                                  |
+UI intent flows through `IPCServer.enqueue_command(cmd, **fields)` or
+`submit_command(...)`. Each command is dispatched on the asyncio loop;
+`send_message` is serialised by the per-server `_turn_lock` so two user
+turns can't interleave.
+
+| cmd                    | fields                                                 | notes                                                                  |
 | ---------------------- | ------------------------------------------------------ | ---------------------------------------------------------------------- |
-| `handshake`            | `{payload: {protocolVersion}}`                         | Optional version negotiation; the server warns on mismatch             |
 | `send_message`         | `{text}`                                               | User input (raw or slash-prefixed)                                     |
-| `cancel`               | `{agentId?}`                                           | Cancel one agent or all if omitted (Esc key). `agentId` is top-level.  |
+| `cancel`               | `{agentId?}`                                           | Cancel one agent or all if omitted (Esc key)                           |
 | `cancel_agent`         | `{payload: {agentId}}`                                 | Cancel a specific sub-agent by tracker id                              |
 | `tool_approval_resp`   | `{toolId, approve}`                                    | Responds to a `tool` `awaiting_approval` (id matches the tool id)      |
 | `set_model`            | `{model}`                                              |                                                                        |
@@ -103,30 +105,9 @@ unknown phases are ignored.
 | `reference`            | `{topic}`                                              | Long-form help (`version`, `models`, `cost`, `system`, `config`, …)    |
 | `exit`                 | `{}`                                                   | Graceful shutdown                                                      |
 
-All commands carry an `id` for correlation.
-
 ### Verbosity filter
 
 `normal` (default) drops `success` toasts at the source; `quiet` also drops
 single-line `info`/`warning`; `verbose` passes everything. Multi-line `info`
 (reference output) always passes regardless of level. Structural events
 (`turn`, `tool`, `agent`, `status`, etc.) are never filtered.
-
----
-
-## Example transcript
-
-```jsonl
-{"v":2,"kind":"cmd","cmd":"handshake","id":"c0","payload":{"protocolVersion":2}}
-{"v":2,"kind":"event","event":"hello","model":"claude-sonnet-4-6","provider":"AnthropicProvider","cwd":"/Users/a/proj","version":"0.1.0","protocolVersion":2,"contextLimit":200000,"budgetLimit":5.0,"autoApprove":false,"reasoning":"medium"}
-{"v":2,"kind":"event","event":"ready"}
-{"v":2,"kind":"cmd","cmd":"send_message","id":"c1","text":"rename getCwd to getCurrentWorkingDirectory"}
-{"v":2,"kind":"event","event":"turn","phase":"start","reasoningActive":false}
-{"v":2,"kind":"event","event":"turn","phase":"text","delta":"I'll search the codebase…"}
-{"v":2,"kind":"event","event":"tool","id":"t1","phase":"running","payload":{"name":"grep","category":"search","args":{"pattern":"getCwd"},"risk":"low"}}
-{"v":2,"kind":"event","event":"tool","id":"t1","phase":"ok","payload":{"preview":"15 matches in 8 files","fullAvailable":true}}
-{"v":2,"kind":"event","event":"file_diff","path":"src/a.ts","diff":"--- a/src/a.ts\n+++ b/src/a.ts\n@@ ... "}
-{"v":2,"kind":"event","event":"turn","phase":"end"}
-{"v":2,"kind":"event","event":"status","ctxUsed":12450,"ctxLimit":200000,"costUsd":0.021,"budgetUsd":5.0,"promptTokens":11200,"completionTokens":1250,"totalTokens":12450}
-{"v":2,"kind":"event","event":"ready"}
-```

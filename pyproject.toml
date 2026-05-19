@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "coderAI"
-version = "0.2.0"
-description = "Intelligent coding agent CLI with a React-powered terminal UI (Ink) and MCP tools"
+version = "0.3.0"
+description = "Intelligent coding agent CLI with a Textual terminal UI and MCP tools"
 readme = "README.md"
 requires-python = ">=3.9"
 authors = [
@@ -22,6 +22,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
+    "textual>=0.80.0",
     "rich>=13.7.0",
     "click>=8.1.7",
     "openai>=1.10.0",
@@ -70,7 +71,6 @@ target-version = "py39"
 [tool.ruff.lint.per-file-ignores]
 # load_dotenv() must run before package imports read env vars
 "coderAI/cli.py" = ["E402"]
-"coderAI/ipc/entry.py" = ["E402"]
 
 [tool.ruff.format]
 quote-style = "double"

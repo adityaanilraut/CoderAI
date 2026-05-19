@@ -23,7 +23,7 @@ class Tool(ABC):
     # Per-tool timeout in seconds. None = use ToolExecutor's default.
     timeout: Optional[float] = None
 
-    # UI grouping. Used by the Ink UI to categorize tools (filesystem,
+    # UI grouping. Used by the Textual UI to categorize tools (filesystem,
     # search, git, terminal, web, memory, agent, mcp, other). Subclasses
     # override to set their category; unset means "other".
     category: str = "other"

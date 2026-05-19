@@ -21,7 +21,7 @@ CoderAI is a Python CLI tool that pairs an LLM with **56+ built-in tools** to re
 | **56+ Tools** | File I/O, Git, terminal, web, HTTP, memory, process management, semantic search, and more |
 | **Multi-Agent System** | Spawn isolated sub-agents for code review, security audit, research, etc. |
 | **Planning & Tasks** | Structured plan-and-execute workflows with persistent task tracking |
-| **Ink interactive UI** | `coderAI chat` uses a React + [Ink](https://github.com/vadimdemedes/ink) terminal UI; NDJSON IPC to the Python agent ([`ui/PROTOCOL.md`](ui/PROTOCOL.md)) |
+| **Textual interactive UI** | `coderAI chat` uses a pure-Python [Textual](https://textual.textualize.io/) TUI ([`docs/CHAT_EVENTS.md`](docs/CHAT_EVENTS.md)) |
 | **Rich CLI output** | Non-interactive commands (`status`, `config`, `history`, …) use [Rich](https://github.com/Textualize/rich) for tables and formatting |
 | **Semantic Search** | Natural-language code search via embeddings (OpenAI + ChromaDB) |
 | **Context Management** | Pin files, auto-detect project type, smart context compaction |
@@ -51,7 +51,7 @@ coderAI setup
 coderAI doctor
 
 # 4. Start chatting
-coderAI                    # default: opens Ink chat UI
+coderAI                    # default: opens Textual chat UI
 coderAI chat -m opus       # pick a model/alias
 coderAI chat --resume ID   # resume a saved session
 ```
@@ -93,24 +93,32 @@ See [COMMANDS.md](COMMANDS.md) for the full CLI reference.
 ┌──────────────────────────────────────────────────────────────────┐
 │                          CLI Layer                                │
 │           coderAI/cli.py  —  Click commands & entry points       │
+│                                                                   │
+│   one-shot subcommands ──► coderAI/ui (Rich helpers)              │
+│   `coderAI chat`        ──► coderAI/tui (Textual TUI)             │
 └──────────────────────────┬───────────────────────────────────────┘
                            │
 ┌──────────────────────────┴───────────────────────────────────────┐
 │                         Agent Layer                               │
 │                       coderAI/agent.py                            │
-│  • Agentic loop (process_message → LLM → tools → LLM → ...)     │
-│  • Context window management with auto-summarization             │
-│  • Retry logic with exponential backoff                          │
-│  • Pre/Post tool hooks                                           │
-│  • Cooperative cancellation via AgentTracker                     │
-└───────┬──────────────┬───────────────┬──────────────┬────────────┘
-        │              │               │              │
-   ┌────┴────┐   ┌─────┴──────┐  ┌────┴─────┐  ┌────┴────────┐
-   │   LLM   │   │   Tools    │  │Ink UI +  │  │  Sub-Agent  │
-   │Providers│   │  Registry  │  │IPC/Rich  │  │  Delegation │
-   │ (6)     │   │  (56+)     │  │          │  │  (Isolated) │
-   └─────────┘   └────────────┘  └──────────┘  └─────────────┘
+│  • Agentic loop (process_message → LLM → tools → LLM → ...)      │
+│  • Context window management with auto-summarization              │
+│  • Retry logic with exponential backoff                           │
+│  • Pre/Post tool hooks                                            │
+│  • Cooperative cancellation via AgentTracker                      │
+└───────┬──────────────┬──────────────────┬────────────────────────┘
+        │              │                  │
+   ┌────┴────┐   ┌─────┴──────┐   ┌──────┴──────┐
+   │   LLM   │   │   Tools    │   │  Sub-Agent  │
+   │Providers│   │  Registry  │   │  Delegation │
+   │ (6)     │   │  (56+)     │   │  (Isolated) │
+   └─────────┘   └────────────┘   └─────────────┘
 ```
+
+`coderAI/ipc/` is an in-process controller used by the Textual TUI: it
+subscribes to `event_emitter`, forwards events to the UI via an
+`on_event` callback, and dispatches slash commands back into the agent.
+See [`docs/CHAT_EVENTS.md`](docs/CHAT_EVENTS.md) for the event catalog.
 
 ---
 
@@ -153,10 +161,19 @@ CoderAI-main/
 │   │   ├── openai.py           #   OpenAI embeddings (text-embedding-3-small)
 │   │   └── factory.py          #   Create provider from config
 │   │
-│   ├── ipc/                    # ─── NDJSON bridge for Ink UI (stdio) ───
-│   │   ├── entry.py            #   python -m coderAI.ipc.entry (spawned by UI binary)
-│   │   ├── jsonrpc_server.py   #   Event/command protocol
-│   │   └── streaming.py        #   IPCStreamingHandler → phased turn events
+│   ├── tui/                    # ─── Textual interactive chat UI ───
+│   │   ├── app.py              #   CoderAIApp (Textual screens, key bindings)
+│   │   ├── listeners.py        #   EventReducer (agent events → timeline state)
+│   │   ├── slash.py            #   Slash-command routing
+│   │   ├── state.py            #   SessionState + AgentInfo dataclasses
+│   │   ├── session_setup.py    #   Agent + IPCServer bootstrap
+│   │   ├── help_menu.py        #   /help command catalog
+│   │   └── diff_render.py      #   Compact diff rendering
+│   │
+│   ├── ipc/                    # ─── In-process controller for the Textual UI ───
+│   │   ├── jsonrpc_server.py   #   IPCServer: event_emitter ↔ UI on_event ↔ slash commands
+│   │   ├── streaming.py        #   IPCStreamingHandler → phased turn events
+│   │   └── chat_reference.py   #   Plain-text reference output for /show
 │   │
 │   ├── llm/                    # ─── LLM Provider Backends ───
 │   │   ├── base.py             #   Abstract LLMProvider interface
@@ -196,9 +213,8 @@ CoderAI-main/
 │   └── ui/                     # ─── Rich helpers (one-shot CLI only) ───
 │       └── display.py          #   Tables, markdown, panels for config/history/status
 │
-├── ui/                         # ─── Ink + React interactive chat (TypeScript) ───
-│   ├── src/                    #   App, components, agent RPC client
-│   └── PROTOCOL.md             #   NDJSON event/command schema
+├── docs/
+│   └── CHAT_EVENTS.md          # Textual UI event catalog (IPCServer ↔ TUI)
 │
 ├── .coderAI/                   # ─── Project Configuration ───
 │   ├── agents/                 #   17 agent personas (YAML frontmatter + markdown)

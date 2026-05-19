@@ -1,7 +1,8 @@
-"""Plain-text reference material for the Ink UI (slash commands / IPC).
+"""Plain-text reference material for ``/show <topic>`` slash commands.
 
 Mirrors ``coderAI models``, ``cost``, ``status``, ``config show``, ``info``, and
-``tasks list`` as strings suitable for multi-line toast output.
+``tasks list`` as strings suitable for multi-line toast output in the
+Textual UI.
 """
 
 from __future__ import annotations

@@ -35,7 +35,7 @@ coderAI --model gpt-5.4 chat
 
 ### 3. Ask in the chat UI
 
-There is no separate “one-shot” CLI argument: start the Ink UI, then type your question at the prompt:
+There is no separate “one-shot” CLI argument: launch the Textual TUI with `coderAI chat`, then type your question at the prompt:
 
 ```bash
 coderAI chat

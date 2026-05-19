@@ -8,7 +8,6 @@ from coderAI.ipc.jsonrpc_server import (
     IPCServer,
     _cmd_cancel,
     _cmd_clear_context,
-    _cmd_handshake,
     _cmd_send_message,
     _cmd_set_model,
 )
@@ -136,22 +135,6 @@ async def test_clear_context_invokes_session_reset() -> None:
     finally:
         agent_tracker._agents.clear()
         agent_tracker._agents.update(prev_agents)
-
-
-@pytest.mark.asyncio
-async def test_handshake_warns_on_protocol_mismatch() -> None:
-    server = SimpleNamespace(
-        emit=MagicMock(),
-        _handshake_done=False,
-    )
-
-    await _cmd_handshake(server, {"payload": {"protocolVersion": 1}})
-
-    server.emit.assert_called_once()
-    args, kwargs = server.emit.call_args
-    assert args == ("warning",)
-    assert "Protocol version mismatch" in kwargs["message"]
-    assert server._handshake_done is True
 
 
 @pytest.mark.asyncio

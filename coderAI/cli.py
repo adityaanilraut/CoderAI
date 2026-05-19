@@ -76,34 +76,16 @@ def cli(ctx, model, resume, continue_, version, verbose):
 )
 @click.option("--auto-approve", "--yolo", is_flag=True, help="Skip tool confirmation prompts")
 @click.option(
-    "--python", default=None, help="Python interpreter for the agent (defaults to current)"
-)
-@click.option(
     "--persona",
     "-p",
     default=None,
     help="Persona to load at startup (filename stem in .coderAI/agents/, e.g. 'code-reviewer'). "
     "Personas can also be switched mid-session with /persona <name>.",
 )
-def chat(model, resume, continue_, auto_approve, python, persona):
-    """Start an interactive chat session in the Ink UI.
+def chat(model, resume, continue_, auto_approve, persona):
+    """Start an interactive chat session (Textual TUI)."""
+    from .tui import run_chat_app
 
-    On first run, downloads the prebuilt UI binary for the current platform
-    from GitHub Releases (verified by SHA256) and caches it under
-    ``~/.coderAI/bin``. Set ``$CODERAI_UI_BINARY`` to bypass the download.
-    """
-    import os
-    import subprocess
-
-    from .binary_manager import (
-        BinaryUnavailableError,
-        UnsupportedPlatformError,
-        ensure_binary,
-    )
-
-    # Preflight: make sure the user has at least one provider configured
-    # before we spawn the UI. Otherwise the chat opens to a friendly
-    # status bar and then fails silently on the first send.
     cfg = config_manager.load()
     has_cloud_key = any(
         [
@@ -113,9 +95,6 @@ def chat(model, resume, continue_, auto_approve, python, persona):
             getattr(cfg, "deepseek_api_key", None),
         ]
     )
-    # Local providers (lmstudio/ollama) don't need an API key — detect
-    # by either default_model hint or a configured endpoint being set to
-    # something other than the library default.
     local_default = (cfg.default_model or "").lower() in ("lmstudio", "ollama")
     if not has_cloud_key and not local_default:
         display.print_error(
@@ -124,12 +103,6 @@ def chat(model, resume, continue_, auto_approve, python, persona):
             "DEEPSEEK_API_KEY). For local models, run `coderAI config set "
             "default_model lmstudio` (or ollama)."
         )
-        sys.exit(1)
-
-    try:
-        binary = ensure_binary(__version__)
-    except (BinaryUnavailableError, UnsupportedPlatformError) as e:
-        display.print_error(str(e))
         sys.exit(1)
 
     if continue_:
@@ -143,36 +116,23 @@ def chat(model, resume, continue_, auto_approve, python, persona):
         resume = sid
         click.echo(f"Resuming session {sid}")
 
-    env = os.environ.copy()
-    if continue_:
-        env["CODERAI_CONTINUE"] = "1"
-    if model:
-        env["CODERAI_MODEL"] = model
-    if resume:
-        env["CODERAI_RESUME"] = resume
     if auto_approve:
-        env["CODERAI_AUTO_APPROVE"] = "1"
         display.print_warning(
             "Auto-approve enabled — tool calls will run without confirmation. "
             "This includes run_command, delete_file, and git_push. "
             "Press Ctrl+C to abort."
         )
-    if persona:
-        env["CODERAI_PERSONA"] = persona
-    env["CODERAI_PYTHON"] = python or sys.executable
 
     try:
-        result = subprocess.run([str(binary)], env=env, check=False)
-        sys.exit(result.returncode)
+        run_chat_app(
+            model=model,
+            resume=resume,
+            continue_=continue_,
+            auto_approve=auto_approve,
+            persona=persona,
+        )
     except KeyboardInterrupt:
         pass
-    except FileNotFoundError:
-        display.print_error(
-            f"UI binary at {binary} is not executable. "
-            "Try `make ui-compile` to rebuild, or delete the cache at "
-            "`~/.coderAI/bin/` to force a re-download."
-        )
-        sys.exit(1)
 
 
 @cli.group()
@@ -614,14 +574,7 @@ def doctor():
     import os
     import platform
     import tempfile
-    from pathlib import Path
-
-    from .binary_manager import (
-        BinaryUnavailableError,
-        UnsupportedPlatformError,
-        detect_platform,
-        local_dev_binary,
-    )
+    import importlib.util
 
     display.print_header("CoderAI Doctor")
 
@@ -698,24 +651,12 @@ def doctor():
             "chat won't start until one is set",
         )
 
-    # 4. UI binary
-    display.print("\n[bold cyan]Ink UI binary[/bold cyan]")
-    override = os.environ.get("CODERAI_UI_BINARY")
-    dev = local_dev_binary()
-    if override:
-        p = Path(override).expanduser()
-        (check_ok if p.is_file() else check_fail)(
-            f"$CODERAI_UI_BINARY → {p}",
-            "exists" if p.is_file() else "not found",
-        )
-    elif dev is not None:
-        check_ok(f"dev binary: {dev}")
+    # 4. Textual TUI
+    display.print("\n[bold cyan]Interactive UI[/bold cyan]")
+    if importlib.util.find_spec("textual") is not None:
+        check_ok("textual installed (coderAI chat)")
     else:
-        try:
-            plat = detect_platform()
-            check_ok(f"platform resolved: {plat}")
-        except (UnsupportedPlatformError, BinaryUnavailableError) as e:
-            check_fail("platform not supported", str(e))
+        check_fail("textual not installed", "pip install 'coderAI' or textual>=0.80")
 
     # 5. History
     display.print("\n[bold cyan]History[/bold cyan]")

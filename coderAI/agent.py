@@ -738,7 +738,7 @@ class Agent:
         if self.session:
             msgs = self.session.get_messages_for_api()
             info.context_used_tokens = self.context_controller.estimate_tokens(msgs)
-        # Let UIs (Ink IPC) refresh the agents table between lifecycle start/end.
+        # Let the UI refresh its agents table between lifecycle start/end.
         event_emitter.emit("agent_tracker_sync", info=info)
 
     def _finish_tracker(self, error: bool = False):

@@ -16,7 +16,7 @@ Complete reference for CLI commands and interactive slash commands.
 Run from your terminal as `coderAI <command>`.
 
 ### `coderAI` / `coderAI chat`
-Start an interactive chat session in the Ink UI.
+Start an interactive chat session in the Textual TUI.
 
 ```bash
 coderAI
@@ -35,7 +35,7 @@ coderAI chat --auto-approve
 coderAI chat --yolo   # alias
 ```
 
-On first run, downloads the prebuilt Ink UI binary for your platform and caches it in `~/.coderAI/bin/`. Set `$CODERAI_UI_BINARY` to use a local binary instead.
+Requires the `textual` package (installed with `pip install coderAI`). No separate UI binary download.
 
 ---
 
@@ -245,7 +245,7 @@ Environment variables take precedence over `~/.coderAI/config.json`.
 | `CODERAI_PROJECT_INSTRUCTION_FILE` | `project_instruction_file` |
 | `LMSTUDIO_ENDPOINT` | `lmstudio_endpoint` |
 | `OLLAMA_ENDPOINT` | `ollama_endpoint` |
-| `CODERAI_UI_BINARY` | Override path to the Ink UI binary |
+| `CODERAI_THEME` | `dark` or `light` for the Textual chat UI |
 | `CODERAI_MODEL` | Model override for the IPC entry point |
 | `CODERAI_RESUME` | Session ID to resume (IPC entry point) |
 | `CODERAI_AUTO_APPROVE` | `"1"` to skip all tool confirmations |
