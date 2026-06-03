@@ -40,7 +40,7 @@ class MultiEditTool(Tool):
     parameters_model = MultiEditParams
     requires_confirmation = True
 
-    async def execute(self, path: str, edits: List[Dict[str, Any]]) -> Dict[str, Any]:
+    async def execute(self, path: str, edits: List[Dict[str, Any]]) -> Dict[str, Any]:  # type: ignore[override]
         try:
             path_obj = Path(path).expanduser()
             lock = await resource_manager.get_file_lock(str(path_obj))

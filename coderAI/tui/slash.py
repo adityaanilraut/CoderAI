@@ -191,6 +191,18 @@ def handle_slash_command(
             set_search_filter(arg)
             show_search()
         return True
+    if head == "pin":
+        if not arg:
+            toast("warning", "Usage: /pin <path>")
+        else:
+            controller.enqueue_command("manage_context", action="add", path=arg)
+        return True
+    if head == "unpin":
+        if not arg:
+            toast("warning", "Usage: /unpin <path>")
+        else:
+            controller.enqueue_command("manage_context", action="remove", path=arg)
+        return True
     if head == "copy":
         last = _find_last_assistant(reducer.timeline)
         if not last:

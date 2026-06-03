@@ -129,7 +129,7 @@ def compute_iteration_backoff(consecutive_errors: int) -> float:
     if consecutive_errors <= 0:
         return 0.0
     base = 0.5 * (2 ** (consecutive_errors - 1))
-    return min(base, RETRY_MAX_DELAY / 2)
+    return float(min(base, RETRY_MAX_DELAY / 2))
 
 
 def compute_retry_delay(exc: Exception, attempt: int) -> float:
@@ -185,7 +185,7 @@ def compute_retry_delay(exc: Exception, attempt: int) -> float:
 
     # Fall back to exponential backoff
     delay = RETRY_BASE_DELAY * (RETRY_BACKOFF_FACTOR ** (attempt - 1))
-    return min(delay, RETRY_MAX_DELAY)
+    return float(min(delay, RETRY_MAX_DELAY))
 
 
 def _try_extract_headers(exc: Exception) -> Optional[Dict[str, str]]:

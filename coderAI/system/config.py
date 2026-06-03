@@ -27,6 +27,9 @@ class Config(BaseModel):
     anthropic_api_key: Optional[str] = Field(default=None)
     groq_api_key: Optional[str] = Field(default=None)
     deepseek_api_key: Optional[str] = Field(default=None)
+    tavily_api_key: Optional[str] = Field(default=None)
+    exa_api_key: Optional[str] = Field(default=None)
+    search_backend: Optional[str] = Field(default=None)
     default_model: str = Field(default="claude-4-sonnet")
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: Optional[int] = Field(default=8192)
@@ -51,6 +54,10 @@ class Config(BaseModel):
     max_glob_results: int = Field(default=200)
     max_command_output: int = Field(default=10_000)  # chars
     web_tools_in_main: bool = Field(default=True)  # Allow web tools in main agent
+    search_cache_ttl_seconds: int = Field(default=300)  # Search result cache TTL
+    page_cache_ttl_seconds: int = Field(default=3600)  # Page content cache TTL
+    rate_limit_delay_seconds: float = Field(default=1.0, ge=0.0)  # Domain rate limit
+    concurrent_search: bool = Field(default=True)  # Run DDG+SearXNG in parallel
     project_root: str = Field(default=".")
     allow_outside_project: bool = Field(default=False)
     approval_timeout_seconds: int = Field(default=300)  # 0 = wait forever
@@ -100,6 +107,9 @@ class ConfigManager:
             "ANTHROPIC_API_KEY": "anthropic_api_key",
             "GROQ_API_KEY": "groq_api_key",
             "DEEPSEEK_API_KEY": "deepseek_api_key",
+            "TAVILY_API_KEY": "tavily_api_key",
+            "EXA_API_KEY": "exa_api_key",
+            "CODERAI_SEARCH_BACKEND": "search_backend",
             "CODERAI_DEFAULT_MODEL": "default_model",
             "CODERAI_TEMPERATURE": "temperature",
             "CODERAI_MAX_TOKENS": "max_tokens",
@@ -116,22 +126,28 @@ class ConfigManager:
             "CODERAI_MAX_TOOL_OUTPUT": "max_tool_output",
             "CODERAI_PROJECT_INSTRUCTION_FILE": "project_instruction_file",
             "CODERAI_WEB_TOOLS_IN_MAIN": "web_tools_in_main",
+            "CODERAI_SEARCH_CACHE_TTL": "search_cache_ttl_seconds",
+            "CODERAI_PAGE_CACHE_TTL": "page_cache_ttl_seconds",
+            "CODERAI_RATE_LIMIT_DELAY": "rate_limit_delay_seconds",
+            "CODERAI_CONCURRENT_SEARCH": "concurrent_search",
             "CODERAI_ALLOW_OUTSIDE_PROJECT": "allow_outside_project",
             "CODERAI_SUBAGENT_TIMEOUT_SECONDS": "subagent_timeout_seconds",
         }
 
         for env_var, config_key in env_mappings.items():
-            value = os.getenv(env_var)
+            value: Any = os.getenv(env_var)
             if value is not None:
                 # Convert types if needed
                 try:
-                    if config_key in ("temperature", "budget_limit", "subagent_timeout_seconds"):
+                    if config_key in ("temperature", "budget_limit", "subagent_timeout_seconds", "rate_limit_delay_seconds"):
                         value = float(value)
-                    elif config_key in ("max_tokens", "max_iterations", "max_tool_output"):
+                    elif config_key in ("max_tokens", "max_iterations", "max_tool_output", "search_cache_ttl_seconds", "page_cache_ttl_seconds"):
                         value = int(value)
                     elif config_key == "web_tools_in_main":
                         value = value.strip().lower() in ("true", "1", "yes", "on")
                     elif config_key == "allow_outside_project":
+                        value = value.strip().lower() in ("true", "1", "yes", "on")
+                    elif config_key == "concurrent_search":
                         value = value.strip().lower() in ("true", "1", "yes", "on")
                 except (ValueError, TypeError):
                     logger.warning(
@@ -195,7 +211,7 @@ class ConfigManager:
         config = self.load()
         data = config.model_dump(exclude_none=True)
         # Mask sensitive data — never reveal short keys
-        for key in ["openai_api_key", "anthropic_api_key", "groq_api_key", "deepseek_api_key"]:
+        for key in ["openai_api_key", "anthropic_api_key", "groq_api_key", "deepseek_api_key", "tavily_api_key", "exa_api_key"]:
             if key in data and data[key]:
                 val = data[key]
                 if len(val) > 16:
@@ -251,6 +267,7 @@ class ConfigManager:
             "log_level",
             "approval_timeout_seconds",
             "subagent_timeout_seconds",
+            "search_backend",
         }
 
         try:

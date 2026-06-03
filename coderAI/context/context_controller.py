@@ -3,7 +3,7 @@
 import json
 import logging
 from collections import OrderedDict
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from coderAI.system.error_policy import check_budget_limit
 from coderAI.system.events import event_emitter
@@ -32,7 +32,7 @@ class ContextController:
         # Optional callback(agent, input_delta, output_delta) invoked after
         # LLM summarization so the agent's cumulative token counters stay in
         # sync with the cost tracker.
-        self._on_summary_tokens: Optional[callable] = None
+        self._on_summary_tokens: Optional[Callable] = None
         # Cache keyed by content fingerprint. id(msg) was unsafe because
         # CPython recycles freed object ids — Session.get_messages_for_api()
         # rebuilds dicts each turn, so an id can land on a *different* message
@@ -59,6 +59,7 @@ class ContextController:
                 "tool_calls": msg.get("tool_calls"),
                 "tool_call_id": msg.get("tool_call_id"),
                 "name": msg.get("name"),
+                "reasoning_content": msg.get("reasoning_content"),
             },
             default=str,
             sort_keys=True,
@@ -97,6 +98,9 @@ class ContextController:
                         total += self.provider.count_tokens(json.dumps(block, default=str))
                 else:
                     total += self.provider.count_tokens(str(block))
+        reasoning_content = msg.get("reasoning_content") or ""
+        if isinstance(reasoning_content, str) and reasoning_content:
+            total += self.provider.count_tokens(reasoning_content)
         if msg.get("tool_calls"):
             total += self.provider.count_tokens(json.dumps(msg["tool_calls"]))
         if msg.get("tool_call_id"):
@@ -273,7 +277,7 @@ class ContextController:
         effective_budget = max(0, remaining_budget - CONTEXT_MARGIN_TOKENS)
 
         groups = self._group_messages_for_truncation(non_system)
-        kept_groups = []
+        kept_groups: List[List[Dict[str, Any]]] = []
         running_tokens = 0
         for group in reversed(groups):
             group_tokens = sum(self._estimate_message_tokens(m) for m in group)
@@ -496,4 +500,5 @@ class ContextController:
                 "output": safe_output,
             }
 
+        assert isinstance(summarized, dict)
         return summarized

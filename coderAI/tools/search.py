@@ -34,7 +34,7 @@ class TextSearchTool(Tool):
     parameters_model = TextSearchParams
     is_read_only = True
 
-    async def execute(
+    async def execute(  # type: ignore[override]
         self,
         query: str,
         regex: bool = False,
@@ -135,7 +135,7 @@ class GrepTool(Tool):
     parameters_model = GrepParams
     is_read_only = True
 
-    async def execute(
+    async def execute(  # type: ignore[override]
         self,
         pattern: str,
         path: str,
@@ -218,7 +218,7 @@ class SymbolSearchTool(Tool):
     parameters_model = SymbolSearchParams
     is_read_only = True
 
-    async def execute(
+    async def execute(  # type: ignore[override]
         self,
         symbol: str,
         kind: str = "any",

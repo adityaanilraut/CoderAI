@@ -61,7 +61,7 @@ class RefactorTool(Tool):
     timeout = None
     category = "other"
 
-    async def execute(
+    async def execute(  # type: ignore[override]
         self,
         action: str,
         symbol: Optional[str] = None,
@@ -154,6 +154,7 @@ class RefactorTool(Tool):
                         ),
                     }
 
+                assert new_name is not None
                 modified_files = self._apply_rename(all_refs, symbol, new_name, base)
                 return {
                     "success": True,
@@ -166,6 +167,11 @@ class RefactorTool(Tool):
                     "message": (
                         f"Renamed '{symbol}' to '{new_name}' in {len(modified_files)} file(s)."
                     ),
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": f"Unknown action: {action}",
                 }
 
         except Exception as e:
@@ -279,8 +285,10 @@ class RefactorTool(Tool):
                     continue
                 if getattr(node, "attr", None) == symbol:
                     ref_name = node.attr
-                    line_no = node.end_lineno if hasattr(node, "end_lineno") else 0
-                    end_col = node.end_col_offset if hasattr(node, "end_col_offset") else 0
+                    val_lineno = getattr(node, "end_lineno", None)
+                    line_no = val_lineno if val_lineno is not None else 0
+                    val_col = getattr(node, "end_col_offset", None)
+                    end_col = val_col if val_col is not None else 0
                     col = max(0, end_col - len(symbol))
                     ref_kind = "attribute_access"
 

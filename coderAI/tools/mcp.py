@@ -58,6 +58,7 @@ class MCPClient:
             if "id" not in parsed:
                 continue
             if parsed["id"] == expected_id:
+                assert isinstance(parsed, dict)
                 return parsed
             # Unexpected id — log and keep reading
             logger.warning(f"Unexpected JSON-RPC id {parsed.get('id')}, expected {expected_id}")
@@ -95,6 +96,8 @@ class MCPClient:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
+            assert process.stdin is not None
+            assert process.stdout is not None
 
             # Send MCP initialize request (JSON-RPC 2.0)
             init_id = self._get_next_id()
@@ -129,6 +132,7 @@ class MCPClient:
                 "jsonrpc": "2.0",
                 "method": "notifications/initialized",
             }
+            assert process.stdin is not None
             process.stdin.write((json.dumps(initialized_notif) + "\n").encode())
             await process.stdin.drain()
 
@@ -139,6 +143,7 @@ class MCPClient:
                 "id": tools_id,
                 "method": "tools/list",
             }
+            assert process.stdin is not None
             process.stdin.write((json.dumps(tools_request) + "\n").encode())
             await process.stdin.drain()
 
@@ -233,6 +238,7 @@ class MCPClient:
                 },
             }
 
+            assert process.stdin is not None
             process.stdin.write((json.dumps(request) + "\n").encode())
             await process.stdin.drain()
 
@@ -570,11 +576,11 @@ class MCPConnectTool(Tool):
 
     _ALLOWED_MCP_LAUNCHERS = {"npx", "node", "python", "python3", "uvx", "bun", "deno"}
 
-    async def execute(
+    async def execute(  # type: ignore[override]
         self,
         server_name: str,
         command: str = "",
-        args: list = None,
+        args: Optional[List[str]] = None,
         transport: str = "stdio",
         url: Optional[str] = None,
     ) -> Dict[str, Any]:
@@ -597,7 +603,8 @@ class MCPConnectTool(Tool):
                 "error": f"MCP server launcher '{command}' is not in the allowed set: {', '.join(sorted(self._ALLOWED_MCP_LAUNCHERS))}",
             }
 
-        from coderAI.tools.terminal import is_command_blocked, is_interactive_command
+        from coderAI.tools.terminal import is_command_blocked
+        from coderAI.system.safeguards import is_interactive_command
 
         full_cmd = command + " " + " ".join(args) if args else command
         if is_command_blocked(full_cmd):
@@ -625,8 +632,8 @@ class MCPCallTool(Tool):
     parameters_model = MCPCallToolParams
     requires_confirmation = True
 
-    async def execute(
-        self, server_name: str, tool_name: str, arguments: dict = None
+    async def execute(  # type: ignore[override]
+        self, server_name: str, tool_name: str, arguments: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """Call a tool on a connected MCP server."""
         return await mcp_client.call_tool(server_name, tool_name, arguments or {})
@@ -644,7 +651,7 @@ class MCPListTool(Tool):
     parameters_model = MCPListParams
     is_read_only = True
 
-    async def execute(self) -> Dict[str, Any]:
+    async def execute(self) -> Dict[str, Any]:  # type: ignore[override]
         """List MCP servers and tools."""
         servers = {}
         for name, info in mcp_client.servers.items():
@@ -680,7 +687,7 @@ class MCPDisconnectTool(Tool):
     is_read_only = False
     requires_confirmation = True
 
-    async def execute(self, server_name: str) -> Dict[str, Any]:
+    async def execute(self, server_name: str) -> Dict[str, Any]:  # type: ignore[override]
         try:
             await mcp_client.disconnect(server_name)
             return {"success": True, "message": f"Disconnected from MCP server: {server_name}"}

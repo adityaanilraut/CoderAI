@@ -19,6 +19,7 @@ def mock_agent():
     agent.provider = AsyncMock()
     agent.provider.supports_tools = MagicMock(return_value=True)
     agent.provider.get_model_info = MagicMock(return_value={})
+    agent.provider.clean_messages = MagicMock(side_effect=lambda msgs: msgs)
     agent.tools = MagicMock()
     agent.tools.get_schemas.return_value = []
     agent.context_controller = MagicMock()

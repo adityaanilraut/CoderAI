@@ -188,6 +188,7 @@ class BridgeStreamingHandler:
             "content": self.current_content,
             "tool_calls": self.tool_calls if self.tool_calls else None,
             "finish_reason": finish_reason,
+            "reasoning_content": self.current_reasoning if self.current_reasoning else None,
         }
 
     def _flush_tag_buffer(self) -> None:

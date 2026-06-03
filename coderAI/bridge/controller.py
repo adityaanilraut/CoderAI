@@ -399,6 +399,7 @@ class UIBridge:
         _bind("agent_lifecycle", self._on_agent_lifecycle)
         _bind("agent_tracker_sync", self._on_agent_tracker_sync)
         _bind("tool_progress", self._on_tool_progress)
+        _bind("plan_update", self._on_plan_update)
 
     def _unwire_event_listeners(self) -> None:
         for name, cb in self._listener_refs:
@@ -409,7 +410,7 @@ class UIBridge:
         if self._verbosity == "verbose":
             self.emit("info", message=_strip_rich_markup(message))
 
-    def _on_tool_call(self, tool_name: str, arguments: Dict[str, Any], tool_id: str = None) -> None:
+    def _on_tool_call(self, tool_name: str, arguments: Dict[str, Any], tool_id: Optional[str] = None) -> None:
         # Use provided tool_id if available, otherwise generate one
         if not tool_id:
             tool_id = f"t_{uuid.uuid4().hex[:12]}"
@@ -425,7 +426,7 @@ class UIBridge:
             },
         )
 
-    def _on_tool_result(self, tool_name: str, result: Dict[str, Any], tool_id: str = None) -> None:
+    def _on_tool_result(self, tool_name: str, result: Dict[str, Any], tool_id: Optional[str] = None) -> None:
         if not tool_id:
             tool_id = f"t_{uuid.uuid4().hex[:12]}"
         ok = bool(result.get("success", True))
@@ -504,10 +505,19 @@ class UIBridge:
             payload["elapsed"] = elapsed
         self.emit("progress", **payload)
 
+    def _on_plan_update(self, plan: Optional[Dict[str, Any]] = None) -> None:
+        if plan is None:
+            self.emit("plan_card", plan=None)
+        else:
+            self.emit("plan_card", plan=_serialize_plan_for_ui(plan))
+
     # -- inbound --------------------------------------------------------------
 
     async def _dispatch(self, msg: Dict[str, Any]) -> None:
         cmd = msg.get("cmd")
+        if not isinstance(cmd, str):
+            self.emit("warning", message=f"Invalid command format: {cmd}")
+            return
         handler = _COMMAND_HANDLERS.get(cmd)
         if handler is None:
             self.emit("warning", message=f"Unknown command: {cmd}")
@@ -793,7 +803,7 @@ async def _cmd_allow_tool(server: UIBridge, msg: Dict[str, Any]) -> None:
     if not tool:
         server.emit("warning", message="Usage: /allow-tool <tool-name>")
         return
-    allowlist = getattr(server.agent, "_tool_approval_allowlist", set())
+    allowlist: set[str] = getattr(server.agent, "_tool_approval_allowlist", set())
     allowlist.add(tool)
     server.emit("info", message=f"Tool approval memory enabled for {tool}.")
 
@@ -803,13 +813,13 @@ async def _cmd_disallow_tool(server: UIBridge, msg: Dict[str, Any]) -> None:
     if not tool:
         server.emit("warning", message="Usage: /disallow-tool <tool-name>")
         return
-    allowlist = getattr(server.agent, "_tool_approval_allowlist", set())
+    allowlist: set[str] = getattr(server.agent, "_tool_approval_allowlist", set())
     allowlist.discard(tool)
     server.emit("info", message=f"Tool approval memory removed for {tool}.")
 
 
 async def _cmd_list_allowed_tools(server: UIBridge, _msg: Dict[str, Any]) -> None:
-    allowlist = getattr(server.agent, "_tool_approval_allowlist", set())
+    allowlist: set[str] = getattr(server.agent, "_tool_approval_allowlist", set())
     names = ", ".join(sorted(allowlist)) if allowlist else "(none)"
     server.emit("info", message=f"Always-allowed tools for this session: {names}")
 
@@ -905,6 +915,41 @@ async def _cmd_clear_context(server: UIBridge, msg: Dict[str, Any]) -> None:
         agent_tracker.clear_except()
     server.emit("success", message="Session cleared")
     server.emit_status()
+
+
+async def _cmd_manage_context(server: UIBridge, msg: Dict[str, Any]) -> None:
+    action = msg.get("action")
+    path = msg.get("path")
+    async with server._turn_lock:
+        if action == "add":
+            if not path:
+                server.emit("warning", message="Path required to add to context.")
+                return
+            success = server.agent.context_manager.add_file(path)
+            if success:
+                server.emit("success", message=f"Added {path} to pinned context.")
+            else:
+                server.emit(
+                    "warning",
+                    message=f"Failed to add {path} to context (may be too large or invalid).",
+                )
+        elif action == "remove":
+            if not path:
+                server.emit("warning", message="Path required to remove from context.")
+                return
+            success = server.agent.context_manager.remove_file(path)
+            if success:
+                server.emit("success", message=f"Removed {path} from context.")
+            else:
+                server.emit("warning", message=f"Failed to remove {path} from context.")
+
+        # Emit updated context state
+        context_files = []
+        pinned = server.agent.context_manager.pinned_files
+        for path_str, content in pinned.items():
+            context_files.append({"path": path_str, "size": len(content)})
+        server.emit("context_state", files=context_files)
+        server.emit_status()
 
 
 async def _cmd_compact_context(server: UIBridge, msg: Dict[str, Any]) -> None:
@@ -1203,6 +1248,7 @@ _COMMAND_HANDLERS: Dict[str, Callable[[UIBridge, Dict[str, Any]], Awaitable[None
     "tool_approval_resp": _cmd_tool_approval_resp,
     "clear_context": _cmd_clear_context,
     "compact_context": _cmd_compact_context,
+    "manage_context": _cmd_manage_context,
     "get_state": _cmd_get_state,
     "get_plan": _cmd_get_plan,
     "list_models": _cmd_list_models,

@@ -119,7 +119,7 @@ class AnthropicProvider(LLMProvider):
         """Get API headers."""
         headers = {
             "Content-Type": "application/json",
-            "x-api-key": self.api_key,
+            "x-api-key": self.api_key or "",
             "anthropic-version": self.API_VERSION,
         }
         if self._supports_caching():
@@ -217,8 +217,9 @@ class AnthropicProvider(LLMProvider):
                     if isinstance(prev_content, list):
                         prev_content.append({"type": "text", "text": content or ""})
                     else:
+                        prev_str = str(prev_content or "")
                         anthropic_messages[-1]["content"] = (
-                            (prev_content or "") + "\n" + (content or "")
+                            prev_str + "\n" + (content or "")
                         )
                 else:
                     anthropic_messages.append({"role": "user", "content": content})
@@ -265,7 +266,7 @@ class AnthropicProvider(LLMProvider):
                     }
                 )
 
-        message = {"content": text_content or None, "role": "assistant"}
+        message: Dict[str, Any] = {"content": text_content or None, "role": "assistant"}
         if tool_calls:
             message["tool_calls"] = tool_calls
 

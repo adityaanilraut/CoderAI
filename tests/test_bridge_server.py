@@ -12,6 +12,7 @@ from coderAI.bridge.controller import (
     _cmd_compact_context,
     _cmd_get_plan,
     _cmd_get_state,
+    _cmd_manage_context,
     _cmd_reference,
     _cmd_send_message,
     _cmd_set_model,
@@ -449,3 +450,68 @@ async def test_get_plan_emits_plan_card_and_info(tmp_path, monkeypatch) -> None:
     info_calls = [c for c in server.emit.call_args_list if c.args[0] == "info"]
     assert info_calls
     assert "Ship feature" in info_calls[0].kwargs["message"]
+
+
+@pytest.mark.asyncio
+async def test_manage_context_actions() -> None:
+    context_manager = MagicMock()
+    context_manager.add_file = MagicMock(return_value=True)
+    context_manager.remove_file = MagicMock(return_value=True)
+    context_manager.pinned_files = {"/path/to/file.py": "content"}
+
+    server = _make_ipc_server(context_manager=context_manager)
+
+    # 1. Test add success
+    await _cmd_manage_context(server, {"action": "add", "path": "/path/to/file.py"})
+    context_manager.add_file.assert_called_with("/path/to/file.py")
+    server.emit.assert_any_call("success", message="Added /path/to/file.py to pinned context.")
+    server.emit.assert_any_call("context_state", files=[{"path": "/path/to/file.py", "size": 7}])
+
+    # Reset mocks
+    context_manager.add_file.reset_mock()
+    server.emit.reset_mock()
+
+    # 2. Test add failure
+    context_manager.add_file.return_value = False
+    await _cmd_manage_context(server, {"action": "add", "path": "/path/to/file.py"})
+    context_manager.add_file.assert_called_with("/path/to/file.py")
+    server.emit.assert_any_call(
+        "warning",
+        message="Failed to add /path/to/file.py to context (may be too large or invalid).",
+    )
+
+    # Reset mocks
+    context_manager.add_file.reset_mock()
+    server.emit.reset_mock()
+
+    # 3. Test add missing path
+    await _cmd_manage_context(server, {"action": "add"})
+    server.emit.assert_any_call("warning", message="Path required to add to context.")
+
+    # Reset mocks
+    server.emit.reset_mock()
+
+    # 4. Test remove success
+    await _cmd_manage_context(server, {"action": "remove", "path": "/path/to/file.py"})
+    context_manager.remove_file.assert_called_with("/path/to/file.py")
+    server.emit.assert_any_call("success", message="Removed /path/to/file.py from context.")
+
+    # Reset mocks
+    context_manager.remove_file.reset_mock()
+    server.emit.reset_mock()
+
+    # 5. Test remove failure
+    context_manager.remove_file.return_value = False
+    await _cmd_manage_context(server, {"action": "remove", "path": "/path/to/file.py"})
+    context_manager.remove_file.assert_called_with("/path/to/file.py")
+    server.emit.assert_any_call(
+        "warning", message="Failed to remove /path/to/file.py from context."
+    )
+
+    # Reset mocks
+    context_manager.remove_file.reset_mock()
+    server.emit.reset_mock()
+
+    # 6. Test remove missing path
+    await _cmd_manage_context(server, {"action": "remove"})
+    server.emit.assert_any_call("warning", message="Path required to remove from context.")

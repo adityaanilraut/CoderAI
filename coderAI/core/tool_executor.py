@@ -57,13 +57,22 @@ def _fingerprint(tool_name: str, arguments: Optional[Dict[str, Any]]) -> str:
 
 
 class ToolExecutor:
-    def __init__(self, agent):
+    agent: Any
+    _ro_semaphore: asyncio.Semaphore
+    _subagent_ro_semaphore: asyncio.Semaphore
+    _confirm_lock: asyncio.Lock
+    _call_counts: Dict[str, int]
+    _last_results: Dict[str, Dict[str, Any]]
+    _preview_file_cache: Dict[str, Tuple[float, str]]
+
+    def __init__(self, agent: Any) -> None:
         self.agent = agent
         self._ro_semaphore = asyncio.Semaphore(MAX_CONCURRENT_READ_ONLY)
         self._subagent_ro_semaphore = asyncio.Semaphore(MAX_CONCURRENT_READ_ONLY_SUBAGENTS)
-        self._call_counts: Dict[str, int] = {}
-        self._last_results: Dict[str, Dict[str, Any]] = {}
-        self._preview_file_cache: Dict[str, Tuple[float, str]] = {}
+        self._confirm_lock = asyncio.Lock()
+        self._call_counts = {}
+        self._last_results = {}
+        self._preview_file_cache = {}
 
     def reset_counts(self) -> None:
         self._call_counts.clear()
@@ -72,7 +81,10 @@ class ToolExecutor:
 
     def _approval_allowlist(self) -> set[str]:
         # Initialized in Agent.__init__ so no race-condition risk here.
-        return self.agent._tool_approval_allowlist
+        val = self.agent._tool_approval_allowlist
+        if isinstance(val, set):
+            return val
+        return set(val) if val is not None else set()
 
     def _normalize_tool_result(
         self,
@@ -203,10 +215,11 @@ class ToolExecutor:
                     )
             elif tool_name == "apply_diff":
                 raw_diff = arguments.get("diff", "")
-                if len(raw_diff) > 32768:
-                    hidden = len(raw_diff) - 32768
-                    return raw_diff[:32768] + f"\n... (diff truncated) {hidden} chars hidden"
-                return raw_diff
+                diff_str = str(raw_diff) if raw_diff is not None else ""
+                if len(diff_str) > 32768:
+                    hidden = len(diff_str) - 32768
+                    return diff_str[:32768] + f"\n... (diff truncated) {hidden} chars hidden"
+                return diff_str
 
             diff_lines = list(
                 difflib.unified_diff(
@@ -268,49 +281,51 @@ class ToolExecutor:
             else await asyncio.to_thread(self._compute_preview_diff, tool_name, arguments)
         )
 
-        if ipc_server is None:
-            args_preview = json.dumps(arguments, indent=2)
-            if len(args_preview) > 300:
-                args_preview = args_preview[:300] + "\n  ... (truncated)"
-
-            diff_preview = f"\n\nDiff Preview:\n{diff}" if diff else ""
-
-            event_emitter.emit(
-                "agent_status",
-                message=(
-                    f"\n[bold yellow]⚠ Tool '{tool_name}' requires confirmation.[/bold yellow]"
-                    f"\n[dim]{args_preview}[/dim]"
-                    f"[dim]{diff_preview}[/dim]"
-                ),
-            )
-
-        previous = self._enter_waiting_for_user(tool_name)
-        try:
-            if ipc_server is not None:
-                return await ipc_server.request_tool_approval(
-                    tool_id=tool_id or str(uuid.uuid4()),
-                    tool_name=tool_name,
-                    arguments=arguments,
-                    diff=diff,
+        async with self._confirm_lock:
+            if ipc_server is None:
+                args_preview = json.dumps(arguments, indent=2)
+                if len(args_preview) > 300:
+                    args_preview = args_preview[:300] + "\n  ... (truncated)"
+    
+                diff_preview = f"\n\nDiff Preview:\n{diff}" if diff else ""
+    
+                event_emitter.emit(
+                    "agent_status",
+                    message=(
+                        f"\n[bold yellow]⚠ Tool '{tool_name}' requires confirmation.[/bold yellow]"
+                        f"\n[dim]{args_preview}[/dim]"
+                        f"[dim]{diff_preview}[/dim]"
+                    ),
                 )
 
+            previous = self._enter_waiting_for_user(tool_name)
             try:
-                from prompt_toolkit import PromptSession
-
-                prompt_session = PromptSession()
-                answer = await prompt_session.prompt_async("Allow this tool? (y/n) > ")
-            except (ImportError, EOFError, KeyboardInterrupt):
-                try:
-                    loop = asyncio.get_running_loop()
-                    answer = await loop.run_in_executor(
-                        None, lambda: input("Allow this tool? (y/n) > ")
+                if ipc_server is not None:
+                    res = await ipc_server.request_tool_approval(
+                        tool_id=tool_id or str(uuid.uuid4()),
+                        tool_name=tool_name,
+                        arguments=arguments,
+                        diff=diff,
                     )
-                except (EOFError, KeyboardInterrupt):
-                    answer = "n"
-
-            return answer.strip().lower() in ("y", "yes")
-        finally:
-            self._exit_waiting_for_user(previous)
+                    return bool(res)
+    
+                try:
+                    from prompt_toolkit import PromptSession
+    
+                    prompt_session: Any = PromptSession()
+                    answer = await prompt_session.prompt_async("Allow this tool? (y/n) > ")
+                except (ImportError, EOFError, KeyboardInterrupt):
+                    try:
+                        loop = asyncio.get_running_loop()
+                        answer = await loop.run_in_executor(
+                            None, lambda: input("Allow this tool? (y/n) > ")
+                        )
+                    except (EOFError, KeyboardInterrupt):
+                        answer = "n"
+    
+                return answer.strip().lower() in ("y", "yes")
+            finally:
+                self._exit_waiting_for_user(previous)
 
     async def execute_single_tool(
         self,
@@ -347,9 +362,10 @@ class ToolExecutor:
             if needs_confirmation:
                 # Check permission hooks first (can auto-allow or auto-deny)
                 if hooks_manager is not None and hooks_data:
-                    permission_status = await getattr(
-                        hooks_manager, "run_permission_hooks", lambda *a, **kw: None
-                    )(tool_name, arguments, hooks_data)
+                    async def fallback_hook(*a, **kw):
+                        return None
+                    func = getattr(hooks_manager, "run_permission_hooks", fallback_hook)
+                    permission_status = await func(tool_name, arguments, hooks_data)
                     if permission_status == "allow":
                         pass  # Skip user prompt, proceed
                     elif permission_status == "deny":
@@ -416,11 +432,11 @@ class ToolExecutor:
                 await hooks_manager.run_hooks(tool_name, "PostToolUse", post_hook_args, hooks_data)
                 or []
             )
-            result = self._normalize_tool_result(result, tool_name=tool_name)
+            normalized_res: Dict[str, Any] = self._normalize_tool_result(result, tool_name=tool_name)
 
-            if isinstance(result, dict) and (pre_hooks or post_hooks):
-                result["_hooks"] = {"pre": pre_hooks, "post": post_hooks}
-            return result
+            if pre_hooks or post_hooks:
+                normalized_res["_hooks"] = {"pre": pre_hooks, "post": post_hooks}
+            return normalized_res
         except Exception as e:
             return self._normalize_tool_result(
                 {
@@ -578,7 +594,10 @@ class ToolExecutor:
         doom_offender: Optional[Tuple[str, int]] = None  # (tool_name, count)
         executed_indices = set(to_run_indices)
         for idx, (pc, res) in enumerate(zip(parsed_calls, results)):
-            fp = pc.get("_fp")
+            fp_val = pc.get("_fp")
+            if not fp_val or not isinstance(fp_val, str):
+                continue
+            fp = fp_val
             if not fp:
                 continue
             if idx not in executed_indices:
@@ -694,7 +713,7 @@ class ToolExecutor:
             else:
                 mut_indices.append(i)
 
-        results = [None] * len(parsed_calls)
+        results: List[Any] = [None] * len(parsed_calls)
         total, done = len(parsed_calls), 0
         # _cancel_event is an asyncio.Event on AgentTrackerInfo used to
         # signal cancellation across concurrent tool tasks.
@@ -738,7 +757,9 @@ class ToolExecutor:
                     "error": f"Tool '{tool_name}' raised: {raw}",
                     "error_code": "tool_exception",
                 }
-            return raw
+            if isinstance(raw, dict):
+                return raw
+            return {"success": True, "result": raw}
 
         if ro_indices:
 
@@ -777,9 +798,49 @@ class ToolExecutor:
                     results[i] = _coerce_gather_result(i, r)
                     _emit_progress(i)
 
-        for i in mut_indices:
-            t0 = _time.time()
-            results[i] = await _run(parsed_calls[i], diff=precomputed_diffs.get(i))
-            _emit_progress(i, elapsed=round(_time.time() - t0, 2))
+        i_idx = 0
+        while i_idx < len(mut_indices):
+            pc = parsed_calls[mut_indices[i_idx]]
+            tool_name = pc["tool_name"]
+            args = pc.get("arguments") or {}
+            safe_file_tools = {"write_file", "search_replace", "multi_edit", "apply_diff", "delete_file"}
+            path = args.get("path") or args.get("file_path")
+            
+            if tool_name in safe_file_tools and isinstance(path, str):
+                contiguous_safe = []
+                while i_idx < len(mut_indices):
+                    c_pc = parsed_calls[mut_indices[i_idx]]
+                    c_tool = c_pc["tool_name"]
+                    c_args = c_pc.get("arguments") or {}
+                    c_path = c_args.get("path") or c_args.get("file_path")
+                    if c_tool in safe_file_tools and isinstance(c_path, str):
+                        contiguous_safe.append(mut_indices[i_idx])
+                        i_idx += 1
+                    else:
+                        break
+                
+                path_queues: Dict[str, List[int]] = {}
+                for idx in contiguous_safe:
+                    c_pc = parsed_calls[idx]
+                    c_path = str(
+                        (c_pc.get("arguments") or {}).get("path")
+                        or (c_pc.get("arguments") or {}).get("file_path")
+                        or ""
+                    )
+                    path_queues.setdefault(c_path, []).append(idx)
+                
+                async def _run_path_queue(path_indices):
+                    for idx in path_indices:
+                        t0 = _time.time()
+                        results[idx] = await _run(parsed_calls[idx], diff=precomputed_diffs.get(idx))
+                        _emit_progress(idx, elapsed=round(_time.time() - t0, 2))
+                
+                await asyncio.gather(*(_run_path_queue(indices) for indices in path_queues.values()), return_exceptions=True)
+            else:
+                idx = mut_indices[i_idx]
+                t0 = _time.time()
+                results[idx] = await _run(parsed_calls[idx], diff=precomputed_diffs.get(idx))
+                _emit_progress(idx, elapsed=round(_time.time() - t0, 2))
+                i_idx += 1
 
         return results

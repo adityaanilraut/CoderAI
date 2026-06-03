@@ -3,7 +3,7 @@
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Set
 
 from pydantic import BaseModel, Field
 
@@ -53,7 +53,7 @@ class ProjectContextTool(Tool):
     parameters_model = ProjectContextParams
     is_read_only = True
 
-    async def execute(self, path: str = ".", max_depth: int = 2) -> Dict[str, Any]:
+    async def execute(self, path: str = ".", max_depth: int = 2) -> Dict[str, Any]:  # type: ignore[override]
         """Detect project type and load context."""
         try:
             project_root = Path(path).expanduser().resolve()
@@ -106,7 +106,7 @@ class ProjectContextTool(Tool):
 
     async def _load_python_context(self, root: Path) -> Dict[str, Any]:
         """Load Python project context."""
-        ctx = {}
+        ctx: Dict[str, Any] = {}
 
         # pyproject.toml
         pyproject = root / "pyproject.toml"
@@ -169,7 +169,7 @@ class ProjectContextTool(Tool):
         return ctx
 
     def _get_directory_structure(
-        self, root: Path, max_depth: int = 2, current_depth: int = 0, seen: set = None
+        self, root: Path, max_depth: int = 2, current_depth: int = 0, seen: Optional[Set[Path]] = None
     ) -> List[str]:
         """Get directory structure up to max_depth levels."""
         IGNORE_DIRS = {
@@ -190,7 +190,7 @@ class ProjectContextTool(Tool):
             ".vscode",
         }
 
-        entries = []
+        entries: List[str] = []
         if seen is None:
             seen = set()
         if current_depth >= max_depth:

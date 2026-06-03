@@ -2,7 +2,7 @@ import re
 import yaml
 import logging
 from pathlib import Path
-from typing import List, Optional, Set, Dict
+from typing import List, Optional, Set, Dict, Any
 
 from coderAI.system.config import config_manager
 from coderAI.system.project_layout import find_dot_coderai_subdir
@@ -124,7 +124,7 @@ def load_agent_persona(persona_name: str, project_root: str = ".") -> Optional[A
         content = file_path.read_text()
 
         # Parse YAML frontmatter
-        metadata = {}
+        metadata: Dict[str, Any] = {}
         instructions = content
 
         if content.startswith("---"):

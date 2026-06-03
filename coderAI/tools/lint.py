@@ -67,7 +67,9 @@ def detect_linter(project_root: str = ".") -> Optional[str]:
             for detect_file in config["detect_files"]:
                 if (current_dir / detect_file).exists():
                     # Check if the linter binary is available
-                    if shutil.which(config["cmd"]):
+                    cmd_str = config["cmd"]
+                    assert isinstance(cmd_str, str)
+                    if shutil.which(cmd_str):
                         return linter_name
         if (current_dir / ".git").exists():
             break
@@ -95,7 +97,7 @@ class LintTool(Tool):
     is_read_only = False
     requires_confirmation = True
 
-    async def execute(
+    async def execute(  # type: ignore[override]
         self,
         path: str = ".",
         fix: bool = False,
@@ -119,7 +121,7 @@ class LintTool(Tool):
 
             config = LINTERS[linter_name]
             cmd_binary = config["cmd"]
-
+            assert isinstance(cmd_binary, str)
             if not shutil.which(cmd_binary):
                 return {
                     "success": False,
@@ -128,6 +130,7 @@ class LintTool(Tool):
 
             # Build command
             args = config["fix_args"] if fix else config["check_args"]
+            assert isinstance(args, list)
             cmd = [cmd_binary] + args
 
             # For file-level linters, append the path

@@ -130,6 +130,7 @@ class OpenAIProvider(LLMProvider):
         try:
             response = await self.client.chat.completions.create(**params)
             result = response.model_dump()
+            assert isinstance(result, dict)
 
             # Track usage for cost calculation
             usage = result.get("usage", {})

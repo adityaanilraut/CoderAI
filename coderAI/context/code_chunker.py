@@ -268,7 +268,9 @@ def _chunk_python(source: str, rel_path: str, language: str) -> list[Chunk]:
             preamble_end = max(preamble_end, end)
 
         else:
-            preamble_end = max(preamble_end, node.end_lineno or node.lineno)
+            node_end = getattr(node, "end_lineno", None) or getattr(node, "lineno", None)
+            if node_end is not None:
+                preamble_end = max(preamble_end, node_end)
 
     # Preamble chunk: everything before the first class/function, not
     # including entity bodies (which are already their own chunks).

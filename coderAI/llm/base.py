@@ -42,7 +42,7 @@ class LLMProvider(ABC):
         pass
 
     @abstractmethod
-    async def stream(
+    def stream(
         self,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
@@ -113,3 +113,16 @@ class LLMProvider(ABC):
             self.total_cache_creation_tokens = max(0, int(cache_creation_tokens or 0))
         if hasattr(self, "total_cache_read_tokens"):
             self.total_cache_read_tokens = max(0, int(cache_read_tokens or 0))
+
+    def clean_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Clean messages before sending to the API.
+
+        By default, strips reasoning_content from assistant messages for compatibility
+        with providers that reject this field. DeepSeek override keeps it.
+        """
+        cleaned = []
+        for m in messages:
+            if m.get("role") == "assistant" and "reasoning_content" in m:
+                m = {k: v for k, v in m.items() if k != "reasoning_content"}
+            cleaned.append(m)
+        return cleaned

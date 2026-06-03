@@ -36,6 +36,7 @@ class SubagentContext:
     parent_session: Optional[Any] = None  # Session
     delegation_depth: int = 0
     parent_config: Optional[Any] = None  # Config — drives subagent_timeout_seconds
+    parent_read_cache: Optional[Any] = None  # FileReadCache
 
 
 # Number of recent parent tool calls to summarise for the sub-agent so it
@@ -296,7 +297,7 @@ class DelegateTaskTool(Tool):
     def _current_depth(self, value: int) -> None:
         self.context.delegation_depth = value
 
-    async def execute(
+    async def execute(  # type: ignore[override]
         self,
         task_description: str,
         agent_role: Optional[str] = None,
@@ -456,26 +457,33 @@ class DelegateTaskTool(Tool):
                     # original session id and metadata so task_id remains
                     # stable across repeated resume calls.
                     sub_agent.session = resumed_session
-                    sub_agent.session.model = effective_model
-                    sub_agent.session.updated_at = _time.time()
+                    if sub_agent.session is not None:
+                        if effective_model:
+                            sub_agent.session.model = effective_model
+                        sub_agent.session.updated_at = _time.time()
                 else:
                     # Sub-agents share project state with the parent, so their
                     # session bootstrap must not clear the parent's active plan.
                     sub_agent.create_session(clear_plan=False)
-                    sub_agent.session.metadata.update(
-                        {
-                            "purpose": "delegation",
-                            "parent_session_id": getattr(ctx.parent_session, "session_id", None),
-                            "delegation_depth": child_depth,
-                            "agent_role": agent_role,
-                        }
-                    )
+                    if sub_agent.session is not None:
+                        sub_agent.session.metadata.update(
+                            {
+                                "purpose": "delegation",
+                                "parent_session_id": getattr(ctx.parent_session, "session_id", None),
+                                "delegation_depth": child_depth,
+                                "agent_role": agent_role,
+                            }
+                        )
 
                 if ctx.parent_cost_tracker is not None:
                     # Assign after session bootstrap so create_session() never
                     # resets the parent's shared budget tracker.
                     sub_agent.cost_tracker = ctx.parent_cost_tracker
                     sub_agent.context_controller.cost_tracker = sub_agent.cost_tracker
+
+                if ctx.parent_read_cache is not None:
+                    sub_agent.read_cache = ctx.parent_read_cache
+                    sub_agent._wire_read_cache()
 
                 sub_agent._register_tracker(
                     task=task_description[:120],
@@ -690,7 +698,7 @@ class DelegateTaskTool(Tool):
                 parent_hooks_manager = getattr(parent_for_hooks, "hooks_manager", None)
 
             hooks_data = parent_hooks_manager.load_hooks() if parent_hooks_manager else None
-            if hooks_data:
+            if parent_hooks_manager is not None and hooks_data:
                 await parent_hooks_manager.run_hooks(
                     "delegate_task",
                     "on_subagent_stop",
@@ -754,7 +762,8 @@ class DelegateTaskTool(Tool):
         from coderAI.system.cost import CostTracker
 
         provider = getattr(sub_agent, "provider", None)
-        model_for_cost = getattr(provider, "actual_model", None) or getattr(sub_agent, "model", "")
+        model_val = getattr(provider, "actual_model", None) or getattr(sub_agent, "model", "")
+        model_for_cost = str(model_val) if model_val is not None else ""
         try:
             return CostTracker.calculate_cost_for_tokens(
                 model_for_cost,

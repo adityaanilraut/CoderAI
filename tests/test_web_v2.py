@@ -422,6 +422,8 @@ class TestWebSearchDomainFilter:
             return [_SearchResult("T", "https://x.com", "s")]
 
         monkeypatch.setattr(_DDGBackend, "search", fake_backend_search)
+        monkeypatch.setattr(web_mod, "_get_cached", lambda _: None)
+        monkeypatch.setattr(web_mod, "_concurrent_search_enabled", lambda: False)
         monkeypatch.delenv("TAVILY_API_KEY", raising=False)
         monkeypatch.delenv("EXA_API_KEY", raising=False)
         monkeypatch.delenv("CODERAI_SEARCH_BACKEND", raising=False)

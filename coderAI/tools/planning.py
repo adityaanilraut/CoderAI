@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from coderAI.tools.base import Tool
 from coderAI.system.config import config_manager
+from coderAI.system.events import event_emitter
 from coderAI.system.project_layout import find_dot_coderai_subdir
 
 _PLANS_DIR = ".coderAI"
@@ -87,7 +88,7 @@ class CreatePlanTool(Tool):
         super().__init__()
         self.project_root = "."
 
-    async def execute(
+    async def execute(  # type: ignore[override]
         self,
         action: str,
         title: Optional[str] = None,
@@ -137,6 +138,7 @@ class CreatePlanTool(Tool):
                     ],
                 }
                 _atomic_write_json(plan_file, plan)
+                event_emitter.emit("plan_update", plan=plan)
 
                 return {
                     "success": True,
@@ -187,19 +189,22 @@ class CreatePlanTool(Tool):
                 with open(plan_file, "r") as f:
                     plan = json.load(f)
 
-                steps = plan.get("steps", [])
-                total = len(steps)
-                completed = sum(1 for s in steps if s.get("status") == "done")
+                plan_steps = plan.get("steps", [])
+                total = len(plan_steps)
+                completed = sum(1 for s in plan_steps if isinstance(s, dict) and s.get("status") == "done")
                 current = plan.get("current_step", 0)
                 done = current >= total
                 if done:
                     current_desc = "All steps completed"
                     next_desc = None
                 else:
-                    current_desc = steps[current].get("description", "")
-                    next_desc = (
-                        steps[current + 1].get("description", "") if current + 1 < total else None
-                    )
+                    current_step_item = plan_steps[current]
+                    current_desc = current_step_item.get("description", "") if isinstance(current_step_item, dict) else ""
+                    if current + 1 < total:
+                        next_step_item = plan_steps[current + 1]
+                        next_desc = next_step_item.get("description", "") if isinstance(next_step_item, dict) else ""
+                    else:
+                        next_desc = None
 
                 return {
                     "success": True,
@@ -232,6 +237,7 @@ class CreatePlanTool(Tool):
                 plan["current_step"] = current + 1
 
                 _atomic_write_json(plan_file, plan)
+                event_emitter.emit("plan_update", plan=plan)
 
                 next_step = (
                     plan["steps"][current + 1]["description"]
@@ -263,6 +269,7 @@ class CreatePlanTool(Tool):
 
                 plan["steps"][step_index]["description"] = new_description
                 _atomic_write_json(plan_file, plan)
+                event_emitter.emit("plan_update", plan=plan)
 
                 return {
                     "success": True,
@@ -273,6 +280,7 @@ class CreatePlanTool(Tool):
             elif action == "clear":
                 if plan_file.exists():
                     plan_file.unlink()
+                event_emitter.emit("plan_update", plan=None)
                 return {"success": True, "message": "Plan cleared."}
 
             else:

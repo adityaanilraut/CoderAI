@@ -85,8 +85,16 @@ from coderAI.tools.search import TextSearchTool, GrepTool, SymbolSearchTool
 # Memory tools
 from coderAI.tools.memory import SaveMemoryTool, RecallMemoryTool, DeleteMemoryTool
 
-# Web search & URL reading & Download & HTTP
-from coderAI.tools.web import WebSearchTool, ReadURLTool, DownloadFileTool, HTTPRequestTool
+# Web search & URL reading & Download & HTTP & Feed & Sitemap & Wikipedia
+from coderAI.tools.web import (
+    WebSearchTool,
+    ReadURLTool,
+    DownloadFileTool,
+    HTTPRequestTool,
+    WikipediaSearchTool,
+    ReadFeedTool,
+    SitemapDiscoverTool,
+)
 
 # MCP tools
 from coderAI.tools.mcp import (
@@ -202,6 +210,9 @@ __all__ = [
     "ReadURLTool",
     "DownloadFileTool",
     "HTTPRequestTool",
+    "WikipediaSearchTool",
+    "ReadFeedTool",
+    "SitemapDiscoverTool",
     # MCP
     "MCPConnectTool",
     "MCPCallTool",

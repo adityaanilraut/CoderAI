@@ -122,7 +122,7 @@ class FormatTool(Tool):
     parameters_model = FormatParams
     requires_confirmation = True
 
-    async def execute(
+    async def execute(  # type: ignore[override]
         self,
         path: str = ".",
         check: bool = False,

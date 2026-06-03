@@ -29,6 +29,10 @@ for _section_name, _tool_names in _TOOL_SECTIONS:
 _TOOL_CATEGORY_FALLBACK["mcp_connect"] = "mcp"
 _TOOL_CATEGORY_FALLBACK["mcp_call_tool"] = "mcp"
 _TOOL_CATEGORY_FALLBACK["mcp_list"] = "mcp"
+_TOOL_CATEGORY_FALLBACK["mcp_disconnect"] = "mcp"
+_TOOL_CATEGORY_FALLBACK["wikipedia_search"] = "web"
+_TOOL_CATEGORY_FALLBACK["read_feed"] = "web"
+_TOOL_CATEGORY_FALLBACK["sitemap_discover"] = "web"
 
 _SKILL_STEP_RE = re.compile(r"^\s*(\d+)[\.\)\-]\s+(.+)", re.MULTILINE)
 
@@ -93,7 +97,7 @@ def tool_category(name: str, registry: Optional[Any] = None) -> str:
         tool = registry.get(name)
         if tool is not None:
             cat = getattr(tool, "category", None)
-            if cat and cat != "other":
+            if isinstance(cat, str) and cat != "other":
                 return cat
     return _TOOL_CATEGORY_FALLBACK.get(name, "other")
 

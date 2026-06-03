@@ -5,7 +5,7 @@ import os
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 from pydantic import BaseModel, Field
 
@@ -65,7 +65,7 @@ class ManageTasksTool(Tool):
     parameters_model = ManageTasksParams
     is_read_only = False
 
-    async def execute(
+    async def execute(  # type: ignore[override]
         self,
         action: str,
         task_id: Optional[int] = None,
@@ -165,6 +165,11 @@ class ManageTasksTool(Tool):
                         "message": f"Updated task #{task_id}",
                         "task": tasks[task_idx],
                     }
+                else:
+                    return {
+                        "success": False,
+                        "error": f"Invalid sub-action: {action}",
+                    }
 
             elif action == "clear":
                 before = len(tasks)
@@ -192,7 +197,7 @@ class ManageTasksTool(Tool):
             for t in tasks:
                 if "priority" not in t:
                     t["priority"] = "medium"
-            return tasks
+            return cast(List[Dict[str, Any]], tasks)
         except (json.JSONDecodeError, IOError):
             return []
 

@@ -123,7 +123,10 @@ class Agent:
         # Streaming handler is provided by the surrounding UI (the IPC entry
         # point injects one that emits protocol events). When absent,
         # ``_stream_response`` falls back to a non-streaming call.
-        self.streaming_handler = None
+        self.streaming_handler: Optional[Any] = None
+
+        # IPC server is set by UIBridge / controller setup
+        self.ipc_server: Optional[Any] = None
 
         # Session management
         self.session: Optional[Session] = None
@@ -206,8 +209,9 @@ class Agent:
         # Manually register tools that require specific initialization
         # arguments
         registry.register(ManageContextTool(self.context_manager))
+        from coderAI.tools.planning import CreatePlanTool
         plan_tool = registry.get("plan")
-        if plan_tool is not None:
+        if isinstance(plan_tool, CreatePlanTool):
             plan_tool.project_root = self.config.project_root
 
         # Filter web tools if not allowed for main agent. Sub-agents always
@@ -216,7 +220,10 @@ class Agent:
         # the main agent before, giving a back-door to web access even when
         # web_tools_in_main=False.
         if not (self.is_subagent or self.config.web_tools_in_main):
-            to_remove = ["web_search", "read_url", "download_file", "http_request"]
+            to_remove = [
+                "web_search", "read_url", "download_file", "http_request",
+                "wikipedia_search", "read_feed", "sitemap_discover",
+            ]
             removed = [n for n in to_remove if n in registry.tools]
             for name in removed:
                 del registry.tools[name]
@@ -233,20 +240,22 @@ class Agent:
         delegate_tool = self.tools.get("delegate_task")
         if delegate_tool is None:
             return
-        from coderAI.tools.subagent import SubagentContext
+        from coderAI.tools.subagent import DelegateTaskTool, SubagentContext
 
-        tracker_info = getattr(self, "tracker_info", None)
-        delegate_tool.context = SubagentContext(
-            parent_agent_id=tracker_info.agent_id if tracker_info else None,
-            parent_model=self.model,
-            parent_context_manager=self.context_manager,
-            parent_cost_tracker=self.cost_tracker,
-            parent_auto_approve=self.auto_approve,
-            parent_ipc_server=getattr(self, "ipc_server", None),
-            parent_session=getattr(self, "session", None),
-            delegation_depth=getattr(self, "delegation_depth", 0),
-            parent_config=self.config,
-        )
+        if isinstance(delegate_tool, DelegateTaskTool):
+            tracker_info = getattr(self, "tracker_info", None)
+            delegate_tool.context = SubagentContext(
+                parent_agent_id=tracker_info.agent_id if tracker_info else None,
+                parent_model=self.model,
+                parent_context_manager=self.context_manager,
+                parent_cost_tracker=self.cost_tracker,
+                parent_auto_approve=self.auto_approve,
+                parent_ipc_server=getattr(self, "ipc_server", None),
+                parent_session=getattr(self, "session", None),
+                delegation_depth=getattr(self, "delegation_depth", 0),
+                parent_config=self.config,
+                parent_read_cache=getattr(self, "read_cache", None),
+            )
 
     def _rebuild_tool_registry(self) -> None:
         """Rebuild registry so persona changes take effect immediately."""
@@ -265,7 +274,8 @@ class Agent:
         if cache is None:
             return
         read_tool = self.tools.get("read_file")
-        if read_tool is not None:
+        from coderAI.tools.filesystem import ReadFileTool
+        if isinstance(read_tool, ReadFileTool):
             read_tool.read_cache = cache
 
     def _refresh_session_system_prompt(self) -> None:
@@ -651,12 +661,13 @@ class Agent:
             )
 
             for compacted_msg in compacted_messages:
+                content_val = compacted_msg.get("content")
                 if (
                     compacted_msg.get("role") == "system"
-                    and isinstance(compacted_msg.get("content"), str)
+                    and isinstance(content_val, str)
                     and (
-                        "[Prior Conversation Summary]:" in compacted_msg.get("content")
-                        or "were removed to fit" in compacted_msg.get("content")
+                        "[Prior Conversation Summary]:" in content_val
+                        or "were removed to fit" in content_val
                     )
                 ):
                     # Compaction reorders messages (inserts a summary, drops
@@ -684,14 +695,22 @@ class Agent:
                             for k, v in cm.items()
                             if k in ["role", "content", "tool_calls", "tool_call_id", "name"]
                         }
-                        key = (
-                            msg_args.get("role"),
-                            msg_args.get("content"),
+                        role_val = str(msg_args.get("role") or "")
+                        content_val2 = msg_args.get("content")
+                        content_str = str(content_val2) if content_val2 is not None else None
+                        tc_id_val = msg_args.get("tool_call_id")
+                        tc_id_str = str(tc_id_val) if tc_id_val is not None else None
+                        name_val = msg_args.get("name")
+                        name_str = str(name_val) if name_val is not None else None
+
+                        lookup_key = (
+                            role_val,
+                            content_str,
                             _freeze(msg_args.get("tool_calls")),
-                            msg_args.get("tool_call_id"),
-                            msg_args.get("name"),
+                            tc_id_str,
+                            name_str,
                         )
-                        stamps = originals_by_identity.get(key)
+                        stamps = originals_by_identity.get(lookup_key)
                         if stamps:
                             msg_args["timestamp"] = stamps.pop(0)
                         else:
@@ -721,7 +740,7 @@ class Agent:
             logger.error(f"Error during manual context compaction: {e}")
             return False
 
-    def _register_tracker(self, task: str, role: str = None, parent_id: str = None) -> AgentInfo:
+    def _register_tracker(self, task: str, role: Optional[str] = None, parent_id: Optional[str] = None) -> AgentInfo:
         """Register this agent with the global tracker."""
         self.tracker_info = agent_tracker.register(
             name=self.persona.name if self.persona else "main",
@@ -780,11 +799,11 @@ class Agent:
     async def process_single_shot(self, user_message: str, progress_callback=None) -> str:
         """Process a single message and return the assistant's text response."""
         result = await self.process_message(user_message, progress_callback=progress_callback)
-        return result.get("content", "")
+        return str(result.get("content", "") or "")
 
     def get_model_info(self) -> Dict[str, Any]:
         """Get information about current model."""
-        return self.provider.get_model_info()
+        return self.provider.get_model_info()  # type: ignore[no-any-return]
 
     async def close(self) -> None:
         """Clean up resources (HTTP sessions, background processes, etc.)."""

@@ -132,6 +132,7 @@ class HooksManager:
             with open(hfile, "r") as f:
                 parsed = json.load(f)
             self._hooks_cache[str(hfile)] = (mtime_ns, parsed)
+            assert isinstance(parsed, dict)
             return parsed
         except Exception as e:
             logger.debug(f"Failed to load hooks: {e}")
@@ -262,7 +263,7 @@ class HooksManager:
             try:
                 from prompt_toolkit import PromptSession
 
-                ps = PromptSession()
+                ps: PromptSession = PromptSession()
                 answer = await ps.prompt_async("Allow project hooks to run? (y/n) > ")
             except Exception as e:
                 logger.warning(f"prompt_async failed: {e}", exc_info=True)
@@ -368,7 +369,7 @@ class HooksManager:
                         return_exceptions=True,
                     )
                     for idx, out in enumerate(outputs):
-                        if isinstance(out, Exception):
+                        if not isinstance(out, tuple):
                             hooks_results[f"_error_{idx}"] = str(out)
                         else:
                             parsed, error = out
@@ -410,7 +411,7 @@ class HooksManager:
         for key in sorted(results.keys(), key=lambda k: (not k.isdigit(), k)):
             entry = results[key]
             if isinstance(entry, dict) and "message" in entry:
-                return entry["message"]
+                return str(entry["message"])
         return None
 
     async def run_permission_hooks(
@@ -439,5 +440,5 @@ class HooksManager:
             if isinstance(entry, dict):
                 status = entry.get("status")
                 if status in VALID_PERMISSION_STATUSES:
-                    return status
+                    return str(status)
         return None

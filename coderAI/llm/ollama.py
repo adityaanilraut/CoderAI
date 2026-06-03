@@ -77,6 +77,7 @@ class OllamaProvider(LLMProvider):
                 raise RuntimeError(f"Ollama returned malformed JSON response: {e}") from e
 
             # Track usage
+            assert isinstance(result, dict)
             usage = result.get("usage", {})
             self.total_input_tokens += usage.get("prompt_tokens", 0)
             self.total_output_tokens += usage.get("completion_tokens", 0)

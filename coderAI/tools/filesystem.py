@@ -247,8 +247,8 @@ class ReadFileTool(Tool):
     # Optional per-session FileReadCache; wired by Agent after registry build.
     read_cache = None
 
-    async def execute(
-        self, path: str, start_line: int = None, end_line: int = None
+    async def execute(  # type: ignore[override]
+        self, path: str, start_line: Optional[int] = None, end_line: Optional[int] = None
     ) -> dict[str, Any]:
         """Read file contents with size limit."""
         try:
@@ -354,7 +354,7 @@ class WriteFileTool(Tool):
     requires_confirmation = True
     category = "filesystem"
 
-    async def execute(self, path: str, content: str, append: bool = False) -> dict[str, Any]:
+    async def execute(self, path: str, content: str, append: bool = False) -> dict[str, Any]:  # type: ignore[override]
         """Write content to file with path protection."""
         try:
             path_obj = Path(path).expanduser()
@@ -472,7 +472,7 @@ class SearchReplaceTool(Tool):
     requires_confirmation = True
     category = "filesystem"
 
-    async def execute(
+    async def execute(  # type: ignore[override]
         self, path: str, search: str, replace: str, replace_all: bool = False
     ) -> dict[str, Any]:
         """Search and replace in file with protection."""
@@ -591,7 +591,7 @@ class ListDirectoryTool(Tool):
     is_read_only = True
     category = "filesystem"
 
-    async def execute(self, path: str) -> dict[str, Any]:
+    async def execute(self, path: str) -> dict[str, Any]:  # type: ignore[override]
         """List directory contents."""
         try:
             path_obj = Path(path).expanduser()
@@ -646,7 +646,7 @@ class GlobSearchTool(Tool):
     is_read_only = True
     category = "filesystem"
 
-    async def execute(self, pattern: str, base_path: str = ".") -> dict[str, Any]:
+    async def execute(self, pattern: str, base_path: str = ".") -> dict[str, Any]:  # type: ignore[override]
         """Find files matching pattern with result limit."""
         try:
             base = Path(base_path).expanduser()
@@ -661,7 +661,7 @@ class GlobSearchTool(Tool):
                 }
 
             max_glob_results = _get_max_glob_results()
-            matches = []
+            matches: list[str] = []
             total_matches = 0
             for match in base.glob(pattern):
                 try:
@@ -729,7 +729,7 @@ class ApplyDiffTool(Tool):
     # How far from the stated line number to search for a matching hunk
     SEARCH_WINDOW = 50
 
-    async def execute(self, path: str, diff: str) -> dict[str, Any]:
+    async def execute(self, path: str, diff: str) -> dict[str, Any]:  # type: ignore[override]
         """Apply a unified diff to a file."""
         try:
             path_obj = Path(path).expanduser()
@@ -991,7 +991,7 @@ class MoveFileTool(Tool):
     parameters_model = MoveFileParams
     requires_confirmation = True
 
-    async def execute(
+    async def execute(  # type: ignore[override]
         self, source: str, destination: str, overwrite: bool = False
     ) -> dict[str, Any]:
 
@@ -1070,7 +1070,7 @@ class CopyFileTool(Tool):
     parameters_model = CopyFileParams
     requires_confirmation = True
 
-    async def execute(
+    async def execute(  # type: ignore[override]
         self, source: str, destination: str, overwrite: bool = False
     ) -> dict[str, Any]:
 
@@ -1152,7 +1152,7 @@ class DeleteFileTool(Tool):
     parameters_model = DeleteFileParams
     requires_confirmation = True
 
-    async def execute(self, path: str, recursive: bool = False) -> dict[str, Any]:
+    async def execute(self, path: str, recursive: bool = False) -> dict[str, Any]:  # type: ignore[override]
 
         try:
             target = Path(os.path.expanduser(path))
@@ -1226,7 +1226,7 @@ class CreateDirectoryTool(Tool):
     parameters_model = CreateDirectoryParams
     requires_confirmation = True
 
-    async def execute(self, path: str, parents: bool = True) -> dict[str, Any]:
+    async def execute(self, path: str, parents: bool = True) -> dict[str, Any]:  # type: ignore[override]
         try:
             target = Path(os.path.expanduser(path))
 
@@ -1270,7 +1270,7 @@ class FileStatTool(Tool):
     parameters_model = FileStatParams
     is_read_only = True
 
-    async def execute(self, path: str) -> dict[str, Any]:
+    async def execute(self, path: str) -> dict[str, Any]:  # type: ignore[override]
         try:
             target = Path(path).expanduser()
             if not target.exists():
@@ -1309,7 +1309,7 @@ class FileChmodTool(Tool):
     parameters_model = FileChmodParams
     requires_confirmation = True
 
-    async def execute(self, path: str, mode: str) -> dict[str, Any]:
+    async def execute(self, path: str, mode: str) -> dict[str, Any]:  # type: ignore[override]
         try:
             target = Path(path).expanduser()
             if not target.exists():
@@ -1344,7 +1344,7 @@ class FileChownTool(Tool):
     parameters_model = FileChownParams
     requires_confirmation = True
 
-    async def execute(
+    async def execute(  # type: ignore[override]
         self, path: str, owner: Optional[str] = None, group: Optional[str] = None
     ) -> dict[str, Any]:
         if sys.platform == "win32":
@@ -1397,7 +1397,7 @@ class FileReadlinkTool(Tool):
     parameters_model = FileReadlinkParams
     is_read_only = True
 
-    async def execute(self, path: str) -> dict[str, Any]:
+    async def execute(self, path: str) -> dict[str, Any]:  # type: ignore[override]
         try:
             target = Path(path).expanduser()
             if not target.exists():

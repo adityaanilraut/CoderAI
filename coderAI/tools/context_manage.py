@@ -35,7 +35,7 @@ class ManageContextTool(Tool):
         super().__init__()
         self.context_manager = context_manager
 
-    async def execute(self, action: str, path: Optional[str] = None) -> Dict[str, Any]:
+    async def execute(self, action: str, path: Optional[str] = None) -> Dict[str, Any]:  # type: ignore[override]
         """Execute context management action."""
         if action == "add":
             if not path:

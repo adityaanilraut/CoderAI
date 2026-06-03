@@ -118,6 +118,7 @@ class DeepSeekProvider(LLMProvider):
         except Exception as e:
             raise RuntimeError(f"DeepSeek API error: {e}") from e
         result = response.model_dump()
+        assert isinstance(result, dict)
 
         usage = result.get("usage", {})
         self.total_input_tokens += usage.get("prompt_tokens", 0)
@@ -192,3 +193,7 @@ class DeepSeekProvider(LLMProvider):
         info["total_output_tokens"] = self.total_output_tokens
         info["total_tokens"] = self.total_input_tokens + self.total_output_tokens
         return info
+
+    def clean_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """DeepSeek V4/R1 supports passing reasoning_content back in the assistant role."""
+        return messages

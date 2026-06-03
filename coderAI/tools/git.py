@@ -28,10 +28,10 @@ def _truncate_output(text: str, max_bytes: int = MAX_GIT_OUTPUT_BYTES) -> tuple[
             break
         except UnicodeDecodeError:
             head = head[:-1]
-    head = head.decode("utf-8")
+    head_str = head.decode("utf-8")
     omitted = len(encoded) - max_bytes
     return (
-        head + f"\n\n[... truncated, {omitted} more bytes — re-run with a narrower scope ...]",
+        head_str + f"\n\n[... truncated, {omitted} more bytes — re-run with a narrower scope ...]",
         True,
     )
 
@@ -86,7 +86,7 @@ class GitAddTool(Tool):
     requires_confirmation = True
     category = "git"
 
-    async def execute(self, files: list, repo_path: str = ".") -> Dict[str, Any]:
+    async def execute(self, files: list, repo_path: str = ".") -> Dict[str, Any]:  # type: ignore[override]
         """Stage files for git commit with safety checks."""
         try:
             # Reject 'git add .'
@@ -169,7 +169,7 @@ class GitStatusTool(Tool):
     is_read_only = True
     category = "git"
 
-    async def execute(self, repo_path: str = ".") -> Dict[str, Any]:
+    async def execute(self, repo_path: str = ".") -> Dict[str, Any]:  # type: ignore[override]
         try:
             scope_error = await _validate_git_scope(repo_path)
             if scope_error:
@@ -225,9 +225,9 @@ class GitDiffTool(Tool):
     is_read_only = True
     category = "git"
 
-    async def execute(
-        self, repo_path: str = ".", file_path: str = None, staged: bool = False
-    ) -> Dict[str, Any]:
+    async def execute(  # type: ignore[override]
+        self, repo_path: str = ".", file_path: Optional[str] = None, staged: bool = False
+    ) -> Dict[str, Any]:  # type: ignore[override]
         try:
             scope_error = await _validate_git_scope(repo_path)
             if scope_error:
@@ -279,7 +279,7 @@ class GitCommitTool(Tool):
     requires_confirmation = True
     category = "git"
 
-    async def execute(self, message: str, repo_path: str = ".") -> Dict[str, Any]:
+    async def execute(self, message: str, repo_path: str = ".") -> Dict[str, Any]:  # type: ignore[override]
         try:
             scope_error = await _validate_git_scope(repo_path)
             if scope_error:
@@ -324,7 +324,7 @@ class GitLogTool(Tool):
     is_read_only = True
     category = "git"
 
-    async def execute(self, repo_path: str = ".", limit: int = 10) -> Dict[str, Any]:
+    async def execute(self, repo_path: str = ".", limit: int = 10) -> Dict[str, Any]:  # type: ignore[override]
         try:
             scope_error = await _validate_git_scope(repo_path)
             if scope_error:
@@ -386,9 +386,9 @@ class GitBranchTool(Tool):
     requires_confirmation = True
     category = "git"
 
-    async def execute(
+    async def execute(  # type: ignore[override]
         self, action: str, branch_name: Optional[str] = None, repo_path: str = "."
-    ) -> Dict[str, Any]:
+    ) -> Dict[str, Any]:  # type: ignore[override]
         try:
             scope_error = await _validate_git_scope(repo_path)
             if scope_error:
@@ -476,9 +476,9 @@ class GitCheckoutTool(Tool):
     requires_confirmation = True
     category = "git"
 
-    async def execute(
+    async def execute(  # type: ignore[override]
         self, branch: str, create: bool = False, repo_path: str = "."
-    ) -> Dict[str, Any]:
+    ) -> Dict[str, Any]:  # type: ignore[override]
         try:
             # Validate git scope before checkout
             scope_error = await _validate_git_scope(repo_path)
@@ -538,13 +538,13 @@ class GitStashTool(Tool):
     requires_confirmation = True
     category = "git"
 
-    async def execute(
+    async def execute(  # type: ignore[override]
         self,
         action: str,
         message: Optional[str] = None,
         stash_index: int = 0,
         repo_path: str = ".",
-    ) -> Dict[str, Any]:
+    ) -> Dict[str, Any]:  # type: ignore[override]
         try:
             scope_error = await _validate_git_scope(repo_path)
             if scope_error:
@@ -604,14 +604,14 @@ class GitPushTool(Tool):
     parameters_model = GitPushParams
     requires_confirmation = True
 
-    async def execute(
+    async def execute(  # type: ignore[override]
         self,
         remote: str = "origin",
         branch: Optional[str] = None,
         force: bool = False,
         set_upstream: bool = False,
         repo_path: str = ".",
-    ) -> Dict[str, Any]:
+    ) -> Dict[str, Any]:  # type: ignore[override]
         try:
             scope_error = await _validate_git_scope(repo_path)
             if scope_error:
@@ -663,13 +663,13 @@ class GitPullTool(Tool):
     parameters_model = GitPullParams
     requires_confirmation = True
 
-    async def execute(
+    async def execute(  # type: ignore[override]
         self,
         remote: str = "origin",
         branch: Optional[str] = None,
         rebase: bool = False,
         repo_path: str = ".",
-    ) -> Dict[str, Any]:
+    ) -> Dict[str, Any]:  # type: ignore[override]
         try:
             scope_error = await _validate_git_scope(repo_path)
             if scope_error:
@@ -716,14 +716,14 @@ class GitMergeTool(Tool):
     parameters_model = GitMergeParams
     requires_confirmation = True
 
-    async def execute(
+    async def execute(  # type: ignore[override]
         self,
         branch: str,
         no_ff: bool = False,
         squash: bool = False,
         message: Optional[str] = None,
         repo_path: str = ".",
-    ) -> Dict[str, Any]:
+    ) -> Dict[str, Any]:  # type: ignore[override]
         try:
             scope_error = await _validate_git_scope(repo_path)
             if scope_error:
@@ -774,13 +774,13 @@ class GitRebaseTool(Tool):
     parameters_model = GitRebaseParams
     requires_confirmation = True
 
-    async def execute(
+    async def execute(  # type: ignore[override]
         self,
         onto: str,
         abort: bool = False,
         continue_rebase: bool = False,
         repo_path: str = ".",
-    ) -> Dict[str, Any]:
+    ) -> Dict[str, Any]:  # type: ignore[override]
         try:
             scope_error = await _validate_git_scope(repo_path)
             if scope_error:
@@ -828,12 +828,12 @@ class GitRevertTool(Tool):
     parameters_model = GitRevertParams
     requires_confirmation = True
 
-    async def execute(
+    async def execute(  # type: ignore[override]
         self,
         commit: str,
         no_commit: bool = False,
         repo_path: str = ".",
-    ) -> Dict[str, Any]:
+    ) -> Dict[str, Any]:  # type: ignore[override]
         try:
             scope_error = await _validate_git_scope(repo_path)
             if scope_error:
@@ -886,12 +886,12 @@ class GitResetTool(Tool):
     parameters_model = GitResetParams
     requires_confirmation = True
 
-    async def execute(
+    async def execute(  # type: ignore[override]
         self,
         ref: str = "HEAD",
         mode: str = "mixed",
         repo_path: str = ".",
-    ) -> Dict[str, Any]:
+    ) -> Dict[str, Any]:  # type: ignore[override]
         try:
             scope_error = await _validate_git_scope(repo_path)
             if scope_error:
@@ -937,12 +937,12 @@ class GitShowTool(Tool):
     parameters_model = GitShowParams
     is_read_only = True
 
-    async def execute(
+    async def execute(  # type: ignore[override]
         self,
         ref: str = "HEAD",
         stat_only: bool = False,
         repo_path: str = ".",
-    ) -> Dict[str, Any]:
+    ) -> Dict[str, Any]:  # type: ignore[override]
         try:
             cmd = ["git", "show"]
             if stat_only:
@@ -988,13 +988,13 @@ class GitRemoteTool(Tool):
     parameters_model = GitRemoteParams
     requires_confirmation = True
 
-    async def execute(
+    async def execute(  # type: ignore[override]
         self,
         action: str,
         name: Optional[str] = None,
         url: Optional[str] = None,
         repo_path: str = ".",
-    ) -> Dict[str, Any]:
+    ) -> Dict[str, Any]:  # type: ignore[override]
         try:
             scope_error = await _validate_git_scope(repo_path)
             if scope_error:
@@ -1053,13 +1053,13 @@ class GitBlameTool(Tool):
     parameters_model = GitBlameParams
     is_read_only = True
 
-    async def execute(
+    async def execute(  # type: ignore[override]
         self,
         file_path: str,
         start_line: Optional[int] = None,
         end_line: Optional[int] = None,
         repo_path: str = ".",
-    ) -> Dict[str, Any]:
+    ) -> Dict[str, Any]:  # type: ignore[override]
         try:
             cmd = ["git", "blame", "--porcelain"]
             if start_line is not None and end_line is not None:
@@ -1124,12 +1124,12 @@ class GitCherryPickTool(Tool):
     parameters_model = GitCherryPickParams
     requires_confirmation = True
 
-    async def execute(
+    async def execute(  # type: ignore[override]
         self,
         commits: List[str],
         no_commit: bool = False,
         repo_path: str = ".",
-    ) -> Dict[str, Any]:
+    ) -> Dict[str, Any]:  # type: ignore[override]
         try:
             scope_error = await _validate_git_scope(repo_path)
             if scope_error:
@@ -1181,14 +1181,14 @@ class GitTagTool(Tool):
     parameters_model = GitTagParams
     requires_confirmation = True
 
-    async def execute(
+    async def execute(  # type: ignore[override]
         self,
         action: str,
         tag_name: Optional[str] = None,
         message: Optional[str] = None,
         ref: str = "HEAD",
         repo_path: str = ".",
-    ) -> Dict[str, Any]:
+    ) -> Dict[str, Any]:  # type: ignore[override]
         try:
             scope_error = await _validate_git_scope(repo_path)
             if scope_error:
@@ -1251,13 +1251,13 @@ class GitFetchTool(Tool):
     is_read_only = False  # --prune deletes remote-tracking branches, so this is not read-only
     requires_confirmation = True
 
-    async def execute(
+    async def execute(  # type: ignore[override]
         self,
         remote: str = "origin",
         branch: Optional[str] = None,
         prune: bool = False,
         repo_path: str = ".",
-    ) -> Dict[str, Any]:
+    ) -> Dict[str, Any]:  # type: ignore[override]
         try:
             scope_error = await _validate_git_scope(repo_path)
             if scope_error:

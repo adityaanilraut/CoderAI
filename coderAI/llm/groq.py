@@ -81,6 +81,7 @@ class GroqProvider(LLMProvider):
         except Exception as e:
             raise RuntimeError(f"Groq API error: {e}") from e
         result = response.model_dump()
+        assert isinstance(result, dict)
 
         usage = result.get("usage", {})
         self.total_input_tokens += usage.get("prompt_tokens", 0)

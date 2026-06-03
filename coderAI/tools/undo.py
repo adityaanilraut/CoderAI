@@ -7,7 +7,7 @@ import shutil
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 from pydantic import BaseModel, Field
 
@@ -25,28 +25,52 @@ MAX_TOTAL_BACKUPS = 50
 class FileBackupStore:
     """Stores file backups for undo operations."""
 
-    def __init__(self, backup_dir: str = None):
+    def __init__(self, backup_dir: Optional[str] = None):
         """Initialize backup store.
 
         Args:
             backup_dir: Directory for storing backups (default: ~/.coderAI/backups)
         """
-        if backup_dir:
-            self.backup_dir = Path(backup_dir)
-        else:
-            self.backup_dir = Path.home() / ".coderAI" / "backups"
-        self.backup_dir.mkdir(parents=True, exist_ok=True)
+        self._custom_backup_dir = backup_dir
+        self._last_resolved_dir: Optional[Path] = None
+        self._cached_index: List[Dict[str, Any]] = []
 
-        # Index file tracking all backups
-        self.index_file = self.backup_dir / "index.json"
-        self.index: List[Dict[str, Any]] = self._load_index()
+    @property
+    def backup_dir(self) -> Path:
+        if self._custom_backup_dir:
+            d = Path(self._custom_backup_dir)
+        else:
+            from coderAI.system.history import history_manager
+            base_dir = Path.home() / ".coderAI" / "backups"
+            if history_manager.current_session:
+                d = base_dir / history_manager.current_session.session_id
+            else:
+                d = base_dir / "global"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    @property
+    def index_file(self) -> Path:
+        return self.backup_dir / "index.json"
+
+    @property
+    def index(self) -> List[Dict[str, Any]]:
+        current_dir = self.backup_dir
+        if self._last_resolved_dir != current_dir:
+            self._last_resolved_dir = current_dir
+            self._cached_index = self._load_index()
+        return self._cached_index
+
+    @index.setter
+    def index(self, val: List[Dict[str, Any]]):
+        self._cached_index = val
 
     def _load_index(self) -> List[Dict[str, Any]]:
         """Load backup index from disk."""
         if self.index_file.exists():
             try:
                 with open(self.index_file, "r") as f:
-                    return json.load(f)
+                    return cast(List[Dict[str, Any]], json.load(f))
             except (json.JSONDecodeError, Exception):
                 return []
         return []
@@ -323,7 +347,7 @@ class UndoTool(Tool):
     parameters_model = UndoParams
     requires_confirmation = True
 
-    async def execute(self, index: int = None) -> Dict[str, Any]:
+    async def execute(self, index: Optional[int] = None) -> Dict[str, Any]:  # type: ignore[override]
         """Undo a file operation."""
         if index is not None:
             return get_backup_store().undo_specific(index)
@@ -342,7 +366,7 @@ class UndoHistoryTool(Tool):
     parameters_model = UndoHistoryParams
     is_read_only = True
 
-    async def execute(self, limit: int = 10) -> Dict[str, Any]:
+    async def execute(self, limit: int = 10) -> Dict[str, Any]:  # type: ignore[override]
         """Get undo history."""
         history = get_backup_store().get_history(limit)
         return {

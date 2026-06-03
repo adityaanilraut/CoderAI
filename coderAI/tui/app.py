@@ -54,6 +54,12 @@ class PromptArea(TextArea):
             event.prevent_default()
             self.insert("\n")
             return
+        if event.key == "@":
+            event.stop()
+            event.prevent_default()
+            if hasattr(self.app, "action_file_picker"):
+                self.app.action_file_picker()
+            return
         await super()._on_key(event)
 
 
@@ -341,14 +347,14 @@ class SearchScreen(ModalScreen[None]):
     def __init__(self, timeline: List[Dict[str, Any]], query: str = "") -> None:
         super().__init__()
         self.timeline = timeline
-        self.query = query.lower()
+        self.search_query = query.lower()
 
     def compose(self) -> ComposeResult:
         with Container(id="search-box"):
             yield Label("Search Timeline:")
-            yield Input(value=self.query, placeholder="Type to search...", id="search-input")
+            yield Input(value=self.search_query, placeholder="Type to search...", id="search-input")
             with VerticalScroll():
-                yield Static(self._build_matches(self.query), id="search-results")
+                yield Static(self._build_matches(self.search_query), id="search-results")
             yield Button("Close", id="search-close")
 
     def _build_matches(self, query: str) -> str:
@@ -366,12 +372,135 @@ class SearchScreen(ModalScreen[None]):
 
     @on(Input.Changed, "#search-input")
     def _on_search_changed(self, event: Input.Changed) -> None:
-        self.query = event.value
-        self.query_one("#search-results", Static).update(self._build_matches(self.query))
+        self.search_query = event.value
+        self.query_one("#search-results", Static).update(self._build_matches(self.search_query))
 
     @on(Button.Pressed, "#search-close")
     def _close(self) -> None:
         self.dismiss(None)
+
+
+class FilePickerScreen(ModalScreen[Optional[str]]):
+    """Fuzzy-searchable project file picker for pinning context."""
+
+    DEFAULT_CSS = f"""
+    FilePickerScreen {{
+        align: center middle;
+    }}
+    FilePickerScreen #picker-box {{
+        width: 80%;
+        max-width: 80;
+        height: auto;
+        max-height: 80%;
+        border: round {Tokens.LINE};
+        background: {Tokens.BG_RAISED};
+        padding: 0;
+    }}
+    FilePickerScreen #picker-input {{
+        margin: 1 2;
+        background: {Tokens.BG_SUNK};
+        color: {Tokens.TEXT};
+        border: solid {Tokens.LINE_SOFT};
+    }}
+    FilePickerScreen VerticalScroll {{
+        height: auto;
+        max-height: 20;
+        margin: 1 0;
+        padding: 0 2;
+        background: {Tokens.BG_RAISED};
+    }}
+    FilePickerScreen #picker-list {{
+        height: auto;
+        background: {Tokens.BG_RAISED};
+    }}
+    FilePickerScreen #picker-footer {{
+        height: 1;
+        padding: 0 2;
+        background: {Tokens.BG_SUNK};
+        color: {Tokens.TEXT_MUTED};
+        border-top: solid {Tokens.LINE};
+    }}
+    """
+
+    def __init__(self, files: List[str]) -> None:
+        super().__init__()
+        self.files = files
+        self._selected_idx = 0
+        self._query = ""
+
+    def compose(self) -> ComposeResult:
+        with Container(id="picker-box"):
+            yield Input(
+                value="",
+                placeholder="🔍 Type to search project files to pin...",
+                id="picker-input",
+            )
+            with VerticalScroll():
+                yield Static(self._build_list(""), id="picker-list", markup=True)
+            yield Static(
+                f"[{Tokens.TEXT_MUTED}]↑↓ navigate  ↵ pin  ⎋ close[/]",
+                id="picker-footer",
+            )
+
+    def _get_matches(self, query: str) -> List[str]:
+        q = query.lower().strip()
+        if not q:
+            return self.files[:100]
+        matches = []
+        for f in self.files:
+            if q in f.lower():
+                matches.append(f)
+        matches.sort(key=lambda x: (x.lower() != q, not x.lower().startswith(q), len(x)))
+        return matches[:100]
+
+    def _build_list(self, query: str) -> str:
+        matches = self._get_matches(query)
+        lines = []
+        flat_idx = 0
+        for item in matches:
+            sel = ">" if flat_idx == self._selected_idx else " "
+            color = Tokens.WARN if flat_idx == self._selected_idx else Tokens.TEXT
+            lines.append(f"  {sel} [{color}]{escape(item)}[/]")
+            flat_idx += 1
+        if flat_idx == 0:
+            lines.append(f'[{Tokens.TEXT_MUTED}]  no matching files for "{escape(query)}"[/]')
+        if flat_idx > 0:
+            self._selected_idx = min(self._selected_idx, flat_idx - 1)
+        else:
+            self._selected_idx = 0
+        return "\n".join(lines)
+
+    @on(Input.Changed, "#picker-input")
+    def _on_input_changed(self, event: Input.Changed) -> None:
+        self._query = event.value or ""
+        self._selected_idx = 0
+        self.query_one("#picker-list", Static).update(self._build_list(self._query))
+
+    @on(events.Key)
+    async def _on_key(self, event: events.Key) -> None:
+        key = event.key
+        matches = self._get_matches(self._query)
+        if key == "up":
+            event.stop()
+            event.prevent_default()
+            if matches:
+                self._selected_idx = (self._selected_idx - 1) % len(matches)
+                self.query_one("#picker-list", Static).update(self._build_list(self._query))
+        elif key == "down":
+            event.stop()
+            event.prevent_default()
+            if matches:
+                self._selected_idx = (self._selected_idx + 1) % len(matches)
+                self.query_one("#picker-list", Static).update(self._build_list(self._query))
+        elif key == "enter":
+            event.stop()
+            event.prevent_default()
+            if matches and 0 <= self._selected_idx < len(matches):
+                self.dismiss(matches[self._selected_idx])
+        elif key == "escape":
+            event.stop()
+            event.prevent_default()
+            self.dismiss(None)
 
 
 class CommandPaletteScreen(ModalScreen[Optional[str]]):
@@ -564,7 +693,7 @@ class CommandPaletteScreen(ModalScreen[Optional[str]]):
         self.query_one("#palette-list", Static).update(self._build_list(self._query))
 
     @on(events.Key)
-    def _on_key(self, event: events.Key) -> None:
+    async def _on_key(self, event: events.Key) -> None:
         key = event.key
         flat = self._get_flat_items(self._query)
         if key == "up":
@@ -637,18 +766,11 @@ class CoderAIApp(App[None]):
         layout: horizontal;
     }}
     #rail {{
-        width: 4;
+        width: 35;
         height: 1fr;
         background: {Tokens.BG_SUNK};
         border-right: solid {Tokens.LINE};
-        padding: 1 0;
-    }}
-    #rail-content {{
-        height: 1fr;
-        background: {Tokens.BG_SUNK};
-        content-align: center top;
-        text-align: center;
-        color: {Tokens.TEXT_DIM};
+        layout: vertical;
     }}
     #center {{
         width: 1fr;
@@ -700,7 +822,7 @@ class CoderAIApp(App[None]):
         border-top: solid {Tokens.LINE_SOFT};
     }}
     #right-pane {{
-        width: 44;
+        width: 35;
         height: 1fr;
         background: {Tokens.BG_SUNK};
         border-left: solid {Tokens.LINE};
@@ -712,6 +834,12 @@ class CoderAIApp(App[None]):
         padding: 1 2;
         scrollbar-background: {Tokens.BG_SUNK};
         scrollbar-color: {Tokens.LINE};
+    }}
+    #plan-pane {{
+        height: 1fr;
+        padding: 1 2;
+        background: {Tokens.BG_SUNK};
+        color: {Tokens.TEXT_DIM};
     }}
     #context-pane {{
         height: auto;
@@ -757,16 +885,19 @@ class CoderAIApp(App[None]):
         self._auto_approve = auto_approve
         self._persona = persona
         self.reducer = EventReducer()
-        self.agent = None
-        self.controller = None
+        self.agent: Optional[Any] = None
+        self.controller: Optional[Any] = None
         self._exit_armed_at: Optional[float] = None
         self._search_filter = ""
         self._log_rendered_idx = 0
+        self.project_files: List[str] = []
+        self._scan_in_progress = False
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="main"):
             with Vertical(id="rail"):
-                yield Static(self._rail_markup(), id="rail-content", markup=True)
+                with VerticalScroll(id="fleet-scroll"):
+                    yield Static("", id="fleet-content", markup=True)
             with Vertical(id="center"):
                 yield Static("", id="session-header", markup=True)
                 yield RichLog(id="timeline", highlight=True, markup=True, wrap=True)
@@ -775,22 +906,10 @@ class CoderAIApp(App[None]):
                     yield PromptArea(id="prompt-area")
                     yield Static("", id="composer-footer", markup=True)
             with Vertical(id="right-pane"):
-                with VerticalScroll(id="fleet-scroll"):
-                    yield Static("", id="fleet-content", markup=True)
-                yield Static("", id="context-pane", markup=True)
-                yield Static("", id="cost-pane", markup=True)
+                yield Static("", id="plan-pane", markup=True)
         yield Footer()
 
-    @staticmethod
-    def _rail_markup() -> str:
-        rows = [
-            f"[{Tokens.AGENT}]{Glyphs.REASONING}[/]",
-            f"[{Tokens.TEXT_DIM}]⊙[/]",
-            f"[{Tokens.TEXT_DIM}]⌘[/]",
-            f"[{Tokens.WARN}]{Glyphs.PINNED}[/]",
-            f"[{Tokens.TEXT_DIM}]≡[/]",
-        ]
-        return "\n\n".join(rows)
+
 
     def on_mount(self) -> None:
         self.reducer.on_change = self._on_reducer_change
@@ -798,6 +917,7 @@ class CoderAIApp(App[None]):
         prompt.show_line_numbers = False
         prompt.placeholder = "Message CoderAI…   / commands   @ pin   ⌘K palette   Enter to send"
         prompt.focus()
+        self.run_worker(self._scan_project_files())
         footer = self.query_one("#composer-footer", Static)
         footer.update(self._composer_footer_markup())
         self._refresh_ui("full")
@@ -806,7 +926,7 @@ class CoderAIApp(App[None]):
         # is captured in UIBridge.start() so command dispatches from this
         # thread can hop over via call_soon_threadsafe.
         self.run_worker(
-            self._run_agent,
+            self._run_agent,  # type: ignore[arg-type]
             exclusive=True,
             thread=True,
             name="agent-loop",
@@ -942,8 +1062,7 @@ class CoderAIApp(App[None]):
     def _render_chrome(self, s: SessionState) -> None:
         self._render_session_header(s)
         self._render_fleet(s)
-        self._render_context(s)
-        self._render_cost(s)
+        self._render_plan(s)
 
     def _render_stream_tail(self, it: Dict[str, Any], verbose: bool) -> None:
         try:
@@ -985,11 +1104,14 @@ class CoderAIApp(App[None]):
             return inner
 
         ctx_ratio = (s.ctx_used / max(1, s.ctx_limit)) if s.ctx_limit else 0
+        budget_ratio = (s.cost_usd / s.budget_usd) if s.budget_usd and s.budget_usd > 0 else -1
+        cost_val = f"${s.cost_usd:.4f} / ${s.budget_usd:.2f}" if s.budget_usd and s.budget_usd > 0 else f"${s.cost_usd:.4f}"
+
         chips = [
             f"[{status_color}]{Glyphs.DOT}[/] [{Tokens.TEXT}]{model_label}[/]",
             chip("provider", provider, Tokens.TEXT_MUTED),
             chip("ctx", f"{ctx_used} / {ctx_lim}", Tokens.TEXT, bar=ctx_ratio),
-            chip("$", f"{s.cost_usd:.4f}", Tokens.TEXT_DIM),
+            chip("$", cost_val, Tokens.TEXT_DIM, bar=budget_ratio),
             chip("iter", f"{s.iteration}/{s.max_iterations}", Tokens.TEXT_DIM),
         ]
         if s.elapsed_s > 0:
@@ -1137,62 +1259,42 @@ class CoderAIApp(App[None]):
             return f"[dim]{result}[/]"
         return "\n".join(parts)
 
-    def _render_context(self, s: SessionState) -> None:
+    def _render_plan(self, s: SessionState) -> None:
         try:
-            pane = self.query_one("#context-pane", Static)
+            pane = self.query_one("#plan-pane", Static)
         except Exception:
             return
-        files = s.context_files or []
-        title = f"[{Styles.SECTION}]PINNED CONTEXT[/]  [{Tokens.TEXT_MUTED}]· {len(files)} files[/]"
-        if not files:
-            pane.update(f"{title}\n[{Tokens.TEXT_MUTED}](nothing pinned · /pin to add)[/]")
+        title = f"[{Styles.SECTION}]CURRENT PLAN[/]"
+        if not s.current_plan:
+            pane.update(f"{title}\n\n[{Tokens.TEXT_MUTED}](no active plan)[/]")
             return
-        rows = [title]
-        for f in files[:6]:
-            path = str(f.get("path", ""))[:30]
-            size_b = int(f.get("size") or 0)
-            size_str = f"{size_b / 1024:.1f} kB" if size_b else ""
-            rows.append(
-                f"[{Tokens.WARN}]{Glyphs.PINNED}[/] [{Tokens.TEXT}]{path}[/]  "
-                f"[{Tokens.TEXT_MUTED}]{size_str}[/]"
-            )
-        if len(files) > 6:
-            rows.append(f"[{Tokens.TEXT_MUTED}]… and {len(files) - 6} more[/]")
-        pane.update("\n".join(rows))
 
-    def _render_cost(self, s: SessionState) -> None:
-        try:
-            pane = self.query_one("#cost-pane", Static)
-        except Exception:
-            return
-        cost = s.cost_usd
-        budget = s.budget_usd or 0.0
-        if budget > 0:
-            ratio = min(1.0, cost / budget)
-            filled = max(0, min(30, int(ratio * 30)))
-            color = Tokens.AGENT if ratio < 0.7 else Tokens.WARN if ratio < 0.95 else Tokens.DANGER
-            bar = (
-                f"[{color}]"
-                + ("█" * filled)
-                + f"[/][{Tokens.LINE}]"
-                + ("─" * (30 - filled))
-                + "[/]"
-            )
-            tail = f"[{Tokens.TEXT}]${cost:.4f}[/] [{Tokens.TEXT_DIM}]/ ${budget:.2f}[/]"
-        else:
-            bar = f"[{Tokens.LINE}]" + ("─" * 30) + "[/]"
-            tail = f"[{Tokens.TEXT}]${cost:.4f}[/] [{Tokens.TEXT_MUTED}](no budget set)[/]"
+        plan = s.current_plan
+        p_title = str(plan.get("title") or "")
+        completed = int(plan.get("completed") or 0)
+        total = int(plan.get("total") or 0)
+        current = int(plan.get("currentIdx") or 0)
+        steps = plan.get("steps") or []
 
-        prompt_tok = s.prompt_tokens
-        comp_tok = s.completion_tokens
-        title = f"[{Styles.SECTION}]COST[/]   {tail}"
-        stats = (
-            f"[{Tokens.TEXT_DIM}]prompt[/]      "
-            f"[{Tokens.TEXT}]{prompt_tok / 1000:.1f}k tok[/]\n"
-            f"[{Tokens.TEXT_DIM}]completion[/]  "
-            f"[{Tokens.TEXT}]{comp_tok / 1000:.1f}k tok[/]"
-        )
-        pane.update(f"{title}\n{bar}\n{stats}")
+        head = f"[{Tokens.TEXT}]{escape(p_title)}[/]"
+        if total:
+            head += f" [{Tokens.TEXT_MUTED}]· {completed}/{total}[/]"
+
+        lines = [title, head, ""]
+        for s_obj in steps:
+            idx = int(s_obj.get("index", 0))
+            status = str(s_obj.get("status", "pending"))
+            desc = escape(str(s_obj.get("description", "")))
+            if status == "done":
+                g, c = Glyphs.TOOL_OK, Tokens.AGENT
+            elif idx == current + 1:
+                g, c = "▸", Tokens.WARN
+            else:
+                g, c = "·", Tokens.TEXT_MUTED
+            markup = f"  [{c}]{g}[/] [{Tokens.TEXT_MUTED}]{idx}.[/] [{Tokens.TEXT}]{desc}[/]"
+            lines.append(markup)
+        
+        pane.update("\n".join(lines))
 
     def _composer_footer_markup(self) -> str:
         s = self.reducer.session
@@ -1221,13 +1323,14 @@ class CoderAIApp(App[None]):
         if result is None:
             return
         approve, always = result
-        if approve and always and not self.reducer.session.auto_approve:
-            self.controller.enqueue_command("toggle_auto_approve")
-        self.controller.enqueue_command(
-            "tool_approval_resp",
-            toolId=pending["id"],
-            approve=approve,
-        )
+        if self.controller:
+            if approve and always and not self.reducer.session.auto_approve:
+                self.controller.enqueue_command("toggle_auto_approve")
+            self.controller.enqueue_command(
+                "tool_approval_resp",
+                toolId=pending["id"],
+                approve=approve,
+            )
         pending["decided"] = "approved" if approve else "denied"
         self._refresh_ui("full")
 
@@ -1249,10 +1352,108 @@ class CoderAIApp(App[None]):
         log = self.query_one("#timeline", RichLog)
         selection = log.text_selection
         if selection:
-            self.copy_to_clipboard(selection)
+            self.copy_to_clipboard(str(selection))
             self.notify("Selection copied to clipboard")
         else:
             self.notify("No text selected — use mouse to select text first")
+
+    async def _scan_project_files(self) -> None:
+        if self._scan_in_progress:
+            return
+        self._scan_in_progress = True
+        try:
+            import os
+
+            root = getattr(self.agent.config, "project_root", None) if self.agent else None
+            if not root:
+                root = self.reducer.session.cwd or os.getcwd()
+
+            import asyncio
+            from concurrent.futures import ThreadPoolExecutor
+
+            def do_walk():
+                from pathlib import Path
+
+                skip_dirs = {
+                    ".git",
+                    "node_modules",
+                    "__pycache__",
+                    ".venv",
+                    "venv",
+                    "dist",
+                    "build",
+                    ".next",
+                    ".nuxt",
+                    "target",
+                    ".tox",
+                    ".eggs",
+                    ".mypy_cache",
+                    ".pytest_cache",
+                    ".ruff_cache",
+                    "vendor",
+                    "bower_components",
+                    ".coderAI",
+                    ".claude",
+                }
+                skip_extensions = {
+                    ".png",
+                    ".jpg",
+                    ".jpeg",
+                    ".gif",
+                    ".webp",
+                    ".ico",
+                    ".pdf",
+                    ".zip",
+                    ".tar",
+                    ".gz",
+                    ".7z",
+                    ".mp3",
+                    ".mp4",
+                    ".mov",
+                    ".pyc",
+                    ".pyo",
+                    ".so",
+                    ".dylib",
+                    ".dll",
+                    ".exe",
+                    ".bin",
+                    ".lock",
+                }
+                files_list = []
+                root_path = Path(root).resolve()
+                for dirpath, dirnames, filenames in os.walk(root_path):
+                    dirnames[:] = [d for d in dirnames if d not in skip_dirs]
+                    for fname in filenames:
+                        file_path = Path(dirpath) / fname
+                        if file_path.suffix.lower() in skip_extensions:
+                            continue
+                        try:
+                            rel_path = file_path.relative_to(root_path)
+                            files_list.append(str(rel_path))
+                        except ValueError:
+                            pass
+                files_list.sort()
+                return files_list
+
+            loop = asyncio.get_running_loop()
+            with ThreadPoolExecutor() as pool:
+                self.project_files = await loop.run_in_executor(pool, do_walk)
+        except Exception:
+            pass
+        finally:
+            self._scan_in_progress = False
+
+    def action_file_picker(self) -> None:
+        self.run_worker(self._show_file_picker(), exclusive=True)
+
+    async def _show_file_picker(self) -> None:
+        self.run_worker(self._scan_project_files())
+        result = await self.push_screen_wait(FilePickerScreen(self.project_files))
+        if result is None or not self.controller:
+            self.query_one("#prompt-area", PromptArea).focus()
+            return
+        self.controller.enqueue_command("manage_context", action="add", path=result)
+        self.query_one("#prompt-area", PromptArea).focus()
 
     def action_command_palette(self) -> None:
         self.run_worker(self._show_palette(), exclusive=True)

@@ -135,21 +135,41 @@ CoderAI-main/
 ├── coderAI/                    # ─── Main Python Package ───
 │   ├── __init__.py             # Package version
 │   ├── cli.py                  # Click CLI: chat, config, history, models, setup, status, cost, tasks
-│   ├── agent.py                # Core orchestrator: agentic loop, context mgmt, retry, hooks
-│   ├── agents.py               # AgentPersona loader from .coderAI/agents/*.md
-│   ├── agent_tracker.py        # Real-time agent registry, cancellation, observability
-│   ├── config.py               # Pydantic config with JSON persistence (~/.coderAI/config.json)
-│   ├── context.py              # Pinned-file context manager with relevance filtering
-│   ├── context_selector.py     # Keyword extraction & relevance-based snippet selection
-│   ├── cost.py                 # Token cost tracking with per-model pricing
-│   ├── code_chunker.py         # AST/regex/sliding-window code chunker for embedding
-│   ├── code_indexer.py         # ChromaDB-backed semantic code index with incremental updates
-│   ├── events.py               # Event emitter for UI notifications
-│   ├── history.py              # Session persistence (JSON files in ~/.coderAI/history/)
-│   ├── locks.py                # Async resource locks for parallel agent safety
-│   ├── notepad.py              # Shared in-memory notepad for inter-agent communication
-│   ├── skills.py               # Skill loader from .coderAI/skills/*.md
 │   ├── system_prompt.py        # Default system prompt with tool docs & strategies
+│   ├── py.typed                # Mypy marker file
+│   │
+│   ├── core/                   # ─── Core Orchestration Layer ───
+│   │   ├── agent.py            #   Main agent orchestrator: loop & session loading
+│   │   ├── agent_loop.py       #   ExecutionLoop: LLM-tool iteration loop
+│   │   ├── agent_tracker.py    #   Real-time agent registry & cooperative cancellation
+│   │   ├── agents.py           #   AgentPersona loader from .coderAI/agents/*.md
+│   │   ├── tool_executor.py    #   Tool execution runner & confirmation gates
+│   │   └── tool_routing.py     #   Tool schema formatting & parallel routing
+│   │
+│   ├── system/                 # ─── System & Persistence ───
+│   │   ├── config.py           #   Pydantic config with JSON persistence (~/.coderAI/config.json)
+│   │   ├── cost.py             #   Token cost tracking with per-model pricing
+│   │   ├── error_policy.py     #   Budget limits & retry delay policy
+│   │   ├── events.py           #   Event emitter for UI notifications
+│   │   ├── history.py          #   Session persistence (JSON files in ~/.coderAI/history/)
+│   │   ├── hooks_manager.py    #   Execution hooks manager
+│   │   ├── locks.py            #   Async resource locks for parallel agent safety
+│   │   ├── project_layout.py   #   Project folder detection helpers
+│   │   ├── read_cache.py       #   Caching layer for repeated file reads
+│   │   └── safeguards.py       #   Safety guards for commands & staging files
+│   │
+│   ├── context/                # ─── Context Window Management ───
+│   │   ├── code_chunker.py     #   AST/regex/sliding-window code chunker for embedding
+│   │   ├── code_indexer.py     #   ChromaDB-backed semantic code index
+│   │   ├── context.py          #   Pinned-file context manager
+│   │   ├── context_controller.py # Token estimation, truncation, summarization
+│   │   └── context_selector.py #   Relevance-based snippet selection
+│   │
+│   ├── bridge/                 # ─── In-process controller (UIBridge) ───
+│   │   ├── controller.py       #   event_emitter ↔ UI on_event ↔ slash commands
+│   │   ├── tool_metadata.py    #   Tool category/risk/preview helpers
+│   │   ├── streaming.py        #   BridgeStreamingHandler → phased turn events
+│   │   └── chat_reference.py   #   Plain-text reference output for /show
 │   │
 │   ├── embeddings/             # ─── Embedding providers for semantic search ───
 │   │   ├── base.py             #   Abstract EmbeddingProvider interface
@@ -164,12 +184,6 @@ CoderAI-main/
 │   │   ├── session_setup.py    #   Agent + UIBridge bootstrap
 │   │   ├── help_menu.py        #   /help command catalog
 │   │   └── diff_render.py      #   Compact diff rendering
-│   │
-│   ├── ipc/                    # ─── In-process controller for the Textual UI ───
-│   │   ├── controller.py       #   UIBridge: event_emitter ↔ UI on_event ↔ slash commands
-│   │   ├── tool_metadata.py    #   Tool category/risk/preview helpers
-│   │   ├── streaming.py        #   BridgeStreamingHandler → phased turn events
-│   │   └── chat_reference.py   #   Plain-text reference output for /show
 │   │
 │   ├── llm/                    # ─── LLM Provider Backends ───
 │   │   ├── base.py             #   Abstract LLMProvider interface
@@ -200,6 +214,7 @@ CoderAI-main/
 │   │   ├── tasks.py            #   manage_tasks (persistent TODO list)
 │   │   ├── subagent.py         #   delegate_task (spawn isolated sub-agents)
 │   │   ├── lint.py             #   lint (auto-detect & run linter)
+│   │   ├── format.py           #   format (auto-detect & run formatter)
 │   │   ├── vision.py           #   read_image (base64 encoding for multimodal)
 │   │   ├── skills.py           #   use_skill (load skill workflows)
 │   │   ├── repl.py             #   python_repl (isolated subprocess execution)
@@ -208,6 +223,7 @@ CoderAI-main/
 │   │
 │   └── ui/                     # ─── Rich helpers (one-shot CLI only) ───
 │       └── display.py          #   Tables, markdown, panels for config/history/status
+│
 │
 ├── docs/
 │   ├── ARCHITECTURE.md         # Detailed architecture documentation

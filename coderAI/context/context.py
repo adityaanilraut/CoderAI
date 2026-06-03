@@ -29,6 +29,7 @@ class ContextManager:
         self._pinned_mtimes: Dict[str, float] = {}  # path -> last known mtime
         self.project_instructions: Optional[str] = None
         self._instructions_loaded: bool = False
+        self._last_refresh_at: float = 0.0
 
     def _load_instructions(self):
         """Load project-specific instructions from file."""

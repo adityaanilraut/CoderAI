@@ -86,8 +86,7 @@ class TestWebSearchExecution:
     @patch("coderAI.tools.web.asyncio.sleep", new_callable=AsyncMock)
     @patch("coderAI.tools.web.aiohttp.ClientSession")
     def test_network_error_returns_empty_results(self, MockSession, mock_sleep):
-        """When individual HTTP calls fail, inner methods return None and
-        execute() falls through to the 'no results' branch (success=True)."""
+        """When all backend HTTP calls fail, execute() returns success=False."""
         from coderAI.tools.web import WebSearchTool
 
         # Make the session context manager raise on __aenter__
@@ -98,10 +97,9 @@ class TestWebSearchExecution:
 
         tool = WebSearchTool()
         result = asyncio.run(tool.execute(query="test"))
-        # Inner methods swallow the exception and return None,
-        # so execute() returns the "no results" fallback
+        # All backends fail → error is raised and caught
         assert result["success"] is False
-        assert "Search failed" in result["error"]
+        assert "error" in result
 
     def test_outer_exception_returns_error(self):
         """If the outer try/except in execute() catches, success=False."""

@@ -1,9 +1,11 @@
 """CLI entry point for CoderAI."""
 
 import asyncio
+import json
 import logging
 import sys
 from pathlib import Path
+from typing import Any
 
 import click
 from dotenv import load_dotenv
@@ -422,6 +424,103 @@ def setup():
         model_name = click.prompt("   Ollama model name", default="llama3", show_default=True)
         config_manager.set("ollama_model", model_name)
         display.print_success("   Ollama configuration saved")
+    display.print()
+
+    # Web Search (optional)
+    display.print("[bold]9. Web Search Configuration (Optional)[/bold]")
+    display.print("   For querying the web during execution.")
+    use_web = click.confirm("   Configure Web Search?", default=False)
+    if use_web:
+        backend = click.prompt(
+            "   Select search backend",
+            type=click.Choice(["none", "ddg", "tavily", "exa", "searxng"], case_sensitive=False),
+            default="ddg",
+        ).lower()
+        if backend != "none":
+            config_manager.set("search_backend", backend)
+            if backend == "tavily":
+                tavily_key = click.prompt(
+                    "   Enter your Tavily API key",
+                    default="",
+                    show_default=False,
+                    hide_input=True,
+                )
+                if tavily_key:
+                    config_manager.set("tavily_api_key", tavily_key)
+                    captured_any_key = True
+            elif backend == "exa":
+                exa_key = click.prompt(
+                    "   Enter your Exa API key",
+                    default="",
+                    show_default=False,
+                    hide_input=True,
+                )
+                if exa_key:
+                    config_manager.set("exa_api_key", exa_key)
+                    captured_any_key = True
+            
+            rate_limit = click.prompt(
+                "   Enter domain rate limit delay in seconds",
+                type=float,
+                default=1.0,
+            )
+            config_manager.set("rate_limit_delay_seconds", rate_limit)
+            
+            concurrent = click.confirm("   Enable concurrent search (DDG + SearXNG)?", default=True)
+            config_manager.set("concurrent_search", concurrent)
+            display.print_success("   Web Search configuration saved")
+    display.print()
+
+    # MCP (optional)
+    display.print("[bold]10. MCP Servers Configuration (Optional)[/bold]")
+    display.print("    Add Model Context Protocol servers to provide custom tools.")
+    use_mcp = click.confirm("    Configure MCP servers?", default=False)
+    if use_mcp:
+        mcp_servers_file = Path.home() / ".coderAI" / "mcp_servers.json"
+        mcp_data: dict[str, Any] = {"mcpServers": {}}
+        if mcp_servers_file.exists():
+            try:
+                with open(mcp_servers_file, "r") as f:
+                    mcp_data = json.load(f)
+            except Exception:
+                pass
+        
+        while True:
+            server_name = click.prompt(
+                "    Enter MCP server name (or press Enter to finish)",
+                default="",
+                show_default=False,
+            ).strip()
+            if not server_name:
+                break
+            
+            transport = click.prompt(
+                "    Transport type",
+                type=click.Choice(["stdio", "sse"]),
+                default="stdio",
+            )
+            if transport == "sse":
+                url = click.prompt("    Enter SSE URL (e.g. http://localhost:8080/sse)").strip()
+                mcp_data["mcpServers"][server_name] = {
+                    "transport": "sse",
+                    "url": url,
+                }
+            else:
+                command = click.prompt("    Enter server command (e.g. npx, python3)").strip()
+                args_str = click.prompt("    Enter command arguments (comma-separated, optional)", default="").strip()
+                args = [a.strip() for a in args_str.split(",") if a.strip()] if args_str else []
+                mcp_data["mcpServers"][server_name] = {
+                    "command": command,
+                    "args": args,
+                }
+            display.print_success(f"    Configured MCP server '{server_name}'")
+        
+        try:
+            with open(mcp_servers_file, "w") as f:
+                json.dump(mcp_data, f, indent=2)
+            display.print_success("    MCP server configurations saved to ~/.coderAI/mcp_servers.json")
+        except Exception as e:
+            display.print_error(f"    Failed to save MCP servers config: {e}")
     display.print()
 
     if not captured_any_key and not (use_lmstudio or use_ollama):

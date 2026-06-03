@@ -45,7 +45,7 @@ class ReadImageTool(Tool):
     parameters_model = ReadImageParams
     is_read_only = True
 
-    async def execute(self, path: str) -> Dict[str, Any]:
+    async def execute(self, path: str) -> Dict[str, Any]:  # type: ignore[override]
         """Read and base64-encode an image file.
 
         Args:

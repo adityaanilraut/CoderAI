@@ -6,6 +6,8 @@ from typing import Any, Dict
 
 from rich.markup import escape
 from rich.text import Text
+from rich.markdown import Markdown
+from rich.padding import Padding
 from textual.widgets import RichLog
 
 from coderAI.tui.diff_render import format_diff_gutter
@@ -69,8 +71,9 @@ def write_user(log: RichLog, it: Dict[str, Any]) -> None:
     header.append(f"{Glyphs.USER} ", style=Styles.USER_GLYPH)
     header.append("you", style=Styles.USER)
     log.write(header)
-    body = Text("  " + (it.get("text", "") or ""), style=Styles.TEXT)
-    log.write(body)
+    body = it.get("text", "") or ""
+    if body:
+        log.write(Padding(Markdown(body), (0, 0, 0, 2)))
     log.write("")
 
 
@@ -89,7 +92,7 @@ def write_assistant(log: RichLog, it: Dict[str, Any], verbose: bool) -> None:
     log.write(head)
     content = it.get("content", "")
     if content:
-        log.write(Text("  " + content, style=Styles.TEXT))
+        log.write(Padding(Markdown(content), (0, 0, 0, 2)))
     if it.get("streaming"):
         log.write(Text("  ▌", style=f"blink {Tokens.AGENT}"))
     log.write("")

@@ -49,8 +49,8 @@ class ExecutionLoop:
         self.tool_executor = ToolExecutor(agent)
         self.progress_callback = progress_callback
         # Use the agent's hooks manager for consistent state (e.g. approval cache)
-        self.hooks_manager = getattr(agent, "hooks_manager", None)
-        if self.hooks_manager is None:
+        hooks_manager = getattr(agent, "hooks_manager", None)
+        if hooks_manager is None:
 
             class _NoopHooksManager:
                 def load_hooks(self):
@@ -59,7 +59,8 @@ class ExecutionLoop:
                 async def run_hooks(self, *args, **kwargs):
                     return []
 
-            self.hooks_manager = _NoopHooksManager()
+            hooks_manager = _NoopHooksManager()
+        self.hooks_manager: Any = hooks_manager
         self._last_repaired_msg_count: int = 0
         # Turn-scoped flags. ``run()`` resets these at the top of each call so
         # state never leaks across user messages.
@@ -179,6 +180,11 @@ class ExecutionLoop:
         self._length_retry_used = False
         self._hard_cap_warned = False
 
+        # Auto-connect MCP servers on first run
+        if not getattr(self.agent, "_mcp_initialized", False):
+            self.agent._mcp_initialized = True
+            await self._autoconnect_mcp_servers()
+
         # 1. Prepare session and check budget
         budget_block = self._prepare_session(user_message)
         if budget_block:
@@ -194,9 +200,10 @@ class ExecutionLoop:
             await self.hooks_manager.run_hooks(
                 "*", "on_user_prompt", {"text": user_message}, hooks_data
             )
-            transformed = await getattr(
-                self.hooks_manager, "run_chat_message_hooks", lambda *a, **kw: None
-            )(user_message, hooks_data)
+            async def fallback_chat_hook(*a, **kw):
+                return None
+            func = getattr(self.hooks_manager, "run_chat_message_hooks", fallback_chat_hook)
+            transformed = await func(user_message, hooks_data)
             if transformed:
                 user_message = transformed
 
@@ -323,8 +330,14 @@ class ExecutionLoop:
                 if content and content.strip():
                     self.agent._assistant_reply_parts.append(content.strip())
 
+                reasoning_content = response_data.get("reasoning_content")
                 session_content = content if content and str(content).strip() else None
-                self.agent.session.add_message("assistant", session_content, tool_calls=tool_calls)
+                self.agent.session.add_message(
+                    "assistant",
+                    session_content,
+                    tool_calls=tool_calls,
+                    reasoning_content=reasoning_content,
+                )
                 self._refresh_messages_from_session(messages)
 
                 if finish_reason == "refusal":
@@ -507,7 +520,7 @@ class ExecutionLoop:
                     has_denials = (
                         fatal_res and isinstance(fatal_res, dict) and bool(fatal_res.get("_denied"))
                     )
-                    if has_denials:
+                    if has_denials and isinstance(fatal_res, dict):
                         if not self.agent.config.continue_loop_on_deny:
                             denied_names = fatal_res.get("_denied_tools", [])
                             names_str = ", ".join(denied_names) if denied_names else "unknown"
@@ -537,7 +550,7 @@ class ExecutionLoop:
                             and fatal_res is not True
                             and fatal_res.get("retry") is not True
                         ):
-                            return fatal_res
+                            return fatal_res  # type: ignore[no-any-return]
                         if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
                             return self._handle_fatal_error(
                                 RuntimeError("Tool execution failed repeatedly."),
@@ -566,6 +579,41 @@ class ExecutionLoop:
                 continue
 
         return await self._handle_max_iterations()
+
+    async def _autoconnect_mcp_servers(self):
+        """Auto-connect configured MCP servers from ~/.coderAI/mcp_servers.json."""
+        from pathlib import Path
+        mcp_servers_file = Path.home() / ".coderAI" / "mcp_servers.json"
+        if not mcp_servers_file.exists():
+            return
+        try:
+            with open(mcp_servers_file, "r") as f:
+                data = json.load(f)
+            servers = data.get("mcpServers", {})
+            if not servers:
+                return
+            from coderAI.tools.mcp import mcp_client
+            for name, config in servers.items():
+                if name in mcp_client.servers:
+                    continue  # Already connected
+                transport = config.get("transport", "stdio")
+                if transport == "sse":
+                    url = config.get("url")
+                    if url:
+                        logger.info("Auto-connecting MCP server %s via SSE...", name)
+                        res = await mcp_client.connect_sse(name, url)
+                        if not res.get("success"):
+                            logger.error("Failed to auto-connect MCP server %s: %s", name, res.get("error"))
+                else:
+                    command = config.get("command")
+                    args = config.get("args", [])
+                    if command:
+                        logger.info("Auto-connecting MCP server %s via stdio...", name)
+                        res = await mcp_client.connect_stdio(name, command, args)
+                        if not res.get("success"):
+                            logger.error("Failed to auto-connect MCP server %s: %s", name, res.get("error"))
+        except Exception as e:
+            logger.error("Error auto-connecting MCP servers: %s", e)
 
     def _prepare_session(self, user_message: str) -> Optional[Dict[str, Any]]:
         """Initialize session and tracker, check budget limits."""
@@ -607,7 +655,7 @@ class ExecutionLoop:
         messages = self.agent.context_controller.inject_context(
             messages, self.agent.context_manager, query=user_message
         )
-        return await self.agent.context_controller.manage_context_window(messages)
+        return await self.agent.context_controller.manage_context_window(messages)  # type: ignore[no-any-return]
 
     def _detect_doom_loop(self, tool_calls: Optional[list]) -> bool:
         """Check for repetitive identical tool calls indicating a model loop.
@@ -845,7 +893,7 @@ class ExecutionLoop:
         messages = self.agent.context_controller.inject_context(
             messages, self.agent.context_manager, query=user_message
         )
-        return await self.agent.context_controller.manage_context_window(messages)
+        return await self.agent.context_controller.manage_context_window(messages)  # type: ignore[no-any-return]
 
     def _handle_budget_exceeded(self, e: BudgetExceededError) -> Dict[str, Any]:
         """Stop the loop cleanly when the budget has been exhausted."""
@@ -888,6 +936,7 @@ class ExecutionLoop:
     ) -> Dict[str, Any]:
         """Call the LLM with retry logic for transient errors."""
         provider_messages = self.agent.context_controller.strip_internal_markers(messages)
+        provider_messages = self.agent.provider.clean_messages(provider_messages)
         for attempt in range(1, MAX_RETRIES_PER_ITERATION + 1):
             try:
                 if self.agent.streaming:
@@ -957,7 +1006,7 @@ class ExecutionLoop:
         stream = self.agent.provider.stream(messages, tools=tools)
         cancel_event = self.agent.tracker_info._cancel_event if self.agent.tracker_info else None
         result = await self.agent.streaming_handler.handle_stream(stream, cancel_event=cancel_event)
-        return result
+        return result  # type: ignore[no-any-return]
 
     def _extract_response_data(self, response: Dict[str, Any]) -> Dict[str, Any]:
         """Extract content and tool calls from API response."""
@@ -970,4 +1019,5 @@ class ExecutionLoop:
             "content": message.get("content"),
             "tool_calls": message.get("tool_calls"),
             "finish_reason": choices[0].get("finish_reason"),
+            "reasoning_content": message.get("reasoning_content"),
         }

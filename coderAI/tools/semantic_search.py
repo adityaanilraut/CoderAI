@@ -53,7 +53,7 @@ class SemanticSearchTool(Tool):
     is_read_only = True
     category = "search"  # type: ignore[assignment]
 
-    async def execute(
+    async def execute(  # type: ignore[override]
         self,
         query: str,
         top_k: int = 10,

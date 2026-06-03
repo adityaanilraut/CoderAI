@@ -24,6 +24,7 @@ class Message(BaseModel):
     tool_calls: Optional[List[Dict[str, Any]]] = None
     tool_call_id: Optional[str] = None
     name: Optional[str] = None  # Tool name for tool messages
+    reasoning_content: Optional[str] = None
 
 
 def _default_session_model() -> str:
@@ -42,7 +43,7 @@ def _default_session_model() -> str:
         try:
             from coderAI.system.config import Config
 
-            return Config.model_fields["default_model"].default
+            return str(Config.model_fields["default_model"].default)
         except Exception:
             return "claude-4-sonnet"
 
@@ -67,13 +68,15 @@ class Session(BaseModel):
         """Get messages in OpenAI API format."""
         api_messages = []
         for msg in self.messages:
-            msg_dict = {"role": msg.role, "content": msg.content}
+            msg_dict: Dict[str, Any] = {"role": msg.role, "content": msg.content}
             if msg.tool_calls:
                 msg_dict["tool_calls"] = msg.tool_calls
             if msg.tool_call_id:
                 msg_dict["tool_call_id"] = msg.tool_call_id
             if msg.name:
                 msg_dict["name"] = msg.name
+            if msg.reasoning_content:
+                msg_dict["reasoning_content"] = msg.reasoning_content
             api_messages.append(msg_dict)
         return api_messages
 

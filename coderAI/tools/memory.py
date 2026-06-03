@@ -103,7 +103,7 @@ class SaveMemoryTool(Tool):
     description = "Save information to persistent memory for later recall"
     parameters_model = SaveMemoryParams
 
-    async def execute(self, key: str, value: str) -> Dict[str, Any]:
+    async def execute(self, key: str, value: str) -> Dict[str, Any]:  # type: ignore[override]
         """Save memory."""
         try:
             get_memory_store().add(key, value)
@@ -135,7 +135,7 @@ class RecallMemoryTool(Tool):
     parameters_model = RecallMemoryParams
     is_read_only = True
 
-    async def execute(self, key: str = None, query: str = None) -> Dict[str, Any]:
+    async def execute(self, key: Optional[str] = None, query: Optional[str] = None) -> Dict[str, Any]:  # type: ignore[override]
         """Recall memory."""
         try:
             store = get_memory_store()
@@ -186,7 +186,7 @@ class DeleteMemoryTool(Tool):
     parameters_model = DeleteMemoryParams
     requires_confirmation = True
 
-    async def execute(self, key: str) -> Dict[str, Any]:
+    async def execute(self, key: str) -> Dict[str, Any]:  # type: ignore[override]
         try:
             store = get_memory_store()
             deleted = store.delete(key)

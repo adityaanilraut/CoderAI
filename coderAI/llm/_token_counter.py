@@ -12,7 +12,7 @@ import asyncio
 import hashlib
 from collections import OrderedDict
 from typing import Optional, Tuple
-import requests
+import requests  # type: ignore[import-untyped]
 
 _TOKENS_PER_CHAR_FALLBACK = 4
 _CACHE_MAX = 1024

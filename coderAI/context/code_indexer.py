@@ -15,7 +15,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ class CodeIndexer:
         self._index_dir.mkdir(parents=True, exist_ok=True)
 
         self._manifest: Dict[str, str] = {}
-        self._collection = None
+        self._collection: Optional[Any] = None
 
     # ------------------------------------------------------------------
     # Indexing
@@ -188,11 +188,12 @@ class CodeIndexer:
 
         # Upsert
         if ids:
+            assert self._collection is not None
             self._collection.add(
                 ids=ids,
                 documents=docs,
-                metadatas=metadatas,
-                embeddings=embeddings,
+                metadatas=metadatas,  # type: ignore[arg-type]
+                embeddings=embeddings,  # type: ignore[arg-type]
             )
 
         # Update manifest
@@ -231,6 +232,7 @@ class CodeIndexer:
         if self._collection is None:
             self._connect()
 
+        assert self._collection is not None
         query_vec = await self._embed.embed([query])
         # ChromaDB doesn't support glob filters natively, so when file_filter is
         # set we overfetch and filter client-side below via _match_glob.
@@ -277,6 +279,7 @@ class CodeIndexer:
         if self._collection is None:
             self._connect()
         try:
+            assert self._collection is not None
             count = self._collection.count()
         except Exception:
             count = 0

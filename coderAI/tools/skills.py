@@ -121,7 +121,7 @@ class UseSkillTool(Tool):
     parameters_model = UseSkillParams
     is_read_only = True
 
-    async def execute(
+    async def execute(  # type: ignore[override]
         self,
         action: str,
         skill_name: Optional[str] = None,

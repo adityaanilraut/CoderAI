@@ -172,7 +172,7 @@ class PackageManagerTool(Tool):
     timeout = None
     category = "other"
 
-    async def execute(
+    async def execute(  # type: ignore[override]
         self,
         action: str,
         package: Optional[str] = None,
@@ -257,6 +257,7 @@ class PackageManagerTool(Tool):
                         cmd.append("--dev")
                     elif manager_name == "pip":
                         pass  # dev deps via requirements-dev.txt, not CLI flag
+                assert package is not None
                 cmd.append(package)
                 if version:
                     if manager_name == "pip":
@@ -284,6 +285,7 @@ class PackageManagerTool(Tool):
                             "error": f"{manager_name} does not have a dedicated uninstall command.",
                         }
                     cmd.extend(uninstall_cmd)
+                    assert package is not None
                     cmd.append(package)
 
             elif action == "list":
@@ -298,6 +300,7 @@ class PackageManagerTool(Tool):
                 cmd.extend(config["list_outdated_cmd"])
 
             elif action == "info":
+                assert package is not None
                 if manager_name == "pip":
                     cmd = [cmd_binary, "show", package]
                 elif manager_name == "npm":

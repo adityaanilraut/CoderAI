@@ -39,6 +39,7 @@ class ResourceManager:
         except (OSError, RuntimeError):
             normalized_path = str(filepath)
 
+        assert self._file_locks_lock is not None
         async with self._file_locks_lock:
             lock = self._file_locks.get(normalized_path)
             if lock is None:
@@ -55,7 +56,7 @@ class ResourceManager:
 
     def _evict_idle_locks(self) -> None:
         """Evict unlocked entries from the front of the LRU."""
-        to_remove = []
+        to_remove: list[str] = []
         for path, lock in self._file_locks.items():
             if len(self._file_locks) - len(to_remove) <= _MAX_FILE_LOCKS:
                 break
@@ -67,6 +68,7 @@ class ResourceManager:
     def git_lock(self) -> asyncio.Lock:
         """Lock to prevent concurrent git modifications that cause index.lock errors."""
         self._ensure_locks()
+        assert self._git_lock is not None
         return self._git_lock
 
 

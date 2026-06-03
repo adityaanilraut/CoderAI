@@ -297,7 +297,7 @@ class RunTestsTool(Tool):
     requires_confirmation = True
     timeout = None
 
-    async def execute(
+    async def execute(  # type: ignore[override]
         self,
         path: str = ".",
         framework: Optional[str] = None,

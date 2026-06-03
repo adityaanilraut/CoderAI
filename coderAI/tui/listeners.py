@@ -137,7 +137,7 @@ class EventReducer:
                 self.session.thinking = True
                 self.session.streaming = False
                 self.session.progress = None
-                item = {
+                item: Dict[str, Any] = {
                     "kind": "assistant",
                     "id": self.next_id(),
                     "content": "",
@@ -298,9 +298,14 @@ class EventReducer:
                     "diff": str(data.get("diff", "")),
                 }
             )
+        elif event == "plan_update":
+            dirty = True
+            self._bump_refresh("chrome")
+            self.session.current_plan = data.get("plan")
         elif event == "plan_card":
             dirty = True
             self._bump_refresh("append")
+            self.session.current_plan = data.get("plan")
             self._push(
                 {
                     "kind": "plan_card",

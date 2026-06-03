@@ -172,6 +172,21 @@ _TOOL_HELP: Dict[str, str] = {
         "Use this for REST API calls, webhooks, or any endpoint that requires authentication headers or "
         "a non-GET method. SSRF protection blocks requests to private/loopback IPs."
     ),
+    "wikipedia_search": (
+        "Search Wikipedia directly (free, no API key needed). Returns article titles, URLs, and text snippets. "
+        "Set fetch_content=true to read the full intro of the top result. "
+        "Use language= to search other editions (e.g., 'de' for German)."
+    ),
+    "read_feed": (
+        "Read and parse an RSS or Atom feed. Returns feed entries with title, link, published date, and summary. "
+        "Set fetch_content=true to also read linked article content for top entries. "
+        "Useful for monitoring blogs, changelogs, release notes, and news feeds."
+    ),
+    "sitemap_discover": (
+        "Discover pages on a website by auto-finding and parsing its sitemap.xml (via robots.txt). "
+        "Returns a list of discovered URLs. Use filter_path to narrow results. "
+        "Useful for understanding a site's structure or cataloging documentation pages."
+    ),
     # --- Memory ---
     "save_memory": ("Store key-value information that persists across sessions"),
     "recall_memory": ("Retrieve or search previously saved memories"),
@@ -438,7 +453,7 @@ _TOOL_SECTIONS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
     ("Refactoring", ("refactor",)),
     ("Package Management", ("package_manager",)),
     ("Vision", ("read_image",)),
-    ("Web", ("web_search", "read_url", "download_file", "http_request")),
+    ("Web", ("web_search", "read_url", "download_file", "http_request", "wikipedia_search", "read_feed", "sitemap_discover")),
     ("Memory (Persistent)", ("save_memory", "recall_memory", "delete_memory")),
     ("Project Context", ("project_context", "manage_context")),
     ("Task Management", ("manage_tasks",)),

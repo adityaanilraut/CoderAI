@@ -25,5 +25,7 @@ HELP_MENU_ENTRIES = [
     ("/undo", "Undo last tool action"),
     ("/tokens", "Show token usage, cost & context stats"),
     ("/context", "View pinned context files"),
+    ("/pin", "Pin a file to context · /pin <path>"),
+    ("/unpin", "Unpin a file from context · /unpin <path>"),
     ("/exit", "Shut down the agent"),
 ]

@@ -8,7 +8,7 @@ import shlex
 import shutil
 import signal as _signal
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 from pydantic import BaseModel, Field
 
@@ -266,7 +266,7 @@ class RunCommandTool(Tool):
     requires_confirmation = True
     timeout = None
 
-    async def execute(
+    async def execute(  # type: ignore[override]
         self,
         command: str,
         working_dir: str = ".",
@@ -472,9 +472,9 @@ class RunBackgroundTool(Tool):
     def __init__(self):
         super().__init__()
         # Instance shares the module-level process registry
-        self._processes = _tracked_bg_processes
+        self._processes: Dict[int, BgProcessInfo] = _tracked_bg_processes
 
-    async def execute(
+    async def execute(  # type: ignore[override]
         self, command: str, working_dir: str = ".", capture_output: bool = False
     ) -> Dict[str, Any]:
         """Start background process with tracking.
@@ -651,7 +651,7 @@ class ListProcessesTool(Tool):
     parameters_model = ListProcessesParams
     is_read_only = True
 
-    async def execute(self) -> Dict[str, Any]:
+    async def execute(self) -> Dict[str, Any]:  # type: ignore[override]
         try:
             processes = []
             for pid, info in _tracked_bg_processes.items():
@@ -689,7 +689,7 @@ class KillProcessTool(Tool):
     parameters_model = KillProcessParams
     requires_confirmation = True
 
-    async def execute(self, pid: int, force: bool = False) -> Dict[str, Any]:
+    async def execute(self, pid: int, force: bool = False) -> Dict[str, Any]:  # type: ignore[override]
         try:
             info = _tracked_bg_processes.get(pid)
             if info is None:
@@ -746,7 +746,7 @@ class ReadBgOutputTool(Tool):
     parameters_model = ReadBgOutputParams
     is_read_only = True
 
-    async def execute(self, pid: int) -> Dict[str, Any]:
+    async def execute(self, pid: int) -> Dict[str, Any]:  # type: ignore[override]
         try:
             info = _tracked_bg_processes.get(pid)
             if info is None:

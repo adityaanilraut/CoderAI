@@ -337,6 +337,7 @@ class TestAgentsPersonas:
 
     def test_load_agent_persona_success(self):
         from coderAI.core.agents import load_agent_persona
+        from coderAI.system.config import Config
 
         mock_md = """---
 name: Planner Agent
@@ -348,11 +349,12 @@ You are a planner."""
 
         with patch("pathlib.Path.exists", return_value=True):
             with patch("pathlib.Path.read_text", return_value=mock_md):
-                persona = load_agent_persona("planner")
-                assert persona is not None
-                assert persona.name == "Planner Agent"
-                assert persona.model == "claude-3-5-sonnet-20241022"
-                assert "You are a planner." in persona.instructions
+                with patch("coderAI.system.config.config_manager.load", return_value=Config()):
+                    persona = load_agent_persona("planner")
+                    assert persona is not None
+                    assert persona.name == "Planner Agent"
+                    assert persona.model == "claude-3-5-sonnet-20241022"
+                    assert "You are a planner." in persona.instructions
 
     def test_resolve_persona_name_alias(self):
         from coderAI.core.agents import resolve_persona_name
