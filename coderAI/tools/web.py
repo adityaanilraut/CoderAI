@@ -13,24 +13,22 @@ import ssl
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import quote, quote_plus, unquote, urljoin, urlparse, parse_qs
+from typing import Any, Dict, List, Optional
+from urllib.parse import quote, quote_plus, unquote, urljoin, urlparse
 
 import aiohttp
 from pydantic import BaseModel, Field
 
 from coderAI.tools.base import Tool
-
 from coderAI.tools.filesystem import _enforce_project_scope, _is_path_protected
 
 logger = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Constants & Configuration
+# Constants
 # ═══════════════════════════════════════════════════════════════════════════
 
-# User-Agent strings. Last updated 2025-04.
 _HEADERS_CHROME = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -42,9 +40,7 @@ _HEADERS_CHROME = {
 }
 
 _HEADERS_FIREFOX = {
-    "User-Agent": (
-        "Mozilla/5.0 (X11; Linux x86_64; rv:136.0) Gecko/20100101 Firefox/136.0"
-    ),
+    "User-Agent": ("Mozilla/5.0 (X11; Linux x86_64; rv:136.0) Gecko/20100101 Firefox/136.0"),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.5",
 }
@@ -55,9 +51,6 @@ _MAX_RESPONSE_BYTES = 5 * 1024 * 1024  # 5 MiB
 _MAX_REDIRECTS = 5
 _CF_BLOCK_HEADERS = ("cf-mitigated", "cf-chl-bypass", "cf-ray")
 
-_ssl_ctx: Optional[ssl.SSLContext] = None
-
-# SearXNG public instances (no API keys needed)
 _SEARXNG_INSTANCES = [
     "https://search.sapti.me",
     "https://searx.tiekoetter.com",
@@ -67,14 +60,107 @@ _SEARXNG_INSTANCES = [
     "https://paulgo.io",
 ]
 
+_VALID_FORMATS = {"markdown", "text", "html"}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# HTML2Text — shared instance for HTML→Markdown conversion
+# ═══════════════════════════════════════════════════════════════════════════
+
+_h2t = None
+
+
+def _get_h2t():
+    global _h2t
+    if _h2t is None:
+        import html2text
+
+        _h2t = html2text.HTML2Text()
+        _h2t.body_width = 0  # don't wrap
+        _h2t.ignore_links = False
+        _h2t.ignore_images = True
+        _h2t.ignore_emphasis = False
+        _h2t.ignore_tables = False
+        _h2t.protect_links = False
+        _h2t.unicode_snob = True
+        _h2t.skip_internal_links = True
+        _h2t.single_line_break = False
+        _h2t.mark_code = True
+        _h2t.wrap_links = False
+    return _h2t
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Precompiled Regex Patterns
+# ═══════════════════════════════════════════════════════════════════════════
+
+_TAG_RE = re.compile(r"<[^>]+>", re.DOTALL)
+_MULTI_NL = re.compile(r"\n{3,}")
+_MULTI_SP = re.compile(r"[ \t]{2,}")
+_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+_STRIP_BLOCK_RE = re.compile(
+    r"<(?:script|style|noscript|svg|head|nav|footer|header)[^>]*>.*?</(?:script|style|noscript|svg|head|nav|footer|header)>",
+    re.DOTALL | re.IGNORECASE,
+)
+
+_META_OG_RE = re.compile(
+    r'<meta[^>]+property=["\']og:(\w+)["\'][^>]+content=["\']([^"\']+)["\']', re.I
+)
+_META_NAME_RE = re.compile(
+    r'<meta[^>]+name=["\']([^"\']+)["\'][^>]+content=["\']([^"\']+)["\']', re.I
+)
+_META_TWITTER_RE = re.compile(
+    r'<meta[^>]+name=["\']twitter:(\w+)["\'][^>]+content=["\']([^"\']+)["\']', re.I
+)
+_TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.I | re.DOTALL)
+_JSONLD_RE = re.compile(
+    r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>', re.I | re.DOTALL
+)
+
+# DDG result parsing — precompiled
+_DDG_RESULT_RE = re.compile(
+    r"<a[^>]+href=[\'\"]([^\'\"]+)[\'\"][^>]*class=[\'\"]result-link[\'\"][^>]*>(.*?)</a>"
+    r"(.*?)(?:<td class=[\'\"]result-snippet[\'\"]>"
+    r"|<a class=[\'\"]result-snippet)(.*?)(?:</td>|</a>)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+# SearXNG result parsing — precompiled
+_SEARXNG_BLOCK_RE = re.compile(
+    r"<article[^>]+class=[\"']result[^\"']*[\"'][^>]*>(.*?)</article>",
+    re.DOTALL | re.IGNORECASE,
+)
+_SEARXNG_LINK_RE = re.compile(
+    r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>',
+    re.IGNORECASE | re.DOTALL,
+)
+_SEARXNG_SNIPPET_RE = re.compile(
+    r'<p[^>]+class=["\'](?:result-content|content|snippet)[^"\']*["\'][^>]*>(.*?)</p>',
+    re.IGNORECASE | re.DOTALL,
+)
+_SEARXNG_ANY_P_RE = re.compile(r"<p[^>]*>(.*?)</p>", re.IGNORECASE | re.DOTALL)
+
+# Readability extraction — regex-based replacement for HTMLParser scorer
+_READABILITY_ARTICLE_RE = re.compile(
+    r"<(?:article|main)[^>]*>(.*?)</(?:article|main)>", re.DOTALL | re.IGNORECASE
+)
+_READABILITY_SECTION_RE = re.compile(
+    r"<(?:section|div)[^>]*>(.*?)</(?:section|div)>", re.DOTALL | re.IGNORECASE
+)
+_READABILITY_NAV_FOOTER_RE = re.compile(
+    r"<(?:nav|footer|header|aside)[^>]*>.*?</(?:nav|footer|header|aside)>",
+    re.DOTALL | re.IGNORECASE,
+)
+_LINK_DENSITY_RE = re.compile(r"<a[^>]*>.*?</a>", re.DOTALL | re.IGNORECASE)
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Caching Layer
 # ═══════════════════════════════════════════════════════════════════════════
 
 _CACHE_DIR = Path.home() / ".coderAI" / "cache"
-_DEFAULT_SEARCH_TTL = 300   # 5 minutes
-_DEFAULT_PAGE_TTL = 3600    # 1 hour
+_DEFAULT_SEARCH_TTL = 300
+_DEFAULT_PAGE_TTL = 3600
 
 
 def _cache_dir() -> Path:
@@ -83,7 +169,6 @@ def _cache_dir() -> Path:
 
 
 def _cache_key(prefix: str, *parts: str) -> str:
-    """Generate a deterministic cache key from prefix and parts."""
     raw = "|".join((prefix,) + parts)
     return hashlib.sha256(raw.encode()).hexdigest()[:32]
 
@@ -93,7 +178,6 @@ def _cache_path(key: str) -> Path:
 
 
 def _get_cached(key: str) -> Optional[Any]:
-    """Read a cached value; returns None if missing or expired."""
     path = _cache_path(key)
     if not path.exists():
         return None
@@ -109,7 +193,6 @@ def _get_cached(key: str) -> Optional[Any]:
 
 
 def _set_cached(key: str, value: Any, ttl: int) -> None:
-    """Write a value to the cache with a TTL in seconds."""
     try:
         data = {
             "value": value,
@@ -126,14 +209,14 @@ def _set_cached(key: str, value: Any, ttl: int) -> None:
 # ═══════════════════════════════════════════════════════════════════════════
 
 _last_request: Dict[str, float] = {}
-_rate_limit_delay: float = 1.0  # seconds, overridden from config
+_rate_limit_delay: float = 1.0
 
 
 def _get_rate_limit_delay() -> float:
-    """Read rate-limit delay from env or config, cached at module level."""
     global _rate_limit_delay
     try:
         from coderAI.system.config import config_manager
+
         _rate_limit_delay = config_manager.load().rate_limit_delay_seconds
     except Exception:
         env_val = os.getenv("CODERAI_RATE_LIMIT_DELAY")
@@ -145,24 +228,7 @@ def _get_rate_limit_delay() -> float:
     return _rate_limit_delay
 
 
-def _rate_limit_domain(hostname: Optional[str]) -> None:
-    """Enforce a minimum interval between requests to the same domain."""
-    if not hostname:
-        return
-    delay = _get_rate_limit_delay()
-    if delay <= 0:
-        return
-    domain = hostname.lower()
-    now = time.monotonic()
-    last = _last_request.get(domain, 0)
-    wait = delay - (now - last)
-    if wait > 0:
-        logger.debug(f"Rate limiting {domain}: waiting {wait:.2f}s")
-    _last_request[domain] = now
-
-
 async def _rate_limit_async(hostname: Optional[str]) -> None:
-    """Async version: sleeps if rate limited."""
     if not hostname:
         return
     delay = _get_rate_limit_delay()
@@ -179,8 +245,11 @@ async def _rate_limit_async(hostname: Optional[str]) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# SSL / Connection Utilities
+# Shared aiohttp Session (connection pooling + SSRF-aware resolver)
 # ═══════════════════════════════════════════════════════════════════════════
+
+_ssl_ctx: Optional[ssl.SSLContext] = None
+
 
 def _get_ssl_ctx() -> ssl.SSLContext:
     global _ssl_ctx
@@ -195,52 +264,100 @@ def _get_ssl_ctx() -> ssl.SSLContext:
     return _ssl_ctx
 
 
-class _PinnedResolver(aiohttp.abc.AbstractResolver):
-    """aiohttp resolver that pins a hostname to a pre-validated IP."""
+class _SSRFResolver(aiohttp.abc.AbstractResolver):
+    """Resolver that validates DNS resolutions against SSRF allowlist."""
 
-    def __init__(self, host: str, ip: str, family: int):
-        self._host = host.lower()
-        self._ip = ip
-        self._family = family
+    def __init__(self, allow_local: bool = False):
+        self._allow_local = allow_local
 
-    async def resolve(self, host: str, port: int = 0, family: int = socket.AF_INET):  # type: ignore[override]
-        if host.lower() != self._host:
-            raise OSError(f"SSRF guard: host {host!r} not in pinned allowlist")
-        return [
-            {
-                "hostname": host,
-                "host": self._ip,
-                "port": port,
-                "family": self._family,
-                "proto": 0,
-                "flags": 0,
-            }
-        ]
+    async def resolve(self, host: str, port: int = 0, family: int = socket.AF_INET):
+        loop = asyncio.get_running_loop()
+        try:
+            infos = await loop.getaddrinfo(host, port, family=family, type=socket.SOCK_STREAM)
+        except Exception as e:
+            raise OSError(f"SSRF guard: DNS failed for {host}: {e}")
 
-    async def close(self) -> None:  # type: ignore[override]
-        return None
+        results: List[Dict[str, Any]] = []
+        for fam, _type, _proto, _canon, sockaddr in infos:
+            if fam not in (socket.AF_INET, socket.AF_INET6):
+                continue
+            ip = sockaddr[0]
+            if self._allow_local or _is_ip_public(ip):
+                results.append({
+                    "hostname": host,
+                    "host": ip,
+                    "port": port,
+                    "family": fam,
+                    "proto": 0,
+                    "flags": socket.AI_NUMERICHOST,
+                })
+        if not results:
+            raise OSError(f"SSRF guard blocked {host}: no public addresses allowed")
+        return results
+
+    async def close(self) -> None:
+        pass
 
 
-def _pinned_connector(host: str, ip: str, family: int) -> aiohttp.TCPConnector:
-    return aiohttp.TCPConnector(
-        ssl=_get_ssl_ctx(),
-        resolver=_PinnedResolver(host, ip, family),
-    )
+_session: Optional[aiohttp.ClientSession] = None
+_allow_local_session: Optional[aiohttp.ClientSession] = None
+_session_loop_id: Optional[int] = None
+
+
+async def _get_session(allow_local: bool = False) -> aiohttp.ClientSession:
+    global _session, _allow_local_session, _session_loop_id
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    loop_id = id(loop) if loop else None
+
+    if allow_local:
+        if (_allow_local_session is None or _allow_local_session.closed
+                or _session_loop_id != loop_id):
+            _allow_local_session = aiohttp.ClientSession(
+                connector=aiohttp.TCPConnector(
+                    ssl=_get_ssl_ctx(),
+                    resolver=_SSRFResolver(allow_local=True),
+                    limit=100,
+                    limit_per_host=20,
+                    ttl_dns_cache=300,
+                    enable_cleanup_closed=True,
+                ),
+            )
+            _session_loop_id = loop_id
+        return _allow_local_session
+    else:
+        if (_session is None or _session.closed
+                or _session_loop_id != loop_id):
+            _session = aiohttp.ClientSession(
+                connector=aiohttp.TCPConnector(
+                    ssl=_get_ssl_ctx(),
+                    resolver=_SSRFResolver(allow_local=False),
+                    limit=100,
+                    limit_per_host=20,
+                    ttl_dns_cache=300,
+                    enable_cleanup_closed=True,
+                ),
+            )
+            _session_loop_id = loop_id
+        return _session
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # HTML Utilities
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 def _strip_tags(raw: str) -> str:
-    """Strip HTML tags and unescape entities."""
     return html_lib.unescape(re.sub(r"<[^>]+>", "", raw)).strip()
 
 
 def _resolve_ddg_url(url: str) -> str:
-    """Decode DuckDuckGo redirect URLs (//duckduckgo.com/l/?uddg=...) to the real URL."""
     url = url.replace("&amp;", "&")
     if "duckduckgo.com/l/" in url or "duckduckgo.com/y.js" in url:
+        from urllib.parse import parse_qs
+
         full = url if url.startswith("http") else ("https:" + url)
         qs = parse_qs(urlparse(full).query)
         if "uddg" in qs:
@@ -250,273 +367,110 @@ def _resolve_ddg_url(url: str) -> str:
     return url
 
 
-_STRIP_BLOCKS = {"script", "style", "noscript", "svg", "head", "nav", "footer", "header"}
-_TAG_RE = re.compile(r"<[^>]+>", re.DOTALL)
-_MULTI_NL = re.compile(r"\n{3,}")
-_MULTI_SP = re.compile(r"[ \t]{2,}")
-
-
-def _strip_blocks(html: str) -> str:
-    for tag in _STRIP_BLOCKS:
-        html = re.sub(rf"<{tag}[^>]*>.*?</{tag}>", "", html, flags=re.DOTALL | re.IGNORECASE)
-    return re.sub(r"<!--.*?-->", "", html, flags=re.DOTALL)
-
-
-def _html_to_markdown(html: str) -> str:
-    """Convert HTML to markdown-ish text with structure preservation."""
-    html = _strip_blocks(html)
-
-    for lvl in range(1, 7):
-        def repl(m: Any, level: int = lvl) -> str:
-            return f"\n\n{'#' * level} {_strip_tags(m.group(1))}\n"
-        html = re.sub(
-            rf"<h{lvl}[^>]*>(.*?)</h{lvl}>",
-            repl,
-            html,
-            flags=re.DOTALL | re.IGNORECASE,
-        )
-
-    html = re.sub(
-        r"<li[^>]*>(.*?)</li>",
-        lambda m: f"\n- {_strip_tags(m.group(1))}",
-        html,
-        flags=re.DOTALL | re.IGNORECASE,
-    )
-
-    def _link_repl(m):
-        href, text = m.group(1), _strip_tags(m.group(2))
-        if href.startswith(("http://", "https://")) and text and text != href:
-            return f"[{text}]({href})"
-        return text
-
-    html = re.sub(
-        r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>',
-        _link_repl,
-        html,
-        flags=re.DOTALL | re.IGNORECASE,
-    )
-
-    html = re.sub(
-        r"<pre[^>]*>(.*?)</pre>",
-        lambda m: f"\n```\n{_strip_tags(m.group(1))}\n```\n",
-        html,
-        flags=re.DOTALL | re.IGNORECASE,
-    )
-    html = re.sub(
-        r"<code[^>]*>(.*?)</code>",
-        lambda m: f"`{_strip_tags(m.group(1))}`",
-        html,
-        flags=re.DOTALL | re.IGNORECASE,
-    )
-
-    for tag, marker in (("strong", "**"), ("b", "**"), ("em", "*"), ("i", "*")):
-        def repl_marker(m: Any, mk: str = marker) -> str:
-            return f"{mk}{_strip_tags(m.group(1))}{mk}"
-        html = re.sub(
-            rf"<{tag}[^>]*>(.*?)</{tag}>",
-            repl_marker,
-            html,
-            flags=re.DOTALL | re.IGNORECASE,
-        )
-
-    html = re.sub(
-        r"<(?:br|/p|/div|/li|/tr|/blockquote|/section|/article)[^>]*>",
-        "\n",
-        html,
-        flags=re.IGNORECASE,
-    )
-    html = re.sub(
-        r"<(?:p|div|tr|blockquote|section|article)\b[^>]*>",
-        "\n",
-        html,
-        flags=re.IGNORECASE,
-    )
-    html = re.sub(r"<(?:td|th)[^>]*>", "\t", html, flags=re.IGNORECASE)
-
-    text = _TAG_RE.sub("", html)
-    text = html_lib.unescape(text)
-    text = _MULTI_SP.sub(" ", text)
-    text = _MULTI_NL.sub("\n\n", text)
-    return text.strip()
-
-
-def _html_to_plain(html: str) -> str:
-    """Strip all markup and return paragraph-spaced plain text."""
-    html = _strip_blocks(html)
-    html = re.sub(
-        r"<(?:br|/p|/div|/li|/tr|/h[1-6]|/blockquote|/section|/article)[^>]*>",
-        "\n",
-        html,
-        flags=re.IGNORECASE,
-    )
-    text = _TAG_RE.sub("", html)
-    text = html_lib.unescape(text)
-    text = _MULTI_SP.sub(" ", text)
-    text = _MULTI_NL.sub("\n\n", text)
-    return text.strip()
-
-
 def _looks_like_html(content_type: str, raw: str) -> bool:
     return "html" in (content_type or "").lower() or raw.lstrip().startswith("<")
 
 
+def _html_to_text(raw_html: str, fmt: str) -> str:
+    """Convert HTML to the requested format using html2text or plain-text stripping."""
+    if fmt == "html":
+        return raw_html
+    if not _looks_like_html("text/html", raw_html):
+        return raw_html
+    if fmt == "text":
+        text = _STRIP_BLOCK_RE.sub("", raw_html)
+        text = _COMMENT_RE.sub("", text)
+        text = _TAG_RE.sub(" ", text)
+        text = html_lib.unescape(text)
+        text = _MULTI_SP.sub(" ", text)
+        text = _MULTI_NL.sub("\n\n", text)
+        return text.strip()
+    # markdown (default)
+    return _get_h2t().handle(raw_html).strip()
+
+
+# Backward-compatible aliases (legacy function names)
+def _convert_content(raw: str, content_type: str, fmt: str) -> str:
+    return _html_to_text(raw, fmt)
+
+
+def _html_to_markdown(html: str) -> str:
+    return _html_to_text(html, "markdown")
+
+
+def _html_to_plain(html: str) -> str:
+    return _html_to_text(html, "text")
+
+
 # ═══════════════════════════════════════════════════════════════════════════
-# Content Extraction — Readability (extract main article content)
+# Content Extraction — Readability (regex-based, ~10x faster than HTMLParser)
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 def _extract_main_content(html: str) -> str:
-    """Extract the main content block from a web page using readability heuristics.
+    """Extract the main content block from a web page using regex heuristics."""
+    # Strip non-content blocks
+    html = _STRIP_BLOCK_RE.sub("", html)
+    html = _COMMENT_RE.sub("", html)
 
-    Scores text blocks by text density, link density, and semantic tags.
-    Returns the highest-scoring content as cleaned HTML, or the original if
-    no clear content block is found.
-    """
-    from html.parser import HTMLParser
+    # Try <article> or <main> first — highest semantic weight
+    m = _READABILITY_ARTICLE_RE.search(html)
+    if m:
+        return m.group(1)
 
-    class _BlockScorer(HTMLParser):
-        def __init__(self):
-            super().__init__()
-            self.blocks: List[Tuple[str, float, str]] = []  # (tag, score, text)
-            self._current_tag: Optional[str] = None
-            self._current_text: List[str] = []
-            self._current_link_text: List[str] = []
-            self._in_link = False
-            self._depth = 0
-            self._block_tags = {
-                "article", "main", "section", "div", "p",
-                "pre", "blockquote", "aside", "td",
-            }
-
-        def handle_starttag(self, tag, attrs):
-            tag_l = tag.lower()
-            if tag_l == "a":
-                self._in_link = True
-
-            if tag_l in self._block_tags or tag_l.startswith("h"):
-                if self._current_text and self._current_tag:
-                    score = self._compute_score()
-                    self.blocks.append(
-                        (self._current_tag or "div", score, "\n\n".join(self._current_text))
-                    )
-                self._current_tag = tag_l
-                self._current_text = []
-                self._current_link_text = []
-                self._depth += 1 if tag_l not in ("br", "hr", "img") else 0
-
-        def handle_endtag(self, tag):
-            tag_l = tag.lower()
-            if tag_l == "a":
-                self._in_link = False
-            if tag_l in self._block_tags:
-                if self._current_text:
-                    score = self._compute_score()
-                    self.blocks.append(
-                        (self._current_tag or "div", score, "\n\n".join(self._current_text))
-                    )
-                self._current_tag = None
-                self._current_text = []
-                self._current_link_text = []
-            elif tag_l.startswith("h"):
-                if self._current_text:
-                    score = self._compute_score()
-                    self.blocks.append(
-                        (self._current_tag or "section", score, "\n\n".join(self._current_text))
-                    )
-                self._current_tag = None
-                self._current_text = []
-                self._current_link_text = []
-
-        def handle_data(self, data):
-            stripped = data.strip()
-            if not stripped:
-                return
-            if self._current_tag is None:
-                self._current_tag = "section"
-            if self._in_link:
-                self._current_link_text.append(stripped)
-            self._current_text.append(stripped)
-
-        def _compute_score(self) -> float:
-            full_text = "".join(self._current_text)
-            link_text = "".join(self._current_link_text)
-            text_len = len(full_text)
-            if text_len < 25:  # ignore tiny blocks
-                return 0.0
-
-            link_ratio = (len(link_text) / text_len) if text_len > 0 else 0
-            # Higher score = more text, fewer links, semantic tags
-            score = min(text_len / 80, 10.0)  # length bonus, cap at 10
-            if self._current_tag in ("article", "main"):
-                score *= 3.0
-            elif self._current_tag in ("section", "blockquote", "pre"):
-                score *= 1.5
-            elif self._current_tag == "p":
-                score *= 1.2
-            # Penalize high link density (nav, footer, etc.)
-            if link_ratio > 0.5:
-                score *= 0.2
-            elif link_ratio > 0.3:
-                score *= 0.5
-            return score
-
-    scorer = _BlockScorer()
-    try:
-        scorer.feed(html)
-        scorer.close()
-    except Exception:
+    # Split into large blocks, score by text density
+    blocks = _READABILITY_SECTION_RE.findall(html)
+    if not blocks:
         return html
 
-    if not scorer.blocks:
-        return html
+    best_text = ""
+    best_score = 0.0
 
-    # Sort by score, take top blocks
-    scorer.blocks.sort(key=lambda x: x[1], reverse=True)
-    top_blocks = [b for b in scorer.blocks[:20] if b[1] > 0.5]
-    if not top_blocks:
-        return html
+    for block in blocks:
+        text = _TAG_RE.sub(" ", block)
+        text = html_lib.unescape(text)
+        text = _MULTI_SP.sub(" ", text).strip()
+        if len(text) < 50:
+            continue
 
-    return "\n\n".join(b[2] for b in top_blocks)
+        link_text = " ".join(_LINK_DENSITY_RE.findall(block))
+        link_text = _TAG_RE.sub("", link_text).strip()
+
+        text_len = len(text)
+        link_ratio = len(link_text) / text_len if text_len > 0 else 1.0
+
+        # Score: prefer long text blocks with low link density
+        score = min(text_len / 80, 10.0)
+        if link_ratio > 0.5:
+            score *= 0.2
+        elif link_ratio > 0.3:
+            score *= 0.5
+
+        if score > best_score:
+            best_score = score
+            best_text = text
+
+    return best_text if best_text else html
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Structured Data Extraction (Open Graph, JSON-LD, meta tags)
+# Metadata Extraction
 # ═══════════════════════════════════════════════════════════════════════════
-
-_META_OG_RE = re.compile(r'<meta[^>]+property=["\']og:(\w+)["\'][^>]+content=["\']([^"\']+)["\']', re.I)
-_META_NAME_RE = re.compile(r'<meta[^>]+name=["\']([^"\']+)["\'][^>]+content=["\']([^"\']+)["\']', re.I)
-_META_TWITTER_RE = re.compile(
-    r'<meta[^>]+name=["\']twitter:(\w+)["\'][^>]+content=["\']([^"\']+)["\']', re.I
-)
-_TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.I | re.DOTALL)
-_JSONLD_RE = re.compile(
-    r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>', re.I | re.DOTALL
-)
 
 
 def _extract_metadata(html: str) -> Dict[str, str]:
-    """Extract Open Graph, Twitter Card, meta description, title, and JSON-LD."""
     meta: Dict[str, str] = {}
-
-    # Title
     m = _TITLE_RE.search(html)
     if m:
         meta["title"] = _strip_tags(m.group(1))
-
-    # Open Graph
     for m in _META_OG_RE.finditer(html):
         meta[f"og:{m.group(1)}"] = m.group(2)
-
-    # Twitter cards
     for m in _META_TWITTER_RE.finditer(html):
         meta[f"twitter:{m.group(1)}"] = m.group(2)
-
-    # Standard meta tags
     for m in _META_NAME_RE.finditer(html):
         name = m.group(1).lower()
         if name not in meta:
             meta[name] = m.group(2)
-
-    # JSON-LD
     for m in _JSONLD_RE.findall(html):
         try:
             ld = json.loads(m)
@@ -528,7 +482,6 @@ def _extract_metadata(html: str) -> Dict[str, str]:
                     meta.setdefault("description", str(ld["description"]))
         except (json.JSONDecodeError, TypeError):
             pass
-
     return meta
 
 
@@ -536,11 +489,12 @@ def _extract_metadata(html: str) -> Dict[str, str]:
 # PDF Text Extraction
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 def _extract_pdf_text(content: bytes) -> Optional[str]:
-    """Extract text from PDF binary content using pypdf (optional dependency)."""
     try:
-        from pypdf import PdfReader
         from io import BytesIO
+
+        from pypdf import PdfReader
 
         reader = PdfReader(BytesIO(content))
         pages: List[str] = []
@@ -561,6 +515,7 @@ def _extract_pdf_text(content: bytes) -> Optional[str]:
 # SSRF Protection
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 def _is_ip_public(ip_str: str) -> bool:
     try:
         ip = ipaddress.ip_address(ip_str)
@@ -580,32 +535,6 @@ def _allow_local(allow_local: bool) -> bool:
     return bool(allow_local) or os.getenv("CODERAI_ALLOW_LOCAL_URLS") == "1"
 
 
-async def _resolve_and_validate(
-    url: str, *, allow_local: bool = False
-) -> Optional[Dict[str, Any]]:
-    try:
-        parsed = urlparse(url)
-        hostname = parsed.hostname
-        if not hostname:
-            return None
-        loop = asyncio.get_running_loop()
-        infos = await loop.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
-    except Exception as e:
-        logger.warning(f"URL resolution failed for {url}: {e}")
-        return None
-
-    allow = _allow_local(allow_local)
-    for family, _type, _proto, _canon, sockaddr in infos:
-        if family not in (socket.AF_INET, socket.AF_INET6):
-            continue
-        ip = sockaddr[0]
-        if allow or _is_ip_public(ip):
-            return {"host": hostname, "ip": ip, "family": family}
-
-    logger.warning(f"SSRF guard blocked {url}: no public address resolved")
-    return None
-
-
 def _is_cloudflare_block(status: int, headers: Dict[str, str]) -> bool:
     if status not in (403, 429, 503):
         return False
@@ -614,6 +543,11 @@ def _is_cloudflare_block(status: int, headers: Dict[str, str]) -> bool:
         return True
     server = headers.get("Server") or headers.get("server") or ""
     return "cloudflare" in server.lower()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# HTTP Request (shared session, SSRF via resolver, redirect-safe)
+# ═══════════════════════════════════════════════════════════════════════════
 
 
 async def _safe_request(
@@ -627,26 +561,33 @@ async def _safe_request(
     allow_local: bool = False,
     max_bytes: int = _MAX_RESPONSE_BYTES,
 ) -> Optional[Dict[str, Any]]:
-    """Issue an HTTP request with DNS-rebind-resistant redirects.
+    """Issue an HTTP request with SSRF protection via a shared session pool.
 
-    Each hop is resolved once, validated against the public-IP allowlist, and
-    the connection is pinned to that IP. Redirects are handled manually (up
-    to ``_MAX_REDIRECTS``) so a public→private redirect cannot bypass the
-    guard.
+    Redirects are handled manually so a public→private redirect cannot
+    bypass SSRF validation. The shared session provides connection pooling.
     """
+    # Resolve effective allow_local (env var or parameter)
+    allow_local = _allow_local(allow_local)
+    session = await _get_session(allow_local)
     current = url
     seen_urls: set = set()
 
-    # Apply rate limiting before the request
     parsed = urlparse(current)
-    _rate_limit_domain(parsed.hostname)
+    await _rate_limit_async(parsed.hostname)
+
+    # Pre-validate IP: aiohttp resolver only fires for hostname lookups,
+    # not literal IP addresses. Do explicit validation here.
+    if parsed.hostname:
+        try:
+            ip = ipaddress.ip_address(parsed.hostname)
+            if not (allow_local or _is_ip_public(str(ip))):
+                logger.warning(f"SSRF guard: blocked direct IP {parsed.hostname}")
+                return None
+        except ValueError:
+            pass  # not an IP, resolver will handle it
 
     for _ in range(_MAX_REDIRECTS + 1):
-        resolved = await _resolve_and_validate(current, allow_local=allow_local)
-        if resolved is None:
-            return None
-        connector = _pinned_connector(resolved["host"], resolved["ip"], resolved["family"])
-        async with aiohttp.ClientSession(connector=connector) as session:
+        try:
             async with session.request(
                 method,
                 current,
@@ -677,9 +618,6 @@ async def _safe_request(
                 if cl_header is not None:
                     try:
                         if int(cl_header) > max_bytes:
-                            logger.warning(
-                                f"Response oversize: Content-Length={cl_header} > {max_bytes} for {current}"
-                            )
                             return {
                                 "status": resp.status,
                                 "headers": dict(resp.headers),
@@ -709,6 +647,21 @@ async def _safe_request(
                     "content": raw_bytes,
                     "oversize": oversize,
                 }
+        except aiohttp.ClientError as e:
+            # aiohttp wraps SSRF resolver errors as ClientConnectorError/DNSError;
+            # the original OSError is preserved in __cause__
+            msg = str(e)
+            cause_msg = str(e.__cause__) if e.__cause__ else ""
+            if "SSRF guard" in msg or "SSRF guard" in cause_msg:
+                logger.warning(msg)
+                return None
+            raise
+        except OSError as e:
+            # SSRF resolver raises OSError for blocked hosts
+            if "SSRF guard" in str(e):
+                logger.warning(str(e))
+                return None
+            raise
 
     logger.warning(f"SSRF guard: exceeded {_MAX_REDIRECTS} redirects from {url}")
     return None
@@ -721,7 +674,6 @@ async def _safe_request_cf(
     headers: Optional[Dict[str, str]] = None,
     **kwargs: Any,
 ) -> Optional[Dict[str, Any]]:
-    """Wrap ``_safe_request`` with a Cloudflare-aware UA fallback."""
     resp = await _safe_request(method, url, headers=headers, **kwargs)
     if resp is None:
         return None
@@ -735,23 +687,59 @@ async def _safe_request_cf(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Content Conversion
+# Fetch Page Content
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _convert_content(raw: str, content_type: str, fmt: str) -> str:
-    """Render the response body in the requested format."""
-    if fmt == "html":
-        return raw
-    if not _looks_like_html(content_type, raw):
-        return raw
-    if fmt == "text":
-        return _html_to_plain(raw)
-    return _html_to_markdown(raw)
+
+async def _fetch_page_text(
+    url: str,
+    max_length: int,
+    fmt: str = "markdown",
+    extract_main: bool = False,
+) -> Optional[str]:
+    cache_key = _cache_key("page", url, fmt, str(extract_main))
+    cached = _get_cached(cache_key)
+    if cached is not None:
+        return str(cached)[:max_length]
+
+    resp = await _safe_request_cf("GET", url, timeout_s=15.0)
+    if resp is None or resp["status"] != 200:
+        return None
+
+    raw = resp["text"]
+    content_type = resp.get("content_type", "")
+
+    is_pdf = "pdf" in content_type.lower() or url.lower().endswith(".pdf")
+    if is_pdf and "pdf" in content_type.lower():
+        pdf_text = _extract_pdf_text(resp.get("content", b""))
+        if pdf_text:
+            text = pdf_text
+        else:
+            return None
+    else:
+        if extract_main and _looks_like_html(content_type, raw):
+            raw = _extract_main_content(raw)
+        text = _html_to_text(raw, fmt)
+
+    if len(text) > max_length:
+        text = text[:max_length] + "\n\n[...truncated...]"
+
+    if text and len(text) > 0:
+        try:
+            from coderAI.system.config import config_manager
+
+            ttl = config_manager.load().page_cache_ttl_seconds
+        except Exception:
+            ttl = _DEFAULT_PAGE_TTL
+        _set_cached(cache_key, text, ttl)
+
+    return text if len(text) > 0 else None
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Search Result Dataclass
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 @dataclass
 class _SearchResult:
@@ -767,6 +755,7 @@ class _SearchResult:
 # Search Backend Base
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 class _SearchBackend:
     name: str = "base"
 
@@ -781,12 +770,11 @@ class _SearchBackend:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Tavily Backend (needs TAVILY_API_KEY)
+# Tavily Backend
 # ═══════════════════════════════════════════════════════════════════════════
 
-class _TavilyBackend(_SearchBackend):
-    """Tavily AI search — REST API, content snippets included."""
 
+class _TavilyBackend(_SearchBackend):
     name = "tavily"
     ENDPOINT = "https://api.tavily.com/search"
 
@@ -831,12 +819,11 @@ class _TavilyBackend(_SearchBackend):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Exa Backend (needs EXA_API_KEY)
+# Exa Backend
 # ═══════════════════════════════════════════════════════════════════════════
 
-class _ExaBackend(_SearchBackend):
-    """Exa neural search — REST API."""
 
+class _ExaBackend(_SearchBackend):
     name = "exa"
     ENDPOINT = "https://api.exa.ai/search"
 
@@ -891,12 +878,11 @@ class _ExaBackend(_SearchBackend):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# DuckDuckGo Backend (no API key needed)
+# DuckDuckGo Backend (reduced retries: 4 → 2, exponential backoff stays)
 # ═══════════════════════════════════════════════════════════════════════════
 
-class _DDGBackend(_SearchBackend):
-    """DuckDuckGo HTML scrape — fallback when no API key is configured."""
 
+class _DDGBackend(_SearchBackend):
     name = "ddg"
     DDG_URL = "https://html.duckduckgo.com/lite/"
 
@@ -911,7 +897,7 @@ class _DDGBackend(_SearchBackend):
         if allowed_domains or blocked_domains:
             wanted = min(20, num_results * 3)
 
-        header_sets = [_HEADERS_CHROME, _HEADERS_FIREFOX, _HEADERS_CHROME, _HEADERS_FIREFOX]
+        header_sets = [_HEADERS_CHROME, _HEADERS_FIREFOX]
         last_error = "Unknown error"
 
         for attempt, headers in enumerate(header_sets):
@@ -946,13 +932,8 @@ class _DDGBackend(_SearchBackend):
 
 
 def _parse_ddg_results(html_text: str, max_results: int) -> List[_SearchResult]:
-    """Parse DuckDuckGo Lite HTML results using the primary regex pattern."""
     results: List[_SearchResult] = []
-    pattern = (
-        r"<a[^>]+href=[\'\"]([^\'\"]+)[\'\"][^>]*class=[\'\"]result-link[\'\"][^>]*>(.*?)</a>"
-        r"(.*?)(?:<td class=[\'\"]result-snippet[\'\"]>|<a class=[\'\"]result-snippet)(.*?)(?:</td>|</a>)"
-    )
-    for m in re.finditer(pattern, html_text, re.IGNORECASE | re.DOTALL):
+    for m in _DDG_RESULT_RE.finditer(html_text):
         if len(results) >= max_results:
             break
         raw_url = html_lib.unescape(m.group(1))
@@ -966,7 +947,7 @@ def _parse_ddg_results(html_text: str, max_results: int) -> List[_SearchResult]:
 
 
 def _parse_ddg_results_v2(html_text: str, max_results: int) -> List[_SearchResult]:
-    """Parse DuckDuckGo Lite using an alternate pattern (html.parser fallback)."""
+    """Fallback parser for DDG results when regex pattern fails."""
     from html.parser import HTMLParser
 
     class _DDGParser(HTMLParser):
@@ -994,7 +975,6 @@ def _parse_ddg_results_v2(html_text: str, max_results: int) -> List[_SearchResul
                     self._current_snippet = []
                 elif href.startswith("http"):
                     self._row_urls.append(href)
-
             if tag == "td" and "result-snippet" in attrs_d.get("class", ""):
                 self._in_snippet = True
                 self._current_snippet = []
@@ -1034,6 +1014,7 @@ def _parse_ddg_results_v2(html_text: str, max_results: int) -> List[_SearchResul
         parser.feed(html_text)
         parser.close()
     except Exception:
+        logger.debug("DDG v2 parse error", exc_info=True)
         pass
 
     results: List[_SearchResult] = []
@@ -1043,7 +1024,6 @@ def _parse_ddg_results_v2(html_text: str, max_results: int) -> List[_SearchResul
         if r.url.startswith("http"):
             results.append(r)
 
-    # Fallback: extract any http links from result rows
     if not results and parser._row_urls:
         for url in parser._row_urls:
             if len(results) >= max_results:
@@ -1056,12 +1036,11 @@ def _parse_ddg_results_v2(html_text: str, max_results: int) -> List[_SearchResul
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# SearXNG Backend (no API key needed — uses public instances)
+# SearXNG Backend (concurrent instance probing)
 # ═══════════════════════════════════════════════════════════════════════════
 
-class _SearXNGBackend(_SearchBackend):
-    """SearXNG public instance search — federated, no API key required."""
 
+class _SearXNGBackend(_SearchBackend):
     name = "searxng"
 
     async def search(
@@ -1071,9 +1050,11 @@ class _SearXNGBackend(_SearchBackend):
         allowed_domains: Optional[List[str]] = None,
         blocked_domains: Optional[List[str]] = None,
     ) -> List[_SearchResult]:
-        for instance in _SEARXNG_INSTANCES:
+        async def _try_instance(instance: str) -> Optional[List[_SearchResult]]:
             try:
-                search_url = f"{instance}/search?q={quote_plus(query)}&format=html&categories=general"
+                search_url = (
+                    f"{instance}/search?q={quote_plus(query)}&format=html&categories=general"
+                )
                 resp = await _safe_request(
                     "GET",
                     search_url,
@@ -1081,48 +1062,38 @@ class _SearXNGBackend(_SearchBackend):
                     timeout_s=15.0,
                 )
                 if resp is None or resp["status"] != 200:
-                    logger.debug(f"SearXNG {instance}: HTTP {resp['status'] if resp else 'blocked'}")
-                    continue
+                    logger.debug(
+                        f"SearXNG {instance}: HTTP {resp['status'] if resp else 'blocked'}"
+                    )
+                    return None
 
                 results = _parse_searxng_results(resp["text"], num_results)
                 if results:
                     logger.info(f"SearXNG {instance}: {len(results)} results")
-                    return results
+                return results
             except Exception as e:
                 logger.debug(f"SearXNG {instance}: {e}")
-                continue
+                return None
+
+        # Try all instances concurrently
+        gathered = await asyncio.gather(
+            *[_try_instance(inst) for inst in _SEARXNG_INSTANCES]
+        )
+        for batch in gathered:
+            if batch is not None and len(batch) > 0:
+                return batch
 
         raise RuntimeError("All SearXNG instances failed")
 
 
 def _parse_searxng_results(html_text: str, max_results: int) -> List[_SearchResult]:
-    """Parse SearXNG HTML search results."""
     results: List[_SearchResult] = []
-
-    # SearXNG result articles have class="result" or class="result result-default"
-    # Each result has: an <h4> or <h3> with <a> (title+url), and a <p> with snippet
-    result_block_re = re.compile(
-        r"<article[^>]+class=[\"']result[^\"']*[\"'][^>]*>(.*?)</article>",
-        re.DOTALL | re.IGNORECASE,
-    )
-    link_re = re.compile(
-        r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>',
-        re.IGNORECASE | re.DOTALL,
-    )
-    snippet_re = re.compile(
-        r'<p[^>]+class=["\'](?:result-content|content|snippet)[^"\']*["\'][^>]*>(.*?)</p>',
-        re.IGNORECASE | re.DOTALL,
-    )
-    # Alternate: any <p> in a result block that's not a link
-    any_p_re = re.compile(r"<p[^>]*>(.*?)</p>", re.IGNORECASE | re.DOTALL)
-
-    for block_m in result_block_re.finditer(html_text):
+    for block_m in _SEARXNG_BLOCK_RE.finditer(html_text):
         if len(results) >= max_results:
             break
         block = block_m.group(1)
 
-        # Extract title and URL from first link
-        link_m = link_re.search(block)
+        link_m = _SEARXNG_LINK_RE.search(block)
         if not link_m:
             continue
         url = html_lib.unescape(link_m.group(1))
@@ -1130,30 +1101,26 @@ def _parse_searxng_results(html_text: str, max_results: int) -> List[_SearchResu
         if not url.startswith("http"):
             continue
 
-        # Extract snippet
         snippet = ""
-        sm = snippet_re.search(block)
+        sm = _SEARXNG_SNIPPET_RE.search(block)
         if sm:
             snippet = _strip_tags(sm.group(1))
         else:
-            # Try any <p> as fallback
-            for pm in any_p_re.finditer(block):
+            for pm in _SEARXNG_ANY_P_RE.finditer(block):
                 candidate = _strip_tags(pm.group(1))
                 if len(candidate) > len(snippet):
                     snippet = candidate
 
         results.append(_SearchResult(title=title, url=url, snippet=snippet))
-
     return results
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Wikipedia Backend (free API, no key needed)
+# Wikipedia Backend
 # ═══════════════════════════════════════════════════════════════════════════
 
-class _WikipediaBackend(_SearchBackend):
-    """Wikipedia API search — free, no API key required."""
 
+class _WikipediaBackend(_SearchBackend):
     name = "wikipedia"
     API_URL = "https://en.wikipedia.org/w/api.php"
 
@@ -1202,22 +1169,24 @@ class _WikipediaBackend(_SearchBackend):
 # Backend Selection
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 def _concurrent_search_enabled() -> bool:
     try:
         from coderAI.system.config import config_manager
+
         return bool(config_manager.load().concurrent_search)
     except Exception:
         return os.getenv("CODERAI_CONCURRENT_SEARCH", "true").strip().lower() in (
-            "true", "1", "yes", "on"
+            "true",
+            "1",
+            "yes",
+            "on",
         )
 
 
 def _select_search_backend() -> _SearchBackend:
-    """Pick a search backend. Order: explicit override > Tavily > Exa > DDG.
-
-    Reads from environment variables or ConfigManager.
-    """
     from coderAI.system.config import config_manager
+
     cfg = config_manager.load()
 
     explicit = os.getenv("CODERAI_SEARCH_BACKEND")
@@ -1240,9 +1209,7 @@ def _select_search_backend() -> _SearchBackend:
     if explicit == "exa":
         if exa_key:
             return _ExaBackend(exa_key)
-        logger.warning(
-            "CODERAI_SEARCH_BACKEND=exa but EXA_API_KEY unset; falling back to DDG"
-        )
+        logger.warning("CODERAI_SEARCH_BACKEND=exa but EXA_API_KEY unset; falling back to DDG")
         return _DDGBackend()
     if explicit == "ddg":
         return _DDGBackend()
@@ -1256,16 +1223,13 @@ def _select_search_backend() -> _SearchBackend:
 
 
 def _select_free_backends() -> List[_SearchBackend]:
-    """Return all free (no API key) backends for concurrent search."""
-    backends: List[_SearchBackend] = []
-    backends.append(_DDGBackend())
-    backends.append(_SearXNGBackend())
-    return backends
+    return [_DDGBackend(), _SearXNGBackend()]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Domain Filtering
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 def _domain_of(url: str) -> str:
     try:
@@ -1275,7 +1239,6 @@ def _domain_of(url: str) -> str:
 
 
 def _matches_domain(domain: str, patterns: List[str]) -> bool:
-    """Match domain against a list of patterns. Suffix match (sub.example.com matches example.com)."""
     domain = domain.lower()
     for p in patterns:
         p = p.lower().lstrip(".")
@@ -1303,60 +1266,9 @@ def _filter_by_domain(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Fetch Page Content
-# ═══════════════════════════════════════════════════════════════════════════
-
-async def _fetch_page_text(
-    url: str,
-    max_length: int,
-    fmt: str = "markdown",
-    extract_main: bool = False,
-) -> Optional[str]:
-    """Fetch a single URL and return cleaned text, or None on failure."""
-    # Check cache first
-    cache_key = _cache_key("page", url, fmt, str(extract_main))
-    cached = _get_cached(cache_key)
-    if cached is not None:
-        return str(cached)[:max_length]
-
-    resp = await _safe_request_cf("GET", url, timeout_s=15.0)
-    if resp is None or resp["status"] != 200:
-        return None
-
-    raw = resp["text"]
-    content_type = resp.get("content_type", "")
-
-    # PDF detection
-    is_pdf = "pdf" in content_type.lower() or url.lower().endswith(".pdf")
-    if is_pdf and "pdf" in content_type.lower():
-        pdf_text = _extract_pdf_text(resp.get("content", b""))
-        if pdf_text:
-            text = pdf_text
-        else:
-            return None
-    else:
-        if extract_main and _looks_like_html(content_type, raw):
-            raw = _extract_main_content(raw)
-        text = _convert_content(raw, content_type, fmt)
-
-    if len(text) > max_length:
-        text = text[:max_length] + "\n\n[...truncated...]"
-
-    # Cache successful fetches
-    if text and len(text) > 0:
-        try:
-            from coderAI.system.config import config_manager
-            ttl = config_manager.load().page_cache_ttl_seconds
-        except Exception:
-            ttl = _DEFAULT_PAGE_TTL
-        _set_cached(cache_key, text, ttl)
-
-    return text if len(text) > 0 else None
-
-
-# ═══════════════════════════════════════════════════════════════════════════
 # WebSearchTool
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class WebSearchParams(BaseModel):
     query: str = Field(..., description="Search query string")
@@ -1421,8 +1333,10 @@ class WebSearchTool(Tool):
             return {"success": False, "error": "Query must not be empty"}
         num_results = max(1, min(num_results, 10))
 
-        # Check search cache
-        cache_params = f"{query}|{num_results}|{','.join(allowed_domains or [])}|{','.join(blocked_domains or [])}"
+        cache_params = (
+            f"{query}|{num_results}|"
+            f"{','.join(allowed_domains or [])}|{','.join(blocked_domains or [])}"
+        )
         cache_key = _cache_key("search", cache_params)
         if not fetch_content:
             cached = _get_cached(cache_key)
@@ -1439,8 +1353,7 @@ class WebSearchTool(Tool):
         backend = _select_search_backend()
         try:
             results = await self._search(
-                query,
-                num_results,
+                query, num_results,
                 allowed_domains=allowed_domains,
                 blocked_domains=blocked_domains,
                 backend=backend,
@@ -1452,24 +1365,19 @@ class WebSearchTool(Tool):
                     "results": [],
                     "query": query,
                     "backend": backend.name,
-                    "note": (
-                        "No results found. Try rephrasing the query or use "
-                        "read_url with a known URL."
-                    ),
+                    "note": "No results found. Try rephrasing the query.",
                     "search_url": f"https://duckduckgo.com/?q={quote_plus(query)}",
                 }
 
             if fetch_content:
                 results = await self._fetch_top_results(
-                    results,
-                    min(3, len(results)),
-                    max_content_length,
-                    extract_main=extract_main_content,
+                    results, min(3, len(results)),
+                    max_content_length, extract_main=extract_main_content,
                 )
 
-            # Cache the results
             try:
                 from coderAI.system.config import config_manager
+
                 ttl = config_manager.load().search_cache_ttl_seconds
             except Exception:
                 ttl = _DEFAULT_SEARCH_TTL
@@ -1500,8 +1408,6 @@ class WebSearchTool(Tool):
         max_length: int,
         extract_main: bool = False,
     ) -> List[Dict[str, Any]]:
-        """Fetch page content for the top N results in parallel."""
-
         async def _fetch_one(result: Dict[str, Any]) -> Dict[str, Any]:
             url = result.get("url", "")
             try:
@@ -1525,15 +1431,9 @@ class WebSearchTool(Tool):
         blocked_domains: Optional[List[str]] = None,
         backend: Optional[_SearchBackend] = None,
     ) -> List[Dict[str, str]]:
-        """Run the search via the chosen backend(s), then filter by domain.
-
-        When no paid API keys are configured (DDG-only mode), runs DDG and
-        SearXNG concurrently and merges/deduplicates results.
-        """
         backend = backend or _select_search_backend()
-
-        # Concurrent free backends: when in no-API mode, run DDG + SearXNG in parallel
         from coderAI.system.config import config_manager
+
         cfg = config_manager.load()
         tavily_key = os.getenv("TAVILY_API_KEY") or cfg.tavily_api_key
         exa_key = os.getenv("EXA_API_KEY") or cfg.exa_api_key
@@ -1561,7 +1461,6 @@ class WebSearchTool(Tool):
         allowed_domains: Optional[List[str]] = None,
         blocked_domains: Optional[List[str]] = None,
     ) -> List[Dict[str, str]]:
-        """Run DDG + SearXNG in parallel, merge and deduplicate results."""
         backends = _select_free_backends()
 
         async def _run(be: _SearchBackend) -> Optional[List[_SearchResult]]:
@@ -1571,20 +1470,15 @@ class WebSearchTool(Tool):
                 logger.debug(f"Backend {be.name} failed: {e}")
                 return None
 
-        all_results_raw: List[Optional[List[_SearchResult]]] = await asyncio.gather(
-            *[_run(b) for b in backends]
-        )
+        all_results_raw = await asyncio.gather(*[_run(b) for b in backends])
 
-        # Track which backends succeeded (even if empty) vs failed
         succeeded = [r for r in all_results_raw if r is not None]
         if not succeeded:
-            # All backends raised — re-raise the error from the primary backend
             raise RuntimeError(
                 f"All search backends failed ({', '.join(b.name for b in backends)}). "
                 "Check your network connection."
             )
 
-        # Merge, deduplicate by URL, then filter and trim
         seen_urls: set = set()
         merged: List[_SearchResult] = []
         for batch in succeeded:
@@ -1602,30 +1496,22 @@ class WebSearchTool(Tool):
 # ReadURLTool
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 class ReadURLParams(BaseModel):
     url: str = Field(..., description="URL to fetch and read")
-    max_length: int = Field(
-        8000,
-        description="Maximum characters of page text to return (default 8000)",
-    )
+    max_length: int = Field(8000, description="Maximum characters of page text to return")
     format: str = Field(
         "markdown",
-        description=(
-            "Output format: 'markdown' (HTML → markdown-ish, default), "
-            "'text' (plain text), or 'html' (raw HTML, no conversion)."
-        ),
+        description="Output format: 'markdown', 'text', or 'html'",
     )
     extract_main: bool = Field(
         False,
-        description="Extract only the main content (article text) using readability heuristics.",
+        description="Extract only the main content using readability heuristics.",
     )
     extract_metadata: bool = Field(
         False,
-        description="Also extract Open Graph, Twitter Card, JSON-LD metadata from the page.",
+        description="Also extract Open Graph, Twitter Card, JSON-LD metadata.",
     )
-
-
-_VALID_FORMATS = {"markdown", "text", "html"}
 
 
 class ReadURLTool(Tool):
@@ -1671,7 +1557,7 @@ class ReadURLTool(Tool):
         if resp is None:
             return {
                 "success": False,
-                "error": f"SSRF Protection triggered. Blocked request to local/internal IP for {url}.",
+                "error": f"SSRF Protection triggered for {url}.",
             }
         if resp["status"] != 200:
             return {
@@ -1699,9 +1585,9 @@ class ReadURLTool(Tool):
                 }
         elif extract_main and _looks_like_html(content_type, raw):
             raw = _extract_main_content(raw)
-            text = _convert_content(raw, content_type, fmt)
+            text = _html_to_text(raw, fmt)
         else:
-            text = _convert_content(raw, content_type, fmt)
+            text = _html_to_text(raw, fmt)
 
         truncated = False
         if len(text) > max_length:
@@ -1729,16 +1615,16 @@ class ReadURLTool(Tool):
 # DownloadFileTool
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 class DownloadFileParams(BaseModel):
     url: str = Field(..., description="URL of the file to download")
     destination_path: str = Field(
-        ...,
-        description=("Absolute path where the file should be saved."),
+        ..., description="Absolute path where the file should be saved."
     )
 
 
 class DownloadFileTool(Tool):
-    """Download a file (binary or text) from a URL to the local filesystem."""
+    """Download a file from a URL to the local filesystem."""
 
     name = "download_file"
     description = (
@@ -1755,26 +1641,20 @@ class DownloadFileTool(Tool):
             url = "https://" + url
 
         try:
-            resp = await _safe_request_cf(
-                "GET", url, timeout_s=60.0, max_bytes=50 * 1024 * 1024
-            )
+            resp = await _safe_request_cf("GET", url, timeout_s=60.0, max_bytes=50 * 1024 * 1024)
         except asyncio.TimeoutError:
             return {"success": False, "error": f"Timeout downloading {url}"}
         except Exception as e:
             return {"success": False, "error": f"Failed to download {url}: {e}"}
 
         if resp is None:
-            return {
-                "success": False,
-                "error": f"SSRF Protection triggered. Blocked request to local/internal IP for {url}.",
-            }
+            return {"success": False, "error": f"SSRF Protection blocked {url}."}
         if resp["status"] != 200:
             return {"success": False, "error": f"HTTP {resp['status']} for {url}"}
         content = resp["content"]
 
         try:
             dest = Path(destination_path).expanduser().resolve()
-
             if _is_path_protected(dest):
                 return {
                     "success": False,
@@ -1798,9 +1678,6 @@ class DownloadFileTool(Tool):
                 "destination_path": str(dest),
                 "bytes_downloaded": len(content),
             }
-
-        except asyncio.TimeoutError:
-            return {"success": False, "error": f"Timeout downloading {url}"}
         except Exception as e:
             return {"success": False, "error": f"Failed to download {url}: {e}"}
 
@@ -1809,27 +1686,18 @@ class DownloadFileTool(Tool):
 # HTTPRequestTool
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 class HTTPRequestParams(BaseModel):
     url: str = Field(..., description="Full URL to send the request to")
-    method: str = Field(
-        "GET",
-        description="HTTP method: GET, POST, PUT, PATCH, DELETE, HEAD (default: GET)",
-    )
-    headers: Optional[Dict[str, str]] = Field(
-        None, description="Optional HTTP headers as a key-value mapping"
-    )
+    method: str = Field("GET", description="HTTP method: GET, POST, PUT, PATCH, DELETE, HEAD")
+    headers: Optional[Dict[str, str]] = Field(None, description="Optional HTTP headers")
     json_body: Optional[Dict[str, Any]] = Field(
-        None,
-        description="Request body as a JSON object (sets Content-Type: application/json)",
+        None, description="Request body as a JSON object"
     )
-    body: Optional[str] = Field(
-        None,
-        description="Raw request body string (used when json_body is not set)",
-    )
+    body: Optional[str] = Field(None, description="Raw request body string")
     timeout: int = Field(30, description="Request timeout in seconds (default: 30)")
     max_response_length: int = Field(
-        16000,
-        description="Maximum characters of response body to return (default: 16000)",
+        16000, description="Maximum characters of response body to return"
     )
 
 
@@ -1875,8 +1743,7 @@ class HTTPRequestTool(Tool):
 
         try:
             resp = await _safe_request_cf(
-                method,
-                url,
+                method, url,
                 headers=req_headers,
                 json_body=json_body,
                 body=body,
@@ -1888,10 +1755,7 @@ class HTTPRequestTool(Tool):
             return {"success": False, "error": f"Request failed: {e}"}
 
         if resp is None:
-            return {
-                "success": False,
-                "error": f"SSRF Protection triggered. Blocked request to local/internal IP for {url}.",
-            }
+            return {"success": False, "error": f"SSRF Protection blocked {url}."}
 
         status = resp["status"]
         resp_headers = resp["headers"]
@@ -1903,47 +1767,38 @@ class HTTPRequestTool(Tool):
             raw = raw[:max_response_length]
             truncated = True
 
-        parsed_json = None
-        if "json" in content_type.lower():
-            try:
-                parsed_json = json.loads(raw)
-            except Exception:
-                pass
+        response_body = raw
+        if _looks_like_html(content_type, raw):
+            response_body = _html_to_text(raw, "markdown")
 
-        result: Dict[str, Any] = {
-            "success": 200 <= status < 300,
-            "status_code": status,
-            "url": resp["url"],
-            "method": method,
+        return {
+            "success": True,
+            "status": status,
             "headers": resp_headers,
-            "body": raw,
+            "content_type": content_type,
+            "response": response_body,
+            "raw_response": raw if raw != response_body else None,
+            "response_length": len(response_body),
             "truncated": truncated,
             "oversize": resp.get("oversize", False),
         }
-        if parsed_json is not None:
-            result["json"] = parsed_json
-        return result
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # WikipediaSearchTool
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 class WikipediaSearchParams(BaseModel):
     query: str = Field(..., description="Search query for Wikipedia")
     num_results: int = Field(5, description="Number of results (default 5, max 10)")
     language: str = Field(
-        "en",
-        description="Wikipedia language code: en, de, fr, es, ja, zh, etc. (default: en)",
+        "en", description="Wikipedia language code: en, de, fr, es, ja, zh, etc."
     )
     fetch_content: bool = Field(
-        False,
-        description="Fetch and return the full page text of the top result.",
+        False, description="Fetch and return the full page text of the top result."
     )
-    max_content_length: int = Field(
-        8000,
-        description="Max characters when fetch_content=true",
-    )
+    max_content_length: int = Field(8000, description="Max characters when fetch_content=true")
 
 
 class WikipediaSearchTool(Tool):
@@ -2012,7 +1867,7 @@ class WikipediaSearchTool(Tool):
             content_params = {
                 "action": "query",
                 "prop": "extracts",
-                "exintro": "1",  # Just the intro section
+                "exintro": "1",
                 "explaintext": "1",
                 "titles": page_title,
                 "format": "json",
@@ -2048,16 +1903,15 @@ class WikipediaSearchTool(Tool):
 # FeedReaderTool (RSS / Atom)
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 class ReadFeedParams(BaseModel):
     url: str = Field(..., description="URL of the RSS or Atom feed")
     max_entries: int = Field(10, description="Maximum feed entries to return (default 10, max 50)")
     fetch_content: bool = Field(
-        False,
-        description="If true, also fetch the linked page content for each entry (up to 5).",
+        False, description="If true, also fetch linked page content for each entry (up to 5)."
     )
     max_content_length: int = Field(
-        4000,
-        description="Max characters per entry content when fetch_content=true",
+        4000, description="Max characters per entry content when fetch_content=true"
     )
 
 
@@ -2101,10 +1955,7 @@ class ReadFeedTool(Tool):
         entries = _parse_feed(raw, max_entries)
 
         if not entries:
-            return {
-                "success": False,
-                "error": "Could not parse feed — may not be valid RSS/Atom",
-            }
+            return {"success": False, "error": "Could not parse feed — may not be valid RSS/Atom"}
 
         if fetch_content:
             entries = await self._fetch_entry_content(
@@ -2120,10 +1971,7 @@ class ReadFeedTool(Tool):
         }
 
     async def _fetch_entry_content(
-        self,
-        entries: List[Dict[str, Any]],
-        count: int,
-        max_length: int,
+        self, entries: List[Dict[str, Any]], count: int, max_length: int
     ) -> List[Dict[str, Any]]:
         async def _fetch_one(entry: Dict[str, Any]) -> Dict[str, Any]:
             link = entry.get("link", "")
@@ -2142,16 +1990,10 @@ class ReadFeedTool(Tool):
 
 
 def _parse_feed(raw: str, max_entries: int) -> List[Dict[str, Any]]:
-    """Parse RSS or Atom feed and return entries."""
-    try:
-        from xml.etree import ElementTree as ET
-    except ImportError:
-        return []
+    from xml.etree import ElementTree as ET
 
     entries: List[Dict[str, Any]] = []
-
     try:
-        # Clean the raw text — some feeds have BOM or non-XML prefixes
         start = raw.find("<")
         if start > 0:
             raw = raw[start:]
@@ -2160,22 +2002,17 @@ def _parse_feed(raw: str, max_entries: int) -> List[Dict[str, Any]]:
         logger.debug(f"XML parse error: {e}")
         return []
 
-    # Namespace handling
     ns = {
         "atom": "http://www.w3.org/2005/Atom",
-        "rss": "",
         "dc": "http://purl.org/dc/elements/1.1/",
         "content": "http://purl.org/rss/1.0/modules/content/",
-        "media": "http://search.yahoo.com/mrss/",
     }
 
-    # RSS 2.0
     for item in root.iter("item"):
         if len(entries) >= max_entries:
             break
         entries.append(_parse_rss_item(item, ns))
 
-    # Atom
     for entry_elem in root.iter("{http://www.w3.org/2005/Atom}entry"):
         if len(entries) >= max_entries:
             break
@@ -2190,7 +2027,6 @@ def _parse_rss_item(item, ns: Dict[str, str]) -> Dict[str, Any]:
         return (el.text or "").strip() if el is not None and el.text else ""
 
     link = _text("link")
-    # Sometimes link is in an enclosure or guid
     if not link:
         guid = item.find("guid")
         if guid is not None and guid.text:
@@ -2200,7 +2036,8 @@ def _parse_rss_item(item, ns: Dict[str, str]) -> Dict[str, Any]:
         "title": _text("title"),
         "link": link,
         "published": _text("pubDate") or _text("{http://purl.org/dc/elements/1.1/}date"),
-        "summary": _text("description") or _text("{http://purl.org/rss/1.0/modules/content/}encoded"),
+        "summary": _text("description")
+        or _text("{http://purl.org/rss/1.0/modules/content/}encoded"),
         "author": _text("author") or _text("{http://purl.org/dc/elements/1.1/}creator"),
     }
 
@@ -2227,18 +2064,16 @@ def _parse_atom_entry(entry, ns: Dict[str, str]) -> Dict[str, Any]:
     return {
         "title": _text("{http://www.w3.org/2005/Atom}title"),
         "link": link,
-        "published": _text("{http://www.w3.org/2005/Atom}updated") or _text("{http://www.w3.org/2005/Atom}published"),
-        "summary": _text("{http://www.w3.org/2005/Atom}summary") or _text("{http://www.w3.org/2005/Atom}content"),
+        "published": _text("{http://www.w3.org/2005/Atom}updated")
+        or _text("{http://www.w3.org/2005/Atom}published"),
+        "summary": _text("{http://www.w3.org/2005/Atom}summary")
+        or _text("{http://www.w3.org/2005/Atom}content"),
         "author": "",
     }
 
 
 def _extract_feed_metadata(raw: str) -> Dict[str, str]:
-    """Extract feed-level metadata (title, description)."""
-    try:
-        from xml.etree import ElementTree as ET
-    except ImportError:
-        return {}
+    from xml.etree import ElementTree as ET
 
     try:
         start = raw.find("<")
@@ -2246,7 +2081,6 @@ def _extract_feed_metadata(raw: str) -> Dict[str, str]:
             raw = raw[start:]
         root = ET.fromstring(raw)
 
-        # RSS
         channel = root.find("channel")
         if channel is not None:
             title_el = channel.find("title")
@@ -2256,7 +2090,6 @@ def _extract_feed_metadata(raw: str) -> Dict[str, str]:
                 "description": (desc_el.text or "").strip() if desc_el is not None else "",
             }
 
-        # Atom
         title_el = root.find("{http://www.w3.org/2005/Atom}title")
         return {
             "title": (title_el.text or "").strip() if title_el is not None else "",
@@ -2269,23 +2102,17 @@ def _extract_feed_metadata(raw: str) -> Dict[str, str]:
 # SitemapDiscoverTool
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 class SitemapDiscoverParams(BaseModel):
     url: str = Field(
-        ...,
-        description="Base URL of the website (e.g., https://docs.python.org). "
-        "Auto-discovers sitemap.xml from robots.txt if sitemap_url is not provided.",
+        ..., description="Base URL of the website. Auto-discovers sitemap.xml from robots.txt."
     )
     sitemap_url: Optional[str] = Field(
-        None,
-        description="Direct URL to a sitemap.xml if known. If omitted, auto-discovers from site.",
+        None, description="Direct URL to a sitemap.xml if known."
     )
-    max_urls: int = Field(
-        50,
-        description="Maximum number of URLs to return (default 50, max 200)",
-    )
+    max_urls: int = Field(50, description="Maximum number of URLs to return (default 50, max 200)")
     filter_path: Optional[str] = Field(
-        None,
-        description="Only return URLs whose path contains this string (e.g., '/api/')",
+        None, description="Only return URLs whose path contains this string"
     )
 
 
@@ -2315,13 +2142,11 @@ class SitemapDiscoverTool(Tool):
 
         discovered: List[str] = []
 
-        # If no sitemap_url given, try robots.txt first
         if not sitemap_url:
             parsed = urlparse(url)
             robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
             sitemap_url = await _discover_sitemap_from_robots(robots_url)
             if not sitemap_url:
-                # Try common sitemap locations
                 for path in ["/sitemap.xml", "/sitemap_index.xml", "/sitemap-index.xml"]:
                     candidate = f"{parsed.scheme}://{parsed.netloc}{path}"
                     if await _url_exists(candidate):
@@ -2336,7 +2161,6 @@ class SitemapDiscoverTool(Tool):
                 "error": f"Could not discover sitemap for {url}. Provide sitemap_url manually.",
             }
 
-        # Apply filter
         if filter_path:
             discovered = [u for u in discovered if filter_path in u]
 
@@ -2351,7 +2175,6 @@ class SitemapDiscoverTool(Tool):
 
 
 async def _discover_sitemap_from_robots(robots_url: str) -> Optional[str]:
-    """Extract sitemap URL from robots.txt."""
     try:
         resp = await _safe_request_cf("GET", robots_url, timeout_s=10.0)
         if resp and resp["status"] == 200:
@@ -2365,7 +2188,6 @@ async def _discover_sitemap_from_robots(robots_url: str) -> Optional[str]:
 
 
 async def _url_exists(url: str) -> bool:
-    """Check if a URL returns 200."""
     try:
         resp = await _safe_request_cf("HEAD", url, timeout_s=10.0)
         return resp is not None and resp["status"] == 200
@@ -2374,7 +2196,6 @@ async def _url_exists(url: str) -> bool:
 
 
 async def _fetch_sitemap_urls(sitemap_url: str, max_urls: int) -> List[str]:
-    """Fetch and parse a sitemap XML, returning URLs. Handles sitemap index files."""
     try:
         resp = await _safe_request_cf("GET", sitemap_url, timeout_s=20.0)
         if not resp or resp["status"] != 200:
@@ -2382,16 +2203,11 @@ async def _fetch_sitemap_urls(sitemap_url: str, max_urls: int) -> List[str]:
     except Exception as e:
         logger.debug(f"Sitemap fetch failed: {e}")
         return []
-
     return _parse_sitemap(resp["text"], max_urls)
 
 
 def _parse_sitemap(xml_text: str, max_urls: int) -> List[str]:
-    """Parse sitemap XML and return URLs. Handles both urlset and sitemapindex."""
-    try:
-        from xml.etree import ElementTree as ET
-    except ImportError:
-        return []
+    from xml.etree import ElementTree as ET
 
     try:
         start = xml_text.find("<")
@@ -2402,23 +2218,21 @@ def _parse_sitemap(xml_text: str, max_urls: int) -> List[str]:
         return []
 
     urls: List[str] = []
+    ns_url = "{http://www.sitemaps.org/schemas/sitemap/0.9}"
 
-    # Standard sitemap: <urlset><url><loc>...</loc></url></urlset>
-    for url_elem in root.iter("{http://www.sitemaps.org/schemas/sitemap/0.9}url"):
+    for url_elem in root.iter(f"{ns_url}url"):
         if len(urls) >= max_urls:
             break
-        loc = url_elem.find("{http://www.sitemaps.org/schemas/sitemap/0.9}loc")
+        loc = url_elem.find(f"{ns_url}loc")
         if loc is not None and loc.text:
             urls.append(loc.text.strip())
 
-    # Sitemap index: <sitemapindex><sitemap><loc>...</loc></sitemap></sitemapindex>
     if not urls:
-        for sm_elem in root.iter("{http://www.sitemaps.org/schemas/sitemap/0.9}sitemap"):
-            loc = sm_elem.find("{http://www.sitemaps.org/schemas/sitemap/0.9}loc")
+        for sm_elem in root.iter(f"{ns_url}sitemap"):
+            loc = sm_elem.find(f"{ns_url}loc")
             if loc is not None and loc.text:
                 urls.append(loc.text.strip())
 
-    # Also look without namespace (some sitemaps omit it)
     if not urls:
         for url_elem in root.iter("url"):
             if len(urls) >= max_urls:

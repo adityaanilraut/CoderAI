@@ -13,7 +13,6 @@ See ``docs/CHAT_EVENTS.md`` for the event catalog.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 from pathlib import Path
@@ -24,7 +23,6 @@ from typing import Any, Awaitable, Callable, Dict, Optional
 from coderAI.core.agent_tracker import AgentInfo, AgentStatus, agent_tracker
 from coderAI.system.config import config_manager
 from coderAI.system.events import event_emitter
-from coderAI.system.project_layout import find_dot_coderai_subdir
 
 from coderAI.bridge.tool_metadata import (
     arg_preview,
@@ -37,14 +35,6 @@ from coderAI.bridge.tool_metadata import (
 )
 
 logger = logging.getLogger(__name__)
-
-_strip_rich_markup = strip_rich_markup
-_tool_category = tool_category
-_tool_risk = tool_risk
-_parse_skill_steps = parse_skill_steps
-_preview_args_for_approval = preview_args_for_approval
-_arg_preview = arg_preview
-_result_preview = result_preview
 
 
 def _infer_error_hint(category: str, message: str) -> Optional[str]:
@@ -68,6 +58,8 @@ def _infer_error_hint(category: str, message: str) -> Optional[str]:
             return "Set GROQ_API_KEY, or run `coderAI config set groq_api_key <KEY>`."
         if "deepseek" in lower and "key" in lower:
             return "Set DEEPSEEK_API_KEY, or run `coderAI config set deepseek_api_key <KEY>`."
+        if "gemini" in lower and "key" in lower:
+            return "Set GEMINI_API_KEY, or run `coderAI config set gemini_api_key <KEY>`."
         if any(k in lower for k in ("api key", "401", "unauthorized", "authentication")):
             return "Missing/invalid API key — run `coderAI setup` or `coderAI doctor`."
         if any(k in lower for k in ("rate limit", "429", "too many requests")):
@@ -172,6 +164,7 @@ class UIBridge:
         # to ≤1Hz per agent so the UI panel doesn't thrash. Lifecycle
         # transitions bypass this throttle (see _on_agent_lifecycle).
         self._agent_update_last_ms: Dict[str, int] = {}
+        self._agent_update_prune_ct: int = 0
 
         # Verbosity filter — set by the UI via the ``set_verbosity`` command.
         # ``normal`` (default) emits the structured protocol but suppresses
@@ -243,7 +236,7 @@ class UIBridge:
         self.emit("error", **payload)
 
     def _emit_tool_error(self, tool_name: str, error: Any) -> None:
-        self._emit_error("tool", _strip_rich_markup(f"{tool_name}: {error}"))
+        self._emit_error("tool", strip_rich_markup(f"{tool_name}: {error}"))
 
     async def request_tool_approval(
         self,
@@ -273,8 +266,8 @@ class UIBridge:
 
         payload = {
             "name": tool_name,
-            "args": _preview_args_for_approval(arguments),
-            "risk": _tool_risk(tool_name),
+            "args": preview_args_for_approval(arguments),
+            "risk": tool_risk(tool_name),
             "requestedBy": requested_by,
             "parentId": parent_id,
             "iteration": iteration,
@@ -384,14 +377,14 @@ class UIBridge:
         _bind("tool_error", self._emit_tool_error)
         _bind("agent_status", self._on_agent_status)
         _bind(
-            "agent_error", lambda message: self._emit_error("internal", _strip_rich_markup(message))
+            "agent_error", lambda message: self._emit_error("internal", strip_rich_markup(message))
         )
         _bind(
-            "agent_paused", lambda message: self.emit("info", message=_strip_rich_markup(message))
+            "agent_paused", lambda message: self.emit("info", message=strip_rich_markup(message))
         )
         _bind(
             "agent_warning",
-            lambda message: self.emit("warning", message=_strip_rich_markup(message)),
+            lambda message: self.emit("warning", message=strip_rich_markup(message)),
         )
         _bind(
             "file_diff", lambda path, diff: self.emit("file_diff", path=str(path), diff=str(diff))
@@ -408,9 +401,11 @@ class UIBridge:
 
     def _on_agent_status(self, message: str) -> None:
         if self._verbosity == "verbose":
-            self.emit("info", message=_strip_rich_markup(message))
+            self.emit("info", message=strip_rich_markup(message))
 
-    def _on_tool_call(self, tool_name: str, arguments: Dict[str, Any], tool_id: Optional[str] = None) -> None:
+    def _on_tool_call(
+        self, tool_name: str, arguments: Dict[str, Any], tool_id: Optional[str] = None
+    ) -> None:
         # Use provided tool_id if available, otherwise generate one
         if not tool_id:
             tool_id = f"t_{uuid.uuid4().hex[:12]}"
@@ -420,18 +415,20 @@ class UIBridge:
             phase="running",
             payload={
                 "name": tool_name,
-                "category": _tool_category(tool_name, getattr(self.agent, "tools", None)),
-                "args": _arg_preview(arguments),
-                "risk": _tool_risk(tool_name),
+                "category": tool_category(tool_name, getattr(self.agent, "tools", None)),
+                "args": arg_preview(arguments),
+                "risk": tool_risk(tool_name),
             },
         )
 
-    def _on_tool_result(self, tool_name: str, result: Dict[str, Any], tool_id: Optional[str] = None) -> None:
+    def _on_tool_result(
+        self, tool_name: str, result: Dict[str, Any], tool_id: Optional[str] = None
+    ) -> None:
         if not tool_id:
             tool_id = f"t_{uuid.uuid4().hex[:12]}"
         ok = bool(result.get("success", True))
         error = result.get("error") if not ok else None
-        preview = _result_preview(result)
+        preview = result_preview(result)
         self.emit(
             "tool",
             id=tool_id,
@@ -446,7 +443,7 @@ class UIBridge:
             skill_name = str(result.get("skill_name") or "")
             skill_desc = str(result.get("description") or "")
             instructions = str(result.get("instructions") or "")
-            steps = _parse_skill_steps(instructions)
+            steps = parse_skill_steps(instructions)
             if skill_name or steps:
                 self.emit(
                     "skill_card",
@@ -486,7 +483,16 @@ class UIBridge:
             self._agent_update_last_ms[info.agent_id] = now_ms
         else:
             self._agent_update_last_ms.pop(info.agent_id, None)
+        self._agent_update_prune_ct += 1
+        if self._agent_update_prune_ct % 30 == 0:
+            self._prune_stale_agent_entries()
         self.emit("agent", phase="update", info=_agent_info_dict(info), parentId=info.parent_id)
+
+    def _prune_stale_agent_entries(self) -> None:
+        now_ms = int(_time.time() * 1000)
+        stale = [aid for aid, last in self._agent_update_last_ms.items() if now_ms - last > 60000]
+        for aid in stale:
+            self._agent_update_last_ms.pop(aid, None)
 
     def _on_tool_progress(
         self,
@@ -680,7 +686,7 @@ def _handle_persona_slash(server: "UIBridge", arg: str) -> None:
 
     if name in ("default", "none", "off", "clear"):
         server.agent.set_persona(None)
-        server.emit("session_patch", model=server.agent.model)
+        server.emit("session_patch", model=server.agent.model, persona=None)
         server.emit("info", message="Persona cleared — back to the default agent.")
         return
 
@@ -700,33 +706,9 @@ def _handle_persona_slash(server: "UIBridge", arg: str) -> None:
         "session_patch",
         model=server.agent.model,
         provider=server.agent.provider.__class__.__name__,
+        persona=applied.name,
     )
     server.emit("info", message=f"Persona switched → {applied.name}")
-
-
-def _handle_skills_slash(server: "UIBridge") -> None:
-    """Inline ``/skills`` — list workflows found under ``.coderAI/skills/``."""
-    from ..tools.skills import get_available_skills
-
-    project_root = getattr(server.agent.config, "project_root", ".")
-    skills = get_available_skills(project_root)
-    if not skills:
-        server.emit(
-            "info",
-            message=(
-                "No skills found in .coderAI/skills/. "
-                "Create <name>.md files with YAML frontmatter to define skill workflows."
-            ),
-        )
-        return
-    listing = "\n".join(f"  • {s['name']} — {s['description']}" for s in skills)
-    server.emit(
-        "info",
-        message=(
-            f"Available skills ({len(skills)}):\n{listing}\n\n"
-            "Ask the agent to run one, e.g. 'use the security-audit skill'."
-        ),
-    )
 
 
 # --- Command handlers -------------------------------------------------------
@@ -771,10 +753,7 @@ async def _cmd_set_model(server: UIBridge, msg: Dict[str, Any]) -> None:
     old_provider = server.agent.provider
     server.agent.model = model
     try:
-        server.agent.provider = server.agent._create_provider()
-        context_controller = getattr(server.agent, "context_controller", None)
-        if context_controller is not None:
-            context_controller.provider = server.agent.provider
+        server.agent._replace_provider()
     except Exception as e:
         server.agent.model = old_model
         server.agent.provider = old_provider
@@ -1024,26 +1003,15 @@ def _serialize_plan_for_ui(plan: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def _cmd_get_plan(server: UIBridge, msg: Dict[str, Any]) -> None:
+    from coderAI.system.project_layout import read_current_plan
+
     pr = getattr(server.agent.config, "project_root", None) or "."
-    config = config_manager.load_project_config(pr)
-    dot_coderai_dir = find_dot_coderai_subdir("", str(config.project_root))
-    if dot_coderai_dir is None:
-        dot_coderai_dir = Path(config.project_root).resolve() / ".coderAI"
-    plan_path = dot_coderai_dir / "current_plan.json"
-    if not plan_path.exists():
+    plan = read_current_plan(str(pr))
+    if not plan or not isinstance(plan, dict):
         server.emit(
             "info",
             message="No active execution plan. The agent can create one with the plan tool.",
         )
-        return
-    try:
-        with open(plan_path, "r", encoding="utf-8") as f:
-            plan = json.load(f)
-    except Exception as e:
-        server.emit("warning", message=f"Could not read plan: {e}")
-        return
-    if not isinstance(plan, dict):
-        server.emit("warning", message="Invalid plan file.")
         return
     server.emit("plan_card", plan=_serialize_plan_for_ui(plan))
     server.emit("info", message=_format_plan_message(plan))
@@ -1153,24 +1121,14 @@ async def _cmd_reference(server: UIBridge, msg: Dict[str, Any]) -> None:
 
 async def _cmd_set_default_model(server: UIBridge, msg: Dict[str, Any]) -> None:
     """Persist default_model in global config (like ``coderAI set-model``)."""
-    from ..llm.anthropic import MODEL_ALIASES
-    from ..llm.deepseek import DeepSeekProvider
-    from ..llm.groq import GroqProvider
-    from ..llm.openai import OpenAIProvider
+    from ..llm.factory import get_all_model_ids
 
     model_name = str(msg.get("model") or "").strip()
     if not model_name:
         server.emit("warning", message="Usage: /default <model>")
         return
 
-    valid_models = (
-        list(OpenAIProvider.SUPPORTED_MODELS.keys())
-        + list(MODEL_ALIASES.keys())
-        + list(GroqProvider.SUPPORTED_MODELS.keys())
-        + list(DeepSeekProvider.SUPPORTED_MODELS.keys())
-        + ["lmstudio", "ollama"]
-    )
-    if model_name not in valid_models:
+    if model_name not in get_all_model_ids():
         server.emit(
             "warning",
             message=(

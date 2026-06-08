@@ -1313,3 +1313,171 @@ class TestExecutionLoopRecovery:
         assert msgs[1]["role"] == "tool"
         assert msgs[1]["tool_call_id"] == "call_missing_1"
         assert "internal error" in msgs[1]["content"].lower()
+
+
+# ============================================================================
+# Gemini Provider
+# ============================================================================
+
+
+class TestGeminiProvider:
+    """Tests for Gemini provider (no API calls, just configuration)."""
+
+    def test_model_mapping(self):
+        from coderAI.llm.gemini import GeminiProvider
+
+        provider = GeminiProvider(model="gemini-3.5-flash", api_key="test-key")
+        assert provider.actual_model == "gemini-3.5-flash"
+
+        provider = GeminiProvider(model="gemini-3.1-pro", api_key="test-key")
+        assert provider.actual_model == "gemini-3.1-pro"
+
+        provider = GeminiProvider(model="gemini-2.5-flash", api_key="test-key")
+        assert provider.actual_model == "gemini-2.5-flash"
+
+    def test_unknown_model_passthrough(self):
+        from coderAI.llm.gemini import GeminiProvider
+
+        provider = GeminiProvider(model="custom-model", api_key="test-key")
+        assert provider.actual_model == "custom-model"
+
+    def test_token_counting(self):
+        from coderAI.llm.gemini import GeminiProvider
+
+        provider = GeminiProvider(model="gemini-3.5-flash", api_key="test-key")
+        count = provider.count_tokens("Hello, how are you doing today?")
+        assert count > 0
+        assert isinstance(count, int)
+
+    def test_supported_models_are_real(self):
+        from coderAI.llm.gemini import GeminiProvider
+
+        assert "gemini-3.5-flash" in GeminiProvider.SUPPORTED_MODELS
+        assert "gemini-3.1-pro" in GeminiProvider.SUPPORTED_MODELS
+        assert "gemini-3.1-flash-lite" in GeminiProvider.SUPPORTED_MODELS
+        assert "gemini-2.5-flash" in GeminiProvider.SUPPORTED_MODELS
+        assert "gemini-2.0-flash" in GeminiProvider.SUPPORTED_MODELS
+        assert "gemini-2.0-pro" in GeminiProvider.SUPPORTED_MODELS
+        assert "gpt-4" not in GeminiProvider.SUPPORTED_MODELS
+
+    def test_gemini_cost_pricing_is_registered(self):
+        from coderAI.system.cost import CostTracker
+
+        assert CostTracker.get_model_pricing("gemini-3.5-flash") == {
+            "input": 1.50,
+            "output": 9.00,
+        }
+        assert CostTracker.get_model_pricing("gemini-3.1-pro") == {
+            "input": 2.00,
+            "output": 12.00,
+        }
+        assert CostTracker.get_model_pricing("gemini-3.1-flash-lite") == {
+            "input": 0.25,
+            "output": 1.50,
+        }
+        assert CostTracker.get_model_pricing("gemini-2.5-flash") == {
+            "input": 0.075,
+            "output": 0.30,
+        }
+        assert CostTracker.get_model_pricing("gemini-2.0-flash") == {
+            "input": 0.075,
+            "output": 0.30,
+        }
+        assert CostTracker.get_model_pricing("gemini-2.0-pro") == {
+            "input": 1.25,
+            "output": 5.00,
+        }
+
+    def test_config_has_gemini_key(self):
+        from coderAI.system.config import Config
+
+        config = Config(gemini_api_key="gemini-test-key-123456789")
+        assert config.gemini_api_key == "gemini-test-key-123456789"
+
+    def test_gemini_key_masked_in_show(self):
+        from coderAI.system.config import Config, ConfigManager
+
+        manager = ConfigManager()
+        manager._config = Config(gemini_api_key="gemini-test-key-123456789-extra-long")
+        shown = manager.show()
+        assert "***" in shown["gemini_api_key"]
+        assert shown["gemini_api_key"] != "gemini-test-key-123456789-extra-long"
+
+    @pytest.mark.asyncio
+    async def test_chat_success(self):
+        from unittest.mock import patch, MagicMock, AsyncMock
+        from coderAI.llm.gemini import GeminiProvider
+
+        with patch("coderAI.llm.gemini.AsyncOpenAI") as mock_openai_class:
+            mock_client = MagicMock()
+            mock_openai_class.return_value = mock_client
+
+            # Mock completions.create response
+            mock_response = MagicMock()
+            mock_response.model_dump.return_value = {
+                "choices": [{"message": {"content": "Hello user"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+            }
+            mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
+
+            provider = GeminiProvider(model="gemini-3.5-flash", api_key="test-key")
+            result = await provider.chat(messages=[{"role": "user", "content": "hi"}])
+
+            assert result["choices"][0]["message"]["content"] == "Hello user"
+            assert provider.total_input_tokens == 10
+            assert provider.total_output_tokens == 5
+
+            # Verify cost calculation
+            cost = provider.get_cost()
+            assert cost["input_tokens"] == 10
+            assert cost["output_tokens"] == 5
+            assert cost["total_cost"] == round((10 / 1_000_000) * 1.50 + (5 / 1_000_000) * 9.00, 6)
+
+    @pytest.mark.asyncio
+    async def test_stream_success(self):
+        from unittest.mock import patch, MagicMock, AsyncMock
+        from coderAI.llm.gemini import GeminiProvider
+
+        with patch("coderAI.llm.gemini.AsyncOpenAI") as mock_openai_class:
+            mock_client = MagicMock()
+            mock_openai_class.return_value = mock_client
+
+            # Mock completions.create stream response
+            class AsyncIterator:
+                def __init__(self, items):
+                    self.items = items
+
+                def __aiter__(self):
+                    return self
+
+                async def __anext__(self):
+                    if not self.items:
+                        raise StopAsyncIteration
+                    return self.items.pop(0)
+
+            chunk1 = MagicMock()
+            chunk1.model_dump.return_value = {
+                "choices": [{"delta": {"content": "Hello"}, "index": 0}]
+            }
+            chunk2 = MagicMock()
+            chunk2.model_dump.return_value = {
+                "choices": [{"delta": {"content": " World"}, "index": 0}],
+                "usage": {"prompt_tokens": 8, "completion_tokens": 4},
+            }
+
+            mock_client.chat.completions.create = AsyncMock(
+                return_value=AsyncIterator([chunk1, chunk2])
+            )
+
+            provider = GeminiProvider(model="gemini-3.5-flash", api_key="test-key")
+            stream_generator = provider.stream(messages=[{"role": "user", "content": "hi"}])
+
+            chunks = []
+            async for chunk in stream_generator:
+                chunks.append(chunk)
+
+            assert len(chunks) == 2
+            assert chunks[0]["choices"][0]["delta"]["content"] == "Hello"
+            assert chunks[1]["choices"][0]["delta"]["content"] == " World"
+            assert provider.total_input_tokens == 8
+            assert provider.total_output_tokens == 4

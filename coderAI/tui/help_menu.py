@@ -21,7 +21,6 @@ HELP_MENU_ENTRIES = [
     ("/code-search", "Search the codebase semantically"),
     ("/export", "Export session to markdown"),
     ("/copy", "Copy last assistant response (OSC-52)"),
-    ("/theme", "Persist dark/light theme"),
     ("/undo", "Undo last tool action"),
     ("/tokens", "Show token usage, cost & context stats"),
     ("/context", "View pinned context files"),

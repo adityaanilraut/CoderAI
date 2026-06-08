@@ -51,6 +51,8 @@ class EventReducer:
         self._pending_refresh = None
 
     def _push(self, item: Dict[str, Any]) -> None:
+        item.setdefault("ts", time.time())
+        item.setdefault("collapsed", False)
         self.timeline = append_capped(self.timeline, item, self.next_id)
 
     def _flush_stream_buffers(self) -> bool:
@@ -287,6 +289,8 @@ class EventReducer:
                 self.session.auto_approve = bool(data["autoApprove"])
             if data.get("reasoning") is not None:
                 self.session.reasoning = data["reasoning"]
+            if data.get("persona") is not None:
+                self.session.active_persona = data["persona"] or None
         elif event == "file_diff":
             dirty = True
             self._bump_refresh("append")
@@ -300,21 +304,37 @@ class EventReducer:
             )
         elif event == "plan_update":
             dirty = True
-            self._bump_refresh("chrome")
+            self._bump_refresh("append")
             self.session.current_plan = data.get("plan")
+            plan = data.get("plan") or {}
+            completed = int(plan.get("completed") or 0)
+            total = int(plan.get("total") or 0)
+            current = int(plan.get("currentIdx") or 0)
+            title = plan.get("title", "")
+            msg = f"Plan: {title}" if title else "Plan updated"
+            detail = f"  step {current + 1}/{total} ({completed} done)" if total else ""
+            self._push(
+                {
+                    "kind": "toast",
+                    "id": self.next_id(),
+                    "level": "info",
+                    "message": f"{msg}{detail}",
+                }
+            )
         elif event == "plan_card":
             dirty = True
             self._bump_refresh("append")
+            plan = data.get("plan") or {}
             self.session.current_plan = data.get("plan")
             self._push(
                 {
                     "kind": "plan_card",
                     "id": self.next_id(),
-                    "title": data.get("plan", {}).get("title", ""),
-                    "completed": int(data.get("plan", {}).get("completed") or 0),
-                    "total": int(data.get("plan", {}).get("total") or 0),
-                    "currentIdx": int(data.get("plan", {}).get("currentIdx") or 0),
-                    "steps": data.get("plan", {}).get("steps") or [],
+                    "title": plan.get("title", ""),
+                    "completed": int(plan.get("completed") or 0),
+                    "total": int(plan.get("total") or 0),
+                    "currentIdx": int(plan.get("currentIdx") or 0),
+                    "steps": plan.get("steps") or [],
                 }
             )
         elif event == "skill_card":

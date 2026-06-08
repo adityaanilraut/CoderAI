@@ -135,7 +135,9 @@ class RecallMemoryTool(Tool):
     parameters_model = RecallMemoryParams
     is_read_only = True
 
-    async def execute(self, key: Optional[str] = None, query: Optional[str] = None) -> Dict[str, Any]:  # type: ignore[override]
+    async def execute(
+        self, key: Optional[str] = None, query: Optional[str] = None
+    ) -> Dict[str, Any]:  # type: ignore[override]
         """Recall memory."""
         try:
             store = get_memory_store()

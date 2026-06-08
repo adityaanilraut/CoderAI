@@ -21,6 +21,29 @@ from coderAI.system.locks import resource_manager
 logger = logging.getLogger(__name__)
 
 
+def _atomic_write_file(path_obj: Path, content: str) -> None:
+    """Write *content* to *path_obj* atomically via tempfile+replace.
+
+    Raises ``OSError`` on write failure; the caller is responsible for
+    translating it into a tool-shaped error response.
+    """
+    import tempfile
+
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(path_obj.parent), prefix="." + path_obj.name + "."
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.replace(tmp_path, str(path_obj))
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def _emit_diff(path_obj: Path, before: str, after: str) -> None:
     """Compute and emit a unified diff event if the content changed."""
     if before == after:
@@ -415,21 +438,7 @@ class WriteFileTool(Tool):
                 mode = "a" if append else "w"
                 try:
                     if mode == "w":
-                        import tempfile
-
-                        fd, tmp_path = tempfile.mkstemp(
-                            dir=str(path_obj.parent), prefix="." + path_obj.name + "."
-                        )
-                        try:
-                            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                                f.write(content)
-                            os.replace(tmp_path, str(path_obj))
-                        except Exception:
-                            try:
-                                os.unlink(tmp_path)
-                            except OSError:
-                                pass
-                            raise
+                        _atomic_write_file(path_obj, content)
                     else:
                         with _safe_open_no_symlink(path_obj, mode) as f:
                             f.write(content)
@@ -545,21 +554,7 @@ class SearchReplaceTool(Tool):
                     count = 1
 
                 try:
-                    import tempfile
-
-                    fd, tmp_path = tempfile.mkstemp(
-                        dir=str(path_obj.parent), prefix="." + path_obj.name + "."
-                    )
-                    try:
-                        with os.fdopen(fd, "w", encoding="utf-8") as f:
-                            f.write(new_content)
-                        os.replace(tmp_path, str(path_obj))
-                    except Exception:
-                        try:
-                            os.unlink(tmp_path)
-                        except OSError:
-                            pass
-                        raise
+                    _atomic_write_file(path_obj, new_content)
                 except OSError as e:
                     return {
                         "success": False,
@@ -837,22 +832,9 @@ class ApplyDiffTool(Tool):
 
                 # Write to a temp file then atomically replace to avoid
                 # leaving the target in a partial-write state.
+                joined = "".join(result_lines)
                 try:
-                    import tempfile
-
-                    fd, tmp_path = tempfile.mkstemp(
-                        dir=str(path_obj.parent), prefix="." + path_obj.name + "."
-                    )
-                    try:
-                        with os.fdopen(fd, "w", encoding="utf-8") as f:
-                            f.writelines(result_lines)
-                        os.replace(tmp_path, str(path_obj))
-                    except Exception:
-                        try:
-                            os.unlink(tmp_path)
-                        except OSError:
-                            pass
-                        raise
+                    _atomic_write_file(path_obj, joined)
                 except OSError as e:
                     return {
                         "success": False,

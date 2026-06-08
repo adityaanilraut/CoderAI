@@ -1,0 +1,200 @@
+"""Gemini LLM provider implementation."""
+
+import logging
+from typing import Any, AsyncIterator, Dict, List, Optional
+
+from openai import AsyncOpenAI
+
+from coderAI.llm.base import LLMProvider
+from coderAI.system.cost import CostTracker
+from coderAI.system.error_policy import _try_extract_response_body
+
+logger = logging.getLogger(__name__)
+
+
+class GeminiProvider(LLMProvider):
+    """Gemini LLM provider using the OpenAI-compatible API."""
+
+    SUPPORTED_MODELS = {
+        "gemini-3.5-flash": "gemini-3.5-flash",
+        "gemini-3.1-pro": "gemini-3.1-pro",
+        "gemini-3.1-flash-lite": "gemini-3.1-flash-lite",
+        "gemini-2.5-flash": "gemini-2.5-flash",
+        "gemini-2.5-pro": "gemini-2.5-pro",
+        "gemini-2.0-flash": "gemini-2.0-flash",
+        "gemini-2.0-pro": "gemini-2.0-pro",
+        "gemini-1.5-flash": "gemini-1.5-flash",
+        "gemini-1.5-pro": "gemini-1.5-pro",
+    }
+
+    def __init__(self, model: str, api_key: Optional[str] = None, **kwargs):
+        """Initialize Gemini provider.
+
+        Args:
+            model: Model name
+            api_key: Gemini API key
+            **kwargs: Additional options (temperature, max_tokens, etc.)
+        """
+        super().__init__(model, api_key, **kwargs)
+
+        if not api_key:
+            raise ValueError("Gemini API key is required")
+
+        self.actual_model = self.SUPPORTED_MODELS.get(model.lower(), model.lower())
+
+        # Gemini uses OpenAI-compatible API
+        self.client = AsyncOpenAI(
+            api_key=api_key,
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+        )
+
+        self.temperature = kwargs.get("temperature", 0.7)
+        self.max_tokens = kwargs.get("max_tokens", 8192)
+
+        # Cost tracking
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
+
+    async def close(self) -> None:
+        await self.client.close()
+
+    def _build_request_params(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]] = None,
+        *,
+        stream: bool = False,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        params: Dict[str, Any] = {
+            "model": self.actual_model,
+            "messages": messages,
+            "temperature": kwargs.get("temperature", self.temperature),
+            "max_tokens": kwargs.get("max_tokens", self.max_tokens),
+        }
+
+        if stream:
+            params["stream"] = True
+
+        if tools:
+            params["tools"] = tools
+            params["tool_choice"] = kwargs.get("tool_choice", "auto")
+
+        return params
+
+    async def chat(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]] = None,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """Send a chat completion request to Gemini.
+
+        Args:
+            messages: List of message dictionaries
+            tools: Optional list of tool definitions
+            **kwargs: Additional request parameters
+
+        Returns:
+            Response dictionary
+        """
+        params = self._build_request_params(messages, tools, **kwargs)
+
+        try:
+            response = await self.client.chat.completions.create(**params)
+        except Exception as e:
+            logger.error("Gemini API error: %s", e)
+            body = _try_extract_response_body(e)
+            if body is not None:
+                logger.error("Gemini API error body: %s", body)
+            raise RuntimeError(f"Gemini API error: {e}") from e
+        result = response.model_dump()
+        assert isinstance(result, dict)
+
+        usage = result.get("usage") or {}
+        self.total_input_tokens += usage.get("prompt_tokens", 0)
+        self.total_output_tokens += usage.get("completion_tokens", 0)
+
+        return result
+
+    async def stream(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]] = None,
+        **kwargs,
+    ) -> AsyncIterator[Dict[str, Any]]:
+        """Send a streaming chat completion request to Gemini.
+
+        Args:
+            messages: List of message dictionaries
+            tools: Optional list of tool definitions
+            **kwargs: Additional request parameters
+
+        Yields:
+            Response chunks
+        """
+        params = self._build_request_params(messages, tools, stream=True, **kwargs)
+
+        try:
+            stream = await self.client.chat.completions.create(**params)
+        except Exception as e:
+            logger.error("Gemini API streaming error: %s", e)
+            body = _try_extract_response_body(e)
+            if body is not None:
+                logger.error("Gemini API streaming error body: %s", body)
+            raise RuntimeError(f"Gemini API streaming error: {e}") from e
+
+        accumulated_content = ""
+        had_usage = False
+        async for chunk in stream:
+            chunk_data = chunk.model_dump()
+
+            usage = chunk_data.get("usage")
+            if usage:
+                had_usage = True
+                self.total_input_tokens += usage.get("prompt_tokens", 0)
+                self.total_output_tokens += usage.get("completion_tokens", 0)
+
+            choices = chunk_data.get("choices", [])
+            if choices:
+                delta = choices[0].get("delta", {})
+                accumulated_content += delta.get("content", "") or ""
+                accumulated_content += delta.get("reasoning_content", "") or ""
+
+            yield chunk_data
+
+        if not had_usage:
+            if accumulated_content:
+                self.total_output_tokens += self.count_tokens(accumulated_content)
+            if not self.total_input_tokens:
+                input_text = " ".join(
+                    m.get("content", "") or ""
+                    for m in messages
+                    if isinstance(m.get("content"), str)
+                )
+                self.total_input_tokens += self.count_tokens(input_text)
+
+    def count_tokens(self, text: str) -> int:
+        from coderAI.llm._token_counter import estimate_chars
+
+        return estimate_chars(text)
+
+    def get_cost(self) -> Dict[str, Any]:
+        """Get current session cost estimate."""
+        pricing = CostTracker.get_model_pricing(self.actual_model)
+        input_cost = (self.total_input_tokens / 1_000_000) * pricing["input"]
+        output_cost = (self.total_output_tokens / 1_000_000) * pricing["output"]
+
+        return {
+            "input_tokens": self.total_input_tokens,
+            "output_tokens": self.total_output_tokens,
+            "total_tokens": self.total_input_tokens + self.total_output_tokens,
+            "input_cost": round(input_cost, 6),
+            "output_cost": round(output_cost, 6),
+            "total_cost": round(input_cost + output_cost, 6),
+            "currency": "USD",
+            "model": self.actual_model,
+        }
+
+    def get_model_info(self) -> Dict[str, Any]:
+        return super().get_model_info()

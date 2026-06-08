@@ -219,11 +219,15 @@ class HistoryManager:
         if not session_file.exists():
             return None
 
-        with open(session_file, "r") as f:
-            data = _sanitize_session_data(json.load(f))
-            session = Session(**data)
-            self.current_session = session
-            return session
+        try:
+            with open(session_file, "r") as f:
+                data = _sanitize_session_data(json.load(f))
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning("Failed to load session %s: %s", session_id, e)
+            return None
+        session = Session(**data)
+        self.current_session = session
+        return session
 
     def save_session(self, session: Optional[Session] = None) -> None:
         """Save a session to disk.
@@ -403,8 +407,20 @@ class HistoryManager:
                     removed_ids.append(session_id)
             except OSError:
                 continue
-        for sid in removed_ids:
-            self._remove_from_index(sid)
+        if removed_ids:
+            index_file = self.history_dir / "index.json"
+            try:
+                if index_file.exists():
+                    with open(index_file, "r") as f:
+                        index = json.load(f)
+                    for sid in removed_ids:
+                        index.pop(sid, None)
+                    tmp_file = index_file.with_suffix(".json.tmp")
+                    with open(tmp_file, "w") as f:
+                        json.dump(index, f)
+                    os.replace(tmp_file, index_file)
+            except Exception as e:
+                logger.warning(f"Failed to update index after cleanup: {e}")
 
 
 # Global history manager instance

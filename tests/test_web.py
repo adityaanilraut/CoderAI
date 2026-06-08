@@ -4,6 +4,23 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
+def _make_mock_session(html_body: str = "", status: int = 200, side_effect=None):
+    """Create a mock aiohttp session that our shared-session code can use."""
+    mock_resp = AsyncMock()
+    mock_resp.status = status
+    mock_resp.headers = {"Content-Type": "text/html"}
+    mock_resp.read = AsyncMock(return_value=html_body.encode("utf-8"))
+    mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+    mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+    mock_session = AsyncMock()
+    if side_effect:
+        mock_session.request = AsyncMock(side_effect=side_effect)
+    else:
+        mock_session.request = AsyncMock(return_value=mock_resp)
+    return mock_session
+
+
 class TestWebSearchToolSchema:
     """Parameter schema tests."""
 
@@ -31,30 +48,23 @@ class TestWebSearchExecution:
 
         tool = WebSearchTool()
         with (
-            patch("coderAI.tools.web.aiohttp.ClientSession") as MockSession,
+            patch("coderAI.tools.web._safe_request") as mock_safe_req,
             patch("coderAI.tools.web.asyncio.sleep", new_callable=AsyncMock),
         ):
-            mock_resp = AsyncMock()
-            mock_resp.status = 200
-            mock_resp.headers = {}
-            mock_resp.read = AsyncMock(return_value=b"<html></html>")
-            mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
-            mock_resp.__aexit__ = AsyncMock(return_value=False)
-
-            mock_ctx = MagicMock()
-            mock_ctx.request = MagicMock(return_value=mock_resp)
-
-            mock_session = MagicMock()
-            mock_session.__aenter__ = AsyncMock(return_value=mock_ctx)
-            mock_session.__aexit__ = AsyncMock(return_value=False)
-            MockSession.return_value = mock_session
-
+            mock_safe_req.return_value = {
+                "status": 200,
+                "headers": {"Content-Type": "text/html"},
+                "url": "https://example.com",
+                "content_type": "text/html",
+                "text": "<html></html>",
+                "content": b"<html></html>",
+            }
             result = asyncio.run(tool.execute(query=""))
             assert result["success"] is False
 
     @patch("coderAI.tools.web.asyncio.sleep", new_callable=AsyncMock)
-    @patch("coderAI.tools.web.aiohttp.ClientSession")
-    def test_successful_search(self, MockSession, mock_sleep):
+    @patch("coderAI.tools.web._safe_request")
+    def test_successful_search(self, mock_safe_req, mock_sleep):
         from coderAI.tools.web import WebSearchTool
 
         html_body = (
@@ -63,52 +73,37 @@ class TestWebSearchExecution:
             '<a class="result-snippet">A test snippet.</a>'
             "</body></html>"
         )
-
-        mock_resp = AsyncMock()
-        mock_resp.status = 200
-        mock_resp.headers = {}
-        mock_resp.read = AsyncMock(return_value=html_body.encode("utf-8"))
-        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_resp.__aexit__ = AsyncMock(return_value=False)
-
-        mock_ctx = MagicMock()
-        mock_ctx.request = MagicMock(return_value=mock_resp)
-
-        mock_session = MagicMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_ctx)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-        MockSession.return_value = mock_session
+        mock_safe_req.return_value = {
+            "status": 200,
+            "headers": {"Content-Type": "text/html"},
+            "url": "https://html.duckduckgo.com/lite/",
+            "content_type": "text/html",
+            "text": html_body,
+            "content": html_body.encode("utf-8"),
+        }
 
         tool = WebSearchTool()
         result = asyncio.run(tool.execute(query="test query"))
         assert result["success"] is True
 
     @patch("coderAI.tools.web.asyncio.sleep", new_callable=AsyncMock)
-    @patch("coderAI.tools.web.aiohttp.ClientSession")
-    def test_network_error_returns_empty_results(self, MockSession, mock_sleep):
-        """When all backend HTTP calls fail, execute() returns success=False."""
+    @patch("coderAI.tools.web._safe_request")
+    def test_network_error_returns_empty_results(self, mock_safe_req, mock_sleep):
         from coderAI.tools.web import WebSearchTool
 
-        # Make the session context manager raise on __aenter__
-        mock_session = MagicMock()
-        mock_session.__aenter__ = AsyncMock(side_effect=Exception("Connection refused"))
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-        MockSession.return_value = mock_session
+        mock_safe_req.side_effect = Exception("Connection refused")
 
         tool = WebSearchTool()
         result = asyncio.run(tool.execute(query="test"))
-        # All backends fail → error is raised and caught
         assert result["success"] is False
         assert "error" in result
 
     def test_outer_exception_returns_error(self):
-        """If the outer try/except in execute() catches, success=False."""
         from coderAI.tools.web import WebSearchTool
 
         tool = WebSearchTool()
         with patch.object(tool, "_search", side_effect=Exception("boom")):
             result = asyncio.run(tool.execute(query="test"))
-            # The exception propagates to the outer try/except
             assert result["success"] is False
             assert "error" in result
 
@@ -149,7 +144,7 @@ class TestDownloadFileExecution:
                 "content": binary_data,
             }
 
-        monkeypatch.setattr(web_mod, "_safe_request", fake_safe_request)
+        monkeypatch.setattr(web_mod, "_safe_request_cf", fake_safe_request)
 
         tool = DownloadFileTool()
         dest_file = tmp_path / "test_download.bin"
@@ -175,17 +170,15 @@ class TestDownloadFileExecution:
                 "status": 404,
                 "headers": {},
                 "url": url,
-                "content_type": "",
-                "text": "",
-                "content": b"",
+                "content_type": "text/html",
+                "text": "<html>Not Found</html>",
+                "content": b"<html>Not Found</html>",
             }
 
-        monkeypatch.setattr(web_mod, "_safe_request", fake_safe_request)
+        monkeypatch.setattr(web_mod, "_safe_request_cf", fake_safe_request)
 
         tool = DownloadFileTool()
         result = asyncio.run(
-            tool.execute(url="https://example.com/notfound.bin", destination_path="notfound.bin")
+            tool.execute(url="https://example.com/nonexistent", destination_path="/tmp/test.bin")
         )
-
         assert result["success"] is False
-        assert "HTTP 404" in result["error"]

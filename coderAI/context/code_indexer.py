@@ -48,6 +48,7 @@ class CodeIndexer:
 
         self._manifest: Dict[str, str] = {}
         self._collection: Optional[Any] = None
+        self._client: Optional[Any] = None
 
     # ------------------------------------------------------------------
     # Indexing
@@ -72,17 +73,20 @@ class CodeIndexer:
 
         self._load_manifest()
 
-        chroma_path = str(self._index_dir / "vectordb")
-        client = chromadb.PersistentClient(path=chroma_path)
+        if self._client is None:
+            import chromadb
 
-        # Only delete and recreate collection for full re-index.
+            chroma_path = str(self._index_dir / "vectordb")
+            self._client = chromadb.PersistentClient(path=chroma_path)
+
         if not skip_if_unchanged:
             try:
-                client.delete_collection(_COLLECTION_NAME)
+                self._client.delete_collection(_COLLECTION_NAME)
             except Exception:
+                logger.debug("Failed to delete ChromaDB collection during reindex", exc_info=True)
                 pass
 
-        self._collection = client.get_or_create_collection(
+        self._collection = self._client.get_or_create_collection(
             name=_COLLECTION_NAME,
             metadata={"hnsw:space": "cosine"},
         )
@@ -91,9 +95,15 @@ class CodeIndexer:
 
         # Gather files
         if paths:
-            files = [
-                (self._root / p).resolve() for p in paths if (self._root / p).resolve().is_file()
-            ]
+            files = []
+            for p in paths:
+                rp = (self._root / p).resolve()
+                try:
+                    rp.relative_to(self._root)
+                except ValueError:
+                    continue
+                if rp.is_file():
+                    files.append(rp)
         else:
             files = []
             for dirpath, dirnames, filenames in os.walk(self._root):
@@ -112,6 +122,10 @@ class CodeIndexer:
         for fp in files:
             rel = str(fp.relative_to(self._root))
             fhash = _file_hash(fp)
+            if fhash is None:
+                # Unreadable — remove from manifest so it gets re-indexed if it becomes readable
+                self._manifest.pop(rel, None)
+                continue
             if skip_if_unchanged:
                 existing = self._manifest.get(rel)
                 if existing == fhash:
@@ -147,9 +161,29 @@ class CodeIndexer:
         if not to_index:
             return {"added": added, "removed": removed, "updated": updated, "unchanged": unchanged}
 
-        # Chunk
+        # Chunk — delete existing chunks for changed files before re-adding
         all_chunks: list = []
         file_hashes: Dict[str, str] = {}
+        if self._collection is not None:
+            changed_rels = [
+                str(fp.relative_to(self._root))
+                for fp in to_index
+                if str(fp.relative_to(self._root)) in self._manifest
+            ]
+            if changed_rels:
+                try:
+                    existing = self._collection.get(  # type: ignore[assignment,arg-type]
+                        where={"file_path": {"$in": changed_rels}}  # type: ignore[dict-item]
+                    )
+                    if existing and existing["ids"]:  # type: ignore[index]
+                        chunk_ids: list[str] = existing["ids"]  # type: ignore[assignment,index]
+                        self._collection.delete(ids=chunk_ids)  # type: ignore[arg-type]
+                except Exception:
+                    logger.debug(
+                        "Failed to delete existing ChromaDB chunks before re-indexing",
+                        exc_info=True,
+                    )
+                    pass
         for fp in to_index:
             rel = str(fp.relative_to(self._root))
             result = chunk_file(fp, self._root)
@@ -189,17 +223,20 @@ class CodeIndexer:
         # Upsert
         if ids:
             assert self._collection is not None
-            self._collection.add(
-                ids=ids,
-                documents=docs,
-                metadatas=metadatas,  # type: ignore[arg-type]
-                embeddings=embeddings,  # type: ignore[arg-type]
-            )
-
-        # Update manifest
-        for rel, fhash in file_hashes.items():
-            self._manifest[rel] = fhash
-        self._save_manifest()
+            try:
+                self._collection.add(
+                    ids=ids,
+                    documents=docs,
+                    metadatas=metadatas,  # type: ignore[arg-type]
+                    embeddings=embeddings,  # type: ignore[arg-type]
+                )
+                # Update manifest only after ChromaDB confirms write
+                for rel, fhash in file_hashes.items():
+                    self._manifest[rel] = fhash
+                self._save_manifest()
+            except Exception:
+                logger.exception("ChromaDB write failed; index may be incomplete")
+                raise
 
         return {
             "added": added,
@@ -291,19 +328,19 @@ class CodeIndexer:
 
     def clear(self) -> None:
         """Delete the entire index."""
-        import chromadb
         import shutil
 
-        chroma_path = str(self._index_dir / "vectordb")
-        client = chromadb.PersistentClient(path=chroma_path)
-        try:
-            client.delete_collection(_COLLECTION_NAME)
-        except Exception:
-            pass
+        if self._client is not None:
+            try:
+                self._client.delete_collection(_COLLECTION_NAME)
+            except Exception:
+                logger.debug("Failed to delete ChromaDB collection during clear", exc_info=True)
+                pass
         if self._index_dir.exists():
             shutil.rmtree(str(self._index_dir))
         self._manifest = {}
         self._collection = None
+        self._client = None
 
     # ------------------------------------------------------------------
     # Internal
@@ -312,12 +349,13 @@ class CodeIndexer:
     def _connect(self) -> None:
         import chromadb
 
-        chroma_path = str(self._index_dir / "vectordb")
-        client = chromadb.PersistentClient(path=chroma_path)
+        if self._client is None:
+            chroma_path = str(self._index_dir / "vectordb")
+            self._client = chromadb.PersistentClient(path=chroma_path)
         try:
-            self._collection = client.get_collection(_COLLECTION_NAME)
+            self._collection = self._client.get_collection(_COLLECTION_NAME)
         except Exception:
-            self._collection = client.get_or_create_collection(
+            self._collection = self._client.get_or_create_collection(
                 name=_COLLECTION_NAME,
                 metadata={"hnsw:space": "cosine"},
             )
@@ -334,25 +372,18 @@ class CodeIndexer:
         self._manifest_path.write_text(json.dumps(self._manifest, indent=2, sort_keys=True))
 
 
-def _file_hash(path: Path) -> str:
-    """SHA-256 of file contents, or empty string on failure."""
+def _file_hash(path: Path) -> Optional[str]:
+    """SHA-256 of file contents, or None on failure."""
     import hashlib
 
     try:
         return hashlib.sha256(path.read_bytes()).hexdigest()
     except Exception:
-        return ""
+        return None
 
 
 def _match_glob(file_path: str, pattern: str) -> bool:
     """Simple glob match — supports ``*.py`` and ``**/*.py``."""
-    import re
+    import fnmatch
 
-    # Convert ** to a catch-all
-    regex = (
-        re.escape(pattern)
-        .replace(r"\*\*", "___DOUBLESTAR___")
-        .replace(r"\*", "[^/]*")
-        .replace("___DOUBLESTAR___", ".*")
-    )
-    return bool(re.match(regex, file_path))
+    return fnmatch.fnmatch(file_path, pattern)

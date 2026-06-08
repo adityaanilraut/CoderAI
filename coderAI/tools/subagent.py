@@ -469,7 +469,9 @@ class DelegateTaskTool(Tool):
                         sub_agent.session.metadata.update(
                             {
                                 "purpose": "delegation",
-                                "parent_session_id": getattr(ctx.parent_session, "session_id", None),
+                                "parent_session_id": getattr(
+                                    ctx.parent_session, "session_id", None
+                                ),
                                 "delegation_depth": child_depth,
                                 "agent_role": agent_role,
                             }

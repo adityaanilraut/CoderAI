@@ -9,6 +9,11 @@ from coderAI.tools.mcp import MCPCallTool, MCPDisconnectTool
 from coderAI.tools.testing import RunTestsTool
 from coderAI.tools.undo import UndoTool
 from coderAI.tools.web import DownloadFileTool, HTTPRequestTool
+from coderAI.tools.desktop import (
+    RunAppleScriptTool,
+    ClickUIElementTool,
+    TypeKeystrokesTool,
+)
 
 
 def test_side_effecting_tools_require_confirmation() -> None:
@@ -21,6 +26,9 @@ def test_side_effecting_tools_require_confirmation() -> None:
         UndoTool(),
         GitFetchTool(),
         RunTestsTool(),
+        RunAppleScriptTool(),
+        ClickUIElementTool(),
+        TypeKeystrokesTool(),
     ):
         assert tool.requires_confirmation is True, tool.name
 

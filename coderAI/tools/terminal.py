@@ -8,7 +8,7 @@ import shlex
 import shutil
 import signal as _signal
 from pathlib import Path
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -214,10 +214,20 @@ def is_command_dangerous(command: str) -> bool:
     """Check if a command should require confirmation."""
     cmd_lower = _normalize_command(command)
 
+    # Strip leading directory components so /bin/rm → rm
+    first_token = cmd_lower.split(" ", 1)[0]
+    basename = first_token.rsplit("/", 1)[-1]
+    cmd_for_check = (
+        cmd_lower if basename == first_token else basename + cmd_lower[len(first_token) :]
+    )
+
     if any(cmd_lower.startswith(prefix) for prefix in DANGEROUS_PREFIXES):
         return True
+    if basename != first_token and any(
+        cmd_for_check.startswith(prefix) for prefix in DANGEROUS_PREFIXES
+    ):
+        return True
 
-    # Also check inner command of shell wrappers
     inner = _extract_inner_command(cmd_lower)
     if inner is not None:
         return is_command_dangerous(inner)
@@ -393,6 +403,7 @@ class RunCommandTool(Tool):
                     try:
                         process.kill()
                     except Exception:
+                        logger.debug("Failed to kill process after CancelledError", exc_info=True)
                         pass
                 raise
 
@@ -601,6 +612,9 @@ class RunBackgroundTool(Tool):
                     info.process.kill()
                     terminated += 1
                 except Exception:
+                    logger.debug(
+                        "Failed to kill background process during terminate_all", exc_info=True
+                    )
                     pass
         self._processes.clear()
         return terminated
@@ -613,6 +627,9 @@ def _cleanup_all_background():
             try:
                 info.process.kill()
             except Exception:
+                logger.debug(
+                    "Failed to kill background process during atexit cleanup", exc_info=True
+                )
                 pass
     _tracked_bg_processes.clear()
 

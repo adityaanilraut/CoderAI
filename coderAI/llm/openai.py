@@ -58,6 +58,16 @@ class OpenAIProvider(LLMProvider):
         self.total_input_tokens = 0
         self.total_output_tokens = 0
 
+    def _check_chat_model_compat(self, exc: Exception) -> None:
+        """Raise a helpful RuntimeError when the model is not a chat model."""
+        msg = str(exc)
+        if "not a chat model" in msg and "v1/chat/completions" in msg:
+            raise RuntimeError(
+                f"Model '{self.actual_model}' is not compatible with chat.completions "
+                "in this environment. Switch to gpt-5.4, gpt-5.4-mini, gpt-5.4-nano, "
+                "o1, o1-mini, or o3-mini."
+            ) from exc
+
     # Models that don't support temperature (only accept default=1)
     _NO_TEMPERATURE_MODELS_PREFIX = ("gpt-5",)
     _NO_TEMPERATURE_MODELS_EXACT = {"o1", "o1-mini", "o1-pro", "o3-mini"}
@@ -133,19 +143,13 @@ class OpenAIProvider(LLMProvider):
             assert isinstance(result, dict)
 
             # Track usage for cost calculation
-            usage = result.get("usage", {})
+            usage = result.get("usage") or {}
             self.total_input_tokens += usage.get("prompt_tokens", 0)
             self.total_output_tokens += usage.get("completion_tokens", 0)
 
             return result
         except openai.APIError as e:
-            msg = str(e)
-            if "not a chat model" in msg and "v1/chat/completions" in msg:
-                raise RuntimeError(
-                    f"Model '{self.actual_model}' is not compatible with chat.completions "
-                    "in this environment. Switch to gpt-5.4, gpt-5.4-mini, gpt-5.4-nano, "
-                    "o1, o1-mini, or o3-mini."
-                ) from e
+            self._check_chat_model_compat(e)
             raise
 
     async def stream(
@@ -189,13 +193,7 @@ class OpenAIProvider(LLMProvider):
                     self.total_output_tokens += usage.get("completion_tokens", 0)
                 yield chunk_data
         except openai.APIError as e:
-            msg = str(e)
-            if "not a chat model" in msg and "v1/chat/completions" in msg:
-                raise RuntimeError(
-                    f"Model '{self.actual_model}' is not compatible with chat.completions "
-                    "in this environment. Switch to gpt-5.4, gpt-5.4-mini, gpt-5.4-nano, "
-                    "o1, o1-mini, or o3-mini."
-                ) from e
+            self._check_chat_model_compat(e)
             raise
 
     def count_tokens(self, text: str) -> int:
@@ -234,13 +232,7 @@ class OpenAIProvider(LLMProvider):
         }
 
     def get_model_info(self) -> Dict[str, Any]:
-        """Get information about the current model."""
-        info = super().get_model_info()
-        info["cost"] = self.get_cost()
-        info["total_input_tokens"] = self.total_input_tokens
-        info["total_output_tokens"] = self.total_output_tokens
-        info["total_tokens"] = self.total_input_tokens + self.total_output_tokens
-        return info
+        return super().get_model_info()
 
     async def close(self) -> None:
         await self.client.close()

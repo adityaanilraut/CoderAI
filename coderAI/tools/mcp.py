@@ -25,6 +25,7 @@ class MCPClient:
         self.servers: Dict[str, Dict[str, Any]] = {}
         self.discovered_tools: List[Dict[str, Any]] = []
         self._next_id: int = 1
+        self._reconnect_attempts: Dict[str, int] = {}
 
     def _get_next_id(self) -> int:
         """Return a unique, incrementing JSON-RPC request ID."""
@@ -53,12 +54,20 @@ class MCPClient:
             line = await asyncio.wait_for(stdout.readline(), timeout=remaining)
             if not line:
                 raise RuntimeError("Server closed stdout unexpectedly")
-            parsed = json.loads(line.decode())
+            try:
+                decoded_line = line.decode("utf-8", errors="replace")
+                parsed = json.loads(decoded_line)
+                if not isinstance(parsed, dict):
+                    logger.warning(f"Parsed line is not a dictionary: {decoded_line}")
+                    continue
+            except Exception as e:
+                logger.warning(f"Failed to decode or parse line: {line!r}. Error: {e}")
+                continue
+
             # Skip notifications (no 'id' field)
             if "id" not in parsed:
                 continue
             if parsed["id"] == expected_id:
-                assert isinstance(parsed, dict)
                 return parsed
             # Unexpected id — log and keep reading
             logger.warning(f"Unexpected JSON-RPC id {parsed.get('id')}, expected {expected_id}")
@@ -162,6 +171,7 @@ class MCPClient:
                 "process": process,
                 "tools": server_info,
                 "server_info": init_response.get("result", {}),
+                "_conn_params": {"command": command, "args": args},
             }
 
             # Store discovered tools
@@ -197,6 +207,9 @@ class MCPClient:
                     process.kill()
                     await process.wait()
                 except Exception:
+                    logger.debug(
+                        "Failed to kill MCP process in connect_stdio finally", exc_info=True
+                    )
                     pass
 
     async def call_tool(
@@ -302,6 +315,7 @@ class MCPClient:
                 try:
                     await session.close()
                 except Exception:
+                    logger.debug("Failed to close SSE session during disconnect", exc_info=True)
                     pass
         else:
             try:
@@ -347,7 +361,16 @@ class MCPClient:
                     }
                 # Read SSE events to find the endpoint
                 message_url = None
-                async for line in resp.content:
+                while True:
+                    try:
+                        line = await asyncio.wait_for(resp.content.readline(), timeout=10.0)
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "Timeout reading SSE stream while discovering message endpoint."
+                        )
+                        break
+                    if not line:
+                        break
                     line_text = line.decode("utf-8", errors="replace").strip()
                     if line_text.startswith("event: endpoint"):
                         # Read next line for data
@@ -355,15 +378,13 @@ class MCPClient:
                     if line_text.startswith("data: "):
                         data = line_text[6:]
                         # The 'endpoint' event carries the message URL
-                        if message_url is None:
-                            # Check if this is after an endpoint event
-                            pass
                         message_url = data
                         break
                     if line_text and not line_text.startswith(":"):
                         # Generic SSE — try parsing as endpoint data
                         if "http" in line_text and not line_text.startswith("data:"):
                             message_url = line_text
+                            break
 
                 if not message_url:
                     # Fallback: derive message URL from SSE URL
@@ -413,8 +434,10 @@ class MCPClient:
                 "transport": "sse",
                 "session": session,
                 "message_url": message_url,
+                "sse_url": url,
                 "tools": server_info,
                 "server_info": init_response.get("result", {}),
+                "_conn_params": {"url": url},
             }
 
             for tool in server_info:
@@ -518,6 +541,110 @@ class MCPClient:
             )
         return tools
 
+    async def check_server_health(self):
+        """Check if each connected MCP server is still alive.
+
+        For stdio servers: checks if the subprocess has exited (returncode is not None).
+        For SSE servers: attempts a lightweight request to the message URL.
+        Dead servers are marked with a ``degraded`` flag and a warning is logged.
+        """
+        import aiohttp
+
+        for name, info in list(self.servers.items()):
+            transport = info.get("transport", "stdio")
+
+            if transport == "stdio":
+                process = info.get("process")
+                if process is not None and process.returncode is not None:
+                    if not info.get("degraded"):
+                        logger.warning(
+                            "MCP server '%s' (stdio) appears dead (returncode=%s)",
+                            name,
+                            process.returncode,
+                        )
+                        info["degraded"] = True
+            elif transport == "sse":
+                message_url = info.get("message_url")
+                if not message_url:
+                    continue
+                session = info.get("session")
+                if session is None or session.closed:
+                    if not info.get("degraded"):
+                        logger.warning("MCP server '%s' (SSE) session is closed", name)
+                        info["degraded"] = True
+                    continue
+                try:
+                    timeout = aiohttp.ClientTimeout(total=5)
+                    async with aiohttp.ClientSession() as tmp_session:
+                        async with tmp_session.options(message_url, timeout=timeout) as _resp:
+                            _resp.raise_for_status()
+                except Exception as e:
+                    if not info.get("degraded"):
+                        logger.warning(
+                            "MCP server '%s' (SSE) health check failed: %s",
+                            name,
+                            e,
+                        )
+                        info["degraded"] = True
+
+    async def auto_reconnect_degraded(self):
+        """Attempt to reconnect degraded MCP servers.
+
+        Tracks reconnect attempts per server (max 3) and uses exponential
+        backoff between attempts. Clears the degraded flag on success.
+        """
+        import asyncio as _asyncio
+
+        for name, info in list(self.servers.items()):
+            if not info.get("degraded"):
+                continue
+
+            attempts = self._reconnect_attempts.get(name, 0)
+            if attempts >= 3:
+                logger.warning(
+                    "MCP server '%s' reached max reconnect attempts (3), giving up",
+                    name,
+                )
+                continue
+
+            self._reconnect_attempts[name] = attempts + 1
+            backoff = 2 ** (attempts + 1)
+            logger.info(
+                "Reconnecting MCP server '%s' (attempt %d/3, backoff %ds)…",
+                name,
+                attempts + 1,
+                backoff,
+            )
+            await _asyncio.sleep(backoff)
+
+            transport = info.get("transport", "stdio")
+            conn_params = info.get("_conn_params", {})
+
+            try:
+                await self.disconnect(name)
+            except Exception:
+                pass
+
+            result: Dict[str, Any]
+            if transport == "sse":
+                result = await self.connect_sse(name, conn_params.get("url", ""))
+            else:
+                result = await self.connect_stdio(
+                    name,
+                    conn_params.get("command", ""),
+                    conn_params.get("args"),
+                )
+
+            if result.get("success"):
+                self._reconnect_attempts.pop(name, None)
+                logger.info("Successfully reconnected to MCP server '%s'", name)
+            else:
+                logger.warning(
+                    "Failed to reconnect MCP server '%s': %s",
+                    name,
+                    result.get("error"),
+                )
+
 
 def _normalize_parameters_schema(schema: Any) -> Dict[str, Any]:
     """Ensure JSON Schema is OpenAI-tool friendly (object root with properties)."""
@@ -546,6 +673,7 @@ def _cleanup_mcp_servers():
             if proc.returncode is None:
                 proc.kill()
         except Exception:
+            logger.debug("Failed to kill MCP server process during atexit cleanup", exc_info=True)
             pass
     mcp_client.servers.clear()
 

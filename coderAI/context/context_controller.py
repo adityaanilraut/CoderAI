@@ -22,6 +22,23 @@ IMAGE_TOKEN_FLOOR = 1500
 _TOKEN_CACHE_MAX_SIZE = 2000
 
 
+def _content_text_len(content: Any) -> int:
+    """Return the character length of message content for token estimation.
+
+    Handles both plain-string content and multimodal list content without
+    inflating the estimate with Python repr() of nested dicts.
+    """
+    if isinstance(content, str):
+        return len(content)
+    if isinstance(content, list):
+        return sum(
+            len(b.get("text", ""))
+            for b in content
+            if isinstance(b, dict) and b.get("type") == "text"
+        )
+    return len(str(content or ""))
+
+
 class ContextController:
     """Handles token estimation, context window truncation, and summarization."""
 
@@ -238,7 +255,7 @@ class ContextController:
         # caller's list is never mutated.
         messages = [m for m in messages if not m.get(self._TRUNCATION_MARKER_KEY)]
 
-        total_chars = sum(len(str(m.get("content") or "")) for m in messages)
+        total_chars = sum(_content_text_len(m.get("content")) for m in messages)
         tool_call_chars = sum(
             len(str(m.get("tool_calls") or "")) + len(str(m.get("tool_call_id") or ""))
             for m in messages
@@ -489,9 +506,14 @@ class ContextController:
                 safe_output = safe_output[: cut + 1]
             safe_output += "\n... [HARD TRUNCATED]"
 
+            # Preserve the original success state — truncation is a size
+            # constraint, not a tool failure. Return success=True with a
+            # _truncated flag so the model knows the data was clipped but
+            # the tool itself worked fine.
+            original_success = result.get("success", True)
             return {
-                "success": False,
-                "error": "TOOL OUTPUT TOO LARGE",
+                "success": original_success,
+                "_truncated": True,
                 "warning": (
                     "Tool output was extremely large and was forcefully truncated. "
                     "DO NOT repeat the exact same tool call. Use a more specific "

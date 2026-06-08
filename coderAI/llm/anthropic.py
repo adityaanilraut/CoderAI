@@ -7,7 +7,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 import aiohttp
 
-from coderAI.llm.base import LLMProvider, REASONING_BUDGET_MAP
+from coderAI.llm.base import LLMProvider, REASONING_BUDGET_MAP, DEFAULT_HTTP_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
@@ -218,9 +218,7 @@ class AnthropicProvider(LLMProvider):
                         prev_content.append({"type": "text", "text": content or ""})
                     else:
                         prev_str = str(prev_content or "")
-                        anthropic_messages[-1]["content"] = (
-                            prev_str + "\n" + (content or "")
-                        )
+                        anthropic_messages[-1]["content"] = prev_str + "\n" + (content or "")
                 else:
                     anthropic_messages.append({"role": "user", "content": content})
 
@@ -401,7 +399,7 @@ class AnthropicProvider(LLMProvider):
             self.API_URL,
             headers=self._get_headers(),
             json=payload,
-            timeout=aiohttp.ClientTimeout(total=120),
+            timeout=aiohttp.ClientTimeout(total=DEFAULT_HTTP_TIMEOUT),
         ) as response:
             if response.status != 200:
                 error_body = await response.text()
@@ -431,7 +429,7 @@ class AnthropicProvider(LLMProvider):
             self.API_URL,
             headers=self._get_headers(),
             json=payload,
-            timeout=aiohttp.ClientTimeout(total=120),
+            timeout=aiohttp.ClientTimeout(total=DEFAULT_HTTP_TIMEOUT),
         ) as response:
             if response.status != 200:
                 error_body = await response.text()
@@ -631,13 +629,8 @@ class AnthropicProvider(LLMProvider):
         }
 
     def get_model_info(self) -> Dict[str, Any]:
-        """Get information about the current model."""
         info = super().get_model_info()
         info["provider"] = "anthropic"
-        info["cost"] = self.get_cost()
-        info["total_input_tokens"] = self.total_input_tokens
-        info["total_output_tokens"] = self.total_output_tokens
-        info["total_tokens"] = self.total_input_tokens + self.total_output_tokens
         info["cache_creation_tokens"] = self.total_cache_creation_tokens
         info["cache_read_tokens"] = self.total_cache_read_tokens
         return info

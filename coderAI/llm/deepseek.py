@@ -83,9 +83,10 @@ class DeepSeekProvider(LLMProvider):
             params["tools"] = tools
             params["tool_choice"] = kwargs.get("tool_choice", "auto")
 
-        # TODO: DeepSeek V4 defaults thinking mode to enabled. This agent loop
-        # does not yet round-trip reasoning_content across tool turns, so keep
-        # the new V4 IDs in non-thinking mode by default for compatibility.
+        # DeepSeek V4 supports a thinking mode that produces reasoning_content
+        # in the response. The agent loop now round-trips reasoning_content
+        # across tool turns via session persistence and clean_messages,
+        # so we enable thinking by default for V4-compatible models.
         if self._uses_v4_family:
             if self.reasoning_effort and self.reasoning_effort != "none":
                 budget = REASONING_BUDGET_MAP.get(self.reasoning_effort, 8192)
@@ -187,12 +188,7 @@ class DeepSeekProvider(LLMProvider):
         }
 
     def get_model_info(self) -> Dict[str, Any]:
-        info = super().get_model_info()
-        info["cost"] = self.get_cost()
-        info["total_input_tokens"] = self.total_input_tokens
-        info["total_output_tokens"] = self.total_output_tokens
-        info["total_tokens"] = self.total_input_tokens + self.total_output_tokens
-        return info
+        return super().get_model_info()
 
     def clean_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """DeepSeek V4/R1 supports passing reasoning_content back in the assistant role."""

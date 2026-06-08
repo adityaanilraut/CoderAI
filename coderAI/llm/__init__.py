@@ -4,6 +4,7 @@ from coderAI.llm.lmstudio import LMStudioProvider
 from coderAI.llm.ollama import OllamaProvider
 from coderAI.llm.groq import GroqProvider
 from coderAI.llm.deepseek import DeepSeekProvider
+from coderAI.llm.gemini import GeminiProvider
 from coderAI.llm.factory import create_provider
 
 __all__ = [
@@ -13,5 +14,6 @@ __all__ = [
     "OllamaProvider",
     "GroqProvider",
     "DeepSeekProvider",
+    "GeminiProvider",
     "create_provider",
 ]

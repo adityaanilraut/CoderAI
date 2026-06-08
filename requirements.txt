@@ -11,3 +11,4 @@ pyyaml>=6.0
 groq>=0.4.2
 certifi>=2024.2.2
 chromadb>=0.4.22
+html2text>=2024.2.26

@@ -1,17 +1,14 @@
 """Ollama local LLM provider implementation."""
 
-import json
 import logging
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, Dict, Optional
 
-import aiohttp
-
-from coderAI.llm.base import LLMProvider
+from coderAI.llm.local_base import OpenAICompatibleLocalProvider
 
 logger = logging.getLogger(__name__)
 
 
-class OllamaProvider(LLMProvider):
+class OllamaProvider(OpenAICompatibleLocalProvider):
     """Ollama local LLM provider using OpenAI-compatible API."""
 
     def __init__(
@@ -24,152 +21,26 @@ class OllamaProvider(LLMProvider):
             endpoint: Ollama API endpoint (default: http://localhost:11434/v1)
             **kwargs: Additional options
         """
-        super().__init__(model, None, **kwargs)
-        self.endpoint = endpoint.rstrip("/")
-        if not self.endpoint.endswith("/v1"):
-            self.endpoint = f"{self.endpoint}/v1"
-        self.temperature = kwargs.get("temperature", 0.7)
-        self.max_tokens = kwargs.get("max_tokens", 8192)
+        super().__init__(model=model, endpoint=endpoint, **kwargs)
 
-        # Token tracking for session info
-        self.total_input_tokens = 0
-        self.total_output_tokens = 0
+    def _transform_chat_response(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        """Inject reasoning content as <think> tags for Ollama models."""
+        choices = result.get("choices", [])
+        if choices:
+            message = dict(choices[0].get("message", {}))
+            reasoning = message.pop("reasoning", "")
+            if reasoning:
+                content = message.get("content") or ""
+                message["content"] = f"<think>\n{reasoning}\n</think>\n\n{content}"
+            choices[0]["message"] = message
+        return result
 
-        self._session: Optional[aiohttp.ClientSession] = None
-
-    def _get_session(self) -> aiohttp.ClientSession:
-        """Get or create a persistent HTTP session."""
-        if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession()
-        return self._session
-
-    async def close(self) -> None:
-        """Close the HTTP session."""
-        if self._session and not self._session.closed:
-            await self._session.close()
-
-    async def chat(
-        self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
-        **kwargs,
-    ) -> Dict[str, Any]:
-        """Send a chat completion request to Ollama."""
-        url = f"{self.endpoint}/chat/completions"
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": kwargs.get("temperature", self.temperature),
-            "max_tokens": kwargs.get("max_tokens", self.max_tokens),
-        }
-
-        if tools:
-            payload["tools"] = tools
-            payload["tool_choice"] = kwargs.get("tool_choice", "auto")
-
-        async with self._get_session().post(
-            url, json=payload, timeout=aiohttp.ClientTimeout(total=120)
-        ) as response:
-            response.raise_for_status()
-            try:
-                result = await response.json()
-            except Exception as e:
-                raise RuntimeError(f"Ollama returned malformed JSON response: {e}") from e
-
-            # Track usage
-            assert isinstance(result, dict)
-            usage = result.get("usage", {})
-            self.total_input_tokens += usage.get("prompt_tokens", 0)
-            self.total_output_tokens += usage.get("completion_tokens", 0)
-
-            # If the model returned reasoning content, inject it into
-            # the response as <think> tags so the streaming handler
-            # can display it consistently.
-            choices = result.get("choices", [])
-            if choices:
-                message = choices[0].get("message", {})
-                reasoning = message.pop("reasoning", "")
-                if reasoning:
-                    content = message.get("content", "")
-                    message["content"] = f"<think>\n{reasoning}\n</think>\n\n{content}"
-
-            return result
-
-    async def stream(
-        self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
-        **kwargs,
-    ) -> AsyncIterator[Dict[str, Any]]:
-        """Send a streaming chat completion request to Ollama."""
-        url = f"{self.endpoint}/chat/completions"
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": kwargs.get("temperature", self.temperature),
-            "max_tokens": kwargs.get("max_tokens", self.max_tokens),
-            "stream": True,
-        }
-
-        if tools:
-            payload["tools"] = tools
-            payload["tool_choice"] = kwargs.get("tool_choice", "auto")
-
-        async with self._get_session().post(
-            url, json=payload, timeout=aiohttp.ClientTimeout(total=120)
-        ) as response:
-            response.raise_for_status()
-            buffer = ""
-            async for raw_chunk in response.content:
-                buffer += raw_chunk.decode("utf-8")
-                while "\n" in buffer:
-                    line, buffer = buffer.split("\n", 1)
-                    line = line.strip()
-                    if not line:
-                        continue
-                    if line.startswith("data: "):
-                        data = line[6:]
-                        if data == "[DONE]":
-                            return
-                        try:
-                            chunk = json.loads(data)
-                            # Transform reasoning into standard reasoning_content delta
-                            choices = chunk.get("choices", [])
-                            if choices:
-                                delta = choices[0].get("delta", {})
-                                reasoning = delta.pop("reasoning", None)
-                                if reasoning:
-                                    delta["reasoning_content"] = reasoning
-                            yield chunk
-                        except json.JSONDecodeError:
-                            logger.debug(f"Failed to parse SSE data: {data}")
-                            continue
-
-    def count_tokens(self, text: str) -> int:
-        """Approximate token count for local models."""
-        return len(text) // 4
-
-    def supports_tools(self) -> bool:
-        return True
-
-    def get_cost(self) -> Dict[str, Any]:
-        return {
-            "input_tokens": self.total_input_tokens,
-            "output_tokens": self.total_output_tokens,
-            "total_tokens": self.total_input_tokens + self.total_output_tokens,
-            "input_cost": 0,
-            "output_cost": 0,
-            "total_cost": 0,
-            "currency": "USD",
-            "model": self.model,
-            "note": "Local model — no API cost",
-        }
-
-    def get_model_info(self) -> Dict[str, Any]:
-        info = super().get_model_info()
-        info["endpoint"] = self.endpoint
-        info["cost"] = self.get_cost()
-        info["total_input_tokens"] = self.total_input_tokens
-        info["total_output_tokens"] = self.total_output_tokens
-        info["total_tokens"] = self.total_input_tokens + self.total_output_tokens
-        return info
+    def _transform_stream_chunk(self, chunk: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Move Ollama reasoning delta to reasoning_content for streaming handler."""
+        choices = chunk.get("choices", [])
+        if choices:
+            delta = choices[0].get("delta", {})
+            reasoning = delta.pop("reasoning", None)
+            if reasoning:
+                delta["reasoning_content"] = reasoning
+        return chunk

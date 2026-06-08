@@ -20,11 +20,11 @@ def no_event_loop():
 
 
 def test_count_tokens_no_api_key():
-    # Fallback to len // 4 if no api key
+    # Fallback to ceil(len/4) if no api key
     text = "hello world"
-    # len is 11, 11 // 4 = 2
+    # len is 11, ceil(11/4) = 3
     count = count_tokens_anthropic(text, "claude-3-5-sonnet-20241022", None)
-    assert count == 2
+    assert count == 3
 
 
 @patch("requests.post")
@@ -53,9 +53,9 @@ def test_count_tokens_api_success(mock_post):
 def test_count_tokens_api_failure(mock_post):
     mock_post.side_effect = Exception("API error")
 
-    text = "fallback text"  # len 13, 13 // 4 = 3
+    text = "fallback text"  # len 13, ceil(13/4) = 4
     model = "claude-3-5-sonnet-20241022"
     api_key = "test_key"
 
     count = count_tokens_anthropic(text, model, api_key)
-    assert count == 3
+    assert count == 4

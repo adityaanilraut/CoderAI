@@ -18,108 +18,42 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 logger = logging.getLogger(__name__)
 
 
-# Commands / binaries that are inherently interactive (REPLs, editors, TUIs)
-_INTERACTIVE_BINARIES: frozenset[str] = frozenset(
-    {
-        # REPLs / interpreters launched without arguments
-        "python",
-        "python3",
-        "python2",
-        "node",
-        "bun",
-        "irb",
-        "pry",
-        "ghci",
-        "erl",
-        "iex",
-        "lua",
-        "luajit",
-        "r",
-        "R",
-        "julia",
-        "scala",
-        # Editors / pagers
-        "vim",
-        "nvim",
-        "vi",
-        "nano",
-        "emacs",
-        "pico",
-        "ed",
-        "less",
-        "more",
-        # System monitors / TUIs
-        "top",
-        "htop",
-        "btop",
-        "glances",
-        "nmon",
-        # Database CLIs
-        "psql",
-        "mysql",
-        "sqlite3",
-        "mongosh",
-        "mongo",
-        "redis-cli",
-        # Network interactive tools
-        "ssh",
-        "telnet",
-        "ftp",
-        "sftp",
-        # Shells
-        "bash",
-        "zsh",
-        "sh",
-        "fish",
-        "csh",
-        "tcsh",
-        # Package managers that open interactive prompts
-        "nix-shell",
-        "ruby",
-        # This project itself
-        "coderai",
-    }
-)
+# Categorised interactive binaries.  ``is_interactive_command()`` uses the
+# category to decide whether arguments (a script file, ``-c``, ``-e``) make
+# the command non-interactive.  The ``__contains__`` check on the values
+# (frozensets) below answers ``binary in _INTERACTIVE_BINARIES``.
+# Adding a binary here automatically makes it available for all lookups;
+# no separate subsets to maintain.
+_INTERACTIVE_COMMAND_CATEGORIES: Dict[str, frozenset[str]] = {
+    "interpreter": frozenset({
+        "python", "python3", "python2", "node", "bun",
+        "lua", "luajit", "julia", "ruby", "irb", "pry",
+        "r", "R", "scala", "ghci", "erl", "iex",
+    }),
+    "shell": frozenset({
+        "bash", "zsh", "sh", "fish", "csh", "tcsh",
+    }),
+    "always_interactive": frozenset({
+        "vim", "nvim", "vi", "nano", "emacs", "pico", "ed",
+        "less", "more", "top", "htop", "btop", "glances", "nmon",
+    }),
+    "db_network": frozenset({
+        "psql", "mysql", "sqlite3", "mongosh", "mongo", "redis-cli",
+        "ssh", "telnet", "ftp", "sftp",
+    }),
+    "other": frozenset({
+        "nix-shell", "coderai",
+    }),
+}
 
-# Sub-categories of _INTERACTIVE_BINARIES used in is_interactive_command()
-# to decide whether arguments make the command non-interactive.
-# Maintaining these here avoids duplicate inline tuples.
-_SHELL_BINARIES: frozenset[str] = frozenset({"bash", "zsh", "sh", "fish", "csh", "tcsh"})
-_INTERPRETER_BINARIES: frozenset[str] = frozenset(
-    {
-        "python",
-        "python3",
-        "python2",
-        "node",
-        "bun",
-        "lua",
-        "luajit",
-        "julia",
-        "ruby",
-        "irb",
-        "R",
-        "r",
-        "scala",
-    }
+# Union of all categories for O(1) membership.
+_INTERACTIVE_BINARIES: frozenset[str] = frozenset(
+    b for s in _INTERACTIVE_COMMAND_CATEGORIES.values() for b in s
 )
-_ALWAYS_INTERACTIVE_BINARIES: frozenset[str] = frozenset(
-    {
-        "vim",
-        "nvim",
-        "vi",
-        "nano",
-        "emacs",
-        "pico",
-        "ed",
-        "less",
-        "more",
-        "top",
-        "htop",
-        "btop",
-        "glances",
-        "nmon",
-    }
-)
+_SHELL_BINARIES: frozenset[str] = _INTERACTIVE_COMMAND_CATEGORIES["shell"]
+_INTERPRETER_BINARIES: frozenset[str] = _INTERACTIVE_COMMAND_CATEGORIES["interpreter"]
+_ALWAYS_INTERACTIVE_BINARIES: frozenset[str] = _INTERACTIVE_COMMAND_CATEGORIES["always_interactive"]
+_DATABASE_NETWORK_CLIS: frozenset[str] = _INTERACTIVE_COMMAND_CATEGORIES["db_network"]
 
 # Patterns that indicate interactive flags (e.g. docker run -it, docker exec -it)
 _INTERACTIVE_FLAG_PATTERNS: tuple[re.Pattern, ...] = (
@@ -150,22 +84,8 @@ _NON_INTERACTIVE_INDICATORS = (
     " <",  # file redirect (e.g. psql < script.sql)
 )
 
-# Database / network CLIs where -h is typically a host flag (not --help)
-_DATABASE_NETWORK_CLIS: frozenset[str] = frozenset(
-    {
-        "psql",
-        "mysql",
-        "sqlite3",
-        "mongosh",
-        "mongo",
-        "redis-cli",
-        "ssh",
-        "telnet",
-        "ftp",
-        "sftp",
-    }
-)
-
+# Database / network CLIs where -h is typically a host flag (not --help).
+# See _INTERACTIVE_COMMAND_CATEGORIES["db_network"] above for the actual set.
 
 def _token_is_shell_dash_c(token: str) -> bool:
     """True if a shell argv token runs a -c script (incl. combined flags like -lc)."""

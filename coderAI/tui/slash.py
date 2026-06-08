@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
@@ -32,6 +30,7 @@ def handle_slash_command(
     reveal_reasoning: Callable[[], None],
     confirm_exit: Callable[[], bool],
     set_search_filter: Callable[[str], None],
+    retry_agent: Callable[[], None],
 ) -> bool:
     """Handle a slash command locally. Returns True if handled (don't send to agent)."""
     parts = raw[1:].split(None, 1) if raw.startswith("/") else raw.split(None, 1)
@@ -151,6 +150,7 @@ def handle_slash_command(
     if head in (
         "version",
         "providers",
+        "models",
         "cost",
         "pricing",
         "system",
@@ -162,7 +162,7 @@ def handle_slash_command(
         "todos",
         "task",
     ):
-        topic = "models" if head == "providers" else head
+        topic = "models" if head in ("providers", "models") else head
         controller.enqueue_command("reference", topic=topic)
         return True
     if head == "plan":
@@ -209,25 +209,25 @@ def handle_slash_command(
             toast("warning", "No assistant response to copy")
         else:
             _copy_osc52(last)
-            toast("info", f"Sent {len(last):,} chars via OSC-52 — paste to verify")
+            _copy_fallback_file(last, toast)
+            toast("info", f"Sent {len(last):,} chars via OSC-52 + temp file")
         return True
-    if head == "theme":
-        theme_name = arg.lower()
-        if theme_name not in ("dark", "light"):
-            toast("warning", "Usage: /theme <dark|light>")
+    if head == "retry":
+        retry_agent()
+        return True
+    if head in ("kill", "cancel-agent"):
+        if not arg:
+            toast("warning", "Usage: /kill <agent-id-or-name>")
             return True
-        os.environ["CODERAI_THEME"] = theme_name
-        cfg_path = Path.home() / ".coderAI" / "config.json"
-        try:
-            cfg: Dict[str, Any] = {}
-            if cfg_path.is_file():
-                cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-            cfg["theme"] = theme_name
-            cfg_path.parent.mkdir(parents=True, exist_ok=True)
-            cfg_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
-            toast("success", f"Theme persisted as {theme_name}. Restart chat to apply.")
-        except OSError as e:
-            toast("warning", f"Theme save failed: {e}")
+        # Look up agent id from name
+        agents = reducer.session.agents
+        target_id = arg
+        for aid, info in agents.items():
+            if info.name == arg or aid == arg:
+                target_id = aid
+                break
+        controller.enqueue_command("cancel_agent", agentId=target_id)
+        toast("info", f"Cancelling agent: {arg}")
         return True
     toast("warning", f"Unknown command: /{head} · type /help")
     return True
@@ -240,10 +240,24 @@ def _find_last_assistant(timeline: List[Dict[str, Any]]) -> Optional[str]:
     return None
 
 
-def _copy_osc52(text: str) -> None:
+def _copy_osc52(text: str) -> bool:
     import base64
     import sys
 
     encoded = base64.b64encode(text.encode("utf-8")).decode("ascii")
+    if len(encoded) > 4096:
+        encoded = encoded[:4096]
     sys.stdout.write(f"\033]52;c;{encoded}\007")
     sys.stdout.flush()
+    return True
+
+
+def _copy_fallback_file(text: str, toast_fn) -> None:
+    import tempfile
+
+    path = Path(tempfile.gettempdir()) / "coderAI-copy.txt"
+    try:
+        path.write_text(text, encoding="utf-8")
+        toast_fn("info", f"Fallback: saved to {path}")
+    except OSError:
+        pass

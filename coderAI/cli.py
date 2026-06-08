@@ -95,6 +95,7 @@ def chat(model, resume, continue_, auto_approve, persona):
             getattr(cfg, "anthropic_api_key", None),
             getattr(cfg, "groq_api_key", None),
             getattr(cfg, "deepseek_api_key", None),
+            getattr(cfg, "gemini_api_key", None),
         ]
     )
     local_default = (cfg.default_model or "").lower() in ("lmstudio", "ollama")
@@ -102,7 +103,7 @@ def chat(model, resume, continue_, auto_approve, persona):
         display.print_error(
             "No API key configured. Run `coderAI setup` to add one, or set a "
             "provider env var (ANTHROPIC_API_KEY, OPENAI_API_KEY, GROQ_API_KEY, "
-            "DEEPSEEK_API_KEY). For local models, run `coderAI config set "
+            "DEEPSEEK_API_KEY, GEMINI_API_KEY). For local models, run `coderAI config set "
             "default_model lmstudio` (or ollama)."
         )
         sys.exit(1)
@@ -258,18 +259,9 @@ _REASONING_CHOICES = ("high", "medium", "low", "none")
 
 def _valid_models() -> set[str]:
     """Return the set of valid default-model values accepted by setup()."""
-    from .llm.anthropic import MODEL_ALIASES as _ANTH
-    from .llm.deepseek import DeepSeekProvider as _DS
-    from .llm.groq import GroqProvider as _GR
-    from .llm.openai import OpenAIProvider as _OAI
+    from .llm.factory import get_all_model_ids
 
-    return (
-        set(_OAI.SUPPORTED_MODELS.keys())
-        | set(_ANTH.keys())
-        | set(_GR.SUPPORTED_MODELS.keys())
-        | set(_DS.SUPPORTED_MODELS.keys())
-        | {"lmstudio", "ollama"}
-    )
+    return get_all_model_ids()
 
 
 def _valid_endpoint(url: str) -> bool:
@@ -353,16 +345,31 @@ def setup():
         captured_any_key = True
     display.print()
 
+    # Gemini API Key
+    display.print("[bold]5. Gemini API Key[/bold]")
+    display.print("   Required for using Gemini models")
+    gemini_key = click.prompt(
+        "   Enter your Gemini API key (or press Enter to skip)",
+        default="",
+        show_default=False,
+        hide_input=True,
+    )
+    if gemini_key:
+        config_manager.set("gemini_api_key", gemini_key)
+        display.print_success("   Gemini API key saved")
+        captured_any_key = True
+    display.print()
+
     # Default Model — validated against the provider registries.
     valid = _valid_models()
-    display.print("[bold]5. Default Model[/bold]")
+    display.print("[bold]6. Default Model[/bold]")
     display.print("   Run `coderAI models` after setup for the full list.")
     display.print(
         "   Common: claude-sonnet-4-6, opus, haiku, gpt-5.4-mini, "
-        "gpt-5.4, deepseek-v4-flash, deepseek-v4-pro, lmstudio, ollama"
+        "gpt-5.4, deepseek-v4-flash, gemini-3.5-flash, lmstudio, ollama"
     )
     while True:
-        model = click.prompt("   Enter default model", default="gpt-5.4-mini").strip()
+        model = click.prompt("   Enter default model", default="gemini-3.5-flash").strip()
         if model in valid:
             config_manager.set("default_model", model)
             display.print_success(f"   Default model set to {model}")
@@ -371,7 +378,7 @@ def setup():
     display.print()
 
     # Reasoning Effort — whitelisted.
-    display.print("[bold]6. Reasoning Effort[/bold]")
+    display.print("[bold]7. Reasoning Effort[/bold]")
     display.print(
         "   Thinking budget for reasoning-capable models (o1, o3-mini, "
         "gpt-5.4, claude-sonnet-4-6, …)."
@@ -387,7 +394,7 @@ def setup():
     display.print()
 
     # LM Studio (optional)
-    display.print("[bold]7. LM Studio Configuration (Optional)[/bold]")
+    display.print("[bold]8. LM Studio Configuration (Optional)[/bold]")
     display.print("   For using local models with LM Studio")
     use_lmstudio = click.confirm("   Configure LM Studio?", default=False)
     if use_lmstudio:
@@ -409,7 +416,7 @@ def setup():
     display.print()
 
     # Ollama (optional)
-    display.print("[bold]8. Ollama Configuration (Optional)[/bold]")
+    display.print("[bold]9. Ollama Configuration (Optional)[/bold]")
     display.print("   For using local models with Ollama")
     use_ollama = click.confirm("   Configure Ollama?", default=False)
     if use_ollama:
@@ -427,7 +434,7 @@ def setup():
     display.print()
 
     # Web Search (optional)
-    display.print("[bold]9. Web Search Configuration (Optional)[/bold]")
+    display.print("[bold]10. Web Search Configuration (Optional)[/bold]")
     display.print("   For querying the web during execution.")
     use_web = click.confirm("   Configure Web Search?", default=False)
     if use_web:
@@ -458,21 +465,21 @@ def setup():
                 if exa_key:
                     config_manager.set("exa_api_key", exa_key)
                     captured_any_key = True
-            
+
             rate_limit = click.prompt(
                 "   Enter domain rate limit delay in seconds",
                 type=float,
                 default=1.0,
             )
             config_manager.set("rate_limit_delay_seconds", rate_limit)
-            
+
             concurrent = click.confirm("   Enable concurrent search (DDG + SearXNG)?", default=True)
             config_manager.set("concurrent_search", concurrent)
             display.print_success("   Web Search configuration saved")
     display.print()
 
     # MCP (optional)
-    display.print("[bold]10. MCP Servers Configuration (Optional)[/bold]")
+    display.print("[bold]11. MCP Servers Configuration (Optional)[/bold]")
     display.print("    Add Model Context Protocol servers to provide custom tools.")
     use_mcp = click.confirm("    Configure MCP servers?", default=False)
     if use_mcp:
@@ -484,7 +491,7 @@ def setup():
                     mcp_data = json.load(f)
             except Exception:
                 pass
-        
+
         while True:
             server_name = click.prompt(
                 "    Enter MCP server name (or press Enter to finish)",
@@ -493,7 +500,7 @@ def setup():
             ).strip()
             if not server_name:
                 break
-            
+
             transport = click.prompt(
                 "    Transport type",
                 type=click.Choice(["stdio", "sse"]),
@@ -507,18 +514,22 @@ def setup():
                 }
             else:
                 command = click.prompt("    Enter server command (e.g. npx, python3)").strip()
-                args_str = click.prompt("    Enter command arguments (comma-separated, optional)", default="").strip()
+                args_str = click.prompt(
+                    "    Enter command arguments (comma-separated, optional)", default=""
+                ).strip()
                 args = [a.strip() for a in args_str.split(",") if a.strip()] if args_str else []
                 mcp_data["mcpServers"][server_name] = {
                     "command": command,
                     "args": args,
                 }
             display.print_success(f"    Configured MCP server '{server_name}'")
-        
+
         try:
             with open(mcp_servers_file, "w") as f:
                 json.dump(mcp_data, f, indent=2)
-            display.print_success("    MCP server configurations saved to ~/.coderAI/mcp_servers.json")
+            display.print_success(
+                "    MCP server configurations saved to ~/.coderAI/mcp_servers.json"
+            )
         except Exception as e:
             display.print_error(f"    Failed to save MCP servers config: {e}")
     display.print()
@@ -540,6 +551,7 @@ def models():
     from .llm.deepseek import DeepSeekProvider
     from .llm.groq import GroqProvider
     from .llm.openai import OpenAIProvider
+    from .llm.gemini import GeminiProvider
 
     display.print_header("Available Models and Providers")
 
@@ -568,6 +580,11 @@ def models():
         "DeepSeek Provider",
         DeepSeekProvider.SUPPORTED_MODELS.keys(),
         "DeepSeek API key",
+    )
+    _print_group(
+        "Gemini Provider",
+        GeminiProvider.SUPPORTED_MODELS.keys(),
+        "Gemini API key",
     )
     _print_group("LM Studio Provider", ["lmstudio"], "LM Studio running locally")
     _print_group("Ollama Provider", ["ollama"], "Ollama running locally")
@@ -650,6 +667,7 @@ def status():
     _key_row("Anthropic", bool(config.anthropic_api_key), "anthropic_api_key")
     _key_row("Groq", bool(config.groq_api_key), "groq_api_key")
     _key_row("DeepSeek", bool(config.deepseek_api_key), "deepseek_api_key")
+    _key_row("Gemini", bool(config.gemini_api_key), "gemini_api_key")
 
     display.print("\n[bold cyan]Local providers[/bold cyan]")
     display.print(f"  LM Studio     endpoint {config.lmstudio_endpoint}")
@@ -736,6 +754,7 @@ def doctor():
         ("Anthropic", cfg.anthropic_api_key),
         ("Groq", cfg.groq_api_key),
         ("DeepSeek", cfg.deepseek_api_key),
+        ("Gemini", cfg.gemini_api_key),
     ]
     any_cloud = any(v for _, v in keys)
     for name, val in keys:

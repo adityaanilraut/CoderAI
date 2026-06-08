@@ -74,7 +74,12 @@ async def test_set_model_aligns_provider_usage_counters() -> None:
         total_prompt_tokens=11,
         total_completion_tokens=7,
         _create_provider=MagicMock(return_value=new_provider),
+        _replace_provider=MagicMock(side_effect=lambda: (
+            setattr(agent, "provider", new_provider),
+            setattr(getattr(agent, "context_controller", SimpleNamespace()), "provider", new_provider),
+        )),
         _configure_delegate_tool_context=MagicMock(),
+        context_controller=SimpleNamespace(provider=old_provider),
         session=None,
     )
     server = SimpleNamespace(agent=agent, emit=MagicMock())
@@ -436,12 +441,8 @@ async def test_get_plan_emits_plan_card_and_info(tmp_path, monkeypatch) -> None:
         config=SimpleNamespace(project_root=str(tmp_path), max_iterations=50, budget_limit=0.0),
     )
     monkeypatch.setattr(
-        "coderAI.bridge.controller.find_dot_coderai_subdir",
-        lambda *_args, **_kwargs: dot_coderai,
-    )
-    monkeypatch.setattr(
-        "coderAI.bridge.controller.config_manager.load_project_config",
-        lambda _root: SimpleNamespace(project_root=tmp_path),
+        "coderAI.system.project_layout.read_current_plan",
+        lambda *_args, **_kwargs: plan,
     )
 
     await _cmd_get_plan(server, {})

@@ -7,7 +7,7 @@ they need for the current task instead of everything available.
 import re
 import logging
 from collections import Counter
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -371,6 +371,17 @@ def build_focused_context(
     return "\n\n".join(parts) if parts else None
 
 
+def _extract_text(content: Any) -> str:
+    """Extract plain text from message content (handles both str and multimodal lists)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(
+            b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
+        )
+    return ""
+
+
 def summarize_conversation_focus(messages: List[Dict[str, str]], recent_count: int = 6) -> str:
     """Derive a short textual summary of the conversation's current focus.
 
@@ -379,16 +390,15 @@ def summarize_conversation_focus(messages: List[Dict[str, str]], recent_count: i
     recent = messages[-recent_count:] if len(messages) > recent_count else messages
     parts: List[str] = []
 
-    # Always include the very first user message to preserve the main task context
     if len(messages) > recent_count:
         first_msg = next((m for m in messages if m.get("role") == "user"), None)
         if first_msg and first_msg not in recent:
-            if first_content := first_msg.get("content"):
+            if first_content := _extract_text(first_msg.get("content")):
                 parts.append(first_content[:300])
 
     for msg in recent:
         role = msg.get("role", "")
-        content = msg.get("content") or ""
+        content = _extract_text(msg.get("content") or "")
         if role in ("user", "assistant") and content:
             parts.append(content[:300])
     return " ".join(parts)

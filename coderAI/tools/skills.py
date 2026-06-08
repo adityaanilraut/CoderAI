@@ -1,100 +1,55 @@
-"""Skill usage tool for loading and applying skill instructions."""
+"""Skill usage tool for loading and applying skill instructions.
+
+Now delegates to the centralized ``coderAI.skills`` package for skill
+discovery, loading, and relevance matching.
+"""
+
+from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import yaml
 from pydantic import BaseModel, Field
 
 from coderAI.tools.base import Tool
 from coderAI.system.config import config_manager
-from coderAI.system.project_layout import find_dot_coderai_subdir
+from coderAI.skills import (
+    Skill,
+    discover_local_skills,
+    load_skill_by_name,
+)
 
 logger = logging.getLogger(__name__)
 
-
-# ---------------------------------------------------------------------------
-# Skill loader (inlined from the former coderAI/skills.py)
-# ---------------------------------------------------------------------------
-
-
-class Skill:
-    """Represents a skill loaded from a markdown file."""
-
-    def __init__(self, name: str, description: str, instructions: str):
-        self.name = name
-        self.description = description
-        self.instructions = instructions
-
-
-def _find_skills_dir(project_root: str = ".") -> Optional[Path]:
-    """Search for the .coderAI/skills/ directory."""
-    return find_dot_coderai_subdir("skills", project_root)
+__all__ = [
+    "Skill",
+    "load_skill",
+    "get_available_skills",
+    "UseSkillParams",
+    "UseSkillTool",
+]
 
 
 def load_skill(skill_name: str, project_root: str = ".") -> Optional[Skill]:
-    """Load a skill from .coderAI/skills/<skill_name>.md."""
-    skills_dir = _find_skills_dir(project_root)
-    if skills_dir is None:
-        return None
+    """Load a single skill from ``.coderAI/skills/``.
 
-    if ".." in skill_name or "/" in skill_name or "\\" in skill_name:
-        logger.warning(f"Rejected skill_name with path traversal: {skill_name}")
-        return None
+    Prefer the subdirectory format (``skills/<name>/SKILLS.md``) but fall
+    back to the legacy flat file (``skills/<name>.md``).
 
-    file_path = (skills_dir / f"{skill_name}.md").resolve()
-    skills_dir_resolved = skills_dir.resolve()
-
-    if not str(file_path).startswith(str(skills_dir_resolved) + "/") and str(file_path) != str(
-        skills_dir_resolved / f"{skill_name}.md"
-    ):
-        logger.warning(f"Path traversal attempt blocked for skill: {skill_name}")
-        return None
-
-    if not file_path.exists():
-        return None
-
-    if file_path.stat().st_size > 100 * 1024:
-        logger.warning(f"Skill file too large: {file_path}")
-        return None
-
-    try:
-        content = file_path.read_text()
-        metadata: Dict[str, Any] = {}
-        instructions = content
-
-        if content.startswith("---"):
-            parts = content.split("---", 2)
-            if len(parts) >= 3:
-                try:
-                    metadata = yaml.safe_load(parts[1]) or {}
-                    instructions = parts[2].strip()
-                except yaml.YAMLError as e:
-                    logger.warning(f"Failed to parse YAML frontmatter in {file_path.name}: {e}")
-
-        return Skill(
-            name=metadata.get("name", skill_name),
-            description=metadata.get("description", f"Skill: {skill_name}"),
-            instructions=instructions,
-        )
-    except Exception as e:
-        logger.error(f"Error loading skill {skill_name}: {e}")
-        return None
+    Maintained for backward compatibility; delegates to
+    :func:`coderAI.skills.load_skill_by_name`.
+    """
+    return load_skill_by_name(skill_name, project_root)
 
 
 def get_available_skills(project_root: str = ".") -> List[Dict[str, str]]:
-    """Return a list of available skills with name and description."""
-    skills_dir = _find_skills_dir(project_root)
-    if skills_dir is None:
-        return []
+    """Return a list of available skills with name and description.
 
-    skills = []
-    for f in sorted(skills_dir.glob("*.md")):
-        skill = load_skill(f.stem, project_root)
-        if skill:
-            skills.append({"name": skill.name, "description": skill.description})
-    return skills
+    Maintained for backward compatibility; delegates to
+    :func:`coderAI.skills.discover_local_skills`.
+    """
+    skills = discover_local_skills(project_root)
+    return [{"name": s.name, "description": s.description} for s in skills]
 
 
 class UseSkillParams(BaseModel):
@@ -138,7 +93,10 @@ class UseSkillTool(Tool):
                         "success": True,
                         "message": "No skills found in .coderAI/skills/ directory.",
                         "skills": [],
-                        "hint": "Create .md files in .coderAI/skills/ with YAML frontmatter to define skills.",
+                        "hint": (
+                            "Create SKILLS.md files in .coderAI/skills/<name>/ "
+                            "with YAML frontmatter to define skills."
+                        ),
                     }
                 return {
                     "success": True,

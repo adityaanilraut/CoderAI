@@ -41,6 +41,7 @@ class FileBackupStore:
             d = Path(self._custom_backup_dir)
         else:
             from coderAI.system.history import history_manager
+
             base_dir = Path.home() / ".coderAI" / "backups"
             if history_manager.current_session:
                 d = base_dir / history_manager.current_session.session_id

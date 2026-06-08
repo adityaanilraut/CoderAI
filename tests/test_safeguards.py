@@ -341,9 +341,7 @@ class TestPythonREPLWorkingDirScope:
         monkeypatch.delenv("CODERAI_ALLOW_OUTSIDE_PROJECT", raising=False)
         config_manager._config = None
 
-        result = asyncio.run(
-            PythonREPLTool().execute(code="print(1)", working_dir=str(tmp_path))
-        )
+        result = asyncio.run(PythonREPLTool().execute(code="print(1)", working_dir=str(tmp_path)))
         assert result["success"] is False
         assert result.get("error_code") == "scope"
 
@@ -373,7 +371,9 @@ class TestGitReadScope:
     def test_git_status_validates_scope(self):
         from coderAI.tools.git import GitStatusTool
 
-        with patch("coderAI.tools.git._validate_git_scope", new_callable=AsyncMock) as mock_validate:
+        with patch(
+            "coderAI.tools.git._validate_git_scope", new_callable=AsyncMock
+        ) as mock_validate:
             mock_validate.return_value = {
                 "success": False,
                 "error": "Git scope mismatch",

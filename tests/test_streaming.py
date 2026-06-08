@@ -132,6 +132,41 @@ class TestBridgeStreamingHandler:
         assert tool_calls[0]["function"]["name"] == "read_file"
         assert '"path": "x.py"' in tool_calls[0]["function"]["arguments"]
 
+    def test_tool_call_accumulation_none_index(self):
+        handler = BridgeStreamingHandler(_FakeServer())
+
+        chunks = [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": None,
+                                    "id": "call_1",
+                                    "function": {
+                                        "name": "read_file",
+                                        "arguments": '{"path": "x.py"}',
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            {"choices": [{"delta": {}}]},
+        ]
+
+        async def run():
+            return await handler.handle_stream(_fake_stream(chunks))
+
+        result = asyncio.run(run())
+        tool_calls = result.get("tool_calls")
+        assert tool_calls is not None
+        assert len(tool_calls) == 1
+        assert tool_calls[0]["function"]["name"] == "read_file"
+        assert tool_calls[0]["id"] == "call_1"
+
     def test_mixed_content_and_tool_calls(self):
         handler = BridgeStreamingHandler(_FakeServer())
 

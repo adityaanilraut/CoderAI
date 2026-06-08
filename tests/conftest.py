@@ -26,7 +26,8 @@ for env_key in [
 # repo, so opt out for the test session.
 os.environ["CODERAI_ALLOW_OUTSIDE_PROJECT"] = "1"
 
-import pytest
+import pytest  # noqa: E402
+
 
 @pytest.fixture(autouse=True)
 def _reset_config_each_test():

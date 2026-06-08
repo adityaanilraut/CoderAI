@@ -33,22 +33,9 @@ from coderAI.core.agents import load_agent_persona, AgentPersona, expand_persona
 from coderAI.core.agent_tracker import agent_tracker, AgentStatus, AgentInfo
 from coderAI.system.hooks_manager import HooksManager
 from coderAI.system.read_cache import FileReadCache
+from coderAI.skills import SkillManager, LocalSkillSource, HasnaSkillSource
 
 logger = logging.getLogger(__name__)
-
-
-def _freeze(value: Any) -> Any:
-    """Return a hashable snapshot of ``value`` for identity comparison.
-
-    Used by ``compact_context`` to look up preserved messages by content and
-    tool-call identity across re-ordering. ``tool_calls`` is a list of dicts
-    (unhashable), so convert nested lists/dicts into tuples.
-    """
-    if isinstance(value, dict):
-        return tuple(sorted((k, _freeze(v)) for k, v in value.items()))
-    if isinstance(value, list):
-        return tuple(_freeze(v) for v in value)
-    return value
 
 
 class Agent:
@@ -153,10 +140,22 @@ class Agent:
 
         self.hooks_manager = HooksManager(self)
 
-        # Per-session file-read dedup cache. Wire onto the read_file tool so
-        # repeat reads of unchanged files in the same session collapse to a
-        # short placeholder.
-        self._wire_read_cache()
+        # Skill auto-detection manager
+        self.skill_manager = SkillManager(
+            sources=[
+                LocalSkillSource(self.config.project_root),
+                HasnaSkillSource(self.config.project_root)
+                if self.config.skills_use_hasna
+                else None,
+            ],
+            threshold=self.config.skill_confidence_threshold,
+            top_n=self.config.skill_top_n,
+            provider=self.provider,
+        )
+        # Filter out None sources (when hasna is disabled)
+        self.skill_manager._sources = [
+            s for s in self.skill_manager._sources if s is not None
+        ]
 
         # Memoization for _get_system_prompt() — only rebuild when rules,
         # tools, or persona change.
@@ -210,6 +209,7 @@ class Agent:
         # arguments
         registry.register(ManageContextTool(self.context_manager))
         from coderAI.tools.planning import CreatePlanTool
+
         plan_tool = registry.get("plan")
         if isinstance(plan_tool, CreatePlanTool):
             plan_tool.project_root = self.config.project_root
@@ -221,8 +221,13 @@ class Agent:
         # web_tools_in_main=False.
         if not (self.is_subagent or self.config.web_tools_in_main):
             to_remove = [
-                "web_search", "read_url", "download_file", "http_request",
-                "wikipedia_search", "read_feed", "sitemap_discover",
+                "web_search",
+                "read_url",
+                "download_file",
+                "http_request",
+                "wikipedia_search",
+                "read_feed",
+                "sitemap_discover",
             ]
             removed = [n for n in to_remove if n in registry.tools]
             for name in removed:
@@ -231,6 +236,18 @@ class Agent:
                 logger.info(
                     "web_tools_in_main=False — removed from main agent: %s",
                     ", ".join(removed),
+                )
+
+        from coderAI.tools.desktop import is_macos, DESKTOP_TOOL_NAMES
+
+        if not is_macos():
+            removed_desktop = [n for n in DESKTOP_TOOL_NAMES if n in registry.tools]
+            for name in removed_desktop:
+                del registry.tools[name]
+            if removed_desktop:
+                logger.info(
+                    "Non-macOS host — removed desktop tools: %s",
+                    ", ".join(removed_desktop),
                 )
 
         return registry
@@ -275,6 +292,7 @@ class Agent:
             return
         read_tool = self.tools.get("read_file")
         from coderAI.tools.filesystem import ReadFileTool
+
         if isinstance(read_tool, ReadFileTool):
             read_tool.read_cache = cache
 
@@ -376,7 +394,6 @@ class Agent:
     def _compute_system_prompt_cache_key(self) -> str:
         """Build a cache key that changes when rules, tools, or persona change."""
         from pathlib import Path
-        from coderAI.system.project_layout import find_dot_coderai_subdir
 
         parts: List[str] = []
         parts.append(self.model)
@@ -393,25 +410,19 @@ class Agent:
                     parts.append(f"rule:{rule_file.name}:{mtime}")
                 except Exception:
                     pass
-        # Active-plan signature: include mtime + current step index so a plan
+        # Active-plan signature: include current step index so a plan
         # advance forces a system-prompt rebuild (the <env> Active-plan line
-        # depends on it). Mirrors the rules try/except pattern above so a
-        # missing or unreadable file silently degrades to "plan:none".
+        # depends on it).
         try:
-            dot_dir = find_dot_coderai_subdir("", str(self.config.project_root))
-            if dot_dir is None:
-                dot_dir = Path(self.config.project_root).resolve() / ".coderAI"
-            plan_path = dot_dir / "current_plan.json"
-            if plan_path.exists():
-                import json as _json
+            from coderAI.system.project_layout import read_current_plan
 
+            plan = read_current_plan(str(self.config.project_root))
+            if plan:
+                plan_path = (
+                    Path(self.config.project_root).resolve() / ".coderAI" / "current_plan.json"
+                )
                 mtime = plan_path.stat().st_mtime
-                try:
-                    with open(plan_path, "r") as _pf:
-                        _plan_data = _json.load(_pf)
-                    current_idx = int(_plan_data.get("current_step", 0))
-                except Exception:
-                    current_idx = -1
+                current_idx = int(plan.get("current_step", 0))
                 parts.append(f"plan:{mtime}:{current_idx}")
             else:
                 parts.append("plan:none")
@@ -438,7 +449,6 @@ class Agent:
         import os
         import platform as _platform
         from pathlib import Path
-        from coderAI.system.project_layout import find_dot_coderai_subdir
 
         # Build environment section (model ID, working dir, git status, platform, date)
         project_root = getattr(self.config, "project_root", os.getcwd())
@@ -450,15 +460,10 @@ class Agent:
         # prompt small even for big plans.
         active_plan: Optional[Dict[str, Any]] = None
         try:
-            dot_dir = find_dot_coderai_subdir("", str(project_root))
-            if dot_dir is None:
-                dot_dir = Path(project_root).resolve() / ".coderAI"
-            plan_path = dot_dir / "current_plan.json"
-            if plan_path.exists():
-                import json as _json
+            from coderAI.system.project_layout import read_current_plan
 
-                with open(plan_path, "r") as _pf:
-                    _plan_data = _json.load(_pf)
+            _plan_data = read_current_plan(str(project_root))
+            if _plan_data:
                 _steps = _plan_data.get("steps", []) or []
                 _total = len(_steps)
                 _completed = sum(1 for s in _steps if s.get("status") == "done")
@@ -603,6 +608,8 @@ class Agent:
         """Load an existing session."""
         self._reset_session_accounting()
         self.session = history_manager.load_session(session_id)
+        if self.session:
+            self._refresh_session_system_prompt()
         return self.session
 
     def realign_provider_usage_counters(self) -> None:
@@ -677,6 +684,14 @@ class Agent:
                     # copy each survivor's original timestamp across. The new
                     # summary message stamps with the current time.
                     now = _time.time()
+
+                    def _freeze(value: Any) -> Any:
+                        if isinstance(value, dict):
+                            return tuple(sorted((k, _freeze(v)) for k, v in value.items()))
+                        if isinstance(value, list):
+                            return tuple(_freeze(v) for v in value)
+                        return value
+
                     originals_by_identity: Dict[tuple, List[float]] = {}
                     for orig in self.session.messages:
                         key = (
@@ -740,7 +755,9 @@ class Agent:
             logger.error(f"Error during manual context compaction: {e}")
             return False
 
-    def _register_tracker(self, task: str, role: Optional[str] = None, parent_id: Optional[str] = None) -> AgentInfo:
+    def _register_tracker(
+        self, task: str, role: Optional[str] = None, parent_id: Optional[str] = None
+    ) -> AgentInfo:
         """Register this agent with the global tracker."""
         self.tracker_info = agent_tracker.register(
             name=self.persona.name if self.persona else "main",
@@ -791,10 +808,42 @@ class Agent:
         event_emitter.emit("agent_lifecycle", action="finished", info=info)
 
     async def process_message(self, user_message: str, progress_callback=None) -> Dict[str, Any]:
-        """Process a user message using ExecutionLoop."""
+        """Process a user message using ExecutionLoop.
+
+        Before running the main loop, auto-detects and injects relevant
+        skill instructions if ``auto_detect_skills`` is enabled.
+        """
         from coderAI.core.agent_loop import ExecutionLoop
 
+        # Auto-detect relevant skills for this task
+        if self.config.auto_detect_skills:
+            try:
+                skills = await self.skill_manager.get_top_skills(user_message)
+                if skills and self.session:
+                    self._inject_skill_context(skills)
+            except Exception as e:
+                logger.warning("Skill auto-detection failed: %s", e)
+
         return await ExecutionLoop(self, progress_callback=progress_callback).run(user_message)
+
+    def _inject_skill_context(self, skills) -> None:
+        """Append loaded skill instructions as system messages to the session."""
+        for skill in skills:
+            instructions = skill.instructions if skill.instructions else skill.description
+            if not instructions:
+                continue
+
+            content = (
+                f"<skill name=\"{skill.name}\" source=\"{skill.source}\">\n"
+                f"The following skill has been auto-loaded for this task. "
+                f"Follow its instructions carefully.\n\n"
+                f"{instructions}\n"
+                f"</skill>"
+            )
+            self.session.add_message("system", content)
+            logger.info(
+                "[SkillManager] Injected skill '%s' into session context", skill.name
+            )
 
     async def process_single_shot(self, user_message: str, progress_callback=None) -> str:
         """Process a single message and return the assistant's text response."""

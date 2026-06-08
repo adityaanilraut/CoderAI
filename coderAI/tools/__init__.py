@@ -23,6 +23,7 @@ Provides all available tools for the coding agent, including:
 - Planning: structured plan-and-execute workflows
 - Notepad: shared inter-agent communication notepad
 - Semantic Search: natural-language codebase search via embeddings
+- Desktop: macOS automation tools via AppleScript and Accessibility
 """
 
 from coderAI.tools.base import Tool, ToolRegistry
@@ -144,6 +145,14 @@ from coderAI.tools.semantic_search import SemanticSearchTool
 # Notepad (inter-agent communication)
 from coderAI.tools.notepad import NotepadTool
 
+# Desktop automation
+from coderAI.tools.desktop import (
+    RunAppleScriptTool,
+    GetAccessibilityTreeTool,
+    ClickUIElementTool,
+    TypeKeystrokesTool,
+)
+
 # Refactoring, testing, and package management (also auto-discovered, but
 # exported here so the import surface matches the registered tool list).
 from coderAI.tools.refactor import RefactorTool
@@ -248,6 +257,11 @@ __all__ = [
     "SemanticSearchTool",
     # Notepad
     "NotepadTool",
+    # Desktop
+    "RunAppleScriptTool",
+    "GetAccessibilityTreeTool",
+    "ClickUIElementTool",
+    "TypeKeystrokesTool",
     # Refactor, testing, packages
     "RefactorTool",
     "RunTestsTool",

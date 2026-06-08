@@ -585,14 +585,19 @@ def test_failed_tool_iterations_accumulate_in_execution_loop() -> None:
     ):
         nonlocal call_count
         call_count += 1
-        # Always signal a tool error. The loop's consecutive_errors counter
-        # resets on each successful LLM call, so tool failures during a
-        # working LLM session run until max_iterations is exhausted.
+        # Signal a tool error every time. With separated error counters
+        # (consecutive_tool_errors accumulates across iterations), this
+        # will terminate after MAX_CONSECUTIVE_ERRORS attempts rather
+        # than running to max_iterations.
         return True, {"retry": True}
 
     loop.tool_executor.orchestrate_tool_calls = AsyncMock(side_effect=fake_orchestrate)
 
     result = asyncio.run(loop.run("hello"))
 
-    assert "maximum number of iterations" in result["content"]
-    assert call_count == cfg.max_iterations
+    # Tool errors accumulate separately from LLM errors and hit the
+    # MAX_CONSECUTIVE_ERRORS threshold (default 5).
+    from coderAI.system.error_policy import MAX_CONSECUTIVE_ERRORS
+
+    assert "consecutive errors" in result["content"]
+    assert call_count == MAX_CONSECUTIVE_ERRORS

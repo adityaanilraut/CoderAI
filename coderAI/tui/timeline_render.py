@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time as _time_mod
 from typing import Any, Dict
 
 from rich.markup import escape
@@ -19,6 +20,20 @@ _TOAST_STYLES = {
     "warning": Tokens.WARN,
     "error": Tokens.DANGER,
 }
+
+
+def _fmt_ts(ts: float | None) -> str:
+    if ts is None:
+        return ""
+    lt = _time_mod.localtime(ts)
+    return f"[{Tokens.TEXT_MUTED}]{lt.tm_hour:02d}:{lt.tm_min:02d}:{lt.tm_sec:02d}[/]"
+
+
+def _first_lines(text: str, n: int) -> str:
+    lines = text.splitlines()
+    if len(lines) <= n:
+        return text
+    return "\n".join(lines[:n]) + f"\n[{Tokens.TEXT_MUTED}][… {len(lines) - n} more lines][/]"
 
 
 def write_timeline_item(log: RichLog, it: Dict[str, Any], *, verbose: bool) -> None:
@@ -47,17 +62,20 @@ def write_timeline_item(log: RichLog, it: Dict[str, Any], *, verbose: bool) -> N
 
 def build_stream_tail_markup(it: Dict[str, Any], *, verbose: bool) -> str:
     """Rich markup for the live streaming assistant tail."""
+    ts = _fmt_ts(it.get("ts"))
     lines: list[str] = []
     reasoning = (it.get("reasoning") or "").strip()
     if verbose and reasoning:
         lines.append(
             f"[{Styles.REASONING_GLYPH}]{Glyphs.REASONING}[/] "
             f"[{Styles.REASONING_LABEL}]reasoning[/]"
+            + (f"  {ts}" if ts else "")
         )
         lines.append(f"  [{Styles.REASONING}]{escape(reasoning)}[/]")
         lines.append("")
     lines.append(
         f"[{Styles.ASSISTANT_GLYPH}]{Glyphs.ASSISTANT}[/] [{Styles.ASSISTANT}]assistant[/]"
+        + (f"  {ts}" if ts else "")
     )
     content = it.get("content", "") or ""
     if content:
@@ -67,38 +85,55 @@ def build_stream_tail_markup(it: Dict[str, Any], *, verbose: bool) -> str:
 
 
 def write_user(log: RichLog, it: Dict[str, Any]) -> None:
+    ts = _fmt_ts(it.get("ts"))
     header = Text()
     header.append(f"{Glyphs.USER} ", style=Styles.USER_GLYPH)
     header.append("you", style=Styles.USER)
+    if ts:
+        header.append(f"  {ts}")
     log.write(header)
     body = it.get("text", "") or ""
     if body:
-        log.write(Padding(Markdown(body), (0, 0, 0, 2)))
+        if it.get("collapsed"):
+            log.write(Text.from_markup(f"  [{Tokens.TEXT_DIM}]{escape(_first_lines(body, 2))}[/]"))
+        else:
+            log.write(Padding(Markdown(body), (0, 0, 0, 2)))
     log.write("")
 
 
 def write_assistant(log: RichLog, it: Dict[str, Any], verbose: bool) -> None:
+    ts = _fmt_ts(it.get("ts"))
+    collapsed = it.get("collapsed")
     reasoning = (it.get("reasoning") or "").strip()
-    if verbose and reasoning:
+    if verbose and reasoning and not collapsed:
         head = Text()
         head.append(f"{Glyphs.REASONING} ", style=Styles.REASONING_GLYPH)
         head.append("reasoning", style=Styles.REASONING_LABEL)
+        if ts:
+            head.append(f"  {ts}")
         log.write(head)
         log.write(Text("  " + reasoning, style=Styles.REASONING))
         log.write("")
     head = Text()
     head.append(f"{Glyphs.ASSISTANT} ", style=Styles.ASSISTANT_GLYPH)
     head.append("assistant", style=Styles.ASSISTANT)
+    if ts:
+        head.append(f"  {ts}")
     log.write(head)
     content = it.get("content", "")
     if content:
-        log.write(Padding(Markdown(content), (0, 0, 0, 2)))
-    if it.get("streaming"):
+        if collapsed:
+            log.write(Text.from_markup(f"  [{Tokens.TEXT_DIM}]{escape(_first_lines(content, 3))}[/]"))
+        else:
+            log.write(Padding(Markdown(content), (0, 0, 0, 2)))
+    if it.get("streaming") and not collapsed:
         log.write(Text("  ▌", style=f"blink {Tokens.AGENT}"))
     log.write("")
 
 
 def write_tool(log: RichLog, it: Dict[str, Any]) -> None:
+    ts = _fmt_ts(it.get("ts"))
+    collapsed = it.get("collapsed")
     ok = it.get("ok")
     if ok is True:
         glyph, glyph_color, border_color = Glyphs.TOOL_OK, Tokens.AGENT, Tokens.AGENT
@@ -111,7 +146,8 @@ def write_tool(log: RichLog, it: Dict[str, Any]) -> None:
     args = it.get("args") or {}
     if isinstance(args, dict):
         argbits = []
-        for k in ("path", "file_path", "command", "query", "url", "pattern", "target"):
+        for k in ("path", "file_path", "command", "query", "url", "pattern", "target",
+                  "content", "regex", "text", "code", "message", "description", "search"):
             if k in args:
                 argbits.append(str(args[k]))
                 break
@@ -123,37 +159,53 @@ def write_tool(log: RichLog, it: Dict[str, Any]) -> None:
     preview = str(it.get("preview") or "")[:60]
 
     row = Text()
-    row.append(f"[{border_color}]▎[/]", style="")
+    row.append("▎", style=border_color)
     row.append(" ")
     row.append(f"{glyph} ", style=glyph_color)
     row.append(f"{name:<16}", style=Styles.TOOL_NAME)
-    if args_str:
+    if ts:
+        row.append(f" {ts}")
+    if args_str and not collapsed:
         row.append(f" {args_str}", style=Styles.TOOL_ARGS)
-    if preview:
+    if preview and not collapsed:
         row.append(f"   {preview}", style=Styles.TOOL_PREVIEW)
+    if collapsed and (args_str or preview):
+        row.append(f" [{Tokens.TEXT_MUTED}][…][/]")
     log.write(row)
-    if it.get("error"):
+    if it.get("error") and not collapsed:
         log.write(Text(f"    → {it['error']}", style=f"{Tokens.DANGER}"))
 
 
 def write_diff(log: RichLog, it: Dict[str, Any], verbose: bool) -> None:
+    ts = _fmt_ts(it.get("ts"))
+    collapsed = it.get("collapsed")
     path = it.get("path", "")
     head = Text()
-    head.append(f"[{Tokens.LINE_SOFT}]▎[/] ", style="")
+    head.append("▎ ", style=Tokens.LINE_SOFT)
     head.append(f"{Glyphs.TOOL_OK} ", style=Styles.TOOL_OK)
     head.append("diff", style=Styles.TOOL_NAME)
-    head.append(f"  [{Tokens.TEXT_DIM}]{path}[/]", style="")
+    head.append(f"  {path}", style=Tokens.TEXT_DIM)
+    if ts:
+        head.append(f"  {ts}")
     log.write(head)
-    body = it.get("diff", "")
-    max_lines = 40 if verbose else 12
-    rendered = format_diff_gutter(body, max_lines=max_lines)
-    log.write(Text.from_markup(rendered))
+    if collapsed:
+        diff_body = it.get("diff", "")
+        line_count = diff_body.count("\n") + (1 if diff_body else 0)
+        log.write(Text.from_markup(f"  [{Tokens.TEXT_MUTED}]{line_count} lines[/]"))
+    else:
+        body = it.get("diff", "")
+        max_lines = 40 if verbose else 12
+        rendered = format_diff_gutter(body, max_lines=max_lines)
+        log.write(Text.from_markup(rendered))
 
 
 def write_error(log: RichLog, it: Dict[str, Any]) -> None:
+    ts = _fmt_ts(it.get("ts"))
     head = Text()
     head.append(f"{Glyphs.ERROR} ", style=Tokens.DANGER)
     head.append("error", style=Styles.DANGER)
+    if ts:
+        head.append(f"  {ts}")
     log.write(head)
     log.write(Text("  " + str(it.get("message", "")), style=Styles.TEXT))
     if it.get("hint"):
@@ -208,10 +260,11 @@ def write_plan_card(log: RichLog, it: Dict[str, Any]) -> None:
     steps = it.get("steps") or []
 
     head = Text()
-    head.append(f"[{Tokens.LINE_SOFT}]▎[/] ", style="")
-    head.append(f"[{Tokens.TEXT_DIM}]PLAN[/] · [{Tokens.TEXT}]{title}[/]")
+    head.append("▎ ", style=Tokens.LINE_SOFT)
+    head.append("PLAN", style=Tokens.TEXT_DIM)
+    head.append(f" · {title}", style=Tokens.TEXT)
     if total:
-        head.append(f" · [{Tokens.TEXT_MUTED}]{completed}/{total}[/]")
+        head.append(f" · {completed}/{total}", style=Tokens.TEXT_MUTED)
     log.write(head)
 
     for s in steps[:12]:

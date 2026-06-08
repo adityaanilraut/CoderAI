@@ -155,9 +155,4 @@ class GroqProvider(LLMProvider):
         }
 
     def get_model_info(self) -> Dict[str, Any]:
-        info = super().get_model_info()
-        info["cost"] = self.get_cost()
-        info["total_input_tokens"] = self.total_input_tokens
-        info["total_output_tokens"] = self.total_output_tokens
-        info["total_tokens"] = self.total_input_tokens + self.total_output_tokens
-        return info
+        return super().get_model_info()

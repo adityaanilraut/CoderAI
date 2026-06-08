@@ -155,7 +155,9 @@ class BridgeStreamingHandler:
 
                 if delta.get("tool_calls"):
                     for tcd in delta["tool_calls"]:
-                        idx = tcd.get("index", 0)
+                        idx = tcd.get("index")
+                        if idx is None or not isinstance(idx, int):
+                            idx = 0
                         while len(self.tool_calls) <= idx:
                             self.tool_calls.append(
                                 {
@@ -172,6 +174,9 @@ class BridgeStreamingHandler:
                                 self.tool_calls[idx]["function"]["name"] += fn["name"]
                             if fn.get("arguments"):
                                 self.tool_calls[idx]["function"]["arguments"] += fn["arguments"]
+                        for k, v in tcd.items():
+                            if k not in ("index", "id", "function", "type") and v is not None:
+                                self.tool_calls[idx][k] = v
         finally:
             self._flush_tag_buffer()
             self._flush_emit_batch(force=True)

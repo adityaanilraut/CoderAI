@@ -28,10 +28,9 @@ logger = logging.getLogger(__name__)
 # detection. OpenCode uses 3; we match that default.
 DOOM_LOOP_THRESHOLD = 3
 
-# Backward-compatible module-level default. The runtime value now lives on
-# :class:`coderAI.system.config.Config.max_iterations_hard_cap` and is read through
-# ``self.agent.config`` inside :class:`ExecutionLoop`. Importers that still
-# reference this constant continue to work but no longer drive the loop.
+# Upper-bound fallback constant used by ExecutionLoop when
+# ``agent.config.max_iterations_hard_cap`` is not set on a config instance.
+# The authoritative value lives in ``coderAI.system.config.Config``.
 MAX_ITERATIONS_HARD_CAP = 200
 
 # Prefix used to tag synthetic system messages persisted into the session
@@ -68,30 +67,22 @@ class ExecutionLoop:
         self._last_plan_step: Optional[int] = None
         self._length_retry_used: bool = False
         self._hard_cap_warned: bool = False
+        self._health_check_counter: int = 0
 
     def _read_active_plan_step(self) -> Optional[Dict[str, Any]]:
         """Return ``{current_step, total_steps, description}`` for the on-disk
         plan, or ``None`` when no plan is active.
 
-        Reads ``.coderAI/current_plan.json`` directly via the same path that
-        the ``plan`` tool writes to. Failures (missing file, malformed JSON,
-        permission errors, etc.) are swallowed and treated as "no plan" — the
-        reminder is a nudge, not a critical path.
+        Reads ``.coderAI/current_plan.json`` via the shared ``read_current_plan``
+        utility.
         """
         try:
-            from pathlib import Path
-
-            from coderAI.system.project_layout import find_dot_coderai_subdir
+            from coderAI.system.project_layout import read_current_plan
 
             project_root = str(getattr(self.agent.config, "project_root", "."))
-            dot_dir = find_dot_coderai_subdir("", project_root)
-            if dot_dir is None:
-                dot_dir = Path(project_root).resolve() / ".coderAI"
-            plan_file = dot_dir / "current_plan.json"
-            if not plan_file.is_file():
+            plan = read_current_plan(project_root)
+            if not plan:
                 return None
-            with open(plan_file, "r") as f:
-                plan = json.load(f)
             steps = plan.get("steps") or []
             total = len(steps)
             if total == 0:
@@ -200,8 +191,10 @@ class ExecutionLoop:
             await self.hooks_manager.run_hooks(
                 "*", "on_user_prompt", {"text": user_message}, hooks_data
             )
+
             async def fallback_chat_hook(*a, **kw):
                 return None
+
             func = getattr(self.hooks_manager, "run_chat_message_hooks", fallback_chat_hook)
             transformed = await func(user_message, hooks_data)
             if transformed:
@@ -240,7 +233,8 @@ class ExecutionLoop:
                 event_emitter.emit("agent_warning", message=clamp_msg)
             max_iterations = hard_cap
         iteration = 0
-        consecutive_errors = 0
+        consecutive_llm_errors = 0
+        consecutive_tool_errors = 0
         consecutive_pauses = 0
 
         while iteration < max_iterations:
@@ -250,7 +244,7 @@ class ExecutionLoop:
             # paced rather than burned in milliseconds. Cancellation-aware:
             # ``cancel_event.wait()`` short-circuits the sleep when the user
             # hits /cancel.
-            delay = compute_iteration_backoff(consecutive_errors)
+            delay = compute_iteration_backoff(max(consecutive_llm_errors, consecutive_tool_errors))
             if delay > 0:
                 cancel_event = (
                     self.agent.tracker_info._cancel_event if self.agent.tracker_info else None
@@ -258,7 +252,7 @@ class ExecutionLoop:
                 event_emitter.emit(
                     "agent_status",
                     message=(
-                        f"Backing off {delay:.1f}s after {consecutive_errors} consecutive error(s)…"
+                        f"Backing off {delay:.1f}s after {max(consecutive_llm_errors, consecutive_tool_errors)} consecutive error(s)…"
                     ),
                 )
                 if cancel_event is not None:
@@ -285,6 +279,19 @@ class ExecutionLoop:
                 step_aware_messages = self._inject_step_reminders(
                     messages, iteration, max_iterations
                 )
+
+                # Periodic MCP server health check (every 10 iterations)
+                self._health_check_counter += 1
+                if self._health_check_counter >= 10:
+                    self._health_check_counter = 0
+                    try:
+                        from coderAI.tools.mcp import mcp_client
+
+                        await mcp_client.check_server_health()
+                        await mcp_client.auto_reconnect_degraded()
+                        tool_schemas = self._get_tool_schemas()
+                    except Exception as e:
+                        logger.debug("MCP health check failed: %s", e)
 
                 response_data = await self._call_llm_with_retry(step_aware_messages, tool_schemas)
 
@@ -318,7 +325,7 @@ class ExecutionLoop:
                         step_aware_messages, tool_schemas
                     )
 
-                consecutive_errors = 0
+                consecutive_llm_errors = 0
 
                 content = response_data.get("content")
                 tool_calls = response_data.get("tool_calls")
@@ -513,7 +520,7 @@ class ExecutionLoop:
                         }
 
                     # Detect denied tools vs real errors. Denials should not
-                    # count toward consecutive_errors when
+                    # count toward consecutive_tool_errors when
                     # ``continue_loop_on_deny`` is True (the model can retry
                     # with a different approach). When False, treat denial as
                     # a terminal stop.
@@ -538,11 +545,11 @@ class ExecutionLoop:
                             }
                         # continue_loop_on_deny=True: reset counter so
                         # repeated denials don't look like fatal errors.
-                        consecutive_errors = 0
+                        consecutive_tool_errors = 0
                         # {"retry": True} has already been set by the executor
                         # so the loop will feed the denial back to the LLM.
                     else:
-                        consecutive_errors += 1
+                        consecutive_tool_errors += 1
                         # {"retry": True} means the messages were updated with error
                         # feedback and the loop should retry the LLM call — not exit.
                         if (
@@ -551,14 +558,23 @@ class ExecutionLoop:
                             and fatal_res.get("retry") is not True
                         ):
                             return fatal_res  # type: ignore[no-any-return]
-                        if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                        if consecutive_tool_errors >= MAX_CONSECUTIVE_ERRORS:
                             return self._handle_fatal_error(
                                 RuntimeError("Tool execution failed repeatedly."),
-                                consecutive_errors,
+                                consecutive_tool_errors,
                             )
                 else:
                     tools_were_used = True
-                    consecutive_errors = 0
+                    consecutive_tool_errors = 0
+
+                # Check budget after expensive tool operations (MCP, sub-agents,
+                # summarization) that consume tokens through internal LLM calls.
+                if self.agent.config.budget_limit > 0:
+                    check_budget_limit(
+                        self.agent.config.budget_limit,
+                        self.agent.cost_tracker,
+                        emit_warning=True,
+                    )
 
                 # Manage context window after tool results (or error messages) are added
                 messages = self.agent.context_controller.inject_context(
@@ -570,12 +586,14 @@ class ExecutionLoop:
                 return self._handle_budget_exceeded(e)
             except Exception as e:
                 logger.error(f"Error during processing: {e}", exc_info=True)
-                consecutive_errors += 1
+                consecutive_llm_errors += 1
 
-                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
-                    return self._handle_fatal_error(e, consecutive_errors)
+                if consecutive_llm_errors >= MAX_CONSECUTIVE_ERRORS:
+                    return self._handle_fatal_error(e, consecutive_llm_errors)
 
-                messages = await self._handle_recoverable_error(e, consecutive_errors, user_message)
+                messages = await self._handle_recoverable_error(
+                    e, consecutive_llm_errors, user_message
+                )
                 continue
 
         return await self._handle_max_iterations()
@@ -583,6 +601,7 @@ class ExecutionLoop:
     async def _autoconnect_mcp_servers(self):
         """Auto-connect configured MCP servers from ~/.coderAI/mcp_servers.json."""
         from pathlib import Path
+
         mcp_servers_file = Path.home() / ".coderAI" / "mcp_servers.json"
         if not mcp_servers_file.exists():
             return
@@ -593,6 +612,7 @@ class ExecutionLoop:
             if not servers:
                 return
             from coderAI.tools.mcp import mcp_client
+
             for name, config in servers.items():
                 if name in mcp_client.servers:
                     continue  # Already connected
@@ -603,7 +623,9 @@ class ExecutionLoop:
                         logger.info("Auto-connecting MCP server %s via SSE...", name)
                         res = await mcp_client.connect_sse(name, url)
                         if not res.get("success"):
-                            logger.error("Failed to auto-connect MCP server %s: %s", name, res.get("error"))
+                            logger.error(
+                                "Failed to auto-connect MCP server %s: %s", name, res.get("error")
+                            )
                 else:
                     command = config.get("command")
                     args = config.get("args", [])
@@ -611,7 +633,9 @@ class ExecutionLoop:
                         logger.info("Auto-connecting MCP server %s via stdio...", name)
                         res = await mcp_client.connect_stdio(name, command, args)
                         if not res.get("success"):
-                            logger.error("Failed to auto-connect MCP server %s: %s", name, res.get("error"))
+                            logger.error(
+                                "Failed to auto-connect MCP server %s: %s", name, res.get("error")
+                            )
         except Exception as e:
             logger.error("Error auto-connecting MCP servers: %s", e)
 
@@ -777,10 +801,23 @@ class ExecutionLoop:
 
             mcp_schemas = mcp_client.get_tools_as_openai_format()
             if mcp_schemas:
-                if tool_schemas is None:
-                    tool_schemas = mcp_schemas
-                else:
-                    tool_schemas = tool_schemas + mcp_schemas
+                degraded_servers = {
+                    name for name, info in mcp_client.servers.items() if info.get("degraded")
+                }
+                if degraded_servers:
+                    mcp_schemas = [
+                        s
+                        for s in mcp_schemas
+                        if not any(
+                            s.get("function", {}).get("name", "").startswith(f"mcp__{srv}__")
+                            for srv in degraded_servers
+                        )
+                    ]
+                if mcp_schemas:
+                    if tool_schemas is None:
+                        tool_schemas = mcp_schemas
+                    else:
+                        tool_schemas = tool_schemas + mcp_schemas
         except Exception as e:
             logger.debug(f"MCP tool discovery skipped: {e}")
         return tool_schemas

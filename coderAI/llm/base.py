@@ -6,6 +6,9 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 # Shared reasoning-effort → budget-tokens mapping used by Anthropic and DeepSeek.
 REASONING_BUDGET_MAP = {"high": 16384, "medium": 8192, "low": 2048}
 
+# Default HTTP request timeout (seconds) for aiohttp-based providers.
+DEFAULT_HTTP_TIMEOUT = 120
+
 
 class LLMProvider(ABC):
     """Abstract base class for LLM providers."""
@@ -82,11 +85,20 @@ class LLMProvider(ABC):
 
     def get_model_info(self) -> Dict[str, Any]:
         """Get information about the current model."""
-        return {
+        info: Dict[str, Any] = {
             "provider": self.__class__.__name__,
             "model": self.model,
-            "temperature": getattr(self, "temperature", 1.0),
+            "temperature": self.temperature if hasattr(self, "temperature") else 1.0,
         }
+        if hasattr(self, "total_input_tokens"):
+            info["total_input_tokens"] = self.total_input_tokens
+        if hasattr(self, "total_output_tokens"):
+            info["total_output_tokens"] = self.total_output_tokens
+        if hasattr(self, "total_input_tokens") and hasattr(self, "total_output_tokens"):
+            info["total_tokens"] = self.total_input_tokens + self.total_output_tokens
+        if hasattr(self, "get_cost"):
+            info["cost"] = self.get_cost()
+        return info
 
     async def close(self) -> None:
         """Clean up resources (sessions, connections, etc.)."""

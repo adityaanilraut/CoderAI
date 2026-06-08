@@ -10,9 +10,12 @@ from textual import events, on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
+from textual.css.query import NoMatches
 from textual.message import Message
 from textual.screen import ModalScreen
-from textual.widgets import Button, Footer, Input, Label, RichLog, Static, TextArea
+from textual.widgets import Button, Footer, Input, Label, Static, TextArea
+
+from coderAI.tui.widgets import SelectableRichLog
 
 from coderAI.tui.diff_render import format_diff_compact
 from coderAI.tui.help_menu import HELP_MENU_ENTRIES
@@ -24,6 +27,100 @@ from coderAI.tui.theme import Glyphs, Styles, Tokens
 from coderAI.tui.timeline_render import build_stream_tail_markup, write_timeline_item
 
 STREAM_TICK_S = 0.12
+
+
+def _build_coderai_css() -> str:
+    return f"""
+Screen {{
+    layout: vertical;
+    background: {Tokens.BG};
+    color: {Tokens.TEXT};
+}}
+#main {{
+    height: 1fr;
+    layout: horizontal;
+}}
+#rail {{
+    width: 35;
+    height: 1fr;
+    background: {Tokens.BG_SUNK};
+    border-right: solid {Tokens.LINE};
+    layout: vertical;
+}}
+#center {{
+    width: 1fr;
+    height: 1fr;
+    layout: vertical;
+    background: {Tokens.BG};
+}}
+#session-header {{
+    height: 2;
+    padding: 0 2;
+    background: {Tokens.BG};
+    border-bottom: solid {Tokens.LINE};
+    color: {Tokens.TEXT_DIM};
+}}
+#timeline {{
+    height: 1fr;
+    padding: 1 2;
+    background: {Tokens.BG};
+    scrollbar-background: {Tokens.BG};
+    scrollbar-color: {Tokens.LINE};
+}}
+#stream-tail {{
+    height: auto;
+    max-height: 40%;
+    padding: 0 2 1 2;
+    background: {Tokens.BG};
+    display: none;
+}}
+#composer-box {{
+    height: auto;
+    margin: 1 2;
+    background: {Tokens.BG_RAISED};
+    border: round {Tokens.LINE};
+    padding: 0 1;
+}}
+#prompt-area {{
+    height: auto;
+    min-height: 2;
+    max-height: 8;
+    background: {Tokens.BG_RAISED};
+    color: {Tokens.TEXT};
+    border: none;
+}}
+#composer-footer {{
+    height: 1;
+    padding: 0 1;
+    color: {Tokens.TEXT_MUTED};
+    background: {Tokens.BG_RAISED};
+    border-top: solid {Tokens.LINE_SOFT};
+}}
+#right-pane {{
+    width: 35;
+    height: 1fr;
+    background: {Tokens.BG_SUNK};
+    border-left: solid {Tokens.LINE};
+    layout: vertical;
+}}
+#fleet-scroll {{
+    height: 1fr;
+    background: {Tokens.BG_SUNK};
+    padding: 1 2;
+    scrollbar-background: {Tokens.BG_SUNK};
+    scrollbar-color: {Tokens.LINE};
+}}
+#plan-pane {{
+    height: 1fr;
+    padding: 1 2;
+    background: {Tokens.BG_SUNK};
+    color: {Tokens.TEXT_DIM};
+}}
+Footer {{
+    background: {Tokens.BG_RAISED};
+    color: {Tokens.TEXT_DIM};
+}}
+"""
 
 
 class AgentEventMsg(Message):
@@ -54,7 +151,7 @@ class PromptArea(TextArea):
             event.prevent_default()
             self.insert("\n")
             return
-        if event.key == "@":
+        if event.key == "@" and not self.text:
             event.stop()
             event.prevent_default()
             if hasattr(self.app, "action_file_picker"):
@@ -257,65 +354,12 @@ class ApprovalScreen(ModalScreen[tuple[bool, bool]]):
     def _always(self) -> None:
         self.dismiss((True, True))
 
-
-class ListPickerScreen(ModalScreen[Optional[str]]):
-    """Simple list picker for help/model/persona menus."""
-
-    DEFAULT_CSS = f"""
-    ListPickerScreen {{
-        align: center middle;
-    }}
-    ListPickerScreen #picker-box {{
-        width: 80%;
-        max-width: 80;
-        height: auto;
-        max-height: 80%;
-        border: round {Tokens.LINE};
-        background: {Tokens.BG_RAISED};
-        padding: 1 2;
-    }}
-    ListPickerScreen Label {{
-        color: {Tokens.TEXT_DIM};
-    }}
-    ListPickerScreen VerticalScroll {{
-        height: auto;
-        max-height: 24;
-    }}
-    ListPickerScreen Button {{
-        width: 100%;
-        margin: 0;
-    }}
-    """
-
-    def __init__(self, title: str, items: List[tuple[str, str]]) -> None:
-        super().__init__()
-        self._pick_title = title
-        self.items = items
-
-    def compose(self) -> ComposeResult:
-        with Container(id="picker-box"):
-            yield Label(self._pick_title)
-            with VerticalScroll():
-                for i, (value, desc) in enumerate(self.items[:60]):
-                    label = f"{value} — {desc}" if desc else value
-                    yield Button(label, id=f"pick-{i}", variant="default")
-            yield Button("Cancel", id="pick-cancel", variant="warning")
-
-    @on(Button.Pressed, "#pick-cancel")
-    def _cancel(self) -> None:
-        self.dismiss(None)
-
-    @on(Button.Pressed)
-    def _pick(self, event: Button.Pressed) -> None:
-        bid = event.button.id or ""
-        if bid == "pick-cancel" or not bid.startswith("pick-"):
-            return
-        try:
-            idx = int(bid.split("-", 1)[1])
-        except (ValueError, IndexError):
-            return
-        if 0 <= idx < len(self.items):
-            self.dismiss(self.items[idx][0])
+    @on(events.Key)
+    def _on_approval_key(self, event: events.Key) -> None:
+        if event.key == "escape":
+            event.stop()
+            event.prevent_default()
+            self.dismiss((False, False))
 
 
 class SearchScreen(ModalScreen[None]):
@@ -378,6 +422,13 @@ class SearchScreen(ModalScreen[None]):
     @on(Button.Pressed, "#search-close")
     def _close(self) -> None:
         self.dismiss(None)
+
+    @on(events.Key)
+    def _on_search_key(self, event: events.Key) -> None:
+        if event.key == "escape":
+            event.stop()
+            event.prevent_default()
+            self.dismiss(None)
 
 
 class FilePickerScreen(ModalScreen[Optional[str]]):
@@ -551,6 +602,8 @@ class CommandPaletteScreen(ModalScreen[Optional[str]]):
         self._selected_idx = 0
         self._query = ""
         self._only_section = only_section
+        self._cached_sections: Optional[List[Dict[str, Any]]] = None
+        self._cached_query: str = "\0"
 
     def compose(self) -> ComposeResult:
         with Container(id="palette-box"):
@@ -655,8 +708,14 @@ class CommandPaletteScreen(ModalScreen[Optional[str]]):
 
         return sections
 
+    def _get_sections(self, query: str) -> List[Dict[str, Any]]:
+        if self._cached_query != query or self._cached_sections is None:
+            self._cached_sections = self._gather_items(query)
+            self._cached_query = query
+        return self._cached_sections
+
     def _build_list(self, query: str) -> str:
-        sections = self._gather_items(query)
+        sections = self._get_sections(query)
         lines: List[str] = []
         flat_idx = 0
         for sec in sections:
@@ -680,7 +739,7 @@ class CommandPaletteScreen(ModalScreen[Optional[str]]):
         return "\n".join(lines)
 
     def _get_flat_items(self, query: str) -> List[Dict[str, Any]]:
-        sections = self._gather_items(query)
+        sections = self._get_sections(query)
         flat: List[Dict[str, Any]] = []
         for sec in sections:
             flat.extend(sec["items"])
@@ -751,122 +810,92 @@ class CommandPaletteScreen(ModalScreen[Optional[str]]):
                 self.dismiss(text)
 
 
+class FullContentScreen(ModalScreen[None]):
+    """Modal showing the full content of a diff or assistant response."""
+
+    DEFAULT_CSS = f"""
+    FullContentScreen {{
+        align: center middle;
+    }}
+    FullContentScreen #full-box {{
+        width: 90%;
+        max-width: 110;
+        height: auto;
+        max-height: 85%;
+        border: round {Tokens.LINE};
+        background: {Tokens.BG_RAISED};
+        padding: 1 2;
+    }}
+    FullContentScreen #full-header {{
+        color: {Tokens.TEXT_DIM};
+        margin-bottom: 1;
+    }}
+    FullContentScreen VerticalScroll {{
+        height: auto;
+        max-height: 30;
+        margin-bottom: 1;
+    }}
+    FullContentScreen Horizontal {{
+        height: auto;
+        align-horizontal: center;
+    }}
+    FullContentScreen Button {{
+        margin: 0 1;
+    }}
+    """
+
+    def __init__(self, title: str, content: str) -> None:
+        super().__init__()
+        self._title = title
+        self._content = content
+
+    def compose(self) -> ComposeResult:
+        with Container(id="full-box"):
+            yield Label(self._title, id="full-header")
+            with VerticalScroll():
+                yield Static(self._content, id="full-body")
+            with Horizontal():
+                yield Button("Close (Esc)", id="full-close")
+                yield Button("Copy", id="full-copy")
+
+    @on(Button.Pressed, "#full-close")
+    def _close(self) -> None:
+        self.dismiss(None)
+
+    @on(Button.Pressed, "#full-copy")
+    def _copy(self) -> None:
+        import base64
+        import sys
+
+        text = self._content
+        encoded = base64.b64encode(text.encode("utf-8")).decode("ascii")
+        if len(encoded) > 4096:
+            encoded = encoded[:4096]
+        sys.stdout.write(f"\033]52;c;{encoded}\007")
+        sys.stdout.flush()
+        self.notify(f"Copied {len(text):,} chars via OSC-52")
+
+    @on(events.Key)
+    def _on_key(self, event: events.Key) -> None:
+        if event.key == "escape":
+            event.stop()
+            event.prevent_default()
+            self.dismiss(None)
+
+
 class CoderAIApp(App[None]):
     """CoderAI Textual chat — Cockpit layout."""
 
     TITLE = "CoderAI"
-    CSS = f"""
-    Screen {{
-        layout: vertical;
-        background: {Tokens.BG};
-        color: {Tokens.TEXT};
-    }}
-    #main {{
-        height: 1fr;
-        layout: horizontal;
-    }}
-    #rail {{
-        width: 35;
-        height: 1fr;
-        background: {Tokens.BG_SUNK};
-        border-right: solid {Tokens.LINE};
-        layout: vertical;
-    }}
-    #center {{
-        width: 1fr;
-        height: 1fr;
-        layout: vertical;
-        background: {Tokens.BG};
-    }}
-    #session-header {{
-        height: 2;
-        padding: 0 2;
-        background: {Tokens.BG};
-        border-bottom: solid {Tokens.LINE};
-        color: {Tokens.TEXT_DIM};
-    }}
-    #timeline {{
-        height: 1fr;
-        padding: 1 2;
-        background: {Tokens.BG};
-        scrollbar-background: {Tokens.BG};
-        scrollbar-color: {Tokens.LINE};
-    }}
-    #stream-tail {{
-        height: auto;
-        max-height: 40%;
-        padding: 0 2 1 2;
-        background: {Tokens.BG};
-        display: none;
-    }}
-    #composer-box {{
-        height: auto;
-        margin: 1 2;
-        background: {Tokens.BG_RAISED};
-        border: round {Tokens.LINE};
-        padding: 0 1;
-    }}
-    #prompt-area {{
-        height: auto;
-        min-height: 2;
-        max-height: 8;
-        background: {Tokens.BG_RAISED};
-        color: {Tokens.TEXT};
-        border: none;
-    }}
-    #composer-footer {{
-        height: 1;
-        padding: 0 1;
-        color: {Tokens.TEXT_MUTED};
-        background: {Tokens.BG_RAISED};
-        border-top: solid {Tokens.LINE_SOFT};
-    }}
-    #right-pane {{
-        width: 35;
-        height: 1fr;
-        background: {Tokens.BG_SUNK};
-        border-left: solid {Tokens.LINE};
-        layout: vertical;
-    }}
-    #fleet-scroll {{
-        height: 1fr;
-        background: {Tokens.BG_SUNK};
-        padding: 1 2;
-        scrollbar-background: {Tokens.BG_SUNK};
-        scrollbar-color: {Tokens.LINE};
-    }}
-    #plan-pane {{
-        height: 1fr;
-        padding: 1 2;
-        background: {Tokens.BG_SUNK};
-        color: {Tokens.TEXT_DIM};
-    }}
-    #context-pane {{
-        height: auto;
-        max-height: 12;
-        padding: 1 2;
-        background: {Tokens.BG_SUNK};
-        border-top: solid {Tokens.LINE};
-        color: {Tokens.TEXT_DIM};
-    }}
-    #cost-pane {{
-        height: auto;
-        padding: 1 2;
-        background: {Tokens.BG_SUNK};
-        border-top: solid {Tokens.LINE};
-        color: {Tokens.TEXT_DIM};
-    }}
-    Footer {{
-        background: {Tokens.BG_RAISED};
-        color: {Tokens.TEXT_DIM};
-    }}
-    """
+    CSS = _build_coderai_css()
 
     BINDINGS = [
-        Binding("escape", "cancel_turn", "Cancel", show=True),
+        Binding("escape", "cancel_turn", "Cancel", show=True, priority=False),
         Binding("ctrl+c", "ctrl_c", "Exit", show=False),
-        Binding("ctrl+shift+c, super+c", "copy_selection", "Copy", show=True),
+        Binding("ctrl+shift+c, super+c", "copy_selection", "Copy", show=False),
         Binding("ctrl+k", "command_palette", "Commands", show=True),
+        Binding("ctrl+t", "toggle_collapse", "Collapse", show=True),
+        Binding("ctrl+e", "expand_full", "Expand", show=True),
     ]
 
     def __init__(
@@ -892,6 +921,7 @@ class CoderAIApp(App[None]):
         self._log_rendered_idx = 0
         self.project_files: List[str] = []
         self._scan_in_progress = False
+        self._agent_retry_count = 0
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="main"):
@@ -900,7 +930,7 @@ class CoderAIApp(App[None]):
                     yield Static("", id="fleet-content", markup=True)
             with Vertical(id="center"):
                 yield Static("", id="session-header", markup=True)
-                yield RichLog(id="timeline", highlight=True, markup=True, wrap=True)
+                yield SelectableRichLog(id="timeline", highlight=True, markup=True, wrap=True)
                 yield Static("", id="stream-tail", markup=True)
                 with Vertical(id="composer-box"):
                     yield PromptArea(id="prompt-area")
@@ -909,13 +939,11 @@ class CoderAIApp(App[None]):
                 yield Static("", id="plan-pane", markup=True)
         yield Footer()
 
-
-
     def on_mount(self) -> None:
         self.reducer.on_change = self._on_reducer_change
         prompt = self.query_one("#prompt-area", PromptArea)
         prompt.show_line_numbers = False
-        prompt.placeholder = "Message CoderAI…   / commands   @ pin   ⌘K palette   Enter to send"
+        prompt.placeholder = "Message CoderAI…   / commands   @ pin   ^T collapse   ^E expand   ⌘K palette"
         prompt.focus()
         self.run_worker(self._scan_project_files())
         footer = self.query_one("#composer-footer", Static)
@@ -931,7 +959,12 @@ class CoderAIApp(App[None]):
             thread=True,
             name="agent-loop",
         )
-        self.set_interval(STREAM_TICK_S, self._stream_tick)
+        self._stream_timer = self.set_interval(STREAM_TICK_S, self._stream_tick)
+
+    def on_unmount(self) -> None:
+        timer = getattr(self, "_stream_timer", None)
+        if timer is not None:
+            timer.stop()
 
     def _on_reducer_change(self, mode: RefreshMode) -> None:
         self.post_message(AgentEventMsg("__refresh__", {"mode": mode}))
@@ -989,19 +1022,29 @@ class CoderAIApp(App[None]):
                 "error",
                 {"category": "internal", "message": f"Agent loop crashed: {exc}"},
             )
-            self._emit_bridge("goodbye", {"reason": "loop_crashed"})
-
-    _TOAST_STYLES = {
-        "info": Tokens.INFO,
-        "success": Tokens.AGENT,
-        "warning": Tokens.WARN,
-        "error": Tokens.DANGER,
-    }
+            if self._agent_retry_count < 1:
+                self._agent_retry_count += 1
+                self._emit_bridge(
+                    "info",
+                    {"message": "Auto-restarting agent…"},
+                )
+                self.run_worker(
+                    self._run_agent,
+                    exclusive=True,
+                    thread=True,
+                    name="agent-loop",
+                )
+            else:
+                self._emit_bridge(
+                    "info",
+                    {"message": "Agent crashed. Type /retry to restart."},
+                )
+                self._emit_bridge("goodbye", {"reason": "loop_crashed"})
 
     def _refresh_ui(self, mode: str = "full") -> None:
         try:
-            log = self.query_one("#timeline", RichLog)
-        except Exception:
+            log = self.query_one("#timeline", SelectableRichLog)
+        except NoMatches:
             return
         s = self.reducer.session
         verbose = s.verbose
@@ -1033,9 +1076,9 @@ class CoderAIApp(App[None]):
                 write_timeline_item(log, it, verbose=verbose)
                 idx += 1
             self._log_rendered_idx = idx
-            if idx >= len(timeline) or not (
-                timeline[idx].get("kind") == "assistant" and timeline[idx].get("streaming")
-            ):
+            if idx > 0:
+                log.scroll_end(animate=False)
+            if idx >= len(timeline):
                 if not any(
                     it.get("kind") == "assistant" and it.get("streaming") for it in timeline
                 ):
@@ -1052,11 +1095,11 @@ class CoderAIApp(App[None]):
                 prompt.placeholder = f"{label}…"
             else:
                 prompt.placeholder = (
-                    "Message CoderAI…   / commands   @ pin   ⌘K palette   Enter to send"
+                    "Message CoderAI…   / commands   @ pin   ^T collapse   ^E expand   ⌘K palette"
                 )
             footer = self.query_one("#composer-footer", Static)
             footer.update(self._composer_footer_markup())
-        except Exception:
+        except NoMatches:
             pass
 
     def _render_chrome(self, s: SessionState) -> None:
@@ -1067,7 +1110,7 @@ class CoderAIApp(App[None]):
     def _render_stream_tail(self, it: Dict[str, Any], verbose: bool) -> None:
         try:
             tail = self.query_one("#stream-tail", Static)
-        except Exception:
+        except NoMatches:
             return
         tail.update(build_stream_tail_markup(it, verbose=verbose))
         tail.display = True
@@ -1075,7 +1118,7 @@ class CoderAIApp(App[None]):
     def _hide_stream_tail(self) -> None:
         try:
             tail = self.query_one("#stream-tail", Static)
-        except Exception:
+        except NoMatches:
             return
         tail.update("")
         tail.display = False
@@ -1085,7 +1128,7 @@ class CoderAIApp(App[None]):
     def _render_session_header(self, s: SessionState) -> None:
         try:
             header = self.query_one("#session-header", Static)
-        except Exception:
+        except NoMatches:
             return
         status_color = Tokens.AGENT if s.streaming or s.thinking else Tokens.TEXT_DIM
         ctx_used = f"{s.ctx_used:,}" if s.ctx_used else "0"
@@ -1105,7 +1148,11 @@ class CoderAIApp(App[None]):
 
         ctx_ratio = (s.ctx_used / max(1, s.ctx_limit)) if s.ctx_limit else 0
         budget_ratio = (s.cost_usd / s.budget_usd) if s.budget_usd and s.budget_usd > 0 else -1
-        cost_val = f"${s.cost_usd:.4f} / ${s.budget_usd:.2f}" if s.budget_usd and s.budget_usd > 0 else f"${s.cost_usd:.4f}"
+        cost_val = (
+            f"${s.cost_usd:.4f} / ${s.budget_usd:.2f}"
+            if s.budget_usd and s.budget_usd > 0
+            else f"${s.cost_usd:.4f}"
+        )
 
         chips = [
             f"[{status_color}]{Glyphs.DOT}[/] [{Tokens.TEXT}]{model_label}[/]",
@@ -1122,10 +1169,12 @@ class CoderAIApp(App[None]):
         if active:
             chips.append(chip("agents", f"{active} active", Tokens.AGENT))
         yolo_c = Tokens.WARN if s.auto_approve else Tokens.TEXT_MUTED
-        yolo_v = "ON" if s.auto_approve else "off"
+        yolo_v = "on" if s.auto_approve else "off"
         chips.append(chip("yolo", yolo_v, yolo_c))
         if s.reasoning and s.reasoning != "none":
             chips.append(chip("reason", s.reasoning, Tokens.THOUGHT))
+        if s.active_persona:
+            chips.append(chip("persona", s.active_persona, Tokens.INFO))
         if s.progress:
             prog = s.progress
             label = str(prog.get("label") or "Working")
@@ -1143,7 +1192,7 @@ class CoderAIApp(App[None]):
     def _render_fleet(self, s: SessionState) -> None:
         try:
             fleet = self.query_one("#fleet-content", Static)
-        except Exception:
+        except NoMatches:
             return
         active_count = sum(
             1 for a in s.agents.values() if a.status not in ("done", "error", "cancelled")
@@ -1262,7 +1311,7 @@ class CoderAIApp(App[None]):
     def _render_plan(self, s: SessionState) -> None:
         try:
             pane = self.query_one("#plan-pane", Static)
-        except Exception:
+        except NoMatches:
             return
         title = f"[{Styles.SECTION}]CURRENT PLAN[/]"
         if not s.current_plan:
@@ -1293,13 +1342,13 @@ class CoderAIApp(App[None]):
                 g, c = "·", Tokens.TEXT_MUTED
             markup = f"  [{c}]{g}[/] [{Tokens.TEXT_MUTED}]{idx}.[/] [{Tokens.TEXT}]{desc}[/]"
             lines.append(markup)
-        
+
         pane.update("\n".join(lines))
 
     def _composer_footer_markup(self) -> str:
         s = self.reducer.session
         reasoning = s.reasoning or "none"
-        hints = f"[{Tokens.TEXT_MUTED}]↵ send · ⇧↵ newline · / commands · ⌘K palette[/]"
+        hints = f"[{Tokens.TEXT_MUTED}]↵ send · ⇧↵ newline · ^T collapse · ^E expand · / commands · ⌘K palette[/]"
         meta = f"[{Tokens.TEXT_DIM}]reasoning:[/] [{Tokens.THOUGHT}]{reasoning}[/]"
         if not s.ready:
             return f"[{Tokens.TEXT_MUTED}]Waiting for agent…[/]   {hints}   {meta}"
@@ -1335,6 +1384,8 @@ class CoderAIApp(App[None]):
         self._refresh_ui("full")
 
     def action_cancel_turn(self) -> None:
+        if len(self.screen_stack) > 1:
+            return
         if self.controller:
             self.controller.enqueue_command("cancel")
 
@@ -1349,13 +1400,56 @@ class CoderAIApp(App[None]):
             self.notify("Press Ctrl+C again within 5s to exit")
 
     def action_copy_selection(self) -> None:
-        log = self.query_one("#timeline", RichLog)
+        log = self.query_one("#timeline", SelectableRichLog)
         selection = log.text_selection
         if selection:
             self.copy_to_clipboard(str(selection))
-            self.notify("Selection copied to clipboard")
+            self.notify("Copied to clipboard")
+
+    def _find_last_content_item(self) -> Optional[tuple[int, Dict[str, Any]]]:
+        for i in range(len(self.reducer.timeline) - 1, -1, -1):
+            it = self.reducer.timeline[i]
+            if it.get("kind") in ("user", "assistant", "tool", "diff"):
+                return i, it
+        return None
+
+    def action_toggle_collapse(self) -> None:
+        found = self._find_last_content_item()
+        if found is None:
+            self.notify("No item to collapse")
+            return
+        idx, it = found
+        it["collapsed"] = not it.get("collapsed", False)
+        state = "collapsed" if it["collapsed"] else "expanded"
+        self.notify(f"{it.get('kind', 'item').capitalize()} {state}")
+        self._refresh_ui("full")
+
+    def action_expand_full(self) -> None:
+        found = self._find_last_content_item()
+        if found is None:
+            self.notify("No item to expand")
+            return
+        _, it = found
+        kind = it.get("kind", "")
+        if kind == "diff":
+            title = f"Full Diff — {it.get('path', '')}"
+            content = str(it.get("diff", ""))
+        elif kind in ("assistant",):
+            title = "Full Assistant Response"
+            content = str(it.get("content", ""))
+        elif kind in ("user",):
+            title = "Full User Message"
+            content = str(it.get("text", ""))
         else:
-            self.notify("No text selected — use mouse to select text first")
+            self.notify(f"Cannot expand {kind} items")
+            return
+        if not content.strip():
+            self.notify("No content to show")
+            return
+        self.run_worker(self._show_full_content(title, content), exclusive=True)
+
+    async def _show_full_content(self, title: str, content: str) -> None:
+        await self.push_screen_wait(FullContentScreen(title, content))
 
     async def _scan_project_files(self) -> None:
         if self._scan_in_progress:
@@ -1438,16 +1532,28 @@ class CoderAIApp(App[None]):
             loop = asyncio.get_running_loop()
             with ThreadPoolExecutor() as pool:
                 self.project_files = await loop.run_in_executor(pool, do_walk)
-        except Exception:
-            pass
+        except Exception as e:
+            import logging as _log
+
+            _log.getLogger(__name__).warning("Project file scan failed: %s", e)
         finally:
             self._scan_in_progress = False
 
     def action_file_picker(self) -> None:
+        self.reducer._push(
+            {"kind": "toast", "id": self.reducer.next_id(), "level": "info", "message": "Scanning project files…"}
+        )
+        self.reducer._bump_refresh("append")
+        self.reducer._notify()
         self.run_worker(self._show_file_picker(), exclusive=True)
 
     async def _show_file_picker(self) -> None:
-        self.run_worker(self._scan_project_files())
+        await self._scan_project_files()
+        self.reducer._push(
+            {"kind": "toast", "id": self.reducer.next_id(), "level": "info", "message": f"Found {len(self.project_files)} files"}
+        )
+        self.reducer._bump_refresh("append")
+        self.reducer._notify()
         result = await self.push_screen_wait(FilePickerScreen(self.project_files))
         if result is None or not self.controller:
             self.query_one("#prompt-area", PromptArea).focus()
@@ -1472,7 +1578,7 @@ class CoderAIApp(App[None]):
                 return  # already in palette
             self._submit(r)
         else:
-            self.query_one("#prompt-area", TextArea).text = r
+            self.query_one("#prompt-area", PromptArea).text = r
             self.query_one("#prompt-area", PromptArea).focus()
 
     @on(PromptArea.Submitted)
@@ -1509,6 +1615,7 @@ class CoderAIApp(App[None]):
                 reveal_reasoning=self._reveal_reasoning,
                 confirm_exit=self._confirm_exit,
                 set_search_filter=lambda q: setattr(self, "_search_filter", q),
+                retry_agent=self._retry_agent,
             )
             if handled:
                 return
@@ -1529,56 +1636,25 @@ class CoderAIApp(App[None]):
     def _show_skills_menu(self) -> None:
         self.run_worker(self._show_palette("skills"), exclusive=True)
 
-    def _fallback_models(self) -> Dict[str, List[str]]:
-        try:
-            from ..llm.anthropic import MODEL_ALIASES
-            from ..llm.deepseek import DeepSeekProvider
-            from ..llm.groq import GroqProvider
-            from ..llm.openai import OpenAIProvider
-
-            return {
-                "Anthropic": sorted(MODEL_ALIASES.keys()),
-                "OpenAI": sorted(OpenAIProvider.SUPPORTED_MODELS.keys()),
-                "DeepSeek": sorted(DeepSeekProvider.SUPPORTED_MODELS.keys()),
-                "Groq": sorted(GroqProvider.SUPPORTED_MODELS.keys()),
-                "Local": ["lmstudio", "ollama"],
-            }
-        except Exception:
-            return {}
-
-    def _fallback_personas(self) -> List[str]:
-        try:
-            from coderAI.core.agents import get_available_personas
-
-            pr = getattr(self.agent.config, "project_root", ".") if self.agent else "."
-            return sorted(get_available_personas(pr))
-        except Exception:
-            return []
-
-    def _fallback_skills(self) -> List[Dict[str, str]]:
-        try:
-            from ..tools.skills import get_available_skills
-
-            pr = getattr(self.agent.config, "project_root", ".") if self.agent else "."
-            return list(get_available_skills(pr))
-        except Exception:
-            return []
-
-    async def _pick_list(self, title: str, items: List[tuple[str, str]]) -> None:
-        result = await self.push_screen_wait(ListPickerScreen(title, items))
-        if result and self.controller:
-            if title == "Models":
-                self.controller.enqueue_command("set_model", model=result)
-            elif title == "Reasoning":
-                self.controller.enqueue_command("set_reasoning", effort=result)
-            elif title == "Personas":
-                self.controller.enqueue_command("send_message", text=f"/persona {result}")
-            elif title == "Skills":
-                self.controller.enqueue_command("send_message", text=f"/skills {result}")
-            elif title == "Commands":
-                self.query_one("#prompt-area", TextArea).text = result + " "
+    def _retry_agent(self) -> None:
+        self._agent_retry_count = 0
+        self.reducer.session.ready = False
+        self.reducer._push(
+            {"kind": "toast", "id": self.reducer.next_id(), "level": "info", "message": "Restarting agent…"}
+        )
+        self.reducer._bump_refresh("append")
+        self.reducer._notify()
+        self.run_worker(
+            self._run_agent,
+            exclusive=True,
+            thread=True,
+            name="agent-loop",
+        )
 
     def _show_search(self) -> None:
+        self.run_worker(self._show_search_async(), exclusive=True)
+
+    async def _show_search_async(self) -> None:
         self.push_screen(SearchScreen(self.reducer.timeline, self._search_filter))
 
     def _show_context(self) -> None:
@@ -1598,9 +1674,13 @@ class CoderAIApp(App[None]):
     def _clear_context(self) -> None:
         if self.controller:
             self.controller.enqueue_command("clear_context")
-            self.reducer.timeline.clear()
-            self._log_rendered_idx = 0
-            self._refresh_ui("full")
+        self.reducer.timeline.clear()
+        self._log_rendered_idx = 0
+        self._refresh_ui("full")
+        try:
+            self.query_one("#timeline", SelectableRichLog).scroll_end(animate=False)
+        except NoMatches:
+            pass
 
     def _toggle_verbose(self) -> None:
         self.reducer.session.verbose = not self.reducer.session.verbose

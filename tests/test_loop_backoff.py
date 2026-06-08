@@ -113,7 +113,9 @@ async def test_cancellation_during_backoff_exits(loop_agent):
             loop_agent.tracker_info.request_cancel()
         return await real_wait_for(coro, timeout=timeout)
 
-    with patch("coderAI.core.agent_loop.asyncio.wait_for", side_effect=wait_for_cancel_during_backoff):
+    with patch(
+        "coderAI.core.agent_loop.asyncio.wait_for", side_effect=wait_for_cancel_during_backoff
+    ):
         result = await loop.run("hello")
 
     assert "stopped by user" in result["content"].lower()

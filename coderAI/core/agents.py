@@ -72,13 +72,18 @@ def _find_agents_dir(project_root: str = ".") -> Optional[Path]:
     return find_dot_coderai_subdir("agents", project_root)
 
 
+def _safe_persona_stem(name: str) -> str:
+    """Strip directory components from a persona name to prevent path traversal."""
+    return Path(name).name
+
+
 def resolve_persona_name(persona_name: str, project_root: str = ".") -> Optional[str]:
     """Resolve flexible persona names to an existing persona file stem."""
     agents_dir = _find_agents_dir(project_root)
     if agents_dir is None or not persona_name:
         return None
 
-    candidate = persona_name.strip()
+    candidate = _safe_persona_stem(persona_name.strip())
     if not candidate:
         return None
 
@@ -115,7 +120,9 @@ def load_agent_persona(persona_name: str, project_root: str = ".") -> Optional[A
     if agents_dir is None:
         return None
 
-    resolved_name = resolve_persona_name(persona_name, project_root) or persona_name
+    resolved_name = resolve_persona_name(persona_name, project_root) or _safe_persona_stem(
+        persona_name
+    )
     file_path = agents_dir / f"{resolved_name}.md"
     if not file_path.exists():
         return None

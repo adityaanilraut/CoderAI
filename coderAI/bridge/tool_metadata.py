@@ -52,6 +52,9 @@ _HIGH_RISK = {
     "delete_file",
     "move_file",
     "kill_process",
+    "run_applescript",
+    "click_ui_element",
+    "type_keystrokes",
 }
 _MEDIUM_RISK = {
     "delegate_task",
@@ -61,6 +64,7 @@ _MEDIUM_RISK = {
     "git_cherry_pick",
     "copy_file",
     "http_request",
+    "get_accessibility_tree",
 }
 
 _ARG_PREVIEW_LIMIT = 240

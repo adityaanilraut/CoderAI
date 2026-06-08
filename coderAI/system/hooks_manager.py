@@ -202,7 +202,11 @@ class HooksManager:
                         "agent_status", message=f"[dim]Running {hook_type} hook...[/dim]"
                     )
                     proc = await asyncio.create_subprocess_shell(
-                        cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env
+                        cmd,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                        env=env,
+                        cwd=str(self.agent.config.project_root),
                     )
                     stdout, stderr = await proc.communicate()
                     stdout_text = stdout.decode("utf-8", errors="replace").strip()
@@ -227,6 +231,11 @@ class HooksManager:
                             os.unlink(args_file_path)
                         except OSError:
                             pass
+            elif args_file_path:
+                try:
+                    os.unlink(args_file_path)
+                except OSError:
+                    pass
         except Exception as e:
             logger.error(f"Error running hooks: {e}")
             hooks_results.append(f"[{hook_type} Hook ERROR]: {e}")
@@ -338,7 +347,11 @@ class HooksManager:
             ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
                 """Run a hook and attempt JSON parsing of stdout."""
                 proc = await asyncio.create_subprocess_shell(
-                    cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env
+                    cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=env,
+                    cwd=str(self.agent.config.project_root),
                 )
                 stdout, stderr = await proc.communicate()
                 stdout_text = stdout.decode("utf-8", errors="replace").strip()
@@ -383,6 +396,11 @@ class HooksManager:
                             os.unlink(args_file_path)
                         except OSError:
                             pass
+            elif args_file_path:
+                try:
+                    os.unlink(args_file_path)
+                except OSError:
+                    pass
         except Exception as e:
             logger.error(f"Error running structured hooks: {e}")
             hooks_results["_error"] = str(e)

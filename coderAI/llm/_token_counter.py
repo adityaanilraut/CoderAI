@@ -10,20 +10,26 @@ asyncio-safe invocations are reused.
 from __future__ import annotations
 import asyncio
 import hashlib
+import logging
+import math
+import threading
 from collections import OrderedDict
 from typing import Optional, Tuple
 import requests  # type: ignore[import-untyped]
+
+logger = logging.getLogger(__name__)
 
 _TOKENS_PER_CHAR_FALLBACK = 4
 _CACHE_MAX = 1024
 
 _cache: "OrderedDict[Tuple[str, str], int]" = OrderedDict()
+_cache_lock = threading.Lock()
 
 
 def estimate_chars(text: str) -> int:
     if not text:
         return 0
-    return max(1, len(text) // _TOKENS_PER_CHAR_FALLBACK)
+    return max(1, math.ceil(len(text) / _TOKENS_PER_CHAR_FALLBACK))
 
 
 def _do_count_tokens_request(text: str, model: str, api_key: str) -> int:
@@ -54,23 +60,24 @@ def count_tokens_anthropic(text: str, model: str, api_key: Optional[str]) -> int
         return estimate_chars(text)
     digest = hashlib.sha1(text.encode("utf-8", errors="replace")).hexdigest()[:16]
     cache_key = (model, digest)
-    if cache_key in _cache:
-        _cache.move_to_end(cache_key)
-        return _cache[cache_key]
+    with _cache_lock:
+        if cache_key in _cache:
+            _cache.move_to_end(cache_key)
+            return _cache[cache_key]
     try:
         asyncio.get_running_loop()
     except RuntimeError:
         pass
     else:
-        # Running inside an event loop — don't block it with a sync HTTP call.
         return estimate_chars(text)
     try:
         n = _do_count_tokens_request(text, model, api_key)
         if n > 0:
-            _cache[cache_key] = n
-            if len(_cache) > _CACHE_MAX:
-                _cache.popitem(last=False)
+            with _cache_lock:
+                _cache[cache_key] = n
+                if len(_cache) > _CACHE_MAX:
+                    _cache.popitem(last=False)
             return n
     except Exception:
-        pass
+        logger.debug("Anthropic token count fallback — using char/4 estimate", exc_info=True)
     return estimate_chars(text)

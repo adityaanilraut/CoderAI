@@ -94,7 +94,8 @@ class NotepadTool(Tool):
         "action='write', key='auth_findings', value='refresh token flow lives in auth.py'."
     )
     parameters_model = NotepadParams
-    is_read_only = True
+    is_read_only = False
+    requires_confirmation = True
 
     async def execute(  # type: ignore[override]
         self,

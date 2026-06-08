@@ -23,10 +23,13 @@ class Config(BaseModel):
 
     model_config = ConfigDict(extra="ignore", validate_assignment=True)
 
+    config_version: int = Field(default=1, description="Schema version for migration support")
+
     openai_api_key: Optional[str] = Field(default=None)
     anthropic_api_key: Optional[str] = Field(default=None)
     groq_api_key: Optional[str] = Field(default=None)
     deepseek_api_key: Optional[str] = Field(default=None)
+    gemini_api_key: Optional[str] = Field(default=None)
     tavily_api_key: Optional[str] = Field(default=None)
     exa_api_key: Optional[str] = Field(default=None)
     search_backend: Optional[str] = Field(default=None)
@@ -71,6 +74,12 @@ class Config(BaseModel):
     # long-running research/refactor sub-agents.
     subagent_timeout_seconds: float = Field(default=600.0, gt=0.0)
 
+    # --- Skill auto-detection ---
+    auto_detect_skills: bool = Field(default=True)
+    skill_confidence_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
+    skill_top_n: int = Field(default=3, ge=1, le=10)
+    skills_use_hasna: bool = Field(default=True)
+
 
 class ConfigManager:
     """Manages configuration for CoderAI."""
@@ -107,6 +116,7 @@ class ConfigManager:
             "ANTHROPIC_API_KEY": "anthropic_api_key",
             "GROQ_API_KEY": "groq_api_key",
             "DEEPSEEK_API_KEY": "deepseek_api_key",
+            "GEMINI_API_KEY": "gemini_api_key",
             "TAVILY_API_KEY": "tavily_api_key",
             "EXA_API_KEY": "exa_api_key",
             "CODERAI_SEARCH_BACKEND": "search_backend",
@@ -132,6 +142,10 @@ class ConfigManager:
             "CODERAI_CONCURRENT_SEARCH": "concurrent_search",
             "CODERAI_ALLOW_OUTSIDE_PROJECT": "allow_outside_project",
             "CODERAI_SUBAGENT_TIMEOUT_SECONDS": "subagent_timeout_seconds",
+            "CODERAI_AUTO_DETECT_SKILLS": "auto_detect_skills",
+            "CODERAI_SKILL_CONFIDENCE_THRESHOLD": "skill_confidence_threshold",
+            "CODERAI_SKILL_TOP_N": "skill_top_n",
+            "CODERAI_SKILLS_USE_HASNA": "skills_use_hasna",
         }
 
         for env_var, config_key in env_mappings.items():
@@ -139,15 +153,30 @@ class ConfigManager:
             if value is not None:
                 # Convert types if needed
                 try:
-                    if config_key in ("temperature", "budget_limit", "subagent_timeout_seconds", "rate_limit_delay_seconds"):
+                    if config_key in (
+                        "temperature",
+                        "budget_limit",
+                        "subagent_timeout_seconds",
+                        "rate_limit_delay_seconds",
+                        "skill_confidence_threshold",
+                    ):
                         value = float(value)
-                    elif config_key in ("max_tokens", "max_iterations", "max_tool_output", "search_cache_ttl_seconds", "page_cache_ttl_seconds"):
+                    elif config_key in (
+                        "max_tokens",
+                        "max_iterations",
+                        "max_tool_output",
+                        "search_cache_ttl_seconds",
+                        "page_cache_ttl_seconds",
+                        "skill_top_n",
+                    ):
                         value = int(value)
-                    elif config_key == "web_tools_in_main":
-                        value = value.strip().lower() in ("true", "1", "yes", "on")
-                    elif config_key == "allow_outside_project":
-                        value = value.strip().lower() in ("true", "1", "yes", "on")
-                    elif config_key == "concurrent_search":
+                    elif config_key in (
+                        "web_tools_in_main",
+                        "allow_outside_project",
+                        "concurrent_search",
+                        "auto_detect_skills",
+                        "skills_use_hasna",
+                    ):
                         value = value.strip().lower() in ("true", "1", "yes", "on")
                 except (ValueError, TypeError):
                     logger.warning(
@@ -168,8 +197,37 @@ class ConfigManager:
                 ", ".join(sorted(unknown)),
             )
 
+        # Run schema migrations before constructing the Config object
+        config_data = self._migrate(config_data)
+
         self._config = Config(**config_data)
         return self._config
+
+    def _migrate(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Apply schema migrations to config data based on config_version.
+
+        Each migration increments the version by 1. New migrations should be
+        appended to the chain below.
+
+        Migration history:
+            1 → Current: Base schema (no changes yet).
+        """
+        CURRENT_VERSION = 1
+        version = int(data.get("config_version", 1))
+        data = dict(data)
+
+        # Migration 1 → 2: (future example)
+        # if version < 2:
+        #     # e.g., rename a deprecated key
+        #     if "old_key_name" in data:
+        #         data["new_key_name"] = data.pop("old_key_name")
+        #     version = 2
+
+        if version != CURRENT_VERSION:
+            data["config_version"] = CURRENT_VERSION
+            logger.info("Config migrated from version %d to %d", version, CURRENT_VERSION)
+
+        return data
 
     def save(self, config: Optional[Config] = None) -> None:
         """Save configuration to file with restricted permissions."""
@@ -181,7 +239,7 @@ class ConfigManager:
         tmp_fd, tmp_path = tempfile.mkstemp(dir=str(self.config_dir), prefix=".config.")
         try:
             os.fchmod(tmp_fd, stat.S_IRUSR | stat.S_IWUSR)
-            with open(tmp_fd, "w") as f:
+            with os.fdopen(tmp_fd, "w") as f:
                 json.dump(config.model_dump(exclude_none=True), f, indent=2)
             os.replace(tmp_path, str(self.config_file))
         except Exception:
@@ -190,6 +248,11 @@ class ConfigManager:
             except OSError:
                 pass
             raise
+        finally:
+            try:
+                os.close(tmp_fd)
+            except OSError:
+                pass
 
     def set(self, key: str, value: Any) -> None:
         """Set a configuration value."""
@@ -211,7 +274,15 @@ class ConfigManager:
         config = self.load()
         data = config.model_dump(exclude_none=True)
         # Mask sensitive data — never reveal short keys
-        for key in ["openai_api_key", "anthropic_api_key", "groq_api_key", "deepseek_api_key", "tavily_api_key", "exa_api_key"]:
+        for key in [
+            "openai_api_key",
+            "anthropic_api_key",
+            "groq_api_key",
+            "deepseek_api_key",
+            "gemini_api_key",
+            "tavily_api_key",
+            "exa_api_key",
+        ]:
             if key in data and data[key]:
                 val = data[key]
                 if len(val) > 16:
@@ -268,6 +339,10 @@ class ConfigManager:
             "approval_timeout_seconds",
             "subagent_timeout_seconds",
             "search_backend",
+            "auto_detect_skills",
+            "skill_confidence_threshold",
+            "skill_top_n",
+            "skills_use_hasna",
         }
 
         try:

@@ -191,7 +191,9 @@ class CreatePlanTool(Tool):
 
                 plan_steps = plan.get("steps", [])
                 total = len(plan_steps)
-                completed = sum(1 for s in plan_steps if isinstance(s, dict) and s.get("status") == "done")
+                completed = sum(
+                    1 for s in plan_steps if isinstance(s, dict) and s.get("status") == "done"
+                )
                 current = plan.get("current_step", 0)
                 done = current >= total
                 if done:
@@ -199,10 +201,18 @@ class CreatePlanTool(Tool):
                     next_desc = None
                 else:
                     current_step_item = plan_steps[current]
-                    current_desc = current_step_item.get("description", "") if isinstance(current_step_item, dict) else ""
+                    current_desc = (
+                        current_step_item.get("description", "")
+                        if isinstance(current_step_item, dict)
+                        else ""
+                    )
                     if current + 1 < total:
                         next_step_item = plan_steps[current + 1]
-                        next_desc = next_step_item.get("description", "") if isinstance(next_step_item, dict) else ""
+                        next_desc = (
+                            next_step_item.get("description", "")
+                            if isinstance(next_step_item, dict)
+                            else ""
+                        )
                     else:
                         next_desc = None
 

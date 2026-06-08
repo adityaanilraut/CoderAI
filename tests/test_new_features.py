@@ -80,14 +80,8 @@ async def test_mcp_autoconnect(monkeypatch, tmp_path):
 
     servers_data = {
         "mcpServers": {
-            "mock_stdio": {
-                "command": "npx",
-                "args": ["mock-server-args"]
-            },
-            "mock_sse": {
-                "transport": "sse",
-                "url": "http://localhost:8080/sse"
-            }
+            "mock_stdio": {"command": "npx", "args": ["mock-server-args"]},
+            "mock_sse": {"transport": "sse", "url": "http://localhost:8080/sse"},
         }
     }
     with open(mcp_servers_file, "w") as f:

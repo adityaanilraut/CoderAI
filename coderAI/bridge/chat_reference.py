@@ -25,7 +25,13 @@ def _truncate(text: str, max_chars: int = _MAX_CHARS) -> str:
 
 def _mask_keys(data: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(data)
-    for key in ("openai_api_key", "anthropic_api_key", "groq_api_key", "deepseek_api_key"):
+    for key in (
+        "openai_api_key",
+        "anthropic_api_key",
+        "groq_api_key",
+        "deepseek_api_key",
+        "gemini_api_key",
+    ):
         v = out.get(key)
         if isinstance(v, str) and len(v) > 12:
             out[key] = f"{v[:8]}...{v[-4:]}"
@@ -50,6 +56,9 @@ def build_models_text() -> str:
         "",
         "DeepSeek — requires DEEPSEEK or config deepseek_api_key",
         "  deepseek-v4-flash, deepseek-v4-pro, deepseek-v3.2, deepseek-r1, …",
+        "",
+        "Gemini — requires GEMINI or config gemini_api_key",
+        "  gemini-3.5-flash, gemini-3.1-pro, gemini-3.1-flash-lite, gemini-2.5-flash, …",
         "",
         "Local",
         "  lmstudio — LM Studio at lmstudio_endpoint",
@@ -106,6 +115,7 @@ def build_system_text() -> str:
         f"  Anthropic:  {'yes' if cfg.anthropic_api_key else 'no'}",
         f"  Groq:       {'yes' if cfg.groq_api_key else 'no'}",
         f"  DeepSeek:   {'yes' if cfg.deepseek_api_key else 'no'}",
+        f"  Gemini:     {'yes' if cfg.gemini_api_key else 'no'}",
         "",
         "LM Studio",
         f"  endpoint: {cfg.lmstudio_endpoint}",

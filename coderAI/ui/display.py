@@ -41,14 +41,12 @@ class Display:
 
         table = Table(title=title, show_header=True, header_style="bold magenta")
 
-        # Add columns
-        if data:
-            for key in data[0].keys():
-                table.add_column(key.replace("_", " ").title())
+        keys = list(dict.fromkeys(k for d in data for k in d))
+        for key in keys:
+            table.add_column(key.replace("_", " ").title())
 
-            # Add rows
-            for row in data:
-                table.add_row(*[str(v) for v in row.values()])
+        for row in data:
+            table.add_row(*[str(row.get(k, "")) for k in keys])
 
         self.console.print(table)
 

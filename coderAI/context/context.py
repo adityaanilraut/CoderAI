@@ -58,10 +58,10 @@ class ContextManager:
             file_path = Path(path).resolve()
 
             project_root = (
-                Path(self.config.project_root).resolve() if self.config.project_root else None
+                Path(self.config.project_root).resolve() if self.config.project_root else Path.cwd()
             )
             allow_outside = os.environ.get("CODERAI_ALLOW_OUTSIDE_PROJECT") == "1"
-            if project_root is not None and not allow_outside:
+            if not allow_outside:
                 try:
                     file_path.relative_to(project_root)
                 except ValueError:

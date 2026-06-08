@@ -169,7 +169,11 @@ class ProjectContextTool(Tool):
         return ctx
 
     def _get_directory_structure(
-        self, root: Path, max_depth: int = 2, current_depth: int = 0, seen: Optional[Set[Path]] = None
+        self,
+        root: Path,
+        max_depth: int = 2,
+        current_depth: int = 0,
+        seen: Optional[Set[Path]] = None,
     ) -> List[str]:
         """Get directory structure up to max_depth levels."""
         IGNORE_DIRS = {

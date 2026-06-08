@@ -249,6 +249,24 @@ _TOOL_HELP: Dict[str, str] = {
     "mcp_list": "List connected servers and their tools",
     "undo": "Revert the last file modification (write_file, search_replace, apply_diff)",
     "undo_history": "View recent file change history",
+    # --- Desktop (macOS) ---
+    "run_applescript": (
+        "Execute AppleScript or JavaScript for Automation (JXA) on the macOS host. "
+        "Useful for opening applications, navigating browsers (e.g. Chrome/Safari) to search or open URLs, "
+        "or generic macOS UI scripting."
+    ),
+    "get_accessibility_tree": (
+        "Retrieve the Accessibility UI tree (as JSON) for a running macOS application. "
+        "Use this to discover UI elements (like buttons, menus, and text fields) before clicking or typing."
+    ),
+    "click_ui_element": (
+        "Click a specific UI element in a macOS application using its AppleScript hierarchy path "
+        "(e.g., ['window 1', 'button \"OK\"'])."
+    ),
+    "type_keystrokes": (
+        "Simulate typing text or pressing a specific key code on the macOS host. "
+        "Can also include modifiers like ['command down']."
+    ),
 }
 
 # ---------------------------------------------------------------------------
@@ -389,6 +407,39 @@ SYSTEM_PROMPT_TAIL = """\
 - Use `delegate_task` for isolated review or research work. Prefer `read_only_task=True` when no mutations are needed.
 - Do not override the sub-agent model unless the user asks.
 
+### macOS Desktop Automation
+- You can automate and control macOS applications, including browsers (Google Chrome, Safari), using AppleScript or JavaScript for Automation (JXA).
+- When asked to perform web searches or open URLs in a browser on the macOS host:
+  - Do NOT say you cannot search the web inside Chrome/Safari directly or ask the user to copy/paste.
+  - Instead, write and execute an AppleScript using `run_applescript` to control the application.
+  - To open a URL or search in Google Chrome, use:
+    ```applescript
+    tell application "Google Chrome"
+        activate
+        if (count of windows) is 0 then
+            make new window
+        end if
+        tell active tab of active window
+            set URL to "https://www.google.com/search?q=search+query"
+        end tell
+    end tell
+    ```
+  - To open a URL or search in Safari, use:
+    ```applescript
+    tell application "Safari"
+        activate
+        if (count of windows) is 0 then
+            make new document
+        end if
+        set URL of document 1 to "https://www.google.com/search?q=search+query"
+    end tell
+    ```
+  - To open a URL in the user's default browser, use:
+    ```applescript
+    open location "https://www.google.com/search?q=search+query"
+    ```
+  - Before interacting with native application UI elements (like click or text fields), retrieve the accessibility layout tree first using `get_accessibility_tree` to identify elements and paths.
+
 ## Safety & Communication
 
 - Do not invent hidden tools, slash commands, hooks, or external services.
@@ -453,7 +504,18 @@ _TOOL_SECTIONS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
     ("Refactoring", ("refactor",)),
     ("Package Management", ("package_manager",)),
     ("Vision", ("read_image",)),
-    ("Web", ("web_search", "read_url", "download_file", "http_request", "wikipedia_search", "read_feed", "sitemap_discover")),
+    (
+        "Web",
+        (
+            "web_search",
+            "read_url",
+            "download_file",
+            "http_request",
+            "wikipedia_search",
+            "read_feed",
+            "sitemap_discover",
+        ),
+    ),
     ("Memory (Persistent)", ("save_memory", "recall_memory", "delete_memory")),
     ("Project Context", ("project_context", "manage_context")),
     ("Task Management", ("manage_tasks",)),
@@ -467,6 +529,10 @@ _TOOL_SECTIONS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
         ("mcp_connect", "mcp_disconnect", "mcp_call_tool", "mcp_list"),
     ),
     ("Undo / Rollback", ("undo", "undo_history")),
+    (
+        "Desktop Automation (macOS)",
+        ("run_applescript", "get_accessibility_tree", "click_ui_element", "type_keystrokes"),
+    ),
 )
 
 
@@ -568,3 +634,29 @@ def compose_default_system_prompt(
         ]
     )
     return "\n\n".join(parts)
+
+
+def format_tools_short(registry: ToolRegistry) -> str:
+    """Build a condensed tool listing (names only) for context-constrained turns.
+
+    Unlike ``format_tools_markdown``, this omits long-form descriptions and
+    MCP appendices to save tokens. Use when the context window is filling up
+    and the model already knows the tool capabilities from the initial prompt.
+    """
+    lines: List[str] = [
+        "## Available Tools (short form — use `plan` action='show' to re-open full listing)",
+        "",
+    ]
+    seen: set[str] = set()
+
+    for heading, names in _TOOL_SECTIONS:
+        present = [n for n in names if registry.get(n) is not None]
+        if present:
+            seen.update(present)
+            lines.append(f"- **{heading}**: {', '.join(present)}")
+
+    other = [n for n in sorted(registry.tools.keys()) if n not in seen]
+    if other:
+        lines.append(f"- **Other**: {', '.join(other)}")
+
+    return "\n".join(lines).rstrip() + "\n"

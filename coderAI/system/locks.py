@@ -24,12 +24,17 @@ class ResourceManager:
         self._file_locks: "OrderedDict[str, asyncio.Lock]" = OrderedDict()
         self._file_locks_lock: Optional[asyncio.Lock] = None
         self._git_lock: Optional[asyncio.Lock] = None
+        self._loop_id: Optional[int] = None
 
     def _ensure_locks(self) -> None:
-        """Lazily create locks inside a running event loop (safe for Python 3.9+)."""
-        if self._git_lock is None:
+        """Lazily create or recreate locks inside the running event loop."""
+        loop = asyncio.get_running_loop()
+        loop_id = id(loop)
+        if self._git_lock is None or self._loop_id != loop_id:
             self._file_locks_lock = asyncio.Lock()
             self._git_lock = asyncio.Lock()
+            self._file_locks.clear()
+            self._loop_id = loop_id
 
     async def get_file_lock(self, filepath: str) -> asyncio.Lock:
         """Get or create an asyncio Lock for a specific absolute or relative filepath."""

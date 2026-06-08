@@ -286,9 +286,9 @@ class ToolExecutor:
                 args_preview = json.dumps(arguments, indent=2)
                 if len(args_preview) > 300:
                     args_preview = args_preview[:300] + "\n  ... (truncated)"
-    
+
                 diff_preview = f"\n\nDiff Preview:\n{diff}" if diff else ""
-    
+
                 event_emitter.emit(
                     "agent_status",
                     message=(
@@ -308,10 +308,10 @@ class ToolExecutor:
                         diff=diff,
                     )
                     return bool(res)
-    
+
                 try:
                     from prompt_toolkit import PromptSession
-    
+
                     prompt_session: Any = PromptSession()
                     answer = await prompt_session.prompt_async("Allow this tool? (y/n) > ")
                 except (ImportError, EOFError, KeyboardInterrupt):
@@ -322,7 +322,7 @@ class ToolExecutor:
                         )
                     except (EOFError, KeyboardInterrupt):
                         answer = "n"
-    
+
                 return answer.strip().lower() in ("y", "yes")
             finally:
                 self._exit_waiting_for_user(previous)
@@ -362,8 +362,10 @@ class ToolExecutor:
             if needs_confirmation:
                 # Check permission hooks first (can auto-allow or auto-deny)
                 if hooks_manager is not None and hooks_data:
+
                     async def fallback_hook(*a, **kw):
                         return None
+
                     func = getattr(hooks_manager, "run_permission_hooks", fallback_hook)
                     permission_status = await func(tool_name, arguments, hooks_data)
                     if permission_status == "allow":
@@ -432,7 +434,9 @@ class ToolExecutor:
                 await hooks_manager.run_hooks(tool_name, "PostToolUse", post_hook_args, hooks_data)
                 or []
             )
-            normalized_res: Dict[str, Any] = self._normalize_tool_result(result, tool_name=tool_name)
+            normalized_res: Dict[str, Any] = self._normalize_tool_result(
+                result, tool_name=tool_name
+            )
 
             if pre_hooks or post_hooks:
                 normalized_res["_hooks"] = {"pre": pre_hooks, "post": post_hooks}
@@ -803,9 +807,15 @@ class ToolExecutor:
             pc = parsed_calls[mut_indices[i_idx]]
             tool_name = pc["tool_name"]
             args = pc.get("arguments") or {}
-            safe_file_tools = {"write_file", "search_replace", "multi_edit", "apply_diff", "delete_file"}
+            safe_file_tools = {
+                "write_file",
+                "search_replace",
+                "multi_edit",
+                "apply_diff",
+                "delete_file",
+            }
             path = args.get("path") or args.get("file_path")
-            
+
             if tool_name in safe_file_tools and isinstance(path, str):
                 contiguous_safe = []
                 while i_idx < len(mut_indices):
@@ -818,7 +828,7 @@ class ToolExecutor:
                         i_idx += 1
                     else:
                         break
-                
+
                 path_queues: Dict[str, List[int]] = {}
                 for idx in contiguous_safe:
                     c_pc = parsed_calls[idx]
@@ -828,14 +838,19 @@ class ToolExecutor:
                         or ""
                     )
                     path_queues.setdefault(c_path, []).append(idx)
-                
+
                 async def _run_path_queue(path_indices):
                     for idx in path_indices:
                         t0 = _time.time()
-                        results[idx] = await _run(parsed_calls[idx], diff=precomputed_diffs.get(idx))
+                        results[idx] = await _run(
+                            parsed_calls[idx], diff=precomputed_diffs.get(idx)
+                        )
                         _emit_progress(idx, elapsed=round(_time.time() - t0, 2))
-                
-                await asyncio.gather(*(_run_path_queue(indices) for indices in path_queues.values()), return_exceptions=True)
+
+                await asyncio.gather(
+                    *(_run_path_queue(indices) for indices in path_queues.values()),
+                    return_exceptions=True,
+                )
             else:
                 idx = mut_indices[i_idx]
                 t0 = _time.time()

@@ -23,6 +23,12 @@ def test_tail_carries_plan_first_workflow_section() -> None:
     assert "manage_tasks" in SYSTEM_PROMPT_TAIL
 
 
+def test_tail_carries_desktop_automation_section() -> None:
+    assert "### macOS Desktop Automation" in SYSTEM_PROMPT_TAIL
+    assert "Google Chrome" in SYSTEM_PROMPT_TAIL
+    assert "run_applescript" in SYSTEM_PROMPT_TAIL
+
+
 def test_compose_default_system_prompt_includes_directives() -> None:
     registry = ToolRegistry()
     registry.register(CreatePlanTool())

@@ -1,7 +1,5 @@
 from typing import Any, Dict, List
 import logging
-import os
-import tempfile
 from pathlib import Path
 from pydantic import BaseModel, Field
 
@@ -12,6 +10,7 @@ from coderAI.tools.filesystem import (
     _emit_diff,
     _reject_symlink_leaf,
     _safe_open_no_symlink,
+    _atomic_write_file,
 )
 from coderAI.tools.undo import backup_store
 from coderAI.system.locks import resource_manager
@@ -84,10 +83,7 @@ class MultiEditTool(Tool):
 
                 backup_store.backup_file(str(path_obj), "modify")
 
-                fd, tmp_path = tempfile.mkstemp(dir=path_obj.parent, prefix=".tmp-")
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    f.write(new_content)
-                os.replace(tmp_path, str(path_obj))
+                _atomic_write_file(path_obj, new_content)
 
                 _emit_diff(path_obj, original_content, new_content)
 
