@@ -41,6 +41,9 @@ dependencies = [
 web = [
     "pypdf>=3.0.0",
 ]
+browser = [
+    "playwright>=1.45.0",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
@@ -70,7 +73,7 @@ target-version = "py310"
 
 [tool.ruff.lint.per-file-ignores]
 # load_dotenv() must run before package imports read env vars
-"coderAI/cli.py" = ["E402"]
+"coderAI/cli/main.py" = ["E402"]
 
 [tool.ruff.format]
 quote-style = "double"

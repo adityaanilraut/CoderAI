@@ -11,14 +11,15 @@
 
 ---
 
-CoderAI is a Python CLI tool that pairs an LLM with **56+ built-in tools** to read, write, search, debug, test, and ship code — all from a single terminal session. It supports **6 LLM providers**, **17 specialist agent personas**, a **multi-agent delegation system** with retry logic, a **semantic code search engine**, and a **plan-and-execute workflow** to tackle complex tasks autonomously.
+CoderAI is a Python CLI tool that pairs an LLM with **66+ built-in tools** to read, write, search, debug, test, automate browsers, and ship code — all from a single terminal session. It supports **6 LLM providers**, **17 specialist agent personas**, a **multi-agent delegation system** with retry logic, a **semantic code search engine**, a **cross-platform browser automation engine**, and a **plan-and-execute workflow** to tackle complex tasks autonomously.
 
 ## ✨ Key Features
 
 | Feature | Description |
 |---|---|
 | **Multi-Provider LLM** | OpenAI, Anthropic Claude, Groq, DeepSeek, LM Studio, Ollama |
-| **56+ Tools** | File I/O, Git, terminal, web, HTTP, memory, process management, semantic search, and more |
+| **66+ Tools** | File I/O, Git, terminal, web, browser automation, HTTP, memory, process management, semantic search, and more |
+| **Browser Automation** | Cross-platform browser control via Playwright — form filling, shopping, data entry, web scraping |
 | **Multi-Agent System** | Spawn isolated sub-agents for code review, security audit, research, etc. |
 | **Planning & Tasks** | Structured plan-and-execute workflows with persistent task tracking |
 | **Textual interactive UI** | `coderAI chat` uses a pure-Python [Textual](https://textual.textualize.io/) TUI ([`docs/CHAT_EVENTS.md`](docs/CHAT_EVENTS.md)) |
@@ -39,18 +40,24 @@ CoderAI is a Python CLI tool that pairs an LLM with **56+ built-in tools** to re
 **Requirements:** Python 3.9+
 
 ```bash
-# 1. Install
+# 1. Clone
 git clone https://github.com/adityaanilraut/CoderAI.git
 cd CoderAI
-pip install -e .
 
-# 2. Configure at least one provider (interactive wizard)
+# 2a. Install (core)
+pip3 install -e .
+
+# 2b. Or install with browser automation (Playwright)
+pip3 install -e ".[browser]"
+playwright install chromium
+
+# 3. Configure at least one provider (interactive wizard)
 coderAI setup
 
-# 3. Verify your install (config, keys, binary, cache)
+# 4. Verify your install (config, keys, binary, cache)
 coderAI doctor
 
-# 4. Start chatting
+# 5. Start chatting
 coderAI                    # default: opens Textual chat UI
 coderAI chat -m opus       # pick a model/alias
 coderAI chat --resume ID   # resume a saved session
@@ -206,6 +213,10 @@ CoderAI-main/
 │   │   ├── search.py           #   text_search, grep, symbol_search
 │   │   ├── semantic_search.py  #   semantic_search (natural-language code search)
 │   │   ├── web.py              #   web_search (DuckDuckGo), read_url, download_file, http_request
+│   │   ├── browser.py           #   browser_navigate, browser_snapshot, browser_click, browser_type,
+│   │   │                       #   browser_select_option, browser_get_content, browser_screenshot,
+│   │   │                       #   browser_evaluate, browser_wait, browser_close (Playwright)
+│   │   ├── desktop.py           #   run_applescript, get_accessibility_tree, click_ui_element, type_keystrokes
 │   │   ├── memory.py           #   save_memory, recall_memory, delete_memory (persistent key-value)
 │   │   ├── mcp.py              #   mcp_connect, mcp_call_tool, mcp_list
 │   │   ├── undo.py             #   undo, undo_history (file backup/rollback)
@@ -450,6 +461,45 @@ CoderAI registers **54+ tools** that the LLM can call. Each tool follows the `To
 |---|---|
 | `use_skill` | Load predefined skill workflows from `.coderAI/skills/` |
 
+### Browser Automation (10 tools)
+
+*Requires `playwright` — install with `pip install coderAI[browser] && playwright install chromium`.*
+
+Browser tools provide full control over a headless Chromium browser for form filling, shopping, data entry, and web scraping. They use an **accessibility snapshot** pattern: navigate → snapshot (get element refs like `[e12]`) → click/type by ref → repeat.
+
+| Tool | Description |
+|---|---|
+| `browser_navigate` | Navigate to a URL — returns page title and final URL |
+| `browser_snapshot` | Capture the accessibility tree with element refs (`[e0]`, `[e1]`, ...) |
+| `browser_click` | Click an element by its snapshot ref |
+| `browser_type` | Type text into an input field by ref (set `clear=true` to replace) |
+| `browser_select_option` | Select an option from a dropdown/combobox by ref |
+| `browser_get_content` | Extract page content as markdown, plain text, or raw HTML |
+| `browser_screenshot` | Take a PNG screenshot of the current page viewport |
+| `browser_evaluate` | Execute JavaScript in the page context and return the result |
+| `browser_wait` | Wait for text to appear or a timeout duration |
+| `browser_close` | Close the browser and free resources |
+
+**Workflow example:**
+```
+1. browser_navigate("https://example.com/form")
+2. browser_snapshot()              → "textbox 'Email' [e5], button 'Submit' [e9]"
+3. browser_type(ref="e5", text="user@example.com")
+4. browser_click(ref="e9")
+5. browser_snapshot()              → "heading 'Thank you!' [e1]"
+6. browser_get_content()           → confirmation page text
+7. browser_close()
+```
+
+### Desktop Automation (macOS only, 4 tools)
+
+| Tool | Description |
+|---|---|
+| `run_applescript` | Execute AppleScript or JXA on the macOS host |
+| `get_accessibility_tree` | Retrieve the macOS accessibility UI tree as JSON |
+| `click_ui_element` | Click a UI element via AppleScript System Events |
+| `type_keystrokes` | Simulate typing or key presses on macOS |
+
 ### MCP Integration (4 tools)
 
 | Tool | Description |
@@ -630,7 +680,7 @@ Configuration is stored in `~/.coderAI/config.json` and managed via `coderAI con
 
 | Key | Default | Description |
 |---|---|---|
-| `default_model` | `gpt-5.4-mini` | Default LLM model |
+| `default_model` | `claude-4-sonnet` | Default LLM model |
 | `temperature` | `0.7` | Sampling temperature |
 | `max_tokens` | `8192` | Max output tokens |
 | `context_window` | `128000` | Context window size |
@@ -640,6 +690,9 @@ Configuration is stored in `~/.coderAI/config.json` and managed via `coderAI con
 | `save_history` | `true` | Persist conversation sessions |
 | `budget_limit` | `0` | Max cost in USD (0 = unlimited) |
 | `web_tools_in_main` | `true` | Allow web tools in the main agent |
+| `browser_headless` | `true` | Run browser in headless mode |
+| `browser_timeout` | `30.0` | Browser operation timeout in seconds |
+| `browser_allowed_domains` | — | Comma-separated domain allowlist (blank = all allowed) |
 | `approval_timeout_seconds` | `300` | Seconds before approval prompts auto-deny (0 = wait forever) |
 
 ---
@@ -685,7 +738,10 @@ python manual_parallel_subagents.py
 | `coderAI` / `coderAI chat` | Start interactive chat |
 | `coderAI chat -m <model>` | Chat with specific model |
 | `coderAI chat --resume <id>` | Resume a previous session |
+| `coderAI chat --continue` | Resume the most recently updated session |
+| `coderAI chat -p <persona>` | Start chat with a persona (e.g. `code-reviewer`) |
 | `coderAI setup` | Interactive setup wizard |
+| `coderAI doctor` | Diagnose install (config, keys, dependencies) |
 | `coderAI models` | List available models and providers |
 | `coderAI set-model <name>` | Set default model |
 | `coderAI config show` | Show configuration |

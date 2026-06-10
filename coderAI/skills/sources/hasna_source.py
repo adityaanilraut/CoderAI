@@ -30,7 +30,8 @@ def _read_hasna_auth() -> Optional[Dict[str, str]]:
     auth_path = Path.home() / ".hasna" / "skills" / "auth.json"
     try:
         if auth_path.is_file():
-            return json.loads(auth_path.read_text())
+            from typing import cast
+            return cast("dict[str, str]", json.loads(auth_path.read_text()))
     except (json.JSONDecodeError, OSError) as e:
         logger.debug("[HasnaSource] Failed to read auth.json: %s", e)
     return None

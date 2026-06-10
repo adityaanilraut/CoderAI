@@ -1,11 +1,8 @@
 """Ollama local LLM provider implementation."""
 
-import logging
 from typing import Any, Dict, Optional
 
 from coderAI.llm.local_base import OpenAICompatibleLocalProvider
-
-logger = logging.getLogger(__name__)
 
 
 class OllamaProvider(OpenAICompatibleLocalProvider):

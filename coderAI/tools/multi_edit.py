@@ -3,6 +3,7 @@ import logging
 from pathlib import Path
 from pydantic import BaseModel, Field
 
+from coderAI.core.tool_error_codes import ToolErrorCode
 from coderAI.tools.base import Tool
 from coderAI.tools.filesystem import (
     _is_path_protected,
@@ -11,6 +12,7 @@ from coderAI.tools.filesystem import (
     _reject_symlink_leaf,
     _safe_open_no_symlink,
     _atomic_write_file,
+    _get_max_file_size,
 )
 from coderAI.tools.undo import backup_store
 from coderAI.system.locks import resource_manager
@@ -54,6 +56,18 @@ class MultiEditTool(Tool):
                 symlink_err = _reject_symlink_leaf(path_obj, "multi_edit")
                 if symlink_err:
                     return symlink_err
+
+                # Check file size before reading (same guard as ReadFileTool)
+                stat = path_obj.stat()
+                file_size = stat.st_size
+                max_file_size = _get_max_file_size()
+                if file_size > max_file_size:
+                    return {
+                        "success": False,
+                        "error": f"File too large: {file_size:,} bytes (limit: {max_file_size:,} bytes).",
+                        "error_code": ToolErrorCode.TOO_LARGE,
+                        "hint": "Use single-edit or write_file for targeted modifications on large files.",
+                    }
 
                 with _safe_open_no_symlink(path_obj, "r") as f:
                     original_content = f.read()

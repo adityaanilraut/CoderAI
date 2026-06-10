@@ -214,10 +214,10 @@ _TOOL_HELP: Dict[str, str] = {
         "own isolated session, and returns a comprehensive structured report. "
         "Use agent_role to apply a specialist persona (e.g. 'code-reviewer', 'security-reviewer', 'planner'). "
         "Use context_hints to pass relevant file paths or notes so the sub-agent doesn't re-discover them. "
-        "Mutating delegations (default) run one at a time to prevent workspace conflicts. "
-        "Set read_only_task=True for pure research or read-only work — such delegations have mutating tools "
-        "stripped and are fanned out in parallel (up to 4 at a time), dramatically reducing wall time when "
-        "you spawn several research specialists in one turn. "
+        "For parallel independent tasks in one turn, set isolation_domain: 'browser' (Playwright automation), "
+        "'desktop' (AppleScript/macOS UI), or read_only_task=True (research — up to 4 parallel). "
+        "Workspace/file/git edits use isolation_domain='workspace' or 'auto' (default) and run serially. "
+        "Browser and desktop delegations can run concurrently (default cap: 3). "
         "Sub-agents inherit the parent model unless model= is specified. Max delegation depth: 3."
     ),
     # --- Skills / REPL / planning ---
@@ -266,6 +266,48 @@ _TOOL_HELP: Dict[str, str] = {
     "type_keystrokes": (
         "Simulate typing text or pressing a specific key code on the macOS host. "
         "Can also include modifiers like ['command down']."
+    ),
+    # --- Browser automation (Playwright) ---
+    "browser_navigate": (
+        "Navigate the browser to a URL. Use this first in any browser workflow. "
+        "Returns the page title and final URL after redirects."
+    ),
+    "browser_snapshot": (
+        "Capture the accessibility tree of the current page as a compact text "
+        "listing. Each interactive element gets a ref like [e12] that you can "
+        "use with browser_click / browser_type. Elements show their role "
+        "('button', 'textbox', 'link', 'combobox'), name, value, and state. "
+        "ALWAYS call this after navigating or clicking to see the updated page."
+    ),
+    "browser_click": (
+        "Click an element identified by its ref from the most recent "
+        "browser_snapshot. Use this for buttons, links, checkboxes, tabs, "
+        "and any clickable element. Follow up with browser_snapshot."
+    ),
+    "browser_type": (
+        "Type text into a form field (textbox, searchbox, textarea) identified "
+        "by its ref from browser_snapshot. Set clear=true to replace existing "
+        "text. Follow up with browser_snapshot."
+    ),
+    "browser_select_option": (
+        "Select an option by value or label in a dropdown/combobox/listbox "
+        "identified by its ref from browser_snapshot."
+    ),
+    "browser_get_content": (
+        "Extract the current page content as markdown (default), plain text, "
+        "or raw HTML. Use this to read page content after navigating."
+    ),
+    "browser_screenshot": (
+        "Take a PNG screenshot of the current page viewport and save to a path."
+    ),
+    "browser_evaluate": (
+        "Execute JavaScript in the page context and return the result. Use for "
+        "extracting data not in the accessibility tree or checking page state."
+    ),
+    "browser_wait": ("Wait for text to appear on the page or for a specified timeout (ms)."),
+    "browser_close": (
+        "Close the browser session and free system resources. Call when done "
+        "with a browser workflow."
     ),
 }
 
@@ -405,6 +447,7 @@ SYSTEM_PROMPT_TAIL = """\
 ### Research and Delegation
 - If web tools are listed, use them directly for current information or specific URLs.
 - Use `delegate_task` for isolated review or research work. Prefer `read_only_task=True` when no mutations are needed.
+- For parallel mixed tasks (e.g. browser + desktop + news), emit multiple `delegate_task` calls in one turn with matching `isolation_domain` values (`browser`, `desktop`, or `read_only_task=True`). Do not claim tasks ran in parallel unless domains are non-conflicting.
 - Do not override the sub-agent model unless the user asks.
 
 ### macOS Desktop Automation
@@ -439,6 +482,22 @@ SYSTEM_PROMPT_TAIL = """\
     open location "https://www.google.com/search?q=search+query"
     ```
   - Before interacting with native application UI elements (like click or text fields), retrieve the accessibility layout tree first using `get_accessibility_tree` to identify elements and paths.
+
+### Browser Automation (Playwright)
+- The browser automation tools give you full control over a headless Chromium browser. Use them for form filling, shopping, data entry, web scraping, and any task that requires interacting with web pages.
+- **Workflow**: Always follow this sequence:
+  1. `browser_navigate` — go to the target URL.
+  2. `browser_snapshot` — read the accessibility tree to understand the page structure and find element refs.
+  3. `browser_click` / `browser_type` / `browser_select_option` — interact with elements by their ref.
+  4. `browser_snapshot` — re-read the page after interactions to see updated state.
+  5. Repeat steps 3–4 as needed.
+  6. `browser_get_content` — read the final page content (confirmation, receipt, details).
+  7. `browser_close` — clean up when done.
+- **Element refs**: Every snapshot assigns refs like `[e0]`, `[e1]`, `[e12]`. Use these exact refs with click/type/select. Refs are only valid until the next snapshot — always snapshot after any action.
+- **Form filling**: For multi-field forms, snapshot once to identify all field refs, then type into each field, then click the submit button.
+- **Shopping / checkout**: Navigate → snapshot to find product → click to add to cart → snapshot to find checkout button → click → snapshot to find form fields → type shipping/payment details → snapshot to verify → click submit → snapshot/get_content to confirm.
+- **Waiting**: Use `browser_wait` with `text` after clicking navigation links or submitting forms to wait for the next page to load before snapshotting.
+- If a ref fails (element not found), the page likely changed — call `browser_snapshot` again to get fresh refs.
 
 ## Safety & Communication
 
@@ -532,6 +591,21 @@ _TOOL_SECTIONS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
     (
         "Desktop Automation (macOS)",
         ("run_applescript", "get_accessibility_tree", "click_ui_element", "type_keystrokes"),
+    ),
+    (
+        "Browser Automation (Playwright)",
+        (
+            "browser_navigate",
+            "browser_snapshot",
+            "browser_click",
+            "browser_type",
+            "browser_select_option",
+            "browser_get_content",
+            "browser_screenshot",
+            "browser_evaluate",
+            "browser_wait",
+            "browser_close",
+        ),
     ),
 )
 

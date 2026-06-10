@@ -4,10 +4,11 @@ import logging
 import os
 import time as _time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from coderAI.core.tool_error_codes import ToolErrorCode
 from coderAI.tools.base import Tool
 from coderAI.core.agent_loop import RECOVERABLE_ERROR_MARKER
 from coderAI.core.agent_tracker import AgentStatus
@@ -223,6 +224,16 @@ class DelegateTaskParams(BaseModel):
             "otherwise mutates workspace state."
         ),
     )
+    isolation_domain: Literal["auto", "read_only", "browser", "desktop", "workspace"] = Field(
+        "auto",
+        description=(
+            "Resource isolation domain for parallel mutating delegations. "
+            "Use 'browser' for Playwright browser automation, 'desktop' for AppleScript/macOS UI, "
+            "'workspace' for file/git edits (serial), 'read_only' equivalent to read_only_task=True. "
+            "'auto' defaults to workspace (serial). Non-workspace domains can run in parallel "
+            "(up to max_concurrent_mutating_subagents, default 3)."
+        ),
+    )
     task_id: Optional[str] = Field(
         None,
         description=(
@@ -245,18 +256,17 @@ class DelegateTaskTool(Tool):
         "The sub-agent has access to all the same tools, runs in an isolated session, "
         "and returns a comprehensive report. Provide a detailed task_description with "
         "specific file paths and expected output format for best results. "
-        "Mutating delegations run one at a time to prevent workspace conflicts. "
-        "For pure research or read-only work, set read_only_task=True — such "
-        "delegations have mutating tools stripped and are fanned out in parallel "
-        "(up to 4 at a time), dramatically reducing wall time when you spawn "
-        "several specialists that don't touch the filesystem."
+        "Mutating delegations with isolation_domain='workspace' or 'auto' run one at a time. "
+        "For parallel execution set isolation_domain='browser' (Playwright), 'desktop' "
+        "(AppleScript), or read_only_task=True (research). Browser and desktop delegations "
+        "each get isolated resources and can run concurrently (up to 3 by default). "
+        "For pure research, set read_only_task=True — mutating tools are stripped and up to "
+        "4 read-only delegations fan out in parallel."
     )
-    # Default to serialising sub-agents: mutating delegations share the
-    # workspace (git branch, file tree) and must not race. Read-only
-    # delegations (``read_only_task=True``) bypass this cap — see
-    # ``ToolExecutor.run_tool_batch`` which routes them to a bounded
-    # parallel group.
-    max_parallel_invocations = 1
+    # Routing is domain-aware in ``ToolExecutor.run_tool_batch`` — not via
+    # ``max_parallel_invocations``. Kept at 0 so delegate_task is never
+    # lumped into the generic capped-tools bucket.
+    max_parallel_invocations = 0
     parameters_model = DelegateTaskParams
     is_read_only = False
 
@@ -305,6 +315,7 @@ class DelegateTaskTool(Tool):
         model: Optional[str] = None,
         inherit_project_context: bool = True,
         read_only_task: bool = False,
+        isolation_domain: str = "auto",
         task_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Execute the sub-agent delegation."""
@@ -324,6 +335,7 @@ class DelegateTaskTool(Tool):
             model,
             inherit_project_context,
             read_only_task,
+            isolation_domain,
             task_id,
         )
 
@@ -335,6 +347,7 @@ class DelegateTaskTool(Tool):
         model: Optional[str],
         inherit_project_context: bool,
         read_only_task: bool = False,
+        isolation_domain: str = "auto",
         task_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Core sub-agent spawning and execution logic."""
@@ -370,7 +383,7 @@ class DelegateTaskTool(Tool):
                                     "Refusing to resume delegate_task with the parent session id. "
                                     "Pass the task_id returned by a previous delegate_task call."
                                 ),
-                                "error_code": "invalid_task_id",
+                                "error_code": ToolErrorCode.INVALID_TASK_ID,
                             }
                         logger.info(
                             "Resuming sub-agent session %s for task_id=%s",
@@ -502,27 +515,11 @@ class DelegateTaskTool(Tool):
                 role_instructions = "" if applied_persona else _get_role_instructions(agent_role)
 
                 system_preamble_parts = [
-                    "You are a specialized sub-agent spawned by a parent CoderAI agent.",
-                    f"You are working in the project directory: {cwd}",
-                    "",
-                    "IMPORTANT INSTRUCTIONS:",
-                    "- Complete the assigned task thoroughly and autonomously.",
-                    "- Use tools (read_file, grep, run_command, etc.) to gather information — do NOT guess.",
-                    "- Provide a comprehensive, well-structured final report.",
-                    "- Structure your report with clear sections: Summary, Findings, Recommendations.",
-                    "- Be specific: cite file paths, line numbers, and code snippets.",
-                    "- Do NOT ask questions — make reasonable assumptions and note them.",
-                    "- WEB SEARCH: If `web_search` or `read_url` appear under **Available Tools** in your system prompt, "
-                    "call them directly to retrieve web content — NEVER tell the parent agent or user to run curl/wget "
-                    "themselves. Include the fetched content directly in your report.",
-                    "- Do NOT parse HTML or scrape web pages with shell pipelines (`curl | grep | sed`). "
-                    "Use `web_search`/`read_url` if available, otherwise a short Python script.",
-                    "- Do NOT switch branches unless explicitly required by the task.",
-                    "- CRITICAL: Your FINAL turn MUST be a plain-text assistant message "
-                    "containing the full report. Do NOT end the conversation on a "
-                    "tool call — after you have gathered enough information, stop "
-                    "calling tools and write the report as text. An empty or "
-                    "tool-call-only final turn is considered a failure.",
+                    "You are a sub-agent. Complete the assigned task autonomously.",
+                    f"Project directory: {cwd}",
+                    "Use tools to gather facts — do not guess. Cite file paths and line numbers.",
+                    "Final turn must be a plain-text report (Summary, Findings, Recommendations).",
+                    "Do not end on a tool call; an empty final turn is a failure.",
                 ]
 
                 if ctx.parent_cost_tracker is not None:
@@ -594,14 +591,27 @@ class DelegateTaskTool(Tool):
                     task_description, progress_callback=_on_tool_progress
                 )
 
-                # Retry: if the report is empty, ask once more for a summary
                 if not (final_report and final_report.strip()):
-                    logger.warning("Sub-agent returned empty report — requesting summary retry.")
+                    from coderAI.core.agent_loop import ExecutionLoop
+
+                    logger.warning("Sub-agent returned empty report — trying closing summary.")
                     event_emitter.emit(
                         "agent_status",
-                        message=f"[dim]Sub-Agent{role_label} report was empty — retrying summary…[/dim]",
+                        message=f"[dim]Sub-Agent{role_label} report was empty — requesting summary…[/dim]",
                     )
+                    try:
+                        closing = await ExecutionLoop(sub_agent)._post_tool_closing_message(
+                            task_description
+                        )
+                        if closing and closing.strip():
+                            final_report = closing.strip()
+                            sub_agent.session.add_message("assistant", final_report)
+                            sub_agent.save_session()
+                    except Exception as closing_err:
+                        logger.warning("Sub-agent closing summary failed: %s", closing_err)
 
+                if not (final_report and final_report.strip()):
+                    logger.warning("Sub-agent still empty — requesting full-context retry.")
                     retry_prompt = (
                         "Your previous response was empty. You have been working on the "
                         "following task and have used tools to complete it. Please now write "
@@ -687,8 +697,6 @@ class DelegateTaskTool(Tool):
             tokens_used = sub_agent.total_tokens
             cost_usd = self._final_cost_for(sub_agent)
 
-            sub_agent._finish_tracker()
-
             # Run on_subagent_stop hooks on the parent agent. The whole chain
             # (parent_ipc_server → agent → hooks_manager) is optional in
             # headless / test setups, so guard each hop instead of letting an
@@ -744,6 +752,14 @@ class DelegateTaskTool(Tool):
         finally:
             # Always close the sub-agent to release HTTP sessions and other resources
             if sub_agent is not None:
+                agent_id = getattr(getattr(sub_agent, "tracker_info", None), "agent_id", None)
+                if agent_id:
+                    try:
+                        from coderAI.tools.browser import BrowserRegistry
+
+                        await BrowserRegistry.get().close_agent(agent_id)
+                    except Exception:
+                        pass
                 try:
                     await sub_agent.close()
                 except Exception:

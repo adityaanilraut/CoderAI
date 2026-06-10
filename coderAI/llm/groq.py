@@ -1,14 +1,11 @@
 """Groq LLM provider implementation."""
 
-import logging
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 from groq import AsyncGroq
 
 from coderAI.llm.base import LLMProvider
-from coderAI.system.cost import CostTracker
-
-logger = logging.getLogger(__name__)
+from coderAI.llm.base import _retry_async as _retry
 
 
 class GroqProvider(LLMProvider):
@@ -39,16 +36,6 @@ class GroqProvider(LLMProvider):
         self.actual_model = self.SUPPORTED_MODELS.get(model, model)
         self.client = AsyncGroq(api_key=api_key)
 
-        self.temperature = kwargs.get("temperature", 0.7)
-        self.max_tokens = kwargs.get("max_tokens", 8192)
-
-        # Cost tracking
-        self.total_input_tokens = 0
-        self.total_output_tokens = 0
-
-    async def close(self) -> None:
-        await self.client.close()
-
     async def chat(
         self,
         messages: List[Dict[str, Any]],
@@ -77,7 +64,9 @@ class GroqProvider(LLMProvider):
             params["tool_choice"] = kwargs.get("tool_choice", "auto")
 
         try:
-            response = await self.client.chat.completions.create(**params)
+            async def _call():
+                return await self.client.chat.completions.create(**params)
+            response = await _retry(_call, description="Groq chat", max_retries=3)
         except Exception as e:
             raise RuntimeError(f"Groq API error: {e}") from e
         result = response.model_dump()
@@ -118,7 +107,9 @@ class GroqProvider(LLMProvider):
             params["tool_choice"] = kwargs.get("tool_choice", "auto")
 
         try:
-            stream = await self.client.chat.completions.create(**params)
+            async def _create_stream():
+                return await self.client.chat.completions.create(**params)
+            stream = await _retry(_create_stream, description="Groq stream", max_retries=3)
         except Exception as e:
             raise RuntimeError(f"Groq API streaming error: {e}") from e
         async for chunk in stream:
@@ -131,28 +122,3 @@ class GroqProvider(LLMProvider):
                 self.total_output_tokens += usage.get("completion_tokens", 0)
 
             yield chunk_data
-
-    def count_tokens(self, text: str) -> int:
-        """Count tokens. Groq doesn't provide a direct tokenizer, using approx."""
-        # Approximate: ~4 chars per token. May be off by ~25%.
-        return len(text) // 4
-
-    def get_cost(self) -> Dict[str, Any]:
-        """Get current session cost estimate."""
-        pricing = CostTracker.get_model_pricing(self.actual_model)
-        input_cost = (self.total_input_tokens / 1_000_000) * pricing["input"]
-        output_cost = (self.total_output_tokens / 1_000_000) * pricing["output"]
-
-        return {
-            "input_tokens": self.total_input_tokens,
-            "output_tokens": self.total_output_tokens,
-            "total_tokens": self.total_input_tokens + self.total_output_tokens,
-            "input_cost": round(input_cost, 6),
-            "output_cost": round(output_cost, 6),
-            "total_cost": round(input_cost + output_cost, 6),
-            "currency": "USD",
-            "model": self.actual_model,
-        }
-
-    def get_model_info(self) -> Dict[str, Any]:
-        return super().get_model_info()

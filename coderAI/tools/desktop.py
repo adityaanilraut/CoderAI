@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 
 from coderAI.tools.base import Tool
+from coderAI.system.locks import resource_manager
 
 # Tool names used for platform gating in Agent._create_tool_registry.
 DESKTOP_TOOL_NAMES: tuple[str, ...] = (
@@ -137,26 +138,27 @@ class RunAppleScriptTool(Tool):
     async def execute(self, script: str, is_jxa: bool = False) -> Dict[str, Any]:  # type: ignore[override]
         if err := _check_platform():
             return err
-        try:
-            cmd = ["osascript"]
-            if is_jxa:
-                cmd.extend(["-l", "JavaScript"])
+        async with resource_manager.desktop_lock():
+            try:
+                cmd = ["osascript"]
+                if is_jxa:
+                    cmd.extend(["-l", "JavaScript"])
 
-            process = await _run_osascript(cmd, script, timeout=30)
+                process = await _run_osascript(cmd, script, timeout=30)
 
-            stdout_str = process.stdout.decode("utf-8", errors="replace").strip()
-            stderr_str = process.stderr.decode("utf-8", errors="replace").strip()
+                stdout_str = process.stdout.decode("utf-8", errors="replace").strip()
+                stderr_str = process.stderr.decode("utf-8", errors="replace").strip()
 
-            return {
-                "success": process.returncode == 0,
-                "stdout": stdout_str,
-                "stderr": stderr_str,
-                "returncode": process.returncode,
-            }
-        except subprocess.TimeoutExpired:
-            return {"success": False, "error": "AppleScript execution timed out after 30 seconds."}
-        except Exception as e:
-            return {"success": False, "error": f"Failed to execute AppleScript: {e}"}
+                return {
+                    "success": process.returncode == 0,
+                    "stdout": stdout_str,
+                    "stderr": stderr_str,
+                    "returncode": process.returncode,
+                }
+            except subprocess.TimeoutExpired:
+                return {"success": False, "error": "AppleScript execution timed out after 30 seconds."}
+            except Exception as e:
+                return {"success": False, "error": f"Failed to execute AppleScript: {e}"}
 
 
 # ---------------------------------------------------------------------------
@@ -281,45 +283,46 @@ class GetAccessibilityTreeTool(Tool):
             JSON.stringify({{error: e.message || e.toString()}});
         }}
         """
-        try:
-            process = await _run_osascript(
-                ["osascript", "-l", "JavaScript"],
-                jxa_script,
-                timeout=15,
-            )
-            stdout_str = process.stdout.decode("utf-8", errors="replace").strip()
-
-            if process.returncode != 0:
-                return {
-                    "success": False,
-                    "error": process.stderr.decode("utf-8", errors="replace").strip()
-                    or "Unknown osascript error",
-                }
-
+        async with resource_manager.desktop_lock():
             try:
-                # Find the first '{' and last '}' to strip warning logs or headers
-                start_idx = stdout_str.find("{")
-                end_idx = stdout_str.rfind("}")
-                if start_idx != -1 and end_idx != -1:
-                    json_str = stdout_str[start_idx : end_idx + 1]
-                else:
-                    json_str = stdout_str
+                process = await _run_osascript(
+                    ["osascript", "-l", "JavaScript"],
+                    jxa_script,
+                    timeout=15,
+                )
+                stdout_str = process.stdout.decode("utf-8", errors="replace").strip()
 
-                data = json.loads(json_str)
-                if "error" in data:
-                    return {"success": False, "error": data["error"]}
-                data = _cap_accessibility_payload(data)
-                return {"success": True, "data": data}
-            except json.JSONDecodeError:
-                return {
-                    "success": False,
-                    "error": f"Failed to parse JXA output as JSON. Raw output: {stdout_str}",
-                }
+                if process.returncode != 0:
+                    return {
+                        "success": False,
+                        "error": process.stderr.decode("utf-8", errors="replace").strip()
+                        or "Unknown osascript error",
+                    }
 
-        except subprocess.TimeoutExpired:
-            return {"success": False, "error": "Accessibility tree traversal timed out."}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+                try:
+                    # Find the first '{' and last '}' to strip warning logs or headers
+                    start_idx = stdout_str.find("{")
+                    end_idx = stdout_str.rfind("}")
+                    if start_idx != -1 and end_idx != -1:
+                        json_str = stdout_str[start_idx : end_idx + 1]
+                    else:
+                        json_str = stdout_str
+
+                    data = json.loads(json_str)
+                    if "error" in data:
+                        return {"success": False, "error": data["error"]}
+                    data = _cap_accessibility_payload(data)
+                    return {"success": True, "data": data}
+                except json.JSONDecodeError:
+                    return {
+                        "success": False,
+                        "error": f"Failed to parse JXA output as JSON. Raw output: {stdout_str}",
+                    }
+
+            except subprocess.TimeoutExpired:
+                return {"success": False, "error": "Accessibility tree traversal timed out."}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
 
 
 # ---------------------------------------------------------------------------
@@ -373,21 +376,22 @@ class ClickUIElementTool(Tool):
         end tell
         """
 
-        try:
-            process = await _run_osascript(["osascript"], script, timeout=10)
-            if process.returncode == 0:
+        async with resource_manager.desktop_lock():
+            try:
+                process = await _run_osascript(["osascript"], script, timeout=10)
+                if process.returncode == 0:
+                    return {
+                        "success": True,
+                        "message": f"Successfully clicked {path_str} in {app_name}",
+                    }
                 return {
-                    "success": True,
-                    "message": f"Successfully clicked {path_str} in {app_name}",
+                    "success": False,
+                    "error": process.stderr.decode("utf-8", errors="replace").strip(),
                 }
-            return {
-                "success": False,
-                "error": process.stderr.decode("utf-8", errors="replace").strip(),
-            }
-        except subprocess.TimeoutExpired:
-            return {"success": False, "error": "Click operation timed out after 10 seconds."}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+            except subprocess.TimeoutExpired:
+                return {"success": False, "error": "Click operation timed out after 10 seconds."}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
 
 
 # ---------------------------------------------------------------------------
@@ -444,7 +448,7 @@ class TypeKeystrokesTool(Tool):
             if err := _validate_keystroke_text(text):
                 return err
             escaped_text = text.replace("\\", "\\\\").replace('"', '\\"')
-            action_str = f'keystroke "{escaped_text}"'
+            action_str = f'set theText to "{escaped_text}"\nkeystroke theText'
         else:
             action_str = f"key code {key_code}"
 
@@ -460,20 +464,20 @@ class TypeKeystrokesTool(Tool):
                 modifier_str = f" using {{{mod_list}}}"
 
         script = f"""
-        tell application "System Events"
-            {action_str}{modifier_str}
-        end tell
-        """
-
-        try:
-            process = await _run_osascript(["osascript"], script, timeout=10)
-            if process.returncode == 0:
-                return {"success": True, "message": "Successfully executed keystroke action."}
-            return {
-                "success": False,
-                "error": process.stderr.decode("utf-8", errors="replace").strip(),
-            }
-        except subprocess.TimeoutExpired:
-            return {"success": False, "error": "Keystroke operation timed out after 10 seconds."}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+tell application "System Events"
+    {action_str}{modifier_str}
+end tell
+"""
+        async with resource_manager.desktop_lock():
+            try:
+                process = await _run_osascript(["osascript"], script, timeout=10)
+                if process.returncode == 0:
+                    return {"success": True, "message": "Successfully executed keystroke action."}
+                return {
+                    "success": False,
+                    "error": process.stderr.decode("utf-8", errors="replace").strip(),
+                }
+            except subprocess.TimeoutExpired:
+                return {"success": False, "error": "Keystroke operation timed out after 10 seconds."}
+            except Exception as e:
+                return {"success": False, "error": str(e)}

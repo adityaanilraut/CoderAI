@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from coderAI.tools.testing import RunTestsTool, detect_test_framework, TEST_FRAMEWORKS
+from conftest import require_external
 
 
 class TestDetectTestFramework:
@@ -69,8 +70,7 @@ class TestRunTestsTool:
         assert not result["success"]
 
     def test_pytest_with_passing_tests(self, tmp_path):
-        if not shutil.which("pytest"):
-            pytest.skip("pytest not installed")
+        require_external("pytest", "pytest required for test execution")
 
         (tmp_path / "pyproject.toml").write_text("[tool.pytest]\n")
         test_file = tmp_path / "test_example.py"
@@ -83,8 +83,7 @@ class TestRunTestsTool:
         assert result["results"]["failed"] == 0
 
     def test_pytest_with_failing_tests(self, tmp_path):
-        if not shutil.which("pytest"):
-            pytest.skip("pytest not installed")
+        require_external("pytest", "pytest required for test execution")
 
         (tmp_path / "pyproject.toml").write_text("[tool.pytest]\n")
         test_file = tmp_path / "test_fail.py"
@@ -97,8 +96,7 @@ class TestRunTestsTool:
         assert len(result["results"]["failures"]) > 0
 
     def test_filter_runs_specific_test(self, tmp_path):
-        if not shutil.which("pytest"):
-            pytest.skip("pytest not installed")
+        require_external("pytest", "pytest required for test execution")
 
         (tmp_path / "pyproject.toml").write_text("[tool.pytest]\n")
         (tmp_path / "test_a.py").write_text("def test_foo():\n    assert True\n")
@@ -115,8 +113,7 @@ class TestRunTestsTool:
         assert result["results"]["passed"] >= 1
 
     def test_verbose_output(self, tmp_path):
-        if not shutil.which("pytest"):
-            pytest.skip("pytest not installed")
+        require_external("pytest", "pytest required for test execution")
 
         (tmp_path / "pyproject.toml").write_text("[tool.pytest]\n")
         (tmp_path / "test_example.py").write_text("def test_pass():\n    assert True\n")
@@ -133,8 +130,7 @@ class TestRunTestsTool:
         assert len(result["stdout"]) > 0
 
     def test_relative_file_path_runs_from_project_root(self, tmp_path, monkeypatch):
-        if not shutil.which("pytest"):
-            pytest.skip("pytest not installed")
+        require_external("pytest", "pytest required for test execution")
 
         (tmp_path / "pyproject.toml").write_text("[tool.pytest]\n")
         tests_dir = tmp_path / "tests"

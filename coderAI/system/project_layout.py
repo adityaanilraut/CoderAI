@@ -46,6 +46,7 @@ def read_current_plan(project_root: str = ".") -> Optional[Dict[str, Any]]:
         if not plan_path.exists():
             return None
         with open(plan_path, "r") as pf:
-            return _json.load(pf)
+            from typing import cast
+            return cast("dict[str, Any]", _json.load(pf))
     except Exception:
         return None

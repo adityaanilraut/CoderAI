@@ -1,6 +1,5 @@
 """OpenAI LLM provider implementation."""
 
-import logging
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 import openai
@@ -8,9 +7,7 @@ import tiktoken
 from openai import AsyncOpenAI
 
 from coderAI.llm.base import LLMProvider
-from coderAI.system.cost import CostTracker
-
-logger = logging.getLogger(__name__)
+from coderAI.llm.base import _retry_async as _retry
 
 
 class OpenAIProvider(LLMProvider):
@@ -43,20 +40,15 @@ class OpenAIProvider(LLMProvider):
         self.actual_model = self.SUPPORTED_MODELS.get(model, model)
         self.client = AsyncOpenAI(api_key=api_key)
 
-        # Extract common parameters
-        self.temperature = kwargs.get("temperature", 1)
-        self.max_tokens = kwargs.get("max_tokens", 8192)
-        self.reasoning_effort = kwargs.get("reasoning_effort", "medium")
+        # OpenAI default temperature is 1.0, not 0.7
+        if "temperature" not in kwargs:
+            self.temperature = 1.0
 
         # Initialize tokenizer
         try:
             self.tokenizer = tiktoken.encoding_for_model(self.actual_model)
         except KeyError:
             self.tokenizer = tiktoken.get_encoding("cl100k_base")
-
-        # Cost tracking
-        self.total_input_tokens = 0
-        self.total_output_tokens = 0
 
     def _check_chat_model_compat(self, exc: Exception) -> None:
         """Raise a helpful RuntimeError when the model is not a chat model."""
@@ -138,7 +130,9 @@ class OpenAIProvider(LLMProvider):
             params["tool_choice"] = kwargs.get("tool_choice", "auto")
 
         try:
-            response = await self.client.chat.completions.create(**params)
+            async def _call():
+                return await self.client.chat.completions.create(**params)
+            response = await _retry(_call, description="OpenAI chat", max_retries=3)
             result = response.model_dump()
             assert isinstance(result, dict)
 
@@ -183,7 +177,9 @@ class OpenAIProvider(LLMProvider):
             params["tool_choice"] = kwargs.get("tool_choice", "auto")
 
         try:
-            stream = await self.client.chat.completions.create(**params)
+            async def _create_stream():
+                return await self.client.chat.completions.create(**params)
+            stream = await _retry(_create_stream, description="OpenAI stream", max_retries=3)
             async for chunk in stream:
                 chunk_data = chunk.model_dump()
                 # Track streaming usage (final chunk contains usage info)
@@ -208,31 +204,5 @@ class OpenAIProvider(LLMProvider):
         try:
             return len(self.tokenizer.encode(text))
         except Exception:
-            return len(text) // 4
-
-    def get_cost(self) -> Dict[str, Any]:
-        """Get current session cost estimate.
-
-        Returns:
-            Dictionary with cost breakdown
-        """
-        pricing = CostTracker.get_model_pricing(self.actual_model)
-        input_cost = (self.total_input_tokens / 1_000_000) * pricing["input"]
-        output_cost = (self.total_output_tokens / 1_000_000) * pricing["output"]
-
-        return {
-            "input_tokens": self.total_input_tokens,
-            "output_tokens": self.total_output_tokens,
-            "total_tokens": self.total_input_tokens + self.total_output_tokens,
-            "input_cost": round(input_cost, 6),
-            "output_cost": round(output_cost, 6),
-            "total_cost": round(input_cost + output_cost, 6),
-            "currency": "USD",
-            "model": self.actual_model,
-        }
-
-    def get_model_info(self) -> Dict[str, Any]:
-        return super().get_model_info()
-
-    async def close(self) -> None:
-        await self.client.close()
+            from coderAI.llm.base import estimate_tokens_by_chars
+            return estimate_tokens_by_chars(text)

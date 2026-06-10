@@ -217,9 +217,9 @@ class TestStream:
 class TestCountTokens:
     def test_count_tokens_approximates(self):
         provider = GroqProvider(model="llama3-8b-8192", api_key="test-key")
-        assert provider.count_tokens("hello world") == 2  # 11 // 4
+        assert provider.count_tokens("hello world") == 3  # ceil(11/4) == 3
         assert provider.count_tokens("") == 0
-        assert provider.count_tokens("abcd" * 10) == 10  # 40 // 4
+        assert provider.count_tokens("abcd" * 10) == 10  # ceil(40/4) == 10
 
 
 class TestGetCost:

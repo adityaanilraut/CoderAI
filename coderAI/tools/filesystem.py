@@ -12,6 +12,7 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
+from coderAI.core.tool_error_codes import ToolErrorCode
 from coderAI.tools.base import Tool
 from coderAI.tools.undo import backup_store
 from coderAI.system.config import config_manager
@@ -189,7 +190,7 @@ def _enforce_project_scope(path: Path, op: str) -> Optional[dict[str, Any]]:
             f"Refusing to {op} outside project root: {path}. "
             "Set CODERAI_ALLOW_OUTSIDE_PROJECT=1 to allow."
         ),
-        "error_code": "scope",
+        "error_code": ToolErrorCode.SCOPE,
     }
 
 
@@ -214,7 +215,7 @@ def _reject_symlink_leaf(path: Path, op: str) -> Optional[dict[str, Any]]:
                     f"Refusing to {op} a symlink leaf: {path}. "
                     "Operate on the resolved target path directly."
                 ),
-                "error_code": "symlink",
+                "error_code": ToolErrorCode.SYMLINK,
             }
     except OSError:
         # ``is_symlink`` raises on broken paths; let the caller's exists()
@@ -283,7 +284,7 @@ class ReadFileTool(Tool):
                 return {
                     "success": False,
                     "error": f"File not found: {path}",
-                    "error_code": "not_found",
+                    "error_code": ToolErrorCode.NOT_FOUND,
                     "hint": "Use list_directory or glob_search to find the correct path.",
                 }
 
@@ -303,7 +304,7 @@ class ReadFileTool(Tool):
                 return {
                     "success": False,
                     "error": f"File too large: {file_size:,} bytes (limit: {max_file_size:,} bytes).",
-                    "error_code": "too_large",
+                    "error_code": ToolErrorCode.TOO_LARGE,
                     "hint": "Use start_line and end_line to read a specific range, or use grep to search.",
                 }
 
@@ -390,7 +391,7 @@ class WriteFileTool(Tool):
                     return {
                         "success": False,
                         "error": f"Cannot write to protected path: {path}",
-                        "error_code": "permission_denied",
+                        "error_code": ToolErrorCode.PERMISSION_DENIED,
                         "hint": "This path is protected for security. Choose a different location.",
                     }
                 scope_err = _enforce_project_scope(path_obj, "write_file")
@@ -446,7 +447,7 @@ class WriteFileTool(Tool):
                     return {
                         "success": False,
                         "error": f"Could not write {path}: {e}",
-                        "error_code": "symlink" if "loop" in str(e).lower() else "io",
+                        "error_code": ToolErrorCode.SYMLINK if "loop" in str(e).lower() else ToolErrorCode.IO,
                     }
 
                 # Emit diff for non-append text writes
@@ -533,7 +534,7 @@ class SearchReplaceTool(Tool):
                     return {
                         "success": False,
                         "error": f"Could not open {path}: {e}",
-                        "error_code": "symlink" if "loop" in str(e).lower() else "io",
+                        "error_code": ToolErrorCode.SYMLINK if "loop" in str(e).lower() else ToolErrorCode.IO,
                     }
 
                 if search not in content:
@@ -559,7 +560,7 @@ class SearchReplaceTool(Tool):
                     return {
                         "success": False,
                         "error": f"Could not write {path}: {e}",
-                        "error_code": "symlink" if "loop" in str(e).lower() else "io",
+                        "error_code": ToolErrorCode.SYMLINK if "loop" in str(e).lower() else ToolErrorCode.IO,
                     }
 
                 _emit_diff(path_obj, content, new_content)
@@ -757,7 +758,7 @@ class ApplyDiffTool(Tool):
                     return {
                         "success": False,
                         "error": f"Could not open {path}: {e}",
-                        "error_code": "symlink" if "loop" in str(e).lower() else "io",
+                        "error_code": ToolErrorCode.SYMLINK if "loop" in str(e).lower() else ToolErrorCode.IO,
                     }
 
                 # Clean up markdown code blocks if the LLM provided them
@@ -839,7 +840,7 @@ class ApplyDiffTool(Tool):
                     return {
                         "success": False,
                         "error": f"Could not write {path}: {e}",
-                        "error_code": "symlink" if "loop" in str(e).lower() else "io",
+                        "error_code": ToolErrorCode.SYMLINK if "loop" in str(e).lower() else ToolErrorCode.IO,
                     }
 
                 _emit_diff(
@@ -1333,7 +1334,7 @@ class FileChownTool(Tool):
             return {
                 "success": False,
                 "error": "file_chown is not supported on Windows.",
-                "error_code": "unsupported_platform",
+                "error_code": ToolErrorCode.UNSUPPORTED_PLATFORM,
             }
         try:
             if not owner and not group:

@@ -8,6 +8,7 @@ from typing import Any, Dict
 
 from pydantic import BaseModel, Field
 
+from coderAI.core.tool_error_codes import ToolErrorCode
 from coderAI.tools.base import Tool
 from coderAI.tools.terminal import _resolve_working_dir
 from coderAI.system.config import config_manager
@@ -56,7 +57,7 @@ class PythonREPLTool(Tool):
         try:
             resolved_cwd, cwd_err = _resolve_working_dir(working_dir)
             if cwd_err:
-                return {"success": False, "error": cwd_err, "error_code": "scope"}
+                return {"success": False, "error": cwd_err, "error_code": ToolErrorCode.SCOPE}
 
             # Write code to a temp file to avoid shell escaping issues
             with tempfile.NamedTemporaryFile(
@@ -89,7 +90,7 @@ class PythonREPLTool(Tool):
                     return {
                         "success": False,
                         "error": f"Execution timed out after {timeout} seconds",
-                        "error_code": "timeout",
+                        "error_code": ToolErrorCode.TIMEOUT,
                         "hint": "Increase the timeout or simplify the code.",
                     }
 

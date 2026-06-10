@@ -6,6 +6,10 @@ from typing import Any, Callable, Dict, List, Optional, Type
 
 from pydantic import BaseModel, ValidationError
 
+from coderAI.core.tool_error_codes import ToolErrorCode  # noqa: F401 — re-export
+
+__all__ = ["Tool", "ToolRegistry", "ToolErrorCode"]
+
 
 class Tool(ABC):
     """Abstract base class for MCP tools."""
@@ -159,7 +163,7 @@ class ToolRegistry:
                 return {
                     "success": False,
                     "error": f"Tool '{name}' was denied by the user.",
-                    "error_code": "denied",
+                    "error_code": ToolErrorCode.DENIED,
                 }
 
         if tool.parameters_model:
@@ -172,7 +176,7 @@ class ToolRegistry:
                 return {
                     "success": False,
                     "error": f"Validation error for tool '{name}':\n{str(e)}",
-                    "error_code": "validation_error",
+                    "error_code": ToolErrorCode.VALIDATION,
                 }
 
         return await tool.execute(**kwargs)

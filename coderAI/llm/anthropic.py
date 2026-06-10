@@ -7,7 +7,8 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 import aiohttp
 
-from coderAI.llm.base import LLMProvider, REASONING_BUDGET_MAP, DEFAULT_HTTP_TIMEOUT
+from coderAI.llm.base import LLMProvider, REASONING_BUDGET_MAP, HTTP_CONNECT_TIMEOUT, HTTP_SOCK_READ_TIMEOUT, HTTP_TOTAL_TIMEOUT
+from coderAI.llm.base import _retry_async as _retry
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,14 @@ _THINKING_SUPPORTED_MODELS = frozenset(
 )
 
 
+def _is_anthropic_retryable(exc: Exception) -> bool:
+    status = getattr(exc, "status", None)
+    if isinstance(status, (int, float)):
+        return int(status) in {429, 502, 503}
+    msg = str(exc).lower()
+    return any(kw in msg for kw in ("429", "502", "503", "rate limit", "too many requests", "service unavailable", "bad gateway", "server error"))
+
+
 class AnthropicProvider(LLMProvider):
     """Anthropic Claude LLM provider using the Messages API."""
 
@@ -90,11 +99,6 @@ class AnthropicProvider(LLMProvider):
         """
         super().__init__(model, api_key, **kwargs)
         self.actual_model = MODEL_ALIASES.get(model, model)
-        self.temperature = kwargs.get("temperature", 0.7)
-        self.max_tokens = kwargs.get("max_tokens", 8192)
-        self.reasoning_effort = kwargs.get("reasoning_effort", "medium")
-        self.total_input_tokens = 0
-        self.total_output_tokens = 0
         self.total_cache_creation_tokens = 0
         self.total_cache_read_tokens = 0
         self._session: Optional[aiohttp.ClientSession] = None
@@ -339,14 +343,16 @@ class AnthropicProvider(LLMProvider):
     def _build_payload(
         self,
         messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]],
-        max_tokens: Optional[int] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        *,
         stream: bool = False,
+        **kwargs: Any,
     ) -> Dict[str, Any]:
         """Build the Anthropic API payload.
 
         Returns the fully-assembled request body as a dictionary.
         """
+        max_tokens = kwargs.get("max_tokens")
         system_prompt, anthropic_messages = self._convert_messages(messages)
         anthropic_tools = self._convert_tools(tools)
 
@@ -386,6 +392,29 @@ class AnthropicProvider(LLMProvider):
 
         return payload
 
+    async def _post_to_anthropic(self, payload: Dict[str, Any]) -> aiohttp.ClientResponse:
+        session = await self._get_session()
+
+        async def _do_post():
+            return await session.post(
+                self.API_URL,
+                headers=self._get_headers(),
+                json=payload,
+                timeout=aiohttp.ClientTimeout(
+                    connect=HTTP_CONNECT_TIMEOUT,
+                    sock_read=HTTP_SOCK_READ_TIMEOUT,
+                    total=HTTP_TOTAL_TIMEOUT,
+                ),
+            )
+
+        from typing import cast
+        return cast(aiohttp.ClientResponse, await _retry(
+            _do_post,
+            description="Anthropic API",
+            max_retries=3,
+            is_retryable=_is_anthropic_retryable,
+        ))
+
     async def chat(
         self,
         messages: List[Dict[str, Any]],
@@ -394,13 +423,8 @@ class AnthropicProvider(LLMProvider):
     ) -> Dict[str, Any]:
         """Send a chat request to Anthropic."""
         payload = self._build_payload(messages, tools, max_tokens=kwargs.get("max_tokens"))
-        session = await self._get_session()
-        async with session.post(
-            self.API_URL,
-            headers=self._get_headers(),
-            json=payload,
-            timeout=aiohttp.ClientTimeout(total=DEFAULT_HTTP_TIMEOUT),
-        ) as response:
+        response = await self._post_to_anthropic(payload)
+        async with response:
             if response.status != 200:
                 error_body = await response.text()
                 raise RuntimeError(f"Anthropic API error {response.status}: {error_body[:200]}")
@@ -424,13 +448,8 @@ class AnthropicProvider(LLMProvider):
         payload = self._build_payload(
             messages, tools, max_tokens=kwargs.get("max_tokens"), stream=True
         )
-        session = await self._get_session()
-        async with session.post(
-            self.API_URL,
-            headers=self._get_headers(),
-            json=payload,
-            timeout=aiohttp.ClientTimeout(total=DEFAULT_HTTP_TIMEOUT),
-        ) as response:
+        response = await self._post_to_anthropic(payload)
+        async with response:
             if response.status != 200:
                 error_body = await response.text()
                 raise RuntimeError(f"Anthropic API error {response.status}: {error_body[:200]}")
@@ -627,6 +646,10 @@ class AnthropicProvider(LLMProvider):
             "currency": "USD",
             "model": self.actual_model,
         }
+
+    def clean_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Anthropic supports passing reasoning_content back in the assistant role."""
+        return messages
 
     def get_model_info(self) -> Dict[str, Any]:
         info = super().get_model_info()

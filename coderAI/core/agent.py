@@ -3,6 +3,7 @@
 import hashlib
 import logging
 import time as _time
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 
@@ -33,13 +34,14 @@ from coderAI.core.agents import load_agent_persona, AgentPersona, expand_persona
 from coderAI.core.agent_tracker import agent_tracker, AgentStatus, AgentInfo
 from coderAI.system.hooks_manager import HooksManager
 from coderAI.system.read_cache import FileReadCache
-from coderAI.skills import SkillManager, LocalSkillSource, HasnaSkillSource
+from coderAI.skills import SkillManager, LocalSkillSource, HasnaSkillSource, SkillSource
 
 logger = logging.getLogger(__name__)
 
 
 class Agent:
     """Main agent orchestrator that coordinates LLM and tools."""
+    hooks_manager: Any = None
 
     def __init__(
         self,
@@ -141,21 +143,16 @@ class Agent:
         self.hooks_manager = HooksManager(self)
 
         # Skill auto-detection manager
+        sources: List[SkillSource] = [LocalSkillSource(self.config.project_root)]
+        if self.config.skills_use_hasna:
+            sources.append(HasnaSkillSource(self.config.project_root))
+            
         self.skill_manager = SkillManager(
-            sources=[
-                LocalSkillSource(self.config.project_root),
-                HasnaSkillSource(self.config.project_root)
-                if self.config.skills_use_hasna
-                else None,
-            ],
+            sources=sources,
             threshold=self.config.skill_confidence_threshold,
             top_n=self.config.skill_top_n,
             provider=self.provider,
         )
-        # Filter out None sources (when hasna is disabled)
-        self.skill_manager._sources = [
-            s for s in self.skill_manager._sources if s is not None
-        ]
 
         # Memoization for _get_system_prompt() — only rebuild when rules,
         # tools, or persona change.
@@ -248,6 +245,22 @@ class Agent:
                 logger.info(
                     "Non-macOS host — removed desktop tools: %s",
                     ", ".join(removed_desktop),
+                )
+
+        # Gate browser tools — remove if Playwright is not installed.
+        try:
+            import playwright  # noqa: F401
+        except ImportError:
+            from coderAI.tools.browser import BROWSER_TOOL_NAMES
+
+            removed_browser = [n for n in BROWSER_TOOL_NAMES if n in registry.tools]
+            for name in removed_browser:
+                del registry.tools[name]
+            if removed_browser:
+                logger.info(
+                    "Playwright not installed — removed browser tools: %s. "
+                    "Install with: pip install coderAI[browser] && playwright install chromium",
+                    ", ".join(removed_browser),
                 )
 
         return registry
@@ -393,7 +406,6 @@ class Agent:
 
     def _compute_system_prompt_cache_key(self) -> str:
         """Build a cache key that changes when rules, tools, or persona change."""
-        from pathlib import Path
 
         parts: List[str] = []
         parts.append(self.model)
@@ -448,7 +460,6 @@ class Agent:
 
         import os
         import platform as _platform
-        from pathlib import Path
 
         # Build environment section (model ID, working dir, git status, platform, date)
         project_root = getattr(self.config, "project_root", os.getcwd())
@@ -513,7 +524,6 @@ class Agent:
 
         # Look for project rules and append them
         try:
-            from pathlib import Path
 
             rules_dir = Path(self.config.project_root, ".coderAI", "rules")
             if rules_dir.exists() and rules_dir.is_dir():
@@ -588,7 +598,6 @@ class Agent:
         if clear_plan:
             try:
                 from coderAI.system.project_layout import find_dot_coderai_subdir
-                from pathlib import Path
 
                 pr = str(self.config.project_root)
                 dot_dir = find_dot_coderai_subdir("", pr)
@@ -815,8 +824,7 @@ class Agent:
         """
         from coderAI.core.agent_loop import ExecutionLoop
 
-        # Auto-detect relevant skills for this task
-        if self.config.auto_detect_skills:
+        if self.config.auto_detect_skills and not self.is_subagent:
             try:
                 skills = await self.skill_manager.get_top_skills(user_message)
                 if skills and self.session:
@@ -834,16 +842,15 @@ class Agent:
                 continue
 
             content = (
-                f"<skill name=\"{skill.name}\" source=\"{skill.source}\">\n"
+                f'<skill name="{skill.name}" source="{skill.source}">\n'
                 f"The following skill has been auto-loaded for this task. "
                 f"Follow its instructions carefully.\n\n"
                 f"{instructions}\n"
                 f"</skill>"
             )
-            self.session.add_message("system", content)
-            logger.info(
-                "[SkillManager] Injected skill '%s' into session context", skill.name
-            )
+            if self.session:
+                self.session.add_message("system", content)
+            logger.info("[SkillManager] Injected skill '%s' into session context", skill.name)
 
     async def process_single_shot(self, user_message: str, progress_callback=None) -> str:
         """Process a single message and return the assistant's text response."""

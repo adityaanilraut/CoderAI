@@ -31,19 +31,7 @@ from coderAI.system.events import event_emitter
 
 logger = logging.getLogger(__name__)
 
-# All recognized hook types in the order they are typically evaluated.
-# New hook types added per-project are discovered from hooks.json;
-# this list documents the built-in contract.
-VALID_HOOK_TYPES: Tuple[str, ...] = (
-    "on_user_prompt",
-    "PreToolUse",
-    "PostToolUse",
-    "on_stop",
-    "on_subagent_stop",
-    "on_compact",
-    "chat.message",
-    "permission.ask",
-)
+
 
 # Valid status values returned by permission.ask hooks
 VALID_PERMISSION_STATUSES: Tuple[str, ...] = ("allow", "deny", "ask")
@@ -51,7 +39,7 @@ VALID_PERMISSION_STATUSES: Tuple[str, ...] = ("allow", "deny", "ask")
 # Shared regex and sanitizer for shell metacharacter removal. Used by both
 # run_hooks() and run_hooks_structured() to prevent hook scripts from being
 # hijacked by adversarial tool arguments.
-_DANGEROUS_METACHARS = re.compile(r"[\x00$`\\;&|<>(){}\"'\n\r]")
+_DANGEROUS_METACHARS = re.compile(r"[\x00$`\\;&|<>(){}\"'\n\r*?\[\]!~#]")
 
 
 def _sanitize_env_value(val: Any, max_len: int = 4096) -> str:
@@ -114,6 +102,8 @@ class HooksManager:
         for i, (arg_key, arg_val) in enumerate(arguments.items()):
             safe_key = "".join(c if c.isalnum() or c == "_" else "_" for c in str(arg_key)).upper()
             safe_val = _sanitize_env_value(arg_val)
+            env[f"CODERAI_HOOK_ARG_{safe_key}"] = safe_val
+            env[f"CODERAI_HOOK_ARG_{i}"] = safe_val
             env[f"CODERAI_ARG_{safe_key}"] = safe_val
             env[f"CODERAI_ARG_{i}"] = safe_val
 

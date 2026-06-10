@@ -4,6 +4,8 @@ import json
 import logging
 import os
 import re
+import stat
+import threading
 import time
 import uuid
 from datetime import datetime
@@ -198,7 +200,9 @@ class HistoryManager:
         """Initialize the history manager."""
         self.history_dir = Path.home() / ".coderAI" / "history"
         self.history_dir.mkdir(parents=True, exist_ok=True)
+        self.history_dir.chmod(stat.S_IRWXU)
         self.current_session: Optional[Session] = None
+        self._index_lock = threading.Lock()
 
     def create_session(self, model: Optional[str] = None) -> Session:
         """Create a new session, defaulting to the configured model."""
@@ -246,6 +250,7 @@ class HistoryManager:
         tmp_file = session_file.with_suffix(".json.tmp")
         try:
             with open(tmp_file, "w") as f:
+                os.fchmod(f.fileno(), stat.S_IRUSR | stat.S_IWUSR)
                 json.dump(session.model_dump(), f, indent=2)
             os.replace(tmp_file, session_file)
         except Exception:
@@ -261,33 +266,34 @@ class HistoryManager:
     def _update_index(self, session: Session) -> None:
         """Update the fast-lookup index for a session."""
         index_file = self.history_dir / "index.json"
-        index = {}
-        if index_file.exists():
-            try:
-                with open(index_file, "r") as f:
-                    index = json.load(f)
-            except json.JSONDecodeError:
-                logger.warning(
-                    "Session index %s is corrupted, rebuilding from session files.",
-                    index_file,
-                )
-            except OSError as e:
-                logger.warning("Could not read session index %s: %s", index_file, e)
+        with self._index_lock:
+            index = {}
+            if index_file.exists():
+                try:
+                    with open(index_file, "r") as f:
+                        index = json.load(f)
+                except json.JSONDecodeError:
+                    logger.warning(
+                        "Session index %s is corrupted, rebuilding from session files.",
+                        index_file,
+                    )
+                except OSError as e:
+                    logger.warning("Could not read session index %s: %s", index_file, e)
 
-        index[session.session_id] = {
-            "session_id": session.session_id,
-            "created_at": datetime.fromtimestamp(session.created_at).strftime("%Y-%m-%d %H:%M:%S"),
-            "updated_at": datetime.fromtimestamp(session.updated_at).strftime("%Y-%m-%d %H:%M:%S"),
-            "messages": len(session.messages),
-            "model": session.model,
-        }
-        try:
-            tmp_file = index_file.with_suffix(".json.tmp")
-            with open(tmp_file, "w") as f:
-                json.dump(index, f)
-            os.replace(tmp_file, index_file)
-        except Exception as e:
-            logger.warning(f"Failed to update session index: {e}")
+            index[session.session_id] = {
+                "session_id": session.session_id,
+                "created_at": datetime.fromtimestamp(session.created_at).strftime("%Y-%m-%d %H:%M:%S"),
+                "updated_at": datetime.fromtimestamp(session.updated_at).strftime("%Y-%m-%d %H:%M:%S"),
+                "messages": len(session.messages),
+                "model": session.model,
+            }
+            try:
+                tmp_file = index_file.with_suffix(".json.tmp")
+                with open(tmp_file, "w") as f:
+                    json.dump(index, f)
+                os.replace(tmp_file, index_file)
+            except Exception as e:
+                logger.warning(f"Failed to update session index: {e}")
 
     def list_sessions(self) -> List[Dict[str, Any]]:
         """List all available sessions using index.json cache."""
@@ -383,17 +389,18 @@ class HistoryManager:
         index_file = self.history_dir / "index.json"
         if not index_file.exists():
             return
-        try:
-            with open(index_file, "r") as f:
-                index = json.load(f)
-            if session_id in index:
-                del index[session_id]
-                tmp_file = index_file.with_suffix(".json.tmp")
-                with open(tmp_file, "w") as f:
-                    json.dump(index, f)
-                os.replace(tmp_file, index_file)
-        except Exception as e:
-            logger.warning(f"Failed to update index after session delete: {e}")
+        with self._index_lock:
+            try:
+                with open(index_file, "r") as f:
+                    index = json.load(f)
+                if session_id in index:
+                    del index[session_id]
+                    tmp_file = index_file.with_suffix(".json.tmp")
+                    with open(tmp_file, "w") as f:
+                        json.dump(index, f)
+                    os.replace(tmp_file, index_file)
+            except Exception as e:
+                logger.warning(f"Failed to update index after session delete: {e}")
 
     def _cleanup_expired_sessions(self) -> None:
         """Delete sessions older than the retention window."""
@@ -409,18 +416,19 @@ class HistoryManager:
                 continue
         if removed_ids:
             index_file = self.history_dir / "index.json"
-            try:
-                if index_file.exists():
-                    with open(index_file, "r") as f:
-                        index = json.load(f)
-                    for sid in removed_ids:
-                        index.pop(sid, None)
-                    tmp_file = index_file.with_suffix(".json.tmp")
-                    with open(tmp_file, "w") as f:
-                        json.dump(index, f)
-                    os.replace(tmp_file, index_file)
-            except Exception as e:
-                logger.warning(f"Failed to update index after cleanup: {e}")
+            with self._index_lock:
+                try:
+                    if index_file.exists():
+                        with open(index_file, "r") as f:
+                            index = json.load(f)
+                        for sid in removed_ids:
+                            index.pop(sid, None)
+                        tmp_file = index_file.with_suffix(".json.tmp")
+                        with open(tmp_file, "w") as f:
+                            json.dump(index, f)
+                        os.replace(tmp_file, index_file)
+                except Exception as e:
+                    logger.warning(f"Failed to update index after cleanup: {e}")
 
 
 # Global history manager instance

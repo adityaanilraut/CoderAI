@@ -27,7 +27,6 @@ PERSONA_TOOL_ALIASES: Dict[str, Set[str]] = {
     "bash": {"run_command", "run_background", "python_repl"},
 }
 
-AgentMode = str  # "primary" | "subagent" | "all" | "hidden"
 
 
 class AgentPersona:
@@ -40,7 +39,7 @@ class AgentPersona:
         tools: List[str],
         model: str,
         instructions: str,
-        mode: AgentMode = "all",
+        mode: str = "all",
         hidden: bool = False,
         permission: Optional[Dict[str, str]] = None,
     ):
@@ -51,7 +50,7 @@ class AgentPersona:
         self.instructions = instructions
         # Agent mode: "primary" (main agent only), "subagent" (delegation only),
         # "all" (usable anywhere), "hidden" (internal system agents)
-        self.mode: AgentMode = mode
+        self.mode: str = mode
         self.hidden = hidden
         # Per-agent permission rules: {"tool_name": "allow"|"deny"}
         self.permission: Dict[str, str] = permission or {}

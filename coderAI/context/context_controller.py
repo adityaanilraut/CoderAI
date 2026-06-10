@@ -60,8 +60,6 @@ class ContextController:
         # move_to_end so hot fingerprints are kept resident.
         self._token_cache: "OrderedDict[str, int]" = OrderedDict()
         self._last_summary_time: float = 0.0
-        self._summary_snapshot_input: int = 0
-        self._summary_snapshot_output: int = 0
         # Cache pinned-context injection across tool-loop iterations when pins/query unchanged.
         self._inject_cache_fp: Optional[tuple] = None
         self._inject_cache_msg: Optional[str] = None
@@ -391,8 +389,6 @@ class ContextController:
                             mi_after.get("total_output_tokens", 0)
                             - mi_before.get("total_output_tokens", 0),
                         )
-                        self._summary_snapshot_input = mi_after.get("total_input_tokens", 0)
-                        self._summary_snapshot_output = mi_after.get("total_output_tokens", 0)
                         if in_tok_delta or out_tok_delta:
                             model_for_cost = getattr(
                                 self.provider, "actual_model", self.config.default_model
@@ -511,7 +507,9 @@ class ContextController:
             # _truncated flag so the model knows the data was clipped but
             # the tool itself worked fine.
             original_success = result.get("success", True)
-            return {
+            error_code = result.get("error_code")
+            err_msg = result.get("error")
+            truncated = {
                 "success": original_success,
                 "_truncated": True,
                 "warning": (
@@ -521,6 +519,11 @@ class ContextController:
                 ),
                 "output": safe_output,
             }
+            if not original_success:
+                truncated["error"] = err_msg or "Tool output truncated."
+                if error_code:
+                    truncated["error_code"] = error_code
+            return truncated
 
         assert isinstance(summarized, dict)
         return summarized

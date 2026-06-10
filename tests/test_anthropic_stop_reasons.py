@@ -32,6 +32,9 @@ def mock_agent():
     agent.total_prompt_tokens = 0
     agent.total_completion_tokens = 0
     agent.total_tokens = 0
+    agent.hooks_manager = MagicMock()
+    agent.hooks_manager.load_hooks = MagicMock(return_value={})
+    agent.hooks_manager.run_hooks = AsyncMock()
     agent.model = "claude"
     agent.streaming = False
     return agent

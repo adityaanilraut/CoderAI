@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
+from coderAI.core.tool_error_codes import ToolErrorCode
 from coderAI.tools.base import Tool
 from coderAI.tools.filesystem import _enforce_project_scope
 
@@ -82,7 +83,7 @@ class RefactorTool(Tool):
                 return {
                     "success": False,
                     "error": "symbol is required for refactor actions.",
-                    "error_code": "validation_error",
+                    "error_code": ToolErrorCode.VALIDATION,
                 }
             symbol = symbol.strip()
 
@@ -90,7 +91,7 @@ class RefactorTool(Tool):
                 return {
                     "success": False,
                     "error": "new_name is required for rename_symbol action.",
-                    "error_code": "validation_error",
+                    "error_code": ToolErrorCode.VALIDATION,
                 }
 
             base = Path(path).expanduser().resolve()
@@ -201,7 +202,7 @@ class RefactorTool(Tool):
             return {
                 "success": False,
                 "error": "new_name must not be empty.",
-                "error_code": "validation_error",
+                "error_code": ToolErrorCode.VALIDATION,
             }
         new_name = new_name.strip()
         if any(f.suffix.lower() == ".py" for f in files):
@@ -209,13 +210,13 @@ class RefactorTool(Tool):
                 return {
                     "success": False,
                     "error": f"new_name is not a valid Python identifier: {new_name!r}",
-                    "error_code": "validation_error",
+                    "error_code": ToolErrorCode.VALIDATION,
                 }
         elif not re.match(r"^[A-Za-z_$][A-Za-z0-9_$]*$", new_name):
             return {
                 "success": False,
                 "error": f"new_name is not a valid JS/TS identifier: {new_name!r}",
-                "error_code": "validation_error",
+                "error_code": ToolErrorCode.VALIDATION,
             }
         return None
 

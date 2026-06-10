@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+from coderAI.core.tool_error_codes import ToolErrorCode
 from coderAI.tools.base import Tool
 from coderAI.system.config import config_manager
 
@@ -293,7 +294,7 @@ class RunCommandTool(Tool):
 
             resolved_cwd, cwd_err = _resolve_working_dir(working_dir)
             if cwd_err:
-                return {"success": False, "error": cwd_err, "error_code": "scope"}
+                return {"success": False, "error": cwd_err, "error_code": ToolErrorCode.SCOPE}
             working_dir = str(resolved_cwd)
 
             # Block known destructive commands (these are never allowed)
@@ -301,7 +302,7 @@ class RunCommandTool(Tool):
                 return {
                     "success": False,
                     "error": f"Command blocked for safety: {command}",
-                    "error_code": "blocked",
+                    "error_code": ToolErrorCode.BLOCKED,
                     "blocked": True,
                 }
 
@@ -316,7 +317,7 @@ class RunCommandTool(Tool):
                         "Command appears interactive (requires TTY/user input): "
                         f"{command!r}. Use an interactive terminal session instead."
                     ),
-                    "error_code": "interactive",
+                    "error_code": ToolErrorCode.INTERACTIVE,
                     "interactive": True,
                 }
 
@@ -357,7 +358,7 @@ class RunCommandTool(Tool):
                             f"Command has malformed quoting — cannot split safely: "
                             f"{command!r}. Check for unmatched quotes."
                         ),
-                        "error_code": "malformed_command",
+                        "error_code": ToolErrorCode.MALFORMED_COMMAND,
                     }
 
             # Wait for completion with timeout
@@ -390,7 +391,7 @@ class RunCommandTool(Tool):
                 return {
                     "success": False,
                     "error": f"Command timed out after {timeout} seconds",
-                    "error_code": "timeout",
+                    "error_code": ToolErrorCode.TIMEOUT,
                     "stdout": stdout_str,
                     "stderr": stderr_str,
                     "returncode": process.returncode,
@@ -497,7 +498,7 @@ class RunBackgroundTool(Tool):
         try:
             resolved_cwd, cwd_err = _resolve_working_dir(working_dir)
             if cwd_err:
-                return {"success": False, "error": cwd_err, "error_code": "scope"}
+                return {"success": False, "error": cwd_err, "error_code": ToolErrorCode.SCOPE}
             working_dir = str(resolved_cwd)
 
             if is_command_blocked(command):
@@ -518,7 +519,7 @@ class RunBackgroundTool(Tool):
                         "Command appears interactive (requires TTY/user input): "
                         f"{command!r}. Interactive commands cannot run in the background."
                     ),
-                    "error_code": "interactive",
+                    "error_code": ToolErrorCode.INTERACTIVE,
                     "interactive": True,
                 }
 
@@ -558,7 +559,7 @@ class RunBackgroundTool(Tool):
                             f"Command has malformed quoting — cannot split safely: "
                             f"{command!r}. Check for unmatched quotes."
                         ),
-                        "error_code": "malformed_command",
+                        "error_code": ToolErrorCode.MALFORMED_COMMAND,
                     }
 
             # Track the process

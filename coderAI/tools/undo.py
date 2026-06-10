@@ -7,7 +7,7 @@ import shutil
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Dict, List, Optional, Protocol, cast, runtime_checkable
 
 from pydantic import BaseModel, Field
 
@@ -20,6 +20,18 @@ MAX_BACKUPS_PER_FILE = 10
 
 # Maximum total backups across all files
 MAX_TOTAL_BACKUPS = 50
+
+
+@runtime_checkable
+class BackupStoreProtocol(Protocol):
+    """Protocol defining the backup store interface used by tools.
+
+    Both ``FileBackupStore`` and ``_LazyBackupStore`` implement this
+    interface, so the ``backup_store`` module-level variable can be
+    statically typed without ``type: ignore``.
+    """
+
+    def backup_file(self, file_path: str, operation: str) -> Any: ...
 
 
 class FileBackupStore:
@@ -330,7 +342,7 @@ class _LazyBackupStore:
 
 
 # Backward-compat alias — lazily delegates to the real store on first use
-backup_store: FileBackupStore = _LazyBackupStore()  # type: ignore[assignment]
+backup_store: BackupStoreProtocol = _LazyBackupStore()
 
 
 class UndoParams(BaseModel):

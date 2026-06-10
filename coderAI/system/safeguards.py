@@ -530,3 +530,40 @@ def filter_stageable_files(
         )
 
     return allowed, rejected
+
+
+# ── Key / secret sanitization for logging ───────────────────────────────────
+
+# Patterns that match sensitive values in log messages.  Designed so the
+# function can be called on any string that may contain API keys, auth
+# headers, or bearer tokens before the string enters a log or exception.
+_SANITIZE_PATTERNS: tuple[re.Pattern, ...] = (
+    # sk-* and sk-ant-* API keys
+    re.compile(r"sk-(?:ant-)?[a-zA-Z0-9_-]{10,}"),
+    # Bearer tokens
+    re.compile(r"Bearer\s+[a-zA-Z0-9._\-+/=]{10,}", re.IGNORECASE),
+    # Authorization header values
+    re.compile(r"Authorization[=:]\s*(?:Bearer\s+)?[a-zA-Z0-9._\-+/=]{10,}", re.IGNORECASE),
+    # x-api-key header / url parameter
+    re.compile(r"x-api-key[=:]\s*[a-zA-Z0-9_-]{10,}", re.IGNORECASE),
+    # Generic key=value patterns with long alphanumeric values
+    re.compile(r"(?:api[_-]?key|apikey|secret|token|password|passwd)\s*[=:]\s*[a-zA-Z0-9._\-+/]{10,}", re.IGNORECASE),
+)
+
+
+def sanitize_for_log(text: str) -> str:
+    """Redact API keys, auth headers, and bearer tokens from *text*.
+
+    Should be called on any value before it enters a log message or
+    exception.  Already-sanitized text (containing ``[REDACTED]``) is
+    returned unchanged.
+
+    >>> sanitize_for_log("Using key sk-ant-api03-abc123def456 for request")
+    'Using key sk-ant...[REDACTED] for request'
+    """
+    if not text or "[REDACTED]" in text:
+        return text
+    result = text
+    for pattern in _SANITIZE_PATTERNS:
+        result = pattern.sub(lambda m: (m.group()[:12] + "...[REDACTED]" if len(m.group()) > 12 else "[REDACTED]"), result)
+    return result

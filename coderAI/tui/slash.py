@@ -137,17 +137,10 @@ def handle_slash_command(
         controller.enqueue_command("get_state")
         toast("info", "Agents panel refreshed")
         return True
-    if head == "show":
-        topic = arg.lower()
-        if not topic:
-            toast("warning", "Usage: /show <version|models|cost|info|config|system|tasks|plan>")
-            return True
-        if topic == "plan":
-            controller.enqueue_command("get_plan")
-        else:
-            controller.enqueue_command("reference", topic=topic)
+    if head in ("tasks", "todos", "task"):
+        controller.enqueue_command("get_tasks")
         return True
-    if head in (
+    if head == "show" or head in (
         "version",
         "providers",
         "models",
@@ -162,8 +155,17 @@ def handle_slash_command(
         "todos",
         "task",
     ):
-        topic = "models" if head in ("providers", "models") else head
-        controller.enqueue_command("reference", topic=topic)
+        topic = arg.lower() if head == "show" else head
+        if not topic:
+            toast("warning", "Usage: /show <version|models|cost|info|config|system|tasks|plan>")
+            return True
+        topic = "models" if topic in ("providers", "models") else topic
+        if topic == "plan":
+            controller.enqueue_command("get_plan")
+        elif topic in ("tasks", "todos", "task"):
+            controller.enqueue_command("get_tasks")
+        else:
+            controller.enqueue_command("reference", topic=topic)
         return True
     if head == "plan":
         controller.enqueue_command("get_plan")
@@ -204,12 +206,14 @@ def handle_slash_command(
             controller.enqueue_command("manage_context", action="remove", path=arg)
         return True
     if head == "copy":
+        from coderAI.tui.clipboard import copy_to_clipboard_osc52, copy_fallback_file
+
         last = _find_last_assistant(reducer.timeline)
         if not last:
             toast("warning", "No assistant response to copy")
         else:
-            _copy_osc52(last)
-            _copy_fallback_file(last, toast)
+            copy_to_clipboard_osc52(last)
+            copy_fallback_file(last, toast)
             toast("info", f"Sent {len(last):,} chars via OSC-52 + temp file")
         return True
     if head == "retry":
@@ -229,6 +233,10 @@ def handle_slash_command(
         controller.enqueue_command("cancel_agent", agentId=target_id)
         toast("info", f"Cancelling agent: {arg}")
         return True
+    if head == "init":
+        toast("info", "Scaffolding .coderai/ project directory…")
+        controller.enqueue_command("init_project")
+        return True
     toast("warning", f"Unknown command: /{head} · type /help")
     return True
 
@@ -240,24 +248,4 @@ def _find_last_assistant(timeline: List[Dict[str, Any]]) -> Optional[str]:
     return None
 
 
-def _copy_osc52(text: str) -> bool:
-    import base64
-    import sys
 
-    encoded = base64.b64encode(text.encode("utf-8")).decode("ascii")
-    if len(encoded) > 4096:
-        encoded = encoded[:4096]
-    sys.stdout.write(f"\033]52;c;{encoded}\007")
-    sys.stdout.flush()
-    return True
-
-
-def _copy_fallback_file(text: str, toast_fn) -> None:
-    import tempfile
-
-    path = Path(tempfile.gettempdir()) / "coderAI-copy.txt"
-    try:
-        path.write_text(text, encoding="utf-8")
-        toast_fn("info", f"Fallback: saved to {path}")
-    except OSError:
-        pass

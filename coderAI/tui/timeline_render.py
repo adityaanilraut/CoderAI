@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time as _time_mod
 from typing import Any, Dict
 
@@ -13,6 +14,8 @@ from textual.widgets import RichLog
 
 from coderAI.tui.diff_render import format_diff_gutter
 from coderAI.tui.theme import Glyphs, Styles, Tokens
+
+logger = logging.getLogger(__name__)
 
 _TOAST_STYLES = {
     "info": Tokens.INFO,
@@ -33,7 +36,7 @@ def _first_lines(text: str, n: int) -> str:
     lines = text.splitlines()
     if len(lines) <= n:
         return text
-    return "\n".join(lines[:n]) + f"\n[{Tokens.TEXT_MUTED}][… {len(lines) - n} more lines][/]"
+    return "\n".join(lines[:n]) + f"\n[… {len(lines) - n} more lines]"
 
 
 def write_timeline_item(log: RichLog, it: Dict[str, Any], *, verbose: bool) -> None:
@@ -58,6 +61,8 @@ def write_timeline_item(log: RichLog, it: Dict[str, Any], *, verbose: bool) -> N
         write_skill_card(log, it)
     elif kind == "plan_card":
         write_plan_card(log, it)
+    else:
+        logger.warning("Unknown timeline kind: %s", kind)
 
 
 def build_stream_tail_markup(it: Dict[str, Any], *, verbose: bool) -> str:

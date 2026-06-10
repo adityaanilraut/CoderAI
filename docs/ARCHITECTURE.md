@@ -314,8 +314,8 @@ events to the Textual UI on the same Python process.
   `budget_limit` enforcement from config.
 - **Async I/O** — `asyncio` throughout for non-blocking LLM and tool
   calls. Read-only tools run in parallel via `asyncio.gather`; mutating
-  tools run sequentially; `delegate_task` is fully serialised
-  (`max_parallel_invocations = 1`) to avoid workspace conflicts.
+  tools run sequentially; `delegate_task` is domain-routed — read-only
+  delegations (≤4 parallel), browser (≤3 parallel), desktop/workspace serial.
 - **Context management** — Reactive compaction in
   `context_controller.py` when estimated tokens exceed
   `context_window - RESPONSE_TOKEN_RESERVE - TOOL_OVERHEAD_TOKENS`.

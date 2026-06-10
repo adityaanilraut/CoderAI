@@ -64,6 +64,7 @@ async def test_confirmation_sets_waiting_for_user_status() -> None:
         ipc_server=FakeIPC(),
         tracker_info=info,
         _sync_tracker=MagicMock(),
+        config=SimpleNamespace(approval_timeout_seconds=300),
     )
     executor = ToolExecutor(agent)
 

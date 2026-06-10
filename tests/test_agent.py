@@ -579,7 +579,7 @@ class TestAgentProjectRules:
         from coderAI.system_prompt import SYSTEM_PROMPT_INTRO
 
         with patch(
-            "pathlib.Path",
+            "coderAI.core.agent.Path",
             side_effect=lambda *args: mock_rules_dir if ".coderAI" in args else MagicMock(),
         ):
             prompt = agent._get_system_prompt()

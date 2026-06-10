@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from coderAI.core.tool_error_codes import ToolErrorCode
 from coderAI.tools.base import Tool
 from coderAI.system.config import config_manager
 from coderAI.system.events import event_emitter
@@ -114,13 +115,13 @@ class CreatePlanTool(Tool):
                     return {
                         "success": False,
                         "error": f"Cannot create plan: directory does not exist: {target}",
-                        "error_code": "missing_directory",
+                        "error_code": ToolErrorCode.MISSING_DIRECTORY,
                     }
                 if not target.is_dir():
                     return {
                         "success": False,
                         "error": f"Cannot create plan: path is not a directory: {target}",
-                        "error_code": "not_a_directory",
+                        "error_code": ToolErrorCode.NOT_A_DIRECTORY,
                     }
 
                 # schema_version=2 introduced when the `status` action landed.

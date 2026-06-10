@@ -1,10 +1,6 @@
 """LM Studio local LLM provider implementation."""
 
-import logging
-
 from coderAI.llm.local_base import OpenAICompatibleLocalProvider
-
-logger = logging.getLogger(__name__)
 
 
 class LMStudioProvider(OpenAICompatibleLocalProvider):

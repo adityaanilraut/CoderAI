@@ -1,0 +1,887 @@
+"""Browser automation tools using Playwright (cross-platform).
+
+These tools provide full browser control: navigate, inspect the accessibility
+snapshot, click/type by element reference, extract page content, take
+screenshots, evaluate JavaScript, and close the browser.
+
+Requires ``playwright`` (install with ``playwright install chromium`` after
+``pip install coderAI[browser]``). Tools gracefully degrade with a clear
+error message when the dependency is missing.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import ipaddress
+import logging
+from typing import Any, Dict, List, Optional, Tuple
+
+from pydantic import BaseModel, Field
+
+from coderAI.tools.base import Tool
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Tool names — used for discovery / optional-dependency gating in Agent.
+# ---------------------------------------------------------------------------
+
+BROWSER_TOOL_NAMES: tuple[str, ...] = (
+    "browser_navigate",
+    "browser_snapshot",
+    "browser_click",
+    "browser_type",
+    "browser_select_option",
+    "browser_get_content",
+    "browser_screenshot",
+    "browser_evaluate",
+    "browser_wait",
+    "browser_close",
+)
+
+# ---------------------------------------------------------------------------
+# Playwright availability check
+# ---------------------------------------------------------------------------
+
+_playwright_available: Optional[bool] = None
+
+
+def _check_playwright() -> Optional[Dict[str, Any]]:
+    """Return an error dict if Playwright is not installed, else None."""
+    global _playwright_available
+    if _playwright_available is None:
+        try:
+            import playwright  # noqa: F401
+
+            _playwright_available = True
+        except ImportError:
+            _playwright_available = False
+    if not _playwright_available:
+        return {
+            "success": False,
+            "error": (
+                "Playwright is not installed. Install with: "
+                "pip install coderAI[browser] && playwright install chromium"
+            ),
+        }
+    return None
+
+
+# ---------------------------------------------------------------------------
+# SSRF guard — reuse the same public-IP check the web tools use.
+# ---------------------------------------------------------------------------
+
+
+def _is_ip_public(ip_str: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return False
+    return not (
+        ip.is_loopback
+        or ip.is_private
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_reserved
+        or ip.is_unspecified
+    )
+
+
+def _validate_navigation_url(url: str) -> Optional[Dict[str, Any]]:
+    """Check URL for SSRF before allowing browser navigation."""
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return {"success": False, "error": f"Unsupported URL scheme: {parsed.scheme}"}
+
+    if parsed.hostname:
+        try:
+            ip = ipaddress.ip_address(parsed.hostname)
+            if not _is_ip_public(str(ip)):
+                return {
+                    "success": False,
+                    "error": f"SSRF guard: blocked navigation to {parsed.hostname}",
+                }
+        except ValueError:
+            pass
+
+    return None
+
+
+def _get_allowed_domains() -> Optional[List[str]]:
+    """Read the comma-separated allowed-domains list from config."""
+    try:
+        from coderAI.system.config import config_manager
+
+        cfg = config_manager.load()
+        raw = cfg.browser_allowed_domains
+        if raw:
+            return [d.strip().lower() for d in raw.split(",") if d.strip()]
+    except Exception:
+        pass
+    return None
+
+
+def _check_domain_allowlist(url: str) -> Optional[Dict[str, Any]]:
+    """If allowed domains are configured, reject URLs outside that list."""
+    allowed = _get_allowed_domains()
+    if not allowed:
+        return None
+    from urllib.parse import urlparse
+
+    hostname = (urlparse(url).hostname or "").lower()
+    for domain in allowed:
+        domain = domain.lstrip(".")
+        if hostname == domain or hostname.endswith("." + domain):
+            return None
+    return {
+        "success": False,
+        "error": f"Domain '{hostname}' is not in the allowed list: {', '.join(allowed)}",
+    }
+
+
+# ---------------------------------------------------------------------------
+# BrowserSession — per-agent Playwright life-cycle
+# ---------------------------------------------------------------------------
+
+
+class BrowserSession:
+    """Lazily initialised Playwright browser (one persistent page per agent)."""
+
+    def __init__(self, agent_id: str) -> None:
+        self.agent_id = agent_id
+        self._playwright: Any = None
+        self._browser: Any = None
+        self._context: Any = None
+        self._page: Any = None
+        self._ref_map: Dict[str, Dict[str, str]] = {}
+        self._initialized = False
+        self._lock = asyncio.Lock()
+
+    @property
+    def page(self) -> Any:
+        if self._page is None:
+            raise RuntimeError("Browser is not initialized. Call browser_navigate first.")
+        return self._page
+
+    async def _ensure_browser(self) -> None:
+        if self._initialized:
+            return
+        async with self._lock:
+            if self._initialized:
+                return
+
+            from playwright.async_api import async_playwright
+
+            self._playwright = await async_playwright().start()
+
+            headless = True
+            try:
+                from coderAI.system.config import config_manager
+
+                headless = config_manager.load().browser_headless
+            except Exception:
+                pass
+
+            self._browser = await self._playwright.chromium.launch(headless=headless)
+            self._context = await self._browser.new_context(
+                viewport={"width": 1280, "height": 720},
+            )
+            self._page = await self._context.new_page()
+            self._initialized = True
+            logger.info(
+                "BrowserSession[%s]: Chromium launched (headless=%s)",
+                self.agent_id,
+                headless,
+            )
+
+    def _get_timeout(self) -> float:
+        try:
+            from coderAI.system.config import config_manager
+
+            return float(config_manager.load().browser_timeout)
+        except Exception:
+            return 30.0
+
+    async def navigate(self, url: str) -> Dict[str, Any]:
+        await self._ensure_browser()
+        try:
+            await self._page.goto(
+                url, wait_until="domcontentloaded", timeout=self._get_timeout() * 1000
+            )
+            title = await self._page.title()
+            current_url = self._page.url
+            return {
+                "success": True,
+                "url": current_url,
+                "title": title,
+                "message": f"Navigated to {current_url}",
+            }
+        except Exception as e:
+            return {"success": False, "error": f"Navigation failed: {e}"}
+
+    async def snapshot(self) -> str:
+        await self._ensure_browser()
+        snapshot_text, ref_map = await _build_accessibility_snapshot(self._page)
+        self._ref_map = ref_map
+        return snapshot_text
+
+    async def click_by_ref(self, ref: str) -> Dict[str, Any]:
+        await self._ensure_browser()
+        if ref not in self._ref_map:
+            return {
+                "success": False,
+                "error": f"Element ref '{ref}' not found in the current snapshot. "
+                f"Call browser_snapshot first to get current refs. "
+                f"Available refs: {sorted(self._ref_map.keys())[:20]}...",
+            }
+        info = self._ref_map[ref]
+        role = info["role"]
+        name = info.get("name", "")
+        try:
+            locator = self._page.get_by_role(role, name=name, exact=False)  # type: ignore[arg-type]
+            count = await locator.count()
+            if count == 0:
+                locator = self._page.get_by_role(role, name=name, exact=True)  # type: ignore[arg-type]
+                count = await locator.count()
+            if count == 0:
+                return {
+                    "success": False,
+                    "error": f"No element found with role='{role}' name='{name}'. "
+                    f"The page may have changed — try browser_snapshot again.",
+                }
+            if count > 1:
+                logger.info(
+                    "Multiple matches (%d) for role='%s' name='%s' — clicking first",
+                    count,
+                    role,
+                    name,
+                )
+            await locator.first.click(timeout=self._get_timeout() * 1000)
+            return {"success": True, "message": f"Clicked [{ref}] {role} '{name}'"}
+        except Exception as e:
+            return {"success": False, "error": f"Click failed: {e}"}
+
+    async def type_by_ref(self, ref: str, text: str, clear: bool = False) -> Dict[str, Any]:
+        await self._ensure_browser()
+        if ref not in self._ref_map:
+            return {
+                "success": False,
+                "error": f"Element ref '{ref}' not found in the current snapshot. "
+                f"Call browser_snapshot first to get current refs.",
+            }
+        info = self._ref_map[ref]
+        role = info["role"]
+        name = info.get("name", "")
+        try:
+            locator = self._page.get_by_role(role, name=name, exact=False)  # type: ignore[arg-type]
+            count = await locator.count()
+            if count == 0:
+                locator = self._page.get_by_role(role, name=name, exact=True)  # type: ignore[arg-type]
+                count = await locator.count()
+            if count == 0:
+                return {
+                    "success": False,
+                    "error": f"No element found with role='{role}' name='{name}'. "
+                    f"Try browser_snapshot again.",
+                }
+            target = locator.first
+            if clear:
+                await target.clear()
+            await target.fill(text, timeout=self._get_timeout() * 1000)
+            return {"success": True, "message": f"Typed '{text}' into [{ref}] {role} '{name}'"}
+        except Exception as e:
+            return {"success": False, "error": f"Type failed: {e}"}
+
+    async def select_option_by_ref(self, ref: str, value: str) -> Dict[str, Any]:
+        await self._ensure_browser()
+        if ref not in self._ref_map:
+            return {
+                "success": False,
+                "error": f"Element ref '{ref}' not found. Call browser_snapshot first.",
+            }
+        info = self._ref_map[ref]
+        role = info["role"]
+        name = info.get("name", "")
+        try:
+            locator = self._page.get_by_role(role, name=name, exact=False)  # type: ignore[arg-type]
+            count = await locator.count()
+            if count == 0:
+                locator = self._page.get_by_role(role, name=name, exact=True)  # type: ignore[arg-type]
+                count = await locator.count()
+            if count == 0:
+                return {"success": False, "error": f"No select element found for [{ref}]."}
+            await locator.first.select_option(value, timeout=self._get_timeout() * 1000)
+            return {"success": True, "message": f"Selected '{value}' in [{ref}] {role} '{name}'"}
+        except Exception as e:
+            return {"success": False, "error": f"Select failed: {e}"}
+
+    async def get_content(self, fmt: str = "markdown") -> str:
+        await self._ensure_browser()
+        if fmt == "text":
+            return str(await self._page.inner_text("body"))
+        if fmt == "html":
+            return str(await self._page.content())
+        try:
+            from coderAI.tools.web import _html_to_text
+        except ImportError:
+            logger.warning("html2text not available, falling back to plain text")
+            return str(await self._page.inner_text("body"))
+        html = await self._page.content()
+        return _html_to_text(html, "markdown")
+
+    async def screenshot(self, path: str) -> Dict[str, Any]:
+        await self._ensure_browser()
+        try:
+            await self._page.screenshot(path=path, full_page=False)
+            return {"success": True, "path": path, "message": f"Screenshot saved to {path}"}
+        except Exception as e:
+            return {"success": False, "error": f"Screenshot failed: {e}"}
+
+    async def evaluate(self, js: str) -> Dict[str, Any]:
+        await self._ensure_browser()
+        try:
+            result = await self._page.evaluate(js)
+            return {"success": True, "result": result}
+        except Exception as e:
+            return {"success": False, "error": f"JavaScript evaluation failed: {e}"}
+
+    async def wait_for(
+        self,
+        text: Optional[str] = None,
+        timeout_ms: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        await self._ensure_browser()
+        timeout = (timeout_ms or self._get_timeout() * 1000) / 1000.0
+        try:
+            if text:
+                await self._page.wait_for_selector(f"text={text}", timeout=timeout * 1000)
+                return {"success": True, "message": f"Text '{text}' appeared on page."}
+            await asyncio.sleep(timeout)
+            return {"success": True, "message": f"Waited {timeout:.1f}s."}
+        except Exception as e:
+            return {"success": False, "error": f"Wait failed: {e}"}
+
+    async def close(self) -> Dict[str, Any]:
+        if self._context:
+            await self._context.close()
+            self._context = None
+        if self._browser:
+            await self._browser.close()
+            self._browser = None
+        if self._playwright:
+            await self._playwright.stop()
+            self._playwright = None
+        self._page = None
+        self._ref_map.clear()
+        self._initialized = False
+        return {"success": True, "message": "Browser closed."}
+
+
+class BrowserRegistry:
+    """Registry of per-agent browser sessions for parallel sub-agent isolation."""
+
+    _instance: Optional["BrowserRegistry"] = None
+    _registry_lock = asyncio.Lock()
+
+    def __init__(self) -> None:
+        self._sessions: Dict[str, BrowserSession] = {}
+
+    @classmethod
+    def get(cls) -> "BrowserRegistry":
+        if cls._instance is None:
+            cls._instance = BrowserRegistry()
+        return cls._instance
+
+    @classmethod
+    def reset_for_tests(cls) -> None:
+        cls._instance = None
+
+    async def for_agent(self, agent_id: Optional[str] = None) -> BrowserSession:
+        from coderAI.core.execution_context import get_execution_context
+
+        aid = agent_id or get_execution_context().agent_id or "main"
+        async with self._registry_lock:
+            session = self._sessions.get(aid)
+            if session is None:
+                session = BrowserSession(aid)
+                self._sessions[aid] = session
+            return session
+
+    async def close_agent(self, agent_id: str) -> None:
+        async with self._registry_lock:
+            session = self._sessions.pop(agent_id, None)
+        if session is not None:
+            try:
+                await session.close()
+            except Exception as exc:
+                logger.debug("BrowserSession[%s] close failed: %s", agent_id, exc)
+
+
+class BrowserManager:
+    """Backward-compatible facade delegating to the per-agent ``BrowserRegistry``."""
+
+    async def _session(self) -> BrowserSession:
+        return await BrowserRegistry.get().for_agent()
+
+    async def navigate(self, url: str) -> Dict[str, Any]:
+        return await (await self._session()).navigate(url)
+
+    async def snapshot(self) -> str:
+        return await (await self._session()).snapshot()
+
+    async def click_by_ref(self, ref: str) -> Dict[str, Any]:
+        return await (await self._session()).click_by_ref(ref)
+
+    async def type_by_ref(self, ref: str, text: str, clear: bool = False) -> Dict[str, Any]:
+        return await (await self._session()).type_by_ref(ref, text, clear=clear)
+
+    async def select_option_by_ref(self, ref: str, value: str) -> Dict[str, Any]:
+        return await (await self._session()).select_option_by_ref(ref, value)
+
+    async def get_content(self, fmt: str = "markdown") -> str:
+        return await (await self._session()).get_content(fmt=fmt)
+
+    async def screenshot(self, path: str) -> Dict[str, Any]:
+        return await (await self._session()).screenshot(path)
+
+    async def evaluate(self, js: str) -> Dict[str, Any]:
+        return await (await self._session()).evaluate(js)
+
+    async def wait_for(
+        self,
+        text: Optional[str] = None,
+        timeout_ms: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        return await (await self._session()).wait_for(text=text, timeout_ms=timeout_ms)
+
+    async def close(self) -> Dict[str, Any]:
+        return await (await self._session()).close()
+
+
+# ---------------------------------------------------------------------------
+# Accessibility snapshot builder
+# ---------------------------------------------------------------------------
+
+
+async def _build_accessibility_snapshot(page: Any) -> Tuple[str, Dict[str, Dict[str, str]]]:
+    """Walk Playwright's accessibility tree and produce a compact text
+    representation with element references (``[e0]``, ``[e1]``, ...).
+
+    Returns ``(snapshot_text, ref_map)`` where *ref_map* maps each ref to
+    ``{"role": ..., "name": ...}`` for later lookup.
+    """
+    tree = await page.accessibility.snapshot()
+    if tree is None:
+        return "No accessibility tree available.", {}
+
+    ref_counter = [0]
+    ref_map: Dict[str, Dict[str, str]] = {}
+    lines: List[str] = []
+
+    def _walk(node: Dict[str, Any], depth: int) -> None:
+        role = node.get("role", "unknown")
+        name = (node.get("name") or "").strip()
+        value = node.get("value")
+        disabled = node.get("disabled", False)
+        checked = node.get("checked")
+        level = node.get("level")
+        expanded = node.get("expanded")
+
+        ref = f"e{ref_counter[0]}"
+        ref_counter[0] += 1
+        ref_map[ref] = {"role": role, "name": name}
+
+        indent = "  " * depth
+        tag_parts: List[str] = []
+
+        tag_parts.append(f"[{ref}]")
+        if disabled:
+            tag_parts.append("[disabled]")
+        if checked is not None:
+            tag_parts.append("[checked]" if checked else "[unchecked]")
+        if expanded is not None and role in ("combobox", "listbox", "menu", "tree", "treegrid"):
+            tag_parts.append("[expanded]" if expanded else "[collapsed]")
+
+        tag_parts.append(role)
+
+        label = name
+        if name:
+            label += f' "{name}"'
+        if value is not None and str(value).strip():
+            label += f" = {value}"
+        if level is not None:
+            label += f" (level {level})"
+
+        tag_parts.append(label)
+        lines.append(indent + " ".join(tag_parts))
+
+        for child in node.get("children") or []:
+            _walk(child, depth + 1)
+
+    _walk(tree, 0)
+    return "\n".join(lines), ref_map
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Tool: browser_navigate
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class BrowserNavigateParams(BaseModel):
+    url: str = Field(..., description="Fully-qualified URL to navigate to (https://...).")
+
+
+class BrowserNavigateTool(Tool):
+    """Navigate the browser to a URL."""
+
+    name = "browser_navigate"
+    description = (
+        "Navigate the browser to a URL. Returns the page title and final URL "
+        "after any redirects. Use this as the first step in any browser workflow. "
+        "The browser session persists across calls — navigate, snapshot, click, "
+        "and type all share the same page."
+    )
+    category = "browser"
+    parameters_model = BrowserNavigateParams
+    timeout = 45.0
+
+    async def execute(self, url: str) -> Dict[str, Any]:  # type: ignore[override]
+        if err := _check_playwright():
+            return err
+        if err := _validate_navigation_url(url):
+            return err
+        if err := _check_domain_allowlist(url):
+            return err
+        return await BrowserManager().navigate(url)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Tool: browser_snapshot
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class BrowserSnapshotParams(BaseModel):
+    pass  # no parameters
+
+
+class BrowserSnapshotTool(Tool):
+    """Get an accessibility snapshot of the current browser page."""
+
+    name = "browser_snapshot"
+    description = (
+        "Capture the accessibility tree of the current browser page as a "
+        "compact text representation. Each interactive element gets a unique "
+        "ref like [e12] that you can use with browser_click / browser_type. "
+        "Elements show their role ('button', 'textbox', 'link', 'combobox', "
+        "'checkbox', etc.), accessible name, and current value/state. "
+        "Call this after navigating or after performing actions to see "
+        "the updated page state. Use this to identify form fields, buttons, "
+        "links, and dropdowns before interacting with them."
+    )
+    category = "browser"
+    parameters_model = BrowserSnapshotParams
+    is_read_only = True
+    timeout = 15.0
+
+    async def execute(self) -> Dict[str, Any]:  # type: ignore[override]
+        if err := _check_playwright():
+            return err
+        try:
+            text = await BrowserManager().snapshot()
+            return {"success": True, "snapshot": text}
+        except RuntimeError as e:
+            return {"success": False, "error": str(e)}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Tool: browser_click
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class BrowserClickParams(BaseModel):
+    ref: str = Field(
+        ...,
+        description="Element reference from browser_snapshot (e.g. 'e12').",
+    )
+
+
+class BrowserClickTool(Tool):
+    """Click an element on the page using its snapshot reference."""
+
+    name = "browser_click"
+    description = (
+        "Click an interactive element identified by its ref from the most "
+        "recent browser_snapshot. Works for buttons, links, checkboxes, "
+        "radio buttons, tabs, and any clickable element. After clicking, "
+        "call browser_snapshot to see the updated page state."
+    )
+    category = "browser"
+    parameters_model = BrowserClickParams
+    requires_confirmation = True
+    timeout = 20.0
+
+    async def execute(self, ref: str) -> Dict[str, Any]:  # type: ignore[override]
+        if err := _check_playwright():
+            return err
+        return await BrowserManager().click_by_ref(ref)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Tool: browser_type
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class BrowserTypeParams(BaseModel):
+    ref: str = Field(
+        ...,
+        description="Element reference from browser_snapshot (e.g. 'e5'). Must be a textbox, searchbox, or combobox.",
+    )
+    text: str = Field(..., description="Text to type into the element.")
+    clear: bool = Field(
+        False, description="Clear existing text before typing (default: false, appends)."
+    )
+
+
+class BrowserTypeTool(Tool):
+    """Type text into an input element on the page."""
+
+    name = "browser_type"
+    description = (
+        "Type text into an input element (textbox, searchbox, textarea, "
+        "combobox) identified by its ref from the most recent browser_snapshot. "
+        "Set clear=true to replace existing text instead of appending. "
+        "After typing, call browser_snapshot to see the updated state."
+    )
+    category = "browser"
+    parameters_model = BrowserTypeParams
+    requires_confirmation = True
+    timeout = 20.0
+
+    async def execute(self, ref: str, text: str, clear: bool = False) -> Dict[str, Any]:  # type: ignore[override]
+        if err := _check_playwright():
+            return err
+        return await BrowserManager().type_by_ref(ref, text, clear=clear)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Tool: browser_select_option
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class BrowserSelectOptionParams(BaseModel):
+    ref: str = Field(
+        ...,
+        description="Element reference from browser_snapshot for a combobox or listbox.",
+    )
+    value: str = Field(
+        ...,
+        description="Option value or visible label to select.",
+    )
+
+
+class BrowserSelectOptionTool(Tool):
+    """Select an option from a dropdown/combobox/listbox."""
+
+    name = "browser_select_option"
+    description = (
+        "Select an option by value or visible label in a combobox, listbox, "
+        "or dropdown identified by its ref from the most recent browser_snapshot. "
+        "Use this for <select> elements, country pickers, size/color dropdowns, etc."
+    )
+    category = "browser"
+    parameters_model = BrowserSelectOptionParams
+    requires_confirmation = True
+    timeout = 20.0
+
+    async def execute(self, ref: str, value: str) -> Dict[str, Any]:  # type: ignore[override]
+        if err := _check_playwright():
+            return err
+        return await BrowserManager().select_option_by_ref(ref, value)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Tool: browser_get_content
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class BrowserGetContentParams(BaseModel):
+    fmt: str = Field(
+        "markdown",
+        description="Output format: 'markdown' (default), 'text', or 'html'.",
+    )
+
+
+class BrowserGetContentTool(Tool):
+    """Extract the current page content as markdown, plain text, or HTML."""
+
+    name = "browser_get_content"
+    description = (
+        "Extract the full text content of the current browser page. "
+        "Use 'markdown' (default) for readable formatted text, 'text' for "
+        "plain text, or 'html' for the raw HTML source. Useful for reading "
+        "page content after navigating (e.g. product details, form summaries, "
+        "confirmation pages)."
+    )
+    category = "browser"
+    parameters_model = BrowserGetContentParams
+    is_read_only = True
+    timeout = 15.0
+
+    async def execute(self, fmt: str = "markdown") -> Dict[str, Any]:  # type: ignore[override]
+        if err := _check_playwright():
+            return err
+        if fmt not in ("markdown", "text", "html"):
+            return {
+                "success": False,
+                "error": f"Invalid format: {fmt}. Use 'markdown', 'text', or 'html'.",
+            }
+        try:
+            content = await BrowserManager().get_content(fmt=fmt)
+            return {"success": True, "content": content}
+        except RuntimeError as e:
+            return {"success": False, "error": str(e)}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Tool: browser_screenshot
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class BrowserScreenshotParams(BaseModel):
+    path: str = Field(
+        ...,
+        description="File path to save the screenshot (e.g. '/tmp/screenshot.png').",
+    )
+
+
+class BrowserScreenshotTool(Tool):
+    """Take a screenshot of the current browser page."""
+
+    name = "browser_screenshot"
+    description = (
+        "Take a screenshot of the current browser page and save it to the "
+        "specified path (PNG format). Useful for capturing visual state, "
+        "confirmation pages, error states, or when the accessibility tree "
+        "doesn't capture the full picture."
+    )
+    category = "browser"
+    parameters_model = BrowserScreenshotParams
+    is_read_only = True
+    timeout = 20.0
+
+    async def execute(self, path: str) -> Dict[str, Any]:  # type: ignore[override]
+        if err := _check_playwright():
+            return err
+        try:
+            return await BrowserManager().screenshot(path)
+        except RuntimeError as e:
+            return {"success": False, "error": str(e)}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Tool: browser_evaluate
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class BrowserEvaluateParams(BaseModel):
+    js: str = Field(
+        ...,
+        description="JavaScript code to execute in the page context. "
+        "The return value is serialized and returned.",
+    )
+
+
+class BrowserEvaluateTool(Tool):
+    """Execute arbitrary JavaScript in the browser page context."""
+
+    name = "browser_evaluate"
+    description = (
+        "Execute JavaScript code in the current browser page and return the "
+        "result. Useful for extracting data that isn't exposed in the "
+        "accessibility tree, checking page state, or triggering custom "
+        "behavior. The return value is JSON-serialized."
+    )
+    category = "browser"
+    parameters_model = BrowserEvaluateParams
+    is_read_only = True
+    timeout = 15.0
+
+    async def execute(self, js: str) -> Dict[str, Any]:  # type: ignore[override]
+        if err := _check_playwright():
+            return err
+        try:
+            return await BrowserManager().evaluate(js)
+        except RuntimeError as e:
+            return {"success": False, "error": str(e)}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Tool: browser_wait
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class BrowserWaitParams(BaseModel):
+    text: Optional[str] = Field(
+        None,
+        description="Wait until this text appears on the page.",
+    )
+    timeout_ms: Optional[float] = Field(
+        None,
+        description="Wait duration in milliseconds (default: browser timeout from config).",
+    )
+
+
+class BrowserWaitTool(Tool):
+    """Wait for a condition on the page (text appearance or timeout)."""
+
+    name = "browser_wait"
+    description = (
+        "Wait for a condition on the current page. If 'text' is provided, "
+        "waits until that text appears in the DOM. If only 'timeout_ms' is "
+        "provided, simply pauses for that duration. Useful after clicking "
+        "navigation elements or submitting forms to let the page update."
+    )
+    category = "browser"
+    parameters_model = BrowserWaitParams
+    is_read_only = True
+    timeout = 60.0
+
+    async def execute(self, **kwargs: Any) -> Dict[str, Any]:  # type: ignore[override]
+        text = kwargs.get("text")
+        timeout_ms = kwargs.get("timeout_ms")
+        if err := _check_playwright():
+            return err
+        try:
+            return await BrowserManager().wait_for(text=text, timeout_ms=timeout_ms)
+        except RuntimeError as e:
+            return {"success": False, "error": str(e)}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Tool: browser_close
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class BrowserCloseParams(BaseModel):
+    pass  # no parameters
+
+
+class BrowserCloseTool(Tool):
+    """Close the browser session and free resources."""
+
+    name = "browser_close"
+    description = (
+        "Close the browser, freeing system resources. Call this when you're "
+        "done with a browser workflow. The browser can be re-opened later with "
+        "browser_navigate."
+    )
+    category = "browser"
+    parameters_model = BrowserCloseParams
+    timeout = 15.0
+
+    async def execute(self) -> Dict[str, Any]:  # type: ignore[override]
+        if err := _check_playwright():
+            return err
+        return await BrowserManager().close()

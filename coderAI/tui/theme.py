@@ -61,8 +61,8 @@ class Styles:
     DANGER = f"bold {Tokens.DANGER}"
     WARN = f"bold {Tokens.WARN}"
     GUTTER_LINE = Tokens.TEXT_MUTED
-    GUTTER_ADD = "oklch(0.86 0.12 145)"
-    GUTTER_REMOVE = "oklch(0.78 0.14 25)"
+    GUTTER_ADD = "rgba(127,212,154,1.0)"
+    GUTTER_REMOVE = "rgba(213,123,102,1.0)"
     GUTTER_CTX = Tokens.TEXT_DIM
     DIFF_ADD_BG = "rgba(120,255,170,0.06)"
     DIFF_REMOVE_BG = "rgba(120,120,255,0.06)"

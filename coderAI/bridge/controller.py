@@ -18,7 +18,7 @@ import os
 from pathlib import Path
 import time as _time
 import uuid
-from typing import Any, Awaitable, Callable, Dict, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from coderAI.core.agent_tracker import AgentInfo, AgentStatus, agent_tracker
 from coderAI.system.config import config_manager
@@ -393,6 +393,7 @@ class UIBridge:
         _bind("agent_tracker_sync", self._on_agent_tracker_sync)
         _bind("tool_progress", self._on_tool_progress)
         _bind("plan_update", self._on_plan_update)
+        _bind("tasks_update", self._on_tasks_update)
 
     def _unwire_event_listeners(self) -> None:
         for name, cb in self._listener_refs:
@@ -517,6 +518,14 @@ class UIBridge:
         else:
             self.emit("plan_card", plan=_serialize_plan_for_ui(plan))
 
+    def _on_tasks_update(self, tasks: Optional[List[Dict[str, Any]]] = None) -> None:
+        self.emit("tasks_card", tasks=_serialize_tasks_for_ui(tasks or []))
+
+    def _emit_tasks_from_disk(self) -> None:
+        pr = getattr(self.agent.config, "project_root", None) or "."
+        tasks = _load_tasks_from_disk(str(pr))
+        self.emit("tasks_card", tasks=_serialize_tasks_for_ui(tasks))
+
     # -- inbound --------------------------------------------------------------
 
     async def _dispatch(self, msg: Dict[str, Any]) -> None:
@@ -605,6 +614,13 @@ class UIBridge:
                 info=_agent_info_dict(info),
                 parentId=info.parent_id,
             )
+        from coderAI.system.project_layout import read_current_plan
+
+        pr = getattr(self.agent.config, "project_root", None) or "."
+        plan = read_current_plan(str(pr))
+        if plan and isinstance(plan, dict):
+            self.emit("plan_card", plan=_serialize_plan_for_ui(plan))
+        self._emit_tasks_from_disk()
 
     async def _shutdown(self) -> None:
         for task in list(self._pending_tasks):
@@ -1002,6 +1018,70 @@ def _serialize_plan_for_ui(plan: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+_PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}
+_COMPLETED_CAP = 5
+
+
+def _task_ui_item(task: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": int(task.get("id") or 0),
+        "title": str(task.get("title") or ""),
+        "priority": str(task.get("priority") or "medium"),
+        "status": str(task.get("status") or "pending"),
+    }
+
+
+def _serialize_tasks_for_ui(tasks: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Serialize tasks into a grouped payload for the tasks_card UI event."""
+
+    def _sort_key(t: Dict[str, Any]) -> int:
+        return _PRIORITY_ORDER.get(str(t.get("priority", "medium")), 1)
+
+    in_progress = sorted(
+        [_task_ui_item(t) for t in tasks if t.get("status") == "in_progress"],
+        key=_sort_key,
+    )
+    pending = sorted(
+        [_task_ui_item(t) for t in tasks if t.get("status") == "pending"],
+        key=_sort_key,
+    )
+    completed_all = [t for t in tasks if t.get("status") == "completed"]
+    completed = [_task_ui_item(t) for t in completed_all[-_COMPLETED_CAP:]]
+
+    return {
+        "summary": (
+            f"{len(in_progress)} in-progress, "
+            f"{len(pending)} pending, "
+            f"{len(completed_all)} completed"
+        ),
+        "inProgress": in_progress,
+        "pending": pending,
+        "completed": completed,
+        "total": len(tasks),
+    }
+
+
+def _load_tasks_from_disk(project_root: str) -> List[Dict[str, Any]]:
+    from coderAI.tools.tasks import get_tasks_file
+
+    tasks_file = get_tasks_file(project_root)
+    if not tasks_file.exists():
+        return []
+    try:
+        import json
+
+        with open(tasks_file, encoding="utf-8") as f:
+            raw = json.load(f)
+        if not isinstance(raw, list):
+            return []
+        for t in raw:
+            if isinstance(t, dict) and "priority" not in t:
+                t["priority"] = "medium"
+        return raw
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
 async def _cmd_get_plan(server: UIBridge, msg: Dict[str, Any]) -> None:
     from coderAI.system.project_layout import read_current_plan
 
@@ -1015,6 +1095,10 @@ async def _cmd_get_plan(server: UIBridge, msg: Dict[str, Any]) -> None:
         return
     server.emit("plan_card", plan=_serialize_plan_for_ui(plan))
     server.emit("info", message=_format_plan_message(plan))
+
+
+async def _cmd_get_tasks(server: UIBridge, _msg: Dict[str, Any]) -> None:
+    server._emit_tasks_from_disk()
 
 
 async def _cmd_list_personas(server: UIBridge, _msg: Dict[str, Any]) -> None:
@@ -1073,6 +1157,7 @@ async def _cmd_list_models(server: UIBridge, _msg: Dict[str, Any]) -> None:
     from ..llm.deepseek import DeepSeekProvider
     from ..llm.groq import GroqProvider
     from ..llm.openai import OpenAIProvider
+    from ..llm.gemini import GeminiProvider
 
     server.emit(
         "available_models",
@@ -1082,6 +1167,7 @@ async def _cmd_list_models(server: UIBridge, _msg: Dict[str, Any]) -> None:
             "OpenAI": sorted(OpenAIProvider.SUPPORTED_MODELS.keys()),
             "DeepSeek": sorted(DeepSeekProvider.SUPPORTED_MODELS.keys()),
             "Groq": sorted(GroqProvider.SUPPORTED_MODELS.keys()),
+            "Gemini": sorted(GeminiProvider.SUPPORTED_MODELS.keys()),
             "Local": ["lmstudio", "ollama"],
         },
     )
@@ -1179,6 +1265,145 @@ async def _cmd_exit(server: UIBridge, msg: Dict[str, Any]) -> None:
     server._exit.set()
 
 
+async def _cmd_init_project(server: UIBridge, _msg: Dict[str, Any]) -> None:
+    project_root = Path(getattr(server.agent.config, "project_root", ".")).resolve()
+    dot_dir = project_root / ".coderAI"
+
+    created_dirs: list[str] = []
+    created_files: list[str] = []
+    skipped_files: list[str] = []
+
+    dirs_to_create = [
+        dot_dir / "agents",
+        dot_dir / "skills",
+        dot_dir / "rules",
+    ]
+
+    for d in dirs_to_create:
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+            created_dirs.append(str(d.relative_to(project_root)))
+        except OSError as e:
+            server._emit_error("tool", f"Cannot create {d.name}: {e}")
+            return
+
+    files_to_create: list[tuple[Path, str]] = [
+        (
+            project_root / "coderai.md",
+            "\n".join([
+                "# Project Guidance for CoderAI",
+                "",
+                "Describe your project here so CoderAI can work effectively:",
+                "",
+                "## Project Overview",
+                "- What does this project do?",
+                "- What is the tech stack?",
+                "",
+                "## Key Conventions",
+                "- Code style preferences (e.g. tabs vs spaces, naming conventions)",
+                "- Testing framework and how to run tests",
+                "- Branch naming and PR workflow",
+                "",
+                "## Common Commands",
+                "- `npm run dev` / `make run` — start development server",
+                "- `npm test` / `pytest` — run tests",
+                "- `npm run lint` / `ruff check .` — lint code",
+                "",
+                "## Important Notes",
+                "- Any gotchas or context the AI should always remember",
+                "- Links to docs, design files, or relevant resources",
+                "",
+            ]),
+        ),
+        (
+            dot_dir / "agents" / "planner.md",
+            "\n".join([
+                "---",
+                "name: planner",
+                "description: Planning specialist for complex features, refactors, and implementation sequencing.",
+                "tools: [\"Read\", \"Grep\", \"Glob\", \"Bash\", \"Edit\", \"Write\"]",
+                "model: sonnet",
+                "---",
+                "",
+                "You create implementation plans that are specific, incremental, and testable.",
+                "",
+                "## Workflow",
+                "",
+                "1. Read enough of the codebase to understand the real constraints.",
+                "2. Break the work into concrete steps with file paths when possible.",
+                "3. Call out dependencies, risks, and validation points.",
+                "4. Prefer plans that can be delivered in small, verifiable increments.",
+                "",
+                "## Output Expectations",
+                "",
+                "- Separate requirements, implementation steps, and risks.",
+                "- Include verification guidance.",
+                "- Avoid claiming any persona or workflow is activated automatically.",
+                "",
+            ]),
+        ),
+        (
+            dot_dir / "rules" / "001-common-principles.md",
+            "\n".join([
+                "# 001: Common Principles",
+                "",
+                "This rule applies universally to all agents operating within this project. Follow these principles at all times:",
+                "",
+                "## 1. Test-Driven Development (TDD)",
+                "- **Always write tests first:** When implementing new features or fixing bugs, write a failing test before writing the implementation code.",
+                "- **Verify Coverage:** Ensure that all new core logic is covered by tests.",
+                "- **Independence:** Tests should not rely on shared state or external systems without proper mocking.",
+                "",
+                "## 2. Security First",
+                "- **No Hardcoded Secrets:** Never hardcode API keys, tokens, passwords, or connection strings in the source code. Use environment variables (e.g., `os.environ.get()`).",
+                "- **Input Validation:** Always validate and sanitize user input at the boundaries of the application.",
+                "- **Defense in Depth:** Do not assume that internal components are safe from malicious input.",
+                "",
+                "## 3. Tool Usage & Autonomy",
+                "- **Act Proactively:** Use your available tools (`Read`, `Grep`, `Bash`, etc.) to gather necessary context. Do not guess file paths or function names.",
+                "- **Verify Assumptions:** If you are unsure about how a component works, read the code or run a test script to understand its behavior before making changes.",
+                "",
+                "## 4. Communication",
+                "- **Clarity and Precision:** When reporting findings or documenting code, be concise but factually complete.",
+                "- **Cite Sources:** Reference specific file paths and line numbers when discussing code changes.",
+                "",
+                "## 5. Plan-First Workflow",
+                "- **Plan before you build:** For any task involving multiple steps, multiple file edits, or non-trivial implementation work, call the `plan` tool with `action='create'` before starting.",
+                "- **Track granular work:** Use `manage_tasks` (`add` / `start` / `complete`) alongside the plan to maintain a working checklist.",
+                "- **Skip planning only for trivial asks:** Single-file reads, greetings, one-line answers, and simple lookups do not need a plan.",
+                "",
+            ]),
+        ),
+        (
+            dot_dir / "tasks.json",
+            "[]\n",
+        ),
+    ]
+
+    for filepath, content in files_to_create:
+        rel = str(filepath.relative_to(project_root))
+        if filepath.exists():
+            skipped_files.append(rel)
+            continue
+        try:
+            filepath.parent.mkdir(parents=True, exist_ok=True)
+            filepath.write_text(content, encoding="utf-8")
+            created_files.append(rel)
+        except OSError as e:
+            server._emit_error("tool", f"Cannot write {rel}: {e}")
+            return
+
+    lines = [f"Scaffolded .coderai/ in {project_root.name}:"]
+    if created_dirs:
+        lines.append(f"  {len(created_dirs)} directories created")
+    for f in created_files:
+        lines.append(f"  created: {f}")
+    for f in skipped_files:
+        lines.append(f"  skipped (exists): {f}")
+
+    server.emit("success", message="\n".join(lines))
+
+
 async def _cmd_cancel_agent(server: UIBridge, msg: Dict[str, Any]) -> None:
     """Cancel a specific sub-agent by ID."""
     agent_id = (msg.get("payload") or {}).get("agentId")
@@ -1209,6 +1434,7 @@ _COMMAND_HANDLERS: Dict[str, Callable[[UIBridge, Dict[str, Any]], Awaitable[None
     "manage_context": _cmd_manage_context,
     "get_state": _cmd_get_state,
     "get_plan": _cmd_get_plan,
+    "get_tasks": _cmd_get_tasks,
     "list_models": _cmd_list_models,
     "list_personas": _cmd_list_personas,
     "list_skills": _cmd_list_skills,
@@ -1216,5 +1442,6 @@ _COMMAND_HANDLERS: Dict[str, Callable[[UIBridge, Dict[str, Any]], Awaitable[None
     "reference": _cmd_reference,
     "set_default_model": _cmd_set_default_model,
     "set_verbosity": _cmd_set_verbosity,
+    "init_project": _cmd_init_project,
     "exit": _cmd_exit,
 }

@@ -1,14 +1,11 @@
 """DeepSeek LLM provider implementation."""
 
-import logging
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 from openai import AsyncOpenAI
 
 from coderAI.llm.base import LLMProvider, REASONING_BUDGET_MAP
-from coderAI.system.cost import CostTracker
-
-logger = logging.getLogger(__name__)
+from coderAI.llm.base import _retry_async as _retry
 
 
 class DeepSeekProvider(LLMProvider):
@@ -45,16 +42,9 @@ class DeepSeekProvider(LLMProvider):
             base_url="https://api.deepseek.com",
         )
 
-        self.temperature = kwargs.get("temperature", 0.7)
-        self.max_tokens = kwargs.get("max_tokens", 8192)
-        self.reasoning_effort = kwargs.get("reasoning_effort", "none")
-
-        # Cost tracking
-        self.total_input_tokens = 0
-        self.total_output_tokens = 0
-
-    async def close(self) -> None:
-        await self.client.close()
+        # DeepSeek reasoning is disabled by default
+        if "reasoning_effort" not in kwargs:
+            self.reasoning_effort = "none"
 
     @property
     def _uses_v4_family(self) -> bool:
@@ -115,7 +105,9 @@ class DeepSeekProvider(LLMProvider):
         params = self._build_request_params(messages, tools, **kwargs)
 
         try:
-            response = await self.client.chat.completions.create(**params)
+            async def _call():
+                return await self.client.chat.completions.create(**params)
+            response = await _retry(_call, description="DeepSeek chat", max_retries=3)
         except Exception as e:
             raise RuntimeError(f"DeepSeek API error: {e}") from e
         result = response.model_dump()
@@ -146,7 +138,9 @@ class DeepSeekProvider(LLMProvider):
         params = self._build_request_params(messages, tools, stream=True, **kwargs)
 
         try:
-            stream = await self.client.chat.completions.create(**params)
+            async def _create_stream():
+                return await self.client.chat.completions.create(**params)
+            stream = await _retry(_create_stream, description="DeepSeek stream", max_retries=3)
         except Exception as e:
             raise RuntimeError(f"DeepSeek API streaming error: {e}") from e
         async for chunk in stream:
@@ -165,30 +159,6 @@ class DeepSeekProvider(LLMProvider):
     def supports_tools(self) -> bool:
         """DeepSeek Reasoner model does not support tool use."""
         return self.actual_model != "deepseek-reasoner"
-
-    def count_tokens(self, text: str) -> int:
-        """Count tokens. Using a rough estimate of 4 chars per token (approximate)."""
-        return len(text) // 4
-
-    def get_cost(self) -> Dict[str, Any]:
-        """Get current session cost estimate."""
-        pricing = CostTracker.get_model_pricing(self.actual_model)
-        input_cost = (self.total_input_tokens / 1_000_000) * pricing["input"]
-        output_cost = (self.total_output_tokens / 1_000_000) * pricing["output"]
-
-        return {
-            "input_tokens": self.total_input_tokens,
-            "output_tokens": self.total_output_tokens,
-            "total_tokens": self.total_input_tokens + self.total_output_tokens,
-            "input_cost": round(input_cost, 6),
-            "output_cost": round(output_cost, 6),
-            "total_cost": round(input_cost + output_cost, 6),
-            "currency": "USD",
-            "model": self.actual_model,
-        }
-
-    def get_model_info(self) -> Dict[str, Any]:
-        return super().get_model_info()
 
     def clean_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """DeepSeek V4/R1 supports passing reasoning_content back in the assistant role."""

@@ -15,6 +15,20 @@ Complete reference for CLI commands and interactive slash commands.
 
 Run from your terminal as `coderAI <command>`.
 
+### Global options
+
+These apply when invoking the root command without a subcommand (equivalent to `coderAI chat`), or as documented on specific commands:
+
+| Option | Description |
+|--------|-------------|
+| `-v`, `--version` | Print version and exit (not verbose logging) |
+| `--verbose` | Enable debug logging |
+| `-m`, `--model` | Model override for this session |
+| `-r`, `--resume` | Resume a session by ID |
+| `--continue` | Resume the most recently updated session |
+
+---
+
 ### `coderAI` / `coderAI chat`
 Start an interactive chat session in the Textual TUI.
 
@@ -29,6 +43,14 @@ coderAI chat -m gpt-5.4-mini
 
 # Resume a previous session
 coderAI chat --resume <session-id>
+
+# Resume the latest session
+coderAI chat --continue
+coderAI chat --continue-session   # alias
+
+# Load a persona at startup (.coderAI/agents/<name>.md)
+coderAI chat --persona code-reviewer
+coderAI chat -p architect
 
 # Skip tool confirmation prompts (use with care)
 coderAI chat --auto-approve
@@ -86,8 +108,19 @@ coderAI status
 
 ---
 
+### `coderAI doctor`
+Run a post-install health check: Python version, config directory writability, default model, API keys (masked), Textual availability, and history directory.
+
+```bash
+coderAI doctor
+```
+
+Exit code `1` if any check fails; `0` if all pass (warnings alone do not fail). Recommended after `coderAI setup`.
+
+---
+
 ### `coderAI cost`
-Show per-model pricing and current session cost.
+Show per-model pricing and configured budget limit. Live session cost is tracked inside chat (`/tokens`).
 
 ```bash
 coderAI cost

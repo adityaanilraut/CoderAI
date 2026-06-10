@@ -13,7 +13,7 @@ from coderAI.tools import web as web_mod
 from coderAI.tools.web import (
     ReadURLTool,
     WebSearchTool,
-    _convert_content,
+    _html_to_text,
     _DDGBackend,
     _ExaBackend,
     _filter_by_domain,
@@ -33,20 +33,19 @@ from coderAI.tools.web import (
 
 class TestConvertContent:
     def test_markdown_format_renders_headings(self):
-        out = _convert_content("<h1>Title</h1><p>body</p>", "text/html", "markdown")
+        out = _html_to_text("<h1>Title</h1><p>body</p>", "markdown")
         assert "# Title" in out
         assert "body" in out
 
     def test_markdown_format_renders_links(self):
-        out = _convert_content(
+        out = _html_to_text(
             '<p>Visit <a href="https://example.com">example</a></p>',
-            "text/html",
             "markdown",
         )
         assert "[example](https://example.com)" in out
 
     def test_text_format_strips_all_markup(self):
-        out = _convert_content("<h1>Title</h1><ul><li>a</li><li>b</li></ul>", "text/html", "text")
+        out = _html_to_text("<h1>Title</h1><ul><li>a</li><li>b</li></ul>", "text")
         assert "<" not in out
         assert "#" not in out
         assert "Title" in out
@@ -54,12 +53,12 @@ class TestConvertContent:
 
     def test_html_format_returns_raw(self):
         raw = "<h1>Title</h1><p>body</p>"
-        assert _convert_content(raw, "text/html", "html") == raw
+        assert _html_to_text(raw, "html") == raw
 
     def test_non_html_passthrough(self):
         raw = "plain text"
-        assert _convert_content(raw, "text/plain", "markdown") == raw
-        assert _convert_content(raw, "text/plain", "text") == raw
+        assert _html_to_text(raw, "markdown") == raw
+        assert _html_to_text(raw, "text") == raw
 
 
 # ---------------------------------------------------------------------------

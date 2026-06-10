@@ -77,14 +77,6 @@ class Display:
         """Print a header."""
         self.console.rule(f"[bold blue]{text}[/bold blue]")
 
-    def status(self, text: str):
-        """Create a status context for showing progress."""
-        return self.console.status(text)
-
-    def clear(self):
-        """Clear the console."""
-        self.console.clear()
-
 
 # Global display instance
 display = Display()

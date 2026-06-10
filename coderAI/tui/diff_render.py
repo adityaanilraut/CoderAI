@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import List, Tuple
 
+from rich.markup import escape
+
 from coderAI.tui.theme import Styles, Tokens
 
 DIFF_MAX_LINES = 12
@@ -59,15 +61,15 @@ def format_diff_gutter(diff: str, max_lines: int = DIFF_MAX_LINES) -> str:
     # Build gutter output
     for kind, text in window:
         if kind == "meta":
-            lines_out.append(f"[{Tokens.TEXT_DIM}]{text}[/]")
+            lines_out.append(f"[{Tokens.TEXT_DIM}]{escape(text)}[/]")
         elif kind == "hunk":
-            lines_out.append(f"[{Tokens.TEXT_MUTED}]{text}[/]")
+            lines_out.append(f"[{Tokens.TEXT_MUTED}]{escape(text)}[/]")
         elif kind == "add":
             lines_out.append(
                 f"[{Styles.DIFF_ADD_BG}]"
                 f"[{Styles.GUTTER_LINE}]    [/]"
                 f" [{Styles.GUTTER_ADD}]+[/] "
-                f"[{Styles.GUTTER_ADD}]{text}[/]"
+                f"[{Styles.GUTTER_ADD}]{escape(text)}[/]"
                 f"[/]"
             )
         elif kind == "del":
@@ -75,14 +77,14 @@ def format_diff_gutter(diff: str, max_lines: int = DIFF_MAX_LINES) -> str:
                 f"[{Styles.DIFF_REMOVE_BG}]"
                 f"[{Styles.GUTTER_LINE}]    [/]"
                 f" [{Styles.GUTTER_REMOVE}]\u2212[/] "
-                f"[{Styles.GUTTER_REMOVE}]{text}[/]"
+                f"[{Styles.GUTTER_REMOVE}]{escape(text)}[/]"
                 f"[/]"
             )
         elif kind == "ctx":
             lines_out.append(
                 f"[{Styles.GUTTER_LINE}]    [/]"
                 f" [{Styles.GUTTER_CTX}] [/] "
-                f"[{Styles.GUTTER_CTX}]{text}[/]"
+                f"[{Styles.GUTTER_CTX}]{escape(text)}[/]"
             )
 
     return "\n".join(lines_out)

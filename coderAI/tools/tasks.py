@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, cast
 
 from pydantic import BaseModel, Field
 
+from coderAI.system.events import event_emitter
 from coderAI.tools.base import Tool
 
 
@@ -217,6 +218,7 @@ class ManageTasksTool(Tool):
             except OSError:
                 pass
             raise
+        event_emitter.emit("tasks_update", tasks=tasks)
 
     def _format_tasks(self, tasks: List[Dict[str, Any]]) -> Dict[str, Any]:
         if not tasks:

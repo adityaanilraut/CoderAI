@@ -69,13 +69,36 @@ class CodeIndexer:
         Returns:
             Dict with ``added``, ``removed``, ``updated``, ``unchanged`` counts.
         """
+        self._load_manifest()
+        self._recreate_collection(skip_if_unchanged)
+        files, to_index, added, updated, unchanged = self._discover_changed_files(
+            paths, skip_if_unchanged
+        )
+        removed = self._cleanup_removed_files(files)
+
+        if not to_index:
+            return {"added": added, "removed": removed, "updated": updated, "unchanged": unchanged}
+
+        ids, docs, metadatas, embeddings, file_hashes = await self._chunk_and_embed(to_index)
+        self._upsert_batch(ids, docs, metadatas, embeddings)
+        self._update_manifest(file_hashes)
+
+        return {
+            "added": added,
+            "removed": removed,
+            "updated": updated,
+            "unchanged": unchanged,
+        }
+
+    # ------------------------------------------------------------------
+    # Index helpers
+    # ------------------------------------------------------------------
+
+    def _recreate_collection(self, skip_if_unchanged: bool) -> None:
+        """Initialize or re-create the ChromaDB collection."""
         import chromadb
 
-        self._load_manifest()
-
         if self._client is None:
-            import chromadb
-
             chroma_path = str(self._index_dir / "vectordb")
             self._client = chromadb.PersistentClient(path=chroma_path)
 
@@ -83,17 +106,28 @@ class CodeIndexer:
             try:
                 self._client.delete_collection(_COLLECTION_NAME)
             except Exception:
-                logger.debug("Failed to delete ChromaDB collection during reindex", exc_info=True)
-                pass
+                logger.warning(
+                    "Failed to delete ChromaDB collection during reindex — "
+                    "collection may be stale. Proceeding with get_or_create_collection.",
+                    exc_info=True,
+                )
 
         self._collection = self._client.get_or_create_collection(
             name=_COLLECTION_NAME,
             metadata={"hnsw:space": "cosine"},
         )
 
-        from coderAI.context.code_chunker import chunk_file, is_skip_dir, should_index
+    def _discover_changed_files(
+        self,
+        paths: Optional[List[str]],
+        skip_if_unchanged: bool,
+    ) -> tuple:
+        """Walk project, gather files, and separate changed from unchanged.
 
-        # Gather files
+        Returns (files, to_index, added, updated, unchanged).
+        """
+        from coderAI.context.code_chunker import is_skip_dir, should_index
+
         if paths:
             files = []
             for p in paths:
@@ -113,8 +147,6 @@ class CodeIndexer:
                     if should_index(fp):
                         files.append(fp)
 
-        # Filter unchanged; separate genuinely new files from hash-changed ones
-        # so the returned stats are no longer misleading.
         to_index: list[Path] = []
         unchanged = 0
         added = 0
@@ -123,7 +155,6 @@ class CodeIndexer:
             rel = str(fp.relative_to(self._root))
             fhash = _file_hash(fp)
             if fhash is None:
-                # Unreadable — remove from manifest so it gets re-indexed if it becomes readable
                 self._manifest.pop(rel, None)
                 continue
             if skip_if_unchanged:
@@ -147,21 +178,32 @@ class CodeIndexer:
             len(files),
         )
 
-        # Remove files no longer on disk
+        return files, to_index, added, updated, unchanged
+
+    def _cleanup_removed_files(self, files: list[Path]) -> int:
+        """Remove manifest entries for files no longer on disk.
+
+        Returns count of removed entries.
+        """
         known = {str(f.relative_to(self._root)) for f in files}
         removed = 0
         for rel in list(self._manifest.keys()):
             if rel not in known:
                 del self._manifest[rel]
                 removed += 1
-
         if removed:
             self._save_manifest()
+        return removed
 
-        if not to_index:
-            return {"added": added, "removed": removed, "updated": updated, "unchanged": unchanged}
+    async def _chunk_and_embed(
+        self, to_index: list[Path]
+    ) -> tuple:
+        """Chunk files, delete stale ChromaDB entries, and generate embeddings.
 
-        # Chunk — delete existing chunks for changed files before re-adding
+        Returns (ids, docs, metadatas, embeddings, file_hashes).
+        """
+        from coderAI.context.code_chunker import chunk_file
+
         all_chunks: list = []
         file_hashes: Dict[str, str] = {}
         if self._collection is not None:
@@ -176,14 +218,12 @@ class CodeIndexer:
                         where={"file_path": {"$in": changed_rels}}  # type: ignore[dict-item]
                     )
                     if existing and existing["ids"]:  # type: ignore[index]
-                        chunk_ids: list[str] = existing["ids"]  # type: ignore[assignment,index]
-                        self._collection.delete(ids=chunk_ids)  # type: ignore[arg-type]
+                        self._collection.delete(ids=existing["ids"])  # type: ignore[arg-type,index]
                 except Exception:
                     logger.debug(
                         "Failed to delete existing ChromaDB chunks before re-indexing",
                         exc_info=True,
                     )
-                    pass
         for fp in to_index:
             rel = str(fp.relative_to(self._root))
             result = chunk_file(fp, self._root)
@@ -191,10 +231,6 @@ class CodeIndexer:
                 all_chunks.extend(result.chunks)
                 file_hashes[rel] = result.file_hash
 
-        if not all_chunks:
-            return {"added": added, "removed": removed, "updated": updated, "unchanged": unchanged}
-
-        # Embed in batches
         ids: list[str] = []
         docs: list[str] = []
         metadatas: list[dict] = []
@@ -220,30 +256,31 @@ class CodeIndexer:
                 )
                 embeddings.append(vec)
 
-        # Upsert
-        if ids:
-            assert self._collection is not None
-            try:
-                self._collection.add(
-                    ids=ids,
-                    documents=docs,
-                    metadatas=metadatas,  # type: ignore[arg-type]
-                    embeddings=embeddings,  # type: ignore[arg-type]
-                )
-                # Update manifest only after ChromaDB confirms write
-                for rel, fhash in file_hashes.items():
-                    self._manifest[rel] = fhash
-                self._save_manifest()
-            except Exception:
-                logger.exception("ChromaDB write failed; index may be incomplete")
-                raise
+        return ids, docs, metadatas, embeddings, file_hashes
 
-        return {
-            "added": added,
-            "removed": removed,
-            "updated": updated,
-            "unchanged": unchanged,
-        }
+    def _upsert_batch(
+        self,
+        ids: list[str],
+        docs: list[str],
+        metadatas: list[dict],
+        embeddings: list[list[float]],
+    ) -> None:
+        """Insert chunk batches into the ChromaDB collection."""
+        if not ids:
+            return
+        assert self._collection is not None
+        self._collection.add(
+            ids=ids,
+            documents=docs,
+            metadatas=metadatas,  # type: ignore[arg-type]
+            embeddings=embeddings,  # type: ignore[arg-type]
+        )
+
+    def _update_manifest(self, file_hashes: Dict[str, str]) -> None:
+        """Persist updated file hashes to the manifest after a successful write."""
+        for rel, fhash in file_hashes.items():
+            self._manifest[rel] = fhash
+        self._save_manifest()
 
     # ------------------------------------------------------------------
     # Search

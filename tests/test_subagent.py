@@ -36,9 +36,9 @@ class TestDelegateTaskToolInit:
         """Sub-agents can mutate repo/state; parallelism is capped separately."""
         assert DelegateTaskTool.is_read_only is False
 
-    def test_parallel_cap_serialises_workspace_access(self):
-        """Sub-agents run one at a time to serialise workspace access and prevent deadlocks."""
-        assert DelegateTaskTool.max_parallel_invocations == 1
+    def test_routing_uses_domain_scheduler_not_parallel_cap(self):
+        """delegate_task parallelism is domain-aware in ToolExecutor, not max_parallel."""
+        assert DelegateTaskTool.max_parallel_invocations == 0
 
 
 class TestDelegateTaskDepthLimit:

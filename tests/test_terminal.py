@@ -199,11 +199,19 @@ class TestRunBackgroundTool:
         assert len(self.tool.get_tracked_processes()) >= 1
 
     def test_cleanup_finished(self):
-        asyncio.run(self.tool.execute(command="sleep 0"))
-        # Give process time to finish
-        import time
+        asyncio.run(self._run_and_cleanup())
 
-        time.sleep(0.2)
+    async def _run_and_cleanup(self):
+        await self.tool.execute(command="sleep 0")
+        # Poll until process finishes or timeout reached
+        for _ in range(10):
+            await asyncio.sleep(0.02)
+            for proc_info in self.tool._processes.values():
+                if proc_info.process.returncode is not None:
+                    break
+            else:
+                continue
+            break
         removed = self.tool.cleanup_finished()
         assert isinstance(removed, int)
 

@@ -46,8 +46,8 @@ def test_turn_text_coalesces_deltas_before_flush() -> None:
         reducer.handle("turn", {"phase": "text", "delta": "hello "})
         reducer.handle("turn", {"phase": "text", "delta": "world"})
 
-    assert reducer.timeline[0]["content"] == ""
-    assert reducer._stream_pending_content == "hello world"
+    assert reducer.timeline[0]["content"] == "hello "
+    assert reducer._stream_pending_content == "world"
     assert reducer.session.streaming is True
 
 
@@ -277,3 +277,21 @@ def test_progress_elapsed_maps_to_session() -> None:
         "kind": "files",
         "elapsed": 4.2,
     }
+
+
+def test_tasks_card_updates_session_and_chrome_refresh() -> None:
+    reducer = EventReducer()
+    modes: list[str] = []
+    reducer.on_change = lambda mode: modes.append(mode)
+
+    payload = {
+        "summary": "1 in-progress, 1 pending, 0 completed",
+        "inProgress": [{"id": 1, "title": "Fix bug", "priority": "high", "status": "in_progress"}],
+        "pending": [{"id": 2, "title": "Write tests", "priority": "medium", "status": "pending"}],
+        "completed": [],
+        "total": 2,
+    }
+    reducer.handle("tasks_card", {"tasks": payload})
+
+    assert reducer.session.current_tasks == payload
+    assert modes == ["chrome"]

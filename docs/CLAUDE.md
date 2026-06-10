@@ -50,7 +50,7 @@ Per-turn flow (`Agent.process_message()` → `agent_loop`):
 1. User input → inject pinned context → context compression once estimated tokens exceed `context_window - RESPONSE_TOKEN_RESERVE - TOOL_OVERHEAD_TOKENS` (so summarization runs reactively when the window is genuinely full, not at an arbitrary 70% mark)
 2. LLM call with retry logic (max 3 retries, exponential backoff for transient errors)
 3. If tool calls returned → read-only tools run in parallel (`asyncio.gather`), mutating tools run sequentially
-4. Tool results fed back to LLM → loop continues until final text response (max 50 iterations). Read-only tools run in parallel; `delegate_task` runs **sequentially** (one sub-agent at a time, `max_parallel_invocations = 1`) to avoid workspace conflicts during branch switching or file modifications; other mutating tools run one at a time.
+4. Tool results fed back to LLM → loop continues until final text response (max 50 iterations). Read-only tools run in parallel; `delegate_task` is domain-routed — read-only delegations (≤4 parallel), browser (≤3 parallel), desktop/workspace serial; other mutating tools run one at a time.
 5. Session saved to `~/.coderAI/history/`
 
 **Runtime shape of `coderAI chat`:**

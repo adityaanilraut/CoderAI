@@ -5,6 +5,7 @@ import shutil
 import pytest
 
 from coderAI.tools.lint import LintTool, detect_linter
+from conftest import require_external
 
 
 @pytest.fixture
@@ -17,8 +18,7 @@ def python_project(tmp_path):
 
 class TestDetectLinter:
     def test_detects_ruff_for_python_project(self, python_project):
-        if not shutil.which("ruff"):
-            pytest.skip("ruff not installed")
+        require_external("ruff")
         result = detect_linter(str(python_project))
         assert result == "ruff"
 
@@ -27,8 +27,7 @@ class TestDetectLinter:
         assert result is None
 
     def test_detects_eslint_for_node_project(self, tmp_path):
-        if not shutil.which("npx"):
-            pytest.skip("npx not installed")
+        require_external("npx", "npx required for eslint detection")
         (tmp_path / "package.json").write_text('{"name":"test"}')
         (tmp_path / ".eslintrc.json").write_text("{}")
         # eslint may not be available; just check it doesn't raise
@@ -52,8 +51,7 @@ class TestLintTool:
         assert not result["success"]
 
     def test_ruff_check_on_python_file(self, tmp_path):
-        if not shutil.which("ruff"):
-            pytest.skip("ruff not installed")
+        require_external("ruff")
         py_file = tmp_path / "bad.py"
         py_file.write_text("import os\nimport sys\nx=1\n")
         result = asyncio.run(self.tool.execute(path=str(py_file), linter="ruff"))
@@ -62,8 +60,7 @@ class TestLintTool:
         assert result["mode"] == "check"
 
     def test_ruff_fix_mode(self, tmp_path):
-        if not shutil.which("ruff"):
-            pytest.skip("ruff not installed")
+        require_external("ruff")
         py_file = tmp_path / "fixable.py"
         py_file.write_text("import os\nx=1\n")
         result = asyncio.run(self.tool.execute(path=str(py_file), linter="ruff", fix=True))

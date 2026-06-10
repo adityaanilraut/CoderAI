@@ -12,6 +12,7 @@ from coderAI.bridge.controller import (
     _cmd_compact_context,
     _cmd_get_plan,
     _cmd_get_state,
+    _cmd_get_tasks,
     _cmd_manage_context,
     _cmd_reference,
     _cmd_send_message,
@@ -20,6 +21,7 @@ from coderAI.bridge.controller import (
     _cmd_set_verbosity,
     _cmd_toggle_auto_approve,
     _cmd_tool_approval_resp,
+    _serialize_tasks_for_ui,
 )
 
 
@@ -516,3 +518,38 @@ async def test_manage_context_actions() -> None:
     # 6. Test remove missing path
     await _cmd_manage_context(server, {"action": "remove"})
     server.emit.assert_any_call("warning", message="Path required to remove from context.")
+
+
+def test_serialize_tasks_for_ui_groups_and_caps_completed() -> None:
+    tasks = [
+        {"id": 1, "title": "A", "priority": "high", "status": "in_progress"},
+        {"id": 2, "title": "B", "priority": "low", "status": "pending"},
+        {"id": 3, "title": "C", "priority": "medium", "status": "completed"},
+        {"id": 4, "title": "D", "priority": "medium", "status": "completed"},
+        {"id": 5, "title": "E", "priority": "medium", "status": "completed"},
+        {"id": 6, "title": "F", "priority": "medium", "status": "completed"},
+        {"id": 7, "title": "G", "priority": "medium", "status": "completed"},
+        {"id": 8, "title": "H", "priority": "medium", "status": "completed"},
+    ]
+    payload = _serialize_tasks_for_ui(tasks)
+
+    assert payload["total"] == 8
+    assert payload["summary"] == "1 in-progress, 1 pending, 6 completed"
+    assert len(payload["inProgress"]) == 1
+    assert payload["inProgress"][0]["title"] == "A"
+    assert len(payload["pending"]) == 1
+    assert len(payload["completed"]) == 5
+    assert payload["completed"][-1]["title"] == "H"
+
+
+@pytest.mark.asyncio
+async def test_get_tasks_emits_tasks_card() -> None:
+    server = SimpleNamespace(
+        agent=SimpleNamespace(config=SimpleNamespace(project_root=".")),
+        emit=MagicMock(),
+        _emit_tasks_from_disk=MagicMock(),
+    )
+
+    await _cmd_get_tasks(server, {})
+
+    server._emit_tasks_from_disk.assert_called_once()

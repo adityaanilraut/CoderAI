@@ -10,6 +10,7 @@ from coderAI.tools.package_manager import (
     PACKAGE_MANAGERS,
     _validate_package_name,
 )
+from conftest import require_external
 
 
 class TestDetectPackageManager:
@@ -111,6 +112,7 @@ class TestPackageManagerTool:
 
     def test_pip_list_succeeds(self, tmp_path):
         if not shutil.which("pip") and not shutil.which("pip3"):
+            require_external("pip3")  # logs WARNING before skip
             pytest.skip("pip not installed")
 
         (tmp_path / "pyproject.toml").write_text("[tool.ruff]\n")
@@ -125,8 +127,7 @@ class TestPackageManagerTool:
         assert result["manager"] in ("pip", "pip3")
 
     def test_npm_list_succeeds(self, tmp_path):
-        if not shutil.which("npm"):
-            pytest.skip("npm not installed")
+        require_external("npm")
 
         (tmp_path / "package.json").write_text('{"name":"test"}')
 

@@ -65,6 +65,7 @@ class SkillManager:
         self.registry = SkillRegistry()
         self._discovery_complete = False
         self._discovery_lock = asyncio.Lock()
+        self._match_lock = asyncio.Lock()
         self._match_cache: Dict[str, List[Tuple[Skill, float]]] = {}
 
     @property
@@ -238,29 +239,7 @@ class SkillManager:
         scored.sort(key=lambda x: x[1], reverse=True)
         return scored[: self.top_n]
 
-    async def _search_all_sources(
-        self, task_description: str
-    ) -> List[Tuple[Skill, float]]:
-        """Query every skill source for matches and merge results."""
-        all_results: Dict[str, Tuple[Skill, float]] = {}
 
-        for source in self._sources:
-            try:
-                source_results = await source.search(task_description, top_n=self.top_n)
-                for skill, confidence in source_results:
-                    existing = all_results.get(skill.name)
-                    if existing is None or confidence > existing[1]:
-                        all_results[skill.name] = (skill, confidence)
-            except Exception as e:
-                logger.warning(
-                    "%s Source '%s' search failed: %s",
-                    SKILL_MGR_PREFIX,
-                    source.source_name,
-                    e,
-                )
-
-        merged = sorted(all_results.values(), key=lambda x: x[1], reverse=True)
-        return merged[: self.top_n]
 
     async def get_top_skills(
         self,
@@ -298,75 +277,76 @@ class SkillManager:
         logger.info("%s Searching skills for: %s...", SKILL_MGR_PREFIX, task_description[:80])
 
         # Temporarily adjust threshold for the matching call
-        original_threshold = self.threshold
-        self.threshold = effective_threshold
-        original_top_n = self.top_n
-        self.top_n = effective_top_n
+        async with self._match_lock:
+            original_threshold = self.threshold
+            self.threshold = effective_threshold
+            original_top_n = self.top_n
+            self.top_n = effective_top_n
 
-        try:
-            local_skills = self.registry.find_by_source("local")
+            try:
+                local_skills = self.registry.find_by_source("local")
 
-            # 1) LLM-based matching for local skills
-            llm_matches: List[Tuple[Skill, float]] = []
-            if local_skills:
-                logger.debug(
-                    "%s Evaluating %d local skill(s) via LLM...",
-                    SKILL_MGR_PREFIX,
-                    len(local_skills),
-                )
-                llm_matches = await self._match_via_llm(task_description, local_skills)
-
-            # 2) Source-based search for external skills (hasna)
-            source_matches: List[Tuple[Skill, float]] = []
-            for source in self._sources:
-                if source.source_name == "local":
-                    continue
-                try:
-                    results = await source.search(task_description, top_n=effective_top_n)
-                    source_matches.extend(results)
-                    for skill, conf in results:
-                        logger.info(
-                            "%s Matched (hasna): %s (%.2f)",
-                            SKILL_MGR_PREFIX,
-                            skill.name,
-                            conf,
-                        )
-                except Exception as e:
-                    logger.warning(
-                        "%s Source '%s' search failed: %s",
+                # 1) LLM-based matching for local skills
+                llm_matches: List[Tuple[Skill, float]] = []
+                if local_skills:
+                    logger.debug(
+                        "%s Evaluating %d local skill(s) via LLM...",
                         SKILL_MGR_PREFIX,
-                        source.source_name,
-                        e,
+                        len(local_skills),
                     )
+                    llm_matches = await self._match_via_llm(task_description, local_skills)
 
-            # 3) If LLM returned nothing but we have local skills, fall back to keyword
-            if not llm_matches and local_skills:
-                logger.debug("%s LLM matching returned no results — trying keyword fallback", SKILL_MGR_PREFIX)
-                llm_matches = self._keyword_score(task_description, local_skills)
+                # 2) Source-based search for external skills (hasna)
+                source_matches: List[Tuple[Skill, float]] = []
+                for source in self._sources:
+                    if source.source_name == "local":
+                        continue
+                    try:
+                        results = await source.search(task_description, top_n=effective_top_n)
+                        source_matches.extend(results)
+                        for skill, conf in results:
+                            logger.info(
+                                "%s Matched (hasna): %s (%.2f)",
+                                SKILL_MGR_PREFIX,
+                                skill.name,
+                                conf,
+                            )
+                    except Exception as e:
+                        logger.warning(
+                            "%s Source '%s' search failed: %s",
+                            SKILL_MGR_PREFIX,
+                            source.source_name,
+                            e,
+                        )
 
-            # 4) Merge, deduplicate by name, sort by confidence
-            merged: Dict[str, Tuple[Skill, float]] = {}
-            for skill, conf in llm_matches + source_matches:
-                existing = merged.get(skill.name)
-                if existing is None or conf > existing[1]:
-                    merged[skill.name] = (skill, conf)
+                # 3) If LLM returned nothing but we have local skills, fall back to keyword
+                if not llm_matches and local_skills:
+                    logger.debug("%s LLM matching returned no results — trying keyword fallback", SKILL_MGR_PREFIX)
+                    llm_matches = self._keyword_score(task_description, local_skills)
 
-            final = sorted(merged.values(), key=lambda x: x[1], reverse=True)[:effective_top_n]
+                # 4) Merge, deduplicate by name, sort by confidence
+                merged: Dict[str, Tuple[Skill, float]] = {}
+                for skill, conf in llm_matches + source_matches:
+                    existing = merged.get(skill.name)
+                    if existing is None or conf > existing[1]:
+                        merged[skill.name] = (skill, conf)
 
-            # Cache the result
-            self._match_cache[cache_key] = final
+                final = sorted(merged.values(), key=lambda x: x[1], reverse=True)[:effective_top_n]
 
-            if final:
-                skill_names = [f"{s.name} ({c:.2f})" for s, c in final]
-                logger.info("%s Skills selected: %s", SKILL_MGR_PREFIX, ", ".join(skill_names))
-            else:
-                logger.debug("%s No relevant skills found", SKILL_MGR_PREFIX)
+                # Cache the result
+                self._match_cache[cache_key] = final
 
-            return [s for s, _ in final]
+                if final:
+                    skill_names = [f"{s.name} ({c:.2f})" for s, c in final]
+                    logger.info("%s Skills selected: %s", SKILL_MGR_PREFIX, ", ".join(skill_names))
+                else:
+                    logger.debug("%s No relevant skills found", SKILL_MGR_PREFIX)
 
-        finally:
-            self.threshold = original_threshold
-            self.top_n = original_top_n
+                return [s for s, _ in final]
+
+            finally:
+                self.threshold = original_threshold
+                self.top_n = original_top_n
 
     async def get_relevant_skill(self, task_description: str) -> Optional[Skill]:
         """Return the single best-match skill, or ``None``."""

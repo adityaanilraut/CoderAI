@@ -97,6 +97,7 @@ class MCPClient:
             }
 
         process = None
+        connection_failed = True
         try:
             full_args = [command] + (args or [])
             process = await asyncio.create_subprocess_exec(
@@ -173,6 +174,7 @@ class MCPClient:
                 "server_info": init_response.get("result", {}),
                 "_conn_params": {"command": command, "args": args},
             }
+            connection_failed = False
 
             # Store discovered tools
             for tool in server_info:
@@ -201,8 +203,12 @@ class MCPClient:
         except Exception as e:
             return {"success": False, "error": str(e)}
         finally:
-            # Kill the process if it was spawned but not successfully stored
-            if process is not None and server_name not in self.servers:
+            # Kill the process if the connection attempt failed.
+            # connection_failed starts True and is only cleared after
+            # successful server registration. This avoids leaking a zombie
+            # process when tools/list times out but server_name was
+            # previously connected.
+            if process is not None and connection_failed:
                 try:
                     process.kill()
                     await process.wait()

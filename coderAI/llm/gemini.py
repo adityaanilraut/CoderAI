@@ -6,8 +6,9 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 from openai import AsyncOpenAI
 
 from coderAI.llm.base import LLMProvider
-from coderAI.system.cost import CostTracker
-from coderAI.system.error_policy import _try_extract_response_body
+from coderAI.llm.base import _retry_async as _retry
+from coderAI.system.error_policy import _sanitize_dict, _try_extract_response_body
+from coderAI.system.safeguards import sanitize_for_log
 
 logger = logging.getLogger(__name__)
 
@@ -47,16 +48,6 @@ class GeminiProvider(LLMProvider):
             api_key=api_key,
             base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
         )
-
-        self.temperature = kwargs.get("temperature", 0.7)
-        self.max_tokens = kwargs.get("max_tokens", 8192)
-
-        # Cost tracking
-        self.total_input_tokens = 0
-        self.total_output_tokens = 0
-
-    async def close(self) -> None:
-        await self.client.close()
 
     def _build_request_params(
         self,
@@ -101,13 +92,15 @@ class GeminiProvider(LLMProvider):
         params = self._build_request_params(messages, tools, **kwargs)
 
         try:
-            response = await self.client.chat.completions.create(**params)
+            async def _call():
+                return await self.client.chat.completions.create(**params)
+            response = await _retry(_call, description="Gemini chat", max_retries=3)
         except Exception as e:
             logger.error("Gemini API error: %s", e)
             body = _try_extract_response_body(e)
             if body is not None:
-                logger.error("Gemini API error body: %s", body)
-            raise RuntimeError(f"Gemini API error: {e}") from e
+                logger.error("Gemini API error body: %s", _sanitize_dict(body))
+            raise RuntimeError(f"Gemini API error: {sanitize_for_log(str(e))}") from e
         result = response.model_dump()
         assert isinstance(result, dict)
 
@@ -136,13 +129,15 @@ class GeminiProvider(LLMProvider):
         params = self._build_request_params(messages, tools, stream=True, **kwargs)
 
         try:
-            stream = await self.client.chat.completions.create(**params)
+            async def _create_stream():
+                return await self.client.chat.completions.create(**params)
+            stream = await _retry(_create_stream, description="Gemini stream", max_retries=3)
         except Exception as e:
             logger.error("Gemini API streaming error: %s", e)
             body = _try_extract_response_body(e)
             if body is not None:
-                logger.error("Gemini API streaming error body: %s", body)
-            raise RuntimeError(f"Gemini API streaming error: {e}") from e
+                logger.error("Gemini API streaming error body: %s", _sanitize_dict(body))
+            raise RuntimeError(f"Gemini API streaming error: {sanitize_for_log(str(e))}") from e
 
         accumulated_content = ""
         had_usage = False
@@ -174,27 +169,6 @@ class GeminiProvider(LLMProvider):
                 )
                 self.total_input_tokens += self.count_tokens(input_text)
 
-    def count_tokens(self, text: str) -> int:
-        from coderAI.llm._token_counter import estimate_chars
-
-        return estimate_chars(text)
-
-    def get_cost(self) -> Dict[str, Any]:
-        """Get current session cost estimate."""
-        pricing = CostTracker.get_model_pricing(self.actual_model)
-        input_cost = (self.total_input_tokens / 1_000_000) * pricing["input"]
-        output_cost = (self.total_output_tokens / 1_000_000) * pricing["output"]
-
-        return {
-            "input_tokens": self.total_input_tokens,
-            "output_tokens": self.total_output_tokens,
-            "total_tokens": self.total_input_tokens + self.total_output_tokens,
-            "input_cost": round(input_cost, 6),
-            "output_cost": round(output_cost, 6),
-            "total_cost": round(input_cost + output_cost, 6),
-            "currency": "USD",
-            "model": self.actual_model,
-        }
-
-    def get_model_info(self) -> Dict[str, Any]:
-        return super().get_model_info()
+    def clean_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Gemini supports passing reasoning_content back in the assistant role."""
+        return messages

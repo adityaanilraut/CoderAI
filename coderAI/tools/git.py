@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 from coderAI.tools.base import Tool
+from coderAI.core.tool_error_codes import ToolErrorCode
 from coderAI.system.locks import resource_manager
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,50 @@ def _truncate_output(text: str, max_bytes: int = MAX_GIT_OUTPUT_BYTES) -> tuple[
     )
 
 
+async def _run_git_command(
+    args: List[str],
+    repo_path: str,
+    *,
+    needs_lock: bool = False,
+    validate_scope: bool = True,
+) -> Dict[str, Any]:
+    """Run a git command with scope validation and optional lock acquisition.
+
+    Returns ``{"success": False, ...}`` on scope validation error, or
+    ``{"success": True, "returncode": int, "stdout": bytes, "stderr": bytes}``
+    on command completion.  The caller is responsible for checking returncode
+    and formatting the tool-level result.
+    """
+    if validate_scope:
+        scope_error = await _validate_git_scope(repo_path)
+        if scope_error:
+            return scope_error
+
+    async def _exec():
+        process = await asyncio.create_subprocess_exec(
+            "git",
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=repo_path,
+        )
+        stdout, stderr = await process.communicate()
+        return process.returncode, stdout, stderr
+
+    if needs_lock:
+        async with resource_manager.git_lock():
+            returncode, stdout, stderr = await _exec()
+    else:
+        returncode, stdout, stderr = await _exec()
+
+    return {
+        "success": True,
+        "returncode": returncode,
+        "stdout": stdout,
+        "stderr": stderr,
+    }
+
+
 async def _validate_git_scope(repo_path: str) -> Optional[Dict[str, Any]]:
     """Validate that the git root matches the intended repo_path.
 
@@ -50,7 +95,7 @@ async def _validate_git_scope(repo_path: str) -> Optional[Dict[str, Any]]:
         return {
             "success": False,
             "error": f"Not a git repository: {repo_path}",
-            "error_code": "not_git_repo",
+            "error_code": ToolErrorCode.NOT_GIT_REPO,
         }
 
     if not result["matches_expected"]:
@@ -61,7 +106,7 @@ async def _validate_git_scope(repo_path: str) -> Optional[Dict[str, Any]]:
                 f"but git root={result['git_root']}. "
                 "Refusing to operate to prevent affecting files outside the intended project."
             ),
-            "error_code": "scope_mismatch",
+            "error_code": ToolErrorCode.SCOPE_MISMATCH,
             "git_root": result["git_root"],
         }
 
@@ -89,7 +134,6 @@ class GitAddTool(Tool):
     async def execute(self, files: list, repo_path: str = ".") -> Dict[str, Any]:  # type: ignore[override]
         """Stage files for git commit with safety checks."""
         try:
-            # Reject 'git add .'
             if files == ["."] or files == ["*"]:
                 return {
                     "success": False,
@@ -98,15 +142,9 @@ class GitAddTool(Tool):
                         "Please specify explicit file paths to stage only "
                         "the files you intentionally created or modified."
                     ),
-                    "error_code": "unsafe_staging",
+                "error_code": ToolErrorCode.UNSAFE_STAGING,
                 }
 
-            # Validate git scope
-            scope_error = await _validate_git_scope(repo_path)
-            if scope_error:
-                return scope_error
-
-            # Filter out junk files
             from coderAI.system.safeguards import filter_stageable_files
 
             allowed, rejected = filter_stageable_files(files, repo_path)
@@ -121,37 +159,31 @@ class GitAddTool(Tool):
                         f"All requested files were filtered as junk/internal artifacts: "
                         f"{rejected}. No files staged."
                     ),
-                    "error_code": "all_filtered",
+                "error_code": ToolErrorCode.ALL_FILTERED,
                 }
 
-            async with resource_manager.git_lock():
-                cmd = ["git", "add"] + allowed
-                process = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=repo_path,
-                )
-                stdout, stderr = await process.communicate()
+            result = await _run_git_command(["add"] + allowed, repo_path, needs_lock=True)
+            if not result["success"]:
+                return result  # scope validation error
 
-            if process.returncode != 0:
+            if result["returncode"] != 0:
                 return {
                     "success": False,
-                    "error": stderr.decode("utf-8", errors="replace"),
+                    "error": result["stderr"].decode("utf-8", errors="replace"),
                 }
 
-            result = {
+            out = {
                 "success": True,
                 "files_staged": allowed,
                 "message": f"Staged {len(allowed)} file(s)",
             }
             if rejected:
-                result["files_filtered"] = rejected
-                result["filter_note"] = (
+                out["files_filtered"] = rejected
+                out["filter_note"] = (
                     f"{len(rejected)} file(s) auto-filtered (junk/internal artifacts)"
                 )
             logger.info(f"git_add: staged {allowed}")
-            return result
+            return out
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -171,31 +203,19 @@ class GitStatusTool(Tool):
 
     async def execute(self, repo_path: str = ".") -> Dict[str, Any]:  # type: ignore[override]
         try:
-            scope_error = await _validate_git_scope(repo_path)
-            if scope_error:
-                return scope_error
+            result = await _run_git_command(["status", "--porcelain", "-b"], repo_path)
+            if not result["success"]:
+                return result
 
-            process = await asyncio.create_subprocess_exec(
-                "git",
-                "status",
-                "--porcelain",
-                "-b",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=repo_path,
-            )
-            stdout, stderr = await process.communicate()
-
-            if process.returncode != 0:
+            if result["returncode"] != 0:
                 return {
                     "success": False,
-                    "error": stderr.decode("utf-8", errors="replace"),
+                    "error": result["stderr"].decode("utf-8", errors="replace"),
                 }
 
-            output = stdout.decode("utf-8", errors="replace")
-            output, truncated = _truncate_output(output)
-            # The first line from --porcelain -b is the branch header (## main...);
-            # actual changes are on subsequent lines.
+            output, truncated = _truncate_output(
+                result["stdout"].decode("utf-8", errors="replace")
+            )
             lines = output.strip().split("\n")
             change_lines = [line for line in lines if line and not line.startswith("##")]
             return {
@@ -229,32 +249,25 @@ class GitDiffTool(Tool):
         self, repo_path: str = ".", file_path: Optional[str] = None, staged: bool = False
     ) -> Dict[str, Any]:  # type: ignore[override]
         try:
-            scope_error = await _validate_git_scope(repo_path)
-            if scope_error:
-                return scope_error
-
-            cmd = ["git", "diff"]
+            args = ["diff"]
             if staged:
-                cmd.append("--cached")
+                args.append("--cached")
             if file_path:
-                cmd.append(file_path)
+                args.append(file_path)
 
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=repo_path,
-            )
-            stdout, stderr = await process.communicate()
+            result = await _run_git_command(args, repo_path)
+            if not result["success"]:
+                return result
 
-            if process.returncode != 0:
+            if result["returncode"] != 0:
                 return {
                     "success": False,
-                    "error": stderr.decode("utf-8", errors="replace"),
+                    "error": result["stderr"].decode("utf-8", errors="replace"),
                 }
 
-            diff = stdout.decode("utf-8", errors="replace")
-            diff, truncated = _truncate_output(diff)
+            diff, truncated = _truncate_output(
+                result["stdout"].decode("utf-8", errors="replace")
+            )
             return {
                 "success": True,
                 "diff": diff,
@@ -281,29 +294,18 @@ class GitCommitTool(Tool):
 
     async def execute(self, message: str, repo_path: str = ".") -> Dict[str, Any]:  # type: ignore[override]
         try:
-            scope_error = await _validate_git_scope(repo_path)
-            if scope_error:
-                return scope_error
+            result = await _run_git_command(
+                ["commit", "-m", message], repo_path, needs_lock=True
+            )
+            if not result["success"]:
+                return result
 
-            async with resource_manager.git_lock():
-                # Use create_subprocess_exec to avoid shell injection
-                process = await asyncio.create_subprocess_exec(
-                    "git",
-                    "commit",
-                    "-m",
-                    message,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=repo_path,
-                )
-                stdout, stderr = await process.communicate()
-
-            output = stdout.decode("utf-8", errors="replace")
-            error = stderr.decode("utf-8", errors="replace")
+            output = result["stdout"].decode("utf-8", errors="replace")
+            error = result["stderr"].decode("utf-8", errors="replace")
             logger.info(f"git_commit: repo={repo_path} message={message!r}")
 
             return {
-                "success": process.returncode == 0,
+                "success": result["returncode"] == 0,
                 "output": output + error,
             }
         except Exception as e:
@@ -326,34 +328,26 @@ class GitLogTool(Tool):
 
     async def execute(self, repo_path: str = ".", limit: int = 10) -> Dict[str, Any]:  # type: ignore[override]
         try:
-            scope_error = await _validate_git_scope(repo_path)
-            if scope_error:
-                return scope_error
-
             if limit < 1:
                 limit = 1
             elif limit > 1000:
                 limit = 1000
-            process = await asyncio.create_subprocess_exec(
-                "git",
-                "log",
-                "--oneline",
-                "-n",
-                str(limit),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=repo_path,
-            )
-            stdout, stderr = await process.communicate()
 
-            if process.returncode != 0:
+            result = await _run_git_command(
+                ["log", "--oneline", "-n", str(limit)], repo_path
+            )
+            if not result["success"]:
+                return result
+
+            if result["returncode"] != 0:
                 return {
                     "success": False,
-                    "error": stderr.decode("utf-8", errors="replace"),
+                    "error": result["stderr"].decode("utf-8", errors="replace"),
                 }
 
-            log = stdout.decode("utf-8", errors="replace")
-            log, truncated = _truncate_output(log)
+            log, truncated = _truncate_output(
+                result["stdout"].decode("utf-8", errors="replace")
+            )
             return {
                 "success": True,
                 "log": log,
@@ -390,73 +384,48 @@ class GitBranchTool(Tool):
         self, action: str, branch_name: Optional[str] = None, repo_path: str = "."
     ) -> Dict[str, Any]:  # type: ignore[override]
         try:
-            scope_error = await _validate_git_scope(repo_path)
-            if scope_error:
-                return scope_error
+            args: List[str]
+            if action == "list":
+                args = ["branch", "-a"]
+            elif action == "create":
+                if not branch_name:
+                    return {"success": False, "error": "branch_name is required for 'create'."}
+                args = ["branch", branch_name]
+            elif action == "delete":
+                if not branch_name:
+                    return {"success": False, "error": "branch_name is required for 'delete'."}
+                args = ["branch", "-d", branch_name]
+            else:
+                return {"success": False, "error": f"Unknown action: {action}"}
 
-            async with resource_manager.git_lock():
-                if action == "list":
-                    process = await asyncio.create_subprocess_exec(
-                        "git",
-                        "branch",
-                        "-a",
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
-                        cwd=repo_path,
-                    )
-                    stdout, stderr = await process.communicate()
-                    if process.returncode != 0:
-                        return {"success": False, "error": stderr.decode("utf-8", errors="replace")}
-                    output, truncated = _truncate_output(stdout.decode("utf-8", errors="replace"))
-                    branches = [
-                        b.strip().removeprefix("* ")
-                        for b in output.strip().split("\n")
-                        if b.strip()
-                    ]
-                    return {
-                        "success": True,
-                        "branches": branches,
-                        "count": len(branches),
-                        "truncated": truncated,
-                    }
+            result = await _run_git_command(args, repo_path, needs_lock=True)
+            if not result["success"]:
+                return result
 
-                elif action == "create":
-                    if not branch_name:
-                        return {"success": False, "error": "branch_name is required for 'create'."}
-                    process = await asyncio.create_subprocess_exec(
-                        "git",
-                        "branch",
-                        branch_name,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
-                        cwd=repo_path,
-                    )
-                    stdout, stderr = await process.communicate()
-                    if process.returncode != 0:
-                        return {"success": False, "error": stderr.decode("utf-8", errors="replace")}
-                    return {"success": True, "message": f"Branch '{branch_name}' created."}
-
-                elif action == "delete":
-                    if not branch_name:
-                        return {"success": False, "error": "branch_name is required for 'delete'."}
-                    process = await asyncio.create_subprocess_exec(
-                        "git",
-                        "branch",
-                        "-d",
-                        branch_name,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
-                        cwd=repo_path,
-                    )
-                    stdout, stderr = await process.communicate()
-                    output = stdout.decode("utf-8", errors="replace") + stderr.decode(
-                        "utf-8", errors="replace"
-                    )
-                    return {"success": process.returncode == 0, "output": output}
-
-                else:
-                    return {"success": False, "error": f"Unknown action: {action}"}
-
+            if action == "list":
+                if result["returncode"] != 0:
+                    return {"success": False, "error": result["stderr"].decode("utf-8", errors="replace")}
+                output, truncated = _truncate_output(result["stdout"].decode("utf-8", errors="replace"))
+                branches = [
+                    b.strip().removeprefix("* ")
+                    for b in output.strip().split("\n")
+                    if b.strip()
+                ]
+                return {
+                    "success": True,
+                    "branches": branches,
+                    "count": len(branches),
+                    "truncated": truncated,
+                }
+            elif action == "create":
+                if result["returncode"] != 0:
+                    return {"success": False, "error": result["stderr"].decode("utf-8", errors="replace")}
+                return {"success": True, "message": f"Branch '{branch_name}' created."}
+            else:  # delete
+                output = result["stdout"].decode("utf-8", errors="replace") + result["stderr"].decode(
+                    "utf-8", errors="replace"
+                )
+                return {"success": result["returncode"] == 0, "output": output}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -480,39 +449,27 @@ class GitCheckoutTool(Tool):
         self, branch: str, create: bool = False, repo_path: str = "."
     ) -> Dict[str, Any]:  # type: ignore[override]
         try:
-            # Validate git scope before checkout
-            scope_error = await _validate_git_scope(repo_path)
-            if scope_error:
-                return scope_error
+            from coderAI.system.safeguards import get_current_branch
 
-            async with resource_manager.git_lock():
-                # Log branch before switching
-                from coderAI.system.safeguards import get_current_branch
+            branch_before = await get_current_branch(repo_path)
+            logger.info(
+                f"git_checkout: branch_before={branch_before} "
+                f"target={branch} create={create} repo={repo_path}"
+            )
 
-                branch_before = await get_current_branch(repo_path)
-                logger.info(
-                    f"git_checkout: branch_before={branch_before} "
-                    f"target={branch} create={create} repo={repo_path}"
-                )
+            args = ["checkout"]
+            if create:
+                args.append("-b")
+            args.append(branch)
 
-                cmd = ["git", "checkout"]
-                if create:
-                    cmd.append("-b")
-                cmd.append(branch)
+            result = await _run_git_command(args, repo_path, needs_lock=True)
+            if not result["success"]:
+                return result
 
-                process = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=repo_path,
-                )
-                stdout, stderr = await process.communicate()
-                output = stdout.decode("utf-8", errors="replace") + stderr.decode(
-                    "utf-8", errors="replace"
-                )
-
-            return {"success": process.returncode == 0, "output": output.strip()}
-
+            output = result["stdout"].decode("utf-8", errors="replace") + result["stderr"].decode(
+                "utf-8", errors="replace"
+            )
+            return {"success": result["returncode"] == 0, "output": output.strip()}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -546,37 +503,27 @@ class GitStashTool(Tool):
         repo_path: str = ".",
     ) -> Dict[str, Any]:  # type: ignore[override]
         try:
-            scope_error = await _validate_git_scope(repo_path)
-            if scope_error:
-                return scope_error
+            if action == "push":
+                args = ["stash", "push"]
+                if message:
+                    args.extend(["-m", message])
+            elif action == "pop":
+                args = ["stash", "pop", f"stash@{{{stash_index}}}"]
+            elif action == "list":
+                args = ["stash", "list"]
+            elif action == "drop":
+                args = ["stash", "drop", f"stash@{{{stash_index}}}"]
+            else:
+                return {"success": False, "error": f"Unknown action: {action}"}
 
-            async with resource_manager.git_lock():
-                if action == "push":
-                    cmd = ["git", "stash", "push"]
-                    if message:
-                        cmd.extend(["-m", message])
-                elif action == "pop":
-                    cmd = ["git", "stash", "pop", f"stash@{{{stash_index}}}"]
-                elif action == "list":
-                    cmd = ["git", "stash", "list"]
-                elif action == "drop":
-                    cmd = ["git", "stash", "drop", f"stash@{{{stash_index}}}"]
-                else:
-                    return {"success": False, "error": f"Unknown action: {action}"}
+            result = await _run_git_command(args, repo_path, needs_lock=True)
+            if not result["success"]:
+                return result
 
-                process = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=repo_path,
-                )
-                stdout, stderr = await process.communicate()
-                output = stdout.decode("utf-8", errors="replace") + stderr.decode(
-                    "utf-8", errors="replace"
-                )
-
-            return {"success": process.returncode == 0, "output": output.strip()}
-
+            output = result["stdout"].decode("utf-8", errors="replace") + result["stderr"].decode(
+                "utf-8", errors="replace"
+            )
+            return {"success": result["returncode"] == 0, "output": output.strip()}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -613,32 +560,23 @@ class GitPushTool(Tool):
         repo_path: str = ".",
     ) -> Dict[str, Any]:  # type: ignore[override]
         try:
-            scope_error = await _validate_git_scope(repo_path)
-            if scope_error:
-                return scope_error
-
-            cmd = ["git", "push"]
+            args = ["push"]
             if set_upstream:
-                cmd.append("-u")
+                args.append("-u")
             if force:
-                cmd.append("--force-with-lease")
-            cmd.append(remote)
+                args.append("--force-with-lease")
+            args.append(remote)
             if branch:
-                cmd.append(branch)
+                args.append(branch)
 
-            async with resource_manager.git_lock():
-                process = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=repo_path,
-                )
-                stdout, stderr = await process.communicate()
+            result = await _run_git_command(args, repo_path, needs_lock=True)
+            if not result["success"]:
+                return result
 
-            output = stdout.decode("utf-8", errors="replace") + stderr.decode(
+            output = result["stdout"].decode("utf-8", errors="replace") + result["stderr"].decode(
                 "utf-8", errors="replace"
             )
-            return {"success": process.returncode == 0, "output": output.strip()}
+            return {"success": result["returncode"] == 0, "output": output.strip()}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -671,30 +609,21 @@ class GitPullTool(Tool):
         repo_path: str = ".",
     ) -> Dict[str, Any]:  # type: ignore[override]
         try:
-            scope_error = await _validate_git_scope(repo_path)
-            if scope_error:
-                return scope_error
-
-            cmd = ["git", "pull"]
+            args = ["pull"]
             if rebase:
-                cmd.append("--rebase")
-            cmd.append(remote)
+                args.append("--rebase")
+            args.append(remote)
             if branch:
-                cmd.append(branch)
+                args.append(branch)
 
-            async with resource_manager.git_lock():
-                process = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=repo_path,
-                )
-                stdout, stderr = await process.communicate()
+            result = await _run_git_command(args, repo_path, needs_lock=True)
+            if not result["success"]:
+                return result
 
-            output = stdout.decode("utf-8", errors="replace") + stderr.decode(
+            output = result["stdout"].decode("utf-8", errors="replace") + result["stderr"].decode(
                 "utf-8", errors="replace"
             )
-            return {"success": process.returncode == 0, "output": output.strip()}
+            return {"success": result["returncode"] == 0, "output": output.strip()}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -725,32 +654,23 @@ class GitMergeTool(Tool):
         repo_path: str = ".",
     ) -> Dict[str, Any]:  # type: ignore[override]
         try:
-            scope_error = await _validate_git_scope(repo_path)
-            if scope_error:
-                return scope_error
-
-            cmd = ["git", "merge"]
+            args = ["merge"]
             if no_ff:
-                cmd.append("--no-ff")
+                args.append("--no-ff")
             if squash:
-                cmd.append("--squash")
+                args.append("--squash")
             if message:
-                cmd.extend(["-m", message])
-            cmd.append(branch)
+                args.extend(["-m", message])
+            args.append(branch)
 
-            async with resource_manager.git_lock():
-                process = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=repo_path,
-                )
-                stdout, stderr = await process.communicate()
+            result = await _run_git_command(args, repo_path, needs_lock=True)
+            if not result["success"]:
+                return result
 
-            output = stdout.decode("utf-8", errors="replace") + stderr.decode(
+            output = result["stdout"].decode("utf-8", errors="replace") + result["stderr"].decode(
                 "utf-8", errors="replace"
             )
-            return {"success": process.returncode == 0, "output": output.strip()}
+            return {"success": result["returncode"] == 0, "output": output.strip()}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -782,30 +702,21 @@ class GitRebaseTool(Tool):
         repo_path: str = ".",
     ) -> Dict[str, Any]:  # type: ignore[override]
         try:
-            scope_error = await _validate_git_scope(repo_path)
-            if scope_error:
-                return scope_error
-
             if abort:
-                cmd = ["git", "rebase", "--abort"]
+                args = ["rebase", "--abort"]
             elif continue_rebase:
-                cmd = ["git", "rebase", "--continue"]
+                args = ["rebase", "--continue"]
             else:
-                cmd = ["git", "rebase", onto]
+                args = ["rebase", onto]
 
-            async with resource_manager.git_lock():
-                process = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=repo_path,
-                )
-                stdout, stderr = await process.communicate()
+            result = await _run_git_command(args, repo_path, needs_lock=True)
+            if not result["success"]:
+                return result
 
-            output = stdout.decode("utf-8", errors="replace") + stderr.decode(
+            output = result["stdout"].decode("utf-8", errors="replace") + result["stderr"].decode(
                 "utf-8", errors="replace"
             )
-            return {"success": process.returncode == 0, "output": output.strip()}
+            return {"success": result["returncode"] == 0, "output": output.strip()}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -835,28 +746,19 @@ class GitRevertTool(Tool):
         repo_path: str = ".",
     ) -> Dict[str, Any]:  # type: ignore[override]
         try:
-            scope_error = await _validate_git_scope(repo_path)
-            if scope_error:
-                return scope_error
-
-            cmd = ["git", "revert", "--no-edit"]
+            args = ["revert", "--no-edit"]
             if no_commit:
-                cmd.append("-n")
-            cmd.append(commit)
+                args.append("-n")
+            args.append(commit)
 
-            async with resource_manager.git_lock():
-                process = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=repo_path,
-                )
-                stdout, stderr = await process.communicate()
+            result = await _run_git_command(args, repo_path, needs_lock=True)
+            if not result["success"]:
+                return result
 
-            output = stdout.decode("utf-8", errors="replace") + stderr.decode(
+            output = result["stdout"].decode("utf-8", errors="replace") + result["stderr"].decode(
                 "utf-8", errors="replace"
             )
-            return {"success": process.returncode == 0, "output": output.strip()}
+            return {"success": result["returncode"] == 0, "output": output.strip()}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -893,31 +795,22 @@ class GitResetTool(Tool):
         repo_path: str = ".",
     ) -> Dict[str, Any]:  # type: ignore[override]
         try:
-            scope_error = await _validate_git_scope(repo_path)
-            if scope_error:
-                return scope_error
-
             if mode not in ("soft", "mixed", "hard"):
                 return {
                     "success": False,
                     "error": f"Invalid mode '{mode}'. Use soft, mixed, or hard.",
                 }
 
-            cmd = ["git", "reset", f"--{mode}", ref]
+            result = await _run_git_command(
+                ["reset", f"--{mode}", ref], repo_path, needs_lock=True
+            )
+            if not result["success"]:
+                return result
 
-            async with resource_manager.git_lock():
-                process = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=repo_path,
-                )
-                stdout, stderr = await process.communicate()
-
-            output = stdout.decode("utf-8", errors="replace") + stderr.decode(
+            output = result["stdout"].decode("utf-8", errors="replace") + result["stderr"].decode(
                 "utf-8", errors="replace"
             )
-            return {"success": process.returncode == 0, "output": output.strip()}
+            return {"success": result["returncode"] == 0, "output": output.strip()}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -944,23 +837,19 @@ class GitShowTool(Tool):
         repo_path: str = ".",
     ) -> Dict[str, Any]:  # type: ignore[override]
         try:
-            cmd = ["git", "show"]
+            args = ["show"]
             if stat_only:
-                cmd.append("--stat")
-            cmd.append(ref)
+                args.append("--stat")
+            args.append(ref)
 
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=repo_path,
-            )
-            stdout, stderr = await process.communicate()
+            result = await _run_git_command(args, repo_path, validate_scope=False)
+            if not result["success"]:
+                return result
 
-            if process.returncode != 0:
-                return {"success": False, "error": stderr.decode("utf-8", errors="replace").strip()}
+            if result["returncode"] != 0:
+                return {"success": False, "error": result["stderr"].decode("utf-8", errors="replace").strip()}
 
-            output, truncated = _truncate_output(stdout.decode("utf-8", errors="replace"))
+            output, truncated = _truncate_output(result["stdout"].decode("utf-8", errors="replace"))
             return {"success": True, "output": output, "truncated": truncated}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -996,43 +885,34 @@ class GitRemoteTool(Tool):
         repo_path: str = ".",
     ) -> Dict[str, Any]:  # type: ignore[override]
         try:
-            scope_error = await _validate_git_scope(repo_path)
-            if scope_error:
-                return scope_error
+            if action == "list":
+                args = ["remote", "-v"]
+            elif action == "add":
+                if not name or not url:
+                    return {"success": False, "error": "'name' and 'url' required for 'add'."}
+                args = ["remote", "add", name, url]
+            elif action == "remove":
+                if not name:
+                    return {"success": False, "error": "'name' required for 'remove'."}
+                args = ["remote", "remove", name]
+            elif action == "set-url":
+                if not name or not url:
+                    return {
+                        "success": False,
+                        "error": "'name' and 'url' required for 'set-url'.",
+                    }
+                args = ["remote", "set-url", name, url]
+            else:
+                return {"success": False, "error": f"Unknown action: {action}"}
 
-            async with resource_manager.git_lock():
-                if action == "list":
-                    cmd = ["git", "remote", "-v"]
-                elif action == "add":
-                    if not name or not url:
-                        return {"success": False, "error": "'name' and 'url' required for 'add'."}
-                    cmd = ["git", "remote", "add", name, url]
-                elif action == "remove":
-                    if not name:
-                        return {"success": False, "error": "'name' required for 'remove'."}
-                    cmd = ["git", "remote", "remove", name]
-                elif action == "set-url":
-                    if not name or not url:
-                        return {
-                            "success": False,
-                            "error": "'name' and 'url' required for 'set-url'.",
-                        }
-                    cmd = ["git", "remote", "set-url", name, url]
-                else:
-                    return {"success": False, "error": f"Unknown action: {action}"}
+            result = await _run_git_command(args, repo_path, needs_lock=True)
+            if not result["success"]:
+                return result
 
-                process = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=repo_path,
-                )
-                stdout, stderr = await process.communicate()
-
-            output = stdout.decode("utf-8", errors="replace") + stderr.decode(
+            output = result["stdout"].decode("utf-8", errors="replace") + result["stderr"].decode(
                 "utf-8", errors="replace"
             )
-            return {"success": process.returncode == 0, "output": output.strip()}
+            return {"success": result["returncode"] == 0, "output": output.strip()}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -1061,26 +941,21 @@ class GitBlameTool(Tool):
         repo_path: str = ".",
     ) -> Dict[str, Any]:  # type: ignore[override]
         try:
-            cmd = ["git", "blame", "--porcelain"]
+            args = ["blame", "--porcelain"]
             if start_line is not None and end_line is not None:
-                cmd.extend([f"-L{start_line},{end_line}"])
+                args.extend([f"-L{start_line},{end_line}"])
             elif start_line is not None:
-                cmd.extend([f"-L{start_line},+30"])
-            cmd.append(file_path)
+                args.extend([f"-L{start_line},+30"])
+            args.append(file_path)
 
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=repo_path,
-            )
-            stdout, stderr = await process.communicate()
+            result = await _run_git_command(args, repo_path, validate_scope=False)
+            if not result["success"]:
+                return result
 
-            if process.returncode != 0:
-                return {"success": False, "error": stderr.decode("utf-8", errors="replace").strip()}
+            if result["returncode"] != 0:
+                return {"success": False, "error": result["stderr"].decode("utf-8", errors="replace").strip()}
 
-            raw = stdout.decode("utf-8", errors="replace")
-            raw, truncated = _truncate_output(raw)
+            raw, truncated = _truncate_output(result["stdout"].decode("utf-8", errors="replace"))
             lines: List[Dict[str, str]] = []
             current: Dict[str, str] = {}
             for line in raw.splitlines():
@@ -1131,28 +1006,19 @@ class GitCherryPickTool(Tool):
         repo_path: str = ".",
     ) -> Dict[str, Any]:  # type: ignore[override]
         try:
-            scope_error = await _validate_git_scope(repo_path)
-            if scope_error:
-                return scope_error
-
-            cmd = ["git", "cherry-pick"]
+            args = ["cherry-pick"]
             if no_commit:
-                cmd.append("-n")
-            cmd.extend(commits)
+                args.append("-n")
+            args.extend(commits)
 
-            async with resource_manager.git_lock():
-                process = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=repo_path,
-                )
-                stdout, stderr = await process.communicate()
+            result = await _run_git_command(args, repo_path, needs_lock=True)
+            if not result["success"]:
+                return result
 
-            output = stdout.decode("utf-8", errors="replace") + stderr.decode(
+            output = result["stdout"].decode("utf-8", errors="replace") + result["stderr"].decode(
                 "utf-8", errors="replace"
             )
-            return {"success": process.returncode == 0, "output": output.strip()}
+            return {"success": result["returncode"] == 0, "output": output.strip()}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -1190,42 +1056,33 @@ class GitTagTool(Tool):
         repo_path: str = ".",
     ) -> Dict[str, Any]:  # type: ignore[override]
         try:
-            scope_error = await _validate_git_scope(repo_path)
-            if scope_error:
-                return scope_error
-
-            async with resource_manager.git_lock():
-                if action == "list":
-                    cmd = ["git", "tag", "--list", "--sort=-version:refname"]
-                elif action == "create":
-                    if not tag_name:
-                        return {"success": False, "error": "'tag_name' required for create."}
-                    if message:
-                        cmd = ["git", "tag", "-a", tag_name, "-m", message, ref]
-                    else:
-                        cmd = ["git", "tag", tag_name, ref]
-                elif action == "delete":
-                    if not tag_name:
-                        return {"success": False, "error": "'tag_name' required for delete."}
-                    cmd = ["git", "tag", "-d", tag_name]
+            if action == "list":
+                args = ["tag", "--list", "--sort=-version:refname"]
+            elif action == "create":
+                if not tag_name:
+                    return {"success": False, "error": "'tag_name' required for create."}
+                if message:
+                    args = ["tag", "-a", tag_name, "-m", message, ref]
                 else:
-                    return {"success": False, "error": f"Unknown action: {action}"}
+                    args = ["tag", tag_name, ref]
+            elif action == "delete":
+                if not tag_name:
+                    return {"success": False, "error": "'tag_name' required for delete."}
+                args = ["tag", "-d", tag_name]
+            else:
+                return {"success": False, "error": f"Unknown action: {action}"}
 
-                process = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=repo_path,
-                )
-                stdout, stderr = await process.communicate()
+            result = await _run_git_command(args, repo_path, needs_lock=True)
+            if not result["success"]:
+                return result
 
-            output = stdout.decode("utf-8", errors="replace")
-            err = stderr.decode("utf-8", errors="replace")
+            output = result["stdout"].decode("utf-8", errors="replace")
+            err = result["stderr"].decode("utf-8", errors="replace")
             if action == "list":
                 tags = [t for t in output.strip().splitlines() if t]
                 return {"success": True, "tags": tags, "count": len(tags)}
             return {
-                "success": process.returncode == 0,
+                "success": result["returncode"] == 0,
                 "output": (output + err).strip(),
             }
         except Exception as e:
@@ -1259,28 +1116,19 @@ class GitFetchTool(Tool):
         repo_path: str = ".",
     ) -> Dict[str, Any]:  # type: ignore[override]
         try:
-            scope_error = await _validate_git_scope(repo_path)
-            if scope_error:
-                return scope_error
-
-            cmd = ["git", "fetch", remote]
+            args = ["fetch", remote]
             if prune:
-                cmd.append("--prune")
+                args.append("--prune")
             if branch:
-                cmd.append(branch)
+                args.append(branch)
 
-            async with resource_manager.git_lock():
-                process = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=repo_path,
-                )
-                stdout, stderr = await process.communicate()
+            result = await _run_git_command(args, repo_path, needs_lock=True)
+            if not result["success"]:
+                return result
 
-            output = stdout.decode("utf-8", errors="replace") + stderr.decode(
+            output = result["stdout"].decode("utf-8", errors="replace") + result["stderr"].decode(
                 "utf-8", errors="replace"
             )
-            return {"success": process.returncode == 0, "output": output.strip()}
+            return {"success": result["returncode"] == 0, "output": output.strip()}
         except Exception as e:
             return {"success": False, "error": str(e)}

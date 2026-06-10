@@ -1,12 +1,11 @@
 """Tests for skill_manager.py — LLM matching, ranking, multi-source orchestration."""
 
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
 from coderAI.skills.skill_loader import Skill
-from coderAI.skills.skill_registry import SkillRegistry
 from coderAI.skills.skill_manager import SkillManager
 from coderAI.skills.sources.base import SkillSource
 

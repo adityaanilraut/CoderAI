@@ -386,20 +386,9 @@ def _html_to_text(raw_html: str, fmt: str) -> str:
         text = _MULTI_NL.sub("\n\n", text)
         return text.strip()
     # markdown (default)
-    return _get_h2t().handle(raw_html).strip()
+    return str(_get_h2t().handle(raw_html).strip())
 
 
-# Backward-compatible aliases (legacy function names)
-def _convert_content(raw: str, content_type: str, fmt: str) -> str:
-    return _html_to_text(raw, fmt)
-
-
-def _html_to_markdown(html: str) -> str:
-    return _html_to_text(html, "markdown")
-
-
-def _html_to_plain(html: str) -> str:
-    return _html_to_text(html, "text")
 
 
 # ═══════════════════════════════════════════════════════════════════════════

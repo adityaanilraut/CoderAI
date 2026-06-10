@@ -1,7 +1,7 @@
 """Tests for the WebSearchTool."""
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 
 def _make_mock_session(html_body: str = "", status: int = 200, side_effect=None):

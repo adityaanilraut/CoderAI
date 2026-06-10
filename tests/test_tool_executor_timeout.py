@@ -20,7 +20,7 @@ class SlowTool(Tool):
     timeout = 0.1
 
     async def execute(self, **kwargs):
-        await asyncio.sleep(5)
+        await asyncio.sleep(0.3)
         return {"success": True, "output": "slow"}
 
 
@@ -69,7 +69,7 @@ async def test_module_default_timeout():
         is_read_only = True
 
         async def execute(self, **kwargs):
-            await asyncio.sleep(5)
+            await asyncio.sleep(0.3)
             return {"success": True}
 
     agent = MagicMock()

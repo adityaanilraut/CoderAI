@@ -93,8 +93,6 @@ class TestReadFileToolWithCache:
         first = _read(tool, tmp_file)
         assert first.get("cached") is not True
 
-        # Make sure mtime advances even on fast filesystems.
-        time.sleep(0.01)
         new_content = "def hello():\n    return 'changed'\n# extra line\n"
         tmp_file.write_text(new_content)
         # Bump mtime past resolution-limited filesystems explicitly.

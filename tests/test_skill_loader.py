@@ -1,6 +1,5 @@
 """Tests for skill_loader.py — file discovery, parsing, and safety."""
 
-import pytest
 
 from coderAI.skills.skill_loader import (
     Skill,

@@ -10,15 +10,21 @@ import json
 import logging
 import time as _time
 import uuid
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
 
 from coderAI.core.agent_tracker import AgentStatus
+from coderAI.core.execution_context import (
+    execution_context_scope,
+    resolve_delegation_isolation_domain,
+)
 from coderAI.system.events import event_emitter
 from coderAI.core.tool_routing import (
     call_mcp_tool_by_function_name,
     is_mcp_function_name,
     coerce_tool_arguments,
 )
+from coderAI.core.tool_error_codes import ToolErrorCode
 
 logger = logging.getLogger(__name__)
 
@@ -27,15 +33,27 @@ MAX_CONCURRENT_READ_ONLY = 20
 
 DEFAULT_TOOL_TIMEOUT_SECONDS = 120.0
 
+DEFAULT_APPROVAL_TIMEOUT_SECONDS = 300.0
+
 # Cap concurrent read-only sub-agent delegations. Each sub-agent is a full
 # LLM session with its own tool loop, so we fan out far less aggressively
 # than for cheap read-only tools like read_file / grep.
 MAX_CONCURRENT_READ_ONLY_SUBAGENTS = 4
 
+DEFAULT_MAX_CONCURRENT_MUTATING_SUBAGENTS = 3
+
 # Number of times an identical (tool, args) call may be repeated across
 # iterations before the executor intervenes and returns a cached-with-warning
 # result. Stops the model from looping on the same read_file / git_status.
 DUPLICATE_CALL_THRESHOLD = 2
+
+# Maximum number of entries in the preview file cache. Beyond this limit, the
+# least-recently-used entry is evicted to bound memory usage.
+PREVIEW_FILE_CACHE_MAX_ENTRIES = 50
+
+# Maximum combined size (bytes) of cached file contents. When exceeded, LRU
+# entries are dropped until the total is within the limit.
+PREVIEW_FILE_CACHE_MAX_BYTES = 5 * 1024 * 1024  # 5 MB
 
 # Hard ceiling on identical (tool, args) calls across iterations. Once a
 # fingerprint reaches this count the executor signals the loop to stop
@@ -45,6 +63,13 @@ DUPLICATE_CALL_THRESHOLD = 2
 # Triggered in production by gpt-5.4-mini calling `plan action=show`
 # 14+ times in a single turn before the user cancelled.
 DOOM_LOOP_HARD_THRESHOLD = 5
+DELEGATE_DOOM_LOOP_HARD_THRESHOLD = 3
+
+
+def _doom_threshold(tool_name: str) -> int:
+    if tool_name == "delegate_task":
+        return DELEGATE_DOOM_LOOP_HARD_THRESHOLD
+    return DOOM_LOOP_HARD_THRESHOLD
 
 
 def _fingerprint(tool_name: str, arguments: Optional[Dict[str, Any]]) -> str:
@@ -60,24 +85,53 @@ class ToolExecutor:
     agent: Any
     _ro_semaphore: asyncio.Semaphore
     _subagent_ro_semaphore: asyncio.Semaphore
+    _subagent_mut_semaphore: asyncio.Semaphore
     _confirm_lock: asyncio.Lock
     _call_counts: Dict[str, int]
     _last_results: Dict[str, Dict[str, Any]]
-    _preview_file_cache: Dict[str, Tuple[float, str]]
+    _preview_file_cache: "OrderedDict[str, Tuple[float, str]]"
 
     def __init__(self, agent: Any) -> None:
         self.agent = agent
         self._ro_semaphore = asyncio.Semaphore(MAX_CONCURRENT_READ_ONLY)
         self._subagent_ro_semaphore = asyncio.Semaphore(MAX_CONCURRENT_READ_ONLY_SUBAGENTS)
+        mut_cap = self._mutating_subagent_cap()
+        self._subagent_mut_semaphore = asyncio.Semaphore(mut_cap)
         self._confirm_lock = asyncio.Lock()
         self._call_counts = {}
         self._last_results = {}
-        self._preview_file_cache = {}
+        self._preview_file_cache: "OrderedDict[str, Tuple[float, str]]" = OrderedDict()
+
+    def _mutating_subagent_cap(self) -> int:
+        cfg = getattr(self.agent, "config", None)
+        try:
+            cap = int(
+                getattr(
+                    cfg,
+                    "max_concurrent_mutating_subagents",
+                    DEFAULT_MAX_CONCURRENT_MUTATING_SUBAGENTS,
+                )
+            )
+            return max(1, min(8, cap))
+        except (TypeError, ValueError):
+            return DEFAULT_MAX_CONCURRENT_MUTATING_SUBAGENTS
 
     def reset_counts(self) -> None:
         self._call_counts.clear()
         self._last_results.clear()
         self._preview_file_cache.clear()
+
+    def _cache_preview(
+        self, path: str, mtime: float, content: str
+    ) -> None:
+        self._preview_file_cache[path] = (mtime, content)
+        self._preview_file_cache.move_to_end(path)
+        while (
+            len(self._preview_file_cache) > PREVIEW_FILE_CACHE_MAX_ENTRIES
+            or sum(len(v[1]) for v in self._preview_file_cache.values())
+            > PREVIEW_FILE_CACHE_MAX_BYTES
+        ):
+            self._preview_file_cache.popitem(last=False)
 
     def _approval_allowlist(self) -> set[str]:
         # Initialized in Agent.__init__ so no race-condition risk here.
@@ -91,7 +145,7 @@ class ToolExecutor:
         result: Any,
         *,
         tool_name: str,
-        default_error_code: str = "tool_error",
+        default_error_code: str = ToolErrorCode.TOOL_ERROR,
     ) -> Dict[str, Any]:
         if isinstance(result, dict):
             normalized = dict(result)
@@ -186,10 +240,11 @@ class ToolExecutor:
                     current_mtime = path_obj.stat().st_mtime
                     cached = self._preview_file_cache.get(resolved)
                     if cached is not None and cached[0] == current_mtime:
+                        self._preview_file_cache.move_to_end(resolved)
                         original_content = cached[1]
                     else:
                         original_content = path_obj.read_text(encoding="utf-8")
-                        self._preview_file_cache[resolved] = (current_mtime, original_content)
+                        self._cache_preview(resolved, current_mtime, original_content)
                 except Exception:
                     return None
 
@@ -301,12 +356,27 @@ class ToolExecutor:
             previous = self._enter_waiting_for_user(tool_name)
             try:
                 if ipc_server is not None:
-                    res = await ipc_server.request_tool_approval(
+                    timeout_s = int(
+                        getattr(self.agent.config, "approval_timeout_seconds", 300) or 0
+                    )
+                    approval_coro = ipc_server.request_tool_approval(
                         tool_id=tool_id or str(uuid.uuid4()),
                         tool_name=tool_name,
                         arguments=arguments,
                         diff=diff,
                     )
+                    try:
+                        if timeout_s > 0:
+                            res = await asyncio.wait_for(approval_coro, timeout=timeout_s)
+                        else:
+                            res = await approval_coro
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "Tool approval timed out after %ss for '%s' — auto-denying.",
+                            timeout_s,
+                            tool_name,
+                        )
+                        return False
                     return bool(res)
 
                 try:
@@ -339,7 +409,7 @@ class ToolExecutor:
                 {
                     "success": False,
                     "error": pc["parse_error"],
-                    "error_code": "parse_error",
+                    "error_code": ToolErrorCode.PARSE_ERROR,
                 },
                 tool_name=pc.get("tool_name", "unknown"),
             )
@@ -348,6 +418,45 @@ class ToolExecutor:
             arguments = pc["arguments"]
             tool = self.agent.tools.get(tool_name)
 
+            agent_id = "main"
+            if self.agent.tracker_info and self.agent.tracker_info.agent_id:
+                agent_id = self.agent.tracker_info.agent_id
+            isolation_domain = None
+            if tool_name == "delegate_task" and isinstance(arguments, dict):
+                isolation_domain = resolve_delegation_isolation_domain(arguments)
+
+            with execution_context_scope(agent_id, isolation_domain=isolation_domain):
+                return await self._execute_single_tool_inner(
+                    pc,
+                    hooks_data,
+                    hooks_manager,
+                    precomputed_diff=precomputed_diff,
+                    tool=tool,
+                    tool_name=tool_name,
+                    arguments=arguments,
+                )
+        except Exception as e:
+            return self._normalize_tool_result(
+                {
+                    "success": False,
+                    "error": str(e),
+                    "error_code": ToolErrorCode.TOOL_EXCEPTION,
+                },
+                tool_name=pc.get("tool_name", "unknown"),
+            )
+
+    async def _execute_single_tool_inner(
+        self,
+        pc: Dict[str, Any],
+        hooks_data: Optional[Dict[str, Any]],
+        hooks_manager,
+        *,
+        precomputed_diff: Optional[str] = None,
+        tool: Any = None,
+        tool_name: str = "",
+        arguments: Any = None,
+    ) -> Dict[str, Any]:
+        try:
             async def _confirm(name, args):
                 return await self._confirmation_callback(
                     name, args, tool_id=pc["tool_id"], precomputed_diff=precomputed_diff
@@ -374,7 +483,7 @@ class ToolExecutor:
                         return {
                             "success": False,
                             "error": f"Tool '{tool_name}' was denied by a permission hook.",
-                            "error_code": "denied_by_hook",
+                            "error_code": ToolErrorCode.DENIED_BY_HOOK,
                         }
                     else:
                         approved = await _confirm(tool_name, arguments)
@@ -382,7 +491,7 @@ class ToolExecutor:
                             return {
                                 "success": False,
                                 "error": f"Tool '{tool_name}' was denied by the user.",
-                                "error_code": "denied",
+                                "error_code": ToolErrorCode.DENIED,
                             }
                 else:
                     approved = await _confirm(tool_name, arguments)
@@ -390,7 +499,7 @@ class ToolExecutor:
                         return {
                             "success": False,
                             "error": f"Tool '{tool_name}' was denied by the user.",
-                            "error_code": "denied",
+                            "error_code": ToolErrorCode.DENIED,
                         }
 
             pre_hooks = (
@@ -401,7 +510,7 @@ class ToolExecutor:
                     return {
                         "success": False,
                         "error": hook_msg,
-                        "error_code": "hook_blocked",
+                        "error_code": ToolErrorCode.HOOK_BLOCKED,
                     }
 
             timeout = getattr(tool, "timeout", None) or DEFAULT_TOOL_TIMEOUT_SECONDS
@@ -424,7 +533,7 @@ class ToolExecutor:
                 result = {
                     "success": False,
                     "error": f"Tool '{tool_name}' exceeded timeout of {timeout}s",
-                    "error_code": "timeout",
+                    "error_code": ToolErrorCode.TIMEOUT,
                 }
 
             post_hook_args = dict(arguments or {})
@@ -442,11 +551,11 @@ class ToolExecutor:
                 normalized_res["_hooks"] = {"pre": pre_hooks, "post": post_hooks}
             return normalized_res
         except Exception as e:
-            return self._normalize_tool_result(
+                return self._normalize_tool_result(
                 {
                     "success": False,
                     "error": str(e),
-                    "error_code": "tool_exception",
+                    "error_code": ToolErrorCode.TOOL_EXCEPTION,
                 },
                 tool_name=pc.get("tool_name", "unknown"),
             )
@@ -493,7 +602,7 @@ class ToolExecutor:
                         {
                             "success": False,
                             "error": pc["parse_error"],
-                            "error_code": "parse_error",
+                            "error_code": ToolErrorCode.PARSE_ERROR,
                         }
                     ),
                     tool_call_id=pc["tool_id"],
@@ -546,24 +655,42 @@ class ToolExecutor:
             prior_count = self._call_counts.get(fp, 0)
             tool = self.agent.tools.get(pc["tool_name"])
             is_read_only = bool(tool and getattr(tool, "is_read_only", False))
+            cacheable_repeat = (
+                fp in self._last_results
+                and isinstance(self._last_results[fp], dict)
+                and self._last_results[fp].get("success") is True
+            )
+            repeat_threshold = DUPLICATE_CALL_THRESHOLD
+            if pc["tool_name"] == "delegate_task":
+                repeat_threshold = 1
             if (
-                is_read_only
-                and prior_count >= DUPLICATE_CALL_THRESHOLD
-                and fp in self._last_results
+                (is_read_only or pc["tool_name"] == "delegate_task")
+                and prior_count >= repeat_threshold
+                and cacheable_repeat
             ):
                 repeated_count = prior_count + 1
                 self._call_counts[fp] = repeated_count
                 pc["_cached_repeat_count"] = repeated_count
                 cached = dict(self._last_results[fp])
-                cached["_warning"] = (
-                    f"This is call #{repeated_count} to '{pc['tool_name']}' with identical "
-                    "arguments — returning the cached result. Stop repeating the same read; "
-                    "either work with the data you already have or try a different approach."
-                )
+                if pc["tool_name"] == "delegate_task":
+                    cached["_warning"] = (
+                        f"This is call #{repeated_count} to 'delegate_task' with identical "
+                        "arguments — returning the cached report. Do not re-delegate the same task."
+                    )
+                else:
+                    cached["_warning"] = (
+                        f"This is call #{repeated_count} to '{pc['tool_name']}' with identical "
+                        "arguments — returning the cached result. Stop repeating the same read; "
+                        "either work with the data you already have or try a different approach."
+                    )
                 dup_results[idx] = cached
                 event_emitter.emit(
                     "agent_warning",
-                    message=f"Skipping duplicate read-only call to {pc['tool_name']} (already run {prior_count}×).",
+                    message=(
+                        f"Skipping duplicate delegate_task (already run {prior_count}×)."
+                        if pc["tool_name"] == "delegate_task"
+                        else f"Skipping duplicate read-only call to {pc['tool_name']} (already run {prior_count}×)."
+                    ),
                 )
                 continue
 
@@ -606,34 +733,32 @@ class ToolExecutor:
                 continue
             if idx not in executed_indices:
                 continue
-            res = self._normalize_tool_result(res, tool_name=pc["tool_name"])
             # User-denied calls don't reflect a stuck model — the user can
             # deny the same write 5× because they're reviewing each preview.
             # Treating denials as doom-loop hits produces a misleading
             # "stuck in a loop" stop instead of a clean "you keep denying".
-            if isinstance(res, dict) and res.get("error_code") == "denied":
+            if isinstance(res, dict) and res.get("error_code") == ToolErrorCode.DENIED:
                 continue
             self._call_counts[fp] = self._call_counts.get(fp, 0) + 1
             if isinstance(res, dict) and res.get("success") is True:
                 self._last_results[fp] = res
             count = self._call_counts[fp]
-            if count >= DOOM_LOOP_HARD_THRESHOLD and (
-                doom_offender is None or count > doom_offender[1]
-            ):
+            threshold = _doom_threshold(pc["tool_name"])
+            if count >= threshold and (doom_offender is None or count > doom_offender[1]):
                 doom_offender = (pc["tool_name"], count)
 
         for pc in parsed_calls:
             cached_count = pc.get("_cached_repeat_count")
+            threshold = _doom_threshold(pc["tool_name"])
             if (
                 isinstance(cached_count, int)
-                and cached_count >= DOOM_LOOP_HARD_THRESHOLD
+                and cached_count >= threshold
                 and (doom_offender is None or cached_count > doom_offender[1])
             ):
                 doom_offender = (pc["tool_name"], cached_count)
 
         for pc, res in zip(parsed_calls, results):
             res = self.agent.context_controller.summarize_tool_result(res)
-            res = self._normalize_tool_result(res, tool_name=pc["tool_name"])
             event_emitter.emit(
                 "tool_result", tool_name=pc["tool_name"], result=res, tool_id=pc["tool_id"]
             )
@@ -652,7 +777,7 @@ class ToolExecutor:
         # Detect which failures are user denials (not real errors).
         denied_tools: List[str] = []
         for pc, res in zip(parsed_calls, results):
-            if isinstance(res, dict) and res.get("error_code") == "denied":
+            if isinstance(res, dict) and res.get("error_code") == ToolErrorCode.DENIED:
                 denied_tools.append(pc.get("tool_name", "unknown"))
 
         all_tool_calls_failed = bool(results) and all(
@@ -694,6 +819,8 @@ class ToolExecutor:
         ro_indices: list = []
         capped_groups: Dict[str, list] = {}
         sub_ro_indices: list = []
+        sub_mut_parallel_indices: list = []
+        sub_mut_workspace_indices: list = []
         mut_indices: list = []
         for i, pc in enumerate(parsed_calls):
             tool_name = pc["tool_name"]
@@ -701,13 +828,15 @@ class ToolExecutor:
             if not tool:
                 mut_indices.append(i)
                 continue
-            # delegate_task with read_only_task=True is safe to parallelize.
-            if (
-                tool_name == "delegate_task"
-                and isinstance(pc.get("arguments"), dict)
-                and bool(pc["arguments"].get("read_only_task"))
-            ):
-                sub_ro_indices.append(i)
+            if tool_name == "delegate_task" and isinstance(pc.get("arguments"), dict):
+                domain = resolve_delegation_isolation_domain(pc["arguments"])
+                if domain == "read_only":
+                    sub_ro_indices.append(i)
+                    continue
+                if domain == "browser":
+                    sub_mut_parallel_indices.append(i)
+                    continue
+                sub_mut_workspace_indices.append(i)
                 continue
             max_par = getattr(tool, "max_parallel_invocations", 0)
             if max_par > 0:
@@ -740,7 +869,7 @@ class ToolExecutor:
                 await asyncio.wait_for(t, timeout=2.0)
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
-            return {"success": False, "error": "Cancelled by user.", "error_code": "cancelled"}
+            return {"success": False, "error": "Cancelled by user.", "error_code": ToolErrorCode.CANCELLED}
 
         def _emit_progress(i: int, elapsed: Optional[float] = None) -> None:
             nonlocal done
@@ -759,7 +888,7 @@ class ToolExecutor:
                 return {
                     "success": False,
                     "error": f"Tool '{tool_name}' raised: {raw}",
-                    "error_code": "tool_exception",
+                    "error_code": ToolErrorCode.TOOL_EXCEPTION,
                 }
             if isinstance(raw, dict):
                 return raw
@@ -788,6 +917,25 @@ class ToolExecutor:
             for i, r in zip(sub_ro_indices, res):
                 results[i] = _coerce_gather_result(i, r)
                 _emit_progress(i)
+
+        if sub_mut_parallel_indices:
+
+            async def _run_sub_mut(idx):
+                async with self._subagent_mut_semaphore:
+                    return await _run(parsed_calls[idx], diff=precomputed_diffs.get(idx))
+
+            res = await asyncio.gather(
+                *(_run_sub_mut(i) for i in sub_mut_parallel_indices),
+                return_exceptions=True,
+            )
+            for i, r in zip(sub_mut_parallel_indices, res):
+                results[i] = _coerce_gather_result(i, r)
+                _emit_progress(i)
+
+        for idx in sub_mut_workspace_indices:
+            t0 = _time.time()
+            results[idx] = await _run(parsed_calls[idx], diff=precomputed_diffs.get(idx))
+            _emit_progress(idx, elapsed=round(_time.time() - t0, 2))
 
         for tool_name, indices in capped_groups.items():
             cap_tool = self.agent.tools.get(tool_name)

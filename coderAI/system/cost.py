@@ -92,14 +92,8 @@ class CostTracker:
         base_model = model.lower()
 
         def _strip_date_suffixes(s: str) -> str:
-            """Strip one or more ``-YYYYMMDD`` suffixes from a model ID."""
             import re as _re
-
-            while True:
-                stripped = _re.sub(r"-\d{8,}$", "", s)
-                if stripped == s:
-                    return stripped
-                s = stripped
+            return _re.sub(r"(-\d{8,})*$", "", s)
 
         base_model = _strip_date_suffixes(base_model)
 
@@ -128,9 +122,9 @@ class CostTracker:
                 model,
                 base_model,
             )
-            return {"input": 0.0, "output": 0.0}
+            return {"input": 0.0, "output": 0.0, "pricing_known": False}
 
-        return pricing
+        return {**pricing, "pricing_known": True}
 
     @staticmethod
     def calculate_cost_for_tokens(model: str, input_tokens: int, output_tokens: int) -> float:

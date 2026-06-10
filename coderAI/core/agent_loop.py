@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import time as _time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from coderAI.core.agent_tracker import AgentStatus
 from coderAI.system.cost import CostTracker
@@ -21,6 +21,7 @@ from coderAI.system.error_policy import (
     MAX_CONSECUTIVE_ERRORS,
     MAX_CONSECUTIVE_PAUSES,
 )
+from coderAI.system.safeguards import sanitize_for_log
 
 logger = logging.getLogger(__name__)
 
@@ -48,18 +49,7 @@ class ExecutionLoop:
         self.tool_executor = ToolExecutor(agent)
         self.progress_callback = progress_callback
         # Use the agent's hooks manager for consistent state (e.g. approval cache)
-        hooks_manager = getattr(agent, "hooks_manager", None)
-        if hooks_manager is None:
-
-            class _NoopHooksManager:
-                def load_hooks(self):
-                    return None
-
-                async def run_hooks(self, *args, **kwargs):
-                    return []
-
-            hooks_manager = _NoopHooksManager()
-        self.hooks_manager: Any = hooks_manager
+        self.hooks_manager: Any = agent.hooks_manager
         self._last_repaired_msg_count: int = 0
         # Turn-scoped flags. ``run()`` resets these at the top of each call so
         # state never leaks across user messages.
@@ -206,11 +196,7 @@ class ExecutionLoop:
         # 4. Prepare messages (retrieve, inject context, manage window)
         messages = await self._prepare_messages(user_message)
 
-        # 5. Get tool schemas
         tool_schemas = self._get_tool_schemas()
-
-        # 6. Load project hooks
-        hooks_data = self.hooks_manager.load_hooks()
 
         self.agent._assistant_reply_parts.clear()
         tools_were_used = False
@@ -390,7 +376,6 @@ class ExecutionLoop:
                         "model_info": self.agent.provider.get_model_info(),
                     }
                 elif finish_reason == "pause_turn":
-                    # Model paused mid-thought. Re-issue same messages to resume.
                     consecutive_pauses += 1
                     if consecutive_pauses > MAX_CONSECUTIVE_PAUSES:
                         event_emitter.emit(
@@ -401,11 +386,22 @@ class ExecutionLoop:
                             ),
                         )
                         return await self._handle_max_iterations()
+                    provider_mod = getattr(
+                        self.agent.provider,
+                        "__module__",
+                        type(self.agent.provider).__module__,
+                    )
+                    if tool_calls and not str(provider_mod).startswith("coderAI.llm.anthropic"):
+                        if self.agent.session and self.agent.session.messages:
+                            last = self.agent.session.messages[-1]
+                            if last.role == "assistant" and last.tool_calls:
+                                last.tool_calls = None
+                                self._refresh_messages_from_session(messages)
                     event_emitter.emit(
                         "agent_paused",
                         message="Model requested pause_turn; resuming automatically.",
                     )
-                    iteration -= 1  # don't count toward max_iterations
+                    iteration -= 1
                     continue
                 else:
                     consecutive_pauses = 0
@@ -451,8 +447,6 @@ class ExecutionLoop:
                         "model_info": self.agent.provider.get_model_info(),
                     }
 
-                # Doom-loop detection: check if the last DOOM_LOOP_THRESHOLD
-                # consecutive assistant messages contain identical tool calls.
                 if self._detect_doom_loop(tool_calls):
                     doom_msg = (
                         "The last {n} tool-call steps repeated the same tool + arguments. "
@@ -671,10 +665,9 @@ class ExecutionLoop:
     async def _prepare_messages(self, user_message: str) -> List[Dict[str, Any]]:
         """Retrieve messages from session, inject context, and manage window."""
         session = self.agent.session
-        msg_count = len(session.messages) if session else 0
-        if msg_count != self._last_repaired_msg_count:
+        if session:
             self._repair_unpaired_tool_calls()
-            self._last_repaired_msg_count = msg_count
+            self._last_repaired_msg_count = len(session.messages)
         messages = self.agent.session.get_messages_for_api()
         messages = self.agent.context_controller.inject_context(
             messages, self.agent.context_manager, query=user_message
@@ -697,12 +690,15 @@ class ExecutionLoop:
         if not tool_calls or len(tool_calls) < DOOM_LOOP_THRESHOLD:
             return False
 
+        from coderAI.core.tool_executor import _fingerprint
+        from coderAI.core.tool_routing import coerce_tool_arguments
+
         fingerprints: Dict[str, int] = {}
         for tc in tool_calls:
             func = tc.get("function", {}) or {}
             name = func.get("name", "") or ""
-            args = func.get("arguments")
-            fp = json.dumps({"name": name, "args": args}, sort_keys=True, default=str)
+            args, _ = coerce_tool_arguments(func.get("arguments"))
+            fp = _fingerprint(name, args)
             fingerprints[fp] = fingerprints.get(fp, 0) + 1
 
         max_count = max(fingerprints.values())
@@ -722,74 +718,75 @@ class ExecutionLoop:
         providers reject the next request. We synthesize tool-error messages for
         any missing tool IDs so the transcript remains valid and recoverable.
 
-        Consumes only tool messages whose ``tool_call_id`` matches the current
-        assistant's expected IDs to avoid cross-assistant contamination.
+        Uses a two-pass O(n) algorithm: first collect expected and seen IDs,
+        then rebuild messages with synthetic injections where needed.
         """
         session = self.agent.session
         if not session or not session.messages:
             return
 
-        repaired: List[Message] = []
-        injected = 0
-        i = 0
         msgs = session.messages
-        while i < len(msgs):
-            msg = msgs[i]
-            repaired.append(msg)
 
-            expected_ids: List[str] = []
+        # Pass 1: collect expected tool_call_ids per assistant index and
+        # track which tool_call_ids already have corresponding tool messages.
+        expected_by_assistant: Dict[int, Set[str]] = {}
+        seen_tool_ids: Set[str] = set()
+        for i, msg in enumerate(msgs):
             if msg.role == "assistant" and msg.tool_calls:
+                ids = set()
                 for tc in msg.tool_calls:
                     tc_id = (tc or {}).get("id")
                     if isinstance(tc_id, str) and tc_id:
-                        expected_ids.append(tc_id)
+                        ids.add(tc_id)
+                if ids:
+                    expected_by_assistant[i] = ids
+            elif msg.role == "tool" and msg.tool_call_id:
+                seen_tool_ids.add(msg.tool_call_id)
 
-            if not expected_ids:
-                i += 1
-                continue
+        if not expected_by_assistant:
+            return
 
-            seen_ids = set()
-            j = i + 1
-            while j < len(msgs) and msgs[j].role == "tool":
-                tcid = msgs[j].tool_call_id
-                if tcid in expected_ids:
-                    repaired.append(msgs[j])
-                    seen_ids.add(tcid)
-                j += 1
+        # Count total missing tool_call_ids.
+        missing_total = sum(
+            len(tool_ids - seen_tool_ids) for tool_ids in expected_by_assistant.values()
+        )
+        if not missing_total:
+            return
 
-            missing_ids = [tcid for tcid in expected_ids if tcid not in seen_ids]
-            anchor_ts = getattr(msg, "timestamp", None)
-            if anchor_ts is None:
-                anchor_ts = _time.time()
-            for offset, tcid in enumerate(missing_ids, start=1):
-                repaired.append(
-                    Message(
-                        role="tool",
-                        content=json.dumps(
-                            {
-                                "success": False,
-                                "error": (
-                                    "Tool execution did not complete due to an internal error. "
-                                    "Recovered by adding a synthetic tool response."
+        # Pass 2: rebuild messages list, injecting synthetic tool responses
+        # after each assistant message that has unpaired tool calls.
+        repaired: List[Message] = []
+        for i, msg in enumerate(msgs):
+            repaired.append(msg)
+            if i in expected_by_assistant:
+                missing = expected_by_assistant[i] - seen_tool_ids
+                if missing:
+                    anchor_ts = getattr(msg, "timestamp", None) or _time.time()
+                    for offset, tcid in enumerate(sorted(missing), start=1):
+                        repaired.append(
+                            Message(
+                                role="tool",
+                                content=json.dumps(
+                                    {
+                                        "success": False,
+                                        "error": (
+                                            "Tool execution did not complete due to an internal error. "
+                                            "Recovered by adding a synthetic tool response."
+                                        ),
+                                    }
                                 ),
-                            }
-                        ),
-                        tool_call_id=tcid,
-                        name="internal_recovery",
-                        timestamp=anchor_ts + offset * 1e-6,
-                    )
-                )
-                injected += 1
+                                tool_call_id=tcid,
+                                name="internal_recovery",
+                                timestamp=anchor_ts + offset * 1e-6,
+                            )
+                        )
 
-            i = j
-
-        if injected:
-            session.messages = repaired
-            session.updated_at = _time.time()
-            logger.warning(
-                "Recovered %s unpaired assistant tool_call(s) by injecting synthetic tool responses.",
-                injected,
-            )
+        session.messages = repaired
+        session.updated_at = _time.time()
+        logger.warning(
+            "Recovered %s unpaired assistant tool_call(s) by injecting synthetic tool responses.",
+            missing_total,
+        )
 
     def _get_tool_schemas(self) -> Optional[List[Dict[str, Any]]]:
         """Collect tool schemas from built-in registry and MCP."""
@@ -797,7 +794,7 @@ class ExecutionLoop:
             self.agent.tools.get_schemas() if self.agent.provider.supports_tools() else None
         )
         try:
-            from .tools.mcp import mcp_client
+            from coderAI.tools.mcp import mcp_client
 
             mcp_schemas = mcp_client.get_tools_as_openai_format()
             if mcp_schemas:
@@ -891,17 +888,10 @@ class ExecutionLoop:
     ) -> List[Dict[str, Any]]:
         # Sanitize error message to avoid leaking sensitive info (API keys, tracebacks)
         error_str = str(e)
-        # Truncate long error messages and strip potential key/token patterns
+        # Truncate long error messages
         if len(error_str) > 200:
             error_str = error_str[:200] + "..."
-        import re
-
-        error_str = re.sub(
-            r"(sk-|key-|token-|Bearer\s+|x-api-key[=:]\s*|Authorization:\s*Bearer\s+)[A-Za-z0-9_\-]{8,}",
-            r"\1[REDACTED]",
-            error_str,
-            flags=re.IGNORECASE,
-        )
+        error_str = sanitize_for_log(error_str)
 
         event_emitter.emit(
             "agent_error", message=f"Error (attempt {count}/{MAX_CONSECUTIVE_ERRORS}): {error_str}"

@@ -75,4 +75,5 @@ class SessionState:
     session_started_at: Optional[float] = None
     ready: bool = False
     current_plan: Optional[Dict[str, Any]] = None
+    current_tasks: Optional[Dict[str, Any]] = None
     active_persona: Optional[str] = None

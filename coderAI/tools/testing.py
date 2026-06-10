@@ -370,11 +370,6 @@ class RunTestsTool(Tool):
             elif framework_name == "unittest" and path != ".":
                 cmd = [cmd_binary, "-m", "unittest", "discover", "-s", str(requested_path), "-v"]
 
-            if verbose and framework_name in ("jest", "vitest"):
-                pass
-            elif verbose and framework_name in ("pytest", "unittest"):
-                pass
-
             effective_timeout = timeout or config.get("timeout", 120)
 
             process = await asyncio.create_subprocess_exec(

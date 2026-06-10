@@ -60,6 +60,7 @@ ui/out/
 !.coderAI/agents/
 !.coderAI/skills/
 !.coderAI/rules/
+.coderAI/skills/workday-autofill/
 .coderAI/current_plan.json
 .coderAI/index/
 .ruff_cache/

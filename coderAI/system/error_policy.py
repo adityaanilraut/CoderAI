@@ -7,6 +7,36 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
+_SENSITIVE_KEYS = frozenset({
+    "api_key", "api-key", "x-api-key", "apiKey", "apikey",
+    "key", "token", "secret", "password", "passwd",
+    "authorization", "auth", "bearer", "access_token", "access-token", "accessToken",
+})
+_SENSITIVE_VALUE_RE = re.compile(
+    r"(sk-(?:ant-)?[a-zA-Z0-9_-]{10,})"
+    r"|(Bearer\s+[a-zA-Z0-9._\-+/=]{10,})"
+    r"|([a-zA-Z0-9_-]{20,})",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_dict(d: Any) -> Any:
+    """Deep-sanitize a dict/list, redacting sensitive key/header values."""
+    if isinstance(d, dict):
+        sanitized: Dict[str, Any] = {}
+        for k, v in d.items():
+            if isinstance(k, str) and k.lower() in _SENSITIVE_KEYS:
+                sanitized[k] = "[REDACTED]"
+            else:
+                sanitized[k] = _sanitize_dict(v)
+        return sanitized
+    if isinstance(d, list):
+        return [_sanitize_dict(item) for item in d]
+    if isinstance(d, str):
+        if _SENSITIVE_VALUE_RE.search(d):
+            return "[REDACTED]"
+    return d
+
 
 class BudgetExceededError(RuntimeError):
     """Raised when the configured budget has been exhausted.

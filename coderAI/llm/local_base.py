@@ -7,7 +7,7 @@ from urllib.parse import urljoin
 
 import aiohttp
 
-from coderAI.llm.base import DEFAULT_HTTP_TIMEOUT, LLMProvider
+from coderAI.llm.base import HTTP_CONNECT_TIMEOUT, HTTP_SOCK_READ_TIMEOUT, HTTP_TOTAL_TIMEOUT, LLMProvider
 
 logger = logging.getLogger(__name__)
 
@@ -27,10 +27,6 @@ class OpenAICompatibleLocalProvider(LLMProvider):
         self.endpoint = endpoint.rstrip("/")
         if not self.endpoint.endswith("/v1"):
             self.endpoint = urljoin(self.endpoint + "/", "v1")
-        self.temperature = kwargs.get("temperature", 0.7)
-        self.max_tokens = kwargs.get("max_tokens", 8192)
-        self.total_input_tokens = 0
-        self.total_output_tokens = 0
         self._session: Optional[aiohttp.ClientSession] = None
 
     def _get_session(self) -> aiohttp.ClientSession:
@@ -83,7 +79,11 @@ class OpenAICompatibleLocalProvider(LLMProvider):
         url = self._get_url()
         payload = self._build_payload(messages, tools, **kwargs)
         async with self._get_session().post(
-            url, json=payload, timeout=aiohttp.ClientTimeout(total=DEFAULT_HTTP_TIMEOUT)
+            url, json=payload, timeout=aiohttp.ClientTimeout(
+                connect=HTTP_CONNECT_TIMEOUT,
+                sock_read=HTTP_SOCK_READ_TIMEOUT,
+                total=HTTP_TOTAL_TIMEOUT,
+            )
         ) as response:
             response.raise_for_status()
             try:
@@ -109,7 +109,11 @@ class OpenAICompatibleLocalProvider(LLMProvider):
         url = self._get_url()
         payload = self._build_payload(messages, tools, stream=True, **kwargs)
         async with self._get_session().post(
-            url, json=payload, timeout=aiohttp.ClientTimeout(total=DEFAULT_HTTP_TIMEOUT)
+            url, json=payload, timeout=aiohttp.ClientTimeout(
+                connect=HTTP_CONNECT_TIMEOUT,
+                sock_read=HTTP_SOCK_READ_TIMEOUT,
+                total=HTTP_TOTAL_TIMEOUT,
+            )
         ) as response:
             response.raise_for_status()
             buffer = ""
@@ -137,9 +141,6 @@ class OpenAICompatibleLocalProvider(LLMProvider):
     def _transform_stream_chunk(self, chunk: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Hook for subclasses to mutate each stream chunk before yielding."""
         return chunk
-
-    def count_tokens(self, text: str) -> int:
-        return len(text) // 4
 
     def supports_tools(self) -> bool:
         return True

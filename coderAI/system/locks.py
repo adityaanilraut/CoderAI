@@ -1,6 +1,7 @@
 """Global resource locking mechanism for parallel agent orchestration."""
 
 import asyncio
+import threading
 from collections import OrderedDict
 from pathlib import Path
 from typing import Optional
@@ -24,16 +25,23 @@ class ResourceManager:
         self._file_locks: "OrderedDict[str, asyncio.Lock]" = OrderedDict()
         self._file_locks_lock: Optional[asyncio.Lock] = None
         self._git_lock: Optional[asyncio.Lock] = None
+        self._desktop_lock: Optional[asyncio.Lock] = None
         self._loop_id: Optional[int] = None
+        self._ensure_lock = threading.Lock()
 
     def _ensure_locks(self) -> None:
         """Lazily create or recreate locks inside the running event loop."""
         loop = asyncio.get_running_loop()
         loop_id = id(loop)
-        if self._git_lock is None or self._loop_id != loop_id:
+        if self._git_lock is not None and self._loop_id == loop_id:
+            return
+        with self._ensure_lock:
+            if self._git_lock is not None and self._loop_id == loop_id:
+                return
+            self._file_locks.clear()
             self._file_locks_lock = asyncio.Lock()
             self._git_lock = asyncio.Lock()
-            self._file_locks.clear()
+            self._desktop_lock = asyncio.Lock()
             self._loop_id = loop_id
 
     async def get_file_lock(self, filepath: str) -> asyncio.Lock:
@@ -75,6 +83,12 @@ class ResourceManager:
         self._ensure_locks()
         assert self._git_lock is not None
         return self._git_lock
+
+    def desktop_lock(self) -> asyncio.Lock:
+        """Lock to serialize macOS desktop automation (AppleScript / a11y) tool calls."""
+        self._ensure_locks()
+        assert self._desktop_lock is not None
+        return self._desktop_lock
 
 
 # Global singleton instance

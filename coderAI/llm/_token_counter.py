@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import math
 import threading
 from collections import OrderedDict
 from typing import Optional, Tuple
@@ -27,9 +26,9 @@ _cache_lock = threading.Lock()
 
 
 def estimate_chars(text: str) -> int:
-    if not text:
-        return 0
-    return max(1, math.ceil(len(text) / _TOKENS_PER_CHAR_FALLBACK))
+    from coderAI.llm.base import estimate_tokens_by_chars
+
+    return estimate_tokens_by_chars(text)
 
 
 def _do_count_tokens_request(text: str, model: str, api_key: str) -> int:
@@ -79,5 +78,5 @@ def count_tokens_anthropic(text: str, model: str, api_key: Optional[str]) -> int
                     _cache.popitem(last=False)
             return n
     except Exception:
-        logger.debug("Anthropic token count fallback — using char/4 estimate", exc_info=True)
+        logger.debug("Anthropic token count fallback — using char/4 estimate")
     return estimate_chars(text)

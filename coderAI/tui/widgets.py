@@ -1,11 +1,16 @@
 """Selectable RichLog that supports mouse drag text selection."""
 
-from __future__ import annotations
-
+from functools import lru_cache
 from rich.segment import Segment
 from rich.style import Style
 from textual.strip import Strip
 from textual.widgets._rich_log import RichLog
+
+
+@lru_cache(maxsize=10000)
+def _get_offset_style(style: Style, offset_x: int, offset_y: int) -> Style:
+    """Memoize style creation to avoid massive GC pressure on every render tick."""
+    return style + Style(meta={"offset": (offset_x, offset_y)})
 
 
 class SelectableRichLog(RichLog):
@@ -35,7 +40,7 @@ class SelectableRichLog(RichLog):
             if style is None:
                 style = Style()
 
-            new_style = style + Style(meta={"offset": (offset_x, content_y)})
+            new_style = _get_offset_style(style, offset_x, content_y)
 
             new_segments.append(Segment(text, new_style))
             offset_x += seg_len

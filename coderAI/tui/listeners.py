@@ -88,6 +88,18 @@ class EventReducer:
         self._stream_pending_reasoning = ""
         self._stream_flush_at = None
 
+    def _maybe_flush_status(self) -> bool:
+        if self._status_pending is None or self._status_flush_at is None:
+            return False
+        now = time.monotonic()
+        if now >= self._status_flush_at:
+            self._apply_status(self._status_pending)
+            self._status_pending = None
+            self._status_flush_at = None
+            self._bump_refresh("chrome")
+            return True
+        return False
+
     def _recover_incomplete_turn(self) -> None:
         self._reset_stream()
         self._current_assistant_id = None
@@ -159,7 +171,11 @@ class EventReducer:
                     self._stream_pending_reasoning += str(data["delta"])
                 else:
                     self._stream_pending_content += str(data["delta"])
-                if self._maybe_flush_stream() or session_dirty:
+                if session_dirty:
+                    self._flush_stream_buffers()
+                    dirty = True
+                    self._bump_refresh("stream")
+                elif self._maybe_flush_stream():
                     dirty = True
                     self._bump_refresh("stream")
             elif phase == "end":
@@ -337,6 +353,10 @@ class EventReducer:
                     "steps": plan.get("steps") or [],
                 }
             )
+        elif event == "tasks_card":
+            dirty = True
+            self._bump_refresh("chrome")
+            self.session.current_tasks = data.get("tasks")
         elif event == "skill_card":
             dirty = True
             self._bump_refresh("append")
