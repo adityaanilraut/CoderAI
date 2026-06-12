@@ -11,6 +11,7 @@ load_dotenv()
 from coderAI import __version__
 from coderAI.system.config import config_manager
 from coderAI.system.history import history_manager
+from coderAI.system.logging_setup import setup_logging
 
 from .config_cmd import config
 from .history_cmd import history
@@ -46,15 +47,7 @@ def cli(ctx, version, verbose, model, resume, resume_latest):
         sys.exit(0)
 
     if not logging.getLogger().handlers:
-        if verbose:
-            level = logging.DEBUG
-        else:
-            cfg_level = getattr(config_manager.load(), "log_level", "WARNING")
-            level = getattr(logging, cfg_level, logging.WARNING)
-        logging.basicConfig(
-            level=level,
-            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        )
+        setup_logging(logging.DEBUG if verbose else None)
 
     ctx.ensure_object(dict)
     ctx.obj["verbose"] = verbose
@@ -356,6 +349,22 @@ def doctor():
             check_ok(f"{cfg_dir} writable")
         except OSError as e:
             check_fail(f"{cfg_dir} write test failed", str(e))
+
+    if os.name != "nt":
+        for label, path, want in (
+            ("config dir", config_manager.config_dir, 0o700),
+            ("config file", config_manager.config_file, 0o600),
+        ):
+            if not path.exists():
+                continue
+            mode = path.stat().st_mode & 0o777
+            if mode & ~want:
+                check_warn(
+                    f"{label} permissions too open ({oct(mode)})",
+                    f"run `chmod {oct(want)[2:]} {path}` — it can contain API keys",
+                )
+            else:
+                check_ok(f"{label} permissions {oct(mode)}")
 
     cfg = config_manager.load()
     if cfg.default_model:

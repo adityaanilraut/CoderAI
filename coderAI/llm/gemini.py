@@ -7,7 +7,8 @@ from openai import AsyncOpenAI
 
 from coderAI.llm.base import LLMProvider
 from coderAI.llm.base import _retry_async as _retry
-from coderAI.system.error_policy import _sanitize_dict, _try_extract_response_body
+from coderAI.system.error_policy import _try_extract_response_body
+from coderAI.system.redaction import sanitize_dict as _sanitize_dict
 from coderAI.system.safeguards import sanitize_for_log
 
 logger = logging.getLogger(__name__)

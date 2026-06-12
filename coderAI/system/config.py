@@ -100,8 +100,16 @@ class ConfigManager:
         """Initialize the configuration manager."""
         self.config_dir = Path.home() / ".coderAI"
         self.config_file = self.config_dir / "config.json"
-        self.config_dir.mkdir(exist_ok=True)
+        self.config_dir.mkdir(mode=0o700, exist_ok=True)
         self._config: Optional[Config] = None
+        # Keys the user explicitly provided (config file or ``set()``) — only
+        # these are persisted by ``save()``. Persisting every field froze all
+        # defaults into config.json, so later default changes in code never
+        # took effect for existing users.
+        self._explicit_keys: set = set()
+        # Keys whose values came from environment variables this run. These
+        # are runtime overrides and must never be frozen to disk by ``save()``.
+        self._env_keys: set = set()
 
     def load(self) -> Config:
         """Load configuration from file and environment variables."""
@@ -121,6 +129,7 @@ class ConfigManager:
                     self.config_file,
                     e,
                 )
+        self._explicit_keys = set(config_data) & set(Config.model_fields.keys())
 
         # Override with environment variables
         env_mappings = {
@@ -206,6 +215,7 @@ class ConfigManager:
                     )
                     continue
                 config_data[config_key] = value
+                self._env_keys.add(config_key)
 
         # Warn about unknown keys (they'll be dropped by extra="ignore")
         known_keys = set(Config.model_fields.keys())
@@ -220,6 +230,27 @@ class ConfigManager:
         self._config = Config(**config_data)
         return self._config
 
+    def _data_to_persist(self, config: Config) -> Dict[str, Any]:
+        """Select which fields ``save()`` writes to disk.
+
+        Persist explicitly-set keys plus any value that differs from the
+        field default (covers direct mutation of the model). Defaults are
+        NOT written, so changing a default in code takes effect for existing
+        users. Env-derived values are runtime overrides and are skipped
+        unless the user also set them explicitly.
+        """
+        defaults = Config()
+        data = config.model_dump(exclude_none=True)
+        persist: Dict[str, Any] = {}
+        for key, value in data.items():
+            if key in self._explicit_keys:
+                persist[key] = value
+            elif key in self._env_keys:
+                continue
+            elif value != getattr(defaults, key, None):
+                persist[key] = value
+        return persist
+
     def save(self, config: Optional[Config] = None) -> None:
         """Save configuration to file with restricted permissions."""
         if config is None:
@@ -231,7 +262,7 @@ class ConfigManager:
         try:
             os.fchmod(tmp_fd, stat.S_IRUSR | stat.S_IWUSR)
             with os.fdopen(tmp_fd, "w") as f:
-                json.dump(config.model_dump(exclude_none=True), f, indent=2)
+                json.dump(self._data_to_persist(config), f, indent=2)
             os.replace(tmp_path, str(self.config_file))
         except Exception:
             try:
@@ -253,6 +284,7 @@ class ConfigManager:
         except ValidationError as e:
             raise ValueError(f"Invalid value for '{key}': {e}") from e
         self._config = config
+        self._explicit_keys.add(key)
         self.save()
 
     def get(self, key: str, default: Any = None) -> Any:
@@ -285,6 +317,8 @@ class ConfigManager:
     def reset(self) -> None:
         """Reset configuration to defaults."""
         self._config = Config()
+        self._explicit_keys = set()
+        self._env_keys = set()
         if self.config_file.exists():
             self.config_file.unlink()
 

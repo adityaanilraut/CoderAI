@@ -760,6 +760,14 @@ def run_chat_app(
     persona: Optional[str] = None,
 ) -> None:
     """Entry point for ``coderAI chat``."""
+    import logging
+
+    from coderAI.system.logging_setup import setup_logging
+
+    # Route logs to a file while Textual owns the terminal — any stderr
+    # write would corrupt the display. Restore stderr logging on exit.
+    root_level = logging.getLogger().level or None
+    setup_logging(root_level, tui_mode=True)
     app = CoderAIApp(
         model=model,
         resume=resume,
@@ -767,4 +775,7 @@ def run_chat_app(
         auto_approve=auto_approve,
         persona=persona,
     )
-    app.run()
+    try:
+        app.run()
+    finally:
+        setup_logging(root_level, tui_mode=False)

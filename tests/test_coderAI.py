@@ -1175,6 +1175,7 @@ LOGIN_PAGE_HTML = """\
 </html>
 """
 
+
 class TestCreateFolderAndLoginPage:
     """End-to-end test: create a folder and build a login page.
 

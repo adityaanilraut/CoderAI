@@ -40,11 +40,7 @@ class FakeSkillSource(SkillSource):
 def make_mock_provider(response_text):
     """Build an AsyncMock LLM provider that returns *response_text*."""
     provider = AsyncMock()
-    provider.chat = AsyncMock(
-        return_value={
-            "choices": [{"message": {"content": response_text}}]
-        }
-    )
+    provider.chat = AsyncMock(return_value={"choices": [{"message": {"content": response_text}}]})
     return provider
 
 
@@ -229,9 +225,7 @@ class TestGetTopSkills:
 
     @pytest.mark.asyncio
     async def test_cache_prevents_redundant_llm_calls(self):
-        source = FakeSkillSource(
-            skills=[Skill(name="a", description="Skill A", source="fake")]
-        )
+        source = FakeSkillSource(skills=[Skill(name="a", description="Skill A", source="fake")])
         manager = SkillManager(sources=[source], threshold=0.5)
 
         response_data = {"matches": [{"skill_name": "a", "confidence": 0.9, "reasoning": "match"}]}
@@ -273,7 +267,9 @@ class TestGetRelevantSkill:
         )
         manager = SkillManager(sources=[source], threshold=0.5)
 
-        response_data = {"matches": [{"skill_name": "best", "confidence": 0.99, "reasoning": "perfect"}]}
+        response_data = {
+            "matches": [{"skill_name": "best", "confidence": 0.99, "reasoning": "perfect"}]
+        }
         manager.provider = make_mock_provider(json.dumps(response_data))
 
         skill = await manager.get_relevant_skill("relevant task")
@@ -298,9 +294,7 @@ class TestGetRelevantSkill:
 class TestPreloadSkills:
     @pytest.mark.asyncio
     async def test_preload_from_source(self):
-        source = FakeSkillSource(
-            skills=[Skill(name="preloaded", description="Preloaded skill")]
-        )
+        source = FakeSkillSource(skills=[Skill(name="preloaded", description="Preloaded skill")])
         manager = SkillManager(sources=[source])
 
         skills = await manager.preload_skills(["preloaded"])

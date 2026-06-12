@@ -128,10 +128,7 @@ class TestBatchReadOnlyParallelism:
         agent = _make_agent(registry)
         executor = ToolExecutor(agent)
 
-        batch = [
-            {"tool_id": str(i), "tool_name": f"ro{i}", "arguments": {}}
-            for i in range(25)
-        ]
+        batch = [{"tool_id": str(i), "tool_name": f"ro{i}", "arguments": {}} for i in range(25)]
         hooks_manager = AsyncMock()
         hooks_manager.run_hooks.return_value = None
 
@@ -233,6 +230,7 @@ class TestBatchErrorIsolation:
     async def test_one_tool_failure_does_not_block_others(self):
         def fail(**kw):
             raise RuntimeError("boom")
+
         t_good = SimpleNamespace(
             name="read_file",
             is_read_only=True,
@@ -280,8 +278,7 @@ class TestCappedParallelism:
         executor = ToolExecutor(agent)
 
         batch = [
-            {"tool_id": str(i), "tool_name": "capped_tool", "arguments": {"n": i}}
-            for i in range(5)
+            {"tool_id": str(i), "tool_name": "capped_tool", "arguments": {"n": i}} for i in range(5)
         ]
         hooks_manager = AsyncMock()
         hooks_manager.run_hooks.return_value = None
@@ -290,5 +287,3 @@ class TestCappedParallelism:
 
         assert len(results) == 5
         assert all(r["success"] for r in results)
-
-

@@ -164,7 +164,8 @@ _DEFAULT_PAGE_TTL = 3600
 
 
 def _cache_dir() -> Path:
-    _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    # 0700: cached search queries / page content can be sensitive
+    _CACHE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
     return _CACHE_DIR
 
 
@@ -199,7 +200,10 @@ def _set_cached(key: str, value: Any, ttl: int) -> None:
             "expires": time.time() + ttl,
             "cached_at": time.time(),
         }
-        _cache_path(key).write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        path = _cache_path(key)
+        path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        if os.name != "nt":
+            os.chmod(path, 0o600)
     except OSError as e:
         logger.debug(f"Cache write failed for {key}: {e}")
 

@@ -76,10 +76,16 @@ async def test_set_model_aligns_provider_usage_counters() -> None:
         total_prompt_tokens=11,
         total_completion_tokens=7,
         _create_provider=MagicMock(return_value=new_provider),
-        _replace_provider=MagicMock(side_effect=lambda: (
-            setattr(agent, "provider", new_provider),
-            setattr(getattr(agent, "context_controller", SimpleNamespace()), "provider", new_provider),
-        )),
+        _replace_provider=MagicMock(
+            side_effect=lambda: (
+                setattr(agent, "provider", new_provider),
+                setattr(
+                    getattr(agent, "context_controller", SimpleNamespace()),
+                    "provider",
+                    new_provider,
+                ),
+            )
+        ),
         _configure_delegate_tool_context=MagicMock(),
         context_controller=SimpleNamespace(provider=old_provider),
         session=None,

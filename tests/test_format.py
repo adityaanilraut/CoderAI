@@ -49,6 +49,7 @@ class TestFormatTool:
 
     def test_missing_binary_returns_error(self):
         import shutil
+
         result = asyncio.run(self.tool.execute(path=".", formatter="gofmt"))
         if not shutil.which("gofmt"):
             assert not result["success"]

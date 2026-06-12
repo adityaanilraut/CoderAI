@@ -1,13 +1,17 @@
 from coderAI.tui.timeline_render import calculate_item_lines
 
+
 def test_calculate_item_lines_user():
     # Uncollapsed user
     item = {"kind": "user", "text": "hello\nworld\nfoo"}
     assert calculate_item_lines(item, verbose=False) == 5  # 1 (header) + 3 (body) + 1 (empty)
-    
+
     # Collapsed user (truncated)
     item = {"kind": "user", "text": "hello\nworld\nfoo\nbar", "collapsed": True}
-    assert calculate_item_lines(item, verbose=False) == 5  # 1 (header) + 3 (2 content lines + 1 ellipsis line) + 1 (empty)
+    assert (
+        calculate_item_lines(item, verbose=False) == 5
+    )  # 1 (header) + 3 (2 content lines + 1 ellipsis line) + 1 (empty)
+
 
 def test_calculate_item_lines_assistant():
     # Uncollapsed, verbose, with reasoning
@@ -16,7 +20,7 @@ def test_calculate_item_lines_assistant():
         "reasoning": "thought 1\nthought 2",
         "content": "hello\nworld",
         "streaming": False,
-        "collapsed": False
+        "collapsed": False,
     }
     # verbose=True:
     # Reasoning header: 1
@@ -51,6 +55,7 @@ def test_calculate_item_lines_assistant():
     # Total = 1 + 4 + 1 = 6
     assert calculate_item_lines(item, verbose=True) == 6
 
+
 def test_calculate_item_lines_tool():
     item = {"kind": "tool", "name": "run_command", "collapsed": False}
     assert calculate_item_lines(item, verbose=False) == 1
@@ -60,6 +65,7 @@ def test_calculate_item_lines_tool():
 
     item["collapsed"] = True
     assert calculate_item_lines(item, verbose=False) == 1
+
 
 def test_calculate_item_lines_diff():
     item = {"kind": "diff", "diff": "line1\nline2\nline3", "collapsed": False}

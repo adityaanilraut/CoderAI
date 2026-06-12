@@ -1,6 +1,5 @@
 """Tests for skill_loader.py — file discovery, parsing, and safety."""
 
-
 from coderAI.skills.skill_loader import (
     Skill,
     SKILLS_FILE_NAME,
@@ -70,9 +69,7 @@ class TestParseFrontmatter:
         assert body == ""
 
     def test_malformed_yaml(self):
-        metadata, body = _parse_frontmatter(
-            "---\n{[bad yaml]}\n---\n\nInstructions"
-        )
+        metadata, body = _parse_frontmatter("---\n{[bad yaml]}\n---\n\nInstructions")
         assert metadata == {}
         assert "Instructions" in body
 
