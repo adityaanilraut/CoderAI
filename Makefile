@@ -17,12 +17,10 @@ help:
 	@echo "make setup       - Run setup wizard"
 
 install:
-	pip install -r requirements.txt
 	pip install .
 
 dev:
-	pip install -r requirements.txt
-	pip install -e .
+	pip install -e ".[dev]"
 
 test:
 	pytest
@@ -67,13 +65,12 @@ quickstart: clean dev test
 	@echo ""
 	@echo "Run 'make setup' to configure, then 'make run' to start."
 
-# Build distribution
+# Build distribution (requires: pip install build)
 dist: clean
-	python -m build
+	python3 -m build
 	@echo "Distribution built in dist/"
 
 # Install dev dependencies
 install-dev:
-	pip install -r requirements.txt
 	pip install -e ".[dev]"
 
