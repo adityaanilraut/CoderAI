@@ -183,6 +183,9 @@ def _resolve_working_dir(working_dir: str) -> "tuple[Optional[Path], Optional[st
         cfg = config_manager.load()
         project_root = Path(getattr(cfg, "project_root", ".") or ".").resolve()
     except Exception:
+        # Config unavailable → treat the current directory as the project
+        # root; the scope check below still runs against it.
+        logger.debug("project_root config unavailable, using cwd", exc_info=True)
         project_root = Path.cwd().resolve()
 
     candidate = Path(working_dir).expanduser()
@@ -196,6 +199,8 @@ def _resolve_working_dir(working_dir: str) -> "tuple[Optional[Path], Optional[st
     try:
         cfg_allow_outside = bool(config_manager.get("allow_outside_project", False))
     except Exception:
+        # Fail closed: if config can't be read, keep project-scope enforcement on.
+        logger.debug("allow_outside_project config unavailable, failing closed", exc_info=True)
         cfg_allow_outside = False
     if os.environ.get("CODERAI_ALLOW_OUTSIDE_PROJECT") == "1" or cfg_allow_outside:
         return resolved, None
@@ -385,6 +390,9 @@ class RunCommandTool(Tool):
                 try:
                     stdout, stderr = await process.communicate()
                 except Exception:
+                    # Best-effort: the process was just killed for timing out;
+                    # if its pipes are already gone, report empty output.
+                    logger.debug("could not read output of timed-out process", exc_info=True)
                     stdout, stderr = b"", b""
                 stdout_str = stdout.decode("utf-8", errors="replace")
                 stderr_str = stderr.decode("utf-8", errors="replace")
@@ -397,6 +405,7 @@ class RunCommandTool(Tool):
                     "returncode": process.returncode,
                 }
             except asyncio.CancelledError:
+                # Escalate terminate → kill; cleanup must not mask the cancellation.
                 try:
                     process.terminate()
                     await asyncio.wait_for(process.wait(), timeout=1)
@@ -405,7 +414,6 @@ class RunCommandTool(Tool):
                         process.kill()
                     except Exception:
                         logger.debug("Failed to kill process after CancelledError", exc_info=True)
-                        pass
                 raise
 
             # Truncate very large output to prevent context overflow
@@ -434,7 +442,11 @@ class RunCommandTool(Tool):
                 "command": command,
             }
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
 
 class RunBackgroundParams(BaseModel):
@@ -589,7 +601,11 @@ class RunBackgroundTool(Tool):
                 "message": "Process started in background",
             }
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
     def get_tracked_processes(self) -> Dict[int, BgProcessInfo]:
         """Get all tracked background processes for this instance."""
@@ -616,7 +632,6 @@ class RunBackgroundTool(Tool):
                     logger.debug(
                         "Failed to kill background process during terminate_all", exc_info=True
                     )
-                    pass
         self._processes.clear()
         return terminated
 
@@ -631,7 +646,6 @@ def _cleanup_all_background():
                 logger.debug(
                     "Failed to kill background process during atexit cleanup", exc_info=True
                 )
-                pass
     _tracked_bg_processes.clear()
 
 
@@ -687,7 +701,11 @@ class ListProcessesTool(Tool):
                 "count": len(processes),
             }
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
 
 class KillProcessParams(BaseModel):
@@ -741,7 +759,11 @@ class KillProcessTool(Tool):
                 "message": f"Sent {'SIGKILL' if force else 'SIGTERM'} to process {pid}.",
             }
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
 
 # ---------------------------------------------------------------------------
@@ -790,4 +812,8 @@ class ReadBgOutputTool(Tool):
                 "stderr": stderr_text,
             }
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }

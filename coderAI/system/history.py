@@ -42,11 +42,13 @@ def _default_session_model() -> str:
         return config_manager.load().default_model
     except Exception:
         # Fall back to the Config field default rather than an invalid literal.
+        logger.debug("default_model config unavailable, using field default", exc_info=True)
         try:
             from coderAI.system.config import Config
 
             return str(Config.model_fields["default_model"].default)
         except Exception:
+            # Last resort if even the Config class can't be imported/inspected.
             return "claude-4-sonnet"
 
 
@@ -342,6 +344,9 @@ class HistoryManager:
                         }
                         needs_save = True
                 except Exception:
+                    # A corrupt session file shouldn't break listing the rest;
+                    # it stays out of the index until repaired or deleted.
+                    logger.debug(f"skipping unreadable session file {session_file}", exc_info=True)
                     continue
 
         if needs_save:
@@ -350,8 +355,10 @@ class HistoryManager:
                 with open(tmp_file, "w") as f:
                     json.dump(index, f)
                 os.replace(tmp_file, index_file)
-            except Exception:
-                pass
+            except Exception as e:
+                # The index is a cache; listing still works from the rebuilt
+                # in-memory copy and the save is retried on the next call.
+                logger.warning(f"Failed to save rebuilt session index: {e}")
 
         sessions = list(index.values())
         # updated_at is formatted YYYY-MM-DD HH:MM:SS which sorts lexicographically in chronological order

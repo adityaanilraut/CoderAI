@@ -185,7 +185,11 @@ class GitAddTool(Tool):
             logger.info(f"git_add: staged {allowed}")
             return out
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
 
 class GitStatusParams(BaseModel):
@@ -223,7 +227,11 @@ class GitStatusTool(Tool):
                 "truncated": truncated,
             }
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
 
 class GitDiffParams(BaseModel):
@@ -271,7 +279,11 @@ class GitDiffTool(Tool):
                 "truncated": truncated,
             }
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
 
 class GitCommitParams(BaseModel):
@@ -303,7 +315,11 @@ class GitCommitTool(Tool):
                 "output": output + error,
             }
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
 
 class GitLogParams(BaseModel):
@@ -345,7 +361,11 @@ class GitLogTool(Tool):
                 "truncated": truncated,
             }
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
 
 class GitBranchParams(BaseModel):
@@ -423,7 +443,11 @@ class GitBranchTool(Tool):
                 ].decode("utf-8", errors="replace")
                 return {"success": result["returncode"] == 0, "output": output}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
 
 class GitCheckoutParams(BaseModel):
@@ -467,7 +491,11 @@ class GitCheckoutTool(Tool):
             )
             return {"success": result["returncode"] == 0, "output": output.strip()}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
 
 class GitStashParams(BaseModel):
@@ -521,7 +549,11 @@ class GitStashTool(Tool):
             )
             return {"success": result["returncode"] == 0, "output": output.strip()}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
 
 class GitPushParams(BaseModel):
@@ -574,7 +606,11 @@ class GitPushTool(Tool):
             )
             return {"success": result["returncode"] == 0, "output": output.strip()}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
 
 class GitPullParams(BaseModel):
@@ -621,7 +657,11 @@ class GitPullTool(Tool):
             )
             return {"success": result["returncode"] == 0, "output": output.strip()}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
 
 class GitMergeParams(BaseModel):
@@ -668,7 +708,11 @@ class GitMergeTool(Tool):
             )
             return {"success": result["returncode"] == 0, "output": output.strip()}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
 
 class GitRebaseParams(BaseModel):
@@ -714,7 +758,11 @@ class GitRebaseTool(Tool):
             )
             return {"success": result["returncode"] == 0, "output": output.strip()}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
 
 class GitRevertParams(BaseModel):
@@ -756,7 +804,11 @@ class GitRevertTool(Tool):
             )
             return {"success": result["returncode"] == 0, "output": output.strip()}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
 
 class GitResetParams(BaseModel):
@@ -806,7 +858,11 @@ class GitResetTool(Tool):
             )
             return {"success": result["returncode"] == 0, "output": output.strip()}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
 
 class GitShowParams(BaseModel):
@@ -849,7 +905,11 @@ class GitShowTool(Tool):
             output, truncated = _truncate_output(result["stdout"].decode("utf-8", errors="replace"))
             return {"success": True, "output": output, "truncated": truncated}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
 
 class GitRemoteParams(BaseModel):
@@ -911,7 +971,11 @@ class GitRemoteTool(Tool):
             )
             return {"success": result["returncode"] == 0, "output": output.strip()}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
 
 class GitBlameParams(BaseModel):
@@ -981,7 +1045,11 @@ class GitBlameTool(Tool):
                 "truncated": truncated,
             }
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
 
 class GitCherryPickParams(BaseModel):
@@ -1020,7 +1088,11 @@ class GitCherryPickTool(Tool):
             )
             return {"success": result["returncode"] == 0, "output": output.strip()}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
 
 class GitTagParams(BaseModel):
@@ -1086,7 +1158,11 @@ class GitTagTool(Tool):
                 "output": (output + err).strip(),
             }
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
 
 class GitFetchParams(BaseModel):
@@ -1131,4 +1207,8 @@ class GitFetchTool(Tool):
             )
             return {"success": result["returncode"] == 0, "output": output.strip()}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }

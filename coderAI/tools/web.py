@@ -19,6 +19,7 @@ from urllib.parse import quote, quote_plus, unquote, urljoin, urlparse
 import aiohttp
 from pydantic import BaseModel, Field
 
+from coderAI.core.tool_error_codes import ToolErrorCode
 from coderAI.tools.base import Tool
 from coderAI.tools.filesystem import _enforce_project_scope, _is_path_protected
 
@@ -223,6 +224,9 @@ def _get_rate_limit_delay() -> float:
 
         _rate_limit_delay = config_manager.load().rate_limit_delay_seconds
     except Exception:
+        # Config can be unreadable (corrupt file, early startup, tests);
+        # fall back to the env var / previous value instead of failing the request.
+        logger.debug("rate_limit_delay config unavailable, using fallback", exc_info=True)
         env_val = os.getenv("CODERAI_RATE_LIMIT_DELAY")
         if env_val:
             try:
@@ -279,7 +283,7 @@ class _SSRFResolver(aiohttp.abc.AbstractResolver):
         try:
             infos = await loop.getaddrinfo(host, port, family=family, type=socket.SOCK_STREAM)
         except Exception as e:
-            raise OSError(f"SSRF guard: DNS failed for {host}: {e}")
+            raise OSError(f"SSRF guard: DNS failed for {host}: {e}") from e
 
         results: List[Dict[str, Any]] = []
         for fam, _type, _proto, _canon, sockaddr in infos:
@@ -502,7 +506,8 @@ def _extract_pdf_text(content: bytes) -> Optional[str]:
         logger.debug("pypdf not installed; install with: pip install pypdf")
         return None
     except Exception as e:
-        logger.debug(f"PDF extraction failed: {e}")
+        # Best-effort: a None return makes the caller fall back to raw-text extraction.
+        logger.debug(f"PDF extraction failed: {e}", exc_info=True)
         return None
 
 
@@ -632,6 +637,9 @@ async def _safe_request(
                 try:
                     text = raw_bytes.decode("utf-8", errors="replace")
                 except Exception:
+                    # errors="replace" should never raise; guard so a pathological
+                    # payload can't kill the request — binary callers use "content".
+                    logger.debug("response decode failed; returning empty text", exc_info=True)
                     text = ""
                 return {
                     "status": resp.status,
@@ -725,6 +733,8 @@ async def _fetch_page_text(
 
             ttl = config_manager.load().page_cache_ttl_seconds
         except Exception:
+            # Config unavailable → default TTL; caching must not break fetches.
+            logger.debug("page_cache_ttl config unavailable, using default", exc_info=True)
             ttl = _DEFAULT_PAGE_TTL
         _set_cached(cache_key, text, ttl)
 
@@ -915,8 +925,9 @@ class _DDGBackend(_SearchBackend):
                 else:
                     last_error = "Empty results returned"
             except Exception as e:
+                # Retry with the next header set; final failure raises RuntimeError below.
                 last_error = str(e)
-                logger.debug(f"DDG attempt {attempt + 1}: {e}")
+                logger.debug(f"DDG attempt {attempt + 1}: {e}", exc_info=True)
 
             if attempt < len(header_sets) - 1:
                 await asyncio.sleep(2**attempt)
@@ -1009,8 +1020,8 @@ def _parse_ddg_results_v2(html_text: str, max_results: int) -> List[_SearchResul
         parser.feed(html_text)
         parser.close()
     except Exception:
+        # Keep whatever results were parsed before the failure.
         logger.debug("DDG v2 parse error", exc_info=True)
-        pass
 
     results: List[_SearchResult] = []
     for r in parser.results:
@@ -1067,7 +1078,9 @@ class _SearXNGBackend(_SearchBackend):
                     logger.info(f"SearXNG {instance}: {len(results)} results")
                 return results
             except Exception as e:
-                logger.debug(f"SearXNG {instance}: {e}")
+                # Public SearXNG instances flake routinely; a None return just
+                # drops this instance from the race — others may still succeed.
+                logger.debug(f"SearXNG {instance}: {e}", exc_info=True)
                 return None
 
         # Try all instances concurrently
@@ -1119,6 +1132,8 @@ def _concurrent_search_enabled() -> bool:
 
         return bool(config_manager.load().concurrent_search)
     except Exception:
+        # Config unavailable → fall back to env var / default (concurrent on).
+        logger.debug("concurrent_search config unavailable, using fallback", exc_info=True)
         return os.getenv("CODERAI_CONCURRENT_SEARCH", "true").strip().lower() in (
             "true",
             "1",
@@ -1178,6 +1193,8 @@ def _domain_of(url: str) -> str:
     try:
         return (urlparse(url).hostname or "").lower()
     except Exception:
+        # urlparse raises only on pathologically malformed URLs; an empty
+        # domain simply matches no allow/block pattern downstream.
         return ""
 
 
@@ -1326,6 +1343,8 @@ class WebSearchTool(Tool):
 
                 ttl = config_manager.load().search_cache_ttl_seconds
             except Exception:
+                # Config unavailable → default TTL; caching must not break search.
+                logger.debug("search_cache_ttl config unavailable, using default", exc_info=True)
                 ttl = _DEFAULT_SEARCH_TTL
             _set_cached(cache_key, results, ttl)
 
@@ -1338,10 +1357,11 @@ class WebSearchTool(Tool):
             }
 
         except Exception as e:
-            logger.error(f"Web search error ({backend.name}): {e}")
+            logger.error(f"Web search error ({backend.name}): {e}", exc_info=True)
             return {
                 "success": False,
                 "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
                 "backend": backend.name,
                 "hint": "Search failed. Try read_url with a direct URL instead.",
                 "search_url": f"https://duckduckgo.com/?q={quote_plus(query)}",
@@ -1362,7 +1382,9 @@ class WebSearchTool(Tool):
                     result["page_content"] = text
                     result["page_content_length"] = len(text)
             except Exception as e:
-                logger.debug(f"Auto-fetch failed for {url}: {e}")
+                # Best-effort enrichment: surface the error on the result and
+                # return the search hit without page content.
+                logger.debug(f"Auto-fetch failed for {url}: {e}", exc_info=True)
                 result["page_content_error"] = str(e)
             return result
 
@@ -1413,7 +1435,9 @@ class WebSearchTool(Tool):
             try:
                 return await be.search(query, num_results * 2, allowed_domains, blocked_domains)
             except Exception as e:
-                logger.debug(f"Backend {be.name} failed: {e}")
+                # A failing backend drops out of the race; if every backend
+                # fails, the all-None check below raises RuntimeError.
+                logger.debug(f"Backend {be.name} failed: {e}", exc_info=True)
                 return None
 
         all_results_raw = await asyncio.gather(*[_run(b) for b in backends])
@@ -1496,9 +1520,17 @@ class ReadURLTool(Tool):
         try:
             resp = await _safe_request_cf("GET", url, timeout_s=25.0)
         except asyncio.TimeoutError:
-            return {"success": False, "error": f"Timeout fetching {url}"}
+            return {
+                "success": False,
+                "error": f"Timeout fetching {url}",
+                "error_code": ToolErrorCode.TIMEOUT,
+            }
         except Exception as e:
-            return {"success": False, "error": f"Failed to fetch {url}: {e}"}
+            return {
+                "success": False,
+                "error": f"Failed to fetch {url}: {e}",
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
         if resp is None:
             return {
@@ -1587,9 +1619,17 @@ class DownloadFileTool(Tool):
         try:
             resp = await _safe_request_cf("GET", url, timeout_s=60.0, max_bytes=50 * 1024 * 1024)
         except asyncio.TimeoutError:
-            return {"success": False, "error": f"Timeout downloading {url}"}
+            return {
+                "success": False,
+                "error": f"Timeout downloading {url}",
+                "error_code": ToolErrorCode.TIMEOUT,
+            }
         except Exception as e:
-            return {"success": False, "error": f"Failed to download {url}: {e}"}
+            return {
+                "success": False,
+                "error": f"Failed to download {url}: {e}",
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
         if resp is None:
             return {"success": False, "error": f"SSRF Protection blocked {url}."}
@@ -1623,7 +1663,11 @@ class DownloadFileTool(Tool):
                 "bytes_downloaded": len(content),
             }
         except Exception as e:
-            return {"success": False, "error": f"Failed to download {url}: {e}"}
+            return {
+                "success": False,
+                "error": f"Failed to download {url}: {e}",
+                "error_code": ToolErrorCode.IO,
+            }
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1693,9 +1737,17 @@ class HTTPRequestTool(Tool):
                 timeout_s=float(timeout),
             )
         except asyncio.TimeoutError:
-            return {"success": False, "error": f"Request timed out after {timeout}s: {url}"}
+            return {
+                "success": False,
+                "error": f"Request timed out after {timeout}s: {url}",
+                "error_code": ToolErrorCode.TIMEOUT,
+            }
         except Exception as e:
-            return {"success": False, "error": f"Request failed: {e}"}
+            return {
+                "success": False,
+                "error": f"Request failed: {e}",
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
         if resp is None:
             return {"success": False, "error": f"SSRF Protection blocked {url}."}
@@ -1780,7 +1832,11 @@ class WikipediaSearchTool(Tool):
         try:
             resp = await _safe_request_cf("GET", api_url, timeout_s=15.0)
         except Exception as e:
-            return {"success": False, "error": f"Wikipedia request failed: {e}"}
+            return {
+                "success": False,
+                "error": f"Wikipedia request failed: {e}",
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
         if resp is None:
             return {"success": False, "error": "Wikipedia request blocked by SSRF guard"}
@@ -1831,7 +1887,8 @@ class WikipediaSearchTool(Tool):
                         results[0]["page_content_length"] = len(extract)
                         break
             except Exception as e:
-                logger.debug(f"Wikipedia content fetch failed: {e}")
+                # Best-effort enrichment; the search results are still returned.
+                logger.debug(f"Wikipedia content fetch failed: {e}", exc_info=True)
 
         return {
             "success": True,
@@ -1885,9 +1942,17 @@ class ReadFeedTool(Tool):
         try:
             resp = await _safe_request_cf("GET", url, timeout_s=20.0)
         except asyncio.TimeoutError:
-            return {"success": False, "error": f"Timeout fetching feed: {url}"}
+            return {
+                "success": False,
+                "error": f"Timeout fetching feed: {url}",
+                "error_code": ToolErrorCode.TIMEOUT,
+            }
         except Exception as e:
-            return {"success": False, "error": f"Failed to fetch feed: {e}"}
+            return {
+                "success": False,
+                "error": f"Failed to fetch feed: {e}",
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
         if resp is None:
             return {"success": False, "error": f"SSRF Protection blocked {url}"}
@@ -1925,7 +1990,8 @@ class ReadFeedTool(Tool):
                 if text:
                     entry["page_content"] = text
             except Exception as e:
-                logger.debug(f"Feed content fetch failed for {link}: {e}")
+                # Best-effort enrichment; the entry is still returned without content.
+                logger.debug(f"Feed content fetch failed for {link}: {e}", exc_info=True)
             return entry
 
         fetched = await asyncio.gather(*[_fetch_one(e) for e in entries[:count]])
@@ -2038,6 +2104,9 @@ def _extract_feed_metadata(raw: str) -> Dict[str, str]:
             "title": (title_el.text or "").strip() if title_el is not None else "",
         }
     except Exception:
+        # Feed metadata is decorative; entries are parsed separately, so a
+        # malformed channel header should not fail the whole feed read.
+        logger.debug("feed metadata parse failed", exc_info=True)
         return {}
 
 
@@ -2124,7 +2193,8 @@ async def _discover_sitemap_from_robots(robots_url: str) -> Optional[str]:
                 if line_lower.startswith("sitemap:"):
                     return str(line.strip().split(":", 1)[1].strip())
     except Exception as e:
-        logger.debug(f"robots.txt fetch failed: {e}")
+        # robots.txt is only one discovery source; callers try common paths next.
+        logger.debug(f"robots.txt fetch failed: {e}", exc_info=True)
     return None
 
 
@@ -2133,6 +2203,8 @@ async def _url_exists(url: str) -> bool:
         resp = await _safe_request_cf("HEAD", url, timeout_s=10.0)
         return resp is not None and resp["status"] == 200
     except Exception:
+        # Existence probe: any failure (network, SSRF block) means "not found".
+        logger.debug(f"HEAD probe failed for {url}", exc_info=True)
         return False
 
 
@@ -2142,7 +2214,8 @@ async def _fetch_sitemap_urls(sitemap_url: str, max_urls: int) -> List[str]:
         if not resp or resp["status"] != 200:
             return []
     except Exception as e:
-        logger.debug(f"Sitemap fetch failed: {e}")
+        # One unreachable sitemap shouldn't fail discovery; return no URLs.
+        logger.debug(f"Sitemap fetch failed: {e}", exc_info=True)
         return []
     return _parse_sitemap(resp["text"], max_urls)
 

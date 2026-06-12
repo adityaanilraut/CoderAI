@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+from coderAI.core.tool_error_codes import ToolErrorCode
 from coderAI.tools.base import Tool
 
 logger = logging.getLogger(__name__)
@@ -201,7 +202,11 @@ class MCPClient:
                 "error": f"Command not found: {command}. Is the MCP server installed?",
             }
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
         finally:
             # Kill the process if the connection attempt failed.
             # connection_failed starts True and is only cleared after
@@ -216,7 +221,6 @@ class MCPClient:
                     logger.debug(
                         "Failed to kill MCP process in connect_stdio finally", exc_info=True
                     )
-                    pass
 
     async def call_tool(
         self, server_name: str, tool_name: str, arguments: Dict[str, Any]
@@ -298,7 +302,11 @@ class MCPClient:
             return out
 
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
     async def disconnect(self, server_name: str) -> Dict[str, Any]:
         """Disconnect from an MCP server.
@@ -322,7 +330,6 @@ class MCPClient:
                     await session.close()
                 except Exception:
                     logger.debug("Failed to close SSE session during disconnect", exc_info=True)
-                    pass
         else:
             try:
                 process = server["process"]
@@ -474,7 +481,11 @@ class MCPClient:
                 await session.close()
             if server_name in self.servers:
                 del self.servers[server_name]
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
     async def _call_tool_sse(
         self, server_name: str, tool_name: str, arguments: Dict[str, Any]
@@ -523,7 +534,11 @@ class MCPClient:
                 out["error"] = text_content or "MCP tool returned an error."
             return out
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
     def get_tools_as_openai_format(self) -> List[Dict[str, Any]]:
         """Get discovered MCP tools in OpenAI function-calling format.
@@ -629,7 +644,9 @@ class MCPClient:
             try:
                 await self.disconnect(name)
             except Exception:
-                pass
+                # Reconnect path: the old connection is likely already dead;
+                # proceed to establish a fresh one regardless.
+                logger.debug(f"disconnect of '{name}' before reconnect failed", exc_info=True)
 
             result: Dict[str, Any]
             if transport == "sse":
@@ -680,7 +697,6 @@ def _cleanup_mcp_servers():
                 proc.kill()
         except Exception:
             logger.debug("Failed to kill MCP server process during atexit cleanup", exc_info=True)
-            pass
     mcp_client.servers.clear()
 
 
@@ -826,4 +842,8 @@ class MCPDisconnectTool(Tool):
             await mcp_client.disconnect(server_name)
             return {"success": True, "message": f"Disconnected from MCP server: {server_name}"}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }

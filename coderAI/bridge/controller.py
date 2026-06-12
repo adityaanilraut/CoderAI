@@ -339,12 +339,15 @@ class UIBridge:
         try:
             used, limit = self.agent.get_context_usage()
         except Exception:
+            # Status-bar decoration only; a broken gauge must not break the UI loop.
+            logger.debug("get_context_usage failed in emit_status", exc_info=True)
             used, limit = 0, 0
         cost = 0.0
         try:
             cost = self.agent.cost_tracker.get_total_cost()
         except Exception:
-            pass
+            # Same: show $0.00 rather than failing the status event.
+            logger.debug("cost_tracker failed in emit_status", exc_info=True)
         elapsed = _time.time() - self._session_start_ts if self._session_start_ts else 0.0
         self.emit(
             "status",
@@ -738,6 +741,7 @@ async def _cmd_send_message(server: UIBridge, msg: Dict[str, Any]) -> None:
         try:
             await server.agent.process_message(text)
         except Exception as e:
+            logger.exception("process_message failed")
             server._emit_error(
                 "internal",
                 str(e),
@@ -861,7 +865,9 @@ async def _cmd_set_reasoning(server: UIBridge, msg: Dict[str, Any]) -> None:
         try:
             setattr(provider, "reasoning_effort", effort)
         except Exception:
-            pass
+            # Provider may expose reasoning_effort as a read-only property;
+            # the config value above still applies on the next provider build.
+            logger.debug("could not patch live provider reasoning_effort", exc_info=True)
     server.emit("session_patch", reasoning=effort)
     # Status bar shows current reasoning level; no toast.
 

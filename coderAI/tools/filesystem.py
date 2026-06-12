@@ -70,6 +70,8 @@ def _get_max_file_size() -> int:
     try:
         return config_manager.load().max_file_size
     except Exception:
+        # Config unavailable (corrupt file, tests) → built-in default.
+        logger.debug("max_file_size config unavailable, using default", exc_info=True)
         return DEFAULT_MAX_FILE_SIZE
 
 
@@ -78,6 +80,8 @@ def _get_max_glob_results() -> int:
     try:
         return config_manager.load().max_glob_results
     except Exception:
+        # Config unavailable (corrupt file, tests) → built-in default.
+        logger.debug("max_glob_results config unavailable, using default", exc_info=True)
         return DEFAULT_MAX_GLOB_RESULTS
 
 
@@ -153,6 +157,9 @@ def _is_in_project_root(path: Path) -> bool:
         cfg = config_manager.load()
         project_root = Path(getattr(cfg, "project_root", ".") or ".").resolve()
     except Exception:
+        # Config unavailable → treat the current directory as the project
+        # root; the scope check below still runs against it.
+        logger.debug("project_root config unavailable, using cwd", exc_info=True)
         project_root = Path.cwd().resolve()
     try:
         path.resolve().relative_to(project_root)
@@ -168,6 +175,8 @@ def _allows_outside_project() -> bool:
     try:
         return bool(config_manager.get("allow_outside_project", False))
     except Exception:
+        # Fail closed: if config can't be read, keep project-scope enforcement on.
+        logger.debug("allow_outside_project config unavailable, failing closed", exc_info=True)
         return False
 
 
@@ -356,7 +365,11 @@ class ReadFileTool(Tool):
                 "hint": "This appears to be a binary file. Use run_command with appropriate tools like 'file', 'hexdump', etc.",
             }
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
 
 class WriteFileParams(BaseModel):
@@ -424,6 +437,8 @@ class WriteFileTool(Tool):
                         try:
                             before_content = path_obj.read_text(encoding="utf-8")
                         except Exception:
+                            # Binary or unreadable file → skip the diff preview;
+                            # the write itself proceeds (backup already taken).
                             before_content = None
                     else:
                         backup_store.backup_file(str(path_obj), "create")
@@ -463,7 +478,11 @@ class WriteFileTool(Tool):
                     "mode": "append" if append else "write",
                 }
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
 
 class SearchReplaceParams(BaseModel):
@@ -575,7 +594,11 @@ class SearchReplaceTool(Tool):
                     "replacements": count,
                 }
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
 
 class ListDirectoryParams(BaseModel):
@@ -629,7 +652,11 @@ class ListDirectoryTool(Tool):
                 "count": len(entries),
             }
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
 
 class GlobSearchParams(BaseModel):
@@ -697,7 +724,11 @@ class GlobSearchTool(Tool):
 
             return result
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
 
 # --- Apply Diff Tool (F2) ---
@@ -866,7 +897,11 @@ class ApplyDiffTool(Tool):
                 }
 
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
     @staticmethod
     def _find_hunk_position(
@@ -1040,7 +1075,11 @@ class MoveFileTool(Tool):
                 "message": f"Moved '{src}' → '{dst}'",
             }
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
 
 class CopyFileParams(BaseModel):
@@ -1123,7 +1162,11 @@ class CopyFileTool(Tool):
                 "message": f"Copied '{src}' → '{dst}'",
             }
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
 
 class DeleteFileParams(BaseModel):
@@ -1197,7 +1240,11 @@ class DeleteFileTool(Tool):
                 }
             return {"success": False, "error": str(e)}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
 
 class CreateDirectoryParams(BaseModel):
@@ -1240,7 +1287,11 @@ class CreateDirectoryTool(Tool):
                 "message": f"Directory created: '{target}'",
             }
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
 
 # ---------------------------------------------------------------------------
@@ -1283,7 +1334,11 @@ class FileStatTool(Tool):
                 "is_symlink": target.is_symlink(),
             }
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
 
 class FileChmodParams(BaseModel):
@@ -1315,7 +1370,11 @@ class FileChmodTool(Tool):
         except PermissionError:
             return {"success": False, "error": f"Permission denied: {path}"}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
 
 class FileChownParams(BaseModel):
@@ -1372,7 +1431,11 @@ class FileChownTool(Tool):
         except PermissionError:
             return {"success": False, "error": f"Permission denied changing ownership of: {path}"}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
 
 class FileReadlinkParams(BaseModel):
@@ -1398,4 +1461,8 @@ class FileReadlinkTool(Tool):
             resolved = target.readlink()
             return {"success": True, "path": str(target.resolve()), "target": str(resolved)}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }

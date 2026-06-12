@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
+from coderAI.core.tool_error_codes import ToolErrorCode
 from coderAI.tools.base import Tool
 from coderAI.tools.web import _is_ip_public
 
@@ -106,7 +107,9 @@ def _get_allowed_domains() -> Optional[List[str]]:
         if raw:
             return [d.strip().lower() for d in raw.split(",") if d.strip()]
     except Exception:
-        pass
+        # Unreadable config is treated like an unset allowlist (no domain
+        # restriction) — same default as a fresh install.
+        logger.debug("browser_allowed_domains config unavailable", exc_info=True)
     return None
 
 
@@ -169,7 +172,8 @@ class BrowserSession:
 
                 headless = config_manager.load().browser_headless
             except Exception:
-                pass
+                # Config unavailable → keep the safe headless default.
+                logger.debug("browser_headless config unavailable, using default", exc_info=True)
 
             self._browser = await self._playwright.chromium.launch(headless=headless)
             self._context = await self._browser.new_context(
@@ -189,6 +193,8 @@ class BrowserSession:
 
             return float(config_manager.load().browser_timeout)
         except Exception:
+            # Config unavailable → built-in 30s default.
+            logger.debug("browser_timeout config unavailable, using default", exc_info=True)
             return 30.0
 
     async def navigate(self, url: str) -> Dict[str, Any]:
@@ -206,7 +212,11 @@ class BrowserSession:
                 "message": f"Navigated to {current_url}",
             }
         except Exception as e:
-            return {"success": False, "error": f"Navigation failed: {e}"}
+            return {
+                "success": False,
+                "error": f"Navigation failed: {e}",
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
     async def snapshot(self) -> str:
         await self._ensure_browser()
@@ -248,7 +258,11 @@ class BrowserSession:
             await locator.first.click(timeout=self._get_timeout() * 1000)
             return {"success": True, "message": f"Clicked [{ref}] {role} '{name}'"}
         except Exception as e:
-            return {"success": False, "error": f"Click failed: {e}"}
+            return {
+                "success": False,
+                "error": f"Click failed: {e}",
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
     async def type_by_ref(self, ref: str, text: str, clear: bool = False) -> Dict[str, Any]:
         await self._ensure_browser()
@@ -279,7 +293,11 @@ class BrowserSession:
             await target.fill(text, timeout=self._get_timeout() * 1000)
             return {"success": True, "message": f"Typed '{text}' into [{ref}] {role} '{name}'"}
         except Exception as e:
-            return {"success": False, "error": f"Type failed: {e}"}
+            return {
+                "success": False,
+                "error": f"Type failed: {e}",
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
     async def select_option_by_ref(self, ref: str, value: str) -> Dict[str, Any]:
         await self._ensure_browser()
@@ -302,7 +320,11 @@ class BrowserSession:
             await locator.first.select_option(value, timeout=self._get_timeout() * 1000)
             return {"success": True, "message": f"Selected '{value}' in [{ref}] {role} '{name}'"}
         except Exception as e:
-            return {"success": False, "error": f"Select failed: {e}"}
+            return {
+                "success": False,
+                "error": f"Select failed: {e}",
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
     async def get_content(self, fmt: str = "markdown") -> str:
         await self._ensure_browser()
@@ -324,7 +346,11 @@ class BrowserSession:
             await self._page.screenshot(path=path, full_page=False)
             return {"success": True, "path": path, "message": f"Screenshot saved to {path}"}
         except Exception as e:
-            return {"success": False, "error": f"Screenshot failed: {e}"}
+            return {
+                "success": False,
+                "error": f"Screenshot failed: {e}",
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
     async def evaluate(self, js: str) -> Dict[str, Any]:
         await self._ensure_browser()
@@ -332,7 +358,11 @@ class BrowserSession:
             result = await self._page.evaluate(js)
             return {"success": True, "result": result}
         except Exception as e:
-            return {"success": False, "error": f"JavaScript evaluation failed: {e}"}
+            return {
+                "success": False,
+                "error": f"JavaScript evaluation failed: {e}",
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
     async def wait_for(
         self,
@@ -348,7 +378,11 @@ class BrowserSession:
             await asyncio.sleep(timeout)
             return {"success": True, "message": f"Waited {timeout:.1f}s."}
         except Exception as e:
-            return {"success": False, "error": f"Wait failed: {e}"}
+            return {
+                "success": False,
+                "error": f"Wait failed: {e}",
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
 
     async def close(self) -> Dict[str, Any]:
         if self._context:
