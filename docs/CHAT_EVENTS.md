@@ -30,6 +30,7 @@ consumers because unknown phases are ignored.
 | `status`        | `{ctxUsed, ctxLimit, costUsd, budgetUsd, promptTokens, completionTokens, totalTokens, iteration, maxIterations, elapsedSeconds}` | Emitted after every turn. `iteration` is the current agent-loop pass (1-based after the first user message). `maxIterations` mirrors `config.max_iterations` (default 50). `elapsedSeconds` is wall time since session bootstrap. |
 | `plan_card`     | `{plan: {title, completed, total, currentIdx, steps: [{index, description, status}]}}`        | Structured plan snapshot for the timeline card (from `/plan` or the plan tool)       |
 | `skill_card`    | `{id?, name, description, steps: [{index, label}]}`                                           | Parsed skill workflow card emitted after a successful `use_skill` call               |
+| `tasks_card`    | `{tasks: {summary, inProgress, pending, completed, total}}`                                   | Task-list snapshot. `inProgress`/`pending`/`completed` are arrays of `{id, title, priority, status}` sorted by priority; `completed` holds only the last 5. `summary` is a human-readable count string. Updates the session task panel (chrome), not a timeline row. |
 | `agent`         | `{phase: "update" \| "started" \| "finished", info: AgentInfo, parentId}`                     | Per-agent snapshot; `started`/`finished` are lifecycle edges, `update` is throttled live sync |
 | `session_patch` | `{model?, provider?, autoApprove?, reasoning?}`                                               | Partial session-state update — only changed fields are present                       |
 | `available_models`| `{current, models: Record<string, string[]>}`                                                 | Emitted for the model picker                                                         |
@@ -117,10 +118,16 @@ turns can't interleave.
 | `set_default_model`    | `{model}`                                              | Persists default model for new sessions                                |
 | `set_verbosity`        | `{level: "quiet" \| "normal" \| "verbose"}`             | Server-side filter (see below)                                         |
 | `toggle_auto_approve`  | `{}`                                                   | Flip YOLO mode                                                         |
+| `allow_tool`           | `{tool}`                                               | Add a tool to the session approval allowlist (skips future approval prompts); confirms via `info` |
+| `disallow_tool`        | `{tool}`                                               | Remove a tool from the session approval allowlist; confirms via `info` |
+| `list_allowed_tools`   | `{}`                                                   | Emits `info` listing the session's always-allowed tools                |
 | `compact_context`      | `{}`                                                   | Triggers summarization                                                 |
 | `clear_context`        | `{}`                                                   | Fresh session; clears sub-agents from tracker, resets main to idle     |
+| `manage_context`       | `{action: "add" \| "remove", path}`                     | Pin/unpin a file in the pinned-context manager; emits `success`/`warning`, then `context_state` + `status` |
 | `get_state`            | `{}`                                                   | Re-emit `status` + `agent` updates                                     |
 | `get_plan`             | `{}`                                                   | Emits `info` with `.coderAI/current_plan.json` or a short notice       |
+| `get_tasks`            | `{}`                                                   | Re-emits `tasks_card` from the on-disk task list                       |
+| `init_project`         | `{}`                                                   | Scaffolds `.coderAI/{agents,skills,rules}` and starter files (`coderai.md`, …) in the project root; emits `success` or `error` |
 | `list_models`          | `{}`                                                   | Emits `available_models` for the model picker                          |
 | `list_personas`        | `{}`                                                   | Emits `available_personas` for the persona picker                      |
 | `list_skills`          | `{}`                                                   | Emits `available_skills` for the skills picker                         |
