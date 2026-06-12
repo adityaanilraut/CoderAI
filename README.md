@@ -11,14 +11,14 @@
 
 ---
 
-CoderAI is a Python CLI tool that pairs an LLM with **66+ built-in tools** to read, write, search, debug, test, automate browsers, and ship code — all from a single terminal session. It supports **6 LLM providers**, **17 specialist agent personas**, a **multi-agent delegation system** with retry logic, a **semantic code search engine**, a **cross-platform browser automation engine**, and a **plan-and-execute workflow** to tackle complex tasks autonomously.
+CoderAI is a Python CLI tool that pairs an LLM with **88 built-in tools** to read, write, search, debug, test, automate browsers, and ship code — all from a single terminal session. It supports **7 LLM providers**, **17 specialist agent personas**, a **multi-agent delegation system** with retry logic, a **semantic code search engine**, a **cross-platform browser automation engine**, and a **plan-and-execute workflow** to tackle complex tasks autonomously.
 
 ## ✨ Key Features
 
 | Feature | Description |
 |---|---|
-| **Multi-Provider LLM** | OpenAI, Anthropic Claude, Groq, DeepSeek, LM Studio, Ollama |
-| **66+ Tools** | File I/O, Git, terminal, web, browser automation, HTTP, memory, process management, semantic search, and more |
+| **Multi-Provider LLM** | OpenAI, Anthropic Claude, Groq, DeepSeek, Gemini, LM Studio, Ollama |
+| **88 Tools** | File I/O, Git, terminal, web, browser automation, HTTP, memory, process management, semantic search, and more |
 | **Browser Automation** | Cross-platform browser control via Playwright — form filling, shopping, data entry, web scraping |
 | **Multi-Agent System** | Spawn isolated sub-agents for code review, security audit, research, etc. |
 | **Planning & Tasks** | Structured plan-and-execute workflows with persistent task tracking |
@@ -37,7 +37,7 @@ CoderAI is a Python CLI tool that pairs an LLM with **66+ built-in tools** to re
 
 ## 🚀 Getting Started
 
-**Requirements:** Python 3.9+
+**Requirements:** Python 3.10+
 
 ```bash
 # 1. Clone
@@ -64,9 +64,9 @@ coderAI chat --resume ID   # resume a saved session
 ```
 
 Don't want to run the wizard? Set a provider key as an environment variable
-instead — `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GROQ_API_KEY`, or
-`DEEPSEEK_API_KEY`. For local inference, run `coderAI config set default_model
-lmstudio` (or `ollama`).
+instead — `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GROQ_API_KEY`,
+`DEEPSEEK_API_KEY`, or `GEMINI_API_KEY`. For local inference, run
+`coderAI config set default_model lmstudio` (or `ollama`).
 
 See [INSTALL.md](docs/INSTALL.md) for platform-specific notes and offline builds.
 
@@ -86,6 +86,10 @@ Type a slash inside `coderAI chat`:
 | `/clear` | Wipe conversation & context |
 | `/reasoning <high\|medium\|low\|none>` | Thinking budget for reasoning models |
 | `/yolo` | Toggle auto-approve for high-risk tools |
+| `/show <topic>` | Reference info (`models`, `cost`, `config`, `tasks`, `plan`, …) |
+| `/code-search <query>` | Semantic codebase search inline |
+| `/export` | Save the session timeline as markdown |
+| `/verbose` | Toggle verbose tool output |
 | `/exit` | Shut down the agent |
 
 See [COMMANDS.md](docs/COMMANDS.md) for the full CLI reference.
@@ -99,7 +103,7 @@ See [COMMANDS.md](docs/COMMANDS.md) for the full CLI reference.
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │                          CLI Layer                                │
-│           coderAI/cli.py  —  Click commands & entry points       │
+│     coderAI/cli.py → coderAI/cli/  —  Click commands & entry      │
 │                                                                   │
 │   one-shot subcommands ──► coderAI/ui (Rich helpers)              │
 │   `coderAI chat`        ──► coderAI/tui (Textual TUI)             │
@@ -107,7 +111,7 @@ See [COMMANDS.md](docs/COMMANDS.md) for the full CLI reference.
                            │
 ┌──────────────────────────┴───────────────────────────────────────┐
 │                         Agent Layer                               │
-│                       coderAI/agent.py                            │
+│                    coderAI/core/agent.py                          │
 │  • Agentic loop (process_message → LLM → tools → LLM → ...)      │
 │  • Context window management with auto-summarization              │
 │  • Retry logic with exponential backoff                           │
@@ -118,7 +122,7 @@ See [COMMANDS.md](docs/COMMANDS.md) for the full CLI reference.
    ┌────┴────┐   ┌─────┴──────┐   ┌──────┴──────┐
    │   LLM   │   │   Tools    │   │  Sub-Agent  │
    │Providers│   │  Registry  │   │  Delegation │
-   │ (6)     │   │  (56+)     │   │  (Isolated) │
+   │ (7)     │   │  (88)      │   │  (Isolated) │
    └─────────┘   └────────────┘   └─────────────┘
 ```
 
@@ -141,8 +145,10 @@ CoderAI-main/
 │
 ├── coderAI/                    # ─── Main Python Package ───
 │   ├── __init__.py             # Package version
-│   ├── cli.py                  # Click CLI: chat, config, history, models, setup, status, cost, tasks
+│   ├── cli.py                  # Thin entry point → coderAI/cli/main.py
+│   ├── cli/                    # Click CLI modules (chat, config, history, setup, …)
 │   ├── system_prompt.py        # Default system prompt with tool docs & strategies
+│   ├── skills/                 # Skill discovery and hosted-skill sources
 │   ├── py.typed                # Mypy marker file
 │   │
 │   ├── core/                   # ─── Core Orchestration Layer ───
@@ -198,39 +204,39 @@ CoderAI-main/
 │   │   ├── anthropic.py        #   Anthropic (Claude 4 Sonnet, 3.5 Sonnet, etc.)
 │   │   ├── groq.py             #   Groq (Llama 3, GPT-OSS models)
 │   │   ├── deepseek.py         #   DeepSeek (V3.2, R1)
+│   │   ├── gemini.py           #   Google Gemini (OpenAI-compatible API)
 │   │   ├── lmstudio.py         #   LM Studio (local OpenAI-compatible)
 │   │   └── ollama.py           #   Ollama (local models)
 │   │
-│   ├── tools/                  # ─── MCP Tool Implementations ───
+│   ├── tools/                  # ─── Agent Tool Implementations (88 total) ───
 │   │   ├── base.py             #   Tool ABC + ToolRegistry
-│   │   ├── filesystem.py       #   read_file, write_file, search_replace, apply_diff, list_directory,
-│   │   │                       #   glob_search, move_file, copy_file, delete_file, create_directory
-│   │   ├── terminal.py         #   run_command, run_background, list_processes, kill_process
-│   │   ├── git.py              #   git_add, git_status, git_diff, git_commit, git_log, git_branch,
-│   │   │                       #   git_checkout, git_stash, git_push, git_pull, git_merge, git_rebase,
-│   │   │                       #   git_revert, git_reset, git_show, git_remote, git_blame,
-│   │   │                       #   git_cherry_pick, git_tag
+│   │   ├── discovery.py        #   Auto-discovery of no-arg Tool subclasses
+│   │   ├── filesystem.py       #   read/write/search_replace/apply_diff/list/glob/move/copy/delete/stat/chmod/chown/readlink
+│   │   ├── multi_edit.py       #   multi_edit (batch search/replace in one file)
+│   │   ├── terminal.py         #   run_command, run_background, list/kill_processes, read_bg_output
+│   │   ├── git.py              #   git_add … git_tag, git_fetch (20 git tools)
 │   │   ├── search.py           #   text_search, grep, symbol_search
 │   │   ├── semantic_search.py  #   semantic_search (natural-language code search)
-│   │   ├── web.py              #   web_search (DuckDuckGo), read_url, download_file, http_request
-│   │   ├── browser.py           #   browser_navigate, browser_snapshot, browser_click, browser_type,
-│   │   │                       #   browser_select_option, browser_get_content, browser_screenshot,
-│   │   │                       #   browser_evaluate, browser_wait, browser_close (Playwright)
-│   │   ├── desktop.py           #   run_applescript, get_accessibility_tree, click_ui_element, type_keystrokes
-│   │   ├── memory.py           #   save_memory, recall_memory, delete_memory (persistent key-value)
-│   │   ├── mcp.py              #   mcp_connect, mcp_call_tool, mcp_list
-│   │   ├── undo.py             #   undo, undo_history (file backup/rollback)
-│   │   ├── project.py          #   project_context (auto-detect project type)
-│   │   ├── context_manage.py   #   manage_context (pin/unpin files)
-│   │   ├── tasks.py            #   manage_tasks (persistent TODO list)
-│   │   ├── subagent.py         #   delegate_task (spawn isolated sub-agents)
-│   │   ├── lint.py             #   lint (auto-detect & run linter)
-│   │   ├── format.py           #   format (auto-detect & run formatter)
-│   │   ├── vision.py           #   read_image (base64 encoding for multimodal)
-│   │   ├── skills.py           #   use_skill (load skill workflows)
-│   │   ├── repl.py             #   python_repl (isolated subprocess execution)
-│   │   ├── planning.py         #   plan (create/show/advance/update/clear)
-│   │   └── notepad.py          #   notepad (shared inter-agent notepad)
+│   │   ├── web.py              #   web_search, read_url, download_file, http_request,
+│   │   │                       #   wikipedia_search, read_feed, sitemap_discover
+│   │   ├── browser.py          #   browser_navigate … browser_close (Playwright; optional)
+│   │   ├── desktop.py          #   run_applescript, get_accessibility_tree, click/type (macOS only)
+│   │   ├── memory.py           #   save_memory, recall_memory, delete_memory
+│   │   ├── mcp.py              #   mcp_connect, mcp_disconnect, mcp_call_tool, mcp_list
+│   │   ├── undo.py             #   undo, undo_history
+│   │   ├── project.py          #   project_context
+│   │   ├── context_manage.py   #   manage_context (pin/unpin files; manual registration)
+│   │   ├── tasks.py            #   manage_tasks
+│   │   ├── subagent.py         #   delegate_task
+│   │   ├── lint.py / format.py #   lint, format
+│   │   ├── testing.py          #   run_tests
+│   │   ├── package_manager.py  #   package_manager (pip, npm, …)
+│   │   ├── refactor.py         #   refactor (rename_symbol, find_references)
+│   │   ├── vision.py           #   read_image
+│   │   ├── skills.py           #   use_skill
+│   │   ├── repl.py             #   python_repl
+│   │   ├── planning.py         #   plan
+│   │   └── notepad.py          #   notepad
 │   │
 │   └── ui/                     # ─── Rich helpers (one-shot CLI only) ───
 │       └── display.py          #   Tables, markdown, panels for config/history/status
@@ -294,7 +300,7 @@ CoderAI-main/
 
 ## 🔁 The Agentic Loop
 
-The heart of CoderAI is the **agentic loop** in `agent.py → process_message()`. Here is how every user message flows through the system:
+The heart of CoderAI is the **agentic loop** in `coderAI/core/agent.py → process_message()`. Here is how every user message flows through the system:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -324,16 +330,16 @@ The heart of CoderAI is the **agentic loop** in `agent.py → process_message()`
 ### Key Loop Features
 
 - **Retry with backoff** — Transient errors (429, 5xx, timeouts) are retried up to 3 times with exponential delay.
-- **Consecutive error guard** — After 3 consecutive errors the loop halts gracefully.
+- **Consecutive error guard** — After 5 consecutive errors the loop halts gracefully.
 - **Parallel tool execution** — Read-only tools run concurrently via `asyncio.gather()`; mutating tools run sequentially to prevent race conditions.
-- **Context auto-compaction** — When token usage exceeds 70% of the context window, older messages are summarized by the LLM and replaced with a condensed summary.
+- **Context auto-compaction** — When estimated tokens exceed the usable context budget (`context_window` minus response and tool overhead), older messages are summarized by the LLM and replaced with a condensed summary.
 - **Cooperative cancellation** — `AgentTracker` provides a cancel event; the loop checks it on every iteration.
 
 ---
 
 ## 🛠️ Tools Reference
 
-CoderAI registers **54+ tools** that the LLM can call. Each tool follows the `Tool` abstract base class and is auto-registered in the `ToolRegistry`.
+CoderAI registers **88 tools** that the LLM can call (87 auto-discovered plus `manage_context`, which is registered manually). Each tool follows the `Tool` abstract base class. Browser, desktop, and some web tools are removed at runtime when optional dependencies or the host OS are unavailable — see notes below.
 
 ### Filesystem (15 tools)
 
@@ -355,7 +361,7 @@ CoderAI registers **54+ tools** that the LLM can call. Each tool follows the `To
 | `file_chown` | Change file ownership |
 | `file_readlink` | Read symlink targets | |
 
-### Terminal (4 tools)
+### Terminal (5 tools)
 
 | Tool | Description |
 |---|---|
@@ -363,8 +369,9 @@ CoderAI registers **54+ tools** that the LLM can call. Each tool follows the `To
 | `run_background` | Start long-running processes (servers, watchers) |
 | `list_processes` | List background processes started by the agent |
 | `kill_process` | Terminate a background process by PID |
+| `read_bg_output` | Read buffered output from a `run_background` process |
 
-### Git (19 tools)
+### Git (20 tools)
 
 | Tool | Description |
 |---|---|
@@ -387,25 +394,30 @@ CoderAI registers **54+ tools** that the LLM can call. Each tool follows the `To
 | `git_blame` | Annotate file lines with commit and author |
 | `git_cherry_pick` | Apply specific commits onto the current branch |
 | `git_tag` | List, create, or delete tags |
+| `git_fetch` | Fetch objects and refs from a remote |
 
-### Search & Analysis (5 tools)
+### Search & Analysis (4 tools)
 
 | Tool | Description |
 |---|---|
 | `text_search` | Fast recursive text search across files |
 | `grep` | Regex pattern matching with context lines |
 | `symbol_search` | Find function/class/variable definitions by name |
-| `semantic_search` | Natural-language code search via embeddings |
-| `lint` | Auto-detect and run project linter (ruff, eslint, etc.) |
+| `semantic_search` | Natural-language code search via embeddings (requires OpenAI key for embeddings) |
 
-### Web & HTTP (4 tools)
+### Web & HTTP (7 tools)
+
+*PDF extraction in `read_url` requires optional `pypdf` — install with `pip install coderAI[web]`.*
 
 | Tool | Description |
 |---|---|
-| `web_search` | DuckDuckGo search with optional content fetching |
-| `read_url` | Fetch and extract text from any URL |
+| `web_search` | Web search (DuckDuckGo and other backends) with optional content fetching |
+| `read_url` | Fetch and extract text from any URL (HTML or PDF with `pypdf`) |
 | `download_file` | Download files (ZIP, images, etc.) from URLs |
 | `http_request` | Generic HTTP client — any method, headers, JSON body (SSRF-protected) |
+| `wikipedia_search` | Search Wikipedia and return article summaries |
+| `read_feed` | Parse RSS/Atom feeds from a URL |
+| `sitemap_discover` | Discover pages via `sitemap.xml` / `robots.txt` |
 
 ### Memory (3 tools)
 
@@ -436,12 +448,25 @@ CoderAI registers **54+ tools** that the LLM can call. Each tool follows the `To
 | `delegate_task` | Spawn an isolated sub-agent for complex tasks |
 | `notepad` | Shared notepad for inter-agent communication |
 
-### Code Quality (2 tools)
+### Code Quality (3 tools)
 
 | Tool | Description |
 |---|---|
 | `lint` | Auto-detect and run project linter (ruff, eslint, clippy, etc.) |
 | `format` | Auto-detect and run code formatter (ruff format, black, prettier, gofmt) |
+| `run_tests` | Auto-detect and run the project test runner (pytest, jest, cargo test, etc.) |
+
+### Refactoring (1 tool)
+
+| Tool | Description |
+|---|---|
+| `refactor` | Cross-file `rename_symbol` and `find_references` (Python AST-aware; JS/TS regex-based). Use `dry_run=true` first. |
+
+### Package Management (1 tool)
+
+| Tool | Description |
+|---|---|
+| `package_manager` | Install, remove, or list packages (pip, npm, cargo, etc.) |
 
 ### Code Execution (1 tool)
 
@@ -667,6 +692,7 @@ Define pre/post tool execution hooks in `.coderAI/hooks.json`:
 | **Anthropic** | `claude-4-sonnet`, `claude-3.5-sonnet`, `claude-3.5-haiku`, `claude-3-opus` | `ANTHROPIC_API_KEY` |
 | **Groq** | `openai/gpt-oss-120b`, `openai/gpt-oss-20b`, `llama3-70b-8192`, `llama3-8b-8192` | `GROQ_API_KEY` |
 | **DeepSeek** | `deepseek-v4-flash`, `deepseek-v4-pro`, `deepseek-v3.2`, `deepseek-r1` | `DEEPSEEK_API_KEY` |
+| **Gemini** | `gemini-3.5-flash`, `gemini-3.1-pro`, `gemini-2.5-flash`, `gemini-2.5-pro`, … | `GEMINI_API_KEY` |
 | **LM Studio** | Any local model | LM Studio running locally |
 | **Ollama** | Any local model | Ollama running locally |
 
@@ -718,15 +744,11 @@ make test
 pytest tests/test_agent.py
 pytest tests/test_web.py
 
-# Validate installation
-python test_installation.py
+# Validate installation (config, keys, dependencies)
+coderAI doctor
 
 # Optional: static typing (the codebase is not fully mypy-clean yet)
 make typecheck
-
-# Run manual sub-agent integration harnesses
-python manual_subagent_delegation.py
-python manual_parallel_subagents.py
 ```
 
 ---
@@ -781,7 +803,7 @@ class MyCustomTool(Tool):
 
 # Auto-discovered by tools/discovery.py if __init__ takes no required args.
 # For tools that need the Agent (e.g. ManageContextTool), register manually
-# in Agent._create_tool_registry().
+# in Agent._create_tool_registry() (coderAI/core/agent.py).
 ```
 
 ### Adding a New Agent Persona

@@ -3,7 +3,7 @@
 import asyncio
 import inspect
 import logging
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List
 
 logger = logging.getLogger(__name__)
 
@@ -38,17 +38,6 @@ class EventEmitter:
             return
         if not listeners:
             del self._listeners[event]
-
-    def remove_all_listeners(self, event: Optional[str] = None) -> None:
-        """Drop all listeners for *event*, or every event if *event* is None.
-
-        Use this to prevent stale listeners from leaking across session or
-        process boundaries (each IPC session installs its own set).
-        """
-        if event is None:
-            self._listeners.clear()
-        else:
-            self._listeners.pop(event, None)
 
     def emit(self, event: str, *args: Any, **kwargs: Any) -> None:
         """Emit an event to all subscribers.

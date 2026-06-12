@@ -5,8 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable, Optional
 
+# A callback that accepts either (message) like Textual App.notify,
+# or (level, message) like the toast helper.
+ClipboardNotify = Callable[..., None]
 
-def copy_to_clipboard_osc52(text: str, notify_fn: Optional[Callable[[str], None]] = None) -> None:
+
+def copy_to_clipboard_osc52(text: str, notify_fn: Optional[ClipboardNotify] = None) -> None:
     """Copy text to clipboard using OSC-52 escape sequences."""
     import base64
     import sys
@@ -30,7 +34,7 @@ def copy_to_clipboard_osc52(text: str, notify_fn: Optional[Callable[[str], None]
             notify_fn(f"Copied {original_len:,} chars via OSC-52")
 
 
-def copy_fallback_file(text: str, notify_fn: Optional[Callable[[str, str], None]] = None) -> None:
+def copy_fallback_file(text: str, notify_fn: Optional[ClipboardNotify] = None) -> None:
     """Save text to a fallback file if OSC-52 fails."""
     import tempfile
 

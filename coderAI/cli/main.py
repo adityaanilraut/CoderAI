@@ -273,6 +273,7 @@ def status():
     display.print(f"  log level      {config.log_level.lower()}")
 
     display.print("\n[bold cyan]Cloud providers[/bold cyan]")
+
     def _key_row(label: str, configured: bool, hint_key: str) -> None:
         if configured:
             display.print(f"  {label:<12}  ✓ key configured")
@@ -336,7 +337,9 @@ def doctor():
 
     # 1. Python
     display.print("\n[bold cyan]Runtime[/bold cyan]")
-    check_ok(f"Python {platform.python_version()}", f"{platform.system().lower()}-{platform.machine()}")
+    check_ok(
+        f"Python {platform.python_version()}", f"{platform.system().lower()}-{platform.machine()}"
+    )
     check_ok(f"CoderAI {__version__}")
 
     # 2. Config directory

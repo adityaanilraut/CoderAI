@@ -30,9 +30,7 @@ class LocalSkillSource(SkillSource):
         """Scan the local skills directory."""
         return discover_local_skills(self._project_root)
 
-    async def search(
-        self, query: str, top_n: int = 5
-    ) -> List[Tuple[Skill, float]]:
+    async def search(self, query: str, top_n: int = 5) -> List[Tuple[Skill, float]]:
         """Simple keyword overlap search for local skills.
 
         NOTE: Full semantic matching is handled by ``SkillManager`` which

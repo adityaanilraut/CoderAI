@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field
 
 from coderAI.tools.base import Tool
+from coderAI.tools.web import _is_ip_public
 
 logger = logging.getLogger(__name__)
 
@@ -68,23 +69,9 @@ def _check_playwright() -> Optional[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# SSRF guard — reuse the same public-IP check the web tools use.
+# SSRF guard — reuse the same public-IP check the web tools use
+# (``_is_ip_public``, imported above).
 # ---------------------------------------------------------------------------
-
-
-def _is_ip_public(ip_str: str) -> bool:
-    try:
-        ip = ipaddress.ip_address(ip_str)
-    except ValueError:
-        return False
-    return not (
-        ip.is_loopback
-        or ip.is_private
-        or ip.is_link_local
-        or ip.is_multicast
-        or ip.is_reserved
-        or ip.is_unspecified
-    )
 
 
 def _validate_navigation_url(url: str) -> Optional[Dict[str, Any]]:

@@ -283,14 +283,16 @@ class _SSRFResolver(aiohttp.abc.AbstractResolver):
                 continue
             ip = sockaddr[0]
             if self._allow_local or _is_ip_public(ip):
-                results.append({
-                    "hostname": host,
-                    "host": ip,
-                    "port": port,
-                    "family": fam,
-                    "proto": 0,
-                    "flags": socket.AI_NUMERICHOST,
-                })
+                results.append(
+                    {
+                        "hostname": host,
+                        "host": ip,
+                        "port": port,
+                        "family": fam,
+                        "proto": 0,
+                        "flags": socket.AI_NUMERICHOST,
+                    }
+                )
         if not results:
             raise OSError(f"SSRF guard blocked {host}: no public addresses allowed")
         return results
@@ -313,8 +315,11 @@ async def _get_session(allow_local: bool = False) -> aiohttp.ClientSession:
     loop_id = id(loop) if loop else None
 
     if allow_local:
-        if (_allow_local_session is None or _allow_local_session.closed
-                or _session_loop_id != loop_id):
+        if (
+            _allow_local_session is None
+            or _allow_local_session.closed
+            or _session_loop_id != loop_id
+        ):
             _allow_local_session = aiohttp.ClientSession(
                 connector=aiohttp.TCPConnector(
                     ssl=_get_ssl_ctx(),
@@ -328,8 +333,7 @@ async def _get_session(allow_local: bool = False) -> aiohttp.ClientSession:
             _session_loop_id = loop_id
         return _allow_local_session
     else:
-        if (_session is None or _session.closed
-                or _session_loop_id != loop_id):
+        if _session is None or _session.closed or _session_loop_id != loop_id:
             _session = aiohttp.ClientSession(
                 connector=aiohttp.TCPConnector(
                     ssl=_get_ssl_ctx(),
@@ -387,8 +391,6 @@ def _html_to_text(raw_html: str, fmt: str) -> str:
         return text.strip()
     # markdown (default)
     return str(_get_h2t().handle(raw_html).strip())
-
-
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1065,9 +1067,7 @@ class _SearXNGBackend(_SearchBackend):
                 return None
 
         # Try all instances concurrently
-        gathered = await asyncio.gather(
-            *[_try_instance(inst) for inst in _SEARXNG_INSTANCES]
-        )
+        gathered = await asyncio.gather(*[_try_instance(inst) for inst in _SEARXNG_INSTANCES])
         for batch in gathered:
             if batch is not None and len(batch) > 0:
                 return batch
@@ -1102,56 +1102,6 @@ def _parse_searxng_results(html_text: str, max_results: int) -> List[_SearchResu
 
         results.append(_SearchResult(title=title, url=url, snippet=snippet))
     return results
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Wikipedia Backend
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-class _WikipediaBackend(_SearchBackend):
-    name = "wikipedia"
-    API_URL = "https://en.wikipedia.org/w/api.php"
-
-    async def search(
-        self,
-        query: str,
-        num_results: int,
-        allowed_domains: Optional[List[str]] = None,
-        blocked_domains: Optional[List[str]] = None,
-    ) -> List[_SearchResult]:
-        params = {
-            "action": "query",
-            "list": "search",
-            "srsearch": query,
-            "srlimit": str(num_results),
-            "format": "json",
-        }
-        qs = "&".join(f"{k}={quote_plus(v)}" for k, v in params.items())
-        url = f"{self.API_URL}?{qs}"
-
-        resp = await _safe_request("GET", url, timeout_s=15.0)
-        if resp is None:
-            raise RuntimeError("Wikipedia request blocked by SSRF guard")
-        if resp["status"] != 200:
-            raise RuntimeError(f"Wikipedia HTTP {resp['status']}")
-        try:
-            data = json.loads(resp["text"])
-        except json.JSONDecodeError as e:
-            raise RuntimeError(f"Wikipedia non-JSON: {e}") from e
-
-        results = []
-        for r in data.get("query", {}).get("search", []):
-            title = r.get("title", "")
-            page_url = f"https://en.wikipedia.org/wiki/{quote(title.replace(' ', '_'))}"
-            results.append(
-                _SearchResult(
-                    title=title,
-                    url=page_url,
-                    snippet=_strip_tags(r.get("snippet", "")),
-                )
-            )
-        return results
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1342,7 +1292,8 @@ class WebSearchTool(Tool):
         backend = _select_search_backend()
         try:
             results = await self._search(
-                query, num_results,
+                query,
+                num_results,
                 allowed_domains=allowed_domains,
                 blocked_domains=blocked_domains,
                 backend=backend,
@@ -1360,8 +1311,10 @@ class WebSearchTool(Tool):
 
             if fetch_content:
                 results = await self._fetch_top_results(
-                    results, min(3, len(results)),
-                    max_content_length, extract_main=extract_main_content,
+                    results,
+                    min(3, len(results)),
+                    max_content_length,
+                    extract_main=extract_main_content,
                 )
 
             try:
@@ -1607,9 +1560,7 @@ class ReadURLTool(Tool):
 
 class DownloadFileParams(BaseModel):
     url: str = Field(..., description="URL of the file to download")
-    destination_path: str = Field(
-        ..., description="Absolute path where the file should be saved."
-    )
+    destination_path: str = Field(..., description="Absolute path where the file should be saved.")
 
 
 class DownloadFileTool(Tool):
@@ -1680,9 +1631,7 @@ class HTTPRequestParams(BaseModel):
     url: str = Field(..., description="Full URL to send the request to")
     method: str = Field("GET", description="HTTP method: GET, POST, PUT, PATCH, DELETE, HEAD")
     headers: Optional[Dict[str, str]] = Field(None, description="Optional HTTP headers")
-    json_body: Optional[Dict[str, Any]] = Field(
-        None, description="Request body as a JSON object"
-    )
+    json_body: Optional[Dict[str, Any]] = Field(None, description="Request body as a JSON object")
     body: Optional[str] = Field(None, description="Raw request body string")
     timeout: int = Field(30, description="Request timeout in seconds (default: 30)")
     max_response_length: int = Field(
@@ -1732,7 +1681,8 @@ class HTTPRequestTool(Tool):
 
         try:
             resp = await _safe_request_cf(
-                method, url,
+                method,
+                url,
                 headers=req_headers,
                 json_body=json_body,
                 body=body,
@@ -1781,9 +1731,7 @@ class HTTPRequestTool(Tool):
 class WikipediaSearchParams(BaseModel):
     query: str = Field(..., description="Search query for Wikipedia")
     num_results: int = Field(5, description="Number of results (default 5, max 10)")
-    language: str = Field(
-        "en", description="Wikipedia language code: en, de, fr, es, ja, zh, etc."
-    )
+    language: str = Field("en", description="Wikipedia language code: en, de, fr, es, ja, zh, etc.")
     fetch_content: bool = Field(
         False, description="Fetch and return the full page text of the top result."
     )
@@ -1843,13 +1791,15 @@ class WikipediaSearchTool(Tool):
         results = []
         for r in data.get("query", {}).get("search", []):
             title = r.get("title", "")
-            results.append({
-                "title": title,
-                "url": f"https://{lang}.wikipedia.org/wiki/{quote(title.replace(' ', '_'))}",
-                "snippet": _strip_tags(r.get("snippet", "")),
-                "page_id": r.get("pageid"),
-                "word_count": r.get("wordcount"),
-            })
+            results.append(
+                {
+                    "title": title,
+                    "url": f"https://{lang}.wikipedia.org/wiki/{quote(title.replace(' ', '_'))}",
+                    "snippet": _strip_tags(r.get("snippet", "")),
+                    "page_id": r.get("pageid"),
+                    "word_count": r.get("wordcount"),
+                }
+            )
 
         if fetch_content and results:
             page_title = results[0]["title"]
@@ -2096,9 +2046,7 @@ class SitemapDiscoverParams(BaseModel):
     url: str = Field(
         ..., description="Base URL of the website. Auto-discovers sitemap.xml from robots.txt."
     )
-    sitemap_url: Optional[str] = Field(
-        None, description="Direct URL to a sitemap.xml if known."
-    )
+    sitemap_url: Optional[str] = Field(None, description="Direct URL to a sitemap.xml if known.")
     max_urls: int = Field(50, description="Maximum number of URLs to return (default 50, max 200)")
     filter_path: Optional[str] = Field(
         None, description="Only return URLs whose path contains this string"

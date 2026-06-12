@@ -89,18 +89,17 @@ class CostTracker:
         Model IDs with date suffixes (e.g. ``claude-haiku-4-5-20251001``) are
         normalised by stripping trailing ``-YYYYMMDD`` segments before lookup.
         """
+        import re as _re
+
         base_model = model.lower()
 
         def _strip_date_suffixes(s: str) -> str:
-            import re as _re
             return _re.sub(r"(-\d{8,})*$", "", s)
 
         base_model = _strip_date_suffixes(base_model)
 
         # Friendly-alias normalisation: claude-4-5-haiku → claude-4.5-haiku
         if base_model.startswith("claude-"):
-            import re as _re
-
             base_model = _re.sub(
                 r"^(claude-)(\d+)-(\d+)(-\w+)$",
                 lambda m: f"{m.group(1)}{m.group(2)}.{m.group(3)}{m.group(4)}",

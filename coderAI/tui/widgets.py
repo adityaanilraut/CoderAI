@@ -25,9 +25,7 @@ class SelectableRichLog(RichLog):
         scroll_x, scroll_y = self.scroll_offset
         content_y = scroll_y + y
 
-        line = self._render_line(
-            content_y, scroll_x, self.scrollable_content_region.width
-        )
+        line = self._render_line(content_y, scroll_x, self.scrollable_content_region.width)
 
         new_segments: list = []
         offset_x = scroll_x

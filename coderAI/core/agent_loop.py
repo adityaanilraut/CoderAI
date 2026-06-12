@@ -148,9 +148,10 @@ class ExecutionLoop:
 
     def _refresh_messages_from_session(self, messages: List[Dict[str, Any]]) -> None:
         """Replace the in-memory message list with the session transcript."""
+        if self.agent.session is None:
+            return
         messages.clear()
-        if self.agent.session is not None:
-            messages.extend(self.agent.session.get_messages_for_api())
+        messages.extend(self.agent.session.get_messages_for_api())
 
     async def run(self, user_message: str) -> Dict[str, Any]:
         """Process a user message and return response."""

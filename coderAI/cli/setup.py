@@ -25,7 +25,12 @@ def setup():
     api_key_providers = [
         (1, "OpenAI", "Required for using GPT models", "openai_api_key"),
         (2, "Anthropic", "Required for using Claude models", "anthropic_api_key"),
-        (3, "Groq", "Required for using Groq models (including openai/gpt-oss-120b and openai/gpt-oss-20b)", "groq_api_key"),
+        (
+            3,
+            "Groq",
+            "Required for using Groq models (including openai/gpt-oss-120b and openai/gpt-oss-20b)",
+            "groq_api_key",
+        ),
         (4, "DeepSeek", "Required for using DeepSeek models", "deepseek_api_key"),
         (5, "Gemini", "Required for using Gemini models", "gemini_api_key"),
     ]

@@ -11,6 +11,17 @@ from coderAI.tui.theme import Styles, Tokens
 DIFF_MAX_LINES = 12
 
 
+def _window_lines(parsed, max_lines):
+    """Return a windowed view of parsed diff lines with an ellipsis if truncated."""
+    if len(parsed) <= max_lines:
+        return parsed
+    head = parsed[: max_lines // 2]
+    tail = parsed[-(max_lines // 2) :]
+    omitted = len(parsed) - len(head) - len(tail)
+    mid = [("ctx", f"… ({omitted} lines elided) …")]
+    return head + mid + tail
+
+
 def parse_unified_diff(diff: str) -> List[Tuple[str, str]]:
     """Return (line_type, text) where line_type is add|del|ctx|hunk|meta."""
     lines: List[Tuple[str, str]] = []
@@ -30,13 +41,8 @@ def parse_unified_diff(diff: str) -> List[Tuple[str, str]]:
 
 def format_diff_compact(diff: str, max_lines: int = DIFF_MAX_LINES) -> str:
     parsed = parse_unified_diff(diff)
-    if len(parsed) <= max_lines:
-        return "\n".join(t for _, t in parsed)
-    head = parsed[: max_lines // 2]
-    tail = parsed[-(max_lines // 2) :]
-    omitted = len(parsed) - len(head) - len(tail)
-    mid = [("ctx", f"\u2026 ({omitted} lines elided) \u2026")]
-    return "\n".join(t for _, t in head + mid + tail)
+    windowed = _window_lines(parsed, max_lines)
+    return "\n".join(t for _, t in windowed)
 
 
 def format_diff_gutter(diff: str, max_lines: int = DIFF_MAX_LINES) -> str:
@@ -49,14 +55,7 @@ def format_diff_gutter(diff: str, max_lines: int = DIFF_MAX_LINES) -> str:
         return ""
 
     lines_out: List[str] = []
-    total = len(parsed)
-    if total <= max_lines:
-        window = parsed
-    else:
-        head = parsed[: max_lines // 2]
-        tail = parsed[-(max_lines // 2) :]
-        omitted = total - len(head) - len(tail)
-        window = head + [("ctx", f"\u2026 ({omitted} lines elided) \u2026")] + tail
+    window = _window_lines(parsed, max_lines)
 
     # Build gutter output
     for kind, text in window:

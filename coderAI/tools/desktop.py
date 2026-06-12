@@ -156,7 +156,10 @@ class RunAppleScriptTool(Tool):
                     "returncode": process.returncode,
                 }
             except subprocess.TimeoutExpired:
-                return {"success": False, "error": "AppleScript execution timed out after 30 seconds."}
+                return {
+                    "success": False,
+                    "error": "AppleScript execution timed out after 30 seconds.",
+                }
             except Exception as e:
                 return {"success": False, "error": f"Failed to execute AppleScript: {e}"}
 
@@ -478,6 +481,9 @@ end tell
                     "error": process.stderr.decode("utf-8", errors="replace").strip(),
                 }
             except subprocess.TimeoutExpired:
-                return {"success": False, "error": "Keystroke operation timed out after 10 seconds."}
+                return {
+                    "success": False,
+                    "error": "Keystroke operation timed out after 10 seconds.",
+                }
             except Exception as e:
                 return {"success": False, "error": str(e)}

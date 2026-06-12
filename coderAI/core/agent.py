@@ -41,6 +41,7 @@ logger = logging.getLogger(__name__)
 
 class Agent:
     """Main agent orchestrator that coordinates LLM and tools."""
+
     hooks_manager: Any = None
 
     def __init__(
@@ -146,7 +147,7 @@ class Agent:
         sources: List[SkillSource] = [LocalSkillSource(self.config.project_root)]
         if self.config.skills_use_hasna:
             sources.append(HasnaSkillSource(self.config.project_root))
-            
+
         self.skill_manager = SkillManager(
             sources=sources,
             threshold=self.config.skill_confidence_threshold,
@@ -524,7 +525,6 @@ class Agent:
 
         # Look for project rules and append them
         try:
-
             rules_dir = Path(self.config.project_root, ".coderAI", "rules")
             if rules_dir.exists() and rules_dir.is_dir():
                 rules = []

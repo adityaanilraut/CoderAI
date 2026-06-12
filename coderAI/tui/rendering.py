@@ -83,9 +83,7 @@ def render_agent_tree(s: SessionState) -> RenderableType:
     active_count = sum(
         1 for a in s.agents.values() if a.status not in ("done", "error", "cancelled")
     )
-    title = (
-        f"[{Styles.SECTION}]AGENTS[/]  [{Tokens.TEXT_MUTED}]· {active_count} active[/]"
-    )
+    title = f"[{Styles.SECTION}]AGENTS[/]  [{Tokens.TEXT_MUTED}]· {active_count} active[/]"
     if not s.agents:
         return title + f"\n[{Tokens.TEXT_MUTED}](no agents yet)[/]"
 
@@ -122,10 +120,7 @@ def render_agent_tree(s: SessionState) -> RenderableType:
         task = (info.task or "")[:24]
         dot = f"[{color}]" + ("●" if glow else Glyphs.DOT) + "[/]"
         status_label = f"[{color}]{'▸' if glow else status[:4]}[/]"
-        line = (
-            f"{dot} [{Tokens.TEXT}]{name}[/] {status_label} "
-            f"[{Tokens.TEXT_DIM}]{task}[/]"
-        )
+        line = f"{dot} [{Tokens.TEXT}]{name}[/] {status_label} [{Tokens.TEXT_DIM}]{task}[/]"
         if status in ("done", "cancelled"):
             line = f"[dim]{line}[/]"
 
@@ -139,11 +134,6 @@ def render_agent_tree(s: SessionState) -> RenderableType:
         add_node(tree, rid)
 
     return tree
-
-
-def render_fleet(s: SessionState) -> RenderableType:
-    """Alias for render_agent_tree (legacy name)."""
-    return render_agent_tree(s)
 
 
 def render_plan(s: SessionState) -> RenderableType:
@@ -202,10 +192,7 @@ def render_tasks(s: SessionState) -> RenderableType:
     """Return markup for the TODO checklist pane."""
     title = f"[{Styles.SECTION}]TODOS[/]"
     if not s.current_tasks:
-        return (
-            f"{title}\n\n"
-            f"[{Tokens.TEXT_MUTED}](no tasks — agent can add with manage_tasks)[/]"
-        )
+        return f"{title}\n\n[{Tokens.TEXT_MUTED}](no tasks — agent can add with manage_tasks)[/]"
 
     tasks = s.current_tasks
     summary = str(tasks.get("summary") or "")
@@ -223,14 +210,26 @@ def render_tasks(s: SessionState) -> RenderableType:
         lines.append(f"\n[{Tokens.AGENT}]In progress[/]")
         for t in in_progress:
             lines.append(
-                _task_row("▸", Tokens.AGENT, int(t.get("id", 0)), str(t.get("title", "")), str(t.get("priority", "")))
+                _task_row(
+                    "▸",
+                    Tokens.AGENT,
+                    int(t.get("id", 0)),
+                    str(t.get("title", "")),
+                    str(t.get("priority", "")),
+                )
             )
 
     if pending:
         lines.append(f"\n[{Tokens.TEXT_DIM}]Pending[/]")
         for t in pending:
             lines.append(
-                _task_row("·", Tokens.TEXT_MUTED, int(t.get("id", 0)), str(t.get("title", "")), str(t.get("priority", "")))
+                _task_row(
+                    "·",
+                    Tokens.TEXT_MUTED,
+                    int(t.get("id", 0)),
+                    str(t.get("title", "")),
+                    str(t.get("priority", "")),
+                )
             )
 
     if completed:

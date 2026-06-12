@@ -282,8 +282,12 @@ class HistoryManager:
 
             index[session.session_id] = {
                 "session_id": session.session_id,
-                "created_at": datetime.fromtimestamp(session.created_at).strftime("%Y-%m-%d %H:%M:%S"),
-                "updated_at": datetime.fromtimestamp(session.updated_at).strftime("%Y-%m-%d %H:%M:%S"),
+                "created_at": datetime.fromtimestamp(session.created_at).strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                ),
+                "updated_at": datetime.fromtimestamp(session.updated_at).strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                ),
                 "messages": len(session.messages),
                 "model": session.model,
             }
@@ -362,13 +366,14 @@ class HistoryManager:
     def clear_history(self) -> int:
         """Clear all history. Returns number of sessions deleted."""
         count = 0
-        for session_file in self.history_dir.glob("session_*.json"):
-            session_file.unlink()
-            count += 1
-        # Remove the index so list_sessions starts fresh
-        index_file = self.history_dir / "index.json"
-        if index_file.exists():
-            index_file.unlink()
+        with self._index_lock:
+            for session_file in self.history_dir.glob("session_*.json"):
+                session_file.unlink()
+                count += 1
+            # Remove the index so list_sessions starts fresh
+            index_file = self.history_dir / "index.json"
+            if index_file.exists():
+                index_file.unlink()
         return count
 
     def delete_session(self, session_id: str) -> bool:

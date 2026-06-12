@@ -39,7 +39,11 @@ from coderAI.tui.slash import handle_slash_command
 from coderAI.tui.state import SessionState
 from coderAI.tui.platform import composer_placeholder
 from coderAI.tui.theme import Tokens
-from coderAI.tui.timeline_render import build_stream_tail_markup, write_timeline_item
+from coderAI.tui.timeline_render import (
+    build_stream_tail_markup,
+    write_timeline_item,
+    calculate_item_lines,
+)
 
 STREAM_TICK_S = 0.12
 
@@ -156,6 +160,16 @@ Footer {{
 """
 
 
+class RecordingLog:
+    """A duck-typed wrapper for RichLog to capture write calls during rendering."""
+
+    def __init__(self) -> None:
+        self.renderables: list[Any] = []
+
+    def write(self, renderable: Any) -> None:
+        self.renderables.append(renderable)
+
+
 class CoderAIApp(App[None]):
     """CoderAI Textual chat — three-column IDE layout."""
 
@@ -195,6 +209,7 @@ class CoderAIApp(App[None]):
         self.project_files: List[str] = []
         self._scan_in_progress = False
         self._agent_retry_count = 0
+        self._render_cache: Dict[tuple[str | None, bool], tuple[Dict[str, Any], list[Any]]] = {}
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="main"):
@@ -246,6 +261,14 @@ class CoderAIApp(App[None]):
     def _on_reducer_change(self, mode: RefreshMode) -> None:
         self.post_message(AgentEventMsg("__refresh__", {"mode": mode}))
 
+    def _toast(self, level: str, message: str) -> None:
+        """Push a toast notification to the timeline."""
+        self.reducer._push(
+            {"kind": "toast", "id": self.reducer.next_id(), "level": level, "message": message}
+        )
+        self.reducer._bump_refresh("append")
+        self.reducer._notify()
+
     @on(AgentEventMsg)
     async def _on_agent_event(self, msg: AgentEventMsg) -> None:
         if msg.event == "__refresh__":
@@ -257,10 +280,11 @@ class CoderAIApp(App[None]):
 
     def _stream_tick(self) -> None:
         flushed_stream = self.reducer._maybe_flush_stream()
-        if self.reducer._stream_flush_at is None and (
-            self.reducer._stream_pending_content or self.reducer._stream_pending_reasoning
-        ):
-            flushed_stream = self.reducer._flush_stream_buffers() or flushed_stream
+        # When streaming ends, the time-gate may leave un-flushed content
+        # in the buffers. Force one last flush so the user sees final output.
+        if not flushed_stream and self.reducer._stream_flush_at is None:
+            if self.reducer._stream_pending_content or self.reducer._stream_pending_reasoning:
+                flushed_stream = self.reducer._flush_stream_buffers()
         if flushed_stream:
             self.reducer._bump_refresh("stream")
         flushed_status = self.reducer._maybe_flush_status()
@@ -339,6 +363,11 @@ class CoderAIApp(App[None]):
             log.clear()
             self._log_rendered_idx = 0
             self._hide_stream_tail()
+            # Prune render cache to keep it clean and bound to active timeline items
+            active_ids = {it.get("id") for it in timeline if it.get("id")}
+            for k in list(self._render_cache.keys()):
+                if k[0] not in active_ids:
+                    del self._render_cache[k]
 
         if mode == "stream":
             streaming_aid = self.reducer._current_assistant_id
@@ -358,13 +387,29 @@ class CoderAIApp(App[None]):
                 if it.get("kind") == "assistant" and it.get("streaming"):
                     self._render_stream_tail(it, verbose)
                     break
-                write_timeline_item(log, it, verbose=verbose)
+
+                item_id = it.get("id")
+                cache_key = (item_id, verbose)
+                cached = self._render_cache.get(cache_key)
+                if cached is not None:
+                    cached_it, renderables = cached
+                    if cached_it == it:
+                        for r in renderables:
+                            log.write(r)
+                        idx += 1
+                        continue
+
+                rec = RecordingLog()
+                write_timeline_item(rec, it, verbose=verbose)
+                self._render_cache[cache_key] = (it.copy(), rec.renderables)
+                for r in rec.renderables:
+                    log.write(r)
                 idx += 1
             self._log_rendered_idx = idx
             if idx > 0:
                 log.scroll_end(animate=False)
             if idx >= len(timeline):
-                if not any(
+                if not self.reducer.session.streaming and not any(
                     it.get("kind") == "assistant" and it.get("streaming") for it in timeline
                 ):
                     self._hide_stream_tail()
@@ -503,11 +548,15 @@ class CoderAIApp(App[None]):
             return self._find_last_content_item()
 
         estimated_lines = 0
+        verbose = self.reducer.session.verbose
         for i in range(len(self.reducer.timeline) - 1, -1, -1):
             it = self.reducer.timeline[i]
             if it.get("kind") not in ("user", "assistant", "tool", "diff"):
                 continue
-            lines = it.get("content", "").count("\n") + 3
+            cache_key = f"_line_count_{verbose}"
+            if it.get("streaming", False) or cache_key not in it:
+                it[cache_key] = calculate_item_lines(it, verbose)
+            lines = it[cache_key]
             estimated_lines += lines
             if estimated_lines >= scroll_y:
                 return i, it
@@ -533,11 +582,11 @@ class CoderAIApp(App[None]):
         kind = it.get("kind", "")
         if kind == "diff":
             title = f"Full Diff — {it.get('path', '')}"
-            content = format_diff_gutter(str(it.get("diff", "")))
+            content = format_diff_gutter(str(it.get("diff", "")), max_lines=10_000)
         elif kind in ("assistant",):
             title = "Full Assistant Response"
             content = str(it.get("content", ""))
-        elif kind in ("user",):
+        elif kind == "user":
             title = "Full User Message"
             content = str(it.get("text", ""))
         else:
@@ -564,25 +613,18 @@ class CoderAIApp(App[None]):
             self.project_files = await async_scan_project_files(root)
         except Exception as e:
             import logging as _log
+
             _log.getLogger(__name__).warning("Project file scan failed: %s", e)
         finally:
             self._scan_in_progress = False
 
     def action_file_picker(self) -> None:
-        self.reducer._push(
-            {"kind": "toast", "id": self.reducer.next_id(), "level": "info", "message": "Scanning project files…"}
-        )
-        self.reducer._bump_refresh("append")
-        self.reducer._notify()
+        self._toast("info", "Scanning project files…")
         self.run_worker(self._show_file_picker(), exclusive=True)
 
     async def _show_file_picker(self) -> None:
         await self._scan_project_files()
-        self.reducer._push(
-            {"kind": "toast", "id": self.reducer.next_id(), "level": "info", "message": f"Found {len(self.project_files)} files"}
-        )
-        self.reducer._bump_refresh("append")
-        self.reducer._notify()
+        self._toast("info", f"Found {len(self.project_files)} files")
         result = await self.push_screen_wait(FilePickerScreen(self.project_files))
         if result is None or not self.controller:
             self.query_one("#prompt-area", PromptArea).focus()
@@ -627,11 +669,11 @@ class CoderAIApp(App[None]):
                 text,
                 self.controller,
                 self.reducer,
-                show_help=self._show_help,
-                show_model_menu=self._show_model_menu,
-                show_reasoning_menu=self._show_reasoning_menu,
-                show_persona_menu=self._show_persona_menu,
-                show_skills_menu=self._show_skills_menu,
+                show_help=lambda: self._show_palette_section(),
+                show_model_menu=lambda: self._show_palette_section("models"),
+                show_reasoning_menu=lambda: self._show_palette_section("reasoning"),
+                show_persona_menu=lambda: self._show_palette_section("personas"),
+                show_skills_menu=lambda: self._show_palette_section("skills"),
                 show_search=self._show_search,
                 show_context=self._show_context,
                 clear_context=self._clear_context,
@@ -648,29 +690,13 @@ class CoderAIApp(App[None]):
         self.reducer._notify()
         self.controller.enqueue_command("send_message", text=text)
 
-    def _show_help(self) -> None:
-        self.run_worker(self._show_palette(), exclusive=True)
-
-    def _show_model_menu(self) -> None:
-        self.run_worker(self._show_palette("models"), exclusive=True)
-
-    def _show_reasoning_menu(self) -> None:
-        self.run_worker(self._show_palette("reasoning"), exclusive=True)
-
-    def _show_persona_menu(self) -> None:
-        self.run_worker(self._show_palette("personas"), exclusive=True)
-
-    def _show_skills_menu(self) -> None:
-        self.run_worker(self._show_palette("skills"), exclusive=True)
+    def _show_palette_section(self, section: str | None = None) -> None:
+        self.run_worker(self._show_palette(section), exclusive=True)
 
     def _retry_agent(self) -> None:
         self._agent_retry_count = 0
         self.reducer.session.ready = False
-        self.reducer._push(
-            {"kind": "toast", "id": self.reducer.next_id(), "level": "info", "message": "Restarting agent…"}
-        )
-        self.reducer._bump_refresh("append")
-        self.reducer._notify()
+        self._toast("info", "Restarting agent…")
         self.run_worker(
             self._run_agent,  # type: ignore[arg-type]
             exclusive=True,
@@ -687,16 +713,7 @@ class CoderAIApp(App[None]):
     def _show_context(self) -> None:
         files = self.reducer.session.context_files or []
         msg = "\n".join(f"  {f.get('path')} ({f.get('size', 0)} B)" for f in files) or "(none)"
-        self.reducer._push(
-            {
-                "kind": "toast",
-                "id": self.reducer.next_id(),
-                "level": "info",
-                "message": f"Pinned context:\n{msg}",
-            }
-        )
-        self.reducer._bump_refresh("append")
-        self.reducer._notify()
+        self._toast("info", f"Pinned context:\n{msg}")
 
     def _clear_context(self) -> None:
         if self.controller:
@@ -719,16 +736,7 @@ class CoderAIApp(App[None]):
     def _reveal_reasoning(self) -> None:
         for it in reversed(self.reducer.timeline):
             if it.get("kind") == "assistant" and (it.get("reasoning") or "").strip():
-                self.reducer._push(
-                    {
-                        "kind": "toast",
-                        "id": self.reducer.next_id(),
-                        "level": "info",
-                        "message": it["reasoning"][:4000],
-                    }
-                )
-                self.reducer._bump_refresh("append")
-                self.reducer._notify()
+                self._toast("info", it["reasoning"][:4000])
                 return
         self.notify("No reasoning to reveal")
 

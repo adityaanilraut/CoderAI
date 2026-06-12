@@ -47,4 +47,4 @@ def test_compose_default_system_prompt_includes_directives() -> None:
     assert "plan-first" in rendered
     assert "finish_reason=length" in rendered.lower()
     assert "create_plan" in rendered or "action=" in rendered
-    assert "do not duplicate plan steps into `manage_tasks`" in rendered.lower()
+    assert "do not duplicate items between" in rendered.lower()

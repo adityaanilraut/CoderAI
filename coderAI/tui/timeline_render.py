@@ -73,8 +73,7 @@ def build_stream_tail_markup(it: Dict[str, Any], *, verbose: bool) -> str:
     if verbose and reasoning:
         lines.append(
             f"[{Styles.REASONING_GLYPH}]{Glyphs.REASONING}[/] "
-            f"[{Styles.REASONING_LABEL}]reasoning[/]"
-            + (f"  {ts}" if ts else "")
+            f"[{Styles.REASONING_LABEL}]reasoning[/]" + (f"  {ts}" if ts else "")
         )
         lines.append(f"  [{Styles.REASONING}]{escape(reasoning)}[/]")
         lines.append("")
@@ -128,7 +127,9 @@ def write_assistant(log: RichLog, it: Dict[str, Any], verbose: bool) -> None:
     content = it.get("content", "")
     if content:
         if collapsed:
-            log.write(Text.from_markup(f"  [{Tokens.TEXT_DIM}]{escape(_first_lines(content, 3))}[/]"))
+            log.write(
+                Text.from_markup(f"  [{Tokens.TEXT_DIM}]{escape(_first_lines(content, 3))}[/]")
+            )
         else:
             log.write(Padding(Markdown(content), (0, 0, 0, 2)))
     if it.get("streaming") and not collapsed:
@@ -151,8 +152,22 @@ def write_tool(log: RichLog, it: Dict[str, Any]) -> None:
     args = it.get("args") or {}
     if isinstance(args, dict):
         argbits = []
-        for k in ("path", "file_path", "command", "query", "url", "pattern", "target",
-                  "content", "regex", "text", "code", "message", "description", "search"):
+        for k in (
+            "path",
+            "file_path",
+            "command",
+            "query",
+            "url",
+            "pattern",
+            "target",
+            "content",
+            "regex",
+            "text",
+            "code",
+            "message",
+            "description",
+            "search",
+        ):
             if k in args:
                 argbits.append(str(args[k]))
                 break
@@ -285,3 +300,80 @@ def write_plan_card(log: RichLog, it: Dict[str, Any]) -> None:
         markup = f"[{c}]{g}[/] [{Tokens.TEXT_MUTED}]{idx}.[/] [{Tokens.TEXT}]{desc}[/]"
         log.write(Text.from_markup(f"  {markup}"))
     log.write("")
+
+
+def calculate_item_lines(it: Dict[str, Any], verbose: bool) -> int:
+    """Precisely calculate the height (in lines) of a rendered timeline item."""
+    kind = it.get("kind")
+    if kind == "user":
+        body = it.get("text", "") or ""
+        if it.get("collapsed"):
+            parsed_len = len(body.splitlines())
+            body_lines = parsed_len if parsed_len <= 2 else 3
+        else:
+            body_lines = len(body.splitlines())
+        return 1 + body_lines + 1
+    elif kind == "assistant":
+        collapsed = it.get("collapsed")
+        lines = 0
+        reasoning = (it.get("reasoning") or "").strip()
+        if verbose and reasoning and not collapsed:
+            lines += 1  # reasoning header
+            lines += len(reasoning.splitlines())  # reasoning body
+            lines += 1  # empty line
+        lines += 1  # assistant header
+        content = it.get("content", "")
+        if content:
+            if collapsed:
+                parsed_len = len(content.splitlines())
+                content_lines = parsed_len if parsed_len <= 3 else 4
+            else:
+                content_lines = len(content.splitlines())
+            lines += content_lines
+        if it.get("streaming") and not collapsed:
+            lines += 1  # cursor block
+        lines += 1  # empty line
+        return lines
+    elif kind == "tool":
+        collapsed = it.get("collapsed")
+        lines = 1
+        if it.get("error") and not collapsed:
+            lines += 1
+        return lines
+    elif kind == "diff":
+        collapsed = it.get("collapsed")
+        if collapsed:
+            return 2  # header + "N lines" text
+        else:
+            body = it.get("diff", "")
+            parsed_len = len(body.splitlines())
+            max_lines = 40 if verbose else 12
+            if parsed_len <= max_lines:
+                diff_lines = parsed_len
+            else:
+                diff_lines = (max_lines // 2) * 2 + 1
+            return 1 + diff_lines
+    elif kind == "error":
+        lines = 1  # header
+        lines += len(str(it.get("message", "")).splitlines())
+        if it.get("hint"):
+            lines += len(str(it["hint"]).splitlines())
+        return lines
+    elif kind in ("toast", "separator", "approval"):
+        return 1
+    elif kind == "skill_card":
+        lines = 1
+        desc = str(it.get("description") or "")
+        if desc:
+            lines += 1
+        steps = it.get("steps") or []
+        lines += min(len(steps), 12)
+        lines += 1  # empty line
+        return lines
+    elif kind == "plan_card":
+        lines = 1
+        steps = it.get("steps") or []
+        lines += min(len(steps), 12)
+        lines += 1  # empty line
+        return lines
+    return 3

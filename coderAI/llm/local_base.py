@@ -7,7 +7,12 @@ from urllib.parse import urljoin
 
 import aiohttp
 
-from coderAI.llm.base import HTTP_CONNECT_TIMEOUT, HTTP_SOCK_READ_TIMEOUT, HTTP_TOTAL_TIMEOUT, LLMProvider
+from coderAI.llm.base import (
+    HTTP_CONNECT_TIMEOUT,
+    HTTP_SOCK_READ_TIMEOUT,
+    HTTP_TOTAL_TIMEOUT,
+    LLMProvider,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -79,11 +84,13 @@ class OpenAICompatibleLocalProvider(LLMProvider):
         url = self._get_url()
         payload = self._build_payload(messages, tools, **kwargs)
         async with self._get_session().post(
-            url, json=payload, timeout=aiohttp.ClientTimeout(
+            url,
+            json=payload,
+            timeout=aiohttp.ClientTimeout(
                 connect=HTTP_CONNECT_TIMEOUT,
                 sock_read=HTTP_SOCK_READ_TIMEOUT,
                 total=HTTP_TOTAL_TIMEOUT,
-            )
+            ),
         ) as response:
             response.raise_for_status()
             try:
@@ -109,11 +116,13 @@ class OpenAICompatibleLocalProvider(LLMProvider):
         url = self._get_url()
         payload = self._build_payload(messages, tools, stream=True, **kwargs)
         async with self._get_session().post(
-            url, json=payload, timeout=aiohttp.ClientTimeout(
+            url,
+            json=payload,
+            timeout=aiohttp.ClientTimeout(
                 connect=HTTP_CONNECT_TIMEOUT,
                 sock_read=HTTP_SOCK_READ_TIMEOUT,
                 total=HTTP_TOTAL_TIMEOUT,
-            )
+            ),
         ) as response:
             response.raise_for_status()
             buffer = ""

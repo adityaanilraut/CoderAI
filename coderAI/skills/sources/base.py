@@ -23,9 +23,7 @@ class SkillSource(ABC):
         ...
 
     @abstractmethod
-    async def search(
-        self, query: str, top_n: int = 5
-    ) -> List[Tuple[Skill, float]]:
+    async def search(self, query: str, top_n: int = 5) -> List[Tuple[Skill, float]]:
         """Search for skills relevant to *query*.
 
         Returns a list of ``(Skill, confidence)`` tuples sorted by

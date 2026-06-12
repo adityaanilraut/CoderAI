@@ -105,8 +105,10 @@ class DeepSeekProvider(LLMProvider):
         params = self._build_request_params(messages, tools, **kwargs)
 
         try:
+
             async def _call():
                 return await self.client.chat.completions.create(**params)
+
             response = await _retry(_call, description="DeepSeek chat", max_retries=3)
         except Exception as e:
             raise RuntimeError(f"DeepSeek API error: {e}") from e
@@ -138,8 +140,10 @@ class DeepSeekProvider(LLMProvider):
         params = self._build_request_params(messages, tools, stream=True, **kwargs)
 
         try:
+
             async def _create_stream():
                 return await self.client.chat.completions.create(**params)
+
             stream = await _retry(_create_stream, description="DeepSeek stream", max_retries=3)
         except Exception as e:
             raise RuntimeError(f"DeepSeek API streaming error: {e}") from e

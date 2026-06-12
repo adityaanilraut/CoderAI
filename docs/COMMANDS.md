@@ -244,7 +244,11 @@ Stored in `~/.coderAI/config.json`. Set via `coderAI config set <key> <value>` o
 | `max_glob_results` | `200` | Max results returned by `glob_search` |
 | `max_command_output` | `10000` | Max characters captured from `run_command` output |
 | `max_tool_output` | `8000` | Max characters of any tool result kept in context |
-| `web_tools_in_main` | `true` | Allow web tools (`web_search`, `read_url`, `http_request`, `download_file`) in the main agent |
+| `web_tools_in_main` | `true` | Allow web tools in the main agent (`web_search`, `read_url`, `http_request`, `download_file`, `wikipedia_search`, `read_feed`, `sitemap_discover`) |
+| `gemini_api_key` | — | Google Gemini API key (or set `GEMINI_API_KEY`) |
+| `browser_headless` | `true` | Run Playwright browser in headless mode |
+| `browser_timeout` | `30.0` | Browser operation timeout (seconds) |
+| `browser_allowed_domains` | — | Comma-separated domain allowlist (blank = all allowed) |
 | `approval_timeout_seconds` | `300` | Seconds before approval prompts auto-deny (0 = wait forever) |
 | `project_root` | `.` | Project root directory path |
 | `log_level` | `WARNING` | Log verbosity — `DEBUG`, `INFO`, `WARNING`, `ERROR` |
@@ -267,6 +271,7 @@ Environment variables take precedence over `~/.coderAI/config.json`.
 | `OPENAI_API_KEY` | `openai_api_key` |
 | `GROQ_API_KEY` | `groq_api_key` |
 | `DEEPSEEK_API_KEY` | `deepseek_api_key` |
+| `GEMINI_API_KEY` | `gemini_api_key` |
 | `CODERAI_DEFAULT_MODEL` | `default_model` |
 | `CODERAI_TEMPERATURE` | `temperature` |
 | `CODERAI_MAX_TOKENS` | `max_tokens` |
@@ -289,7 +294,7 @@ Environment variables take precedence over `~/.coderAI/config.json`.
 
 ## Tool Quick Reference
 
-All 56+ tools available to the agent. Confirmation required (`✓`) means the agent asks before running.
+All **88 tools** available to the agent when optional dependencies are installed (87 auto-discovered plus `manage_context`). Browser tools require `pip install coderAI[browser]`; PDF extraction in `read_url` requires `pip install coderAI[web]`; desktop tools are macOS-only. Confirmation required (`✓`) means the agent asks before running.
 
 ### Filesystem
 
@@ -319,6 +324,7 @@ All 56+ tools available to the agent. Confirmation required (`✓`) means the ag
 | `run_background` | ✓ | Start a background process |
 | `list_processes` | — | List tracked background processes |
 | `kill_process` | ✓ | Terminate a process by PID |
+| `read_bg_output` | — | Read buffered output from a `run_background` process |
 
 ### Git
 
@@ -358,10 +364,13 @@ All 56+ tools available to the agent. Confirmation required (`✓`) means the ag
 
 | Tool | Confirm | Description |
 |---|---|---|
-| `web_search` | — | DuckDuckGo search |
-| `read_url` | — | Fetch a URL and return text |
+| `web_search` | — | Web search (DuckDuckGo and other backends) |
+| `read_url` | — | Fetch a URL and return text (PDF with optional `pypdf`) |
 | `download_file` | ✓ | Download a file from a URL |
 | `http_request` | ✓ | Generic HTTP client (any method, headers, body) |
+| `wikipedia_search` | — | Search Wikipedia and return article summaries |
+| `read_feed` | — | Parse RSS/Atom feeds from a URL |
+| `sitemap_discover` | — | Discover pages via `sitemap.xml` / `robots.txt` |
 
 ### Memory
 
@@ -376,8 +385,20 @@ All 56+ tools available to the agent. Confirmation required (`✓`) means the ag
 | Tool | Confirm | Description |
 |---|---|---|
 | `lint` | ✓ | Auto-detect and run linter |
-| `run_tests` | ✓ | Auto-detect and run project tests |
 | `format` | ✓ | Auto-detect and run formatter |
+| `run_tests` | ✓ | Auto-detect and run project tests |
+
+### Refactoring
+
+| Tool | Confirm | Description |
+|---|---|---|
+| `refactor` | ✓ | Cross-file `rename_symbol` or `find_references` (use `dry_run=true` first) |
+
+### Package Management
+
+| Tool | Confirm | Description |
+|---|---|---|
+| `package_manager` | ✓ | Install, remove, or list packages (pip, npm, cargo, …) |
 
 ### Project, Context & Tasks
 
@@ -416,6 +437,32 @@ All 56+ tools available to the agent. Confirmation required (`✓`) means the ag
 | `mcp_disconnect` | ✓ | Disconnect from an MCP server |
 | `mcp_call_tool` | ✓ | Call a tool on a connected server |
 | `mcp_list` | — | List connected servers and tools |
+
+### Browser Automation
+
+*Requires `pip install coderAI[browser]` and `playwright install chromium`.*
+
+| Tool | Confirm | Description |
+|---|---|---|
+| `browser_navigate` | — | Navigate to a URL |
+| `browser_snapshot` | — | Capture accessibility tree with element refs |
+| `browser_click` | ✓ | Click an element by snapshot ref |
+| `browser_type` | ✓ | Type into an input by ref |
+| `browser_select_option` | ✓ | Select a dropdown option by ref |
+| `browser_get_content` | — | Extract page content (markdown, text, or HTML) |
+| `browser_screenshot` | — | Take a PNG screenshot |
+| `browser_evaluate` | ✓ | Execute JavaScript in the page |
+| `browser_wait` | — | Wait for text or a timeout |
+| `browser_close` | — | Close the browser session |
+
+### Desktop Automation (macOS only)
+
+| Tool | Confirm | Description |
+|---|---|---|
+| `run_applescript` | ✓ | Execute AppleScript or JXA |
+| `get_accessibility_tree` | — | Retrieve the macOS accessibility UI tree |
+| `click_ui_element` | ✓ | Click a UI element via System Events |
+| `type_keystrokes` | ✓ | Simulate typing or key presses |
 
 ### Undo
 

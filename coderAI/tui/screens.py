@@ -113,62 +113,59 @@ class ApprovalScreen(ModalScreen[tuple[bool, bool]]):
     }}
     """
 
-    _RISK_FACTORS: Dict[str, List[tuple[str, bool]]] = {
+    _RISK_BASE = [
+        ("Runs in project sandbox", True),
+    ]
+
+    _RISK_OVERRIDES: Dict[str, List[tuple[str, bool]]] = {
         "run_command": [
-            ("No network access by default", True),
             ("Could spawn child processes", False),
             ("Writes to filesystem", False),
         ],
         "run_background": [
-            ("No network access by default", True),
             ("Long-running process", False),
             ("Could consume resources", False),
         ],
         "write_file": [
-            ("Runs in project sandbox", True),
             ("Writes to filesystem", False),
             ("Could overwrite existing files", False),
         ],
         "search_replace": [
-            ("Runs in project sandbox", True),
             ("Modifies files in place", False),
             ("Could leave dirty working tree", False),
         ],
         "apply_diff": [
-            ("Runs in project sandbox", True),
             ("Modifies files in place", False),
             ("Could leave dirty working tree", False),
         ],
         "delete_file": [
-            ("Runs in project sandbox", True),
             ("Permanently deletes files", False),
             ("Irreversible without git", False),
         ],
         "git_commit": [
-            ("Runs in project sandbox", True),
             ("Creates permanent git history", False),
             ("Could push on next sync", False),
         ],
         "git_push": [
-            ("Runs in project sandbox", True),
             ("Transmits data to remote", False),
             ("Affects shared repository", False),
         ],
         "git_checkout": [
-            ("Runs in project sandbox", True),
             ("Switches working tree", False),
             ("Could cause merge conflicts", False),
         ],
         "git_reset": [
-            ("Runs in project sandbox", True),
             ("Destroys uncommitted work", False),
             ("Irreversible without reflog", False),
         ],
     }
-    _DEFAULT_RISK_FACTORS: List[tuple[str, bool]] = [
-        ("Runs in project sandbox", True),
-        ("May modify project files", False),
-    ]
+
+    @classmethod
+    def _get_risk_factors(cls, tool_name: str) -> List[tuple[str, bool]]:
+        overrides = cls._RISK_OVERRIDES.get(tool_name)
+        if overrides is None:
+            return cls._RISK_BASE
+        return cls._RISK_BASE + overrides
 
     def __init__(self, approval: Dict[str, Any]) -> None:
         super().__init__()
@@ -220,7 +217,7 @@ class ApprovalScreen(ModalScreen[tuple[bool, bool]]):
             if not diff:
                 yield Label(args_text)
 
-            risk_items = self._RISK_FACTORS.get(tool_name, self._DEFAULT_RISK_FACTORS)
+            risk_items = self._get_risk_factors(tool_name)
             risk_lines = []
             for label, ok in risk_items[:6]:
                 g, c = (Glyphs.TOOL_OK, Tokens.AGENT) if ok else (Glyphs.APPROVAL, Tokens.WARN)
@@ -312,7 +309,9 @@ class SearchScreen(ModalScreen[None]):
             yield Label("Search Timeline:")
             yield Input(value=self.search_query, placeholder="Type to search...", id="search-input")
             with VerticalScroll():
-                yield Static(self._build_matches(self.search_query), id="search-results", markup=False)
+                yield Static(
+                    self._build_matches(self.search_query), id="search-results", markup=False
+                )
             yield Button("Close", id="search-close")
 
     def _build_matches(self, query: str) -> str:
@@ -360,14 +359,11 @@ def _action_to_text(action_type: str, action_val: Any, is_tab_completion: bool =
 
 
 class FuzzyPickerScreen(ModalScreen[Optional[str]]):
-    """Base class for fuzzy-searchable picker modals."""
+    """Base class for fuzzy-searchable picker modals.
 
-    BOX_ID: str = ""
-    INPUT_ID: str = ""
-    LIST_ID: str = ""
-    FOOTER_ID: str = ""
-    PLACEHOLDER: str = ""
-    FOOTER_HELP: str = ""
+    Subclasses pass widget IDs and copy as constructor arguments so typos
+    are caught at instantiation time rather than failing silently at runtime.
+    """
 
     DEFAULT_CSS = f"""
     FuzzyPickerScreen {{
@@ -408,34 +404,44 @@ class FuzzyPickerScreen(ModalScreen[Optional[str]]):
     }}
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        box_id: str,
+        input_id: str,
+        list_id: str,
+        footer_id: str,
+        placeholder: str,
+        footer_help: str,
+    ) -> None:
         super().__init__()
+        self._box_id = box_id
+        self._input_id = input_id
+        self._list_id = list_id
+        self._footer_id = footer_id
+        self._placeholder = placeholder
+        self._footer_help = footer_help
         self._query = ""
 
     @abstractmethod
-    def _update_options(self, query: str) -> None:
-        ...
+    def _update_options(self, query: str) -> None: ...
 
     @abstractmethod
-    def _get_selected_action_value(self, is_tab: bool = False) -> Optional[str]:
-        ...
+    def _get_selected_action_value(self, is_tab: bool = False) -> Optional[str]: ...
 
     def on_mount(self) -> None:
-        self.query_one(f"#{self.INPUT_ID}", Input).focus()
+        self.query_one(f"#{self._input_id}", Input).focus()
         self._update_options("")
 
     def compose(self) -> ComposeResult:
-        with Container(id=self.BOX_ID):
+        with Container(id=self._box_id):
             yield Input(
                 value="",
-                placeholder=self.PLACEHOLDER,
-                id=self.INPUT_ID,
+                placeholder=self._placeholder,
+                id=self._input_id,
             )
-            yield OptionList(id=self.LIST_ID)
-            yield Static(
-                self.FOOTER_HELP,
-                id=self.FOOTER_ID,
-            )
+            yield OptionList(id=self._list_id)
+            yield Static(self._footer_help, id=self._footer_id)
 
     @on(Input.Changed)
     def _on_input_changed(self, event: Input.Changed) -> None:
@@ -453,7 +459,7 @@ class FuzzyPickerScreen(ModalScreen[Optional[str]]):
     def _handle_key(self, event: events.Key) -> bool:
         key = event.key
         try:
-            option_list = self.query_one(f"#{self.LIST_ID}", OptionList)
+            option_list = self.query_one(f"#{self._list_id}", OptionList)
         except NoMatches:
             return False
 
@@ -485,15 +491,15 @@ class FuzzyPickerScreen(ModalScreen[Optional[str]]):
 class FilePickerScreen(FuzzyPickerScreen):
     """Fuzzy-searchable project file picker for pinning context."""
 
-    BOX_ID = "picker-box"
-    INPUT_ID = "picker-input"
-    LIST_ID = "picker-list"
-    FOOTER_ID = "picker-footer"
-    PLACEHOLDER = "🔍 Type to search project files to pin..."
-    FOOTER_HELP = f"[{Tokens.TEXT_MUTED}]↑↓ navigate  ↵ pin  ⎋ close[/]"
-
     def __init__(self, files: List[str]) -> None:
-        super().__init__()
+        super().__init__(
+            box_id="picker-box",
+            input_id="picker-input",
+            list_id="picker-list",
+            footer_id="picker-footer",
+            placeholder="🔍 Type to search project files to pin...",
+            footer_help=f"[{Tokens.TEXT_MUTED}]↑↓ navigate  ↵ pin  ⎋ close[/]",
+        )
         self.files = files
 
     def _get_matches(self, query: str) -> List[str]:
@@ -509,7 +515,7 @@ class FilePickerScreen(FuzzyPickerScreen):
 
     def _update_options(self, query: str) -> None:
         matches = self._get_matches(query)
-        option_list = self.query_one(f"#{self.LIST_ID}", OptionList)
+        option_list = self.query_one(f"#{self._list_id}", OptionList)
         option_list.clear_options()
 
         options = []
@@ -519,7 +525,11 @@ class FilePickerScreen(FuzzyPickerScreen):
 
         if not options:
             options.append(
-                Option(f'[{Tokens.TEXT_MUTED}]  no matching files for "{escape(query)}"[/]', id="none", disabled=True)
+                Option(
+                    f'[{Tokens.TEXT_MUTED}]  no matching files for "{escape(query)}"[/]',
+                    id="none",
+                    disabled=True,
+                )
             )
 
         option_list.add_options(options)
@@ -528,7 +538,7 @@ class FilePickerScreen(FuzzyPickerScreen):
 
     def _get_selected_action_value(self, is_tab: bool = False) -> Optional[str]:
         try:
-            option_list = self.query_one(f"#{self.LIST_ID}", OptionList)
+            option_list = self.query_one(f"#{self._list_id}", OptionList)
         except NoMatches:
             return None
         idx = option_list.highlighted
@@ -546,15 +556,15 @@ class FilePickerScreen(FuzzyPickerScreen):
 class CommandPaletteScreen(FuzzyPickerScreen):
     """Fuzzy-searchable command palette with grouped sections."""
 
-    BOX_ID = "palette-box"
-    INPUT_ID = "palette-input"
-    LIST_ID = "palette-list"
-    FOOTER_ID = "palette-footer"
-    PLACEHOLDER = palette_input_placeholder()
-    FOOTER_HELP = f"[{Tokens.TEXT_MUTED}]↑↓ navigate  ↵ select  ⇥ complete  ⎋ close[/]"
-
     def __init__(self, session: SessionState, only_section: Optional[str] = None) -> None:
-        super().__init__()
+        super().__init__(
+            box_id="palette-box",
+            input_id="palette-input",
+            list_id="palette-list",
+            footer_id="palette-footer",
+            placeholder=palette_input_placeholder(),
+            footer_help=f"[{Tokens.TEXT_MUTED}]↑↓ navigate  ↵ select  ⇥ complete  ⎋ close[/]",
+        )
         self._s = session
         self._only_section = only_section
         self._cached_sections: Optional[List[Dict[str, Any]]] = None
@@ -624,24 +634,6 @@ class CommandPaletteScreen(FuzzyPickerScreen):
                     )
             add_section("Skills", skills)
 
-        if only is None or only == "session":
-            session = []
-            session_items = [
-                ("/clear", "Wipe conversation & context", "clear"),
-                ("/compact", "Summarize long context", "compact"),
-                ("/yolo", "Toggle auto-approve", "yolo"),
-                ("/verbose", "Toggle verbose mode", "verbose"),
-                ("/agents", "Refresh agents tree (left panel)", "agents"),
-                ("/tasks", "Refresh TODO checklist panel", "session"),
-                ("/plan", "Show execution plan (right panel)", "session"),
-                ("/export", "Export session to markdown", "export"),
-                ("/search", "Search timeline", "search"),
-            ]
-            for label, desc, action in session_items:
-                if not q or q in label.lower() or q in desc.lower():
-                    session.append({"label": label, "desc": desc, "action": ("cmd", label)})
-            add_section("Session", session)
-
         return sections
 
     def _get_sections(self, query: str) -> List[Dict[str, Any]]:
@@ -652,24 +644,34 @@ class CommandPaletteScreen(FuzzyPickerScreen):
 
     def _update_options(self, query: str) -> None:
         sections = self._get_sections(query)
-        option_list = self.query_one(f"#{self.LIST_ID}", OptionList)
+        option_list = self.query_one(f"#{self._list_id}", OptionList)
         option_list.clear_options()
 
         options = []
         for sec in sections:
             options.append(
-                Option(f"[{Styles.SECTION}]{sec['title']}[/]", id=f"header:{sec['title']}", disabled=True)
+                Option(
+                    f"[{Styles.SECTION}]{sec['title']}[/]",
+                    id=f"header:{sec['title']}",
+                    disabled=True,
+                )
             )
             for item in sec["items"]:
                 label = item["label"]
                 desc = item["desc"]
                 action_type, action_val = item["action"]
-                prompt = f"  [{Tokens.AGENT}]{escape(label)}[/]  [{Tokens.TEXT_MUTED}]{escape(desc)}[/]"
+                prompt = (
+                    f"  [{Tokens.AGENT}]{escape(label)}[/]  [{Tokens.TEXT_MUTED}]{escape(desc)}[/]"
+                )
                 options.append(Option(prompt, id=f"{sec['title']}:{action_type}:{action_val}"))
 
         if not options:
             options.append(
-                Option(f'[{Tokens.TEXT_MUTED}]  no matches for "{escape(query)}"[/\n]', id="none", disabled=True)
+                Option(
+                    f'[{Tokens.TEXT_MUTED}]  no matches for "{escape(query)}"[/]',
+                    id="none",
+                    disabled=True,
+                )
             )
 
         option_list.add_options(options)
@@ -681,7 +683,7 @@ class CommandPaletteScreen(FuzzyPickerScreen):
 
     def _get_selected_action_value(self, is_tab: bool = False) -> Optional[str]:
         try:
-            option_list = self.query_one(f"#{self.LIST_ID}", OptionList)
+            option_list = self.query_one(f"#{self._list_id}", OptionList)
         except NoMatches:
             return None
         idx = option_list.highlighted

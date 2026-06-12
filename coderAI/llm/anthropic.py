@@ -7,7 +7,13 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 import aiohttp
 
-from coderAI.llm.base import LLMProvider, REASONING_BUDGET_MAP, HTTP_CONNECT_TIMEOUT, HTTP_SOCK_READ_TIMEOUT, HTTP_TOTAL_TIMEOUT
+from coderAI.llm.base import (
+    LLMProvider,
+    REASONING_BUDGET_MAP,
+    HTTP_CONNECT_TIMEOUT,
+    HTTP_SOCK_READ_TIMEOUT,
+    HTTP_TOTAL_TIMEOUT,
+)
 from coderAI.llm.base import _retry_async as _retry
 
 logger = logging.getLogger(__name__)
@@ -79,7 +85,19 @@ def _is_anthropic_retryable(exc: Exception) -> bool:
     if isinstance(status, (int, float)):
         return int(status) in {429, 502, 503}
     msg = str(exc).lower()
-    return any(kw in msg for kw in ("429", "502", "503", "rate limit", "too many requests", "service unavailable", "bad gateway", "server error"))
+    return any(
+        kw in msg
+        for kw in (
+            "429",
+            "502",
+            "503",
+            "rate limit",
+            "too many requests",
+            "service unavailable",
+            "bad gateway",
+            "server error",
+        )
+    )
 
 
 class AnthropicProvider(LLMProvider):
@@ -185,7 +203,7 @@ class AnthropicProvider(LLMProvider):
                         )
                     anthropic_messages.append({"role": "assistant", "content": content_blocks})
                 else:
-                    anthropic_messages.append({"role": "assistant", "content": content or ""})
+                    anthropic_messages.append({"role": "assistant", "content": content})
             elif role == "tool":
                 # Convert tool results to Anthropic format.
                 # Merge consecutive tool results into a single user message
@@ -199,10 +217,8 @@ class AnthropicProvider(LLMProvider):
                     anthropic_messages
                     and anthropic_messages[-1]["role"] == "user"
                     and isinstance(anthropic_messages[-1]["content"], list)
-                    and anthropic_messages[-1]["content"]
-                    and anthropic_messages[-1]["content"][0].get("type") == "tool_result"
                 ):
-                    # Append to existing user message
+                    # Append to existing user message list of blocks
                     anthropic_messages[-1]["content"].append(tool_result_block)
                 else:
                     anthropic_messages.append(
@@ -213,18 +229,20 @@ class AnthropicProvider(LLMProvider):
                     )
             elif role == "user":
                 # Anthropic requires strictly alternating user/assistant turns.
-                # Merge into the previous user message when adjacent user turns occur
-                # (e.g. injected error messages, pinned-context inserts, tool results
-                # followed by a recovery prompt).
+                # Merge into the previous user message when adjacent user turns occur.
                 if anthropic_messages and anthropic_messages[-1]["role"] == "user":
                     prev_content = anthropic_messages[-1]["content"]
                     if isinstance(prev_content, list):
-                        prev_content.append({"type": "text", "text": content or ""})
+                        prev_content.append({"type": "text", "text": content})
                     else:
-                        prev_str = str(prev_content or "")
-                        anthropic_messages[-1]["content"] = prev_str + "\n" + (content or "")
+                        anthropic_messages[-1]["content"] = [
+                            {"type": "text", "text": str(prev_content) + "\n"},
+                            {"type": "text", "text": content},
+                        ]
                 else:
-                    anthropic_messages.append({"role": "user", "content": content})
+                    anthropic_messages.append(
+                        {"role": "user", "content": [{"type": "text", "text": content}]}
+                    )
 
         return system_prompt.strip(), anthropic_messages
 
@@ -408,12 +426,16 @@ class AnthropicProvider(LLMProvider):
             )
 
         from typing import cast
-        return cast(aiohttp.ClientResponse, await _retry(
-            _do_post,
-            description="Anthropic API",
-            max_retries=3,
-            is_retryable=_is_anthropic_retryable,
-        ))
+
+        return cast(
+            aiohttp.ClientResponse,
+            await _retry(
+                _do_post,
+                description="Anthropic API",
+                max_retries=3,
+                is_retryable=_is_anthropic_retryable,
+            ),
+        )
 
     async def chat(
         self,

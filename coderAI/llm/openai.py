@@ -130,8 +130,10 @@ class OpenAIProvider(LLMProvider):
             params["tool_choice"] = kwargs.get("tool_choice", "auto")
 
         try:
+
             async def _call():
                 return await self.client.chat.completions.create(**params)
+
             response = await _retry(_call, description="OpenAI chat", max_retries=3)
             result = response.model_dump()
             assert isinstance(result, dict)
@@ -177,8 +179,10 @@ class OpenAIProvider(LLMProvider):
             params["tool_choice"] = kwargs.get("tool_choice", "auto")
 
         try:
+
             async def _create_stream():
                 return await self.client.chat.completions.create(**params)
+
             stream = await _retry(_create_stream, description="OpenAI stream", max_retries=3)
             async for chunk in stream:
                 chunk_data = chunk.model_dump()
@@ -205,4 +209,5 @@ class OpenAIProvider(LLMProvider):
             return len(self.tokenizer.encode(text))
         except Exception:
             from coderAI.llm.base import estimate_tokens_by_chars
+
             return estimate_tokens_by_chars(text)

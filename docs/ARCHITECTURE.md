@@ -98,146 +98,95 @@ timeline/session state; `timeline_render.py` writes rows to the
 
 ```text
 .
-├── ARCHITECTURE.md          # This file
-├── CLAUDE.md                # Contributor-oriented notes (Claude Code guide)
-├── COMMANDS.md              # CLI command reference
-├── EXAMPLES.md              # Example usage scenarios
-├── INSTALL.md               # Installation and setup
-├── LICENSE                  # MIT License
-├── Makefile                 # Dev shortcuts (test, lint, install, format)
-├── README.md                # Project home and quickstart
-├── pyproject.toml           # Build metadata, dependencies, ruff/black/mypy config
-├── pytest.ini               # Test runner configuration
-├── requirements.txt         # Pinned runtime dependencies
-├── requirements-dev.txt     # Pinned dev dependencies
-├── coderAI/                 # Core Python package
-│   ├── __init__.py
-│   ├── cli.py               # Click commands (chat, config, history, status, …)
-│   ├── agent.py             # Agent orchestrator (loop, providers, sessions, sub-agents)
-│   ├── agent_loop.py        # Per-turn execution loop (retry, JSON-arg coercion, iter cap)
-│   ├── agent_tracker.py     # Singleton tracker (status, tokens, cost, cancellation)
-│   ├── agents.py            # AgentPersona loader (.coderAI/agents/*.md)
-│   ├── config.py            # Pydantic ConfigManager (~/.coderAI/config.json + env)
-│   ├── context.py           # Pinned-file context manager with relevance filtering
-│   ├── context_controller.py # Token estimates, compaction, tool-result sizing
-│   ├── context_selector.py  # Keyword extraction & relevance-based snippet selection
-│   ├── cost.py              # Token / USD cost tracking with budget enforcement
-│   ├── code_chunker.py      # AST/regex/sliding-window chunker for embeddings
-│   ├── code_indexer.py      # ChromaDB-backed semantic code index
-│   ├── error_policy.py      # Retry/error constants and transient-error regex
-│   ├── events.py            # Module-level EventEmitter for internal signals
-│   ├── history.py           # Session persistence in ~/.coderAI/history/
-│   ├── hooks_manager.py     # Loads .coderAI/hooks.json; runs pre/post-tool shells
-│   ├── locks.py             # Async resource locks for parallel-agent safety
-│   ├── notepad.py           # Shared in-memory notepad for inter-agent messages
-│   ├── project_layout.py    # Resolves .coderAI/<subdir> across cwd / pkg / project root
-│   ├── read_cache.py        # Recent-read cache to deduplicate tool reads
-│   ├── safeguards.py        # Pre-tool validators (interactive cmd, git scope, blocklist)
-│   ├── system_prompt.py     # Builds system prompt with tool docs + rule injection
-│   ├── tool_executor.py     # Confirmation UX for gated tools (routes via IPC when TUI attached)
-│   ├── tool_routing.py      # Dispatches function.name → ToolRegistry or MCP server
-│   ├── py.typed             # PEP 561 marker
-│   ├── embeddings/          # Embedding providers
-│   │   ├── base.py          #   Abstract EmbeddingProvider
-│   │   ├── factory.py       #   create_embedding_provider(config)
-│   │   └── openai.py        #   text-embedding-3-small (default)
-│   ├── ipc/                 # In-process controller for the Textual UI
-│   │   ├── __init__.py
-│   │   ├── controller.py     #   UIBridge: events ↔ on_event ↔ slash commands
-│   │   ├── tool_metadata.py  #   Tool category/risk/preview helpers
-│   │   ├── streaming.py     #   BridgeStreamingHandler → phased turn events
-│   │   └── chat_reference.py #   Plain-text /show reference output
-│   ├── llm/                 # LLM backend implementations
-│   │   ├── base.py          #   Abstract LLMProvider
-│   │   ├── factory.py       #   create_provider(model, config)
-│   │   ├── anthropic.py     #   Claude (Opus/Sonnet/Haiku 4.x, 3.x)
-│   │   ├── openai.py        #   GPT models
-│   │   ├── deepseek.py      #   DeepSeek
-│   │   ├── groq.py          #   Groq
-│   │   ├── lmstudio.py      #   LM Studio (local, OpenAI-compatible)
-│   │   └── ollama.py        #   Ollama (local)
-│   ├── tools/               # Tool implementations (56+ tools total)
-│   │   ├── base.py          #   Tool ABC + ToolRegistry
-│   │   ├── discovery.py     #   Auto-discovery of no-arg Tool subclasses
-│   │   ├── filesystem.py    #   read_file, write_file, search_replace, apply_diff,
-│   │   │                    #   list_directory, glob_search, move_file, copy_file,
-│   │   │                    #   delete_file, create_directory, file_stat, file_chmod,
-│   │   │                    #   file_chown, file_readlink
-│   │   ├── multi_edit.py    #   multi_edit (batch search/replace in one file)
-│   │   ├── git.py           #   git_add/status/diff/commit/log/branch/checkout/stash
-│   │   │                    #   + push/pull/merge/rebase/revert/reset/show/remote
-│   │   │                    #   + blame/cherry_pick/tag
-│   │   ├── web.py           #   web_search, read_url, download_file, http_request
-│   │   ├── search.py        #   text_search, grep, symbol_search
-│   │   ├── semantic_search.py #   semantic_search (natural-language code search)
-│   │   ├── terminal.py      #   run_command, run_background, list_processes, kill_process
-│   │   ├── subagent.py      #   delegate_task (spawn isolated sub-agents)
-│   │   ├── tasks.py         #   manage_tasks (persistent TODO list)
-│   │   ├── memory.py        #   save_memory, recall_memory, delete_memory
-│   │   ├── mcp.py           #   mcp_connect, mcp_call_tool, mcp_list
-│   │   ├── vision.py        #   read_image (base64 for multimodal)
-│   │   ├── undo.py          #   undo, undo_history (file backup/rollback)
-│   │   ├── lint.py          #   lint (auto-detect linter)
-│   │   ├── format.py        #   format (auto-detect formatter)
-│   │   ├── repl.py          #   python_repl (isolated subprocess)
-│   │   ├── context_manage.py #   pin/unpin files (manual registration)
-│   │   ├── planning.py      #   plan (create/show/advance/update/clear)
-│   │   ├── notepad.py       #   notepad (shared inter-agent)
-│   │   ├── project.py       #   project_context (auto-detect project type)
-│   │   ├── package_manager.py # install/remove/list packages (pip, npm, …)
-│   │   ├── refactor.py      #   refactor (rename symbol, extract, inline)
-│   │   ├── testing.py       #   run_tests (auto-detect test runner)
-│   │   └── skills.py        #   use_skill (load .coderAI/skills/*.md)
-│   ├── tui/                 # Textual interactive chat
-│   │   ├── app.py           #   CoderAIApp + modal screens
-│   │   ├── listeners.py     #   EventReducer (agent events → timeline state)
-│   │   ├── slash.py         #   Slash command routing
-│   │   ├── state.py         #   SessionState + AgentInfo dataclasses
-│   │   ├── session_setup.py #   create_agent_session: Agent + UIBridge bootstrap
-│   │   ├── help_menu.py     #   /help command catalog
-│   │   ├── diff_render.py   #   Compact diff gutter rendering
-│   │   ├── timeline_render.py # Timeline row writers (user, tool, diff, stream tail)
-│   │   ├── timeline_append.py #   Cap timeline length with trim separator
-│   │   ├── export.py        #   /export → markdown
-│   │   └── theme.py         #   Colors, glyphs, Rich styles
-│   └── ui/                  # Rich helpers for one-shot CLI subcommands
-│       ├── __init__.py
-│       └── display.py       #   Tables, markdown, trees, panels
 ├── docs/
-│   └── CHAT_EVENTS.md       # Textual UI event catalog
-└── tests/                   # Pytest test suite
+│   ├── ARCHITECTURE.md      # This file
+│   ├── CLAUDE.md            # Contributor-oriented notes
+│   ├── COMMANDS.md          # CLI command reference
+│   ├── CHAT_EVENTS.md       # Textual UI event catalog
+│   ├── EXAMPLES.md
+│   └── INSTALL.md
+├── pyproject.toml           # Build metadata, dependencies, ruff/mypy config
+├── Makefile
+├── coderAI/                 # Core Python package
+│   ├── cli.py               # Thin entry point → cli/main.py
+│   ├── cli/                 # Click subcommands (config, history, setup, …)
+│   ├── system_prompt.py     # System prompt + dynamic tool docs
+│   ├── core/                # Agent orchestration
+│   │   ├── agent.py         # Agent lifecycle, sessions, sub-agents
+│   │   ├── agent_loop.py    # Per-turn LLM ↔ tool loop
+│   │   ├── agent_tracker.py # Status, tokens, cost, cancellation
+│   │   ├── agents.py        # AgentPersona loader (.coderAI/agents/*.md)
+│   │   ├── tool_executor.py # Confirmation gates for risky tools
+│   │   └── tool_routing.py  # ToolRegistry + MCP wire format dispatch
+│   ├── system/              # Config, persistence, safeguards
+│   │   ├── config.py        # ~/.coderAI/config.json + env overrides
+│   │   ├── cost.py          # Token / USD tracking
+│   │   ├── error_policy.py  # Retry constants and transient-error regex
+│   │   ├── events.py        # EventEmitter
+│   │   ├── history.py       # Session persistence
+│   │   ├── hooks_manager.py # .coderAI/hooks.json
+│   │   ├── locks.py         # Async resource locks
+│   │   ├── project_layout.py
+│   │   ├── read_cache.py
+│   │   └── safeguards.py
+│   ├── context/             # Context window management
+│   │   ├── context.py       # Pinned-file manager
+│   │   ├── context_controller.py
+│   │   ├── context_selector.py
+│   │   ├── code_chunker.py
+│   │   └── code_indexer.py  # ChromaDB semantic index
+│   ├── bridge/              # In-process UIBridge (agent ↔ Textual TUI)
+│   │   ├── controller.py
+│   │   ├── streaming.py
+│   │   ├── tool_metadata.py
+│   │   └── chat_reference.py
+│   ├── embeddings/          # OpenAI embeddings (default; no local provider yet)
+│   ├── llm/                 # OpenAI, Anthropic, Groq, DeepSeek, Gemini, LM Studio, Ollama
+│   ├── skills/              # Skill discovery + optional hosted sources
+│   ├── tools/               # 88 agent tools (87 auto-discovered + manage_context)
+│   │   ├── discovery.py
+│   │   ├── filesystem.py, multi_edit.py, terminal.py, git.py
+│   │   ├── search.py, semantic_search.py, web.py, browser.py, desktop.py
+│   │   ├── memory.py, mcp.py, undo.py, subagent.py, tasks.py
+│   │   ├── lint.py, format.py, testing.py, package_manager.py, refactor.py
+│   │   ├── project.py, context_manage.py, planning.py, notepad.py
+│   │   ├── repl.py, vision.py, skills.py
+│   │   └── …
+│   ├── tui/                 # Textual interactive chat
+│   └── ui/                  # Rich helpers for one-shot CLI commands
+└── tests/                   # Pytest test suite (66+ test modules)
 ```
 
 ## Component Details
 
-### 1. CLI Layer (`coderAI/cli.py`)
+### 1. CLI Layer (`coderAI/cli.py` → `coderAI/cli/`)
 
 **Responsibility:** Command-line interface and dispatch.
 
 **Key entry points:**
-- `main()` / `cli()` — Click group; default invokes `chat`.
+- `main()` / `cli()` in `cli/main.py` — Click group; default invokes `chat`.
 - `chat()` — Calls `coderAI.tui.run_chat_app(...)` to launch the Textual UI.
 - `config`, `history`, `info`, `status`, `cost`, `models`, `setup`,
   `doctor`, `index`, `search`, `tasks list` — one-shot subcommands that
   render with Rich.
 
-### 2. Agent Layer (`coderAI/agent.py`, `agent_loop.py`, `tool_executor.py`, `tool_routing.py`, `context_controller.py`)
+### 2. Agent Layer (`coderAI/core/`, `coderAI/context/`)
 
 **Responsibility:** Core orchestration logic.
 
 **Key components:**
-- `Agent` (`agent.py`) — Lifecycle, persona loading, provider wiring,
-  session state, sub-agent spawning.
-- The per-turn loop (`agent_loop.py`) — Retry/backoff for transient LLM
+- `Agent` (`core/agent.py`) — Lifecycle, persona loading, provider wiring,
+  session state, sub-agent spawning, tool registry filtering.
+- The per-turn loop (`core/agent_loop.py`) — Retry/backoff for transient LLM
   errors, JSON-arg coercion, iteration cap. Constants
   (`MAX_RETRIES_PER_ITERATION`, `MAX_CONSECUTIVE_ERRORS`,
-  transient-error regex) live in `error_policy.py`.
-- `ToolExecutor` (`tool_executor.py`) — User confirmation for gated
+  transient-error regex) live in `system/error_policy.py`.
+- `ToolExecutor` (`core/tool_executor.py`) — User confirmation for gated
   tools. Routes through `UIBridge.request_tool_approval` when the
   Textual UI is attached; otherwise falls back to a terminal prompt.
 - `tool_routing.py` — Dispatches `function.name` to either the
   `ToolRegistry` or an MCP server (`mcp__<server>__<tool>` wire format).
-- `context_controller.py` — Token estimation, truncation, and
+- `context/context_controller.py` — Token estimation, truncation, and
   summarization. Reserves `RESPONSE_TOKEN_RESERVE=1024` and
   `TOOL_OVERHEAD_TOKENS=512` when budgeting.
 
@@ -246,11 +195,11 @@ timeline/session state; `timeline_render.py` writes rows to the
 **Responsibility:** Abstract different LLM backends behind `LLMProvider`.
 
 **Implementations:** `OpenAIProvider`, `AnthropicProvider`,
-`DeepSeekProvider`, `GroqProvider`, `LMStudioProvider`, `OllamaProvider`.
-Instantiation goes through `llm/factory.py::create_provider(model, config)`
+`DeepSeekProvider`, `GroqProvider`, `GeminiProvider`, `LMStudioProvider`,
+`OllamaProvider`. Instantiation goes through `llm/factory.py::create_provider(model, config)`
 — do not construct providers directly from `agent.py`.
 
-### 4. In-process IPC controller (`coderAI/bridge/`)
+### 4. In-process bridge (`coderAI/bridge/`)
 
 **Responsibility:** Bridge the agent's `event_emitter` and tool lifecycle
 events to the Textual UI on the same Python process.
@@ -307,17 +256,20 @@ events to the Textual UI on the same Python process.
 
 ## Security & Performance
 
-- **Safeguards** (`safeguards.py`) — Interactive-command detection,
+- **Safeguards** (`system/safeguards.py`) — Interactive-command detection,
   project-directory validation, git-scope guards, staging blocklist
   for junk paths.
-- **Cost guard** (`cost.py`) — Per-model token pricing with
+- **Cost guard** (`system/cost.py`) — Per-model token pricing with
   `budget_limit` enforcement from config.
 - **Async I/O** — `asyncio` throughout for non-blocking LLM and tool
   calls. Read-only tools run in parallel via `asyncio.gather`; mutating
   tools run sequentially; `delegate_task` is domain-routed — read-only
   delegations (≤4 parallel), browser (≤3 parallel), desktop/workspace serial.
 - **Context management** — Reactive compaction in
-  `context_controller.py` when estimated tokens exceed
+  `context/context_controller.py` when estimated tokens exceed
   `context_window - RESPONSE_TOKEN_RESERVE - TOOL_OVERHEAD_TOKENS`.
+- **Optional tool gating** — Browser tools require Playwright; desktop tools
+  require macOS; web tools can be removed from the main agent when
+  `web_tools_in_main=false`.
 - **Persistence** — Session-based history stored in
   `~/.coderAI/history/`; semantic index under `.coderAI/index/`.

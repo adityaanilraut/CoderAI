@@ -4,7 +4,7 @@ This guide will help you install and set up CoderAI on your system.
 
 ## Prerequisites
 
-- Python 3.9 or higher
+- Python 3.10 or higher
 - pip (Python package installer)
 - Git (optional, for version control features)
 
@@ -41,6 +41,17 @@ pip install -e ".[dev]"
 `pip install -e ".[dev]"` adds pytest/ruff/black/mypy for the test and
 lint targets. `make dev` is a shortcut for the same install.
 
+### Optional extras
+
+```bash
+# Browser automation (Playwright)
+pip install -e ".[browser]"
+playwright install chromium
+
+# PDF extraction in read_url
+pip install -e ".[web]"
+```
+
 ## Verify Installation
 
 Check that CoderAI is installed correctly:
@@ -67,10 +78,11 @@ This will guide you through:
 2. Setting your Anthropic API key
 3. Setting your Groq API key
 4. Setting your DeepSeek API key
-5. Choosing a default model
-6. Setting reasoning effort
-7. Configuring LM Studio (optional)
-8. Configuring Ollama (optional)
+5. Setting your Gemini API key
+6. Choosing a default model
+7. Setting reasoning effort
+8. Configuring LM Studio (optional)
+9. Configuring Ollama (optional)
 
 ### Manual Setup
 
@@ -333,6 +345,7 @@ CoderAI supports these environment variables:
 - `OPENAI_API_KEY` - OpenAI API key
 - `GROQ_API_KEY` - Groq API key
 - `DEEPSEEK_API_KEY` - DeepSeek API key
+- `GEMINI_API_KEY` - Google Gemini API key
 - `CODERAI_DEFAULT_MODEL` - Default model to use
 - `CODERAI_TEMPERATURE` - Temperature for generation (0.0-2.0)
 - `CODERAI_MAX_TOKENS` - Maximum tokens to generate

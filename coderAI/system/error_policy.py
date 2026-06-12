@@ -7,11 +7,26 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-_SENSITIVE_KEYS = frozenset({
-    "api_key", "api-key", "x-api-key", "apiKey", "apikey",
-    "key", "token", "secret", "password", "passwd",
-    "authorization", "auth", "bearer", "access_token", "access-token", "accessToken",
-})
+_SENSITIVE_KEYS = frozenset(
+    {
+        "api_key",
+        "api-key",
+        "x-api-key",
+        "apiKey",
+        "apikey",
+        "key",
+        "token",
+        "secret",
+        "password",
+        "passwd",
+        "authorization",
+        "auth",
+        "bearer",
+        "access_token",
+        "access-token",
+        "accessToken",
+    }
+)
 _SENSITIVE_VALUE_RE = re.compile(
     r"(sk-(?:ant-)?[a-zA-Z0-9_-]{10,})"
     r"|(Bearer\s+[a-zA-Z0-9._\-+/=]{10,})"
@@ -199,14 +214,9 @@ def compute_retry_delay(exc: Exception, attempt: int) -> float:
 
                     dt = parsedate_to_datetime(retry_after)
                     now_dt = None
-                    try:
-                        from datetime import datetime, timezone
+                    from datetime import datetime, timezone
 
-                        now_dt = datetime.now(timezone.utc)
-                    except ImportError:
-                        from datetime import datetime
-
-                        now_dt = datetime.utcnow()
+                    now_dt = datetime.now(timezone.utc)
                     delta = (dt - now_dt).total_seconds()
                     if delta > 0:
                         return min(delta, RETRY_MAX_DELAY)

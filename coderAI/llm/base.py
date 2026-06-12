@@ -74,7 +74,19 @@ def _default_retryable(exc: Exception) -> bool:
     if isinstance(status, (int, float)):
         return int(status) in _RETRYABLE_STATUSES
     msg = str(exc).lower()
-    return any(kw in msg for kw in ("429", "502", "503", "rate limit", "too many requests", "service unavailable", "bad gateway", "server error"))
+    return any(
+        kw in msg
+        for kw in (
+            "429",
+            "502",
+            "503",
+            "rate limit",
+            "too many requests",
+            "service unavailable",
+            "bad gateway",
+            "server error",
+        )
+    )
 
 
 # ── Token estimation helpers ───────────────────────────────────────────────

@@ -55,9 +55,11 @@ def _is_safe_path(file_path: Path, skills_root: Path) -> bool:
     try:
         resolved = file_path.resolve()
         root_resolved = skills_root.resolve()
-        return str(resolved).startswith(str(root_resolved) + "/") or resolved == root_resolved or str(
-            resolved
-        ).startswith(str(root_resolved))
+        return (
+            str(resolved).startswith(str(root_resolved) + "/")
+            or resolved == root_resolved
+            or str(resolved).startswith(str(root_resolved))
+        )
     except Exception:
         return False
 

@@ -26,8 +26,7 @@ def header_palette_hint() -> str:
 
 def composer_footer_hints() -> str:
     return (
-        f"↵ send · ⇧↵ newline · ^T collapse · ^O expand · / commands · "
-        f"{palette_shortcut()} palette"
+        f"↵ send · ⇧↵ newline · ^T collapse · ^O expand · / commands · {palette_shortcut()} palette"
     )
 
 

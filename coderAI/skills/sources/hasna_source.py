@@ -31,6 +31,7 @@ def _read_hasna_auth() -> Optional[Dict[str, str]]:
     try:
         if auth_path.is_file():
             from typing import cast
+
             return cast("dict[str, str]", json.loads(auth_path.read_text()))
     except (json.JSONDecodeError, OSError) as e:
         logger.debug("[HasnaSource] Failed to read auth.json: %s", e)
@@ -124,7 +125,11 @@ class HasnaSkillSource(SkillSource):
                     j = i + 1
                     while j < len(lines):
                         next_line = lines[j].strip()
-                        if not next_line or next_line.startswith("  ") and not next_line.startswith("    Price"):
+                        if (
+                            not next_line
+                            or next_line.startswith("  ")
+                            and not next_line.startswith("    Price")
+                        ):
                             j += 1
                             if next_line and not next_line.startswith("  "):
                                 desc_line = f"   {next_line} "  # Buffer description
@@ -170,9 +175,7 @@ class HasnaSkillSource(SkillSource):
                 skills.append(skill)
         return skills
 
-    async def search(
-        self, query: str, top_n: int = 5
-    ) -> List[Tuple[Skill, float]]:
+    async def search(self, query: str, top_n: int = 5) -> List[Tuple[Skill, float]]:
         """Use ``skills search`` to find relevant skills."""
         if not self._enabled:
             return []

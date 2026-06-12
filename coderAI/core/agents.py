@@ -28,7 +28,6 @@ PERSONA_TOOL_ALIASES: Dict[str, Set[str]] = {
 }
 
 
-
 class AgentPersona:
     """Represents a specialized agent persona loaded from a markdown file."""
 

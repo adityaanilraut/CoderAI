@@ -25,25 +25,75 @@ logger = logging.getLogger(__name__)
 # Adding a binary here automatically makes it available for all lookups;
 # no separate subsets to maintain.
 _INTERACTIVE_COMMAND_CATEGORIES: Dict[str, frozenset[str]] = {
-    "interpreter": frozenset({
-        "python", "python3", "python2", "node", "bun",
-        "lua", "luajit", "julia", "ruby", "irb", "pry",
-        "r", "R", "scala", "ghci", "erl", "iex",
-    }),
-    "shell": frozenset({
-        "bash", "zsh", "sh", "fish", "csh", "tcsh",
-    }),
-    "always_interactive": frozenset({
-        "vim", "nvim", "vi", "nano", "emacs", "pico", "ed",
-        "less", "more", "top", "htop", "btop", "glances", "nmon",
-    }),
-    "db_network": frozenset({
-        "psql", "mysql", "sqlite3", "mongosh", "mongo", "redis-cli",
-        "ssh", "telnet", "ftp", "sftp",
-    }),
-    "other": frozenset({
-        "nix-shell", "coderai",
-    }),
+    "interpreter": frozenset(
+        {
+            "python",
+            "python3",
+            "python2",
+            "node",
+            "bun",
+            "lua",
+            "luajit",
+            "julia",
+            "ruby",
+            "irb",
+            "pry",
+            "r",
+            "R",
+            "scala",
+            "ghci",
+            "erl",
+            "iex",
+        }
+    ),
+    "shell": frozenset(
+        {
+            "bash",
+            "zsh",
+            "sh",
+            "fish",
+            "csh",
+            "tcsh",
+        }
+    ),
+    "always_interactive": frozenset(
+        {
+            "vim",
+            "nvim",
+            "vi",
+            "nano",
+            "emacs",
+            "pico",
+            "ed",
+            "less",
+            "more",
+            "top",
+            "htop",
+            "btop",
+            "glances",
+            "nmon",
+        }
+    ),
+    "db_network": frozenset(
+        {
+            "psql",
+            "mysql",
+            "sqlite3",
+            "mongosh",
+            "mongo",
+            "redis-cli",
+            "ssh",
+            "telnet",
+            "ftp",
+            "sftp",
+        }
+    ),
+    "other": frozenset(
+        {
+            "nix-shell",
+            "coderai",
+        }
+    ),
 }
 
 # Union of all categories for O(1) membership.
@@ -86,6 +136,7 @@ _NON_INTERACTIVE_INDICATORS = (
 
 # Database / network CLIs where -h is typically a host flag (not --help).
 # See _INTERACTIVE_COMMAND_CATEGORIES["db_network"] above for the actual set.
+
 
 def _token_is_shell_dash_c(token: str) -> bool:
     """True if a shell argv token runs a -c script (incl. combined flags like -lc)."""
@@ -419,7 +470,7 @@ async def resolve_git_root(working_dir: str = ".") -> Dict[str, Any]:
             logger.warning(warning)
 
         return {
-            "git_root": git_root,
+            "git_root": resolved_git_root,
             "matches_expected": matches,
             "warning": warning,
         }
@@ -547,7 +598,10 @@ _SANITIZE_PATTERNS: tuple[re.Pattern, ...] = (
     # x-api-key header / url parameter
     re.compile(r"x-api-key[=:]\s*[a-zA-Z0-9_-]{10,}", re.IGNORECASE),
     # Generic key=value patterns with long alphanumeric values
-    re.compile(r"(?:api[_-]?key|apikey|secret|token|password|passwd)\s*[=:]\s*[a-zA-Z0-9._\-+/]{10,}", re.IGNORECASE),
+    re.compile(
+        r"(?:api[_-]?key|apikey|secret|token|password|passwd)\s*[=:]\s*[a-zA-Z0-9._\-+/]{10,}",
+        re.IGNORECASE,
+    ),
 )
 
 
@@ -565,5 +619,8 @@ def sanitize_for_log(text: str) -> str:
         return text
     result = text
     for pattern in _SANITIZE_PATTERNS:
-        result = pattern.sub(lambda m: (m.group()[:12] + "...[REDACTED]" if len(m.group()) > 12 else "[REDACTED]"), result)
+        result = pattern.sub(
+            lambda m: m.group()[:12] + "...[REDACTED]" if len(m.group()) > 12 else "[REDACTED]",
+            result,
+        )
     return result

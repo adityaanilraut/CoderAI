@@ -25,17 +25,17 @@ class Tokens:
 
 
 class Glyphs:
-    USER = "\u276f"          # user turn / composer prompt
-    REASONING = "\u25c6"     # reasoning
-    ASSISTANT = "\u25c8"     # assistant turn
-    TOOL_OK = "\u2713"       # tool ok
-    TOOL_RUN = "\u25f4"      # tool running
-    APPROVAL = "\u25b2"      # approval / warning
-    ERROR = "\u2717"         # error
+    USER = "\u276f"  # user turn / composer prompt
+    REASONING = "\u25c6"  # reasoning
+    ASSISTANT = "\u25c8"  # assistant turn
+    TOOL_OK = "\u2713"  # tool ok
+    TOOL_RUN = "\u25f4"  # tool running
+    APPROVAL = "\u25b2"  # approval / warning
+    ERROR = "\u2717"  # error
     DOT = "\u25cf"
     PARENT = "\u21b3"
-    TREE_END = "\u2514"      # tree last child
-    TREE_MID = "\u251c"      # tree middle child
+    TREE_END = "\u2514"  # tree last child
+    TREE_MID = "\u251c"  # tree middle child
 
 
 class Styles:

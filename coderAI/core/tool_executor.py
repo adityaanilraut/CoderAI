@@ -121,9 +121,7 @@ class ToolExecutor:
         self._last_results.clear()
         self._preview_file_cache.clear()
 
-    def _cache_preview(
-        self, path: str, mtime: float, content: str
-    ) -> None:
+    def _cache_preview(self, path: str, mtime: float, content: str) -> None:
         self._preview_file_cache[path] = (mtime, content)
         self._preview_file_cache.move_to_end(path)
         while (
@@ -294,6 +292,14 @@ class ToolExecutor:
             logger.debug("Preview diff computation failed for %s: %s", tool_name, e)
             return None
 
+    @staticmethod
+    def _safe_get_arg(pc: dict, key: str) -> Any:
+        """Safely get an argument from a parsed call, guarding against None args."""
+        args = pc.get("arguments")
+        if not isinstance(args, dict):
+            return None
+        return args.get(key)
+
     async def _precompute_diffs(self, parsed_calls: list) -> Dict[int, Optional[str]]:
         gated: List[Tuple[int, dict]] = []
         for i, pc in enumerate(parsed_calls):
@@ -457,6 +463,7 @@ class ToolExecutor:
         arguments: Any = None,
     ) -> Dict[str, Any]:
         try:
+
             async def _confirm(name, args):
                 return await self._confirmation_callback(
                     name, args, tool_id=pc["tool_id"], precomputed_diff=precomputed_diff
@@ -551,7 +558,7 @@ class ToolExecutor:
                 normalized_res["_hooks"] = {"pre": pre_hooks, "post": post_hooks}
             return normalized_res
         except Exception as e:
-                return self._normalize_tool_result(
+            return self._normalize_tool_result(
                 {
                     "success": False,
                     "error": str(e),
@@ -869,7 +876,11 @@ class ToolExecutor:
                 await asyncio.wait_for(t, timeout=2.0)
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
-            return {"success": False, "error": "Cancelled by user.", "error_code": ToolErrorCode.CANCELLED}
+            return {
+                "success": False,
+                "error": "Cancelled by user.",
+                "error_code": ToolErrorCode.CANCELLED,
+            }
 
         def _emit_progress(i: int, elapsed: Optional[float] = None) -> None:
             nonlocal done

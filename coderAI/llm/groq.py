@@ -64,8 +64,10 @@ class GroqProvider(LLMProvider):
             params["tool_choice"] = kwargs.get("tool_choice", "auto")
 
         try:
+
             async def _call():
                 return await self.client.chat.completions.create(**params)
+
             response = await _retry(_call, description="Groq chat", max_retries=3)
         except Exception as e:
             raise RuntimeError(f"Groq API error: {e}") from e
@@ -107,8 +109,10 @@ class GroqProvider(LLMProvider):
             params["tool_choice"] = kwargs.get("tool_choice", "auto")
 
         try:
+
             async def _create_stream():
                 return await self.client.chat.completions.create(**params)
+
             stream = await _retry(_create_stream, description="Groq stream", max_retries=3)
         except Exception as e:
             raise RuntimeError(f"Groq API streaming error: {e}") from e

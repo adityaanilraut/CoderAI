@@ -54,6 +54,13 @@ def create_agent_session(
         except Exception:
             session = None
             logger.exception("Failed to load session %s; starting fresh", resume)
+            try:
+                on_event(
+                    "warning",
+                    {"message": f"Failed to resume session {resume}. Starting a fresh session."},
+                )
+            except Exception:
+                pass
         if session is None:
             agent.create_session()
         else:

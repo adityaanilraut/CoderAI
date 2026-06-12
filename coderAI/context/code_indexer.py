@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import asyncio
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -22,6 +23,11 @@ logger = logging.getLogger(__name__)
 _BATCH_SIZE = 32  # how many chunks to embed in one API call
 
 _COLLECTION_NAME = "codebase"
+
+
+def _on_walk_error(error: OSError) -> None:
+    """Handle os.walk permission errors gracefully during indexing."""
+    logger.warning("Skipping unreadable directory during indexing: %s", error)
 
 
 class CodeIndexer:
@@ -71,7 +77,7 @@ class CodeIndexer:
         """
         self._load_manifest()
         self._recreate_collection(skip_if_unchanged)
-        files, to_index, added, updated, unchanged = self._discover_changed_files(
+        files, to_index, added, updated, unchanged = await self._discover_changed_files(
             paths, skip_if_unchanged
         )
         removed = self._cleanup_removed_files(files)
@@ -80,7 +86,7 @@ class CodeIndexer:
             return {"added": added, "removed": removed, "updated": updated, "unchanged": unchanged}
 
         ids, docs, metadatas, embeddings, file_hashes = await self._chunk_and_embed(to_index)
-        self._upsert_batch(ids, docs, metadatas, embeddings)
+        await self._upsert_batch(ids, docs, metadatas, embeddings)
         self._update_manifest(file_hashes)
 
         return {
@@ -117,7 +123,20 @@ class CodeIndexer:
             metadata={"hnsw:space": "cosine"},
         )
 
-    def _discover_changed_files(
+    def _scan_files_sync(self) -> List[Path]:
+        """Synchronously scan directory for files to index (run in a thread pool)."""
+        from coderAI.context.code_chunker import is_skip_dir, should_index
+
+        files = []
+        for dirpath, dirnames, filenames in os.walk(self._root, onerror=_on_walk_error):
+            dirnames[:] = [d for d in dirnames if not is_skip_dir(d)]
+            for fname in filenames:
+                fp = Path(dirpath) / fname
+                if should_index(fp):
+                    files.append(fp)
+        return files
+
+    async def _discover_changed_files(
         self,
         paths: Optional[List[str]],
         skip_if_unchanged: bool,
@@ -126,7 +145,6 @@ class CodeIndexer:
 
         Returns (files, to_index, added, updated, unchanged).
         """
-        from coderAI.context.code_chunker import is_skip_dir, should_index
 
         if paths:
             files = []
@@ -139,13 +157,7 @@ class CodeIndexer:
                 if rp.is_file():
                     files.append(rp)
         else:
-            files = []
-            for dirpath, dirnames, filenames in os.walk(self._root):
-                dirnames[:] = [d for d in dirnames if not is_skip_dir(d)]
-                for fname in filenames:
-                    fp = Path(dirpath) / fname
-                    if should_index(fp):
-                        files.append(fp)
+            files = await asyncio.to_thread(self._scan_files_sync)
 
         to_index: list[Path] = []
         unchanged = 0
@@ -195,9 +207,7 @@ class CodeIndexer:
             self._save_manifest()
         return removed
 
-    async def _chunk_and_embed(
-        self, to_index: list[Path]
-    ) -> tuple:
+    async def _chunk_and_embed(self, to_index: list[Path]) -> tuple:
         """Chunk files, delete stale ChromaDB entries, and generate embeddings.
 
         Returns (ids, docs, metadatas, embeddings, file_hashes).
@@ -226,7 +236,7 @@ class CodeIndexer:
                     )
         for fp in to_index:
             rel = str(fp.relative_to(self._root))
-            result = chunk_file(fp, self._root)
+            result = await asyncio.to_thread(chunk_file, fp, self._root)
             if result.chunks:
                 all_chunks.extend(result.chunks)
                 file_hashes[rel] = result.file_hash
@@ -258,7 +268,7 @@ class CodeIndexer:
 
         return ids, docs, metadatas, embeddings, file_hashes
 
-    def _upsert_batch(
+    async def _upsert_batch(
         self,
         ids: list[str],
         docs: list[str],
@@ -269,7 +279,8 @@ class CodeIndexer:
         if not ids:
             return
         assert self._collection is not None
-        self._collection.add(
+        await asyncio.to_thread(
+            self._collection.add,
             ids=ids,
             documents=docs,
             metadatas=metadatas,  # type: ignore[arg-type]
@@ -310,7 +321,8 @@ class CodeIndexer:
         query_vec = await self._embed.embed([query])
         # ChromaDB doesn't support glob filters natively, so when file_filter is
         # set we overfetch and filter client-side below via _match_glob.
-        results = self._collection.query(
+        results = await asyncio.to_thread(
+            self._collection.query,
             query_embeddings=query_vec,
             n_results=min(top_k * 2 if file_filter else top_k, 50),
         )

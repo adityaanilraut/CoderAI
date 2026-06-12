@@ -86,7 +86,9 @@ class SkillManager:
             if self._discovery_complete:
                 return
 
-            logger.info("%s Discovering skills from %d source(s)...", SKILL_MGR_PREFIX, len(self._sources))
+            logger.info(
+                "%s Discovering skills from %d source(s)...", SKILL_MGR_PREFIX, len(self._sources)
+            )
 
             for source in self._sources:
                 try:
@@ -99,7 +101,9 @@ class SkillManager:
                         len(skills),
                     )
                 except Exception as e:
-                    logger.warning("%s Source '%s' failed: %s", SKILL_MGR_PREFIX, source.source_name, e)
+                    logger.warning(
+                        "%s Source '%s' failed: %s", SKILL_MGR_PREFIX, source.source_name, e
+                    )
 
             self._discovery_complete = True
             logger.info(
@@ -129,8 +133,7 @@ class SkillManager:
 
         user_message = (
             f"Task: {task_description}\n\n"
-            f"Available skills ({len(skills)}):\n"
-            + "\n".join(skill_lines)
+            f"Available skills ({len(skills)}):\n" + "\n".join(skill_lines)
         )
 
         messages: List[Dict[str, Any]] = [
@@ -210,13 +213,17 @@ class SkillManager:
                 continue
 
             reasoning = str(item.get("reasoning", ""))
-            logger.info("%s Matched: %s (%.2f) — %s", SKILL_MGR_PREFIX, skill_name, confidence, reasoning)
+            logger.info(
+                "%s Matched: %s (%.2f) — %s", SKILL_MGR_PREFIX, skill_name, confidence, reasoning
+            )
             results.append((skill, confidence))
 
         results.sort(key=lambda x: x[1], reverse=True)
         return results[: self.top_n]
 
-    def _keyword_score(self, task_description: str, skills: List[Skill]) -> List[Tuple[Skill, float]]:
+    def _keyword_score(
+        self, task_description: str, skills: List[Skill]
+    ) -> List[Tuple[Skill, float]]:
         """Fast keyword-overlap baseline (no LLM call).
 
         Used as a fallback when no LLM provider is available.
@@ -238,8 +245,6 @@ class SkillManager:
 
         scored.sort(key=lambda x: x[1], reverse=True)
         return scored[: self.top_n]
-
-
 
     async def get_top_skills(
         self,
@@ -321,7 +326,10 @@ class SkillManager:
 
                 # 3) If LLM returned nothing but we have local skills, fall back to keyword
                 if not llm_matches and local_skills:
-                    logger.debug("%s LLM matching returned no results — trying keyword fallback", SKILL_MGR_PREFIX)
+                    logger.debug(
+                        "%s LLM matching returned no results — trying keyword fallback",
+                        SKILL_MGR_PREFIX,
+                    )
                     llm_matches = self._keyword_score(task_description, local_skills)
 
                 # 4) Merge, deduplicate by name, sort by confidence

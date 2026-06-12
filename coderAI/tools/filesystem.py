@@ -30,9 +30,7 @@ def _atomic_write_file(path_obj: Path, content: str) -> None:
     """
     import tempfile
 
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(path_obj.parent), prefix="." + path_obj.name + "."
-    )
+    fd, tmp_path = tempfile.mkstemp(dir=str(path_obj.parent), prefix="." + path_obj.name + ".")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(content)
@@ -447,7 +445,9 @@ class WriteFileTool(Tool):
                     return {
                         "success": False,
                         "error": f"Could not write {path}: {e}",
-                        "error_code": ToolErrorCode.SYMLINK if "loop" in str(e).lower() else ToolErrorCode.IO,
+                        "error_code": ToolErrorCode.SYMLINK
+                        if "loop" in str(e).lower()
+                        else ToolErrorCode.IO,
                     }
 
                 # Emit diff for non-append text writes
@@ -534,7 +534,9 @@ class SearchReplaceTool(Tool):
                     return {
                         "success": False,
                         "error": f"Could not open {path}: {e}",
-                        "error_code": ToolErrorCode.SYMLINK if "loop" in str(e).lower() else ToolErrorCode.IO,
+                        "error_code": ToolErrorCode.SYMLINK
+                        if "loop" in str(e).lower()
+                        else ToolErrorCode.IO,
                     }
 
                 if search not in content:
@@ -560,7 +562,9 @@ class SearchReplaceTool(Tool):
                     return {
                         "success": False,
                         "error": f"Could not write {path}: {e}",
-                        "error_code": ToolErrorCode.SYMLINK if "loop" in str(e).lower() else ToolErrorCode.IO,
+                        "error_code": ToolErrorCode.SYMLINK
+                        if "loop" in str(e).lower()
+                        else ToolErrorCode.IO,
                     }
 
                 _emit_diff(path_obj, content, new_content)
@@ -758,7 +762,9 @@ class ApplyDiffTool(Tool):
                     return {
                         "success": False,
                         "error": f"Could not open {path}: {e}",
-                        "error_code": ToolErrorCode.SYMLINK if "loop" in str(e).lower() else ToolErrorCode.IO,
+                        "error_code": ToolErrorCode.SYMLINK
+                        if "loop" in str(e).lower()
+                        else ToolErrorCode.IO,
                     }
 
                 # Clean up markdown code blocks if the LLM provided them
@@ -840,7 +846,9 @@ class ApplyDiffTool(Tool):
                     return {
                         "success": False,
                         "error": f"Could not write {path}: {e}",
-                        "error_code": ToolErrorCode.SYMLINK if "loop" in str(e).lower() else ToolErrorCode.IO,
+                        "error_code": ToolErrorCode.SYMLINK
+                        if "loop" in str(e).lower()
+                        else ToolErrorCode.IO,
                     }
 
                 _emit_diff(

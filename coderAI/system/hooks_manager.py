@@ -32,7 +32,6 @@ from coderAI.system.events import event_emitter
 logger = logging.getLogger(__name__)
 
 
-
 # Valid status values returned by permission.ask hooks
 VALID_PERMISSION_STATUSES: Tuple[str, ...] = ("allow", "deny", "ask")
 

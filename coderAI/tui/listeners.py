@@ -68,8 +68,14 @@ class EventReducer:
         for i in range(len(self.timeline) - 1, -1, -1):
             it = self.timeline[i]
             if it.get("id") == aid and it.get("kind") == "assistant":
-                it["content"] = it.get("content", "") + add_c
-                it["reasoning"] = it.get("reasoning", "") + add_r
+                if add_c:
+                    chunks = it.setdefault("_content_chunks", [it.get("content", "")])
+                    chunks.append(add_c)
+                    it["content"] = "".join(chunks)
+                if add_r:
+                    r_chunks = it.setdefault("_reasoning_chunks", [it.get("reasoning", "")])
+                    r_chunks.append(add_r)
+                    it["reasoning"] = "".join(r_chunks)
                 return True
         return False
 
@@ -183,22 +189,19 @@ class EventReducer:
                 self._bump_refresh("append")
                 self._awaiting_first_delta = False
                 self._flush_stream_buffers()
-                pending_c = self._stream_pending_content
-                pending_r = self._stream_pending_reasoning
-                self._stream_pending_content = ""
-                self._stream_pending_reasoning = ""
+                # _flush_stream_buffers already merged pending content;
+                # now mark the item non-streaming (or remove if empty).
                 aid = self._current_assistant_id
                 if aid:
                     for i in range(len(self.timeline) - 1, -1, -1):
                         it = self.timeline[i]
                         if it.get("id") == aid and it.get("kind") == "assistant":
-                            merged_c = it.get("content", "") + pending_c
-                            merged_r = it.get("reasoning", "") + pending_r
-                            if not merged_c.strip() and not merged_r.strip():
+                            if (
+                                not it.get("content", "").strip()
+                                and not it.get("reasoning", "").strip()
+                            ):
                                 self.timeline.pop(i)
                             else:
-                                it["content"] = merged_c
-                                it["reasoning"] = merged_r
                                 it["streaming"] = False
                             break
                 self._current_assistant_id = None

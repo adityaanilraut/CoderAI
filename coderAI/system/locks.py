@@ -1,10 +1,13 @@
 """Global resource locking mechanism for parallel agent orchestration."""
 
 import asyncio
+import logging
 import threading
 from collections import OrderedDict
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 # Cap the file-lock table so long-running sessions don't leak entries for
 # every file ever touched. When exceeded we evict the least-recently-used
@@ -50,6 +53,11 @@ class ResourceManager:
         try:
             normalized_path = str(Path(filepath).resolve())
         except (OSError, RuntimeError):
+            logger.warning(
+                "Could not resolve path %r for file lock normalization; "
+                "using raw path — this may cause lock misses",
+                filepath,
+            )
             normalized_path = str(filepath)
 
         assert self._file_locks_lock is not None

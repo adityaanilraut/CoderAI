@@ -30,6 +30,7 @@ Thumbs.db
 htmlcov/
 .tox/
 .mypy_cache/
+.benchmarks/
 
 # Distribution
 *.tar.gz

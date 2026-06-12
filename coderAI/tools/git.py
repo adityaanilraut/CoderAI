@@ -142,7 +142,7 @@ class GitAddTool(Tool):
                         "Please specify explicit file paths to stage only "
                         "the files you intentionally created or modified."
                     ),
-                "error_code": ToolErrorCode.UNSAFE_STAGING,
+                    "error_code": ToolErrorCode.UNSAFE_STAGING,
                 }
 
             from coderAI.system.safeguards import filter_stageable_files
@@ -159,7 +159,7 @@ class GitAddTool(Tool):
                         f"All requested files were filtered as junk/internal artifacts: "
                         f"{rejected}. No files staged."
                     ),
-                "error_code": ToolErrorCode.ALL_FILTERED,
+                    "error_code": ToolErrorCode.ALL_FILTERED,
                 }
 
             result = await _run_git_command(["add"] + allowed, repo_path, needs_lock=True)
@@ -213,9 +213,7 @@ class GitStatusTool(Tool):
                     "error": result["stderr"].decode("utf-8", errors="replace"),
                 }
 
-            output, truncated = _truncate_output(
-                result["stdout"].decode("utf-8", errors="replace")
-            )
+            output, truncated = _truncate_output(result["stdout"].decode("utf-8", errors="replace"))
             lines = output.strip().split("\n")
             change_lines = [line for line in lines if line and not line.startswith("##")]
             return {
@@ -265,9 +263,7 @@ class GitDiffTool(Tool):
                     "error": result["stderr"].decode("utf-8", errors="replace"),
                 }
 
-            diff, truncated = _truncate_output(
-                result["stdout"].decode("utf-8", errors="replace")
-            )
+            diff, truncated = _truncate_output(result["stdout"].decode("utf-8", errors="replace"))
             return {
                 "success": True,
                 "diff": diff,
@@ -294,9 +290,7 @@ class GitCommitTool(Tool):
 
     async def execute(self, message: str, repo_path: str = ".") -> Dict[str, Any]:  # type: ignore[override]
         try:
-            result = await _run_git_command(
-                ["commit", "-m", message], repo_path, needs_lock=True
-            )
+            result = await _run_git_command(["commit", "-m", message], repo_path, needs_lock=True)
             if not result["success"]:
                 return result
 
@@ -333,9 +327,7 @@ class GitLogTool(Tool):
             elif limit > 1000:
                 limit = 1000
 
-            result = await _run_git_command(
-                ["log", "--oneline", "-n", str(limit)], repo_path
-            )
+            result = await _run_git_command(["log", "--oneline", "-n", str(limit)], repo_path)
             if not result["success"]:
                 return result
 
@@ -345,9 +337,7 @@ class GitLogTool(Tool):
                     "error": result["stderr"].decode("utf-8", errors="replace"),
                 }
 
-            log, truncated = _truncate_output(
-                result["stdout"].decode("utf-8", errors="replace")
-            )
+            log, truncated = _truncate_output(result["stdout"].decode("utf-8", errors="replace"))
             return {
                 "success": True,
                 "log": log,
@@ -404,12 +394,15 @@ class GitBranchTool(Tool):
 
             if action == "list":
                 if result["returncode"] != 0:
-                    return {"success": False, "error": result["stderr"].decode("utf-8", errors="replace")}
-                output, truncated = _truncate_output(result["stdout"].decode("utf-8", errors="replace"))
+                    return {
+                        "success": False,
+                        "error": result["stderr"].decode("utf-8", errors="replace"),
+                    }
+                output, truncated = _truncate_output(
+                    result["stdout"].decode("utf-8", errors="replace")
+                )
                 branches = [
-                    b.strip().removeprefix("* ")
-                    for b in output.strip().split("\n")
-                    if b.strip()
+                    b.strip().removeprefix("* ") for b in output.strip().split("\n") if b.strip()
                 ]
                 return {
                     "success": True,
@@ -419,12 +412,15 @@ class GitBranchTool(Tool):
                 }
             elif action == "create":
                 if result["returncode"] != 0:
-                    return {"success": False, "error": result["stderr"].decode("utf-8", errors="replace")}
+                    return {
+                        "success": False,
+                        "error": result["stderr"].decode("utf-8", errors="replace"),
+                    }
                 return {"success": True, "message": f"Branch '{branch_name}' created."}
             else:  # delete
-                output = result["stdout"].decode("utf-8", errors="replace") + result["stderr"].decode(
-                    "utf-8", errors="replace"
-                )
+                output = result["stdout"].decode("utf-8", errors="replace") + result[
+                    "stderr"
+                ].decode("utf-8", errors="replace")
                 return {"success": result["returncode"] == 0, "output": output}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -801,9 +797,7 @@ class GitResetTool(Tool):
                     "error": f"Invalid mode '{mode}'. Use soft, mixed, or hard.",
                 }
 
-            result = await _run_git_command(
-                ["reset", f"--{mode}", ref], repo_path, needs_lock=True
-            )
+            result = await _run_git_command(["reset", f"--{mode}", ref], repo_path, needs_lock=True)
             if not result["success"]:
                 return result
 
@@ -847,7 +841,10 @@ class GitShowTool(Tool):
                 return result
 
             if result["returncode"] != 0:
-                return {"success": False, "error": result["stderr"].decode("utf-8", errors="replace").strip()}
+                return {
+                    "success": False,
+                    "error": result["stderr"].decode("utf-8", errors="replace").strip(),
+                }
 
             output, truncated = _truncate_output(result["stdout"].decode("utf-8", errors="replace"))
             return {"success": True, "output": output, "truncated": truncated}
@@ -953,7 +950,10 @@ class GitBlameTool(Tool):
                 return result
 
             if result["returncode"] != 0:
-                return {"success": False, "error": result["stderr"].decode("utf-8", errors="replace").strip()}
+                return {
+                    "success": False,
+                    "error": result["stderr"].decode("utf-8", errors="replace").strip(),
+                }
 
             raw, truncated = _truncate_output(result["stdout"].decode("utf-8", errors="replace"))
             lines: List[Dict[str, str]] = []
