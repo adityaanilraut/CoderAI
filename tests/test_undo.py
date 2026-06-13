@@ -3,6 +3,7 @@
 import asyncio
 import pytest
 
+from coderAI.core.services import services_scope
 from coderAI.tools.undo import FileBackupStore, UndoTool, UndoHistoryTool
 
 
@@ -88,10 +89,11 @@ class TestFileBackupStore:
 
 class TestUndoTool:
     @pytest.fixture(autouse=True)
-    def setup(self, tmp_path, monkeypatch):
+    def setup(self, tmp_path):
         self.store = FileBackupStore(backup_dir=str(tmp_path / "backups"))
-        monkeypatch.setattr("coderAI.tools.undo.get_backup_store", lambda: self.store)
         self.tool = UndoTool()
+        with services_scope(backup_store=self.store):
+            yield
 
     def test_undo_with_no_history(self):
         result = asyncio.run(self.tool.execute())
@@ -117,10 +119,11 @@ class TestUndoTool:
 
 class TestUndoHistoryTool:
     @pytest.fixture(autouse=True)
-    def setup(self, tmp_path, monkeypatch):
+    def setup(self, tmp_path):
         self.store = FileBackupStore(backup_dir=str(tmp_path / "backups"))
-        monkeypatch.setattr("coderAI.tools.undo.get_backup_store", lambda: self.store)
         self.tool = UndoHistoryTool()
+        with services_scope(backup_store=self.store):
+            yield
 
     def test_empty_history(self):
         result = asyncio.run(self.tool.execute())

@@ -315,16 +315,11 @@ class FileBackupStore:
         self._save_index()
 
 
-# Lazy-initialized backup store to avoid side effects on import
-_backup_store: "FileBackupStore | None" = None
-
-
 def get_backup_store() -> FileBackupStore:
-    """Get or create the global backup store (lazy init)."""
-    global _backup_store
-    if _backup_store is None:
-        _backup_store = FileBackupStore()
-    return _backup_store
+    """Resolve the active backup store (process-shared via ToolServices)."""
+    from coderAI.core.services import get_services
+
+    return get_services().backup_store
 
 
 class _LazyBackupStore:
