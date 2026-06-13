@@ -30,7 +30,7 @@ def render_session_header(s: SessionState) -> str:
             w = 10
             f = min(w, max(0, int(bar * w)))
             b = f"[{color}]" + ("█" * f) + "[/]"
-            b += f"[{Tokens.LINE}]" + ("─" * (w - f)) + "[/]"
+            b += f"[{Tokens.LINE}]" + ("░" * (w - f)) + "[/]"
             inner += f" {b}"
         return inner
 
@@ -43,7 +43,7 @@ def render_session_header(s: SessionState) -> str:
     )
 
     chips = [
-        f"[{status_color}]{Glyphs.DOT}[/] [{Tokens.TEXT}]{model_label}[/]",
+        f"[{status_color}]{Glyphs.BRAND}[/] [{Tokens.TEXT}]{model_label}[/]",
         chip("provider", provider, Tokens.TEXT_MUTED),
         chip("ctx", f"{ctx_used} / {ctx_lim}", Tokens.TEXT, bar=ctx_ratio),
         chip("$", cost_val, Tokens.TEXT_DIM, bar=budget_ratio),

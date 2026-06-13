@@ -12,7 +12,7 @@ from rich.markdown import Markdown
 from rich.padding import Padding
 
 from coderAI.tui.diff_render import format_diff_gutter
-from coderAI.tui.theme import Glyphs, Styles, Tokens
+from coderAI.tui.theme import Categories, Glyphs, Styles, Tokens
 
 logger = logging.getLogger(__name__)
 
@@ -152,12 +152,15 @@ def write_tool(log: SupportsWrite, it: Dict[str, Any]) -> None:
     ts = _fmt_ts(it.get("ts"))
     collapsed = it.get("collapsed")
     ok = it.get("ok")
+    # The Rail color encodes the tool category; a semantic state (error)
+    # overrides it. The glyph color stays semantic (ok / running / error).
+    cat_color = Categories.color(it.get("category"))
     if ok is True:
-        glyph, glyph_color, border_color = Glyphs.TOOL_OK, Tokens.AGENT, Tokens.AGENT
+        glyph, glyph_color, border_color = Glyphs.TOOL_OK, Tokens.AGENT, cat_color
     elif ok is False:
         glyph, glyph_color, border_color = Glyphs.ERROR, Tokens.DANGER, Tokens.DANGER
     else:
-        glyph, glyph_color, border_color = Glyphs.TOOL_RUN, Tokens.THOUGHT, Tokens.THOUGHT
+        glyph, glyph_color, border_color = Glyphs.TOOL_RUN, Tokens.THOUGHT, cat_color
 
     name = str(it.get("name") or "")
     args = it.get("args") or {}
@@ -202,6 +205,13 @@ def write_tool(log: SupportsWrite, it: Dict[str, Any]) -> None:
         row.append(f"   {preview}", style=Styles.TOOL_PREVIEW)
     if collapsed and (args_str or preview):
         row.append(f" [{Tokens.TEXT_MUTED}][…][/]")
+    # Risk is earned: low risk gets no badge, medium/high are flagged inline.
+    risk = str(it.get("risk") or "low")
+    if risk in ("medium", "high") and not collapsed:
+        row.append(
+            f"  {Glyphs.APPROVAL} {'high' if risk == 'high' else 'med'}",
+            style=Tokens.DANGER if risk == "high" else Tokens.WARN,
+        )
     log.write(row)
     if it.get("error") and not collapsed:
         log.write(Text(f"    → {it['error']}", style=f"{Tokens.DANGER}"))
