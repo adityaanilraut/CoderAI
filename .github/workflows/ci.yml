@@ -42,7 +42,7 @@ jobs:
         run: python -m mypy coderAI/
 
       - name: Pytest
-        run: pytest -q --cov=coderAI --cov-fail-under=56
+        run: pytest -q --cov=coderAI --cov-fail-under=62
 
       - name: CLI smoke test
         run: coderAI --version
