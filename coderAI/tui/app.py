@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import time
 from typing import Any, Dict, List, Optional
 
@@ -37,7 +38,7 @@ from coderAI.tui.screens import (
 from coderAI.tui.session_setup import create_agent_session
 from coderAI.tui.slash import handle_slash_command
 from coderAI.tui.state import SessionState
-from coderAI.tui.platform import composer_placeholder
+from coderAI.tui.platform import composer_placeholder, supports_truecolor, truecolor_hint
 from coderAI.tui.theme import Tokens
 from coderAI.tui.timeline_render import (
     build_stream_tail_markup,
@@ -240,6 +241,8 @@ class CoderAIApp(App[None]):
         footer = self.query_one("#composer-footer", Static)
         footer.update(self._composer_footer_markup())
         self._refresh_ui("full")
+        if sys.stdout.isatty() and not supports_truecolor():
+            self._toast("warning", truecolor_hint())
         self.run_worker(
             self._run_agent,  # type: ignore[arg-type]
             exclusive=True,
