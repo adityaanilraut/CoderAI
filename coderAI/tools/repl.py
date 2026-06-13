@@ -8,10 +8,10 @@ from typing import Any, Dict
 
 from pydantic import BaseModel, Field
 
+from coderAI.core.services import get_services
 from coderAI.core.tool_error_codes import ToolErrorCode
 from coderAI.tools.base import Tool
 from coderAI.tools.terminal import _resolve_working_dir
-from coderAI.system.config import config_manager
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +98,7 @@ class PythonREPLTool(Tool):
                 stderr_str = stderr.decode("utf-8", errors="replace")
 
                 # Truncate large output
-                max_output = config_manager.load().max_command_output
+                max_output = get_services().config.max_command_output
                 if len(stdout_str) > max_output:
                     stdout_str = (
                         stdout_str[: max_output // 2]

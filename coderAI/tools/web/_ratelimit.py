@@ -15,9 +15,9 @@ _rate_limit_delay: float = 1.0
 def _get_rate_limit_delay() -> float:
     global _rate_limit_delay
     try:
-        from coderAI.system.config import config_manager
+        from coderAI.core.services import get_services
 
-        _rate_limit_delay = config_manager.load().rate_limit_delay_seconds
+        _rate_limit_delay = get_services().config.rate_limit_delay_seconds
     except Exception:
         # Config can be unreadable (corrupt file, early startup, tests);
         # fall back to the env var / previous value instead of failing the request.

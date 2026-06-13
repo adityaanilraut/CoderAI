@@ -13,8 +13,8 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
+from coderAI.core.services import get_services
 from coderAI.core.tool_error_codes import ToolErrorCode
-from coderAI.system.config import config_manager
 from coderAI.system.events import event_emitter
 
 logger = logging.getLogger(__name__)
@@ -66,7 +66,7 @@ DEFAULT_MAX_GLOB_RESULTS = 200
 def _get_max_file_size() -> int:
     """Get max file size from config."""
     try:
-        return config_manager.load().max_file_size
+        return get_services().config.max_file_size
     except Exception:
         # Config unavailable (corrupt file, tests) → built-in default.
         logger.debug("max_file_size config unavailable, using default", exc_info=True)
@@ -76,7 +76,7 @@ def _get_max_file_size() -> int:
 def _get_max_glob_results() -> int:
     """Get max glob results from config."""
     try:
-        return config_manager.load().max_glob_results
+        return get_services().config.max_glob_results
     except Exception:
         # Config unavailable (corrupt file, tests) → built-in default.
         logger.debug("max_glob_results config unavailable, using default", exc_info=True)
@@ -152,7 +152,7 @@ def _is_in_project_root(path: Path) -> bool:
     that points at ``/etc`` cannot be used to dodge this check.
     """
     try:
-        cfg = config_manager.load()
+        cfg = get_services().config
         project_root = Path(getattr(cfg, "project_root", ".") or ".").resolve()
     except Exception:
         # Config unavailable → treat the current directory as the project
@@ -171,7 +171,7 @@ def _allows_outside_project() -> bool:
     if os.environ.get("CODERAI_ALLOW_OUTSIDE_PROJECT") == "1":
         return True
     try:
-        return bool(config_manager.get("allow_outside_project", False))
+        return bool(getattr(get_services().config, "allow_outside_project", False))
     except Exception:
         # Fail closed: if config can't be read, keep project-scope enforcement on.
         logger.debug("allow_outside_project config unavailable, failing closed", exc_info=True)

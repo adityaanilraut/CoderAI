@@ -63,10 +63,10 @@ class SemanticSearchTool(Tool):
 
         try:
             from coderAI.context.code_indexer import CodeIndexer
-            from coderAI.system.config import config_manager
+            from coderAI.core.services import get_services
             from ..embeddings.factory import create_embedding_provider
 
-            config = config_manager.load()
+            config = get_services().config
             project_root = str(Path(config.project_root).resolve())
 
             provider = create_embedding_provider(config)

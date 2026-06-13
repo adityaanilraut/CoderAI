@@ -1,6 +1,7 @@
 """Tests for the ToolServices container and ContextVar scoping."""
 
 import asyncio
+import json
 
 import coderAI.core.services as services_mod
 from coderAI.core.services import ToolServices, get_services, services_scope
@@ -82,3 +83,36 @@ class TestServicesScope:
 
         svc, seen_in_task = asyncio.run(main())
         assert seen_in_task is svc
+
+
+class TestConfigReadUnification:
+    """Phase 3h: in-tool config reads resolve ``get_services().config``.
+
+    During a tool batch the ToolExecutor binds the agent's project-aware
+    config into the scope, so tools observe project-level overrides — the
+    bug where tools read the global ``config_manager.load()`` and missed
+    overrides the Agent had resolved via ``load_project_config``.
+    """
+
+    def test_filesystem_guard_honors_project_override_via_scope(self, tmp_path):
+        from coderAI.system.config import config_manager
+        from coderAI.tools.filesystem._guards import _get_max_file_size
+
+        global_max = config_manager.load().max_file_size
+        override = global_max + 4242
+
+        # A project with a .coderAI/config.json overriding max_file_size.
+        proj = tmp_path / "proj"
+        (proj / ".coderAI").mkdir(parents=True)
+        (proj / ".coderAI" / "config.json").write_text(json.dumps({"max_file_size": override}))
+        project_config = config_manager.load_project_config(str(proj))
+        assert project_config.max_file_size == override
+
+        # Outside any scope the tool sees the global value.
+        assert _get_max_file_size() == global_max
+        # Bound to the project config (as the ToolExecutor does per batch) the
+        # same tool read now observes the project override.
+        with services_scope(config=project_config):
+            assert _get_max_file_size() == override
+        # Scope exit restores the global view.
+        assert _get_max_file_size() == global_max

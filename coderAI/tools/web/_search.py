@@ -454,9 +454,9 @@ def _parse_searxng_results(html_text: str, max_results: int) -> List[_SearchResu
 
 def _concurrent_search_enabled() -> bool:
     try:
-        from coderAI.system.config import config_manager
+        from coderAI.core.services import get_services
 
-        return bool(config_manager.load().concurrent_search)
+        return bool(get_services().config.concurrent_search)
     except Exception:
         # Config unavailable → fall back to env var / default (concurrent on).
         logger.debug("concurrent_search config unavailable, using fallback", exc_info=True)
@@ -469,9 +469,9 @@ def _concurrent_search_enabled() -> bool:
 
 
 def _select_search_backend() -> _SearchBackend:
-    from coderAI.system.config import config_manager
+    from coderAI.core.services import get_services
 
-    cfg = config_manager.load()
+    cfg = get_services().config
 
     explicit = os.getenv("CODERAI_SEARCH_BACKEND")
     if not explicit and cfg.search_backend:

@@ -155,9 +155,9 @@ class WebSearchTool(Tool):
                 )
 
             try:
-                from coderAI.system.config import config_manager
+                from coderAI.core.services import get_services
 
-                ttl = config_manager.load().search_cache_ttl_seconds
+                ttl = get_services().config.search_cache_ttl_seconds
             except Exception:
                 # Config unavailable → default TTL; caching must not break search.
                 logger.debug("search_cache_ttl config unavailable, using default", exc_info=True)
@@ -216,9 +216,9 @@ class WebSearchTool(Tool):
         backend: Optional[_SearchBackend] = None,
     ) -> List[Dict[str, str]]:
         backend = backend or _web._select_search_backend()
-        from coderAI.system.config import config_manager
+        from coderAI.core.services import get_services
 
-        cfg = config_manager.load()
+        cfg = get_services().config
         tavily_key = os.getenv("TAVILY_API_KEY") or cfg.tavily_api_key
         exa_key = os.getenv("EXA_API_KEY") or cfg.exa_api_key
         explicit = os.getenv("CODERAI_SEARCH_BACKEND") or cfg.search_backend or "auto"

@@ -100,9 +100,9 @@ def _validate_navigation_url(url: str) -> Optional[Dict[str, Any]]:
 def _get_allowed_domains() -> Optional[List[str]]:
     """Read the comma-separated allowed-domains list from config."""
     try:
-        from coderAI.system.config import config_manager
+        from coderAI.core.services import get_services
 
-        cfg = config_manager.load()
+        cfg = get_services().config
         raw = cfg.browser_allowed_domains
         if raw:
             return [d.strip().lower() for d in raw.split(",") if d.strip()]
@@ -168,9 +168,9 @@ class BrowserSession:
 
             headless = True
             try:
-                from coderAI.system.config import config_manager
+                from coderAI.core.services import get_services
 
-                headless = config_manager.load().browser_headless
+                headless = get_services().config.browser_headless
             except Exception:
                 # Config unavailable → keep the safe headless default.
                 logger.debug("browser_headless config unavailable, using default", exc_info=True)
@@ -189,9 +189,9 @@ class BrowserSession:
 
     def _get_timeout(self) -> float:
         try:
-            from coderAI.system.config import config_manager
+            from coderAI.core.services import get_services
 
-            return float(config_manager.load().browser_timeout)
+            return float(get_services().config.browser_timeout)
         except Exception:
             # Config unavailable → built-in 30s default.
             logger.debug("browser_timeout config unavailable, using default", exc_info=True)

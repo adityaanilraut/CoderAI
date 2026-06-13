@@ -12,9 +12,9 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+from coderAI.core.services import get_services
 from coderAI.core.tool_error_codes import ToolErrorCode
 from coderAI.tools.base import Tool
-from coderAI.system.config import config_manager
 
 logger = logging.getLogger(__name__)
 
@@ -180,7 +180,7 @@ def _resolve_working_dir(working_dir: str) -> "tuple[Optional[Path], Optional[st
     Returns ``(Path, None)`` on success and ``(None, err)`` on rejection.
     """
     try:
-        cfg = config_manager.load()
+        cfg = get_services().config
         project_root = Path(getattr(cfg, "project_root", ".") or ".").resolve()
     except Exception:
         # Config unavailable → treat the current directory as the project
@@ -197,7 +197,7 @@ def _resolve_working_dir(working_dir: str) -> "tuple[Optional[Path], Optional[st
         return None, f"Invalid working_dir {working_dir!r}: {e}"
 
     try:
-        cfg_allow_outside = bool(config_manager.get("allow_outside_project", False))
+        cfg_allow_outside = bool(getattr(get_services().config, "allow_outside_project", False))
     except Exception:
         # Fail closed: if config can't be read, keep project-scope enforcement on.
         logger.debug("allow_outside_project config unavailable, failing closed", exc_info=True)
@@ -420,7 +420,7 @@ class RunCommandTool(Tool):
             stdout_str = stdout.decode("utf-8", errors="replace")
             stderr_str = stderr.decode("utf-8", errors="replace")
 
-            max_output = config_manager.load().max_command_output
+            max_output = get_services().config.max_command_output
             if len(stdout_str) > max_output:
                 stdout_str = (
                     stdout_str[: max_output // 2]

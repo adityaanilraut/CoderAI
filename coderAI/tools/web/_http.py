@@ -366,9 +366,7 @@ class HttpClient:
 
         if text and len(text) > 0:
             try:
-                from coderAI.system.config import config_manager
-
-                ttl = config_manager.load().page_cache_ttl_seconds
+                ttl = get_services().config.page_cache_ttl_seconds
             except Exception:
                 # Config unavailable → default TTL; caching must not break fetches.
                 logger.debug("page_cache_ttl config unavailable, using default", exc_info=True)
