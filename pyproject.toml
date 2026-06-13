@@ -86,6 +86,24 @@ warn_unused_configs = true
 ignore_missing_imports = true
 exclude = ["tests/"]
 
+# Per-module strict typing (Phase 4). This list ONLY GROWS — never shrink it.
+# Modules here must pass disallow_untyped_defs + check_untyped_defs +
+# warn_unused_ignores. See docs/CLAUDE.md ("Typing ratchet").
+[[tool.mypy.overrides]]
+module = [
+  "coderAI.system.*",
+  "coderAI.llm.*",
+  "coderAI.bridge.*",
+  "coderAI.context.*",
+  "coderAI.core.execution_context",
+  "coderAI.core.tool_error_codes",
+  "coderAI.core.services",
+  "coderAI.core.agent_tracker",
+]
+disallow_untyped_defs = true
+check_untyped_defs = true
+warn_unused_ignores = true
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

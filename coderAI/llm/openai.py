@@ -24,7 +24,7 @@ class OpenAIProvider(LLMProvider):
         "o3-mini": "o3-mini",
     }
 
-    def __init__(self, model: str, api_key: Optional[str] = None, **kwargs):
+    def __init__(self, model: str, api_key: Optional[str] = None, **kwargs: Any):
         """Initialize OpenAI provider.
 
         Args:
@@ -90,7 +90,7 @@ class OpenAIProvider(LLMProvider):
             self._rejects_temperature and self.actual_model not in self._NO_REASONING_EFFORT_MODELS
         )
 
-    def _apply_temp_and_reasoning(self, params: Dict[str, Any], **kwargs) -> None:
+    def _apply_temp_and_reasoning(self, params: Dict[str, Any], **kwargs: Any) -> None:
         if self._rejects_temperature:
             if (
                 self._supports_reasoning_effort
@@ -105,7 +105,7 @@ class OpenAIProvider(LLMProvider):
         self,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> Dict[str, Any]:
         """Send a chat completion request to OpenAI.
 
@@ -131,7 +131,7 @@ class OpenAIProvider(LLMProvider):
 
         try:
 
-            async def _call():
+            async def _call() -> Any:
                 return await self.client.chat.completions.create(**params)
 
             response = await _retry(_call, description="OpenAI chat", max_retries=3)
@@ -152,7 +152,7 @@ class OpenAIProvider(LLMProvider):
         self,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> AsyncIterator[Dict[str, Any]]:
         """Send a streaming chat completion request to OpenAI.
 
@@ -180,7 +180,7 @@ class OpenAIProvider(LLMProvider):
 
         try:
 
-            async def _create_stream():
+            async def _create_stream() -> Any:
                 return await self.client.chat.completions.create(**params)
 
             stream = await _retry(_create_stream, description="OpenAI stream", max_retries=3)

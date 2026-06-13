@@ -20,7 +20,7 @@ class GroqProvider(LLMProvider):
         "gemma-7b-it": "gemma-7b-it",
     }
 
-    def __init__(self, model: str, api_key: Optional[str] = None, **kwargs):
+    def __init__(self, model: str, api_key: Optional[str] = None, **kwargs: Any):
         """Initialize Groq provider.
 
         Args:
@@ -40,7 +40,7 @@ class GroqProvider(LLMProvider):
         self,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> Dict[str, Any]:
         """Send a chat completion request to Groq.
 
@@ -65,7 +65,7 @@ class GroqProvider(LLMProvider):
 
         try:
 
-            async def _call():
+            async def _call() -> Any:
                 return await self.client.chat.completions.create(**params)
 
             response = await _retry(_call, description="Groq chat", max_retries=3)
@@ -84,7 +84,7 @@ class GroqProvider(LLMProvider):
         self,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> AsyncIterator[Dict[str, Any]]:
         """Send a streaming chat completion request to Groq.
 
@@ -110,7 +110,7 @@ class GroqProvider(LLMProvider):
 
         try:
 
-            async def _create_stream():
+            async def _create_stream() -> Any:
                 return await self.client.chat.completions.create(**params)
 
             stream = await _retry(_create_stream, description="Groq stream", max_retries=3)

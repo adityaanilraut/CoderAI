@@ -3,10 +3,15 @@
 import json
 import logging
 from collections import OrderedDict
-from typing import Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from coderAI.system.error_policy import check_budget_limit
 from coderAI.system.events import event_emitter
+
+if TYPE_CHECKING:
+    from coderAI.llm.base import LLMProvider
+    from coderAI.system.config import Config
+    from coderAI.system.cost import CostTracker
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +47,12 @@ def _content_text_len(content: Any) -> int:
 class ContextController:
     """Handles token estimation, context window truncation, and summarization."""
 
-    def __init__(self, config, provider, cost_tracker=None):
+    def __init__(
+        self,
+        config: "Config",
+        provider: "LLMProvider",
+        cost_tracker: Optional["CostTracker"] = None,
+    ) -> None:
         self.config = config
         self.provider = provider
         self.cost_tracker = cost_tracker
@@ -468,7 +478,7 @@ class ContextController:
 
         import copy
 
-        def truncate_recursive(val, max_len):
+        def truncate_recursive(val: Any, max_len: int) -> Any:
             if isinstance(val, str):
                 if len(val) > max_len:
                     half = max_len // 2

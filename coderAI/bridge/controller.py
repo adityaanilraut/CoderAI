@@ -24,10 +24,13 @@ import logging
 import os
 import time as _time
 import uuid
-from typing import Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from coderAI.core.agent_tracker import AgentInfo, agent_tracker
 from coderAI.system.events import event_emitter
+
+if TYPE_CHECKING:
+    from coderAI.core.agent import Agent
 
 from coderAI.bridge.commands import (  # noqa: F401
     _cmd_allow_tool,
@@ -95,10 +98,10 @@ class UIBridge:
 
     def __init__(
         self,
-        agent,
+        agent: "Agent",
         *,
         on_event: Callable[[str, Dict[str, Any]], None],
-    ):
+    ) -> None:
         self.agent = agent
         self._on_event = on_event
         self._turn_lock = asyncio.Lock()

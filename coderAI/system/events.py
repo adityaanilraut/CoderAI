@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 class EventEmitter:
     """Simple event emitter for Pub/Sub architecture."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize event emitter."""
         self._listeners: Dict[str, List[Callable]] = {}
 
@@ -57,7 +57,11 @@ class EventEmitter:
                         loop = asyncio.get_running_loop()
                         task = loop.create_task(callback(*args, **kwargs))
 
-                        def _on_task_done(t, _event=event, _cb=callback):
+                        def _on_task_done(
+                            t: "asyncio.Task[Any]",
+                            _event: str = event,
+                            _cb: Callable = callback,
+                        ) -> None:
                             if t.cancelled():
                                 return
                             exc = t.exception()

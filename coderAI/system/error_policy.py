@@ -3,7 +3,10 @@
 import json as _json
 import logging
 import re
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
+
+if TYPE_CHECKING:
+    from coderAI.system.cost import CostTracker
 
 from coderAI.system.redaction import (
     SENSITIVE_KEYS as _SENSITIVE_KEYS,  # noqa: F401  (back-compat re-export)
@@ -26,7 +29,7 @@ class BudgetExceededError(RuntimeError):
 
 def check_budget_limit(
     budget_limit: float,
-    cost_tracker,
+    cost_tracker: "CostTracker",
     *,
     emit_warning: bool = False,
 ) -> None:

@@ -44,7 +44,7 @@ class CodeIndexer:
     def __init__(
         self,
         project_root: str,
-        embedding_provider,  # EmbeddingProvider
+        embedding_provider: Any,  # EmbeddingProvider
     ) -> None:
         self._root = Path(project_root).resolve()
         self._embed = embedding_provider
@@ -224,11 +224,9 @@ class CodeIndexer:
             ]
             if changed_rels:
                 try:
-                    existing = self._collection.get(  # type: ignore[assignment,arg-type]
-                        where={"file_path": {"$in": changed_rels}}  # type: ignore[dict-item]
-                    )
-                    if existing and existing["ids"]:  # type: ignore[index]
-                        self._collection.delete(ids=existing["ids"])  # type: ignore[arg-type,index]
+                    existing = self._collection.get(where={"file_path": {"$in": changed_rels}})
+                    if existing and existing["ids"]:
+                        self._collection.delete(ids=existing["ids"])
                 except Exception:
                     logger.debug(
                         "Failed to delete existing ChromaDB chunks before re-indexing",
@@ -283,8 +281,8 @@ class CodeIndexer:
             self._collection.add,
             ids=ids,
             documents=docs,
-            metadatas=metadatas,  # type: ignore[arg-type]
-            embeddings=embeddings,  # type: ignore[arg-type]
+            metadatas=metadatas,
+            embeddings=embeddings,
         )
 
     def _update_manifest(self, file_hashes: Dict[str, str]) -> None:

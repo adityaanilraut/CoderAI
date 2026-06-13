@@ -17,7 +17,9 @@ from __future__ import annotations
 import threading
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import TYPE_CHECKING, Any, Callable, Iterator, Optional
+from typing import TYPE_CHECKING, Any, Callable, Iterator, Optional, TypeVar, cast
+
+T = TypeVar("T")
 
 if TYPE_CHECKING:
     from coderAI.core.agent_tracker import AgentTracker
@@ -69,19 +71,19 @@ class ToolServices:
         # threads (e.g. asyncio.to_thread bodies).
         self._build_lock = threading.Lock()
 
-    def _resolve(self, field: str, build: Callable[[], Any]) -> Any:
+    def _resolve(self, field: str, build: Callable[[], T]) -> T:
         attr = f"_{field}"
         val = getattr(self, attr)
         if val is not None:
-            return val
+            return cast(T, val)
         if self._parent is not None:
-            return getattr(self._parent, field)
+            return cast(T, getattr(self._parent, field))
         with self._build_lock:
             val = getattr(self, attr)
             if val is None:
                 val = build()
                 setattr(self, attr, val)
-        return val
+        return cast(T, val)
 
     @property
     def config(self) -> "Config":

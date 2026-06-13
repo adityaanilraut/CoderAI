@@ -29,7 +29,7 @@ class GeminiProvider(LLMProvider):
         "gemini-1.5-pro": "gemini-1.5-pro",
     }
 
-    def __init__(self, model: str, api_key: Optional[str] = None, **kwargs):
+    def __init__(self, model: str, api_key: Optional[str] = None, **kwargs: Any):
         """Initialize Gemini provider.
 
         Args:
@@ -56,7 +56,7 @@ class GeminiProvider(LLMProvider):
         tools: Optional[List[Dict[str, Any]]] = None,
         *,
         stream: bool = False,
-        **kwargs,
+        **kwargs: Any,
     ) -> Dict[str, Any]:
         params: Dict[str, Any] = {
             "model": self.actual_model,
@@ -78,7 +78,7 @@ class GeminiProvider(LLMProvider):
         self,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> Dict[str, Any]:
         """Send a chat completion request to Gemini.
 
@@ -94,7 +94,7 @@ class GeminiProvider(LLMProvider):
 
         try:
 
-            async def _call():
+            async def _call() -> Any:
                 return await self.client.chat.completions.create(**params)
 
             response = await _retry(_call, description="Gemini chat", max_retries=3)
@@ -117,7 +117,7 @@ class GeminiProvider(LLMProvider):
         self,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> AsyncIterator[Dict[str, Any]]:
         """Send a streaming chat completion request to Gemini.
 
@@ -133,7 +133,7 @@ class GeminiProvider(LLMProvider):
 
         try:
 
-            async def _create_stream():
+            async def _create_stream() -> Any:
                 return await self.client.chat.completions.create(**params)
 
             stream = await _retry(_create_stream, description="Gemini stream", max_retries=3)

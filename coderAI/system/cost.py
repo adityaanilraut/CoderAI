@@ -76,7 +76,7 @@ MODEL_PRICING: Dict[str, Dict[str, float]] = {
 class CostTracker:
     """Calculates and tracks API usage costs."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize the cost tracker."""
         self.total_cost_usd: float = 0.0
         self._lock = asyncio.Lock()

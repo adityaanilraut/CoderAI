@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from coderAI.system.config import config_manager
+from coderAI.system.config import Config, config_manager
 from coderAI.context.context_selector import build_focused_context, summarize_conversation_focus
 
 logger = logging.getLogger(__name__)
@@ -22,7 +22,7 @@ PINNED_CONTEXT_PER_FILE_CHARS = 10_000
 class ContextManager:
     """Manages project context and pinned files."""
 
-    def __init__(self, config=None):
+    def __init__(self, config: Optional[Config] = None) -> None:
         """Initialize context manager."""
         self.config = config.model_copy(deep=True) if config is not None else config_manager.load()
         self.pinned_files: Dict[str, str] = {}
@@ -31,7 +31,7 @@ class ContextManager:
         self._instructions_loaded: bool = False
         self._last_refresh_at: float = 0.0
 
-    def _load_instructions(self):
+    def _load_instructions(self) -> None:
         """Load project-specific instructions from file."""
         instruction_file = getattr(self.config, "project_instruction_file", "CODERAI.md")
         project_root = getattr(self.config, "project_root", ".")
@@ -111,12 +111,12 @@ class ContextManager:
         except Exception:
             return False
 
-    def clear(self):
+    def clear(self) -> None:
         """Clear all pinned files."""
         self.pinned_files.clear()
         self._pinned_mtimes.clear()
 
-    def refresh_pinned_files(self):
+    def refresh_pinned_files(self) -> None:
         """Re-read pinned files from disk only when they have changed (mtime check).
 
         Includes a cooldown (2s) so rapid tool-loop iterations don't

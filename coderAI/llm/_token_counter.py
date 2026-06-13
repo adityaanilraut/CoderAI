@@ -14,7 +14,7 @@ import logging
 import threading
 from collections import OrderedDict
 from typing import Optional, Tuple
-import requests  # type: ignore[import-untyped]
+import requests
 
 logger = logging.getLogger(__name__)
 

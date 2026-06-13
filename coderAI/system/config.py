@@ -96,7 +96,7 @@ class Config(BaseModel):
 class ConfigManager:
     """Manages configuration for CoderAI."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize the configuration manager."""
         self.config_dir = Path.home() / ".coderAI"
         self.config_file = self.config_dir / "config.json"

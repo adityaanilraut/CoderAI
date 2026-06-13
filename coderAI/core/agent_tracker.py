@@ -61,7 +61,7 @@ class AgentInfo:
     def is_cancelled(self) -> bool:
         return self._cancel_event.is_set()
 
-    def request_cancel(self):
+    def request_cancel(self) -> None:
         """Signal this agent to stop after the current step."""
         self._cancel_event.set()
         self.status = AgentStatus.CANCELLED
@@ -83,7 +83,7 @@ class AgentTracker:
     never evicted.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._agents: Dict[str, AgentInfo] = {}
         # threading.Lock is intentionally used here rather than asyncio.Lock.
         # The critical sections only perform dict lookups/insertions which take
@@ -163,7 +163,7 @@ class AgentTracker:
         with self._lock:
             return list(self._agents.values())
 
-    def cancel_all(self):
+    def cancel_all(self) -> None:
         """Request cancellation for every active agent."""
         with self._lock:
             for info in self._agents.values():

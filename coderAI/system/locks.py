@@ -24,7 +24,7 @@ class ResourceManager:
     concurrent writers to end up with *different* lock objects.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._file_locks: "OrderedDict[str, asyncio.Lock]" = OrderedDict()
         self._file_locks_lock: Optional[asyncio.Lock] = None
         self._git_lock: Optional[asyncio.Lock] = None

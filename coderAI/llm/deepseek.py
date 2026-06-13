@@ -21,7 +21,7 @@ class DeepSeekProvider(LLMProvider):
         "deepseek-r1": "deepseek-reasoner",
     }
 
-    def __init__(self, model: str, api_key: Optional[str] = None, **kwargs):
+    def __init__(self, model: str, api_key: Optional[str] = None, **kwargs: Any):
         """Initialize DeepSeek provider.
 
         Args:
@@ -56,7 +56,7 @@ class DeepSeekProvider(LLMProvider):
         tools: Optional[List[Dict[str, Any]]] = None,
         *,
         stream: bool = False,
-        **kwargs,
+        **kwargs: Any,
     ) -> Dict[str, Any]:
         params: Dict[str, Any] = {
             "model": self.actual_model,
@@ -90,7 +90,7 @@ class DeepSeekProvider(LLMProvider):
         self,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> Dict[str, Any]:
         """Send a chat completion request to DeepSeek.
 
@@ -106,7 +106,7 @@ class DeepSeekProvider(LLMProvider):
 
         try:
 
-            async def _call():
+            async def _call() -> Any:
                 return await self.client.chat.completions.create(**params)
 
             response = await _retry(_call, description="DeepSeek chat", max_retries=3)
@@ -125,7 +125,7 @@ class DeepSeekProvider(LLMProvider):
         self,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> AsyncIterator[Dict[str, Any]]:
         """Send a streaming chat completion request to DeepSeek.
 
@@ -141,7 +141,7 @@ class DeepSeekProvider(LLMProvider):
 
         try:
 
-            async def _create_stream():
+            async def _create_stream() -> Any:
                 return await self.client.chat.completions.create(**params)
 
             stream = await _retry(_create_stream, description="DeepSeek stream", max_retries=3)

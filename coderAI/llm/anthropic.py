@@ -107,7 +107,7 @@ class AnthropicProvider(LLMProvider):
     API_VERSION = "2023-06-01"
     SUPPORTED_MODELS = list(MODEL_ALIASES.keys())
 
-    def __init__(self, model: str, api_key: Optional[str] = None, **kwargs):
+    def __init__(self, model: str, api_key: Optional[str] = None, **kwargs: Any):
         """Initialize Anthropic provider.
 
         Args:
@@ -413,7 +413,7 @@ class AnthropicProvider(LLMProvider):
     async def _post_to_anthropic(self, payload: Dict[str, Any]) -> aiohttp.ClientResponse:
         session = await self._get_session()
 
-        async def _do_post():
+        async def _do_post() -> Any:
             return await session.post(
                 self.API_URL,
                 headers=self._get_headers(),
@@ -441,7 +441,7 @@ class AnthropicProvider(LLMProvider):
         self,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> Dict[str, Any]:
         """Send a chat request to Anthropic."""
         payload = self._build_payload(messages, tools, max_tokens=kwargs.get("max_tokens"))
@@ -464,7 +464,7 @@ class AnthropicProvider(LLMProvider):
         self,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> AsyncIterator[Dict[str, Any]]:
         """Stream response from Anthropic (SSE-based)."""
         payload = self._build_payload(

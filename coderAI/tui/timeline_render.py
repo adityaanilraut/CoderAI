@@ -4,18 +4,29 @@ from __future__ import annotations
 
 import logging
 import time as _time_mod
-from typing import Any, Dict
+from typing import Any, Dict, Protocol
 
 from rich.markup import escape
 from rich.text import Text
 from rich.markdown import Markdown
 from rich.padding import Padding
-from textual.widgets import RichLog
 
 from coderAI.tui.diff_render import format_diff_gutter
 from coderAI.tui.theme import Glyphs, Styles, Tokens
 
 logger = logging.getLogger(__name__)
+
+
+class SupportsWrite(Protocol):
+    """Minimal write sink for timeline rendering.
+
+    Both Textual's ``RichLog`` widget and the ``RecordingLog`` capture buffer
+    used for render caching satisfy this structurally — the renderers only ever
+    call ``write``.
+    """
+
+    def write(self, renderable: Any) -> Any: ...
+
 
 _TOAST_STYLES = {
     "info": Tokens.INFO,
@@ -39,7 +50,7 @@ def _first_lines(text: str, n: int) -> str:
     return "\n".join(lines[:n]) + f"\n[… {len(lines) - n} more lines]"
 
 
-def write_timeline_item(log: RichLog, it: Dict[str, Any], *, verbose: bool) -> None:
+def write_timeline_item(log: SupportsWrite, it: Dict[str, Any], *, verbose: bool) -> None:
     kind = it.get("kind")
     if kind == "user":
         write_user(log, it)
@@ -88,7 +99,7 @@ def build_stream_tail_markup(it: Dict[str, Any], *, verbose: bool) -> str:
     return "\n".join(lines)
 
 
-def write_user(log: RichLog, it: Dict[str, Any]) -> None:
+def write_user(log: SupportsWrite, it: Dict[str, Any]) -> None:
     ts = _fmt_ts(it.get("ts"))
     header = Text()
     header.append(f"{Glyphs.USER} ", style=Styles.USER_GLYPH)
@@ -105,7 +116,7 @@ def write_user(log: RichLog, it: Dict[str, Any]) -> None:
     log.write("")
 
 
-def write_assistant(log: RichLog, it: Dict[str, Any], verbose: bool) -> None:
+def write_assistant(log: SupportsWrite, it: Dict[str, Any], verbose: bool) -> None:
     ts = _fmt_ts(it.get("ts"))
     collapsed = it.get("collapsed")
     reasoning = (it.get("reasoning") or "").strip()
@@ -137,7 +148,7 @@ def write_assistant(log: RichLog, it: Dict[str, Any], verbose: bool) -> None:
     log.write("")
 
 
-def write_tool(log: RichLog, it: Dict[str, Any]) -> None:
+def write_tool(log: SupportsWrite, it: Dict[str, Any]) -> None:
     ts = _fmt_ts(it.get("ts"))
     collapsed = it.get("collapsed")
     ok = it.get("ok")
@@ -196,7 +207,7 @@ def write_tool(log: RichLog, it: Dict[str, Any]) -> None:
         log.write(Text(f"    → {it['error']}", style=f"{Tokens.DANGER}"))
 
 
-def write_diff(log: RichLog, it: Dict[str, Any], verbose: bool) -> None:
+def write_diff(log: SupportsWrite, it: Dict[str, Any], verbose: bool) -> None:
     ts = _fmt_ts(it.get("ts"))
     collapsed = it.get("collapsed")
     path = it.get("path", "")
@@ -219,7 +230,7 @@ def write_diff(log: RichLog, it: Dict[str, Any], verbose: bool) -> None:
         log.write(Text.from_markup(rendered))
 
 
-def write_error(log: RichLog, it: Dict[str, Any]) -> None:
+def write_error(log: SupportsWrite, it: Dict[str, Any]) -> None:
     ts = _fmt_ts(it.get("ts"))
     head = Text()
     head.append(f"{Glyphs.ERROR} ", style=Tokens.DANGER)
@@ -232,13 +243,13 @@ def write_error(log: RichLog, it: Dict[str, Any]) -> None:
         log.write(Text("  " + str(it["hint"]), style=Styles.TEXT_DIM))
 
 
-def write_toast(log: RichLog, it: Dict[str, Any]) -> None:
+def write_toast(log: SupportsWrite, it: Dict[str, Any]) -> None:
     level = it.get("level", "info")
     color = _TOAST_STYLES.get(level, Tokens.TEXT_DIM)
     log.write(Text("· " + str(it.get("message", "")), style=color))
 
 
-def write_approval(log: RichLog, it: Dict[str, Any]) -> None:
+def write_approval(log: SupportsWrite, it: Dict[str, Any]) -> None:
     decided = it.get("decided", "pending")
     head = Text()
     head.append(f"{Glyphs.APPROVAL} ", style=Styles.APPROVAL_GLYPH)
@@ -248,7 +259,7 @@ def write_approval(log: RichLog, it: Dict[str, Any]) -> None:
     log.write(head)
 
 
-def write_skill_card(log: RichLog, it: Dict[str, Any]) -> None:
+def write_skill_card(log: SupportsWrite, it: Dict[str, Any]) -> None:
     name = escape(str(it.get("name") or ""))
     desc = escape(str(it.get("description") or ""))
     steps = it.get("steps") or []
@@ -272,7 +283,7 @@ def write_skill_card(log: RichLog, it: Dict[str, Any]) -> None:
     log.write("")
 
 
-def write_plan_card(log: RichLog, it: Dict[str, Any]) -> None:
+def write_plan_card(log: SupportsWrite, it: Dict[str, Any]) -> None:
     title = str(it.get("title") or "")
     completed = int(it.get("completed") or 0)
     total = int(it.get("total") or 0)

@@ -5,7 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
-from typing import Any, Dict, Iterator, Literal, Optional
+from typing import Any, Dict, Iterator, Literal, Optional, cast
 
 IsolationDomain = Literal["auto", "read_only", "browser", "desktop", "workspace"]
 
@@ -53,7 +53,7 @@ def execution_context_scope(
         reset_execution_context(token)
 
 
-def resolve_delegation_isolation_domain(arguments: Optional[Dict[str, Any]]) -> str:
+def resolve_delegation_isolation_domain(arguments: Optional[Dict[str, Any]]) -> IsolationDomain:
     """Map ``delegate_task`` arguments to an executor routing domain."""
     if not isinstance(arguments, dict):
         return "workspace"
@@ -63,7 +63,9 @@ def resolve_delegation_isolation_domain(arguments: Optional[Dict[str, Any]]) -> 
     if domain == "read_only":
         return "read_only"
     if domain in PARALLEL_MUTATING_DOMAINS:
-        return str(domain)
+        # Members of PARALLEL_MUTATING_DOMAINS are themselves IsolationDomain
+        # values, so the membership check guarantees a valid literal here.
+        return cast(IsolationDomain, domain)
     if domain == "desktop":
         return "desktop"
     # ``auto`` and ``workspace`` default to conservative workspace serialization.

@@ -101,7 +101,7 @@ def estimate_tokens_by_chars(text: str) -> int:
 class LLMProvider(ABC):
     """Abstract base class for LLM providers."""
 
-    def __init__(self, model: str, api_key: Optional[str] = None, **kwargs):
+    def __init__(self, model: str, api_key: Optional[str] = None, **kwargs: Any):
         """Initialize the LLM provider.
 
         Args:
@@ -125,7 +125,7 @@ class LLMProvider(ABC):
         self,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> Dict[str, Any]:
         """Send a chat completion request.
 
@@ -144,7 +144,7 @@ class LLMProvider(ABC):
         self,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> AsyncIterator[Dict[str, Any]]:
         """Send a streaming chat completion request.
 
@@ -172,7 +172,7 @@ class LLMProvider(ABC):
         tools: Optional[List[Dict[str, Any]]] = None,
         *,
         stream: bool = False,
-        **kwargs,
+        **kwargs: Any,
     ) -> Dict[str, Any]:
         """Build the request payload for the provider's API.
 

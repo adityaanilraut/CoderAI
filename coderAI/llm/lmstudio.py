@@ -1,5 +1,7 @@
 """LM Studio local LLM provider implementation."""
 
+from typing import Any
+
 from coderAI.llm.local_base import OpenAICompatibleLocalProvider
 
 
@@ -7,7 +9,7 @@ class LMStudioProvider(OpenAICompatibleLocalProvider):
     """LM Studio local LLM provider using OpenAI-compatible API."""
 
     def __init__(
-        self, model: str = "local-model", endpoint: str = "http://localhost:1234/v1", **kwargs
+        self, model: str = "local-model", endpoint: str = "http://localhost:1234/v1", **kwargs: Any
     ):
         """Initialize LM Studio provider.
 

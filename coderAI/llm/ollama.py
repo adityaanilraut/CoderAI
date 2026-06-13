@@ -9,7 +9,7 @@ class OllamaProvider(OpenAICompatibleLocalProvider):
     """Ollama local LLM provider using OpenAI-compatible API."""
 
     def __init__(
-        self, model: str = "llama3", endpoint: str = "http://localhost:11434/v1", **kwargs
+        self, model: str = "llama3", endpoint: str = "http://localhost:11434/v1", **kwargs: Any
     ):
         """Initialize Ollama provider.
 

@@ -23,11 +23,12 @@ from coderAI.bridge.serializers import (
 
 if TYPE_CHECKING:
     from coderAI.bridge.controller import UIBridge
+    from coderAI.core.agent_tracker import AgentTracker
 
 logger = logging.getLogger(__name__)
 
 
-def _tracker():
+def _tracker() -> "AgentTracker":
     # Resolved through the controller module at call time so tests patching
     # coderAI.bridge.controller.agent_tracker keep working (the handlers
     # lived in that module before the Phase 2b split).

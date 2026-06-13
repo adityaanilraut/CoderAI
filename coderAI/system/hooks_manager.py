@@ -24,10 +24,13 @@ import os
 import re
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from coderAI.core.agent_tracker import AgentStatus
 from coderAI.system.events import event_emitter
+
+if TYPE_CHECKING:
+    from coderAI.core.agent import Agent
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +59,7 @@ def _sanitize_env_value(val: Any, max_len: int = 4096) -> str:
 class HooksManager:
     """Manages project-specific tool hook configuration and execution."""
 
-    def __init__(self, agent):
+    def __init__(self, agent: "Agent") -> None:
         self.agent = agent
         # Cache for project hooks.json (keyed by path → (mtime_ns, parsed))
         self._hooks_cache: Dict[str, Tuple[int, Optional[Dict[str, Any]]]] = {}
@@ -186,7 +189,7 @@ class HooksManager:
 
             if runnable:
 
-                async def _exec_hook(cmd: str):
+                async def _exec_hook(cmd: str) -> Optional[str]:
                     event_emitter.emit(
                         "agent_status", message=f"[dim]Running {hook_type} hook...[/dim]"
                     )

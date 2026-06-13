@@ -206,7 +206,7 @@ class ExecutionLoop:
                 "*", "on_user_prompt", {"text": user_message}, hooks_data
             )
 
-            async def fallback_chat_hook(*a, **kw):
+            async def fallback_chat_hook(*a: Any, **kw: Any):
                 return None
 
             func = getattr(self.hooks_manager, "run_chat_message_hooks", fallback_chat_hook)

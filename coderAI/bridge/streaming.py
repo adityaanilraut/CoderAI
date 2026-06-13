@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
+if TYPE_CHECKING:
+    from coderAI.bridge.controller import UIBridge
 
 # Match EventReducer.STREAM_FLUSH_S so IPC and UI batch at the same cadence.
 STREAM_EMIT_S = 0.120
@@ -35,7 +38,7 @@ def _partial_tag_suffix_len(buffer: str, tag: str) -> int:
 class BridgeStreamingHandler:
     """Consume an LLM stream and relay deltas through an ``UIBridge``."""
 
-    def __init__(self, server) -> None:
+    def __init__(self, server: UIBridge) -> None:
         self.server = server
         self.current_content = ""
         self.current_reasoning = ""
@@ -50,7 +53,7 @@ class BridgeStreamingHandler:
         self._batch_last_flush = 0.0
 
     async def handle_stream(
-        self, stream, initial_content: str = "", cancel_event: Any = None
+        self, stream: Any, initial_content: str = "", cancel_event: Any = None
     ) -> Dict[str, Any]:
         self.current_content = initial_content
         self.current_reasoning = ""

@@ -480,7 +480,7 @@ class ToolExecutor:
                 # Check permission hooks first (can auto-allow or auto-deny)
                 if hooks_manager is not None and hooks_data:
 
-                    async def fallback_hook(*a, **kw):
+                    async def fallback_hook(*a: Any, **kw: Any):
                         return None
 
                     func = getattr(hooks_manager, "run_permission_hooks", fallback_hook)

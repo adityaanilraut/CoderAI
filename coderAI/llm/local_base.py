@@ -27,7 +27,7 @@ class OpenAICompatibleLocalProvider(LLMProvider):
     extraction for Ollama).
     """
 
-    def __init__(self, model: str, endpoint: str, **kwargs):
+    def __init__(self, model: str, endpoint: str, **kwargs: Any):
         super().__init__(model, None, **kwargs)
         self.endpoint = endpoint.rstrip("/")
         if not self.endpoint.endswith("/v1"):
@@ -49,7 +49,7 @@ class OpenAICompatibleLocalProvider(LLMProvider):
         tools: Optional[List[Dict[str, Any]]] = None,
         *,
         stream: bool = False,
-        **kwargs,
+        **kwargs: Any,
     ) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
             "model": self.model,
@@ -79,7 +79,7 @@ class OpenAICompatibleLocalProvider(LLMProvider):
         self,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> Dict[str, Any]:
         url = self._get_url()
         payload = self._build_payload(messages, tools, **kwargs)
@@ -111,7 +111,7 @@ class OpenAICompatibleLocalProvider(LLMProvider):
         self,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> AsyncIterator[Dict[str, Any]]:
         url = self._get_url()
         payload = self._build_payload(messages, tools, stream=True, **kwargs)

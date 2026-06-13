@@ -62,7 +62,7 @@ class Session(BaseModel):
     model: str = Field(default_factory=_default_session_model)
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
-    def add_message(self, role: str, content: str, **kwargs) -> None:
+    def add_message(self, role: str, content: str, **kwargs: Any) -> None:
         """Add a message to the session."""
         message = Message(role=role, content=content, **kwargs)
         self.messages.append(message)
@@ -198,7 +198,7 @@ def _sanitize_session_data(data: Dict[str, Any]) -> Dict[str, Any]:
 class HistoryManager:
     """Manages conversation history."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize the history manager."""
         self.history_dir = Path.home() / ".coderAI" / "history"
         self.history_dir.mkdir(parents=True, exist_ok=True)
