@@ -11,7 +11,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import IO, Any, Optional
 
 from coderAI.core.services import get_services
 from coderAI.core.tool_error_codes import ToolErrorCode
@@ -236,7 +236,7 @@ def _reject_symlink_leaf(path: Path, op: str) -> Optional[dict[str, Any]]:
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
 
-def _safe_open_no_symlink(path: Path, mode: str, encoding: Optional[str] = "utf-8"):
+def _safe_open_no_symlink(path: Path, mode: str, encoding: Optional[str] = "utf-8") -> IO[str]:
     """Open *path* with ``O_NOFOLLOW`` so a swap-to-symlink between
     ``_reject_symlink_leaf`` and the open will fail with ``OSError(ELOOP)``
     instead of silently following the link.

@@ -1,5 +1,6 @@
 """In-place editing tools: search/replace and unified-diff patching."""
 
+import asyncio
 import re
 from pathlib import Path
 from typing import Any, Optional
@@ -82,9 +83,12 @@ class SearchReplaceTool(Tool):
                 if symlink_err:
                     return symlink_err
 
-                try:
+                def _read() -> str:
                     with _safe_open_no_symlink(path_obj, "r") as f:
-                        content = f.read()
+                        return f.read()
+
+                try:
+                    content = await asyncio.to_thread(_read)
                 except OSError as e:
                     return {
                         "success": False,
@@ -112,7 +116,7 @@ class SearchReplaceTool(Tool):
                     count = 1
 
                 try:
-                    _atomic_write_file(path_obj, new_content)
+                    await asyncio.to_thread(_atomic_write_file, path_obj, new_content)
                 except OSError as e:
                     return {
                         "success": False,
@@ -192,9 +196,12 @@ class ApplyDiffTool(Tool):
                 if symlink_err:
                     return symlink_err
 
-                try:
+                def _readlines() -> list[str]:
                     with _safe_open_no_symlink(path_obj, "r") as f:
-                        original_lines = f.readlines()
+                        return f.readlines()
+
+                try:
+                    original_lines = await asyncio.to_thread(_readlines)
                 except OSError as e:
                     return {
                         "success": False,
@@ -278,7 +285,7 @@ class ApplyDiffTool(Tool):
                 # leaving the target in a partial-write state.
                 joined = "".join(result_lines)
                 try:
-                    _atomic_write_file(path_obj, joined)
+                    await asyncio.to_thread(_atomic_write_file, path_obj, joined)
                 except OSError as e:
                     return {
                         "success": False,

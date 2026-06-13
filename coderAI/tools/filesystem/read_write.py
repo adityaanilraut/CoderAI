@@ -1,5 +1,6 @@
 """File read and write tools."""
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Any, Optional
@@ -97,14 +98,19 @@ class ReadFileTool(Tool):
                         "size_bytes": file_size,
                     }
 
-            with open(path_obj, "r", encoding="utf-8") as f:
-                if is_partial_read:
-                    lines = f.readlines()
-                    start = (start_line - 1) if start_line else 0
-                    end = end_line if end_line else len(lines)
-                    content = "".join(lines[start:end])
-                else:
-                    content = f.read()
+            def _read() -> str:
+                # Offloaded to a worker thread so a large file read doesn't
+                # block the event loop (UnicodeDecodeError propagates out and
+                # is handled by the caller's except clause).
+                with open(path_obj, "r", encoding="utf-8") as f:
+                    if is_partial_read:
+                        lines = f.readlines()
+                        start = (start_line - 1) if start_line else 0
+                        end = end_line if end_line else len(lines)
+                        return "".join(lines[start:end])
+                    return f.read()
+
+            content = await asyncio.to_thread(_read)
 
             line_count = content.count("\n")
             # A file with no trailing newline still has 1 line of content,
@@ -199,7 +205,9 @@ class WriteFileTool(Tool):
                     if path_obj.exists():
                         backup_store.backup_file(str(path_obj), "modify")
                         try:
-                            before_content = path_obj.read_text(encoding="utf-8")
+                            before_content = await asyncio.to_thread(
+                                path_obj.read_text, encoding="utf-8"
+                            )
                         except Exception:
                             # Binary or unreadable file → skip the diff preview;
                             # the write itself proceeds (backup already taken).
@@ -214,12 +222,17 @@ class WriteFileTool(Tool):
                         logger.warning("Backup before append failed: %s", backup_result["error"])
 
                 mode = "a" if append else "w"
-                try:
+
+                def _do_write() -> None:
+                    # Blocking disk write offloaded to a worker thread.
                     if mode == "w":
                         _atomic_write_file(path_obj, content)
                     else:
                         with _safe_open_no_symlink(path_obj, mode) as f:
                             f.write(content)
+
+                try:
+                    await asyncio.to_thread(_do_write)
                 except OSError as e:
                     return {
                         "success": False,
