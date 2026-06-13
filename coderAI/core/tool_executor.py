@@ -18,6 +18,7 @@ from coderAI.core.execution_context import (
     execution_context_scope,
     resolve_delegation_isolation_domain,
 )
+from coderAI.core.services import services_scope
 from coderAI.system.events import event_emitter
 from coderAI.core.tool_routing import (
     call_mcp_tool_by_function_name,
@@ -568,6 +569,23 @@ class ToolExecutor:
             )
 
     async def orchestrate_tool_calls(
+        self,
+        tool_calls: list,
+        messages: List[Dict[str, Any]],
+        user_message: str,
+        hooks_data: Optional[Dict[str, Any]],
+        hooks_manager,
+    ) -> Tuple[bool, Optional[Dict[str, Any]]]:
+        # Bind the owning agent's effective config (project overrides included)
+        # for the duration of the batch. Stores still resolve to the shared
+        # process-wide instances through the parent chain, so cross-agent
+        # sharing (notepad/tracker/undo) is unchanged.
+        with services_scope(inherit=True, config=getattr(self.agent, "config", None)):
+            return await self._orchestrate_tool_calls(
+                tool_calls, messages, user_message, hooks_data, hooks_manager
+            )
+
+    async def _orchestrate_tool_calls(
         self,
         tool_calls: list,
         messages: List[Dict[str, Any]],
