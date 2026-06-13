@@ -39,7 +39,7 @@ from coderAI.tui.session_setup import create_agent_session
 from coderAI.tui.slash import handle_slash_command
 from coderAI.tui.state import SessionState
 from coderAI.tui.platform import composer_placeholder, supports_truecolor, truecolor_hint
-from coderAI.tui.theme import Tokens
+from coderAI.tui.theme import Glyphs, Tokens
 from coderAI.tui.timeline_render import (
     build_stream_tail_markup,
     write_timeline_item,
@@ -95,7 +95,18 @@ Screen {{
     border: round {Tokens.LINE};
     padding: 1 2;
 }}
+#prompt-row {{
+    height: auto;
+    background: {Tokens.BG_RAISED};
+}}
+#prompt-caret {{
+    width: 2;
+    height: auto;
+    color: {Tokens.ACCENT};
+    background: {Tokens.BG_RAISED};
+}}
 #prompt-area {{
+    width: 1fr;
     height: auto;
     min-height: 2;
     max-height: 8;
@@ -227,7 +238,9 @@ class CoderAIApp(App[None]):
                 with VerticalScroll(id="tasks-scroll"):
                     yield Static("", id="tasks-pane", markup=True)
         with Vertical(id="composer-box"):
-            yield PromptArea(id="prompt-area")
+            with Horizontal(id="prompt-row"):
+                yield Static(f"[{Tokens.ACCENT}]{Glyphs.USER}[/]", id="prompt-caret", markup=True)
+                yield PromptArea(id="prompt-area")
             yield Static("", id="composer-footer", markup=True)
         yield Footer()
 
@@ -428,6 +441,8 @@ class CoderAIApp(App[None]):
                 prompt.placeholder = f"{label}…"
             else:
                 prompt.placeholder = composer_placeholder()
+            caret_color = Tokens.ACCENT if s.ready else Tokens.LINE
+            self.query_one("#prompt-caret", Static).update(f"[{caret_color}]{Glyphs.USER}[/]")
             footer = self.query_one("#composer-footer", Static)
             footer.update(self._composer_footer_markup())
         except NoMatches:

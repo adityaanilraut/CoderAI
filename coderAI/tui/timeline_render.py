@@ -6,7 +6,10 @@ import logging
 import time as _time_mod
 from typing import Any, Dict, Protocol
 
+from rich.console import Console, ConsoleOptions, Group, RenderResult
 from rich.markup import escape
+from rich.segment import Segment
+from rich.style import Style
 from rich.text import Text
 from rich.markdown import Markdown
 from rich.padding import Padding
@@ -48,6 +51,28 @@ def _first_lines(text: str, n: int) -> str:
     if len(lines) <= n:
         return text
     return "\n".join(lines[:n]) + f"\n[… {len(lines) - n} more lines]"
+
+
+class _RailBlock:
+    """Render ``renderable`` with a colored ``▎`` left rail on every visual line.
+
+    The Rail is the design system's backbone motif: a single colored left-edge
+    pipe that groups a block with minimal visual weight (see the Tokyo Night
+    "Rail" redesign). Tool cards/diffs draw a single-line rail inline; this
+    wrapper extends the same gutter down a multi-line block (chat bubbles).
+    """
+
+    def __init__(self, renderable: Any, color: str) -> None:
+        self.renderable = renderable
+        self.color = color
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        gutter = Segment("▎ ", Style(color=self.color))
+        inner = options.update_width(max(1, options.max_width - 2))
+        for line in console.render_lines(self.renderable, inner, pad=False):
+            yield gutter
+            yield from line
+            yield Segment.line()
 
 
 def write_timeline_item(log: SupportsWrite, it: Dict[str, Any], *, verbose: bool) -> None:
@@ -106,13 +131,16 @@ def write_user(log: SupportsWrite, it: Dict[str, Any]) -> None:
     header.append("you", style=Styles.USER)
     if ts:
         header.append(f"  {ts}")
-    log.write(header)
+    parts: list[Any] = [header]
     body = it.get("text", "") or ""
     if body:
         if it.get("collapsed"):
-            log.write(Text.from_markup(f"  [{Tokens.TEXT_DIM}]{escape(_first_lines(body, 2))}[/]"))
+            parts.append(
+                Text.from_markup(f"  [{Tokens.TEXT_DIM}]{escape(_first_lines(body, 2))}[/]")
+            )
         else:
-            log.write(Padding(Markdown(body), (0, 0, 0, 2)))
+            parts.append(Padding(Markdown(body), (0, 0, 0, 2)))
+    log.write(_RailBlock(Group(*parts), Tokens.INFO))
     log.write("")
 
 
@@ -120,31 +148,33 @@ def write_assistant(log: SupportsWrite, it: Dict[str, Any], verbose: bool) -> No
     ts = _fmt_ts(it.get("ts"))
     collapsed = it.get("collapsed")
     reasoning = (it.get("reasoning") or "").strip()
+    parts: list[Any] = []
     if verbose and reasoning and not collapsed:
-        head = Text()
-        head.append(f"{Glyphs.REASONING} ", style=Styles.REASONING_GLYPH)
-        head.append("reasoning", style=Styles.REASONING_LABEL)
+        rhead = Text()
+        rhead.append(f"{Glyphs.REASONING} ", style=Styles.REASONING_GLYPH)
+        rhead.append("reasoning", style=Styles.REASONING_LABEL)
         if ts:
-            head.append(f"  {ts}")
-        log.write(head)
-        log.write(Text("  " + reasoning, style=Styles.REASONING))
-        log.write("")
+            rhead.append(f"  {ts}")
+        parts.append(rhead)
+        parts.append(Text("  " + reasoning, style=Styles.REASONING))
+        parts.append(Text(""))
     head = Text()
     head.append(f"{Glyphs.ASSISTANT} ", style=Styles.ASSISTANT_GLYPH)
     head.append("assistant", style=Styles.ASSISTANT)
     if ts:
         head.append(f"  {ts}")
-    log.write(head)
+    parts.append(head)
     content = it.get("content", "")
     if content:
         if collapsed:
-            log.write(
+            parts.append(
                 Text.from_markup(f"  [{Tokens.TEXT_DIM}]{escape(_first_lines(content, 3))}[/]")
             )
         else:
-            log.write(Padding(Markdown(content), (0, 0, 0, 2)))
+            parts.append(Padding(Markdown(content), (0, 0, 0, 2)))
     if it.get("streaming") and not collapsed:
-        log.write(Text("  ▌", style=f"blink {Tokens.AGENT}"))
+        parts.append(Text("  ▌", style=f"blink {Tokens.AGENT}"))
+    log.write(_RailBlock(Group(*parts), Tokens.AGENT))
     log.write("")
 
 

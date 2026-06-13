@@ -26,20 +26,26 @@ def _wrote(log: RecordingLog) -> bool:
 
 
 def test_write_user_variants():
-    # Non-collapsed body with timestamp renders header + markdown body + blank.
+    from coderAI.tui.theme import Tokens
+
+    # Non-collapsed body + timestamp: one cyan rail-wrapped block + trailing blank.
     log = RecordingLog()
     tr.write_user(log, {"text": "hello\nworld", "ts": 1_700_000_000})
-    assert len(log.writes) == 3
+    assert len(log.writes) == 2
+    assert isinstance(log.writes[0], tr._RailBlock)
+    assert log.writes[0].color == Tokens.INFO
 
-    # Collapsed body uses the truncated dim renderer.
+    # Collapsed body uses the truncated dim renderer, still inside one rail block.
     log = RecordingLog()
     tr.write_user(log, {"text": "a\nb\nc\nd", "collapsed": True})
-    assert len(log.writes) == 3
+    assert len(log.writes) == 2
+    assert isinstance(log.writes[0], tr._RailBlock)
 
-    # Empty body: header + trailing blank only.
+    # Empty body: rail block (header only) + trailing blank.
     log = RecordingLog()
     tr.write_user(log, {"text": ""})
     assert len(log.writes) == 2
+    assert isinstance(log.writes[0], tr._RailBlock)
 
 
 def test_write_assistant_variants():
@@ -66,10 +72,15 @@ def test_write_assistant_variants():
     )
     assert _wrote(log)
 
-    # Non-verbose with no content still writes the assistant header + blank.
+    # Non-verbose with no content still writes the assistant header + blank,
+    # wrapped in a single green (AGENT) rail block.
     log = RecordingLog()
     tr.write_assistant(log, {"content": ""}, False)
     assert _wrote(log)
+    from coderAI.tui.theme import Tokens
+
+    assert isinstance(log.writes[0], tr._RailBlock)
+    assert log.writes[0].color == Tokens.AGENT
 
 
 def test_write_tool_variants():
