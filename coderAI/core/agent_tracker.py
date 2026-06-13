@@ -10,7 +10,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import AbstractSet, Dict, Iterable, List, Optional
+from typing import AbstractSet, Any, Dict, Iterable, List, Optional, cast
 
 
 class AgentStatus(str, Enum):
@@ -205,5 +205,30 @@ class AgentTracker:
                     self._agents.pop(aid, None)
 
 
-# Global singleton
-agent_tracker = AgentTracker()
+def get_agent_tracker() -> "AgentTracker":
+    """Resolve the active agent tracker (process-shared via ToolServices)."""
+    from coderAI.core.services import get_services
+
+    return get_services().agent_tracker
+
+
+class _LazyAgentTracker:
+    """Module-level proxy delegating to the active ToolServices agent tracker.
+
+    Kept so existing ``from coderAI.core.agent_tracker import agent_tracker``
+    import sites (agent, bridge controller/serializers, tui session setup)
+    keep working after ownership moved into ToolServices. Tests that patch
+    ``coderAI.bridge.controller.agent_tracker`` still rebind that module's
+    own name; everything else resolves through the process-wide default
+    container, so all references observe the same tracker by default.
+    """
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(get_agent_tracker(), name)
+
+    def __repr__(self) -> str:
+        return repr(get_agent_tracker())
+
+
+# Backward-compat alias — lazily delegates to the active container's tracker.
+agent_tracker: "AgentTracker" = cast("AgentTracker", _LazyAgentTracker())
