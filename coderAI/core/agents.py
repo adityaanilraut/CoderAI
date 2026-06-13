@@ -148,7 +148,7 @@ def load_agent_persona(persona_name: str, project_root: str = ".") -> Optional[A
         # unmapped name.
         if isinstance(model_name, str):
             try:
-                from .llm.anthropic import MODEL_ALIASES as _anthropic_aliases
+                from coderAI.llm.anthropic import MODEL_ALIASES as _anthropic_aliases
 
                 model_name = _anthropic_aliases.get(model_name.lower(), model_name)
             except (ImportError, AttributeError):
