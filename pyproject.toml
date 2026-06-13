@@ -108,4 +108,10 @@ warn_unused_ignores = true
 asyncio_mode = "auto"
 testpaths = ["tests"]
 asyncio_default_fixture_loop_scope = "function"
+# Exclude long-running benchmarks from the default run (and CI). Opt in with
+# `pytest -m slow`.
+addopts = "-m 'not slow'"
+markers = [
+    "slow: long-running benchmark; excluded from the default run (use -m slow to include)",
+]
 

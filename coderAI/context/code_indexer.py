@@ -18,6 +18,8 @@ import asyncio
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from coderAI.system.events import event_emitter
+
 logger = logging.getLogger(__name__)
 
 _BATCH_SIZE = 32  # how many chunks to embed in one API call
@@ -52,7 +54,11 @@ class CodeIndexer:
         self._manifest_path = self._index_dir / "manifest.json"
         self._index_dir.mkdir(parents=True, exist_ok=True)
 
-        self._manifest: Dict[str, str] = {}
+        # Manifest values are per-file entries: {"hash", "mtime", "size"}.
+        # Legacy manifests stored a bare hash string; those are coerced on read
+        # and upgraded to the dict form on the next index pass.
+        self._manifest: Dict[str, Any] = {}
+        self._manifest_dirty = False
         self._collection: Optional[Any] = None
         self._client: Optional[Any] = None
 
@@ -83,11 +89,15 @@ class CodeIndexer:
         removed = self._cleanup_removed_files(files)
 
         if not to_index:
+            # Discovery may have refreshed stored mtimes for touched-but-
+            # unchanged files; persist them so the fast path holds next run.
+            if self._manifest_dirty:
+                self._save_manifest()
             return {"added": added, "removed": removed, "updated": updated, "unchanged": unchanged}
 
-        ids, docs, metadatas, embeddings, file_hashes = await self._chunk_and_embed(to_index)
+        ids, docs, metadatas, embeddings, file_entries = await self._chunk_and_embed(to_index)
         await self._upsert_batch(ids, docs, metadatas, embeddings)
-        self._update_manifest(file_hashes)
+        self._update_manifest(file_entries)
 
         return {
             "added": added,
@@ -165,15 +175,41 @@ class CodeIndexer:
         updated = 0
         for fp in files:
             rel = str(fp.relative_to(self._root))
+            try:
+                st = fp.stat()
+            except OSError:
+                if self._manifest.pop(rel, None) is not None:
+                    self._manifest_dirty = True
+                continue
+            mtime, size = st.st_mtime, st.st_size
+            existing = _entry_meta(self._manifest.get(rel))
+
+            # Fast path: when mtime AND size are unchanged since the last index,
+            # assume the content is unchanged and skip the full-file sha256 read.
+            if (
+                skip_if_unchanged
+                and existing is not None
+                and existing.get("mtime") == mtime
+                and existing.get("size") == size
+            ):
+                unchanged += 1
+                continue
+
             fhash = _file_hash(fp)
             if fhash is None:
-                self._manifest.pop(rel, None)
+                if self._manifest.pop(rel, None) is not None:
+                    self._manifest_dirty = True
                 continue
+
+            if skip_if_unchanged and existing is not None and existing.get("hash") == fhash:
+                # Content identical despite an mtime/size touch — refresh the
+                # stored stat so the next run fast-paths, but don't re-embed.
+                self._manifest[rel] = {"hash": fhash, "mtime": mtime, "size": size}
+                self._manifest_dirty = True
+                unchanged += 1
+                continue
+
             if skip_if_unchanged:
-                existing = self._manifest.get(rel)
-                if existing == fhash:
-                    unchanged += 1
-                    continue
                 if existing is None:
                     added += 1
                 else:
@@ -210,12 +246,13 @@ class CodeIndexer:
     async def _chunk_and_embed(self, to_index: list[Path]) -> tuple:
         """Chunk files, delete stale ChromaDB entries, and generate embeddings.
 
-        Returns (ids, docs, metadatas, embeddings, file_hashes).
+        Returns (ids, docs, metadatas, embeddings, file_entries) where
+        file_entries maps rel-path -> {"hash", "mtime", "size"}.
         """
         from coderAI.context.code_chunker import chunk_file
 
         all_chunks: list = []
-        file_hashes: Dict[str, str] = {}
+        file_entries: Dict[str, dict] = {}
         if self._collection is not None:
             changed_rels = [
                 str(fp.relative_to(self._root))
@@ -237,17 +274,35 @@ class CodeIndexer:
             result = await asyncio.to_thread(chunk_file, fp, self._root)
             if result.chunks:
                 all_chunks.extend(result.chunks)
-                file_hashes[rel] = result.file_hash
+                try:
+                    st = fp.stat()
+                    file_entries[rel] = {
+                        "hash": result.file_hash,
+                        "mtime": st.st_mtime,
+                        "size": st.st_size,
+                    }
+                except OSError:
+                    file_entries[rel] = {"hash": result.file_hash, "mtime": None, "size": None}
 
         ids: list[str] = []
         docs: list[str] = []
         metadatas: list[dict] = []
         embeddings: list[list[float]] = []
 
-        for batch_start in range(0, len(all_chunks), _BATCH_SIZE):
+        total_chunks = len(all_chunks)
+        for batch_start in range(0, total_chunks, _BATCH_SIZE):
             batch = all_chunks[batch_start : batch_start + _BATCH_SIZE]
             texts = [c.text for c in batch]
             vecs = await self._embed.embed(texts)
+
+            # Progress event so the UI can show embedding advance on large trees.
+            event_emitter.emit(
+                "index_progress",
+                phase="embed",
+                done=min(batch_start + len(batch), total_chunks),
+                total=total_chunks,
+                files=len(file_entries),
+            )
 
             for chunk, vec in zip(batch, vecs):
                 cid = f"{chunk.file_path}:{chunk.start_line}"
@@ -264,7 +319,7 @@ class CodeIndexer:
                 )
                 embeddings.append(vec)
 
-        return ids, docs, metadatas, embeddings, file_hashes
+        return ids, docs, metadatas, embeddings, file_entries
 
     async def _upsert_batch(
         self,
@@ -285,10 +340,10 @@ class CodeIndexer:
             embeddings=embeddings,
         )
 
-    def _update_manifest(self, file_hashes: Dict[str, str]) -> None:
-        """Persist updated file hashes to the manifest after a successful write."""
-        for rel, fhash in file_hashes.items():
-            self._manifest[rel] = fhash
+    def _update_manifest(self, file_entries: Dict[str, dict]) -> None:
+        """Persist updated file entries to the manifest after a successful write."""
+        for rel, entry in file_entries.items():
+            self._manifest[rel] = entry
         self._save_manifest()
 
     # ------------------------------------------------------------------
@@ -417,6 +472,22 @@ class CodeIndexer:
     def _save_manifest(self) -> None:
         self._manifest_path.parent.mkdir(parents=True, exist_ok=True)
         self._manifest_path.write_text(json.dumps(self._manifest, indent=2, sort_keys=True))
+        self._manifest_dirty = False
+
+
+def _entry_meta(value: Any) -> Optional[Dict[str, Any]]:
+    """Coerce a manifest value into ``{"hash", "mtime", "size"}`` form.
+
+    Accepts the current dict form, the legacy bare-hash string (no stat — so
+    the fast path is skipped until the entry is rewritten), or None.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return {"hash": value, "mtime": None, "size": None}
+    if isinstance(value, dict):
+        return value
+    return None
 
 
 def _file_hash(path: Path) -> Optional[str]:
