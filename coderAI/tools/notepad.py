@@ -60,8 +60,11 @@ class SharedNotepad:
             return count
 
 
-# Global singleton shared across all agents in the process
-shared_notepad = SharedNotepad()
+def get_notepad() -> SharedNotepad:
+    """Resolve the active shared notepad (process-shared via ToolServices)."""
+    from coderAI.core.services import get_services
+
+    return get_services().notepad
 
 
 class NotepadParams(BaseModel):
@@ -103,41 +106,42 @@ class NotepadTool(Tool):
         key: Optional[str] = None,
         value: Optional[str] = None,
     ) -> Dict[str, Any]:
+        notepad = get_notepad()
         try:
             if action == "write":
                 if not key:
                     return {"success": False, "error": "key is required for 'write'."}
                 if value is None:
                     return {"success": False, "error": "value is required for 'write'."}
-                shared_notepad.write(key, value)
+                notepad.write(key, value)
                 return {"success": True, "message": f"Note '{key}' saved."}
 
             elif action == "read":
                 if not key:
                     return {"success": False, "error": "key is required for 'read'."}
-                note = shared_notepad.read(key)
+                note = notepad.read(key)
                 if note is None:
                     return {"success": False, "error": f"Note '{key}' not found."}
                 return {"success": True, "key": key, "note": note}
 
             elif action == "list":
-                keys = shared_notepad.list_keys()
+                keys = notepad.list_keys()
                 return {"success": True, "keys": keys, "count": len(keys)}
 
             elif action == "read_all":
-                notes = shared_notepad.read_all()
+                notes = notepad.read_all()
                 return {"success": True, "notes": notes, "count": len(notes)}
 
             elif action == "delete":
                 if not key:
                     return {"success": False, "error": "key is required for 'delete'."}
-                existed = shared_notepad.delete(key)
+                existed = notepad.delete(key)
                 if existed:
                     return {"success": True, "message": f"Note '{key}' deleted."}
                 return {"success": False, "error": f"Note '{key}' not found."}
 
             elif action == "clear":
-                count = shared_notepad.clear()
+                count = notepad.clear()
                 return {"success": True, "message": f"Cleared {count} note(s)."}
 
             else:
