@@ -4,11 +4,17 @@ import asyncio
 import logging
 import os
 import time
-from typing import Dict, Optional
+from collections import OrderedDict
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-_last_request: Dict[str, float] = {}
+# Cap how many distinct domains we remember the last-request time for. Without
+# a bound this dict grows once per domain ever contacted for the life of the
+# process; an LRU cap keeps it small while still rate-limiting the domains a
+# session actually hits repeatedly.
+_MAX_TRACKED_DOMAINS = 2048
+_last_request: "OrderedDict[str, float]" = OrderedDict()
 _rate_limit_delay: float = 1.0
 
 
@@ -45,3 +51,7 @@ async def _rate_limit_async(hostname: Optional[str]) -> None:
         logger.debug(f"Rate limiting {domain}: waiting {wait:.2f}s")
         await asyncio.sleep(wait)
     _last_request[domain] = time.monotonic()
+    # Mark as most-recently-used and evict the oldest domains past the cap.
+    _last_request.move_to_end(domain)
+    while len(_last_request) > _MAX_TRACKED_DOMAINS:
+        _last_request.popitem(last=False)

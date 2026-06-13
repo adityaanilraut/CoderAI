@@ -22,6 +22,8 @@ from coderAI.tools.web._cache import (
     _DEFAULT_PAGE_TTL,
     _DEFAULT_SEARCH_TTL,
     _get_cached,
+    _maybe_prune,
+    _prune_cache,
     _set_cached,
 )
 from coderAI.tools.web._constants import (
