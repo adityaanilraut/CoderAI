@@ -5,7 +5,7 @@ import logging
 import threading
 from collections import OrderedDict
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional, cast
 
 logger = logging.getLogger(__name__)
 
@@ -99,5 +99,28 @@ class ResourceManager:
         return self._desktop_lock
 
 
-# Global singleton instance
-resource_manager = ResourceManager()
+def get_lock_manager() -> "ResourceManager":
+    """Resolve the active resource manager (process-shared via ToolServices)."""
+    from coderAI.core.services import get_services
+
+    return get_services().lock_manager
+
+
+class _LazyResourceManager:
+    """Module-level proxy delegating to the active ToolServices lock manager.
+
+    Kept so existing ``from coderAI.system.locks import resource_manager``
+    import sites keep working after ownership moved into ToolServices. The
+    process-wide default container reuses a single ``ResourceManager``, so the
+    per-event-loop lock recreation logic in ``ResourceManager`` is preserved.
+    """
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(get_lock_manager(), name)
+
+    def __repr__(self) -> str:
+        return repr(get_lock_manager())
+
+
+# Backward-compat alias — lazily delegates to the active container's manager.
+resource_manager: "ResourceManager" = cast("ResourceManager", _LazyResourceManager())
