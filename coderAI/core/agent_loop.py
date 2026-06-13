@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import time as _time
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set
 
 from coderAI.core.agent_tracker import AgentStatus
@@ -39,6 +40,28 @@ MAX_ITERATIONS_HARD_CAP = 200
 # sub-agent bootstrap recognise this marker to preserve / propagate the
 # error feedback across iterations and into spawned sub-agents.
 RECOVERABLE_ERROR_MARKER = "[Recoverable Error]:"
+
+# Sentinels returned by ``ExecutionLoop._handle_finish_reason`` to steer the
+# iteration: continue into the tool phase, or restart the loop without
+# consuming an iteration (pause_turn).
+_PROCEED_TO_TOOLS = object()
+_RESTART_ITERATION = object()
+
+
+@dataclass
+class _TurnState:
+    """Mutable per-turn state threaded through the iteration phases."""
+
+    user_message: str
+    messages: List[Dict[str, Any]]
+    tool_schemas: Optional[List[Dict[str, Any]]]
+    hooks_data: Any
+    max_iterations: int
+    iteration: int = 0
+    consecutive_llm_errors: int = 0
+    consecutive_tool_errors: int = 0
+    consecutive_pauses: int = 0
+    tools_were_used: bool = False
 
 
 class ExecutionLoop:
@@ -200,7 +223,6 @@ class ExecutionLoop:
         tool_schemas = self._get_tool_schemas()
 
         self.agent._assistant_reply_parts.clear()
-        tools_were_used = False
 
         # Process with LLM (potentially multiple rounds for tool calls)
         max_iterations = self.agent.config.max_iterations
@@ -219,379 +241,418 @@ class ExecutionLoop:
                 self._hard_cap_warned = True
                 event_emitter.emit("agent_warning", message=clamp_msg)
             max_iterations = hard_cap
-        iteration = 0
-        consecutive_llm_errors = 0
-        consecutive_tool_errors = 0
-        consecutive_pauses = 0
+        state = _TurnState(
+            user_message=user_message,
+            messages=messages,
+            tool_schemas=tool_schemas,
+            hooks_data=hooks_data,
+            max_iterations=max_iterations,
+        )
 
-        while iteration < max_iterations:
-            iteration += 1
-
-            # Per-iteration back-off after recoverable errors so retries are
-            # paced rather than burned in milliseconds. Cancellation-aware:
-            # ``cancel_event.wait()`` short-circuits the sleep when the user
-            # hits /cancel.
-            delay = compute_iteration_backoff(max(consecutive_llm_errors, consecutive_tool_errors))
-            if delay > 0:
-                cancel_event = (
-                    self.agent.tracker_info._cancel_event if self.agent.tracker_info else None
-                )
-                event_emitter.emit(
-                    "agent_status",
-                    message=(
-                        f"Backing off {delay:.1f}s after {max(consecutive_llm_errors, consecutive_tool_errors)} consecutive error(s)…"
-                    ),
-                )
-                if cancel_event is not None:
-                    try:
-                        await asyncio.wait_for(cancel_event.wait(), timeout=delay)
-                        # cancel_event fired during back-off → user cancelled.
-                        return await self._handle_cancellation()
-                    except asyncio.TimeoutError:
-                        # Back-off elapsed; continue normally.
-                        pass
-                else:
-                    await asyncio.sleep(delay)
-
-            if self.agent.tracker_info and self.agent.tracker_info.is_cancelled:
-                return await self._handle_cancellation()
-
-            try:
-                if self.agent.tracker_info:
-                    if self.agent.tracker_info.status != AgentStatus.THINKING:
-                        self.agent.tracker_info.status = AgentStatus.THINKING
-                        self.agent._sync_tracker()
-
-                # Inject step reminders (plan mode, step-limit warnings)
-                step_aware_messages = self._inject_step_reminders(
-                    messages, iteration, max_iterations
-                )
-
-                # Periodic MCP server health check (every 10 iterations)
-                self._health_check_counter += 1
-                if self._health_check_counter >= 10:
-                    self._health_check_counter = 0
-                    try:
-                        from coderAI.tools.mcp import mcp_client
-
-                        await mcp_client.check_server_health()
-                        await mcp_client.auto_reconnect_degraded()
-                        tool_schemas = self._get_tool_schemas()
-                    except Exception as e:
-                        logger.debug("MCP health check failed: %s", e)
-
-                response_data = await self._call_llm_with_retry(step_aware_messages, tool_schemas)
-
-                # One-shot recovery when the model gets cut off mid-tool-loop:
-                # ask once for a concise final answer and re-issue the call.
-                # Second consecutive ``length`` is terminal (handled below).
-                if (
-                    response_data.get("finish_reason") == "length"
-                    and tools_were_used
-                    and not self._length_retry_used
-                ):
-                    self._length_retry_used = True
-                    event_emitter.emit(
-                        "agent_warning",
-                        message=(
-                            "Response truncated mid-tool-loop; retrying once with "
-                            "a concise-final-answer hint."
-                        ),
-                    )
-                    step_aware_messages = list(step_aware_messages) + [
-                        {
-                            "role": "system",
-                            "content": (
-                                "Previous reply was truncated by max_tokens. "
-                                "Respond concisely with the final answer for the "
-                                "user. Do NOT call any more tools."
-                            ),
-                        }
-                    ]
-                    response_data = await self._call_llm_with_retry(
-                        step_aware_messages, tool_schemas
-                    )
-
-                consecutive_llm_errors = 0
-
-                content = response_data.get("content")
-                tool_calls = response_data.get("tool_calls")
-                finish_reason = response_data.get("finish_reason")
-
-                if finish_reason == "cancelled":
-                    return await self._handle_cancellation()
-
-                if content and content.strip():
-                    self.agent._assistant_reply_parts.append(content.strip())
-
-                reasoning_content = response_data.get("reasoning_content")
-                session_content = content if content and str(content).strip() else None
-                self.agent.session.add_message(
-                    "assistant",
-                    session_content,
-                    tool_calls=tool_calls,
-                    reasoning_content=reasoning_content,
-                )
-                self._refresh_messages_from_session(messages)
-
-                if finish_reason == "refusal":
-                    event_emitter.emit(
-                        "agent_warning",
-                        message="Model refused this request (stop_reason=refusal). Returning model text without further tool calls.",
-                    )
-                    # Return the refusal content as final response — do NOT loop
-                    self.agent._finish_tracker()
-                    self.agent.save_session()
-
-                    # Run on_stop hooks
-                    if hooks_data:
-                        await self.hooks_manager.run_hooks(
-                            "*", "on_stop", {"iterations": iteration}, hooks_data
-                        )
-
-                    joined = "\n\n".join(self.agent._assistant_reply_parts)
-                    return {
-                        "content": joined if joined else (content or ""),
-                        "messages": self.agent.session.messages,
-                        "model_info": self.agent.provider.get_model_info(),
-                    }
-                elif finish_reason == "length":
-                    # Model hit max_tokens and was cut off mid-response.
-                    event_emitter.emit(
-                        "agent_warning",
-                        message=(
-                            "Response was truncated (max_tokens limit reached). "
-                            "Increase max_tokens in config to fix this."
-                        ),
-                    )
-                    self.agent._finish_tracker(error=True)
-                    self.agent.save_session()
-                    joined = "\n\n".join(self.agent._assistant_reply_parts)
-                    note = (
-                        "[Output cut off — the model hit the max_tokens limit. "
-                        "Run `coderAI config set max_tokens 16000` to increase it.]"
-                    )
-                    return {
-                        "content": f"{joined}\n\n{note}" if joined else note,
-                        "messages": self.agent.session.messages,
-                        "model_info": self.agent.provider.get_model_info(),
-                    }
-                elif finish_reason == "pause_turn":
-                    consecutive_pauses += 1
-                    if consecutive_pauses > MAX_CONSECUTIVE_PAUSES:
-                        event_emitter.emit(
-                            "agent_warning",
-                            message=(
-                                f"Model returned pause_turn {consecutive_pauses} times in a row; "
-                                "aborting to avoid an infinite loop."
-                            ),
-                        )
-                        return await self._handle_max_iterations()
-                    provider_mod = getattr(
-                        self.agent.provider,
-                        "__module__",
-                        type(self.agent.provider).__module__,
-                    )
-                    if tool_calls and not str(provider_mod).startswith("coderAI.llm.anthropic"):
-                        if self.agent.session and self.agent.session.messages:
-                            last = self.agent.session.messages[-1]
-                            if last.role == "assistant" and last.tool_calls:
-                                last.tool_calls = None
-                                self._refresh_messages_from_session(messages)
-                    event_emitter.emit(
-                        "agent_paused",
-                        message="Model requested pause_turn; resuming automatically.",
-                    )
-                    iteration -= 1
-                    continue
-                else:
-                    consecutive_pauses = 0
-
-                if not tool_calls:
-                    if (
-                        tools_were_used
-                        and not (content or "").strip()
-                        and not self.agent._assistant_reply_parts
-                    ):
-                        try:
-                            summary = await self._post_tool_closing_message(user_message)
-                        except BudgetExceededError:
-                            return self._handle_budget_exceeded(
-                                BudgetExceededError("Budget exceeded during closing summary.")
-                            )
-                        if summary:
-                            msgs = self.agent.session.messages
-                            if (
-                                msgs
-                                and msgs[-1].role == "assistant"
-                                and not (msgs[-1].content or "").strip()
-                                and not msgs[-1].tool_calls
-                            ):
-                                msgs.pop()
-                            self.agent.session.add_message("assistant", summary)
-                            self.agent._assistant_reply_parts.append(summary.strip())
-
-                    self.agent._finish_tracker()
-                    self.agent.save_session()
-
-                    # Run on_stop hooks
-                    if hooks_data:
-                        await self.hooks_manager.run_hooks(
-                            "*", "on_stop", {"iterations": iteration}, hooks_data
-                        )
-
-                    joined = "\n\n".join(self.agent._assistant_reply_parts)
-                    reply_text = joined if joined else (content or "")
-                    return {
-                        "content": reply_text,
-                        "messages": self.agent.session.messages,
-                        "model_info": self.agent.provider.get_model_info(),
-                    }
-
-                if self._detect_doom_loop(tool_calls):
-                    doom_msg = (
-                        "The last {n} tool-call steps repeated the same tool + arguments. "
-                        "The model appears to be stuck in a loop. Stopping to avoid "
-                        "wasting tokens. Please rephrase your request or provide "
-                        "additional guidance."
-                    ).format(n=DOOM_LOOP_THRESHOLD)
-                    event_emitter.emit("agent_warning", message=doom_msg)
-                    self.agent._finish_tracker(error=True)
-                    self.agent.save_session()
-                    joined = "\n\n".join(self.agent._assistant_reply_parts)
-                    return {
-                        "content": joined + "\n\n" + doom_msg if joined else doom_msg,
-                        "messages": self.agent.session.messages,
-                        "model_info": self.agent.provider.get_model_info(),
-                    }
-
-                did_error, fatal_res = await self.tool_executor.orchestrate_tool_calls(
-                    tool_calls, messages, user_message, hooks_data, self.hooks_manager
-                )
-
-                # Emit progress after tool execution for sub-agent streaming
-                if self.progress_callback:
-                    try:
-                        self.progress_callback(tool_calls, did_error)
-                    except Exception:
-                        pass
-
-                # Check for cancellation after tools (long tool chains can be interrupted)
-                if self.agent.tracker_info and self.agent.tracker_info.is_cancelled:
-                    return await self._handle_cancellation()
-
-                if did_error:
-                    # Cross-iteration doom-loop hard stop: the executor
-                    # has flagged that some (tool, args) fingerprint has
-                    # been called too many times. Terminate cleanly with
-                    # the same lifecycle as a normal stop.
-                    if (
-                        fatal_res
-                        and isinstance(fatal_res, dict)
-                        and fatal_res.get("_doom_loop_stop")
-                    ):
-                        tool_name = fatal_res.get("tool_name", "unknown")
-                        count = fatal_res.get("count", 0)
-                        stop_msg = (
-                            f"Stopped to avoid wasting tokens: '{tool_name}' was "
-                            f"called {count} times with identical arguments. "
-                            "The model appears to be looping. Please rephrase your "
-                            "request or provide additional guidance."
-                        )
-                        self.agent._finish_tracker(error=True)
-                        self.agent.save_session()
-                        if hooks_data:
-                            await self.hooks_manager.run_hooks(
-                                "*",
-                                "on_stop",
-                                {"iterations": iteration, "error": "doom_loop"},
-                                hooks_data,
-                            )
-                        joined = "\n\n".join(self.agent._assistant_reply_parts)
-                        return {
-                            "content": (joined + "\n\n" + stop_msg) if joined else stop_msg,
-                            "messages": self.agent.session.messages,
-                            "model_info": self.agent.provider.get_model_info(),
-                        }
-
-                    # Detect denied tools vs real errors. Denials should not
-                    # count toward consecutive_tool_errors when
-                    # ``continue_loop_on_deny`` is True (the model can retry
-                    # with a different approach). When False, treat denial as
-                    # a terminal stop.
-                    has_denials = (
-                        fatal_res and isinstance(fatal_res, dict) and bool(fatal_res.get("_denied"))
-                    )
-                    if has_denials and isinstance(fatal_res, dict):
-                        if not self.agent.config.continue_loop_on_deny:
-                            denied_names = fatal_res.get("_denied_tools", [])
-                            names_str = ", ".join(denied_names) if denied_names else "unknown"
-                            event_emitter.emit(
-                                "agent_warning",
-                                message=f"Tool(s) denied by user: {names_str}. Stopping.",
-                            )
-                            self.agent._finish_tracker()
-                            self.agent.save_session()
-                            joined = "\n\n".join(self.agent._assistant_reply_parts)
-                            return {
-                                "content": joined or f"Tool(s) denied: {names_str}",
-                                "messages": self.agent.session.messages,
-                                "model_info": self.agent.provider.get_model_info(),
-                            }
-                        # continue_loop_on_deny=True: reset counter so
-                        # repeated denials don't look like fatal errors.
-                        consecutive_tool_errors = 0
-                        # {"retry": True} has already been set by the executor
-                        # so the loop will feed the denial back to the LLM.
-                    else:
-                        consecutive_tool_errors += 1
-                        # {"retry": True} means the messages were updated with error
-                        # feedback and the loop should retry the LLM call — not exit.
-                        if (
-                            fatal_res
-                            and fatal_res is not True
-                            and fatal_res.get("retry") is not True
-                        ):
-                            return fatal_res  # type: ignore[no-any-return]
-                        if consecutive_tool_errors >= MAX_CONSECUTIVE_ERRORS:
-                            return self._handle_fatal_error(
-                                RuntimeError("Tool execution failed repeatedly."),
-                                consecutive_tool_errors,
-                            )
-                else:
-                    tools_were_used = True
-                    consecutive_tool_errors = 0
-
-                # Check budget after expensive tool operations (MCP, sub-agents,
-                # summarization) that consume tokens through internal LLM calls.
-                if self.agent.config.budget_limit > 0:
-                    check_budget_limit(
-                        self.agent.config.budget_limit,
-                        self.agent.cost_tracker,
-                        emit_warning=True,
-                    )
-
-                # Manage context window after tool results (or error messages) are added
-                messages = self.agent.context_controller.inject_context(
-                    messages, self.agent.context_manager, query=user_message
-                )
-                messages = await self.agent.context_controller.manage_context_window(messages)
-            except BudgetExceededError as e:
-                # Terminal: budget is a hard stop, not a transient failure.
-                return self._handle_budget_exceeded(e)
-            except Exception as e:
-                logger.error(f"Error during processing: {e}", exc_info=True)
-                consecutive_llm_errors += 1
-
-                if consecutive_llm_errors >= MAX_CONSECUTIVE_ERRORS:
-                    return self._handle_fatal_error(e, consecutive_llm_errors)
-
-                messages = await self._handle_recoverable_error(
-                    e, consecutive_llm_errors, user_message
-                )
-                continue
+        while state.iteration < state.max_iterations:
+            state.iteration += 1
+            result = await self._run_iteration(state)
+            if result is not None:
+                return result
 
         return await self._handle_max_iterations()
+
+    async def _run_iteration(self, state: _TurnState) -> Optional[Dict[str, Any]]:
+        """Run a single loop iteration.
+
+        Returns a final response dict to end the turn, or ``None`` to
+        continue with the next iteration.
+        """
+        # Per-iteration back-off after recoverable errors so retries are
+        # paced rather than burned in milliseconds. Cancellation-aware:
+        # ``cancel_event.wait()`` short-circuits the sleep when the user
+        # hits /cancel.
+        consecutive_errors = max(state.consecutive_llm_errors, state.consecutive_tool_errors)
+        delay = compute_iteration_backoff(consecutive_errors)
+        if delay > 0:
+            cancel_event = (
+                self.agent.tracker_info._cancel_event if self.agent.tracker_info else None
+            )
+            event_emitter.emit(
+                "agent_status",
+                message=(
+                    f"Backing off {delay:.1f}s after {consecutive_errors} consecutive error(s)…"
+                ),
+            )
+            if cancel_event is not None:
+                try:
+                    await asyncio.wait_for(cancel_event.wait(), timeout=delay)
+                    # cancel_event fired during back-off → user cancelled.
+                    return await self._handle_cancellation()
+                except asyncio.TimeoutError:
+                    # Back-off elapsed; continue normally.
+                    pass
+            else:
+                await asyncio.sleep(delay)
+
+        if self.agent.tracker_info and self.agent.tracker_info.is_cancelled:
+            return await self._handle_cancellation()
+
+        try:
+            response_data = await self._handle_llm_phase(state)
+            state.consecutive_llm_errors = 0
+
+            outcome = await self._handle_finish_reason(state, response_data)
+            if outcome is _RESTART_ITERATION:
+                return None
+            if outcome is not _PROCEED_TO_TOOLS:
+                return outcome  # type: ignore[no-any-return]
+
+            return await self._handle_tools_phase(state, response_data)
+        except BudgetExceededError as e:
+            # Terminal: budget is a hard stop, not a transient failure.
+            return self._handle_budget_exceeded(e)
+        except Exception as e:
+            logger.error(f"Error during processing: {e}", exc_info=True)
+            state.consecutive_llm_errors += 1
+
+            if state.consecutive_llm_errors >= MAX_CONSECUTIVE_ERRORS:
+                return self._handle_fatal_error(e, state.consecutive_llm_errors)
+
+            state.messages = await self._handle_recoverable_error(
+                e, state.consecutive_llm_errors, state.user_message
+            )
+            return None
+
+    async def _handle_llm_phase(self, state: _TurnState) -> Dict[str, Any]:
+        """Call the LLM (including the one-shot ``length`` retry) and return
+        the parsed response data."""
+        if self.agent.tracker_info:
+            if self.agent.tracker_info.status != AgentStatus.THINKING:
+                self.agent.tracker_info.status = AgentStatus.THINKING
+                self.agent._sync_tracker()
+
+        # Inject step reminders (plan mode, step-limit warnings)
+        step_aware_messages = self._inject_step_reminders(
+            state.messages, state.iteration, state.max_iterations
+        )
+
+        # Periodic MCP server health check (every 10 iterations)
+        self._health_check_counter += 1
+        if self._health_check_counter >= 10:
+            self._health_check_counter = 0
+            try:
+                from coderAI.tools.mcp import mcp_client
+
+                await mcp_client.check_server_health()
+                await mcp_client.auto_reconnect_degraded()
+                state.tool_schemas = self._get_tool_schemas()
+            except Exception as e:
+                logger.debug("MCP health check failed: %s", e)
+
+        response_data = await self._call_llm_with_retry(step_aware_messages, state.tool_schemas)
+
+        # One-shot recovery when the model gets cut off mid-tool-loop:
+        # ask once for a concise final answer and re-issue the call.
+        # Second consecutive ``length`` is terminal (handled by the
+        # finish-reason phase).
+        if (
+            response_data.get("finish_reason") == "length"
+            and state.tools_were_used
+            and not self._length_retry_used
+        ):
+            self._length_retry_used = True
+            event_emitter.emit(
+                "agent_warning",
+                message=(
+                    "Response truncated mid-tool-loop; retrying once with "
+                    "a concise-final-answer hint."
+                ),
+            )
+            step_aware_messages = list(step_aware_messages) + [
+                {
+                    "role": "system",
+                    "content": (
+                        "Previous reply was truncated by max_tokens. "
+                        "Respond concisely with the final answer for the "
+                        "user. Do NOT call any more tools."
+                    ),
+                }
+            ]
+            response_data = await self._call_llm_with_retry(step_aware_messages, state.tool_schemas)
+
+        return response_data
+
+    async def _handle_finish_reason(self, state: _TurnState, response_data: Dict[str, Any]) -> Any:
+        """Persist the assistant reply and route on ``finish_reason``.
+
+        Returns ``_PROCEED_TO_TOOLS`` to continue into the tool phase,
+        ``_RESTART_ITERATION`` to restart the loop without consuming an
+        iteration, or a final response dict that ends the turn.
+        """
+        content = response_data.get("content")
+        tool_calls = response_data.get("tool_calls")
+        finish_reason = response_data.get("finish_reason")
+
+        if finish_reason == "cancelled":
+            return await self._handle_cancellation()
+
+        if content and content.strip():
+            self.agent._assistant_reply_parts.append(content.strip())
+
+        reasoning_content = response_data.get("reasoning_content")
+        session_content = content if content and str(content).strip() else None
+        self.agent.session.add_message(
+            "assistant",
+            session_content,
+            tool_calls=tool_calls,
+            reasoning_content=reasoning_content,
+        )
+        self._refresh_messages_from_session(state.messages)
+
+        if finish_reason == "refusal":
+            event_emitter.emit(
+                "agent_warning",
+                message="Model refused this request (stop_reason=refusal). Returning model text without further tool calls.",
+            )
+            # Return the refusal content as final response — do NOT loop
+            self.agent._finish_tracker()
+            self.agent.save_session()
+
+            # Run on_stop hooks
+            if state.hooks_data:
+                await self.hooks_manager.run_hooks(
+                    "*", "on_stop", {"iterations": state.iteration}, state.hooks_data
+                )
+
+            joined = "\n\n".join(self.agent._assistant_reply_parts)
+            return {
+                "content": joined if joined else (content or ""),
+                "messages": self.agent.session.messages,
+                "model_info": self.agent.provider.get_model_info(),
+            }
+        elif finish_reason == "length":
+            # Model hit max_tokens and was cut off mid-response.
+            event_emitter.emit(
+                "agent_warning",
+                message=(
+                    "Response was truncated (max_tokens limit reached). "
+                    "Increase max_tokens in config to fix this."
+                ),
+            )
+            self.agent._finish_tracker(error=True)
+            self.agent.save_session()
+            joined = "\n\n".join(self.agent._assistant_reply_parts)
+            note = (
+                "[Output cut off — the model hit the max_tokens limit. "
+                "Run `coderAI config set max_tokens 16000` to increase it.]"
+            )
+            return {
+                "content": f"{joined}\n\n{note}" if joined else note,
+                "messages": self.agent.session.messages,
+                "model_info": self.agent.provider.get_model_info(),
+            }
+        elif finish_reason == "pause_turn":
+            state.consecutive_pauses += 1
+            if state.consecutive_pauses > MAX_CONSECUTIVE_PAUSES:
+                event_emitter.emit(
+                    "agent_warning",
+                    message=(
+                        f"Model returned pause_turn {state.consecutive_pauses} times in a row; "
+                        "aborting to avoid an infinite loop."
+                    ),
+                )
+                return await self._handle_max_iterations()
+            provider_mod = getattr(
+                self.agent.provider,
+                "__module__",
+                type(self.agent.provider).__module__,
+            )
+            if tool_calls and not str(provider_mod).startswith("coderAI.llm.anthropic"):
+                if self.agent.session and self.agent.session.messages:
+                    last = self.agent.session.messages[-1]
+                    if last.role == "assistant" and last.tool_calls:
+                        last.tool_calls = None
+                        self._refresh_messages_from_session(state.messages)
+            event_emitter.emit(
+                "agent_paused",
+                message="Model requested pause_turn; resuming automatically.",
+            )
+            state.iteration -= 1
+            return _RESTART_ITERATION
+        else:
+            state.consecutive_pauses = 0
+
+        return _PROCEED_TO_TOOLS
+
+    async def _handle_tools_phase(
+        self, state: _TurnState, response_data: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        """Execute the tool calls and post-process the results.
+
+        Returns a final response dict to end the turn, or ``None`` to
+        continue with the next iteration.
+        """
+        content = response_data.get("content")
+        tool_calls = response_data.get("tool_calls")
+
+        if not tool_calls:
+            if (
+                state.tools_were_used
+                and not (content or "").strip()
+                and not self.agent._assistant_reply_parts
+            ):
+                try:
+                    summary = await self._post_tool_closing_message(state.user_message)
+                except BudgetExceededError:
+                    return self._handle_budget_exceeded(
+                        BudgetExceededError("Budget exceeded during closing summary.")
+                    )
+                if summary:
+                    msgs = self.agent.session.messages
+                    if (
+                        msgs
+                        and msgs[-1].role == "assistant"
+                        and not (msgs[-1].content or "").strip()
+                        and not msgs[-1].tool_calls
+                    ):
+                        msgs.pop()
+                    self.agent.session.add_message("assistant", summary)
+                    self.agent._assistant_reply_parts.append(summary.strip())
+
+            self.agent._finish_tracker()
+            self.agent.save_session()
+
+            # Run on_stop hooks
+            if state.hooks_data:
+                await self.hooks_manager.run_hooks(
+                    "*", "on_stop", {"iterations": state.iteration}, state.hooks_data
+                )
+
+            joined = "\n\n".join(self.agent._assistant_reply_parts)
+            reply_text = joined if joined else (content or "")
+            return {
+                "content": reply_text,
+                "messages": self.agent.session.messages,
+                "model_info": self.agent.provider.get_model_info(),
+            }
+
+        if self._detect_doom_loop(tool_calls):
+            doom_msg = (
+                "The last {n} tool-call steps repeated the same tool + arguments. "
+                "The model appears to be stuck in a loop. Stopping to avoid "
+                "wasting tokens. Please rephrase your request or provide "
+                "additional guidance."
+            ).format(n=DOOM_LOOP_THRESHOLD)
+            event_emitter.emit("agent_warning", message=doom_msg)
+            self.agent._finish_tracker(error=True)
+            self.agent.save_session()
+            joined = "\n\n".join(self.agent._assistant_reply_parts)
+            return {
+                "content": joined + "\n\n" + doom_msg if joined else doom_msg,
+                "messages": self.agent.session.messages,
+                "model_info": self.agent.provider.get_model_info(),
+            }
+
+        did_error, fatal_res = await self.tool_executor.orchestrate_tool_calls(
+            tool_calls, state.messages, state.user_message, state.hooks_data, self.hooks_manager
+        )
+
+        # Emit progress after tool execution for sub-agent streaming
+        if self.progress_callback:
+            try:
+                self.progress_callback(tool_calls, did_error)
+            except Exception:
+                pass
+
+        # Check for cancellation after tools (long tool chains can be interrupted)
+        if self.agent.tracker_info and self.agent.tracker_info.is_cancelled:
+            return await self._handle_cancellation()
+
+        if did_error:
+            # Cross-iteration doom-loop hard stop: the executor
+            # has flagged that some (tool, args) fingerprint has
+            # been called too many times. Terminate cleanly with
+            # the same lifecycle as a normal stop.
+            if fatal_res and isinstance(fatal_res, dict) and fatal_res.get("_doom_loop_stop"):
+                tool_name = fatal_res.get("tool_name", "unknown")
+                count = fatal_res.get("count", 0)
+                stop_msg = (
+                    f"Stopped to avoid wasting tokens: '{tool_name}' was "
+                    f"called {count} times with identical arguments. "
+                    "The model appears to be looping. Please rephrase your "
+                    "request or provide additional guidance."
+                )
+                self.agent._finish_tracker(error=True)
+                self.agent.save_session()
+                if state.hooks_data:
+                    await self.hooks_manager.run_hooks(
+                        "*",
+                        "on_stop",
+                        {"iterations": state.iteration, "error": "doom_loop"},
+                        state.hooks_data,
+                    )
+                joined = "\n\n".join(self.agent._assistant_reply_parts)
+                return {
+                    "content": (joined + "\n\n" + stop_msg) if joined else stop_msg,
+                    "messages": self.agent.session.messages,
+                    "model_info": self.agent.provider.get_model_info(),
+                }
+
+            # Detect denied tools vs real errors. Denials should not
+            # count toward consecutive_tool_errors when
+            # ``continue_loop_on_deny`` is True (the model can retry
+            # with a different approach). When False, treat denial as
+            # a terminal stop.
+            has_denials = (
+                fatal_res and isinstance(fatal_res, dict) and bool(fatal_res.get("_denied"))
+            )
+            if has_denials and isinstance(fatal_res, dict):
+                if not self.agent.config.continue_loop_on_deny:
+                    denied_names = fatal_res.get("_denied_tools", [])
+                    names_str = ", ".join(denied_names) if denied_names else "unknown"
+                    event_emitter.emit(
+                        "agent_warning",
+                        message=f"Tool(s) denied by user: {names_str}. Stopping.",
+                    )
+                    self.agent._finish_tracker()
+                    self.agent.save_session()
+                    joined = "\n\n".join(self.agent._assistant_reply_parts)
+                    return {
+                        "content": joined or f"Tool(s) denied: {names_str}",
+                        "messages": self.agent.session.messages,
+                        "model_info": self.agent.provider.get_model_info(),
+                    }
+                # continue_loop_on_deny=True: reset counter so
+                # repeated denials don't look like fatal errors.
+                state.consecutive_tool_errors = 0
+                # {"retry": True} has already been set by the executor
+                # so the loop will feed the denial back to the LLM.
+            else:
+                state.consecutive_tool_errors += 1
+                # {"retry": True} means the messages were updated with error
+                # feedback and the loop should retry the LLM call — not exit.
+                if fatal_res and fatal_res is not True and fatal_res.get("retry") is not True:
+                    return fatal_res  # type: ignore[no-any-return]
+                if state.consecutive_tool_errors >= MAX_CONSECUTIVE_ERRORS:
+                    return self._handle_fatal_error(
+                        RuntimeError("Tool execution failed repeatedly."),
+                        state.consecutive_tool_errors,
+                    )
+        else:
+            state.tools_were_used = True
+            state.consecutive_tool_errors = 0
+
+        # Check budget after expensive tool operations (MCP, sub-agents,
+        # summarization) that consume tokens through internal LLM calls.
+        if self.agent.config.budget_limit > 0:
+            check_budget_limit(
+                self.agent.config.budget_limit,
+                self.agent.cost_tracker,
+                emit_warning=True,
+            )
+
+        # Manage context window after tool results (or error messages) are added
+        state.messages = self.agent.context_controller.inject_context(
+            state.messages, self.agent.context_manager, query=state.user_message
+        )
+        state.messages = await self.agent.context_controller.manage_context_window(state.messages)
+        return None
 
     async def _autoconnect_mcp_servers(self):
         """Auto-connect configured MCP servers from ~/.coderAI/mcp_servers.json."""
