@@ -1,0 +1,258 @@
+"""Security core for filesystem tools.
+
+Path protection, project-scope enforcement, symlink guards, atomic writes,
+and size limits. This surface is pinned by ``tests/test_path_traversal.py``
+and ``tests/test_filesystem_symlink_guard.py`` — behavior changes here are
+security-relevant.
+"""
+
+import difflib
+import logging
+import os
+import sys
+from pathlib import Path
+from typing import Any, Optional
+
+from coderAI.core.tool_error_codes import ToolErrorCode
+from coderAI.system.config import config_manager
+from coderAI.system.events import event_emitter
+
+logger = logging.getLogger(__name__)
+
+
+def _atomic_write_file(path_obj: Path, content: str) -> None:
+    """Write *content* to *path_obj* atomically via tempfile+replace.
+
+    Raises ``OSError`` on write failure; the caller is responsible for
+    translating it into a tool-shaped error response.
+    """
+    import tempfile
+
+    fd, tmp_path = tempfile.mkstemp(dir=str(path_obj.parent), prefix="." + path_obj.name + ".")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.replace(tmp_path, str(path_obj))
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _emit_diff(path_obj: Path, before: str, after: str) -> None:
+    """Compute and emit a unified diff event if the content changed."""
+    if before == after:
+        return
+    diff = "".join(
+        difflib.unified_diff(
+            before.splitlines(keepends=True),
+            after.splitlines(keepends=True),
+            fromfile=f"a/{path_obj.name}",
+            tofile=f"b/{path_obj.name}",
+            n=3,
+        )
+    )
+    if diff:
+        event_emitter.emit("file_diff", path=str(path_obj), diff=diff)
+
+
+# Defaults (overridden by config if set)
+DEFAULT_MAX_FILE_SIZE = 1_048_576
+DEFAULT_MAX_GLOB_RESULTS = 200
+
+
+def _get_max_file_size() -> int:
+    """Get max file size from config."""
+    try:
+        return config_manager.load().max_file_size
+    except Exception:
+        # Config unavailable (corrupt file, tests) → built-in default.
+        logger.debug("max_file_size config unavailable, using default", exc_info=True)
+        return DEFAULT_MAX_FILE_SIZE
+
+
+def _get_max_glob_results() -> int:
+    """Get max glob results from config."""
+    try:
+        return config_manager.load().max_glob_results
+    except Exception:
+        # Config unavailable (corrupt file, tests) → built-in default.
+        logger.debug("max_glob_results config unavailable, using default", exc_info=True)
+        return DEFAULT_MAX_GLOB_RESULTS
+
+
+# Paths under $HOME that tools should never write to.
+PROTECTED_HOME_PATHS = [
+    ".ssh",
+    ".gnupg",
+    ".aws",
+    ".config/gcloud",
+    ".kube",
+    ".docker",
+    ".bash_history",
+    ".zsh_history",
+]
+
+# Absolute system paths that tools should never write to. If the process
+# happens to run with elevated privileges, the OS-level write permission is
+# NOT a safety net — we refuse these up front.
+PROTECTED_SYSTEM_PATHS = [
+    "/etc",
+    "/usr",
+    "/bin",
+    "/sbin",
+    "/boot",
+    "/System",  # macOS system dir
+    "/Library",  # macOS shared library dir
+    "/private/etc",
+    "/var/log",
+    "/root",
+]
+
+if sys.platform == "win32":
+    PROTECTED_SYSTEM_PATHS.extend(
+        [
+            "C:\\Windows",
+            "C:\\Windows\\System32",
+            "C:\\Program Files",
+            "C:\\Program Files (x86)",
+        ]
+    )
+
+
+def _is_path_protected(path: Path) -> bool:
+    """Check if a path targets a protected location (home or system)."""
+    resolved = path.resolve()
+    home = Path.home()
+    for protected in PROTECTED_HOME_PATHS:
+        protected_path = (home / protected).resolve()
+        try:
+            resolved.relative_to(protected_path)
+            return True
+        except ValueError:
+            continue
+    for system in PROTECTED_SYSTEM_PATHS:
+        system_path = Path(system)
+        if not system_path.exists():
+            continue
+        try:
+            resolved.relative_to(system_path.resolve())
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+def _is_in_project_root(path: Path) -> bool:
+    """Return True if *path* resolves underneath the configured project root.
+
+    ``.resolve()`` follows every symlink in the chain, so a symlinked ancestor
+    that points at ``/etc`` cannot be used to dodge this check.
+    """
+    try:
+        cfg = config_manager.load()
+        project_root = Path(getattr(cfg, "project_root", ".") or ".").resolve()
+    except Exception:
+        # Config unavailable → treat the current directory as the project
+        # root; the scope check below still runs against it.
+        logger.debug("project_root config unavailable, using cwd", exc_info=True)
+        project_root = Path.cwd().resolve()
+    try:
+        path.resolve().relative_to(project_root)
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def _allows_outside_project() -> bool:
+    """True when config or ``CODERAI_ALLOW_OUTSIDE_PROJECT=1`` opts out of scope."""
+    if os.environ.get("CODERAI_ALLOW_OUTSIDE_PROJECT") == "1":
+        return True
+    try:
+        return bool(config_manager.get("allow_outside_project", False))
+    except Exception:
+        # Fail closed: if config can't be read, keep project-scope enforcement on.
+        logger.debug("allow_outside_project config unavailable, failing closed", exc_info=True)
+        return False
+
+
+def _enforce_project_scope(path: Path, op: str) -> Optional[dict[str, Any]]:
+    """Reject file operations outside the project root.
+
+    Set ``CODERAI_ALLOW_OUTSIDE_PROJECT=1`` to opt out (e.g. when editing
+    dotfiles or scratch files outside the repo).
+    """
+    if _is_in_project_root(path):
+        return None
+    if _allows_outside_project():
+        logger.warning("%s outside project root: %s (allowed by opt-out)", op, path)
+        return None
+    return {
+        "success": False,
+        "error": (
+            f"Refusing to {op} outside project root: {path}. "
+            "Set CODERAI_ALLOW_OUTSIDE_PROJECT=1 to allow."
+        ),
+        "error_code": ToolErrorCode.SCOPE,
+    }
+
+
+def _reject_symlink_leaf(path: Path, op: str) -> Optional[dict[str, Any]]:
+    """Refuse to operate on a symlink leaf.
+
+    Mitigates the symlink-TOCTOU pattern: ``_is_path_protected`` and
+    ``_enforce_project_scope`` both call ``Path.resolve()``, which follows
+    every symlink in the chain — so a path that *currently* points at a
+    benign file inside the project passes, even though the link could be
+    swapped to point at ``/etc/passwd`` between the check and the
+    subsequent open. Refusing symlink leaves outright closes the common
+    attack shape; ``_safe_open_no_symlink`` below is the second layer
+    against a swap inside the microsecond gap between the lstat and the
+    actual ``open()``.
+    """
+    try:
+        if path.is_symlink():
+            return {
+                "success": False,
+                "error": (
+                    f"Refusing to {op} a symlink leaf: {path}. "
+                    "Operate on the resolved target path directly."
+                ),
+                "error_code": ToolErrorCode.SYMLINK,
+            }
+    except OSError:
+        # ``is_symlink`` raises on broken paths; let the caller's exists()
+        # check produce the canonical error.
+        pass
+    return None
+
+
+# ``O_NOFOLLOW`` is POSIX-only; on Windows the constant is absent and the
+# open flag has no equivalent (Windows does not have user-space symlinks
+# in the same shape). Falling back to 0 is acceptable because the lstat
+# check above is the primary guard; O_NOFOLLOW is the belt-and-suspenders.
+_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+
+
+def _safe_open_no_symlink(path: Path, mode: str, encoding: Optional[str] = "utf-8"):
+    """Open *path* with ``O_NOFOLLOW`` so a swap-to-symlink between
+    ``_reject_symlink_leaf`` and the open will fail with ``OSError(ELOOP)``
+    instead of silently following the link.
+
+    ``mode`` is the standard textual mode (``"r"``, ``"w"``, ``"a"``).
+    Translates to the matching POSIX flags. The caller is responsible for
+    converting ``OSError`` into a tool-shaped error response.
+    """
+    if mode == "r":
+        flags = os.O_RDONLY
+    elif mode == "w":
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    elif mode == "a":
+        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+    else:
+        raise ValueError(f"Unsupported mode for safe open: {mode!r}")
+    flags |= _O_NOFOLLOW
+    fd = os.open(str(path), flags, 0o666)
+    return os.fdopen(fd, mode, encoding=encoding)
