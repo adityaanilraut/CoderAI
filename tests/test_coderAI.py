@@ -505,6 +505,7 @@ class TestMemoryTools:
     """Tests for memory tools."""
 
     def test_save_and_recall(self, temp_dir):
+        from coderAI.core.services import services_scope
         from coderAI.tools.memory import SaveMemoryTool, RecallMemoryTool, MemoryStore
 
         store = MemoryStore()
@@ -513,12 +514,7 @@ class TestMemoryTools:
         save_tool = SaveMemoryTool()
         recall_tool = RecallMemoryTool()
 
-        import coderAI.tools.memory as mem_module
-
-        original_store = mem_module._memory_store
-        mem_module._memory_store = store
-
-        try:
+        with services_scope(memory_store=store):
             result = asyncio.run(save_tool.execute(key="test_key", value="test_value"))
             assert result["success"] is True
 
@@ -528,8 +524,6 @@ class TestMemoryTools:
 
             result = asyncio.run(recall_tool.execute(key="nonexistent"))
             assert result["success"] is False
-        finally:
-            mem_module._memory_store = original_store
 
 
 # ============================================================================

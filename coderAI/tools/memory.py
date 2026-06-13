@@ -79,16 +79,11 @@ class MemoryStore:
         return False
 
 
-# Lazy-initialized memory store to avoid side effects on import
-_memory_store: "MemoryStore | None" = None
-
-
 def get_memory_store() -> MemoryStore:
-    """Get or create the global memory store (lazy init)."""
-    global _memory_store
-    if _memory_store is None:
-        _memory_store = MemoryStore()
-    return _memory_store
+    """Resolve the active memory store (process-shared via ToolServices)."""
+    from coderAI.core.services import get_services
+
+    return get_services().memory_store
 
 
 class SaveMemoryParams(BaseModel):

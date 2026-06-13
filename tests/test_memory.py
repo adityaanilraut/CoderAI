@@ -3,6 +3,7 @@
 import asyncio
 import pytest
 
+from coderAI.core.services import services_scope
 from coderAI.tools.memory import MemoryStore, SaveMemoryTool, RecallMemoryTool
 
 
@@ -83,10 +84,10 @@ class TestSaveMemoryTool:
         store.memory_dir.mkdir()
         store.memory_file = store.memory_dir / "memories.json"
         store._memories = {}
-        import coderAI.tools.memory as mem_mod
-
-        monkeypatch.setattr(mem_mod, "_memory_store", store)
-        self.tool = SaveMemoryTool()
+        self.store = store
+        with services_scope(memory_store=store):
+            self.tool = SaveMemoryTool()
+            yield
 
     def test_save_returns_success(self):
         result = asyncio.run(self.tool.execute(key="test_key", value="test_value"))
@@ -100,9 +101,7 @@ class TestSaveMemoryTool:
     def test_save_overwrites(self):
         asyncio.run(self.tool.execute(key="k", value="old"))
         asyncio.run(self.tool.execute(key="k", value="new"))
-        import coderAI.tools.memory as mem_mod
-
-        assert mem_mod._memory_store.get("k") == "new"
+        assert self.store.get("k") == "new"
 
 
 class TestRecallMemoryTool:
@@ -113,10 +112,9 @@ class TestRecallMemoryTool:
         store.memory_dir.mkdir()
         store.memory_file = store.memory_dir / "memories.json"
         store._memories = {"existing": "found_it"}
-        import coderAI.tools.memory as mem_mod
-
-        monkeypatch.setattr(mem_mod, "_memory_store", store)
-        self.tool = RecallMemoryTool()
+        with services_scope(memory_store=store):
+            self.tool = RecallMemoryTool()
+            yield
 
     def test_recall_by_key(self):
         result = asyncio.run(self.tool.execute(key="existing"))
