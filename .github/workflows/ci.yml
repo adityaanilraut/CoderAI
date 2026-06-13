@@ -38,6 +38,9 @@ jobs:
       - name: Ruff Lint
         run: python -m ruff check coderAI/
 
+      - name: Mypy
+        run: python -m mypy coderAI/
+
       - name: Pytest
         run: pytest -q --cov=coderAI --cov-fail-under=56
 

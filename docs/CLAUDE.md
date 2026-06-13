@@ -18,7 +18,7 @@ pytest tests/test_agent.py::TestClassName::test_method_name   # single test
 
 # Lint & format
 make lint         # ruff check (required; same as CI)
-make typecheck    # mypy coderAI/ (optional; not fully clean yet)
+make typecheck    # mypy coderAI/ (required; CI gate — see "Typing ratchet")
 make format       # ruff format coderAI/
 make check        # Runs format, lint, typecheck, and test sequentially
 
@@ -28,6 +28,26 @@ make quickstart   # complete setup for new developers
 make clean        # remove build artifacts
 make dist         # build Python distribution
 ```
+
+## Typing ratchet
+
+`mypy coderAI/` is a **CI gate** (runs after ruff, before pytest). The base
+config in `pyproject.toml` is lenient, but a `[[tool.mypy.overrides]]` block
+lists modules held to **strict** typing (`disallow_untyped_defs`,
+`check_untyped_defs`, `warn_unused_ignores`). As of Phase 4 the strict set is
+`system.*`, `llm.*`, `bridge.*`, `context.*`, and
+`core.{execution_context,tool_error_codes,services,agent_tracker}`.
+
+**The strict-module list only grows — never remove a module from it.** When a
+module becomes clean under strict checking, add it; once added it must stay
+green. New code in strict modules must be fully annotated. The remaining
+untyped surface (rest of `core/`, `tools/*`, `tui/*`) is migrated incrementally
+in that order; do not regress an already-strict module to land a change
+elsewhere.
+
+`requests`/`yaml` are the only deps without bundled stubs — covered by
+`types-requests`/`types-PyYAML` in the `dev` extra, so a clean run requires
+`pip install -e ".[dev]"`.
 
 ## Architecture
 
@@ -89,7 +109,7 @@ Per-turn flow (`Agent.process_message()` → `agent_loop`):
 - `coderAI/context/code_chunker.py` — Splits source files into semantic chunks (AST-aware for Python, regex for JS/TS, sliding window fallback).
 - `coderAI/context/code_indexer.py` — ChromaDB-backed semantic code index with incremental updates via file-hash manifests.
 - `coderAI/embeddings/` — Embedding provider abstraction (OpenAI `text-embedding-3-small` by default; no local provider yet).
-- `.github/workflows/ci.yml` — On push/PR: matrix of (ubuntu-latest, macos-latest) × (Python 3.10, 3.12). Installs `pip install -e ".[dev]"`, then runs `ruff check coderAI/`, `pytest -q`, and a `coderAI --version` smoke test. `make test` mirrors this (pytest + `coderAI --version`).
+- `.github/workflows/ci.yml` — On push/PR: matrix of (ubuntu-latest, macos-latest) × (Python 3.10, 3.12). Installs `pip install -e ".[dev]"`, then runs `ruff format --check coderAI/`, `ruff check coderAI/`, `mypy coderAI/`, `pytest -q --cov-fail-under=…`, and a `coderAI --version` smoke test. `make test` mirrors the pytest + smoke portion; `make check` runs the full sequence.
 - `.github/workflows/release.yml` — On tagged releases (`v*`), builds the Python wheel + sdist with `python -m build`, attaches them to the GitHub Release, and publishes the wheel to PyPI via trusted publishing.
 
 **Tool categories** (`coderAI/tools/`):
