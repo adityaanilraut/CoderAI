@@ -58,6 +58,7 @@ def _dispatch(raw, controller, reducer, **overrides):
         "confirm_exit": MagicMock(return_value=True),
         "set_search_filter": MagicMock(),
         "retry_agent": MagicMock(),
+        "rewind_timeline": MagicMock(),
     }
     cb.update(overrides)
     handled = slash.handle_slash_command(raw, controller, reducer, **cb)
@@ -86,7 +87,6 @@ def test_help_intercepted_before_registry(ctrl, red):
 
 def test_clear_and_compact(ctrl, red):
     _dispatch("/clear", ctrl, red)
-    cb_calls = []
     handled, cb = _dispatch("/clear", ctrl, red)
     cb["clear_context"].assert_called()
 
@@ -160,7 +160,37 @@ def test_verbose_think_status(ctrl, red):
     cb["toggle_verbose"].assert_called_once()
     _, cb = _dispatch("/think", ctrl, red)
     cb["reveal_reasoning"].assert_called_once()
+
+
+def test_tokens_renders_usage_summary(ctrl, red):
+    # /tokens (and its /status alias) refresh the panels AND surface a
+    # token/cost summary toast — distinct from /context's pinned-file list.
+    red.session = SimpleNamespace(
+        agents={},
+        model="claude-opus-4-8",
+        ctx_used=12000,
+        ctx_limit=200000,
+        prompt_tokens=8000,
+        completion_tokens=4000,
+        cost_usd=0.1234,
+        budget_usd=0.0,
+        context_files=[{"path": "a.py", "size": 10}],
+    )
+    _, cb = _dispatch("/tokens", ctrl, red)
+    assert "get_state" in ctrl.names()
+    cb["show_context"].assert_not_called()  # not the pinned-files view
+    toast = [p for p in red.pushed if p.get("kind") == "toast"][-1]
+    assert toast["level"] == "info"
+    assert "Session usage" in toast["message"]
+    assert "8,000" in toast["message"]  # prompt tokens
+    assert "12,000 / 200,000" in toast["message"]  # context
+    # /status is an alias of the same handler.
     _, cb = _dispatch("/status", ctrl, red)
+    cb["show_context"].assert_not_called()
+
+
+def test_context_lists_pinned_files(ctrl, red):
+    _, cb = _dispatch("/context", ctrl, red)
     assert "get_state" in ctrl.names()
     cb["show_context"].assert_called_once()
 
@@ -283,6 +313,51 @@ def test_unknown_command_warns(ctrl, red):
     handled, _ = _dispatch("/nonsense", ctrl, red)
     assert handled
     assert "warning" in _toast_levels(red)
+
+
+def test_rewind_no_turns_warns(ctrl, red):
+    handled, _ = _dispatch("/rewind", ctrl, red)
+    assert handled
+    assert "warning" in _toast_levels(red)
+    assert ctrl.commands == []
+
+
+def test_rewind_lists_turns_without_arg(ctrl, red):
+    red.timeline = [
+        {"kind": "user", "text": "first task"},
+        {"kind": "assistant", "content": "ok"},
+        {"kind": "user", "text": "second task"},
+    ]
+    handled, _ = _dispatch("/rewind", ctrl, red)
+    assert handled
+    assert "info" in _toast_levels(red)
+    assert ctrl.commands == []  # listing only, nothing enqueued
+
+
+def test_rewind_valid_turn_truncates_and_enqueues(ctrl, red):
+    red.timeline = [
+        {"kind": "user", "text": "first"},
+        {"kind": "user", "text": "second"},
+    ]
+    handled, cb = _dispatch("/rewind 1", ctrl, red)
+    assert handled
+    cb["rewind_timeline"].assert_called_once_with(1)
+    assert ("rewind", {"turn": 1, "files": False}) == ctrl.last()
+
+
+def test_rewind_files_flag_sets_files_true(ctrl, red):
+    red.timeline = [{"kind": "user", "text": "first"}]
+    _dispatch("/rewind 1 --files", ctrl, red)
+    assert ("rewind", {"turn": 1, "files": True}) == ctrl.last()
+
+
+def test_rewind_invalid_turn_warns_and_does_nothing(ctrl, red):
+    red.timeline = [{"kind": "user", "text": "first"}]
+    handled, cb = _dispatch("/rewind 9", ctrl, red)
+    assert handled
+    assert "warning" in _toast_levels(red)
+    cb["rewind_timeline"].assert_not_called()
+    assert ctrl.commands == []
 
 
 def test_find_last_assistant_helper():

@@ -274,6 +274,75 @@ class FileBackupStore:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+    def restore_after(self, cutoff_epoch: float) -> Dict[str, Any]:
+        """Revert every backup recorded after ``cutoff_epoch`` (newest first).
+
+        Used by conversation rewind (``/rewind <turn> --files``) to undo file
+        edits made since a checkpoint. Entries at or before the cutoff are left
+        untouched. Consumed entries are dropped from the index, matching the
+        single-step ``undo_last`` behaviour.
+
+        Args:
+            cutoff_epoch: A ``time.time()`` value; backups with a newer
+                timestamp are reverted.
+
+        Returns:
+            ``{"success", "restored", "deleted", "errors", "count"}``.
+        """
+
+        def _epoch(entry: Dict[str, Any]) -> float:
+            ts = entry.get("timestamp")
+            if not isinstance(ts, str):
+                return 0.0
+            try:
+                return datetime.fromisoformat(ts).timestamp()
+            except ValueError:
+                return 0.0
+
+        to_undo = [e for e in self.index if _epoch(e) > cutoff_epoch]
+        if not to_undo:
+            return {"success": True, "restored": [], "deleted": [], "errors": [], "count": 0}
+
+        restored: List[str] = []
+        deleted: List[str] = []
+        errors: List[str] = []
+
+        # Newest first so layered edits to a single file unwind in order.
+        for entry in sorted(to_undo, key=_epoch, reverse=True):
+            filepath = Path(entry["filepath"])
+            operation = entry.get("operation")
+            try:
+                if operation == "create":
+                    if filepath.exists():
+                        filepath.unlink()
+                    deleted.append(str(filepath))
+                elif operation in ("modify", "delete"):
+                    backup_path_str = entry.get("backup_path")
+                    if not backup_path_str or not Path(backup_path_str).exists():
+                        errors.append(f"{filepath.name}: backup missing")
+                        continue
+                    filepath.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(backup_path_str, filepath)
+                    Path(backup_path_str).unlink()
+                    restored.append(str(filepath))
+                else:
+                    errors.append(f"{filepath.name}: unknown operation {operation!r}")
+            except Exception as e:
+                errors.append(f"{filepath.name}: {e}")
+
+        # Drop the consumed entries (by identity) and persist the index.
+        consumed = {id(e) for e in to_undo}
+        self.index = [e for e in self.index if id(e) not in consumed]
+        self._save_index()
+
+        return {
+            "success": True,
+            "restored": restored,
+            "deleted": deleted,
+            "errors": errors,
+            "count": len(restored) + len(deleted),
+        }
+
     def get_history(self, limit: int = 10) -> List[Dict[str, Any]]:
         """Get recent backup history.
 

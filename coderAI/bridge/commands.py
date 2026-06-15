@@ -286,6 +286,44 @@ async def _cmd_clear_context(server: UIBridge, msg: Dict[str, Any]) -> None:
     server.emit_status()
 
 
+async def _cmd_rewind(server: UIBridge, msg: Dict[str, Any]) -> None:
+    """Rewind the conversation to before a prior user turn.
+
+    Payload: ``{"turn": int, "files": bool}``. Truncates the session's message
+    history back to that turn's checkpoint and, when ``files`` is set, reverts
+    file edits made since then. The UI truncates its own timeline in parallel.
+    """
+    try:
+        turn = int(msg.get("turn"))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        server.emit("warning", message="Usage: /rewind <turn> [--files]")
+        return
+    restore_files = bool(msg.get("files", False))
+
+    async with server._turn_lock:
+        result = server.agent.rewind_to(turn, restore_files=restore_files)
+
+    if not result.get("ok"):
+        server.emit("warning", message=str(result.get("error", "Rewind failed.")))
+        return
+
+    parts = [f"Rewound to turn {result['turn']} ({result.get('label', '')})"]
+    dropped = int(result.get("dropped_turns", 0) or 0)
+    if dropped:
+        parts.append(f"dropped {dropped} turn(s)")
+    if restore_files:
+        parts.append(f"restored {len(result.get('restored_files', []))} file(s)")
+    server.emit("success", message=" — ".join(parts))
+
+    file_errors = result.get("file_errors") or []
+    if file_errors:
+        server.emit(
+            "warning",
+            message="Some files could not be restored:\n" + "\n".join(file_errors),
+        )
+    server.emit_status()
+
+
 async def _cmd_manage_context(server: UIBridge, msg: Dict[str, Any]) -> None:
     action = msg.get("action")
     path = msg.get("path")
@@ -673,7 +711,10 @@ async def _cmd_init_project(server: UIBridge, _msg: Dict[str, Any]) -> None:
 
 async def _cmd_cancel_agent(server: UIBridge, msg: Dict[str, Any]) -> None:
     """Cancel a specific sub-agent by ID."""
-    agent_id = (msg.get("payload") or {}).get("agentId")
+    # ``/kill`` (coderAI/tui/slash.py) enqueues ``agentId`` at the top level via
+    # ``enqueue_command("cancel_agent", agentId=...)``; older callers nested it
+    # under ``payload``. Accept both so the TUI command actually reaches a target.
+    agent_id = msg.get("agentId") or (msg.get("payload") or {}).get("agentId")
     if not agent_id:
         server.emit("error", category="protocol", message="cancel_agent requires agentId")
         return
@@ -697,6 +738,7 @@ _COMMAND_HANDLERS: Dict[str, Callable[["UIBridge", Dict[str, Any]], Awaitable[No
     "toggle_auto_approve": _cmd_toggle_auto_approve,
     "tool_approval_resp": _cmd_tool_approval_resp,
     "clear_context": _cmd_clear_context,
+    "rewind": _cmd_rewind,
     "compact_context": _cmd_compact_context,
     "manage_context": _cmd_manage_context,
     "get_state": _cmd_get_state,

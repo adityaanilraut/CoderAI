@@ -1,16 +1,18 @@
 """Main agent orchestrator for CoderAI."""
 
+import asyncio
 import hashlib
 import logging
 import time as _time
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 
 from coderAI.system.config import config_manager
 from coderAI.context.context import ContextManager
 from coderAI.system.cost import CostTracker
-from coderAI.system.history import Message, Session, history_manager
+from coderAI.system.history import Message, Session, checkpoint_label, history_manager
 from coderAI.context.context_controller import (
     ContextController,
     RESPONSE_TOKEN_RESERVE,
@@ -118,8 +120,23 @@ class Agent:
         # IPC server is set by UIBridge / controller setup
         self.ipc_server: Optional[Any] = None
 
+        # Optional confirmation override for headless / non-interactive entry
+        # points (e.g. `coderAI run`). When set, the tool executor consults
+        # this callable — `async (tool_name, arguments) -> bool` — instead of
+        # prompting; returning False denies the tool. Ignored when
+        # auto_approve is on (no confirmation is requested in that case).
+        self.confirmation_override: Optional[Any] = None
+
         # Session management
         self.session: Optional[Session] = None
+
+        # Background session-save machinery. ``save_session`` snapshots on the
+        # caller thread and offloads the blocking disk write to a single worker
+        # so the agent loop never stalls on file I/O. One worker keeps writes
+        # serialized; ``_pending_saves`` holds in-flight futures so they aren't
+        # GC'd and can be drained on ``close()``. Created lazily on first save.
+        self._save_executor: Optional[ThreadPoolExecutor] = None
+        self._pending_saves: Set["Future[Any]"] = set()
 
         # Cumulative token usage tracking (#13)
         self.total_prompt_tokens: int = 0
@@ -634,9 +651,53 @@ class Agent:
         )
 
     def save_session(self):
-        """Save current session."""
-        if self.session and self.config.save_history:
-            history_manager.save_session(self.session)
+        """Persist the current session without blocking the agent loop.
+
+        The session is snapshotted (``model_dump``) on the calling thread so
+        the write can't race with in-loop mutations, then the blocking disk
+        I/O is offloaded to a single-worker background thread when an event
+        loop is running. Outside a loop (sync/CLI paths) the write runs inline.
+        """
+        if not (self.session and self.config.save_history):
+            return
+        try:
+            snapshot = self.session.model_dump()
+        except Exception:
+            logger.debug("save_session snapshot failed", exc_info=True)
+            return
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            # No event loop on this thread — safe to write inline.
+            history_manager.save_session_data(snapshot)
+            return
+
+        if self._save_executor is None:
+            self._save_executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="coderAI-save"
+            )
+        future = self._save_executor.submit(history_manager.save_session_data, snapshot)
+        self._pending_saves.add(future)
+
+        def _on_done(f: "Future[Any]") -> None:
+            self._pending_saves.discard(f)
+            exc = f.exception()
+            if exc is not None:
+                logger.warning("Background session save failed: %s", exc)
+
+        future.add_done_callback(_on_done)
+
+    def _flush_pending_saves(self, timeout: float = 5.0) -> None:
+        """Block until queued background session writes finish (best effort)."""
+        for future in list(self._pending_saves):
+            try:
+                future.result(timeout=timeout)
+            except Exception:
+                logger.debug("pending save did not complete cleanly", exc_info=True)
+        if self._save_executor is not None:
+            self._save_executor.shutdown(wait=True)
+            self._save_executor = None
 
     def get_context_usage(self) -> Tuple[int, int]:
         """Get the current context window usage and limit."""
@@ -742,6 +803,11 @@ class Agent:
                         new_messages.append(Message(**msg_args))
                     self.session.messages = new_messages
                     self.session.updated_at = now
+                    # Compaction rewrote the message list, so the stored
+                    # checkpoint message_index offsets no longer line up.
+                    # Drop the rewind points rather than leave them pointing
+                    # at the wrong messages.
+                    self.session.checkpoints = []
                     self.save_session()
                     # Run on_compact hooks
                     hooks_data = self.hooks_manager.load_hooks()
@@ -824,6 +890,10 @@ class Agent:
         """
         from coderAI.core.agent_loop import ExecutionLoop
 
+        # Capture a rewind point *before* skill injection / the user message
+        # are appended, so the stored index is the clean pre-turn boundary.
+        self._record_checkpoint(user_message)
+
         if self.config.auto_detect_skills and not self.is_subagent:
             try:
                 skills = await self.skill_manager.get_top_skills(user_message)
@@ -833,6 +903,62 @@ class Agent:
                 logger.warning("Skill auto-detection failed: %s", e)
 
         return await ExecutionLoop(self, progress_callback=progress_callback).run(user_message)
+
+    def _record_checkpoint(self, user_message: str) -> None:
+        """Record a per-turn rewind point on the active session.
+
+        Skipped for sub-agents and when ``enable_checkpoints`` is off. Called
+        at the top of ``process_message`` so ``message_index`` excludes this
+        turn's skill injections, user message, and assistant reply.
+        """
+        if self.is_subagent or not self.config.enable_checkpoints:
+            return
+        if self.session is None:
+            return
+        self.session.add_checkpoint(checkpoint_label(user_message))
+
+    def rewind_to(self, turn: int, restore_files: bool = False) -> Dict[str, Any]:
+        """Rewind the conversation to before the given user ``turn``.
+
+        Truncates message history (and the checkpoint list) back to that
+        checkpoint. When ``restore_files`` is set, file edits recorded since
+        the checkpoint are reverted via the per-session backup store.
+
+        Returns a result dict: ``{"ok": True, "turn", "label", "dropped_turns",
+        "restored_files", "file_errors"}`` on success, or
+        ``{"ok": False, "error"}`` if the session or turn is invalid.
+        """
+        if self.session is None:
+            return {"ok": False, "error": "No active session."}
+
+        target = next((c for c in self.session.checkpoints if c.turn == turn), None)
+        if target is None:
+            valid = [c.turn for c in self.session.checkpoints]
+            detail = f" Valid turns: {valid}." if valid else " No rewind points recorded yet."
+            return {"ok": False, "error": f"No checkpoint for turn {turn}.{detail}"}
+
+        dropped = sum(1 for c in self.session.checkpoints if c.turn >= turn)
+        cutoff = target.created_at
+        self.session.truncate_to_checkpoint(turn)
+
+        restored_files: List[str] = []
+        file_errors: List[str] = []
+        if restore_files:
+            from coderAI.tools.undo import get_backup_store
+
+            result = get_backup_store().restore_after(cutoff)
+            restored_files = list(result.get("restored", [])) + list(result.get("deleted", []))
+            file_errors = list(result.get("errors", []))
+
+        self.save_session()
+        return {
+            "ok": True,
+            "turn": turn,
+            "label": target.label,
+            "dropped_turns": dropped,
+            "restored_files": restored_files,
+            "file_errors": file_errors,
+        }
 
     def _inject_skill_context(self, skills) -> None:
         """Append loaded skill instructions as system messages to the session."""
@@ -863,6 +989,10 @@ class Agent:
 
     async def close(self) -> None:
         """Clean up resources (HTTP sessions, background processes, etc.)."""
+        # Drain queued background session writes before tearing down so a
+        # sub-agent's final report isn't lost when its executor is discarded.
+        if self._pending_saves or self._save_executor is not None:
+            await asyncio.to_thread(self._flush_pending_saves)
         if hasattr(self, "streaming_handler") and self.streaming_handler is not None:
             if hasattr(self.streaming_handler, "close"):
                 await self.streaming_handler.close()

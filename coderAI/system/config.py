@@ -44,6 +44,8 @@ class Config(BaseModel):
     reasoning_effort: str = Field(default="medium")  # high, medium, low, none
     budget_limit: float = Field(default=0.0)  # max USD per session, 0 = unlimited
     save_history: bool = Field(default=True)
+    # Record a per-turn rewind point so /rewind can step the conversation back.
+    enable_checkpoints: bool = Field(default=True)
     context_window: int = Field(default=128000)
     max_iterations: int = Field(default=50)
     # Absolute upper bound that the execution loop will clamp ``max_iterations``

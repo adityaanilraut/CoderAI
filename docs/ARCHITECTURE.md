@@ -143,7 +143,7 @@ timeline/session state; `timeline_render.py` writes rows to the
 │   ├── embeddings/          # OpenAI embeddings (default; no local provider yet)
 │   ├── llm/                 # OpenAI, Anthropic, Groq, DeepSeek, Gemini, LM Studio, Ollama
 │   ├── skills/              # Skill discovery + optional hosted sources
-│   ├── tools/               # 88 agent tools (87 auto-discovered + manage_context)
+│   ├── tools/               # 91 agent tools (90 auto-discovered + manage_context)
 │   │   ├── discovery.py
 │   │   ├── filesystem.py, multi_edit.py, terminal.py, git.py
 │   │   ├── search.py, semantic_search.py, web.py, browser.py, desktop.py

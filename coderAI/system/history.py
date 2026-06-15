@@ -52,6 +52,31 @@ def _default_session_model() -> str:
             return "claude-4-sonnet"
 
 
+def checkpoint_label(text: Optional[str]) -> str:
+    """Build a short single-line preview of a user turn for a rewind point.
+
+    Shared by the checkpoint recorder (``Agent._record_checkpoint``) and the
+    ``/rewind`` turn listing so the stored and displayed labels can't drift.
+    """
+    stripped = (text or "").strip().splitlines()
+    return stripped[0][:60] if stripped else "(empty)"
+
+
+class Checkpoint(BaseModel):
+    """A conversation rewind point captured at the start of a user turn.
+
+    ``message_index`` is ``len(session.messages)`` at the moment just before
+    the turn's messages (skill injections + the user message + the assistant
+    reply) were appended, so truncating ``messages`` to it removes the whole
+    turn. ``created_at`` is the cutoff used to revert file edits made since.
+    """
+
+    turn: int  # 1-based user-turn number
+    label: str  # short preview of the user message
+    message_index: int
+    created_at: float = Field(default_factory=time.time)
+
+
 class Session(BaseModel):
     """A conversation session."""
 
@@ -61,12 +86,40 @@ class Session(BaseModel):
     messages: List[Message] = Field(default_factory=list)
     model: str = Field(default_factory=_default_session_model)
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    checkpoints: List[Checkpoint] = Field(default_factory=list)
 
     def add_message(self, role: str, content: str, **kwargs: Any) -> None:
         """Add a message to the session."""
         message = Message(role=role, content=content, **kwargs)
         self.messages.append(message)
         self.updated_at = time.time()
+
+    def add_checkpoint(self, label: str) -> Checkpoint:
+        """Record a rewind point for the turn that is about to start."""
+        checkpoint = Checkpoint(
+            turn=len(self.checkpoints) + 1,
+            label=label,
+            message_index=len(self.messages),
+        )
+        self.checkpoints.append(checkpoint)
+        self.updated_at = time.time()
+        return checkpoint
+
+    def truncate_to_checkpoint(self, turn: int) -> Optional[Checkpoint]:
+        """Rewind history to before ``turn``.
+
+        Truncates ``messages`` to the checkpoint's ``message_index`` and drops
+        that checkpoint and every later one. Returns the matched checkpoint
+        (so callers can read its ``created_at`` cutoff), or ``None`` if no
+        checkpoint has that turn number.
+        """
+        target = next((c for c in self.checkpoints if c.turn == turn), None)
+        if target is None:
+            return None
+        self.messages = self.messages[: target.message_index]
+        self.checkpoints = [c for c in self.checkpoints if c.turn < turn]
+        self.updated_at = time.time()
+        return target
 
     def get_messages_for_api(self) -> List[Dict[str, Any]]:
         """Get messages in OpenAI API format."""
@@ -198,6 +251,10 @@ def _sanitize_session_data(data: Dict[str, Any]) -> Dict[str, Any]:
 class HistoryManager:
     """Manages conversation history."""
 
+    # Expired-session cleanup scans (glob + stat) the whole history directory,
+    # so it must not run on every save/load/list. Run it at most this often.
+    _CLEANUP_INTERVAL_SECONDS = 3600.0
+
     def __init__(self) -> None:
         """Initialize the history manager."""
         self.history_dir = Path.home() / ".coderAI" / "history"
@@ -205,6 +262,10 @@ class HistoryManager:
         self.history_dir.chmod(stat.S_IRWXU)
         self.current_session: Optional[Session] = None
         self._index_lock = threading.Lock()
+        # Throttle clock for ``_cleanup_expired_sessions``; ``-inf`` forces the
+        # first call (e.g. the first ``list_sessions`` after launch) to run.
+        self._last_cleanup_ts = float("-inf")
+        self._cleanup_lock = threading.Lock()
 
     def create_session(self, model: Optional[str] = None) -> Session:
         """Create a new session, defaulting to the configured model."""
@@ -247,13 +308,35 @@ class HistoryManager:
             session = self.current_session
         if session is None:
             return
+        # ``model_dump()`` snapshots the live session on the caller's thread so
+        # the dict handed to ``save_session_data`` (which callers may offload to
+        # a background thread) can never race with in-loop session mutations.
+        self.save_session_data(session.model_dump(), run_cleanup=False)
 
-        session_file = self.history_dir / f"{session.session_id}.json"
-        tmp_file = session_file.with_suffix(".json.tmp")
+    def save_session_data(self, data: Dict[str, Any], *, run_cleanup: bool = True) -> None:
+        """Write a pre-serialized session dict to disk.
+
+        Split out from :meth:`save_session` so the expensive disk I/O can be
+        offloaded to a background thread (see ``Agent.save_session``) while the
+        ``model_dump()`` snapshot stays on the calling thread. ``data`` must be
+        the output of ``Session.model_dump()``.
+
+        Writes via a unique temp file + ``os.replace`` so a crash mid-write
+        cannot leave a truncated/invalid JSON behind, and concurrent writers
+        can't clobber each other's temp file.
+        """
+        if run_cleanup:
+            self._cleanup_expired_sessions()
+        session_id = data.get("session_id")
+        if not session_id:
+            return
+
+        session_file = self.history_dir / f"{session_id}.json"
+        tmp_file = session_file.with_name(f"{session_id}.{uuid.uuid4().hex}.tmp")
         try:
             with open(tmp_file, "w") as f:
                 os.fchmod(f.fileno(), stat.S_IRUSR | stat.S_IWUSR)
-                json.dump(session.model_dump(), f, indent=2)
+                json.dump(data, f)
             os.replace(tmp_file, session_file)
         except Exception:
             # Don't leave an orphan ``.tmp`` when the write itself failed.
@@ -263,10 +346,13 @@ class HistoryManager:
                 pass
             raise
 
-        self._update_index(session)
+        self._update_index(data)
 
-    def _update_index(self, session: Session) -> None:
-        """Update the fast-lookup index for a session."""
+    def _update_index(self, data: Dict[str, Any]) -> None:
+        """Update the fast-lookup index from a session dict."""
+        session_id = data.get("session_id")
+        if not session_id:
+            return
         index_file = self.history_dir / "index.json"
         with self._index_lock:
             index = {}
@@ -282,19 +368,19 @@ class HistoryManager:
                 except OSError as e:
                     logger.warning("Could not read session index %s: %s", index_file, e)
 
-            index[session.session_id] = {
-                "session_id": session.session_id,
-                "created_at": datetime.fromtimestamp(session.created_at).strftime(
+            index[session_id] = {
+                "session_id": session_id,
+                "created_at": datetime.fromtimestamp(data.get("created_at", time.time())).strftime(
                     "%Y-%m-%d %H:%M:%S"
                 ),
-                "updated_at": datetime.fromtimestamp(session.updated_at).strftime(
+                "updated_at": datetime.fromtimestamp(data.get("updated_at", time.time())).strftime(
                     "%Y-%m-%d %H:%M:%S"
                 ),
-                "messages": len(session.messages),
-                "model": session.model,
+                "messages": len(data.get("messages", [])),
+                "model": data.get("model", "unknown"),
             }
             try:
-                tmp_file = index_file.with_suffix(".json.tmp")
+                tmp_file = index_file.with_name(f"index.{uuid.uuid4().hex}.tmp")
                 with open(tmp_file, "w") as f:
                     json.dump(index, f)
                 os.replace(tmp_file, index_file)
@@ -414,9 +500,27 @@ class HistoryManager:
             except Exception as e:
                 logger.warning(f"Failed to update index after session delete: {e}")
 
-    def _cleanup_expired_sessions(self) -> None:
-        """Delete sessions older than the retention window."""
-        cutoff = time.time() - _SESSION_RETENTION_SECONDS
+    def _cleanup_expired_sessions(self, *, force: bool = False) -> None:
+        """Delete sessions older than the retention window.
+
+        This globs and ``stat()``s every session file, so the cost grows with
+        the history size. It is called from ``save_session``/``load_session``/
+        ``create_session``/``list_sessions`` — several times per turn — so the
+        scan is throttled to once per ``_CLEANUP_INTERVAL_SECONDS`` unless
+        ``force`` is set. Retention is a coarse, time-based eviction, so a
+        slightly delayed sweep is harmless.
+        """
+        now = time.time()
+        if not force:
+            with self._cleanup_lock:
+                if now - self._last_cleanup_ts < self._CLEANUP_INTERVAL_SECONDS:
+                    return
+                self._last_cleanup_ts = now
+        else:
+            with self._cleanup_lock:
+                self._last_cleanup_ts = now
+
+        cutoff = now - _SESSION_RETENTION_SECONDS
         removed_ids = []
         for session_file in self.history_dir.glob("session_*.json"):
             try:

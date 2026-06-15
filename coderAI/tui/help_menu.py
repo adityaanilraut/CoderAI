@@ -24,6 +24,7 @@ HELP_MENU_ENTRIES = [
     ("/export", "Export session to markdown"),
     ("/copy", "Copy last assistant response (OSC-52)"),
     ("/undo", "Undo last tool action"),
+    ("/rewind", "Rewind conversation to a past turn · /rewind <n> [--files]"),
     ("/tokens", "Show token usage, cost & context stats"),
     ("/context", "View pinned context files"),
     ("/pin", "Pin a file to context · /pin <path>"),

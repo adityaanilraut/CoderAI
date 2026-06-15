@@ -30,6 +30,7 @@ EXPECTED_COMMANDS = {
     "toggle_auto_approve",
     "tool_approval_resp",
     "clear_context",
+    "rewind",
     "compact_context",
     "manage_context",
     "get_state",

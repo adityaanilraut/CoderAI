@@ -417,29 +417,3 @@ def compose_default_system_prompt(
         ]
     )
     return "\n\n".join(parts)
-
-
-def format_tools_short(registry: ToolRegistry) -> str:
-    """Build a condensed tool listing (names only) for context-constrained turns.
-
-    Unlike ``format_tools_markdown``, this omits long-form descriptions and
-    MCP appendices to save tokens. Use when the context window is filling up
-    and the model already knows the tool capabilities from the initial prompt.
-    """
-    lines: List[str] = [
-        "## Available Tools (short form — use `plan` action='show' to re-open full listing)",
-        "",
-    ]
-    seen: set[str] = set()
-
-    for heading, names in _TOOL_SECTIONS:
-        present = [n for n in names if registry.get(n) is not None]
-        if present:
-            seen.update(present)
-            lines.append(f"- **{heading}**: {', '.join(present)}")
-
-    other = [n for n in sorted(registry.tools.keys()) if n not in seen]
-    if other:
-        lines.append(f"- **Other**: {', '.join(other)}")
-
-    return "\n".join(lines).rstrip() + "\n"

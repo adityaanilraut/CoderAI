@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 
+from coderAI.system.history import checkpoint_label
 from coderAI.tui.export import timeline_to_markdown
 
 if TYPE_CHECKING:
@@ -30,6 +31,7 @@ class SlashContext:
     confirm_exit: Callable[[], bool]
     set_search_filter: Callable[[str], None]
     retry_agent: Callable[[], None]
+    rewind_timeline: Callable[[int], None]
 
     def toast(self, level: str, message: str) -> None:
         self.reducer._push(
@@ -121,6 +123,41 @@ def _cmd_undo(ctx: SlashContext, arg: str, head: str) -> bool:
     return True
 
 
+def _cmd_rewind(ctx: SlashContext, arg: str, head: str) -> bool:
+    user_rows = [it for it in ctx.reducer.timeline if it.get("kind") == "user"]
+    if not user_rows:
+        ctx.toast("warning", "No turns to rewind to yet.")
+        return True
+
+    tokens = arg.split() if arg else []
+    if not tokens:
+        # No argument → list the turns the user can jump back to.
+        lines = []
+        for i, it in enumerate(user_rows, 1):
+            lines.append(f"  {i}: {checkpoint_label(it.get('text'))}")
+        ctx.toast(
+            "info",
+            "Rewind to which turn? Use /rewind <n> [--files]\n" + "\n".join(lines),
+        )
+        return True
+
+    try:
+        turn = int(tokens[0])
+    except ValueError:
+        ctx.toast("warning", "Usage: /rewind <turn> [--files]")
+        return True
+
+    restore_files = any(t.lower() in ("--files", "files", "-f") for t in tokens[1:])
+    if turn < 1 or turn > len(user_rows):
+        ctx.toast("warning", f"Invalid turn {turn}. Valid: 1–{len(user_rows)}.")
+        return True
+
+    # Truncate the local timeline, then ask the agent to truncate its history.
+    ctx.rewind_timeline(turn)
+    ctx.controller.enqueue_command("rewind", turn=turn, files=restore_files)
+    return True
+
+
 def _cmd_persona(ctx: SlashContext, arg: str, head: str) -> bool:
     if not arg or arg == "list":
         ctx.controller.enqueue_command("list_personas")
@@ -149,7 +186,37 @@ def _cmd_think(ctx: SlashContext, arg: str, head: str) -> bool:
     return True
 
 
-def _cmd_status(ctx: SlashContext, arg: str, head: str) -> bool:
+def _cmd_tokens(ctx: SlashContext, arg: str, head: str) -> bool:
+    # Refresh the status bar / panels, then surface a live usage summary.
+    # The numbers are mirrored onto the session by the bridge's ``status``
+    # events, so we can render them client-side without another round-trip.
+    ctx.controller.enqueue_command("get_state")
+    s = ctx.reducer.session
+    used = getattr(s, "ctx_used", 0) or 0
+    limit = getattr(s, "ctx_limit", 0) or 0
+    pct = (used / limit * 100) if limit else 0.0
+    prompt = getattr(s, "prompt_tokens", 0) or 0
+    completion = getattr(s, "completion_tokens", 0) or 0
+    total = prompt + completion
+    cost = getattr(s, "cost_usd", 0.0) or 0.0
+    budget = getattr(s, "budget_usd", 0.0) or 0.0
+    pinned = getattr(s, "context_files", None) or []
+    cost_line = f"${cost:.4f}" + (f" / ${budget:.2f} budget" if budget else "")
+    lines = [
+        "Session usage",
+        f"  Model:       {getattr(s, 'model', '') or '(unknown)'}",
+        f"  Context:     {used:,} / {limit:,} tokens ({pct:.0f}%)",
+        f"  Prompt:      {prompt:,}",
+        f"  Completion:  {completion:,}",
+        f"  Total:       {total:,}",
+        f"  Cost:        {cost_line}",
+        f"  Pinned:      {len(pinned)} file(s)",
+    ]
+    ctx.toast("info", "\n".join(lines))
+    return True
+
+
+def _cmd_context(ctx: SlashContext, arg: str, head: str) -> bool:
     ctx.controller.enqueue_command("get_state")
     ctx.show_context()
     return True
@@ -299,11 +366,13 @@ _register(_cmd_allow_tool, "allow-tool")
 _register(_cmd_disallow_tool, "disallow-tool")
 _register(_cmd_allowed_tools, "allowed-tools")
 _register(_cmd_undo, "undo")
+_register(_cmd_rewind, "rewind")
 _register(_cmd_persona, "persona")
 _register(_cmd_skills, "skills")
 _register(_cmd_verbose, "verbose")
 _register(_cmd_think, "think", "reveal")
-_register(_cmd_status, "tokens", "status", "context")
+_register(_cmd_tokens, "tokens", "status")
+_register(_cmd_context, "context")
 _register(_cmd_code_search, "code-search", "search-code", "cs")
 _register(_cmd_agents, "agents")
 _register(_cmd_tasks, "tasks", "todos", "task")
@@ -354,6 +423,7 @@ def handle_slash_command(
     confirm_exit: Callable[[], bool],
     set_search_filter: Callable[[str], None],
     retry_agent: Callable[[], None],
+    rewind_timeline: Callable[[int], None],
 ) -> bool:
     """Dispatch a slash command. Returns True if handled."""
 
@@ -373,6 +443,7 @@ def handle_slash_command(
         confirm_exit=confirm_exit,
         set_search_filter=set_search_filter,
         retry_agent=retry_agent,
+        rewind_timeline=rewind_timeline,
     )
 
     # Wire the palette callbacks through the section-aware helper.

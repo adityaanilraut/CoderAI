@@ -40,18 +40,18 @@ def palette_shortcut() -> str:
 
 def composer_placeholder() -> str:
     return (
-        f"Message CoderAI…   / commands   @ pin   ^T collapse   ^O expand   "
+        f"Message CoderAI…   / commands   @ mention   ↑ history   "
         f"{palette_shortcut()} palette"
     )
 
 
 def header_palette_hint() -> str:
-    return f"{palette_shortcut()} palette • ⎋ cancel • @ pin • / slash"
+    return f"{palette_shortcut()} palette • ⎋ cancel • @ mention • / slash"
 
 
 def composer_footer_hints() -> str:
     return (
-        f"↵ send · ⇧↵ newline · ^T collapse · ^O expand · / commands · {palette_shortcut()} palette"
+        f"↵ send · ⇧↵ newline · ↑↓ history · @ mention · / commands · {palette_shortcut()} palette"
     )
 
 
