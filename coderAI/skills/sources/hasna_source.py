@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import shutil
 from pathlib import Path
@@ -23,19 +22,6 @@ def _find_hasna_cli() -> Optional[str]:
     if path is None:
         logger.debug("[HasnaSource] skills CLI not found on PATH")
     return path
-
-
-def _read_hasna_auth() -> Optional[Dict[str, str]]:
-    """Read @hasna/skills auth credentials from ``~/.hasna/skills/auth.json``."""
-    auth_path = Path.home() / ".hasna" / "skills" / "auth.json"
-    try:
-        if auth_path.is_file():
-            from typing import cast
-
-            return cast("dict[str, str]", json.loads(auth_path.read_text()))
-    except (json.JSONDecodeError, OSError) as e:
-        logger.debug("[HasnaSource] Failed to read auth.json: %s", e)
-    return None
 
 
 class HasnaSkillSource(SkillSource):

@@ -123,6 +123,7 @@ turns can't interleave.
 | `list_allowed_tools`   | `{}`                                                   | Emits `info` listing the session's always-allowed tools                |
 | `compact_context`      | `{}`                                                   | Triggers summarization                                                 |
 | `clear_context`        | `{}`                                                   | Fresh session; clears sub-agents from tracker, resets main to idle     |
+| `rewind`               | `{turn: int, files?: bool}`                            | Rewind conversation to before user `turn`; truncates `session.messages` and (if `files`) reverts file edits since that checkpoint. Emits `success`/`warning` + `status`. UI truncates its own timeline. |
 | `manage_context`       | `{action: "add" \| "remove", path}`                     | Pin/unpin a file in the pinned-context manager; emits `success`/`warning`, then `context_state` + `status` |
 | `get_state`            | `{}`                                                   | Re-emit `status` + `agent` updates                                     |
 | `get_plan`             | `{}`                                                   | Emits `info` with `.coderAI/current_plan.json` or a short notice       |

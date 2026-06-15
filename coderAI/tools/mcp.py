@@ -4,6 +4,7 @@ import atexit
 import asyncio
 import json
 import logging
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
@@ -12,6 +13,45 @@ from coderAI.core.tool_error_codes import ToolErrorCode
 from coderAI.tools.base import Tool
 
 logger = logging.getLogger(__name__)
+
+# Launchers permitted for stdio MCP servers. Shared by the ``mcp_connect`` tool
+# and the ``coderAI mcp`` CLI so both validate against the same allow-list.
+ALLOWED_MCP_LAUNCHERS = {"npx", "node", "python", "python3", "uvx", "bun", "deno"}
+
+
+def mcp_servers_path() -> Path:
+    """Path to the persisted MCP server config (``~/.coderAI/mcp_servers.json``)."""
+    from coderAI.system.config import config_manager
+
+    return config_manager.config_dir / "mcp_servers.json"
+
+
+def load_mcp_servers() -> Dict[str, Any]:
+    """Read the MCP server config, tolerating a missing or corrupt file.
+
+    Always returns a dict with an ``mcpServers`` mapping so callers can index
+    into it without extra guards.
+    """
+    path = mcp_servers_path()
+    if not path.exists():
+        return {"mcpServers": {}}
+    try:
+        with open(path, "r") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return {"mcpServers": {}}
+        data.setdefault("mcpServers", {})
+        return data
+    except Exception:
+        logger.warning("Failed to read %s; treating as empty", path, exc_info=True)
+        return {"mcpServers": {}}
+
+
+def save_mcp_servers(data: Dict[str, Any]) -> None:
+    """Write the MCP server config as pretty-printed JSON."""
+    path = mcp_servers_path()
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
 
 
 class MCPClient:
@@ -571,6 +611,31 @@ class MCPClient:
         """
         import aiohttp
 
+        async def _probe_sse(name: str, info: Dict[str, Any]) -> None:
+            message_url = info.get("message_url")
+            if not message_url:
+                return
+            session = info.get("session")
+            if session is None or session.closed:
+                if not info.get("degraded"):
+                    logger.warning("MCP server '%s' (SSE) session is closed", name)
+                    info["degraded"] = True
+                return
+            try:
+                timeout = aiohttp.ClientTimeout(total=5)
+                async with aiohttp.ClientSession() as tmp_session:
+                    async with tmp_session.options(message_url, timeout=timeout) as _resp:
+                        _resp.raise_for_status()
+            except Exception as e:
+                if not info.get("degraded"):
+                    logger.warning(
+                        "MCP server '%s' (SSE) health check failed: %s",
+                        name,
+                        e,
+                    )
+                    info["degraded"] = True
+
+        sse_probes = []
         for name, info in list(self.servers.items()):
             transport = info.get("transport", "stdio")
 
@@ -585,28 +650,12 @@ class MCPClient:
                         )
                         info["degraded"] = True
             elif transport == "sse":
-                message_url = info.get("message_url")
-                if not message_url:
-                    continue
-                session = info.get("session")
-                if session is None or session.closed:
-                    if not info.get("degraded"):
-                        logger.warning("MCP server '%s' (SSE) session is closed", name)
-                        info["degraded"] = True
-                    continue
-                try:
-                    timeout = aiohttp.ClientTimeout(total=5)
-                    async with aiohttp.ClientSession() as tmp_session:
-                        async with tmp_session.options(message_url, timeout=timeout) as _resp:
-                            _resp.raise_for_status()
-                except Exception as e:
-                    if not info.get("degraded"):
-                        logger.warning(
-                            "MCP server '%s' (SSE) health check failed: %s",
-                            name,
-                            e,
-                        )
-                        info["degraded"] = True
+                # Probe SSE servers concurrently — a slow/hung server must not
+                # delay the health check for the others (each waits up to 5s).
+                sse_probes.append(_probe_sse(name, info))
+
+        if sse_probes:
+            await asyncio.gather(*sse_probes, return_exceptions=True)
 
     async def auto_reconnect_degraded(self):
         """Attempt to reconnect degraded MCP servers.
@@ -724,7 +773,7 @@ class MCPConnectTool(Tool):
     parameters_model = MCPConnectParams
     requires_confirmation = True
 
-    _ALLOWED_MCP_LAUNCHERS = {"npx", "node", "python", "python3", "uvx", "bun", "deno"}
+    _ALLOWED_MCP_LAUNCHERS = ALLOWED_MCP_LAUNCHERS
 
     async def execute(  # type: ignore[override]
         self,

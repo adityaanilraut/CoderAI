@@ -1,9 +1,5 @@
 """CLI setup wizard."""
 
-import json
-from pathlib import Path
-from typing import Any
-
 import click
 
 from coderAI.system.config import config_manager
@@ -178,14 +174,10 @@ def setup():
     display.print("    Add Model Context Protocol servers to provide custom tools.")
     use_mcp = click.confirm("    Configure MCP servers?", default=False)
     if use_mcp:
-        mcp_servers_file = Path.home() / ".coderAI" / "mcp_servers.json"
-        mcp_data: dict[str, Any] = {"mcpServers": {}}
-        if mcp_servers_file.exists():
-            try:
-                with open(mcp_servers_file, "r") as f:
-                    mcp_data = json.load(f)
-            except Exception:
-                pass
+        from coderAI.tools.mcp import load_mcp_servers, mcp_servers_path, save_mcp_servers
+
+        mcp_data = load_mcp_servers()
+        mcp_data.setdefault("mcpServers", {})
 
         while True:
             server_name = click.prompt(
@@ -220,11 +212,8 @@ def setup():
             display.print_success(f"    Configured MCP server '{server_name}'")
 
         try:
-            with open(mcp_servers_file, "w") as f:
-                json.dump(mcp_data, f, indent=2)
-            display.print_success(
-                "    MCP server configurations saved to ~/.coderAI/mcp_servers.json"
-            )
+            save_mcp_servers(mcp_data)
+            display.print_success(f"    MCP server configurations saved to {mcp_servers_path()}")
         except Exception as e:
             display.print_error(f"    Failed to save MCP servers config: {e}")
     display.print()

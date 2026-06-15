@@ -636,19 +636,28 @@ class CoderAIApp(App[None]):
         finally:
             self._scan_in_progress = False
 
-    def action_file_picker(self) -> None:
-        self._toast("info", "Scanning project files…")
-        self.run_worker(self._show_file_picker(), exclusive=True)
+    def action_file_mention(self) -> None:
+        self.run_worker(self._show_file_mention(), exclusive=True)
 
-    async def _show_file_picker(self) -> None:
+    async def _show_file_mention(self) -> None:
         await self._scan_project_files()
-        self._toast("info", f"Found {len(self.project_files)} files")
-        result = await self.push_screen_wait(FilePickerScreen(self.project_files))
-        if result is None or not self.controller:
-            self.query_one("#prompt-area", PromptArea).focus()
-            return
-        self.controller.enqueue_command("manage_context", action="add", path=result)
-        self.query_one("#prompt-area", PromptArea).focus()
+        result = await self.push_screen_wait(
+            FilePickerScreen(
+                self.project_files,
+                placeholder="🔍 Type to search files to mention…",
+                footer_help=(
+                    f"[{Tokens.TEXT_MUTED}]↑↓ navigate  ↵ insert @path  ⎋ close[/]"
+                ),
+            )
+        )
+        prompt = self.query_one("#prompt-area", PromptArea)
+        if result:
+            prompt.insert(f"@{result} ")
+            if self.controller:
+                self.controller.enqueue_command(
+                    "manage_context", action="add", path=result
+                )
+        prompt.focus()
 
     def action_command_palette(self) -> None:
         self.run_worker(self._show_palette(), exclusive=True)
@@ -700,6 +709,7 @@ class CoderAIApp(App[None]):
                 confirm_exit=self._confirm_exit,
                 set_search_filter=lambda q: setattr(self, "_search_filter", q),
                 retry_agent=self._retry_agent,
+                rewind_timeline=self._rewind_timeline,
             )
             if handled:
                 return
@@ -737,6 +747,31 @@ class CoderAIApp(App[None]):
         if self.controller:
             self.controller.enqueue_command("clear_context")
         self.reducer.timeline.clear()
+        self._log_rendered_idx = 0
+        self._refresh_ui("full")
+        try:
+            self.query_one("#timeline", SelectableRichLog).scroll_end(animate=False)
+        except NoMatches:
+            pass
+
+    def _rewind_timeline(self, turn: int) -> None:
+        """Truncate the local timeline to before the Nth user message.
+
+        Mirrors ``_clear_context`` but stops at a turn boundary instead of
+        wiping everything; the backend ``rewind`` command truncates the
+        session history in parallel.
+        """
+        count = 0
+        cut_idx: Optional[int] = None
+        for i, it in enumerate(self.reducer.timeline):
+            if it.get("kind") == "user":
+                count += 1
+                if count == turn:
+                    cut_idx = i
+                    break
+        if cut_idx is None:
+            return
+        del self.reducer.timeline[cut_idx:]
         self._log_rendered_idx = 0
         self._refresh_ui("full")
         try:

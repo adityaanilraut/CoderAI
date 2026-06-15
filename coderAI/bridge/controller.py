@@ -50,6 +50,7 @@ from coderAI.bridge.commands import (  # noqa: F401
     _cmd_list_skills,
     _cmd_manage_context,
     _cmd_reference,
+    _cmd_rewind,
     _cmd_search_codebase,
     _cmd_send_message,
     _cmd_set_default_model,

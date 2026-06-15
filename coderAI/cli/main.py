@@ -17,8 +17,10 @@ from .config_cmd import config
 from .history_cmd import history
 from .setup import setup
 from .index_cmd import index_cmd, search_cmd
+from .mcp_cmd import mcp as mcp_cmd
+from .run_cmd import run as run_cmd
 from .tasks_cmd import tasks
-from .utils import valid_models
+from .utils import missing_api_key_message, valid_models
 
 logger = logging.getLogger(__name__)
 
@@ -91,24 +93,9 @@ def chat(model, resume, resume_latest, auto_approve, persona):
     from coderAI.tui import run_chat_app
     from coderAI.ui.display import display
 
-    cfg = config_manager.load()
-    has_cloud_key = any(
-        [
-            getattr(cfg, "openai_api_key", None),
-            getattr(cfg, "anthropic_api_key", None),
-            getattr(cfg, "groq_api_key", None),
-            getattr(cfg, "deepseek_api_key", None),
-            getattr(cfg, "gemini_api_key", None),
-        ]
-    )
-    local_default = (cfg.default_model or "").lower() in ("lmstudio", "ollama")
-    if not has_cloud_key and not local_default:
-        display.print_error(
-            "No API key configured. Run `coderAI setup` to add one, or set a "
-            "provider env var (ANTHROPIC_API_KEY, OPENAI_API_KEY, GROQ_API_KEY, "
-            "DEEPSEEK_API_KEY, GEMINI_API_KEY). For local models, run `coderAI config set "
-            "default_model lmstudio` (or ollama)."
-        )
+    key_error = missing_api_key_message()
+    if key_error:
+        display.print_error(key_error)
         sys.exit(1)
 
     if resume_latest:
@@ -429,6 +416,8 @@ cli.add_command(tasks)
 cli.add_command(setup)
 cli.add_command(index_cmd)
 cli.add_command(search_cmd)
+cli.add_command(run_cmd)
+cli.add_command(mcp_cmd)
 
 
 def main():

@@ -34,8 +34,6 @@ MAX_CONCURRENT_READ_ONLY = 20
 
 DEFAULT_TOOL_TIMEOUT_SECONDS = 120.0
 
-DEFAULT_APPROVAL_TIMEOUT_SECONDS = 300.0
-
 # Cap concurrent read-only sub-agent delegations. Each sub-agent is a full
 # LLM session with its own tool loop, so we fan out far less aggressively
 # than for cheap read-only tools like read_file / grep.
@@ -116,11 +114,6 @@ class ToolExecutor:
             return max(1, min(8, cap))
         except (TypeError, ValueError):
             return DEFAULT_MAX_CONCURRENT_MUTATING_SUBAGENTS
-
-    def reset_counts(self) -> None:
-        self._call_counts.clear()
-        self._last_results.clear()
-        self._preview_file_cache.clear()
 
     def _cache_preview(self, path: str, mtime: float, content: str) -> None:
         self._preview_file_cache[path] = (mtime, content)
@@ -293,14 +286,6 @@ class ToolExecutor:
             logger.debug("Preview diff computation failed for %s: %s", tool_name, e)
             return None
 
-    @staticmethod
-    def _safe_get_arg(pc: dict, key: str) -> Any:
-        """Safely get an argument from a parsed call, guarding against None args."""
-        args = pc.get("arguments")
-        if not isinstance(args, dict):
-            return None
-        return args.get(key)
-
     async def _precompute_diffs(self, parsed_calls: list) -> Dict[int, Optional[str]]:
         gated: List[Tuple[int, dict]] = []
         for i, pc in enumerate(parsed_calls):
@@ -333,6 +318,13 @@ class ToolExecutor:
         tool_id: Optional[str] = None,
         precomputed_diff: Optional[str] = None,
     ) -> bool:
+        # Headless / non-interactive override (e.g. `coderAI run`): when set,
+        # decide here instead of prompting. Used to deny-on-mutate without a
+        # TTY. Only reached when auto_approve is off, so it never blocks --yolo.
+        override = getattr(self.agent, "confirmation_override", None)
+        if override is not None:
+            return bool(await override(tool_name, arguments))
+
         # getattr avoids a hard import on ipc_server; the agent may run
         # without IPC (e.g. one-shot CLI) where ipc_server is never set.
         ipc_server = getattr(self.agent, "ipc_server", None)

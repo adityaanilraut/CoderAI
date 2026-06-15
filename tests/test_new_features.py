@@ -71,11 +71,13 @@ def test_web_search_backend_fallbacks(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_mcp_autoconnect(monkeypatch, tmp_path):
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-
-    # Write a mock mcp_servers.json file
+    # Auto-connect resolves the config path through config_manager.config_dir
+    # (via coderAI.tools.mcp.load_mcp_servers), so point that at a temp dir.
     mcp_config_dir = tmp_path / ".coderAI"
     mcp_config_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr("coderAI.system.config.config_manager.config_dir", mcp_config_dir)
+
+    # Write a mock mcp_servers.json file
     mcp_servers_file = mcp_config_dir / "mcp_servers.json"
 
     servers_data = {

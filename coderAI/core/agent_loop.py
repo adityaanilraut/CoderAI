@@ -81,6 +81,13 @@ class ExecutionLoop:
         self._length_retry_used: bool = False
         self._hard_cap_warned: bool = False
         self._health_check_counter: int = 0
+        # Background MCP health check (see ``_maybe_start_mcp_health_check``).
+        # The probes and reconnect back-offs must never run on the LLM loop's
+        # critical path, so they run detached; the task sets
+        # ``_tool_schemas_dirty`` when servers change so the loop rebuilds
+        # schemas on its own thread before the next call.
+        self._mcp_health_task: Optional["asyncio.Task[None]"] = None
+        self._tool_schemas_dirty: bool = False
 
     def _read_active_plan_step(self) -> Optional[Dict[str, Any]]:
         """Return ``{current_step, total_steps, description}`` for the on-disk
@@ -332,18 +339,19 @@ class ExecutionLoop:
             state.messages, state.iteration, state.max_iterations
         )
 
-        # Periodic MCP server health check (every 10 iterations)
+        # Periodic MCP server health check (every 10 iterations). Launched in
+        # the background so the SSE probes (5s timeout each) and reconnect
+        # back-off sleeps never stall the agent's reasoning loop.
         self._health_check_counter += 1
         if self._health_check_counter >= 10:
             self._health_check_counter = 0
-            try:
-                from coderAI.tools.mcp import mcp_client
+            self._maybe_start_mcp_health_check()
 
-                await mcp_client.check_server_health()
-                await mcp_client.auto_reconnect_degraded()
-                state.tool_schemas = self._get_tool_schemas()
-            except Exception as e:
-                logger.debug("MCP health check failed: %s", e)
+        # A completed background health check may have reconnected or dropped
+        # servers; rebuild the schemas on this thread before the next LLM call.
+        if self._tool_schemas_dirty:
+            self._tool_schemas_dirty = False
+            state.tool_schemas = self._get_tool_schemas()
 
         response_data = await self._call_llm_with_retry(step_aware_messages, state.tool_schemas)
 
@@ -654,17 +662,42 @@ class ExecutionLoop:
         state.messages = await self.agent.context_controller.manage_context_window(state.messages)
         return None
 
+    def _maybe_start_mcp_health_check(self) -> None:
+        """Run the MCP health check + auto-reconnect off the critical path.
+
+        ``check_server_health`` makes per-server network probes (5s timeout
+        each) and ``auto_reconnect_degraded`` sleeps through an exponential
+        back-off — both would otherwise stall the agent's LLM loop for
+        seconds. We run them as a detached task and only signal the loop to
+        rebuild tool schemas once the work finishes. At most one health task
+        runs at a time.
+        """
+        task = self._mcp_health_task
+        if task is not None and not task.done():
+            return
+
+        async def _run_health_check() -> None:
+            try:
+                from coderAI.tools.mcp import mcp_client
+
+                await mcp_client.check_server_health()
+                await mcp_client.auto_reconnect_degraded()
+                # Defer the schema rebuild to the loop thread (it owns
+                # ``state.tool_schemas``); just flag that it's stale.
+                self._tool_schemas_dirty = True
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.debug("MCP health check failed: %s", e)
+
+        self._mcp_health_task = asyncio.create_task(_run_health_check())
+
     async def _autoconnect_mcp_servers(self):
         """Auto-connect configured MCP servers from ~/.coderAI/mcp_servers.json."""
-        from pathlib import Path
+        from coderAI.tools.mcp import load_mcp_servers
 
-        mcp_servers_file = Path.home() / ".coderAI" / "mcp_servers.json"
-        if not mcp_servers_file.exists():
-            return
         try:
-            with open(mcp_servers_file, "r") as f:
-                data = json.load(f)
-            servers = data.get("mcpServers", {})
+            servers = load_mcp_servers().get("mcpServers", {})
             if not servers:
                 return
             from coderAI.tools.mcp import mcp_client

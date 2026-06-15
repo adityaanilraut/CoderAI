@@ -18,6 +18,7 @@ from textual.widgets.option_list import Option
 from coderAI.tui.diff_render import format_diff_compact
 from coderAI.tui.help_menu import HELP_MENU_ENTRIES
 from coderAI.tui.platform import palette_input_placeholder
+from coderAI.tui.prompt_history import PromptHistory
 from coderAI.tui.state import SessionState
 from coderAI.tui.theme import Glyphs, Styles, Tokens
 
@@ -32,31 +33,92 @@ class AgentEventMsg(Message):
 
 
 class PromptArea(TextArea):
-    """TextArea that submits on Enter and inserts a newline on Shift/Alt+Enter."""
+    """TextArea that submits on Enter and inserts a newline on Shift/Alt+Enter.
+
+    Adds shell-style prompt recall (Up/Down cycle previously submitted prompts)
+    and an inline ``@`` file-mention trigger.
+    """
 
     class Submitted(Message):
         def __init__(self, text: str) -> None:
             super().__init__()
             self.text = text
 
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        # Note: TextArea already owns ``self.history`` (its undo stack), so the
+        # prompt recall buffer must use a distinct attribute name.
+        self.prompt_history = PromptHistory()
+
     async def _on_key(self, event: events.Key) -> None:
         if event.key == "enter":
             event.stop()
             event.prevent_default()
-            self.post_message(self.Submitted(self.text))
+            text = self.text
+            self.prompt_history.add(text)
+            self.post_message(self.Submitted(text))
             return
         if event.key in ("shift+enter", "alt+enter", "ctrl+j"):
             event.stop()
             event.prevent_default()
+            self.prompt_history.reset()
             self.insert("\n")
             return
-        if event.key == "@" and not self.text:
+        # Textual names this key "at", so match the character, not event.key.
+        if event.character == "@" and self._at_word_boundary():
             event.stop()
             event.prevent_default()
-            if hasattr(self.app, "action_file_picker"):
-                self.app.action_file_picker()
+            self.prompt_history.reset()
+            if hasattr(self.app, "action_file_mention"):
+                self.app.action_file_mention()
             return
+        if event.key == "up" and self._recall_prev():
+            event.stop()
+            event.prevent_default()
+            return
+        if event.key == "down" and self._recall_next():
+            event.stop()
+            event.prevent_default()
+            return
+        if event.is_printable:
+            # Typing forks a new draft, so abandon any in-flight history walk.
+            self.prompt_history.reset()
         await super()._on_key(event)
+
+    def _at_word_boundary(self) -> bool:
+        """True when the cursor sits at line start or just after whitespace."""
+        row, col = self.cursor_location
+        if col == 0:
+            return True
+        line = self.document.get_line(row)
+        prev_char = line[col - 1] if col - 1 < len(line) else ""
+        return prev_char == "" or prev_char.isspace()
+
+    def _recall_prev(self) -> bool:
+        # Only hijack Up on the first line so multi-line editing still works.
+        row, _ = self.cursor_location
+        if row != 0:
+            return False
+        recalled = self.prompt_history.prev(self.text)
+        if recalled is None:
+            return False
+        self._set_text(recalled)
+        return True
+
+    def _recall_next(self) -> bool:
+        if not self.prompt_history.navigating:
+            return False
+        row, _ = self.cursor_location
+        if row != self.document.line_count - 1:
+            return False
+        recalled = self.prompt_history.next()
+        if recalled is not None:
+            self._set_text(recalled)
+        return True
+
+    def _set_text(self, text: str) -> None:
+        self.text = text
+        self.move_cursor(self.document.end)
 
 
 class ApprovalScreen(ModalScreen[tuple[bool, bool]]):
@@ -491,14 +553,21 @@ class FuzzyPickerScreen(ModalScreen[Optional[str]]):
 class FilePickerScreen(FuzzyPickerScreen):
     """Fuzzy-searchable project file picker for pinning context."""
 
-    def __init__(self, files: List[str]) -> None:
+    def __init__(
+        self,
+        files: List[str],
+        *,
+        placeholder: Optional[str] = None,
+        footer_help: Optional[str] = None,
+    ) -> None:
         super().__init__(
             box_id="picker-box",
             input_id="picker-input",
             list_id="picker-list",
             footer_id="picker-footer",
-            placeholder="🔍 Type to search project files to pin...",
-            footer_help=f"[{Tokens.TEXT_MUTED}]↑↓ navigate  ↵ pin  ⎋ close[/]",
+            placeholder=placeholder or "🔍 Type to search project files to pin...",
+            footer_help=footer_help
+            or f"[{Tokens.TEXT_MUTED}]↑↓ navigate  ↵ pin  ⎋ close[/]",
         )
         self.files = files
 
