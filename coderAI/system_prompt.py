@@ -294,7 +294,16 @@ _TOOL_SECTIONS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
     ("Inter-Agent Notepad", ("notepad",)),
     (
         "MCP (Model Context Protocol)",
-        ("mcp_connect", "mcp_disconnect", "mcp_call_tool", "mcp_list"),
+        (
+            "mcp_connect",
+            "mcp_disconnect",
+            "mcp_call_tool",
+            "mcp_list",
+            "mcp_list_resources",
+            "mcp_read_resource",
+            "mcp_list_prompts",
+            "mcp_get_prompt",
+        ),
     ),
     ("Undo / Rollback", ("undo", "undo_history")),
     (

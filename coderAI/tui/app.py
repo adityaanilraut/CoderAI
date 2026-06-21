@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import sys
 import time
 from typing import Any, Dict, List, Optional
 
@@ -12,6 +11,8 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
+from textual.geometry import Size
+from textual.strip import Strip
 from textual.widgets import Footer, Static
 
 from coderAI.tui.widgets import SelectableRichLog
@@ -38,7 +39,7 @@ from coderAI.tui.screens import (
 from coderAI.tui.session_setup import create_agent_session
 from coderAI.tui.slash import handle_slash_command
 from coderAI.tui.state import SessionState
-from coderAI.tui.platform import composer_placeholder, supports_truecolor, truecolor_hint
+from coderAI.tui.platform import composer_placeholder
 from coderAI.tui.theme import Glyphs, Tokens
 from coderAI.tui.timeline_render import (
     build_stream_tail_markup,
@@ -64,6 +65,7 @@ Screen {{
     width: 1fr;
     height: 1fr;
     layout: vertical;
+    layers: base tail;
     background: {Tokens.BG};
 }}
 #session-header {{
@@ -82,6 +84,8 @@ Screen {{
     scrollbar-color: {Tokens.LINE};
 }}
 #stream-tail {{
+    layer: tail;
+    dock: bottom;
     height: auto;
     max-height: 40%;
     padding: 0 2 1 2;
@@ -172,16 +176,6 @@ Footer {{
 """
 
 
-class RecordingLog:
-    """A duck-typed wrapper for RichLog to capture write calls during rendering."""
-
-    def __init__(self) -> None:
-        self.renderables: list[Any] = []
-
-    def write(self, renderable: Any) -> None:
-        self.renderables.append(renderable)
-
-
 class CoderAIApp(App[None]):
     """CoderAI Textual chat — three-column IDE layout."""
 
@@ -221,7 +215,15 @@ class CoderAIApp(App[None]):
         self.project_files: List[str] = []
         self._scan_in_progress = False
         self._agent_retry_count = 0
-        self._render_cache: Dict[tuple[str | None, bool], tuple[Dict[str, Any], list[Any]]] = {}
+        # Rendered-Strip cache, keyed by (item id, verbose, render width). The
+        # expensive part of any refresh is Rich rendering each renderable
+        # (Markdown bubbles especially) into terminal Strips; caching the Strips
+        # means a "full" refresh only re-renders items whose content changed and
+        # blits everything else, instead of re-parsing every message each time a
+        # tool finishes. Width is in the key so a terminal resize self-heals.
+        self._render_cache: Dict[
+            tuple[str | None, bool, int], tuple[Dict[str, Any], list[Strip]]
+        ] = {}
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="main"):
@@ -254,8 +256,6 @@ class CoderAIApp(App[None]):
         footer = self.query_one("#composer-footer", Static)
         footer.update(self._composer_footer_markup())
         self._refresh_ui("full")
-        if sys.stdout.isatty() and not supports_truecolor():
-            self._toast("warning", truecolor_hint())
         self.run_worker(
             self._run_agent,  # type: ignore[arg-type]
             exclusive=True,
@@ -397,6 +397,11 @@ class CoderAIApp(App[None]):
             else:
                 self._hide_stream_tail()
         else:
+            # Before the RichLog knows its width it *defers* every write and
+            # replays them once sized, so log.lines is empty and strip caching
+            # would capture nothing. Fall back to plain writes until then.
+            width = log.scrollable_content_region.width
+            use_cache = bool(getattr(log, "_size_known", False)) and width > 0
             idx = self._log_rendered_idx
             while idx < len(timeline):
                 it = timeline[idx]
@@ -404,24 +409,14 @@ class CoderAIApp(App[None]):
                     self._render_stream_tail(it, verbose)
                     break
 
-                item_id = it.get("id")
-                cache_key = (item_id, verbose)
-                cached = self._render_cache.get(cache_key)
-                if cached is not None:
-                    cached_it, renderables = cached
-                    if cached_it == it:
-                        for r in renderables:
-                            log.write(r)
-                        idx += 1
-                        continue
-
-                rec = RecordingLog()
-                write_timeline_item(rec, it, verbose=verbose)
-                self._render_cache[cache_key] = (it.copy(), rec.renderables)
-                for r in rec.renderables:
-                    log.write(r)
+                if use_cache:
+                    self._write_item_cached(log, it, verbose, width)
+                else:
+                    write_timeline_item(log, it, verbose=verbose)
                 idx += 1
             self._log_rendered_idx = idx
+            if use_cache:
+                log.virtual_size = Size(log._widest_line_width, len(log.lines))
             if idx > 0:
                 log.scroll_end(animate=False)
             if idx >= len(timeline):
@@ -447,6 +442,31 @@ class CoderAIApp(App[None]):
             footer.update(self._composer_footer_markup())
         except NoMatches:
             pass
+
+    def _write_item_cached(
+        self, log: SelectableRichLog, it: Dict[str, Any], verbose: bool, width: int
+    ) -> None:
+        """Append a timeline item to ``log``, reusing cached rendered Strips.
+
+        On a cache hit the item's pre-rendered Strips are blitted straight into
+        ``log.lines`` (no Rich/Markdown re-rendering). On a miss the item is
+        rendered through the normal ``log.write`` path and the resulting Strips
+        are captured for next time. This is what keeps a "full" refresh cheap
+        as the conversation grows — see ``self._render_cache``.
+        """
+        cache_key = (it.get("id"), verbose, width)
+        cached = self._render_cache.get(cache_key)
+        if cached is not None and cached[0] == it:
+            strips = cached[1]
+            log.lines.extend(strips)
+            if strips:
+                log._widest_line_width = max(
+                    log._widest_line_width, max(s.cell_length for s in strips)
+                )
+            return
+        start = len(log.lines)
+        write_timeline_item(log, it, verbose=verbose)
+        self._render_cache[cache_key] = (it.copy(), log.lines[start:])
 
     # ── Chrome (delegates to rendering.py) ───────────────────────────
 
@@ -701,6 +721,7 @@ class CoderAIApp(App[None]):
                 show_reasoning_menu=lambda: self._show_palette_section("reasoning"),
                 show_persona_menu=lambda: self._show_palette_section("personas"),
                 show_skills_menu=lambda: self._show_palette_section("skills"),
+                show_mcp_menu=lambda: self._show_palette_section("mcp"),
                 show_search=self._show_search,
                 show_context=self._show_context,
                 clear_context=self._clear_context,

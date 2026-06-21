@@ -50,6 +50,7 @@ def _dispatch(raw, controller, reducer, **overrides):
         "show_reasoning_menu": MagicMock(),
         "show_persona_menu": MagicMock(),
         "show_skills_menu": MagicMock(),
+        "show_mcp_menu": MagicMock(),
         "show_search": MagicMock(),
         "show_context": MagicMock(),
         "clear_context": MagicMock(),
@@ -153,6 +154,21 @@ def test_persona_and_skills(ctrl, red):
     cb["show_skills_menu"].assert_called_once()
     _dispatch("/skills deploy", ctrl, red)
     assert ("send_message", {"text": "/skills deploy"}) == ctrl.last()
+
+
+def test_mcp_lists_and_toggles(ctrl, red):
+    # No arg → fetch the list and open the mcp picker section.
+    _, cb = _dispatch("/mcp", ctrl, red)
+    assert "list_mcp_servers" in ctrl.names()
+    cb["show_mcp_menu"].assert_called_once()
+
+    # `/mcp list` behaves the same as no arg.
+    _, cb = _dispatch("/mcp list", ctrl, red)
+    cb["show_mcp_menu"].assert_called_once()
+
+    # A name toggles that server (connect/disconnect handled server-side).
+    _dispatch("/mcp fetch", ctrl, red)
+    assert ("toggle_mcp_server", {"server": "fetch"}) == ctrl.last()
 
 
 def test_verbose_think_status(ctrl, red):

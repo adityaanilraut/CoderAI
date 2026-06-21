@@ -705,12 +705,23 @@ class ExecutionLoop:
             for name, config in servers.items():
                 if name in mcp_client.servers:
                     continue  # Already connected
+                if config.get("disabled"):
+                    continue  # Toggled off via /mcp — don't auto-reconnect
                 transport = config.get("transport", "stdio")
                 if transport == "sse":
                     url = config.get("url")
                     if url:
                         logger.info("Auto-connecting MCP server %s via SSE...", name)
                         res = await mcp_client.connect_sse(name, url)
+                        if not res.get("success"):
+                            logger.error(
+                                "Failed to auto-connect MCP server %s: %s", name, res.get("error")
+                            )
+                elif transport == "http":
+                    url = config.get("url")
+                    if url:
+                        logger.info("Auto-connecting MCP server %s via HTTP...", name)
+                        res = await mcp_client.connect_http(name, url, config.get("headers"))
                         if not res.get("success"):
                             logger.error(
                                 "Failed to auto-connect MCP server %s: %s", name, res.get("error")

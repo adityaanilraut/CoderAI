@@ -23,9 +23,8 @@ logger = logging.getLogger(__name__)
 class SupportsWrite(Protocol):
     """Minimal write sink for timeline rendering.
 
-    Both Textual's ``RichLog`` widget and the ``RecordingLog`` capture buffer
-    used for render caching satisfy this structurally — the renderers only ever
-    call ``write``.
+    Textual's ``RichLog`` widget satisfies this structurally (the renderers only
+    ever call ``write``), as do the lightweight recording buffers used in tests.
     """
 
     def write(self, renderable: Any) -> Any: ...

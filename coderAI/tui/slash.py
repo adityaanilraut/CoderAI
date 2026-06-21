@@ -167,6 +167,15 @@ def _cmd_persona(ctx: SlashContext, arg: str, head: str) -> bool:
     return True
 
 
+def _cmd_mcp(ctx: SlashContext, arg: str, head: str) -> bool:
+    if not arg or arg == "list":
+        ctx.controller.enqueue_command("list_mcp_servers")
+        ctx.show_palette("mcp")
+    else:
+        ctx.controller.enqueue_command("toggle_mcp_server", server=arg)
+    return True
+
+
 def _cmd_skills(ctx: SlashContext, arg: str, head: str) -> bool:
     if not arg or arg == "list":
         ctx.controller.enqueue_command("list_skills")
@@ -368,6 +377,7 @@ _register(_cmd_allowed_tools, "allowed-tools")
 _register(_cmd_undo, "undo")
 _register(_cmd_rewind, "rewind")
 _register(_cmd_persona, "persona")
+_register(_cmd_mcp, "mcp")
 _register(_cmd_skills, "skills")
 _register(_cmd_verbose, "verbose")
 _register(_cmd_think, "think", "reveal")
@@ -415,6 +425,7 @@ def handle_slash_command(
     show_reasoning_menu: Callable[[], None],
     show_persona_menu: Callable[[], None],
     show_skills_menu: Callable[[], None],
+    show_mcp_menu: Callable[[], None],
     show_search: Callable[[], None],
     show_context: Callable[[], None],
     clear_context: Callable[[], None],
@@ -458,6 +469,8 @@ def handle_slash_command(
             show_persona_menu()
         elif section == "skills":
             show_skills_menu()
+        elif section == "mcp":
+            show_mcp_menu()
         else:
             show_help()
 

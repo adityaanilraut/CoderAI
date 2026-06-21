@@ -4,6 +4,9 @@ import atexit
 import asyncio
 import json
 import logging
+import os
+import stat
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -17,6 +20,18 @@ logger = logging.getLogger(__name__)
 # Launchers permitted for stdio MCP servers. Shared by the ``mcp_connect`` tool
 # and the ``coderAI mcp`` CLI so both validate against the same allow-list.
 ALLOWED_MCP_LAUNCHERS = {"npx", "node", "python", "python3", "uvx", "bun", "deno"}
+
+
+class MCPAuthRequiredError(Exception):
+    """Raised when an HTTP MCP server demands OAuth (HTTP 401).
+
+    Carries the ``WWW-Authenticate`` header so the OAuth layer can discover the
+    authorization server. Callers map this to a "run ``coderAI mcp login``" hint.
+    """
+
+    def __init__(self, www_authenticate: Optional[str] = None):
+        self.www_authenticate = www_authenticate
+        super().__init__("authorization required (HTTP 401)")
 
 
 def mcp_servers_path() -> Path:
@@ -47,24 +62,99 @@ def load_mcp_servers() -> Dict[str, Any]:
         return {"mcpServers": {}}
 
 
+def persist_mcp_server(name: str, entry: Dict[str, Any]) -> None:
+    """Add or overwrite a single server entry in the persisted MCP config.
+
+    Called after a successful interactive ``mcp_connect`` so the server is
+    auto-reconnected on the next session (see
+    ``ExecutionLoop._autoconnect_mcp_servers``). Without this, connections made
+    via the agent tool live only in ``mcp_client.servers`` and are forgotten
+    when the session ends, so a fresh ``mcp_list`` comes back empty.
+
+    Idempotent: an existing entry of the same name is replaced. Persistence
+    failures are logged but never propagated — a live connection must not be
+    torn down just because the config file could not be written.
+    """
+    try:
+        data = load_mcp_servers()
+        servers = data.setdefault("mcpServers", {})
+        servers[name] = entry
+        save_mcp_servers(data)
+    except Exception:
+        logger.warning(
+            "Failed to persist MCP server %r; it will not auto-reconnect next session",
+            name,
+            exc_info=True,
+        )
+
+
+def set_mcp_server_disabled(name: str, disabled: bool) -> bool:
+    """Flip the ``disabled`` flag on a persisted MCP server.
+
+    A disabled server stays in ``mcp_servers.json`` but is skipped by
+    ``ExecutionLoop._autoconnect_mcp_servers`` on startup, so it does not
+    auto-reconnect until re-enabled. Enabling simply removes the flag (absence
+    means enabled) to keep the on-disk config tidy.
+
+    Returns ``True`` if the flag was changed/persisted, ``False`` when no server
+    of that name exists in the config.
+    """
+    data = load_mcp_servers()
+    servers = data.get("mcpServers", {})
+    entry = servers.get(name)
+    if not isinstance(entry, dict):
+        return False
+    if disabled:
+        entry["disabled"] = True
+    else:
+        entry.pop("disabled", None)
+    save_mcp_servers(data)
+    return True
+
+
 def save_mcp_servers(data: Dict[str, Any]) -> None:
-    """Write the MCP server config as pretty-printed JSON."""
+    """Write the MCP server config as pretty-printed JSON.
+
+    Writes to a temp file in the same directory and ``os.replace``s it into
+    place so a crash or a concurrent writer can never leave a truncated file.
+    ``load_mcp_servers`` silently treats a corrupt file as empty, so a
+    non-atomic write would risk wiping every configured server. Mirrors the
+    atomic-save pattern in ``system.config.ConfigManager.save``.
+    """
     path = mcp_servers_path()
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=".mcp_servers.")
+    try:
+        os.fchmod(tmp_fd, stat.S_IRUSR | stat.S_IWUSR)
+        with os.fdopen(tmp_fd, "w") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp_path, str(path))
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+    finally:
+        try:
+            os.close(tmp_fd)
+        except OSError:
+            pass
 
 
 class MCPClient:
     """Client for connecting to MCP servers and discovering tools.
 
-    Supports stdio and SSE transports for connecting to MCP-compatible servers.
-    Discovered tools are registered in the CoderAI tool registry.
+    Supports stdio, SSE, and Streamable HTTP transports for connecting to
+    MCP-compatible servers. Discovered tools are registered in the CoderAI tool
+    registry.
     """
 
     def __init__(self):
         """Initialize MCP client."""
         self.servers: Dict[str, Dict[str, Any]] = {}
         self.discovered_tools: List[Dict[str, Any]] = []
+        self.discovered_resources: List[Dict[str, Any]] = []
+        self.discovered_prompts: List[Dict[str, Any]] = []
         self._next_id: int = 1
         self._reconnect_attempts: Dict[str, int] = {}
 
@@ -113,6 +203,31 @@ class MCPClient:
             # Unexpected id — log and keep reading
             logger.warning(f"Unexpected JSON-RPC id {parsed.get('id')}, expected {expected_id}")
 
+    async def _drain_stderr(self, server_name: str, stream: asyncio.StreamReader) -> None:
+        """Continuously read a stdio server's stderr so its pipe never fills.
+
+        ``stderr`` is a PIPE but nothing else reads it. The OS pipe buffer is
+        small (~64KB); once a chatty server fills it, its next write to stderr
+        blocks, and because stdio MCP servers are typically single-threaded,
+        that also stalls the stdout responses we read — deadlocking the
+        connection. Draining to the debug log keeps the buffer clear while
+        preserving server diagnostics.
+        """
+        try:
+            while True:
+                line = await stream.readline()
+                if not line:
+                    break
+                text = line.decode("utf-8", errors="replace").rstrip()
+                if text:
+                    logger.debug("[mcp:%s stderr] %s", server_name, text)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug(
+                "stderr drain for MCP server '%s' ended unexpectedly", server_name, exc_info=True
+            )
+
     async def connect_stdio(
         self, server_name: str, command: str, args: Optional[List[str]] = None
     ) -> Dict[str, Any]:
@@ -138,6 +253,7 @@ class MCPClient:
             }
 
         process = None
+        stderr_task: Optional["asyncio.Task[None]"] = None
         connection_failed = True
         try:
             full_args = [command] + (args or [])
@@ -149,6 +265,11 @@ class MCPClient:
             )
             assert process.stdin is not None
             assert process.stdout is not None
+
+            # Drain stderr in the background so the server can never block on a
+            # full stderr pipe (see ``_drain_stderr``).
+            if process.stderr is not None:
+                stderr_task = asyncio.create_task(self._drain_stderr(server_name, process.stderr))
 
             # Send MCP initialize request (JSON-RPC 2.0)
             init_id = self._get_next_id()
@@ -211,6 +332,7 @@ class MCPClient:
             self.servers[server_name] = {
                 "transport": "stdio",
                 "process": process,
+                "stderr_task": stderr_task,
                 "tools": server_info,
                 "server_info": init_response.get("result", {}),
                 "_conn_params": {"command": command, "args": args},
@@ -228,10 +350,14 @@ class MCPClient:
                     }
                 )
 
+            extras = await self._discover_extras(server_name)
+
             return {
                 "success": True,
                 "server": server_name,
                 "tools_discovered": len(server_info),
+                "resources_discovered": extras["resources"],
+                "prompts_discovered": extras["prompts"],
                 "tools": [t.get("name") for t in server_info],
                 "server_info": init_response.get("result", {}).get("serverInfo", {}),
             }
@@ -254,6 +380,8 @@ class MCPClient:
             # process when tools/list times out but server_name was
             # previously connected.
             if process is not None and connection_failed:
+                if stderr_task is not None:
+                    stderr_task.cancel()
                 try:
                     process.kill()
                     await process.wait()
@@ -283,6 +411,8 @@ class MCPClient:
 
         if transport == "sse":
             return await self._call_tool_sse(server_name, tool_name, arguments)
+        if transport == "http":
+            return await self._call_tool_http(server_name, tool_name, arguments)
 
         process = server["process"]
 
@@ -348,6 +478,227 @@ class MCPClient:
                 "error_code": ToolErrorCode.TOOL_ERROR,
             }
 
+    async def _request(
+        self,
+        server_name: str,
+        method: str,
+        params: Optional[Dict[str, Any]] = None,
+        timeout: float = 30,
+    ) -> Dict[str, Any]:
+        """Send one JSON-RPC request to a connected server and return its result.
+
+        Dispatches across the stdio / SSE / HTTP transports using the same
+        primitives as :meth:`call_tool`. Returns
+        ``{"success": True, "result": <result dict>}`` on success, or
+        ``{"success": False, "error": <message>}`` otherwise.
+        """
+        if server_name not in self.servers:
+            return {"success": False, "error": f"Server not connected: {server_name}"}
+
+        server = self.servers[server_name]
+        transport = server.get("transport", "stdio")
+        req_id = self._get_next_id()
+        request: Dict[str, Any] = {"jsonrpc": "2.0", "id": req_id, "method": method}
+        if params is not None:
+            request["params"] = params
+
+        try:
+            if transport == "sse":
+                import aiohttp as _aiohttp
+
+                session = server.get("session")
+                message_url = server.get("message_url")
+                if not session or not message_url:
+                    return {
+                        "success": False,
+                        "error": f"SSE connection state invalid for '{server_name}'",
+                    }
+                async with session.post(
+                    message_url, json=request, timeout=_aiohttp.ClientTimeout(total=timeout)
+                ) as resp:
+                    response = await resp.json()
+            elif transport == "http":
+                session = server.get("session")
+                url = server.get("url")
+                session_id = server.get("session_id")
+                if not session or not url:
+                    return {
+                        "success": False,
+                        "error": f"HTTP connection state invalid for '{server_name}'",
+                    }
+                response, _ = await self._http_send(
+                    session,
+                    url,
+                    request,
+                    expected_id=req_id,
+                    session_id=session_id,
+                    timeout=timeout,
+                )
+                response = response or {}
+            else:
+                process = server.get("process")
+                if process is None or process.returncode is not None:
+                    return {"success": False, "error": f"Server '{server_name}' process has exited"}
+                assert process.stdin is not None
+                process.stdin.write((json.dumps(request) + "\n").encode())
+                await process.stdin.drain()
+                response = await self._read_response(process.stdout, req_id, timeout=timeout)
+        except MCPAuthRequiredError:
+            return {
+                "success": False,
+                "needs_auth": True,
+                "error": (
+                    f"Authorization expired for '{server_name}'. "
+                    f"Run: coderAI mcp login {server_name}"
+                ),
+            }
+        except asyncio.TimeoutError:
+            return {
+                "success": False,
+                "error": f"Request '{method}' to '{server_name}' timed out after {timeout}s",
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e), "error_code": ToolErrorCode.TOOL_ERROR}
+
+        error = response.get("error")
+        if error:
+            message = error.get("message", str(error)) if isinstance(error, dict) else str(error)
+            return {"success": False, "error": message}
+        return {"success": True, "result": response.get("result", {})}
+
+    def _capabilities(self, server_name: str) -> Dict[str, Any]:
+        """Return the server's advertised capabilities from the initialize reply."""
+        server = self.servers.get(server_name, {})
+        caps = (server.get("server_info") or {}).get("capabilities", {})
+        return caps if isinstance(caps, dict) else {}
+
+    async def list_resources(self, server_name: str) -> Dict[str, Any]:
+        """List resources exposed by a connected server (``resources/list``)."""
+        if server_name not in self.servers:
+            return {"success": False, "error": f"Server not connected: {server_name}"}
+        if "resources" not in self._capabilities(server_name):
+            return {
+                "success": False,
+                "error": f"Server '{server_name}' does not advertise resource support",
+            }
+        resp = await self._request(server_name, "resources/list")
+        if not resp.get("success"):
+            return resp
+        resources = resp["result"].get("resources", [])
+        return {
+            "success": True,
+            "server": server_name,
+            "count": len(resources),
+            "resources": resources,
+        }
+
+    async def read_resource(self, server_name: str, uri: str) -> Dict[str, Any]:
+        """Read the contents of a resource (``resources/read``)."""
+        if server_name not in self.servers:
+            return {"success": False, "error": f"Server not connected: {server_name}"}
+        if "resources" not in self._capabilities(server_name):
+            return {
+                "success": False,
+                "error": f"Server '{server_name}' does not advertise resource support",
+            }
+        resp = await self._request(server_name, "resources/read", {"uri": uri})
+        if not resp.get("success"):
+            return resp
+        contents = resp["result"].get("contents", [])
+        text = "".join(c.get("text", "") for c in contents if isinstance(c, dict) and c.get("text"))
+        return {
+            "success": True,
+            "server": server_name,
+            "uri": uri,
+            "contents": contents,
+            "text": text,
+        }
+
+    async def list_prompts(self, server_name: str) -> Dict[str, Any]:
+        """List prompt templates exposed by a connected server (``prompts/list``)."""
+        if server_name not in self.servers:
+            return {"success": False, "error": f"Server not connected: {server_name}"}
+        if "prompts" not in self._capabilities(server_name):
+            return {
+                "success": False,
+                "error": f"Server '{server_name}' does not advertise prompt support",
+            }
+        resp = await self._request(server_name, "prompts/list")
+        if not resp.get("success"):
+            return resp
+        prompts = resp["result"].get("prompts", [])
+        return {"success": True, "server": server_name, "count": len(prompts), "prompts": prompts}
+
+    async def get_prompt(
+        self, server_name: str, name: str, arguments: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """Fetch a prompt template with arguments filled in (``prompts/get``)."""
+        if server_name not in self.servers:
+            return {"success": False, "error": f"Server not connected: {server_name}"}
+        if "prompts" not in self._capabilities(server_name):
+            return {
+                "success": False,
+                "error": f"Server '{server_name}' does not advertise prompt support",
+            }
+        resp = await self._request(
+            server_name, "prompts/get", {"name": name, "arguments": arguments or {}}
+        )
+        if not resp.get("success"):
+            return resp
+        result = resp["result"]
+        return {
+            "success": True,
+            "server": server_name,
+            "prompt": name,
+            "description": result.get("description", ""),
+            "messages": result.get("messages", []),
+        }
+
+    async def _discover_extras(self, server_name: str) -> Dict[str, int]:
+        """Best-effort discovery of resources & prompts after connect.
+
+        Non-fatal: a server exposing only tools must still connect cleanly, so
+        every failure here is swallowed to the debug log. Returns the counts
+        discovered so callers can surface them in the connection result.
+        """
+        caps = self._capabilities(server_name)
+        n_resources = 0
+        n_prompts = 0
+        if "resources" in caps:
+            try:
+                r = await self.list_resources(server_name)
+                if r.get("success"):
+                    for res in r.get("resources", []):
+                        self.discovered_resources.append(
+                            {
+                                "server": server_name,
+                                "uri": res.get("uri", ""),
+                                "name": res.get("name", ""),
+                                "description": res.get("description", ""),
+                                "mimeType": res.get("mimeType", ""),
+                            }
+                        )
+                    n_resources = len(r.get("resources", []))
+            except Exception:
+                logger.debug("resource discovery failed for '%s'", server_name, exc_info=True)
+        if "prompts" in caps:
+            try:
+                p = await self.list_prompts(server_name)
+                if p.get("success"):
+                    for pr in p.get("prompts", []):
+                        self.discovered_prompts.append(
+                            {
+                                "server": server_name,
+                                "name": pr.get("name", ""),
+                                "description": pr.get("description", ""),
+                                "arguments": pr.get("arguments", []),
+                            }
+                        )
+                    n_prompts = len(p.get("prompts", []))
+            except Exception:
+                logger.debug("prompt discovery failed for '%s'", server_name, exc_info=True)
+        return {"resources": n_resources, "prompts": n_prompts}
+
     async def disconnect(self, server_name: str) -> Dict[str, Any]:
         """Disconnect from an MCP server.
 
@@ -363,14 +714,19 @@ class MCPClient:
         server = self.servers[server_name]
         transport = server.get("transport", "stdio")
 
-        if transport == "sse":
+        if transport in ("sse", "http"):
             session = server.get("session")
             if session:
                 try:
                     await session.close()
                 except Exception:
-                    logger.debug("Failed to close SSE session during disconnect", exc_info=True)
+                    logger.debug(
+                        "Failed to close %s session during disconnect", transport, exc_info=True
+                    )
         else:
+            stderr_task = server.get("stderr_task")
+            if stderr_task is not None:
+                stderr_task.cancel()
             try:
                 process = server["process"]
                 process.terminate()
@@ -380,6 +736,12 @@ class MCPClient:
 
         del self.servers[server_name]
         self.discovered_tools = [t for t in self.discovered_tools if t.get("server") != server_name]
+        self.discovered_resources = [
+            r for r in self.discovered_resources if r.get("server") != server_name
+        ]
+        self.discovered_prompts = [
+            p for p in self.discovered_prompts if p.get("server") != server_name
+        ]
 
         return {"success": True, "message": f"Disconnected from {server_name}"}
 
@@ -503,11 +865,15 @@ class MCPClient:
                     }
                 )
 
+            extras = await self._discover_extras(server_name)
+
             return {
                 "success": True,
                 "server": server_name,
                 "transport": "sse",
                 "tools_discovered": len(server_info),
+                "resources_discovered": extras["resources"],
+                "prompts_discovered": extras["prompts"],
                 "tools": [t.get("name") for t in server_info],
                 "server_info": init_response.get("result", {}).get("serverInfo", {}),
             }
@@ -573,6 +939,308 @@ class MCPClient:
             if is_error:
                 out["error"] = text_content or "MCP tool returned an error."
             return out
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
+
+    async def connect_http(
+        self,
+        server_name: str,
+        url: str,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        """Connect to an MCP server via Streamable HTTP transport.
+
+        This is the modern remote-server transport (MCP spec 2025-03-26) that
+        superseded HTTP+SSE: every JSON-RPC message is an HTTP POST to a single
+        endpoint, and the server may answer either with a plain JSON body or an
+        ``text/event-stream`` body carrying the response. A ``Mcp-Session-Id``
+        header returned on ``initialize`` is echoed back on every later request.
+
+        Args:
+            server_name: Friendly name for this server connection.
+            url: The single MCP endpoint URL (e.g. https://host/mcp).
+            headers: Optional extra headers (e.g. ``Authorization``) sent on
+                every request — used for token-authenticated remote servers.
+
+        Returns:
+            Connection result with discovered tools.
+        """
+        import aiohttp
+
+        if "__" in server_name:
+            return {
+                "success": False,
+                "error": "server_name must not contain '__'",
+            }
+
+        session = None
+        try:
+            base_headers = {
+                "Accept": "application/json, text/event-stream",
+                "Content-Type": "application/json",
+            }
+            if headers:
+                base_headers.update(headers)
+
+            # Inject a stored OAuth bearer token (refreshing silently if needed)
+            # unless the caller already supplied an explicit Authorization header.
+            if not any(k.lower() == "authorization" for k in base_headers):
+                from coderAI.tools.mcp_oauth import get_valid_token_sync
+
+                token = await asyncio.to_thread(get_valid_token_sync, server_name)
+                if token:
+                    base_headers["Authorization"] = f"Bearer {token}"
+
+            session = aiohttp.ClientSession(headers=base_headers)
+
+            init_id = self._get_next_id()
+            init_request = {
+                "jsonrpc": "2.0",
+                "id": init_id,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "CoderAI", "version": "0.1.0"},
+                },
+            }
+            init_response, session_id = await self._http_send(
+                session, url, init_request, expected_id=init_id, session_id=None
+            )
+            if init_response is None:
+                await session.close()
+                return {
+                    "success": False,
+                    "error": f"Server '{server_name}' returned no response to initialize",
+                }
+
+            # The session id (if any) must accompany every subsequent request.
+            await self._http_send(
+                session,
+                url,
+                {"jsonrpc": "2.0", "method": "notifications/initialized"},
+                expected_id=None,
+                session_id=session_id,
+            )
+
+            tools_id = self._get_next_id()
+            tools_response, _ = await self._http_send(
+                session,
+                url,
+                {"jsonrpc": "2.0", "id": tools_id, "method": "tools/list"},
+                expected_id=tools_id,
+                session_id=session_id,
+            )
+            tools_response = tools_response or {}
+
+            server_info = tools_response.get("result", {}).get("tools", [])
+            self.servers[server_name] = {
+                "transport": "http",
+                "session": session,
+                "url": url,
+                "session_id": session_id,
+                "headers": headers or {},
+                "tools": server_info,
+                "server_info": init_response.get("result", {}),
+                "_conn_params": {"url": url, "headers": headers or {}},
+            }
+
+            for tool in server_info:
+                self.discovered_tools.append(
+                    {
+                        "server": server_name,
+                        "name": tool.get("name", ""),
+                        "description": tool.get("description", ""),
+                        "input_schema": tool.get("inputSchema", {}),
+                    }
+                )
+
+            extras = await self._discover_extras(server_name)
+
+            return {
+                "success": True,
+                "server": server_name,
+                "transport": "http",
+                "tools_discovered": len(server_info),
+                "resources_discovered": extras["resources"],
+                "prompts_discovered": extras["prompts"],
+                "tools": [t.get("name") for t in server_info],
+                "server_info": init_response.get("result", {}).get("serverInfo", {}),
+            }
+
+        except MCPAuthRequiredError as e:
+            if session:
+                await session.close()
+            if server_name in self.servers:
+                del self.servers[server_name]
+            return {
+                "success": False,
+                "needs_auth": True,
+                "www_authenticate": e.www_authenticate,
+                "error": (
+                    f"MCP server '{server_name}' requires authorization. "
+                    f"Run: coderAI mcp login {server_name}"
+                ),
+            }
+        except ImportError:
+            if session:
+                await session.close()
+            return {"success": False, "error": "aiohttp is required for HTTP transport"}
+        except Exception as e:
+            if session:
+                await session.close()
+            if server_name in self.servers:
+                del self.servers[server_name]
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
+
+    async def _http_send(
+        self,
+        session: Any,
+        url: str,
+        payload: Dict[str, Any],
+        expected_id: Optional[int],
+        session_id: Optional[str],
+        timeout: float = 30,
+    ) -> tuple:
+        """POST one JSON-RPC message over Streamable HTTP and read the reply.
+
+        Returns ``(response_dict_or_None, session_id)``. ``expected_id`` is
+        ``None`` for notifications (the server replies 202/empty and we return
+        ``None``). The server's ``Mcp-Session-Id`` header — present on the
+        ``initialize`` reply — is threaded back out so callers can reuse it.
+        """
+        import aiohttp
+
+        req_headers = {}
+        if session_id:
+            req_headers["Mcp-Session-Id"] = session_id
+        async with session.post(
+            url,
+            json=payload,
+            headers=req_headers,
+            timeout=aiohttp.ClientTimeout(total=timeout),
+        ) as resp:
+            new_session_id = resp.headers.get("Mcp-Session-Id") or session_id
+            if resp.status == 401:
+                raise MCPAuthRequiredError(resp.headers.get("WWW-Authenticate"))
+            if resp.status >= 400:
+                body = await resp.text()
+                raise RuntimeError(f"MCP server returned HTTP {resp.status}: {body[:300]}")
+            # Notifications expect no response body (202 Accepted is typical).
+            if expected_id is None:
+                return None, new_session_id
+            content_type = resp.headers.get("Content-Type", "")
+            if "text/event-stream" in content_type:
+                parsed = await self._read_http_sse(resp, expected_id, timeout=timeout)
+            else:
+                parsed = await resp.json()
+            return parsed, new_session_id
+
+    async def _read_http_sse(
+        self, resp: Any, expected_id: int, timeout: float = 30
+    ) -> Dict[str, Any]:
+        """Read an SSE-framed HTTP body until the matching JSON-RPC reply lands.
+
+        Streamable HTTP servers may answer a single request with an event
+        stream that interleaves server notifications before the actual result;
+        we accumulate ``data:`` lines per event and return the first event whose
+        JSON-RPC ``id`` matches ``expected_id``.
+        """
+        import time
+
+        deadline = time.monotonic() + timeout
+        data_lines: List[str] = []
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise asyncio.TimeoutError()
+            line = await asyncio.wait_for(resp.content.readline(), timeout=remaining)
+            if not line:
+                raise RuntimeError("Server closed the event stream before responding")
+            text = line.decode("utf-8", errors="replace").rstrip("\r\n")
+            if text == "":
+                # Blank line dispatches the buffered event.
+                if data_lines:
+                    payload = "\n".join(data_lines)
+                    data_lines = []
+                    try:
+                        parsed = json.loads(payload)
+                    except Exception:
+                        continue
+                    if isinstance(parsed, dict) and parsed.get("id") == expected_id:
+                        return parsed
+                continue
+            if text.startswith(":"):
+                continue  # SSE comment / keep-alive
+            if text.startswith("data:"):
+                data_lines.append(text[5:].lstrip())
+            # Other SSE fields (event:, id:, retry:) are not needed here.
+
+    async def _call_tool_http(
+        self, server_name: str, tool_name: str, arguments: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Call a tool on a Streamable-HTTP-connected MCP server."""
+        server = self.servers[server_name]
+        session = server.get("session")
+        url = server.get("url")
+        session_id = server.get("session_id")
+
+        if not session or not url:
+            return {
+                "success": False,
+                "error": f"HTTP connection state invalid for '{server_name}'",
+            }
+
+        try:
+            call_id = self._get_next_id()
+            request = {
+                "jsonrpc": "2.0",
+                "id": call_id,
+                "method": "tools/call",
+                "params": {"name": tool_name, "arguments": arguments},
+            }
+            response, _ = await self._http_send(
+                session, url, request, expected_id=call_id, session_id=session_id
+            )
+            response = response or {}
+
+            result = response.get("result", {})
+            error = response.get("error")
+            if error:
+                return {"success": False, "error": error.get("message", str(error))}
+
+            content_parts = result.get("content", [])
+            text_content = ""
+            for part in content_parts:
+                if part.get("type") == "text":
+                    text_content += part.get("text", "")
+
+            is_error = bool(result.get("isError"))
+            out: Dict[str, Any] = {
+                "success": not is_error,
+                "content": text_content,
+                "raw": result,
+            }
+            if is_error:
+                out["error"] = text_content or "MCP tool returned an error."
+            return out
+        except MCPAuthRequiredError:
+            return {
+                "success": False,
+                "needs_auth": True,
+                "error": (
+                    f"Authorization expired for '{server_name}'. "
+                    f"Run: coderAI mcp login {server_name}"
+                ),
+            }
         except Exception as e:
             return {
                 "success": False,
@@ -653,6 +1321,14 @@ class MCPClient:
                 # Probe SSE servers concurrently — a slow/hung server must not
                 # delay the health check for the others (each waits up to 5s).
                 sse_probes.append(_probe_sse(name, info))
+            elif transport == "http":
+                # Streamable HTTP keeps a single aiohttp session; a closed
+                # session means the connection is gone.
+                session = info.get("session")
+                if session is None or session.closed:
+                    if not info.get("degraded"):
+                        logger.warning("MCP server '%s' (HTTP) session is closed", name)
+                        info["degraded"] = True
 
         if sse_probes:
             await asyncio.gather(*sse_probes, return_exceptions=True)
@@ -700,6 +1376,10 @@ class MCPClient:
             result: Dict[str, Any]
             if transport == "sse":
                 result = await self.connect_sse(name, conn_params.get("url", ""))
+            elif transport == "http":
+                result = await self.connect_http(
+                    name, conn_params.get("url", ""), conn_params.get("headers")
+                )
             else:
                 result = await self.connect_stdio(
                     name,
@@ -738,10 +1418,17 @@ mcp_client = MCPClient()
 
 
 def _cleanup_mcp_servers():
-    """Synchronous cleanup of MCP servers on exit."""
+    """Synchronous cleanup of MCP servers on exit.
+
+    Only stdio servers own a child process to reap here; http/sse servers hold
+    an async session that can't be awaited from an atexit hook (the loop is
+    gone) and is released when the interpreter tears down, so they're skipped.
+    """
     for name, info in list(mcp_client.servers.items()):
+        proc = info.get("process")
+        if proc is None:
+            continue
         try:
-            proc = info["process"]
             if proc.returncode is None:
                 proc.kill()
         except Exception:
@@ -758,15 +1445,35 @@ class MCPConnectParams(BaseModel):
         "", description="Command to start the MCP server (e.g., 'npx'), for stdio transport"
     )
     args: Optional[List[str]] = Field(None, description="Arguments for the server command")
-    transport: str = Field("stdio", description="Transport type: 'stdio' or 'sse' (default: stdio)")
+    transport: str = Field(
+        "stdio",
+        description="Transport type: 'stdio', 'sse', or 'http' (Streamable HTTP). Default: stdio",
+    )
     url: Optional[str] = Field(
         None,
-        description="SSE endpoint URL (required for SSE transport, e.g., http://host:port/sse)",
+        description=(
+            "Endpoint URL for remote transports — SSE (e.g. http://host:port/sse) "
+            "or Streamable HTTP (e.g. https://host/mcp)."
+        ),
+    )
+    headers: Optional[Dict[str, str]] = Field(
+        None,
+        description=(
+            "Extra HTTP headers (e.g. {'Authorization': 'Bearer …'}) sent on every "
+            "request for the 'http' transport — used for token-authenticated servers."
+        ),
+    )
+    persist: bool = Field(
+        True,
+        description=(
+            "Save this server to ~/.coderAI/mcp_servers.json so it auto-reconnects "
+            "in future sessions. Set false for a one-off, session-only connection."
+        ),
     )
 
 
 class MCPConnectTool(Tool):
-    """Tool for connecting to MCP servers via stdio or SSE transport."""
+    """Tool for connecting to MCP servers via stdio, SSE, or Streamable HTTP transport."""
 
     name = "mcp_connect"
     description = "Connect to an MCP (Model Context Protocol) server to discover and use its tools"
@@ -782,12 +1489,27 @@ class MCPConnectTool(Tool):
         args: Optional[List[str]] = None,
         transport: str = "stdio",
         url: Optional[str] = None,
+        headers: Optional[Dict[str, str]] = None,
+        persist: bool = True,
     ) -> Dict[str, Any]:
         """Connect to an MCP server."""
         if transport == "sse":
             if not url:
                 return {"success": False, "error": "URL is required for SSE transport"}
-            return await mcp_client.connect_sse(server_name, url)
+            result = await mcp_client.connect_sse(server_name, url)
+            if result.get("success") and persist:
+                persist_mcp_server(server_name, {"transport": "sse", "url": url})
+            return result
+        if transport == "http":
+            if not url:
+                return {"success": False, "error": "URL is required for HTTP transport"}
+            result = await mcp_client.connect_http(server_name, url, headers)
+            if result.get("success") and persist:
+                entry: Dict[str, Any] = {"transport": "http", "url": url}
+                if headers:
+                    entry["headers"] = headers
+                persist_mcp_server(server_name, entry)
+            return result
         if not command:
             return {"success": False, "error": "Command is required for stdio transport"}
 
@@ -814,7 +1536,10 @@ class MCPConnectTool(Tool):
                 "error": "MCP server command appears interactive, which is not allowed",
             }
 
-        return await mcp_client.connect_stdio(server_name, command, args)
+        result = await mcp_client.connect_stdio(server_name, command, args)
+        if result.get("success") and persist:
+            persist_mcp_server(server_name, {"command": command, "args": list(args or [])})
+        return result
 
 
 class MCPCallToolParams(BaseModel):
@@ -851,19 +1576,45 @@ class MCPListTool(Tool):
     is_read_only = True
 
     async def execute(self) -> Dict[str, Any]:  # type: ignore[override]
-        """List MCP servers and tools."""
+        """List MCP servers and tools (both live connections and saved config)."""
+        configured = load_mcp_servers().get("mcpServers", {})
         servers = {}
         for name, info in mcp_client.servers.items():
             servers[name] = {
+                "connected": True,
+                "degraded": bool(info.get("degraded")),
+                "disabled": bool(configured.get(name, {}).get("disabled")),
                 "tools": [t.get("name") for t in info.get("tools", [])],
+                "resources": [
+                    r.get("uri") for r in mcp_client.discovered_resources if r.get("server") == name
+                ],
+                "prompts": [
+                    p.get("name") for p in mcp_client.discovered_prompts if p.get("server") == name
+                ],
                 "server_info": info.get("server_info", {}),
             }
 
+        # Surface saved servers that aren't currently connected so the list is
+        # never misleadingly empty when a persisted server failed to autoconnect.
+        for name, cfg in configured.items():
+            if name in servers:
+                continue
+            servers[name] = {
+                "connected": False,
+                "disabled": bool(cfg.get("disabled")),
+                "transport": cfg.get("transport", "stdio"),
+                "tools": [],
+            }
+
+        connected = sum(1 for s in servers.values() if s.get("connected"))
         return {
             "success": True,
-            "connected_servers": len(servers),
+            "connected_servers": connected,
+            "configured_servers": len(configured),
             "servers": servers,
             "total_tools": len(mcp_client.discovered_tools),
+            "total_resources": len(mcp_client.discovered_resources),
+            "total_prompts": len(mcp_client.discovered_prompts),
         }
 
 
@@ -896,3 +1647,88 @@ class MCPDisconnectTool(Tool):
                 "error": str(e),
                 "error_code": ToolErrorCode.TOOL_ERROR,
             }
+
+
+# ---------------------------------------------------------------------------
+# MCP resources
+# ---------------------------------------------------------------------------
+
+
+class MCPListResourcesParams(BaseModel):
+    server_name: str = Field(..., description="Name of the connected MCP server")
+
+
+class MCPListResourcesTool(Tool):
+    """List resources exposed by a connected MCP server."""
+
+    name = "mcp_list_resources"
+    description = "List resources (files, data) exposed by a connected MCP server"
+    category = "mcp"
+    parameters_model = MCPListResourcesParams
+    is_read_only = True
+
+    async def execute(self, server_name: str) -> Dict[str, Any]:  # type: ignore[override]
+        return await mcp_client.list_resources(server_name)
+
+
+class MCPReadResourceParams(BaseModel):
+    server_name: str = Field(..., description="Name of the connected MCP server")
+    uri: str = Field(..., description="URI of the resource to read (from mcp_list_resources)")
+
+
+class MCPReadResourceTool(Tool):
+    """Read the contents of a resource from a connected MCP server."""
+
+    name = "mcp_read_resource"
+    description = "Read the contents of a resource (by URI) from a connected MCP server"
+    category = "mcp"
+    parameters_model = MCPReadResourceParams
+    is_read_only = True
+
+    async def execute(self, server_name: str, uri: str) -> Dict[str, Any]:  # type: ignore[override]
+        return await mcp_client.read_resource(server_name, uri)
+
+
+# ---------------------------------------------------------------------------
+# MCP prompts
+# ---------------------------------------------------------------------------
+
+
+class MCPListPromptsParams(BaseModel):
+    server_name: str = Field(..., description="Name of the connected MCP server")
+
+
+class MCPListPromptsTool(Tool):
+    """List prompt templates exposed by a connected MCP server."""
+
+    name = "mcp_list_prompts"
+    description = "List prompt templates exposed by a connected MCP server"
+    category = "mcp"
+    parameters_model = MCPListPromptsParams
+    is_read_only = True
+
+    async def execute(self, server_name: str) -> Dict[str, Any]:  # type: ignore[override]
+        return await mcp_client.list_prompts(server_name)
+
+
+class MCPGetPromptParams(BaseModel):
+    server_name: str = Field(..., description="Name of the connected MCP server")
+    name: str = Field(..., description="Name of the prompt to fetch (from mcp_list_prompts)")
+    arguments: Optional[Dict[str, Any]] = Field(
+        None, description="Arguments to fill into the prompt template"
+    )
+
+
+class MCPGetPromptTool(Tool):
+    """Fetch a prompt template (with arguments filled in) from a connected MCP server."""
+
+    name = "mcp_get_prompt"
+    description = "Fetch a prompt template (with arguments filled in) from a connected MCP server"
+    category = "mcp"
+    parameters_model = MCPGetPromptParams
+    is_read_only = True
+
+    async def execute(  # type: ignore[override]
+        self, server_name: str, name: str, arguments: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        return await mcp_client.get_prompt(server_name, name, arguments or {})

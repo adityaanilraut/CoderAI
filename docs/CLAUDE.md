@@ -91,7 +91,7 @@ Per-turn flow (`Agent.process_message()` → `agent_loop`):
 - `coderAI/bridge/streaming.py` — `BridgeStreamingHandler`: emits one phased `turn` event per assistant turn so the Textual timeline streams incrementally.
 - `coderAI/bridge/tool_metadata.py` — Tool category, risk level, and approval-preview helpers for the controller and modals.
 - `coderAI/llm/` — LLM providers (openai, anthropic, groq, deepseek, gemini, lmstudio, ollama), all extending `base.LLMProvider`. Instantiation goes through `llm/factory.py::create_provider(model, config)` — do not construct providers directly from `agent.py`.
-- `coderAI/tools/` — 88 tools extending `tools/base.Tool`. Registration is automatic via `tools/discovery.py::discover_tools()`, which walks the `coderAI.tools` package and instantiates every `Tool` subclass whose `__init__` takes no required args. Tools requiring constructor args (e.g. `ManageContextTool`, which needs the `Agent`) are registered manually in `Agent._create_tool_registry()`.
+- `coderAI/tools/` — 92 tools extending `tools/base.Tool`. Registration is automatic via `tools/discovery.py::discover_tools()`, which walks the `coderAI.tools` package and instantiates every `Tool` subclass whose `__init__` takes no required args. Tools requiring constructor args (e.g. `ManageContextTool`, which needs the `Agent`) are registered manually in `Agent._create_tool_registry()`.
 - `coderAI/system/safeguards.py` — reusable validators that run before dangerous actions: interactive-command detection (blocks REPLs invoked via non-interactive pipes), project-directory validation, git-scope guards (prevent operations leaking to a parent repo), staging blocklist for junk files (`.DS_Store`, `__pycache__`, `.coderAI/`, …).
 - `coderAI/system/project_layout.py` — `find_dot_coderai_subdir()` resolves `.coderAI/<subdir>` across project root, cwd, and the package dir (for dev installs). Use this instead of hardcoding `.coderAI/` paths.
 - `coderAI/bridge/chat_reference.py` — plain-text reference output for `/show <topic>` slash commands (`/show models`, `/show cost`, `/show status`, `/show config`, `/show info`, `/show tasks`).
@@ -124,7 +124,7 @@ Per-turn flow (`Agent.process_message()` → `agent_loop`):
 - `desktop.py` — run_applescript, get_accessibility_tree, click_ui_element, type_keystrokes (macOS only)
 - `memory.py` — save_memory, recall_memory, **delete_memory**
 - `subagent.py` — delegate_task (max depth 3, retried 2×)
-- `mcp.py` — mcp_connect, mcp_disconnect, mcp_call_tool, mcp_list (connected servers expose functions as `mcp__<server>__<tool>`)
+- `mcp.py` — mcp_connect, mcp_disconnect, mcp_call_tool, mcp_list, mcp_list_resources, mcp_read_resource, mcp_list_prompts, mcp_get_prompt (connected servers expose functions as `mcp__<server>__<tool>`)
 - `undo.py` — undo, undo_history
 - `context_manage.py` — pin/unpin files into the pinned-context manager (takes `Agent` at construction → registered manually)
 - `planning.py`, `tasks.py` — in-session plan + task list management

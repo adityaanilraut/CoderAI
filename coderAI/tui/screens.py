@@ -417,6 +417,8 @@ def _action_to_text(action_type: str, action_val: Any, is_tab_completion: bool =
         return f"/reasoning {action_val}"
     elif action_type == "skills":
         return f"/skills {action_val}"
+    elif action_type == "mcp":
+        return f"/mcp {action_val}"
     return str(action_val)
 
 
@@ -702,6 +704,24 @@ class CommandPaletteScreen(FuzzyPickerScreen):
                         {"label": f"/skills {name}", "desc": desc, "action": ("skills", name)}
                     )
             add_section("Skills", skills)
+
+        if only is None or only == "mcp":
+            mcp_items = []
+            for srv in self._s.available_mcp_servers or []:
+                name = srv.get("name", "")
+                if srv.get("connected"):
+                    status = f"● on · {srv.get('tools', 0)} tools"
+                    if srv.get("degraded"):
+                        status += " (degraded)"
+                elif srv.get("disabled"):
+                    status = "○ off (disabled)"
+                else:
+                    status = "○ off"
+                if not q or q in name.lower():
+                    mcp_items.append(
+                        {"label": f"/mcp {name}", "desc": status, "action": ("mcp", name)}
+                    )
+            add_section("MCP servers", mcp_items)
 
         return sections
 

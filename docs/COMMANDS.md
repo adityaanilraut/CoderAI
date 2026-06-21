@@ -294,7 +294,7 @@ Environment variables take precedence over `~/.coderAI/config.json`.
 
 ## Tool Quick Reference
 
-All **88 tools** available to the agent when optional dependencies are installed (87 auto-discovered plus `manage_context`). Browser tools require `pip install coderAI[browser]`; PDF extraction in `read_url` requires `pip install coderAI[web]`; desktop tools are macOS-only. Confirmation required (`✓`) means the agent asks before running.
+All **92 tools** available to the agent when optional dependencies are installed (91 auto-discovered plus `manage_context`). Browser tools require `pip install coderAI[browser]`; PDF extraction in `read_url` requires `pip install coderAI[web]`; desktop tools are macOS-only. Confirmation required (`✓`) means the agent asks before running.
 
 ### Filesystem
 
@@ -436,7 +436,11 @@ All **88 tools** available to the agent when optional dependencies are installed
 | `mcp_connect` | ✓ | Connect to an external MCP server |
 | `mcp_disconnect` | ✓ | Disconnect from an MCP server |
 | `mcp_call_tool` | ✓ | Call a tool on a connected server |
-| `mcp_list` | — | List connected servers and tools |
+| `mcp_list` | — | List connected servers, tools, resources, and prompts |
+| `mcp_list_resources` | — | List resources exposed by a connected server |
+| `mcp_read_resource` | — | Read a resource (by URI) from a connected server |
+| `mcp_list_prompts` | — | List prompt templates exposed by a connected server |
+| `mcp_get_prompt` | — | Fetch a prompt template (with arguments) from a server |
 
 ### Browser Automation
 

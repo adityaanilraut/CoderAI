@@ -11,14 +11,14 @@
 
 ---
 
-CoderAI is a Python CLI tool that pairs an LLM with **88 built-in tools** to read, write, search, debug, test, automate browsers, and ship code — all from a single terminal session. It supports **7 LLM providers**, **17 specialist agent personas**, a **multi-agent delegation system** with retry logic, a **semantic code search engine**, a **cross-platform browser automation engine**, and a **plan-and-execute workflow** to tackle complex tasks autonomously.
+CoderAI is a Python CLI tool that pairs an LLM with **92 built-in tools** to read, write, search, debug, test, automate browsers, and ship code — all from a single terminal session. It supports **7 LLM providers**, **17 specialist agent personas**, a **multi-agent delegation system** with retry logic, a **semantic code search engine**, a **cross-platform browser automation engine**, and a **plan-and-execute workflow** to tackle complex tasks autonomously.
 
 ## ✨ Key Features
 
 | Feature | Description |
 |---|---|
 | **Multi-Provider LLM** | OpenAI, Anthropic Claude, Groq, DeepSeek, Gemini, LM Studio, Ollama |
-| **88 Tools** | File I/O, Git, terminal, web, browser automation, HTTP, memory, process management, semantic search, and more |
+| **92 Tools** | File I/O, Git, terminal, web, browser automation, HTTP, memory, process management, semantic search, and more |
 | **Browser Automation** | Cross-platform browser control via Playwright — form filling, shopping, data entry, web scraping |
 | **Multi-Agent System** | Spawn isolated sub-agents for code review, security audit, research, etc. |
 | **Planning & Tasks** | Structured plan-and-execute workflows with persistent task tracking |
@@ -122,7 +122,7 @@ See [COMMANDS.md](docs/COMMANDS.md) for the full CLI reference.
    ┌────┴────┐   ┌─────┴──────┐   ┌──────┴──────┐
    │   LLM   │   │   Tools    │   │  Sub-Agent  │
    │Providers│   │  Registry  │   │  Delegation │
-   │ (7)     │   │  (88)      │   │  (Isolated) │
+   │ (7)     │   │  (92)      │   │  (Isolated) │
    └─────────┘   └────────────┘   └─────────────┘
 ```
 
@@ -208,7 +208,7 @@ CoderAI-main/
 │   │   ├── lmstudio.py         #   LM Studio (local OpenAI-compatible)
 │   │   └── ollama.py           #   Ollama (local models)
 │   │
-│   ├── tools/                  # ─── Agent Tool Implementations (88 total) ───
+│   ├── tools/                  # ─── Agent Tool Implementations (92 total) ───
 │   │   ├── base.py             #   Tool ABC + ToolRegistry
 │   │   ├── discovery.py        #   Auto-discovery of no-arg Tool subclasses
 │   │   ├── filesystem.py       #   read/write/search_replace/apply_diff/list/glob/move/copy/delete/stat/chmod/chown/readlink
@@ -222,7 +222,7 @@ CoderAI-main/
 │   │   ├── browser.py          #   browser_navigate … browser_close (Playwright; optional)
 │   │   ├── desktop.py          #   run_applescript, get_accessibility_tree, click/type (macOS only)
 │   │   ├── memory.py           #   save_memory, recall_memory, delete_memory
-│   │   ├── mcp.py              #   mcp_connect, mcp_disconnect, mcp_call_tool, mcp_list
+│   │   ├── mcp.py              #   mcp_connect/disconnect/call_tool/list (+resources, prompts)
 │   │   ├── undo.py             #   undo, undo_history
 │   │   ├── project.py          #   project_context
 │   │   ├── context_manage.py   #   manage_context (pin/unpin files; manual registration)
@@ -339,7 +339,7 @@ The heart of CoderAI is the **agentic loop** in `coderAI/core/agent.py → proce
 
 ## 🛠️ Tools Reference
 
-CoderAI registers **88 tools** that the LLM can call (87 auto-discovered plus `manage_context`, which is registered manually). Each tool follows the `Tool` abstract base class. Browser, desktop, and some web tools are removed at runtime when optional dependencies or the host OS are unavailable — see notes below.
+CoderAI registers **92 tools** that the LLM can call (91 auto-discovered plus `manage_context`, which is registered manually). Each tool follows the `Tool` abstract base class. Browser, desktop, and some web tools are removed at runtime when optional dependencies or the host OS are unavailable — see notes below.
 
 ### Filesystem (15 tools)
 
@@ -525,14 +525,18 @@ Browser tools provide full control over a headless Chromium browser for form fil
 | `click_ui_element` | Click a UI element via AppleScript System Events |
 | `type_keystrokes` | Simulate typing or key presses on macOS |
 
-### MCP Integration (4 tools)
+### MCP Integration (8 tools)
 
 | Tool | Description |
 |---|---|
 | `mcp_connect` | Connect to an external MCP server |
 | `mcp_disconnect` | Disconnect from an MCP server |
 | `mcp_call_tool` | Call a tool on a connected MCP server |
-| `mcp_list` | List connected servers and their tools |
+| `mcp_list` | List connected servers and their tools, resources, and prompts |
+| `mcp_list_resources` | List resources exposed by a connected MCP server |
+| `mcp_read_resource` | Read a resource (by URI) from a connected MCP server |
+| `mcp_list_prompts` | List prompt templates exposed by a connected MCP server |
+| `mcp_get_prompt` | Fetch a prompt template (with arguments) from a server |
 
 ### Undo / Rollback (2 tools)
 

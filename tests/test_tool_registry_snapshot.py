@@ -68,7 +68,11 @@ EXPECTED_TOOLS = {
     "mcp_call_tool",
     "mcp_connect",
     "mcp_disconnect",
+    "mcp_get_prompt",
     "mcp_list",
+    "mcp_list_prompts",
+    "mcp_list_resources",
+    "mcp_read_resource",
     "move_file",
     "multi_edit",
     "notepad",
@@ -119,4 +123,4 @@ def test_discovered_tool_names_match_snapshot():
 def test_discovered_tool_count():
     registry = ToolRegistry()
     discover_tools(registry)
-    assert len(registry.tools) == len(EXPECTED_TOOLS) == 87
+    assert len(registry.tools) == len(EXPECTED_TOOLS) == 91

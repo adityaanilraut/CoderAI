@@ -106,3 +106,31 @@ async def test_mcp_autoconnect(monkeypatch, tmp_path):
     # Verify that connect_stdio and connect_sse were called correctly
     mock_mcp_client.connect_stdio.assert_called_once_with("mock_stdio", "npx", ["mock-server-args"])
     mock_mcp_client.connect_sse.assert_called_once_with("mock_sse", "http://localhost:8080/sse")
+
+
+@pytest.mark.asyncio
+async def test_mcp_autoconnect_skips_disabled(monkeypatch, tmp_path):
+    """A server flagged ``disabled`` (toggled off via /mcp) must not auto-reconnect."""
+    mcp_config_dir = tmp_path / ".coderAI"
+    mcp_config_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr("coderAI.system.config.config_manager.config_dir", mcp_config_dir)
+
+    servers_data = {
+        "mcpServers": {
+            "enabled_srv": {"command": "npx", "args": ["a"]},
+            "disabled_srv": {"command": "npx", "args": ["b"], "disabled": True},
+        }
+    }
+    with open(mcp_config_dir / "mcp_servers.json", "w") as f:
+        json.dump(servers_data, f)
+
+    mock_mcp_client = MagicMock()
+    mock_mcp_client.servers = {}
+    mock_mcp_client.connect_stdio = AsyncMock(return_value={"success": True})
+    mock_mcp_client.connect_sse = AsyncMock(return_value={"success": True})
+    monkeypatch.setattr("coderAI.tools.mcp.mcp_client", mock_mcp_client)
+
+    loop = ExecutionLoop(agent=MagicMock())
+    await loop._autoconnect_mcp_servers()
+
+    mock_mcp_client.connect_stdio.assert_called_once_with("enabled_srv", "npx", ["a"])

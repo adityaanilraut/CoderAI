@@ -432,6 +432,19 @@ class Agent:
         parts.append(f"tools:{len(self.tools.tools)}:{','.join(sorted(self.tools.tools.keys()))}")
         parts.append(f"auto:{self.auto_approve}")
         parts.append(f"web:{self.config.web_tools_in_main}")
+        # Connected-MCP signature: the prompt's "MCP (connected servers)"
+        # appendix mirrors mcp_client.discovered_tools, so toggling a server
+        # on/off via /mcp must force a rebuild or the appendix goes stale.
+        try:
+            from coderAI.tools.mcp import mcp_client
+
+            mcp_fns = sorted(
+                f"{t.get('server', '')}__{t.get('name', '')}"
+                for t in mcp_client.discovered_tools
+            )
+            parts.append(f"mcp:{len(mcp_fns)}:{','.join(mcp_fns)}")
+        except Exception:
+            parts.append("mcp:none")
         rules_dir = Path(self.config.project_root, ".coderAI", "rules")
         if rules_dir.exists() and rules_dir.is_dir():
             for rule_file in sorted(rules_dir.glob("*.md")):

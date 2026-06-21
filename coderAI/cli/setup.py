@@ -179,6 +179,13 @@ def setup():
         mcp_data = load_mcp_servers()
         mcp_data.setdefault("mcpServers", {})
 
+        def _prompt_mcp_url(example: str) -> str:
+            while True:
+                url: str = click.prompt(f"    Enter URL (e.g. {example})").strip()
+                if valid_endpoint(url):
+                    return url
+                display.print_error("    Invalid URL — must start with http:// or https://")
+
         while True:
             server_name = click.prompt(
                 "    Enter MCP server name (or press Enter to finish)",
@@ -190,15 +197,29 @@ def setup():
 
             transport = click.prompt(
                 "    Transport type",
-                type=click.Choice(["stdio", "sse"]),
+                type=click.Choice(["stdio", "sse", "http"]),
                 default="stdio",
             )
             if transport == "sse":
-                url = click.prompt("    Enter SSE URL (e.g. http://localhost:8080/sse)").strip()
+                url = _prompt_mcp_url("http://localhost:8080/sse")
                 mcp_data["mcpServers"][server_name] = {
                     "transport": "sse",
                     "url": url,
                 }
+            elif transport == "http":
+                url = _prompt_mcp_url("https://mcp.example.com/mcp")
+                entry: dict = {"transport": "http", "url": url}
+                auth = click.prompt(
+                    "    Authorization header (optional, e.g. 'Bearer TOKEN')", default=""
+                ).strip()
+                if auth:
+                    entry["headers"] = {"Authorization": auth}
+                    display.print_warning(
+                        f"    Heads up: this token is stored in plaintext in "
+                        f"{mcp_servers_path()}. For OAuth-protected servers, prefer "
+                        "`coderAI mcp login` instead of pasting a static token."
+                    )
+                mcp_data["mcpServers"][server_name] = entry
             else:
                 command = click.prompt("    Enter server command (e.g. npx, python3)").strip()
                 args_str = click.prompt(

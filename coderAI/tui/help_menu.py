@@ -15,6 +15,7 @@ HELP_MENU_ENTRIES = [
     ("/verbose", "Toggle reasoning + expanded tool cards"),
     ("/agents", "Refresh the agents tree (left panel)"),
     ("/persona", "List or switch persona"),
+    ("/mcp", "List MCP servers · toggle one on/off · /mcp <name>"),
     ("/skills", "List workflows under .coderAI/skills/"),
     ("/init", "Scaffold .coderai/ directory for the current project"),
     ("/show", "Reference info · type /show then a topic"),

@@ -114,6 +114,8 @@ class EventReducer:
         for it in self.timeline:
             if it.get("kind") == "assistant" and it.get("streaming"):
                 it["streaming"] = False
+                it.pop("_content_chunks", None)
+                it.pop("_reasoning_chunks", None)
 
     def _apply_status(self, data: Dict[str, Any]) -> None:
         self.session.ctx_used = int(data.get("ctxUsed") or 0)
@@ -203,6 +205,11 @@ class EventReducer:
                                 self.timeline.pop(i)
                             else:
                                 it["streaming"] = False
+                                # content/reasoning already hold the joined
+                                # result — drop the per-delta chunk buffers so
+                                # they don't accumulate across a long session.
+                                it.pop("_content_chunks", None)
+                                it.pop("_reasoning_chunks", None)
                             break
                 self._current_assistant_id = None
                 self.session.streaming = False
@@ -293,6 +300,10 @@ class EventReducer:
             dirty = True
             self._bump_refresh("chrome")
             self.session.available_skills = data.get("skills")
+        elif event == "available_mcp_servers":
+            dirty = True
+            self._bump_refresh("chrome")
+            self.session.available_mcp_servers = data.get("servers")
         elif event == "context_state":
             dirty = True
             self._bump_refresh("chrome")

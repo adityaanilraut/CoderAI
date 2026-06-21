@@ -589,6 +589,34 @@ class TestAgentProjectRules:
             assert "### Rule: testing.md" in prompt
             assert "Always write pytest tests." in prompt
 
+    def test_system_prompt_rebuilds_when_mcp_servers_change(self):
+        """Toggling an MCP server (changing discovered_tools) must refresh the prompt.
+
+        The connected-MCP appendix mirrors mcp_client.discovered_tools, so the
+        cache key has to track it — otherwise /mcp toggles leave a stale prompt.
+        """
+        import coderAI.tools.mcp as mcp_mod
+
+        agent = self._make_agent()
+        fake_client = mcp_mod.MCPClient()
+        original = mcp_mod.mcp_client
+        mcp_mod.mcp_client = fake_client
+        try:
+            key_empty = agent._compute_system_prompt_cache_key()
+            prompt_empty = agent._get_system_prompt()
+
+            fake_client.discovered_tools = [
+                {"server": "fetch", "name": "get", "description": "fetch a url"}
+            ]
+            key_connected = agent._compute_system_prompt_cache_key()
+            prompt_connected = agent._get_system_prompt()
+        finally:
+            mcp_mod.mcp_client = original
+
+        assert key_empty != key_connected
+        assert "mcp__fetch__get" not in prompt_empty
+        assert "mcp__fetch__get" in prompt_connected
+
     def test_get_system_prompt_omits_web_tools_when_disabled(self):
         with patch("coderAI.core.agent.config_manager") as cm:
             from coderAI.system.config import Config

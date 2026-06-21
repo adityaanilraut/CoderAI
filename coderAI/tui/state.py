@@ -69,6 +69,7 @@ class SessionState:
     available_models: Optional[Dict[str, List[str]]] = None
     available_personas: Optional[List[str]] = None
     available_skills: Optional[List[Dict[str, str]]] = None
+    available_mcp_servers: Optional[List[Dict[str, Any]]] = None
     context_files: Optional[List[Dict[str, Any]]] = None
     agents: Dict[str, AgentInfo] = field(default_factory=dict)
     progress: Optional[Dict[str, Any]] = None

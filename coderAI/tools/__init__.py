@@ -103,6 +103,10 @@ from coderAI.tools.mcp import (
     MCPCallTool,
     MCPListTool,
     MCPDisconnectTool,
+    MCPListResourcesTool,
+    MCPReadResourceTool,
+    MCPListPromptsTool,
+    MCPGetPromptTool,
     mcp_client,
 )
 
@@ -227,6 +231,10 @@ __all__ = [
     "MCPCallTool",
     "MCPListTool",
     "MCPDisconnectTool",
+    "MCPListResourcesTool",
+    "MCPReadResourceTool",
+    "MCPListPromptsTool",
+    "MCPGetPromptTool",
     "mcp_client",
     # Undo
     "UndoTool",

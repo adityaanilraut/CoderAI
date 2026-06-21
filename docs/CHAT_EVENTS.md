@@ -36,6 +36,7 @@ consumers because unknown phases are ignored.
 | `available_models`| `{current, models: Record<string, string[]>}`                                                 | Emitted for the model picker                                                         |
 | `available_personas`| `{current, personas: string[]}`                                                             | Emitted for the persona picker                                                       |
 | `available_skills`| `{skills: {name: string, description: string}[]}`                                             | Emitted for the skill picker                                                         |
+| `available_mcp_servers`| `{servers: {name, connected, disabled, degraded, tools: number, transport}[]}`           | Emitted for the `/mcp` picker (connected + configured servers)                       |
 | `context_state` | `{files: {path: string, size: number}[]}`                                                     | Emitted during get_state to show pinned context files                                |
 | `info`          | `{message}`                                                                                   | Long-form reference output (`/show <topic>`, `/plan`) and short notices             |
 | `warning`       | `{message}`                                                                                   | Non-fatal user-facing problem (unknown command, bad input)                           |
@@ -132,6 +133,8 @@ turns can't interleave.
 | `list_models`          | `{}`                                                   | Emits `available_models` for the model picker                          |
 | `list_personas`        | `{}`                                                   | Emits `available_personas` for the persona picker                      |
 | `list_skills`          | `{}`                                                   | Emits `available_skills` for the skills picker                         |
+| `list_mcp_servers`     | `{}`                                                   | Emits `available_mcp_servers` for the `/mcp` picker                    |
+| `toggle_mcp_server`    | `{server}`                                             | Connects/disconnects an MCP server (persists `disabled`); re-emits `available_mcp_servers` |
 | `search_codebase`      | `{query}`                                              | Emits `info` with codebase search results                              |
 | `reference`            | `{topic}`                                              | Long-form help (`version`, `models`, `cost`, `system`, `config`, …)    |
 | `exit`                 | `{}`                                                   | Graceful shutdown                                                      |

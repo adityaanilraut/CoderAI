@@ -417,6 +417,92 @@ async def _cmd_list_skills(server: UIBridge, _msg: Dict[str, Any]) -> None:
     server.emit("available_skills", skills=skills)
 
 
+async def _cmd_list_mcp_servers(server: UIBridge, _msg: Dict[str, Any]) -> None:
+    """Emit the merged live + configured MCP server list for the /mcp picker."""
+    from coderAI.tools.mcp import load_mcp_servers, mcp_client
+
+    configured = load_mcp_servers().get("mcpServers", {})
+    rows: list[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for name, info in mcp_client.servers.items():
+        seen.add(name)
+        rows.append(
+            {
+                "name": name,
+                "connected": True,
+                "disabled": bool(configured.get(name, {}).get("disabled")),
+                "degraded": bool(info.get("degraded")),
+                "tools": len(info.get("tools", [])),
+                "transport": info.get("transport", "stdio"),
+            }
+        )
+    for name, cfg in configured.items():
+        if name in seen:
+            continue
+        rows.append(
+            {
+                "name": name,
+                "connected": False,
+                "disabled": bool(cfg.get("disabled")),
+                "degraded": False,
+                "tools": 0,
+                "transport": cfg.get("transport", "stdio"),
+            }
+        )
+
+    rows.sort(key=lambda r: str(r["name"]))
+    server.emit("available_mcp_servers", servers=rows)
+    if not rows:
+        server.emit(
+            "info",
+            message="No MCP servers configured. Add one with `coderAI mcp add`.",
+        )
+
+
+async def _cmd_toggle_mcp_server(server: UIBridge, msg: Dict[str, Any]) -> None:
+    """Toggle an MCP server on/off — persistent (config) + live (connection).
+
+    Off: disconnect the live connection now and mark it ``disabled`` so it does
+    not auto-reconnect next session. On: connect now and clear the flag. The
+    connect path mirrors ``ExecutionLoop._autoconnect_mcp_servers`` — the config
+    was validated when the server was added, so no launcher re-check is needed.
+    """
+    from coderAI.tools.mcp import load_mcp_servers, mcp_client, set_mcp_server_disabled
+
+    name = str(msg.get("server", "")).strip()
+    if not name:
+        server.emit("warning", message="Usage: /mcp <server-name>")
+        return
+
+    if name in mcp_client.servers:
+        await mcp_client.disconnect(name)
+        set_mcp_server_disabled(name, True)
+        server.emit("success", message=f"MCP server '{name}' turned off (disconnected)")
+        await _cmd_list_mcp_servers(server, {})
+        return
+
+    cfg = load_mcp_servers().get("mcpServers", {}).get(name)
+    if not isinstance(cfg, dict):
+        server.emit("warning", message=f"No MCP server named '{name}' is configured.")
+        return
+
+    transport = cfg.get("transport", "stdio")
+    if transport == "sse":
+        result = await mcp_client.connect_sse(name, cfg.get("url", ""))
+    elif transport == "http":
+        result = await mcp_client.connect_http(name, cfg.get("url", ""), cfg.get("headers"))
+    else:
+        result = await mcp_client.connect_stdio(name, cfg.get("command", ""), cfg.get("args"))
+
+    if result.get("success"):
+        set_mcp_server_disabled(name, False)
+        count = result.get("tools_discovered", 0)
+        server.emit("success", message=f"MCP server '{name}' turned on ({count} tools)")
+    else:
+        server.emit("warning", message=f"Failed to connect '{name}': {result.get('error')}")
+    await _cmd_list_mcp_servers(server, {})
+
+
 async def _cmd_search_codebase(server: UIBridge, msg: Dict[str, Any]) -> None:
     query = msg.get("query", "")
     if not query:
@@ -747,6 +833,8 @@ _COMMAND_HANDLERS: Dict[str, Callable[["UIBridge", Dict[str, Any]], Awaitable[No
     "list_models": _cmd_list_models,
     "list_personas": _cmd_list_personas,
     "list_skills": _cmd_list_skills,
+    "list_mcp_servers": _cmd_list_mcp_servers,
+    "toggle_mcp_server": _cmd_toggle_mcp_server,
     "search_codebase": _cmd_search_codebase,
     "reference": _cmd_reference,
     "set_default_model": _cmd_set_default_model,
