@@ -124,10 +124,61 @@ def detect_package_manager(project_root: str = ".") -> Optional[str]:
     return None
 
 
-def _validate_package_name(package: str, manager: str) -> Optional[str]:
-    """Simple package-name validation to reject shell injection attempts."""
+# URL / VCS schemes that make the package manager fetch and execute arbitrary
+# code (a remote setup.py, a git repo's build hooks). Refused unless the caller
+# explicitly opts in via ``allow_remote_source``.
+_REMOTE_SOURCE_PREFIXES = (
+    "git+",
+    "hg+",
+    "svn+",
+    "bzr+",
+    "http://",
+    "https://",
+    "ftp://",
+    "git://",
+    "file:",
+)
+
+
+def _looks_like_local_path(package: str) -> bool:
+    """True if *package* is a filesystem path rather than a registry name."""
+    if package in (".", ".."):
+        return True
+    if package.startswith(("/", "./", "../", "~", ".\\", "..\\")):
+        return True
+    if "\\" in package:
+        return True
+    # An embedded parent-directory traversal component.
+    return ".." in package.replace("\\", "/").split("/")
+
+
+def _is_scoped_npm_name(package: str, manager: str) -> bool:
+    """True for a valid ``@scope/name`` npm-family package."""
+    return (
+        manager in ("npm", "yarn", "pnpm", "bun")
+        and package.startswith("@")
+        and package.count("/") == 1
+    )
+
+
+def _supports_double_dash(manager: str) -> bool:
+    """Managers whose option parser honours a ``--`` end-of-options marker."""
+    return manager in ("pip", "pip3")
+
+
+def _validate_package_name(
+    package: str, manager: str, allow_remote_source: bool = False
+) -> Optional[str]:
+    """Validate a package spec, rejecting shell/flag injection and remote sources.
+
+    ``allow_remote_source=True`` permits VCS/URL/local-path installs — a
+    separately-confirmed, dangerous opt-in. By default those forms are refused
+    so a package name can never make the manager fetch and run arbitrary code.
+    """
     if not package or not package.strip():
         return "Package name cannot be empty."
+    package = package.strip()
+
     dangerous_chars = [";", "|", "&", "$", "`", "(", ")", "{", "}", "<", ">", "\n", "\r", "'", '"']
     for ch in dangerous_chars:
         if ch in package:
@@ -136,6 +187,36 @@ def _validate_package_name(package: str, manager: str) -> Optional[str]:
             )
     if len(package) > 256:
         return "Package name too long (max 256 characters)."
+
+    # Flag injection: a token starting with '-' would be parsed as an option
+    # (e.g. --index-url=http://evil, -e .). Registry names never start with '-'.
+    if package.startswith("-"):
+        return (
+            "Package name cannot start with '-' (it would be parsed as a command "
+            "flag). Specify a plain package name."
+        )
+
+    if not allow_remote_source:
+        lowered = package.lower()
+        for prefix in _REMOTE_SOURCE_PREFIXES:
+            if lowered.startswith(prefix):
+                return (
+                    f"Refusing remote/VCS package source {package!r}: this can execute "
+                    "arbitrary code (e.g. a remote setup.py). Set allow_remote_source=true "
+                    "to override after review."
+                )
+        if _looks_like_local_path(package):
+            return (
+                f"Refusing local-path package source {package!r}: a local install can run "
+                "arbitrary setup code. Set allow_remote_source=true to override after review."
+            )
+        # '/' only legitimately appears in scoped npm names and go module paths.
+        if "/" in package and not _is_scoped_npm_name(package, manager) and manager != "go":
+            return (
+                f"Package name contains '/': {package!r}. Only scoped npm names "
+                "(@scope/name) may contain a slash."
+            )
+
     return None
 
 
@@ -153,6 +234,15 @@ class PackageManagerParams(BaseModel):
     )
     dev: bool = Field(False, description="Install as a dev dependency (default: false)")
     max_results: int = Field(20, description="Maximum packages to list (default: 20)")
+    allow_remote_source: bool = Field(
+        False,
+        description=(
+            "DANGEROUS: permit installing from a VCS/URL/local-path source "
+            "(e.g. git+https://…, ./local, https://…). These can execute "
+            "arbitrary code at install time. Leave false unless you have "
+            "reviewed the source."
+        ),
+    )
 
 
 class PackageManagerTool(Tool):
@@ -162,7 +252,9 @@ class PackageManagerTool(Tool):
     description = (
         "Install, uninstall, list, or check outdated packages using the project's package manager. "
         "Auto-detects pip, npm, yarn, pnpm, bun, cargo, or go based on project files. "
-        "Safe: validates package names to prevent shell injection. "
+        "Package names are validated (no shell/flag injection) and remote/VCS/local-path "
+        "sources are refused unless allow_remote_source=true; installs still run the "
+        "manager's own build steps, so treat installing untrusted packages as running code. "
         "Use 'install' to add a new dependency, 'uninstall' to remove one, "
         "'list' to see installed packages, 'outdated' to check for updates."
     )
@@ -180,6 +272,7 @@ class PackageManagerTool(Tool):
         manager: Optional[str] = None,
         dev: bool = False,
         max_results: int = 20,
+        allow_remote_source: bool = False,
     ) -> Dict[str, Any]:
         try:
             action = action.strip().lower()
@@ -226,7 +319,9 @@ class PackageManagerTool(Tool):
                 }
 
             if package:
-                validation_error = _validate_package_name(package, manager_name)
+                validation_error = _validate_package_name(
+                    package, manager_name, allow_remote_source=allow_remote_source
+                )
                 if validation_error:
                     return {"success": False, "error": validation_error}
                 pkg_with_version = (
@@ -258,16 +353,16 @@ class PackageManagerTool(Tool):
                     elif manager_name == "pip":
                         pass  # dev deps via requirements-dev.txt, not CLI flag
                 assert package is not None
-                cmd.append(package)
-                if version:
-                    if manager_name == "pip":
-                        cmd.append(pkg_with_version)
-                    elif manager_name in ("npm", "yarn", "pnpm", "bun"):
-                        # Already included in pkg_with_version
-                        if pkg_with_version != package:
-                            cmd[-1] = pkg_with_version
-                    elif manager_name == "cargo":
-                        pass
+                # Resolve to a single package token (folding in the version
+                # spec where the manager supports it inline; cargo/go don't).
+                install_token = package
+                if version and manager_name in ("pip", "pip3", "npm", "yarn", "pnpm", "bun"):
+                    install_token = pkg_with_version
+                # ``--`` stops option parsing so the token can never be read as
+                # a flag (defense-in-depth on top of the leading-dash reject).
+                if _supports_double_dash(manager_name):
+                    cmd.append("--")
+                cmd.append(install_token)
 
             elif action == "uninstall":
                 if manager_name == "go":
@@ -286,6 +381,8 @@ class PackageManagerTool(Tool):
                         }
                     cmd.extend(uninstall_cmd)
                     assert package is not None
+                    if _supports_double_dash(manager_name):
+                        cmd.append("--")
                     cmd.append(package)
 
             elif action == "list":
@@ -301,8 +398,8 @@ class PackageManagerTool(Tool):
 
             elif action == "info":
                 assert package is not None
-                if manager_name == "pip":
-                    cmd = [cmd_binary, "show", package]
+                if manager_name in ("pip", "pip3"):
+                    cmd = [cmd_binary, "show", "--", package]
                 elif manager_name == "npm":
                     cmd = [cmd_binary, "info", package, "--json"]
                 elif manager_name in ("yarn", "pnpm"):

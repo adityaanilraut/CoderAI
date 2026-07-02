@@ -567,6 +567,11 @@ class BrowserNavigateTool(Tool):
     category = "browser"
     parameters_model = BrowserNavigateParams
     timeout = 45.0
+    # Mutates browser page state rather than the local machine; navigation is
+    # already URL-validated below. Classified ``safe`` to preserve the current
+    # no-confirmation UX. NOTE: full egress + resolve-and-pin SSRF hardening for
+    # the browser layer is Phase 6.2 — this is not an egress classification.
+    safe = True
 
     async def execute(self, url: str) -> Dict[str, Any]:  # type: ignore[override]
         if err := _check_playwright():
@@ -901,6 +906,9 @@ class BrowserCloseTool(Tool):
     category = "browser"
     parameters_model = BrowserCloseParams
     timeout = 15.0
+    # Only tears down the local browser session and frees resources — no
+    # external effect — so it runs without per-call confirmation.
+    safe = True
 
     async def execute(self) -> Dict[str, Any]:  # type: ignore[override]
         if err := _check_playwright():

@@ -19,6 +19,7 @@ BRIDGE_DIR = Path(controller.__file__).parent
 
 EXPECTED_COMMANDS = {
     "send_message",
+    "trust",
     "allow_tool",
     "disallow_tool",
     "list_allowed_tools",

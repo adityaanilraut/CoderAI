@@ -84,6 +84,9 @@ class CreatePlanTool(Tool):
     )
     parameters_model = PlanParams
     is_read_only = False
+    # Mutates only the agent's own in-session plan state — no filesystem,
+    # network, or shell effect — so it runs without per-call confirmation.
+    safe = True
 
     def __init__(self) -> None:
         super().__init__()

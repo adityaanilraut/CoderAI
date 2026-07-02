@@ -191,6 +191,10 @@ class ExecutionLoop:
         self._last_plan_step = None
         self._length_retry_used = False
         self._hard_cap_warned = False
+        # Egress gate (Phase 3.4): each user message starts with a clean taint
+        # slate. The flag flips true once any UNTRUSTED_EXTERNAL tool result is
+        # ingested this turn, arming confirmation for subsequent egress tools.
+        self.agent._turn_ingested_untrusted = False
 
         # Auto-connect MCP servers on first run
         if not getattr(self.agent, "_mcp_initialized", False):
@@ -205,6 +209,10 @@ class ExecutionLoop:
         read_cache = getattr(self.agent, "read_cache", None)
         if read_cache is not None:
             read_cache.bump_turn()
+
+        # 1b. First-run workspace-trust gate — decide trust before any hook or
+        # project-config surface is honoured this turn.
+        await self._ensure_workspace_trust()
 
         # 2. Run on_user_prompt and chat.message hooks
         hooks_data = self.hooks_manager.load_hooks()
@@ -263,6 +271,110 @@ class ExecutionLoop:
                 return result
 
         return await self._handle_max_iterations()
+
+    # ── Workspace-trust gate (Phase 2.3) ────────────────────────────────────
+
+    async def _ensure_workspace_trust(self) -> None:
+        """First-run trust decision for the current workspace.
+
+        Runs once per agent. If the project root carries a ``.coderAI``
+        execution surface and is not yet trusted, prompt the user. Fail-closed:
+        no interactive path (headless / piped) or a decline leaves the
+        workspace untrusted, so hooks stay off and the ``config.json`` overlay
+        stays skipped. Any error is treated as untrusted.
+        """
+        if getattr(self.agent, "_workspace_trust_checked", False):
+            return
+        self.agent._workspace_trust_checked = True
+        try:
+            from coderAI.system.trust import workspace_trust
+
+            root = getattr(self.agent.config, "project_root", ".") or "."
+            if workspace_trust.is_trusted(root):
+                return
+            if not workspace_trust.has_execution_surface(root):
+                return
+            if await self._prompt_workspace_trust(root):
+                workspace_trust.record_trust(root)
+                event_emitter.emit(
+                    "agent_status",
+                    message="[green]Workspace trusted — project hooks/config enabled.[/green]",
+                )
+            else:
+                event_emitter.emit(
+                    "agent_warning",
+                    message=(
+                        "Workspace left untrusted — project hooks and .coderAI/config.json "
+                        "overlay are disabled. Use /trust to enable them."
+                    ),
+                )
+        except Exception:
+            logger.debug("workspace-trust gate failed; treating as untrusted", exc_info=True)
+
+    async def _prompt_workspace_trust(self, root: Any) -> bool:
+        """Ask the user to trust *root*; return True on approval.
+
+        Uses the UI approval channel (TUI) when present, else a console prompt.
+        Returns False when there is no interactive path, keeping the default
+        fail-closed.
+        """
+        surface = self._describe_trust_surface(root)
+        ipc_server = getattr(self.agent, "ipc_server", None)
+        if ipc_server is not None:
+            import uuid
+
+            try:
+                approved = await ipc_server.request_tool_approval(
+                    tool_id=str(uuid.uuid4()),
+                    tool_name="workspace_trust",
+                    arguments={"folder": str(root), "enables": surface},
+                )
+                return bool(approved)
+            except Exception:
+                logger.debug("ipc workspace-trust prompt failed", exc_info=True)
+                return False
+
+        import sys
+
+        if not sys.stdin.isatty():
+            return False
+        event_emitter.emit(
+            "agent_status",
+            message=(
+                f"\n[bold yellow]⚠ Untrusted workspace[/bold yellow]\n"
+                f"[dim]{root}[/dim]\n"
+                f"[dim]Contains: {', '.join(surface)}[/dim]"
+            ),
+        )
+        prompt = "Trust this workspace's project automation? (y/n) > "
+        try:
+            from prompt_toolkit import PromptSession
+
+            ps: PromptSession = PromptSession()
+            answer = await ps.prompt_async(prompt)
+        except Exception:
+            answer = await asyncio.to_thread(input, prompt)
+        return answer.strip().lower() in ("y", "yes")
+
+    @staticmethod
+    def _describe_trust_surface(root: Any) -> List[str]:
+        """Human-readable list of the ``.coderAI`` surface a trust decision enables."""
+        from pathlib import Path
+
+        dot = Path(str(root)) / ".coderAI"
+        items: List[str] = []
+        try:
+            if (dot / "hooks.json").is_file():
+                items.append("hooks.json (runs shell commands)")
+            if (dot / "config.json").is_file():
+                items.append("config.json (settings overlay)")
+            if (dot / "rules").is_dir():
+                items.append("rules/")
+            if (dot / "skills").is_dir():
+                items.append("skills/")
+        except OSError:
+            pass
+        return items or ["project automation"]
 
     async def _run_iteration(self, state: _TurnState) -> Optional[Dict[str, Any]]:
         """Run a single loop iteration.

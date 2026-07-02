@@ -31,6 +31,13 @@ for env_key in [
 # repo, so opt out for the test session.
 os.environ["CODERAI_ALLOW_OUTSIDE_PROJECT"] = "1"
 
+# Workspace-trust (Phase 2) is fail-closed: an untrusted project's hooks and
+# config.json overlay are ignored. The existing suite builds ``.coderAI`` trees
+# in throwaway tmp dirs and expects them honoured, so opt the whole test session
+# into trust here (the same escape hatch as ``coderAI run --trust-workspace``).
+# The security suite unsets this per-test to exercise the untrusted path.
+os.environ["CODERAI_TRUST_WORKSPACE"] = "1"
+
 import pytest  # noqa: E402
 from unittest.mock import AsyncMock, MagicMock  # noqa: E402
 

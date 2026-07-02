@@ -65,6 +65,10 @@ class ManageTasksTool(Tool):
     )
     parameters_model = ManageTasksParams
     is_read_only = False
+    # Mutates only the agent's own task list (`.coderAI/tasks.json`) — no
+    # arbitrary filesystem, network, or shell effect — so it runs without
+    # per-call confirmation.
+    safe = True
 
     async def execute(  # type: ignore[override]
         self,

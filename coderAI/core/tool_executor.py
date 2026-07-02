@@ -25,6 +25,12 @@ from coderAI.core.tool_routing import (
     is_mcp_function_name,
     coerce_tool_arguments,
 )
+from coderAI.core.permissions import (
+    HIGH_RISK_NO_BLANKET,
+    ApprovalRules,
+    tool_requires_confirmation,
+)
+from coderAI.core.provenance import Provenance, wrap_untrusted_output
 from coderAI.core.tool_error_codes import ToolErrorCode
 
 logger = logging.getLogger(__name__)
@@ -80,6 +86,31 @@ def _fingerprint(tool_name: str, arguments: Optional[Dict[str, Any]]) -> str:
     return h
 
 
+def _extract_vision_images(
+    res: Any,
+) -> Tuple[Any, Optional[List[Dict[str, Any]]]]:
+    """Split a vision tool result into a lightweight text dict + image blocks.
+
+    Tools like ``read_image`` return ``{"_vision": True, "image_data": <b64>,
+    "mime_type": ...}``. The base64 payload must NOT go through result
+    summarization (it would be truncated and corrupted) or be stringified into
+    the text content (huge + useless to the model). This pulls the image out so
+    it can be carried as a structured ``tool_images`` block, leaving a small
+    text dict behind. Returns ``(clean_result, images)`` where ``images`` is
+    ``None`` when the result carries no usable image.
+    """
+    if not isinstance(res, dict) or not res.get("_vision"):
+        return res, None
+    data = res.get("image_data")
+    mime = res.get("mime_type")
+    if not (isinstance(data, str) and data and isinstance(mime, str) and mime):
+        return res, None
+    images = [{"mime_type": mime, "data": data}]
+    clean = {k: v for k, v in res.items() if k != "image_data"}
+    clean["image_attached"] = True
+    return clean, images
+
+
 class ToolExecutor:
     agent: Any
     _ro_semaphore: asyncio.Semaphore
@@ -125,12 +156,66 @@ class ToolExecutor:
         ):
             self._preview_file_cache.popitem(last=False)
 
-    def _approval_allowlist(self) -> set[str]:
-        # Initialized in Agent.__init__ so no race-condition risk here.
-        val = self.agent._tool_approval_allowlist
-        if isinstance(val, set):
-            return val
-        return set(val) if val is not None else set()
+    def _is_call_preapproved(self, tool_name: str, arguments: Optional[Dict[str, Any]]) -> bool:
+        """True if this exact call is covered by an "always allow" rule (Phase 4.2).
+
+        The real agent carries an :class:`ApprovalRules`, which scopes high-risk
+        tools to a reviewed command-prefix / path (a bare-name allow of
+        ``run_command`` never authorizes a *different* command). A plain set of
+        names is still accepted as a legacy/test shim, but only for tools outside
+        :data:`HIGH_RISK_NO_BLANKET`.
+        """
+        rules = getattr(self.agent, "_tool_approval_allowlist", None)
+        if rules is None:
+            return False
+        if isinstance(rules, ApprovalRules):
+            return rules.is_allowed(tool_name, arguments)
+        try:
+            name_allowed = tool_name in rules
+        except TypeError:
+            return False
+        return bool(name_allowed) and tool_name not in HIGH_RISK_NO_BLANKET
+
+    def _result_provenance(self, tool_name: str) -> str:
+        """Taint label for *tool_name*'s results (Phase 3.1).
+
+        Real tools declare ``result_provenance``; MCP proxy calls (no local Tool
+        object) are always ``UNTRUSTED_EXTERNAL`` — a third-party server's output
+        must never carry system authority (confused-deputy, Phase 7.3).
+        """
+        tool = self.agent.tools.get(tool_name)
+        if tool is not None:
+            return str(getattr(tool, "result_provenance", Provenance.TRUSTED))
+        if is_mcp_function_name(tool_name):
+            return Provenance.UNTRUSTED_EXTERNAL
+        return Provenance.TRUSTED
+
+    def _mark_turn_untrusted(self) -> None:
+        """Record that this user turn has ingested untrusted external content.
+
+        Arms the egress gate (:meth:`_turn_has_untrusted`). Reset per user message
+        in ``ExecutionLoop.run``.
+        """
+        setattr(self.agent, "_turn_ingested_untrusted", True)
+
+    def _turn_has_untrusted(self) -> bool:
+        return bool(getattr(self.agent, "_turn_ingested_untrusted", False))
+
+    @staticmethod
+    def _untrusted_source(pc: Dict[str, Any]) -> str:
+        """Short ``source`` label for the untrusted-output fence.
+
+        Tool name, plus the fetch target (url/query) when available so a reviewer
+        can see where the content came from. Sanitized by ``wrap_untrusted_output``.
+        """
+        name = pc.get("tool_name", "unknown")
+        args = pc.get("arguments") or {}
+        target = None
+        if isinstance(args, dict):
+            target = args.get("url") or args.get("query")
+        if isinstance(target, str) and target.strip():
+            return f"{name}:{target}"
+        return str(name)
 
     def _normalize_tool_result(
         self,
@@ -292,7 +377,7 @@ class ToolExecutor:
             if pc.get("parse_error") or pc.get("arguments") is None:
                 continue
             tool = self.agent.tools.get(pc.get("tool_name", ""))
-            if tool is not None and getattr(tool, "requires_confirmation", False):
+            if tool is not None and tool_requires_confirmation(tool):
                 gated.append((i, pc))
 
         if not gated:
@@ -463,11 +548,28 @@ class ToolExecutor:
                 )
 
             is_mcp_proxy = is_mcp_function_name(tool_name) and tool is None
+            # Confirmation-by-default (Phase 4.1): mutating tools require
+            # confirmation unless they opt out with ``safe = True``; a tool that
+            # declares nothing is treated as requiring confirmation. MCP proxy
+            # calls (no local Tool object) always gate.
             needs_confirmation = (
                 not self.agent.auto_approve
-                and tool_name not in self._approval_allowlist()
-                and (is_mcp_proxy or bool(tool and getattr(tool, "requires_confirmation", False)))
+                and not self._is_call_preapproved(tool_name, arguments)
+                and (is_mcp_proxy or tool_requires_confirmation(tool))
             )
+            # Egress gate (Phase 3.4): once this turn has ingested untrusted
+            # external content, force confirmation for any network-egress tool —
+            # even a read-only, allowlisted one — so injected page/MCP content
+            # can't silently exfiltrate via a follow-up fetch. Deliberately
+            # bypasses the name allowlist and the is_read_only fast-path, but
+            # still honours the YOLO/auto_approve master switch.
+            egress_gated = (
+                not self.agent.auto_approve
+                and bool(tool and getattr(tool, "is_egress", False))
+                and self._turn_has_untrusted()
+            )
+            if egress_gated:
+                needs_confirmation = True
             if needs_confirmation:
                 # Check permission hooks first (can auto-allow or auto-deny)
                 if hooks_manager is not None and hooks_data:
@@ -775,13 +877,27 @@ class ToolExecutor:
                 doom_offender = (pc["tool_name"], cached_count)
 
         for pc, res in zip(parsed_calls, results):
+            # Pull any base64 image out BEFORE summarization so it reaches the
+            # model as a real vision block instead of being truncated/stringified.
+            res, images = _extract_vision_images(res)
             res = self.agent.context_controller.summarize_tool_result(res)
             event_emitter.emit(
                 "tool_result", tool_name=pc["tool_name"], result=res, tool_id=pc["tool_id"]
             )
-            self.agent.session.add_message(
-                "tool", json.dumps(res), tool_call_id=pc["tool_id"], name=pc["tool_name"]
-            )
+            extra: Dict[str, Any] = {"name": pc["tool_name"]}
+            if images:
+                extra["tool_images"] = images
+
+            # Provenance (Phase 3.2): tool results that ingest outside data are
+            # serialized inside a non-authoritative <untrusted_tool_output> block
+            # and mark the turn as tainted so the egress gate (3.4) arms. The UI
+            # event above still carries the clean dict — only the model-facing
+            # transcript is fenced.
+            serialized = json.dumps(res)
+            if self._result_provenance(pc["tool_name"]) == Provenance.UNTRUSTED_EXTERNAL:
+                self._mark_turn_untrusted()
+                serialized = wrap_untrusted_output(serialized, self._untrusted_source(pc))
+            self.agent.session.add_message("tool", serialized, tool_call_id=pc["tool_id"], **extra)
 
         if self.agent.tracker_info:
             self.agent.tracker_info.current_tool = None
@@ -1009,11 +1125,15 @@ class ToolExecutor:
                     path_queues.setdefault(c_path, []).append(idx)
 
                 async def _run_path_queue(path_indices):
-                    for idx in path_indices:
+                    # Same-file writes run sequentially; a batch-start diff for
+                    # the 2nd+ write to a path is stale (TOCTOU, Phase 4.4). Only
+                    # the first write to each path uses the precomputed diff — the
+                    # rest recompute against live disk at confirmation time (pass
+                    # diff=None so ``_confirmation_callback`` computes fresh).
+                    for pos, idx in enumerate(path_indices):
                         t0 = _time.time()
-                        results[idx] = await _run(
-                            parsed_calls[idx], diff=precomputed_diffs.get(idx)
-                        )
+                        diff = precomputed_diffs.get(idx) if pos == 0 else None
+                        results[idx] = await _run(parsed_calls[idx], diff=diff)
                         _emit_progress(idx, elapsed=round(_time.time() - t0, 2))
 
                 await asyncio.gather(

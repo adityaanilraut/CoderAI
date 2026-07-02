@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from coderAI.core.provenance import fence_project_context
 from coderAI.system.config import Config, config_manager
 from coderAI.context.context_selector import build_focused_context, summarize_conversation_focus
 
@@ -32,16 +33,40 @@ class ContextManager:
         self._last_refresh_at: float = 0.0
 
     def _load_instructions(self) -> None:
-        """Load project-specific instructions from file."""
-        instruction_file = getattr(self.config, "project_instruction_file", "CODERAI.md")
-        project_root = getattr(self.config, "project_root", ".")
-        path = Path(project_root) / instruction_file
-        if path.exists() and path.is_file():
-            try:
-                self.project_instructions = path.read_text(encoding="utf-8")
-                logger.info(f"Loaded project instructions from {instruction_file}")
-            except Exception as e:
-                logger.error(f"Failed to load project instructions: {e}")
+        """Load project-specific instructions from file.
+
+        The configured ``project_instruction_file`` is tried first, then a set
+        of well-known fallbacks. This makes loading robust to the historical
+        ``CODERAI.md`` vs ``coderai.md`` case mismatch on case-sensitive
+        filesystems, and auto-loads the de-facto standard ``AGENTS.md`` /
+        ``CLAUDE.md`` so users migrating from other agents get their project
+        memory without extra configuration. The first existing file wins.
+        """
+        configured = getattr(self.config, "project_instruction_file", "CODERAI.md")
+        project_root = Path(getattr(self.config, "project_root", "."))
+
+        # Configured file first (honours an explicit user override), then the
+        # standard names. Order is deduplicated while preserving precedence.
+        candidates = [
+            configured,
+            "CODERAI.md",
+            "coderai.md",
+            "AGENTS.md",
+            "CLAUDE.md",
+        ]
+        seen: set[str] = set()
+        for name in candidates:
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            path = project_root / name
+            if path.exists() and path.is_file():
+                try:
+                    self.project_instructions = path.read_text(encoding="utf-8")
+                    logger.info(f"Loaded project instructions from {name}")
+                except Exception as e:
+                    logger.error(f"Failed to load project instructions: {e}")
+                return
 
     def add_file(self, path: str) -> bool:
         """Add a file to pinned context.
@@ -195,8 +220,16 @@ class ContextManager:
         parts: List[str] = []
 
         if self.project_instructions:
-            parts.append("## Project Instructions")
-            parts.append(self.project_instructions)
+            # Defused (Phase 3.3): AGENTS.md / CLAUDE.md / CODERAI.md are repo
+            # files, so they are advisory project context — never authoritative
+            # system text that could override the user or safety rules.
+            parts.append(
+                fence_project_context(
+                    title="Project instructions (AGENTS.md / CLAUDE.md / CODERAI.md)",
+                    body=self.project_instructions,
+                    origin="instructions",
+                )
+            )
             parts.append("")
 
         if self.pinned_files:

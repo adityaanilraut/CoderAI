@@ -3,12 +3,13 @@
 import json
 import logging
 import os
-import stat
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from coderAI.system.fsperms import restrict_fd
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +98,12 @@ class Config(BaseModel):
 
 class ConfigManager:
     """Manages configuration for CoderAI."""
+
+    # Security-sensitive flags that must never be frozen to config.json, even
+    # when set explicitly (Phase 2.5). They must be re-supplied per session
+    # (env / CLI flag) so a stale on-disk ``true`` cannot silently keep a
+    # sandbox-escape / auto-approve posture enabled across future sessions.
+    _NEVER_PERSIST_KEYS = frozenset({"allow_outside_project"})
 
     def __init__(self) -> None:
         """Initialize the configuration manager."""
@@ -245,6 +252,8 @@ class ConfigManager:
         data = config.model_dump(exclude_none=True)
         persist: Dict[str, Any] = {}
         for key, value in data.items():
+            if key in self._NEVER_PERSIST_KEYS:
+                continue
             if key in self._explicit_keys:
                 persist[key] = value
             elif key in self._env_keys:
@@ -262,7 +271,7 @@ class ConfigManager:
 
         tmp_fd, tmp_path = tempfile.mkstemp(dir=str(self.config_dir), prefix=".config.")
         try:
-            os.fchmod(tmp_fd, stat.S_IRUSR | stat.S_IWUSR)
+            restrict_fd(tmp_fd)
             with os.fdopen(tmp_fd, "w") as f:
                 json.dump(self._data_to_persist(config), f, indent=2)
             os.replace(tmp_path, str(self.config_file))
@@ -346,6 +355,18 @@ class ConfigManager:
         if not project_config_path.is_file():
             return config
 
+        # Fail-closed on workspace trust (Phase 2.2): an untrusted project's
+        # config.json overlay is never applied, so a cloned repo cannot raise
+        # caps or flip flags until the user explicitly trusts the folder.
+        from coderAI.system.trust import workspace_trust
+
+        if not workspace_trust.is_trusted(config.project_root):
+            logger.warning(
+                "Skipping .coderAI/config.json overlay for untrusted workspace %s",
+                config.project_root,
+            )
+            return config
+
         # Only these keys may be overridden at the project level.
         # API keys are intentionally excluded for security.
         ALLOWED_PROJECT_KEYS = {
@@ -407,6 +428,20 @@ class ConfigManager:
             except (ValueError, TypeError) as e:
                 logger.warning(f"Invalid project config value for '{key}': {e}")
                 continue
+            if key == "budget_limit":
+                # A project config may only *tighten* the spend cap, never raise
+                # or unbound it (0 == unlimited). Prevents a cloned repo from
+                # draining spend by widening the budget. (Phase 2.5)
+                base_cap = base.budget_limit if base.budget_limit > 0 else float("inf")
+                new_cap = value if value > 0 else float("inf")
+                if new_cap > base_cap:
+                    logger.warning(
+                        "Ignoring project budget_limit=%s: a project config may not raise "
+                        "the effective spend cap (current %s).",
+                        value,
+                        base.budget_limit,
+                    )
+                    continue
             setattr(config, key, value)
 
         return config

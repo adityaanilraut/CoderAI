@@ -29,6 +29,9 @@ class ManageContextTool(Tool):
         "checking what is currently pinned."
     )
     parameters_model = ManageContextParams
+    # Mutates only the agent's own pinned-context set — no external effect —
+    # so it runs without per-call confirmation.
+    safe = True
 
     def __init__(self, context_manager: ContextManager):
         """Initialize with context manager."""

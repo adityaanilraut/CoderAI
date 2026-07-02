@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from coderAI.core.services import get_services
 from coderAI.core.tool_error_codes import ToolErrorCode
+from coderAI.system.proc import kill_process_group, new_session_kwargs, scrub_env
 from coderAI.tools.base import Tool
 from coderAI.tools.terminal import _resolve_working_dir
 
@@ -55,6 +56,8 @@ class PythonREPLTool(Tool):
     ) -> Dict[str, Any]:
         """Execute Python code in a subprocess."""
         try:
+            timeout = max(1, min(timeout, 3600))
+
             resolved_cwd, cwd_err = _resolve_working_dir(working_dir)
             if cwd_err:
                 return {"success": False, "error": cwd_err, "error_code": ToolErrorCode.SCOPE}
@@ -72,21 +75,43 @@ class PythonREPLTool(Tool):
 
             try:
                 import shutil
+                import sys
 
-                python_cmd = shutil.which("python3") or shutil.which("python") or "python3"
+                # ``sys.executable`` is the interpreter currently running
+                # CoderAI — the most reliable choice and the only one that
+                # works out of the box on Windows, where a bare ``python3`` is
+                # often missing or a non-functional Store stub.
+                python_cmd = (
+                    sys.executable
+                    or shutil.which("python3")
+                    or shutil.which("python")
+                    or "python3"
+                )
 
+                # ``python_repl`` runs unsandboxed model-authored code. Scrub
+                # secret-bearing env vars so an injected snippet cannot read
+                # ``$OPENAI_API_KEY`` etc., and isolate the process group so a
+                # timeout can reap any children it spawned.
                 process = await asyncio.create_subprocess_exec(
                     python_cmd,
                     script_path,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=str(resolved_cwd),
+                    env=scrub_env(),
+                    **new_session_kwargs(),
                 )
 
                 try:
                     stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
                 except asyncio.TimeoutError:
-                    process.kill()
+                    # Kill the whole group and reap it — a bare ``process.kill()``
+                    # without ``wait()`` leaves a zombie and orphans children.
+                    kill_process_group(process)
+                    try:
+                        await asyncio.wait_for(process.wait(), timeout=5)
+                    except (asyncio.TimeoutError, ProcessLookupError):
+                        pass
                     return {
                         "success": False,
                         "error": f"Execution timed out after {timeout} seconds",

@@ -13,6 +13,7 @@ Pass ``--yolo``/``--auto-approve`` to allow mutations.
 import asyncio
 import json as _json
 import logging
+import os
 import sys
 from typing import Any, Dict, List, Optional
 
@@ -125,6 +126,12 @@ async def _run_agent(agent: Any, prompt: str, blocked_tools: List[str]) -> Dict[
     help="Persona to load (filename stem in .coderAI/agents/, e.g. 'code-reviewer')",
 )
 @click.option("--max-iterations", type=int, default=None, help="Override the agent iteration limit")
+@click.option(
+    "--trust-workspace",
+    is_flag=True,
+    help="DANGEROUS: trust this workspace's .coderAI hooks/config without a prompt (CI use). "
+    "Enables project hooks and the config.json overlay for a cloned repo.",
+)
 def run(
     prompt: Optional[str],
     model: Optional[str],
@@ -134,6 +141,7 @@ def run(
     auto_approve: bool,
     persona: Optional[str],
     max_iterations: Optional[int],
+    trust_workspace: bool,
 ) -> None:
     """Run a single prompt non-interactively and exit (no TUI).
 
@@ -144,6 +152,12 @@ def run(
       echo "list the open TODOs" | coderAI run\n
       coderAI run --json "what is 2+2"
     """
+    # Opt this headless run into workspace trust before the agent is built (so
+    # the project config overlay applies at construction). Deliberately a
+    # per-process env var, not persisted. Default remains untrusted.
+    if trust_workspace:
+        os.environ["CODERAI_TRUST_WORKSPACE"] = "1"
+
     if resume and resume_latest:
         _fail("Pass either --resume or --continue, not both.", json_output, exit_code=2)
 
@@ -201,8 +215,7 @@ def run(
         if blocked:
             names = ", ".join(sorted(set(blocked_tools)))
             click.echo(
-                f"\nBlocked mutating tool call(s): {names}. "
-                "Re-run with --yolo to allow.",
+                f"\nBlocked mutating tool call(s): {names}. Re-run with --yolo to allow.",
                 err=True,
             )
 

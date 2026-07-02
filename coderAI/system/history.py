@@ -4,7 +4,6 @@ import json
 import logging
 import os
 import re
-import stat
 import threading
 import time
 import uuid
@@ -13,6 +12,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
+
+from coderAI.system.fsperms import OWNER_RWX, restrict_fd, restrict_path
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,11 @@ class Message(BaseModel):
     tool_call_id: Optional[str] = None
     name: Optional[str] = None  # Tool name for tool messages
     reasoning_content: Optional[str] = None
+    # Base64 images attached to a tool result (e.g. from ``read_image``).
+    # Each entry is ``{"mime_type": str, "data": <base64>}``. Providers that
+    # support vision render these as real image blocks; the heavy base64 is
+    # kept out of the text ``content`` so it survives result summarization.
+    tool_images: Optional[List[Dict[str, Any]]] = None
 
 
 def _default_session_model() -> str:
@@ -134,6 +140,8 @@ class Session(BaseModel):
                 msg_dict["name"] = msg.name
             if msg.reasoning_content:
                 msg_dict["reasoning_content"] = msg.reasoning_content
+            if msg.tool_images:
+                msg_dict["tool_images"] = msg.tool_images
             api_messages.append(msg_dict)
         return api_messages
 
@@ -259,7 +267,7 @@ class HistoryManager:
         """Initialize the history manager."""
         self.history_dir = Path.home() / ".coderAI" / "history"
         self.history_dir.mkdir(parents=True, exist_ok=True)
-        self.history_dir.chmod(stat.S_IRWXU)
+        restrict_path(self.history_dir, OWNER_RWX)
         self.current_session: Optional[Session] = None
         self._index_lock = threading.Lock()
         # Throttle clock for ``_cleanup_expired_sessions``; ``-inf`` forces the
@@ -335,7 +343,7 @@ class HistoryManager:
         tmp_file = session_file.with_name(f"{session_id}.{uuid.uuid4().hex}.tmp")
         try:
             with open(tmp_file, "w") as f:
-                os.fchmod(f.fileno(), stat.S_IRUSR | stat.S_IWUSR)
+                restrict_fd(f.fileno())
                 json.dump(data, f)
             os.replace(tmp_file, session_file)
         except Exception:

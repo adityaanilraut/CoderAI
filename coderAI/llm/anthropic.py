@@ -208,10 +208,35 @@ class AnthropicProvider(LLMProvider):
                 # Convert tool results to Anthropic format.
                 # Merge consecutive tool results into a single user message
                 # (Anthropic requires alternating user/assistant roles).
+                # Vision tool results (e.g. read_image) carry base64 images in
+                # ``tool_images`` — render them as real image content blocks so
+                # the model can actually see them.
+                tool_images = msg.get("tool_images")
+                result_content: Any = content
+                if tool_images:
+                    blocks: List[Dict[str, Any]] = []
+                    if content:
+                        blocks.append({"type": "text", "text": content})
+                    for img in tool_images:
+                        data = img.get("data")
+                        mime = img.get("mime_type")
+                        if data and mime:
+                            blocks.append(
+                                {
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": mime,
+                                        "data": data,
+                                    },
+                                }
+                            )
+                    if blocks:
+                        result_content = blocks
                 tool_result_block = {
                     "type": "tool_result",
                     "tool_use_id": msg.get("tool_call_id", ""),
-                    "content": content,
+                    "content": result_content,
                 }
                 if (
                     anthropic_messages

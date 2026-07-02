@@ -585,8 +585,11 @@ class TestAgentProjectRules:
             prompt = agent._get_system_prompt()
             assert SYSTEM_PROMPT_INTRO in prompt
             assert "## Available Tools" in prompt
-            assert "## Project Specific Rules" in prompt
-            assert "### Rule: testing.md" in prompt
+            # Phase 3.3: rules are defused into fenced, advisory project guidance
+            # (no "MUST be followed" / authoritative framing).
+            assert "## Project Guidance (user-provided)" in prompt
+            assert "[BEGIN PROJECT RULE" in prompt
+            assert "Rule: testing.md" in prompt
             assert "Always write pytest tests." in prompt
 
     def test_system_prompt_rebuilds_when_mcp_servers_change(self):

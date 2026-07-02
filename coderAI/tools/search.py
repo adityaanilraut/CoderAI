@@ -3,12 +3,19 @@
 import asyncio
 import ast
 import re
+import shutil
 from pathlib import Path
 from typing import Any, Dict, List
 
 from pydantic import BaseModel, Field
 
 from coderAI.tools.base import Tool
+
+# Directories skipped by the pure-Python grep fallback to avoid scanning
+# build artifacts and VCS metadata.
+_GREP_SKIP_DIRS = frozenset(
+    {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build"}
+)
 
 
 class TextSearchParams(BaseModel):
@@ -143,8 +150,23 @@ class GrepTool(Tool):
         recursive: bool = True,
         max_results: int = 50,
     ) -> Dict[str, Any]:
-        """Execute grep search using create_subprocess_exec to avoid shell injection."""
+        """Execute grep search using create_subprocess_exec to avoid shell injection.
+
+        The ``grep`` binary is absent on stock Windows, so when it is not on
+        PATH we fall back to an equivalent pure-Python scan that returns the
+        same result shape.
+        """
         try:
+            if shutil.which("grep") is None:
+                return await asyncio.to_thread(
+                    self._python_grep,
+                    pattern,
+                    path,
+                    case_insensitive,
+                    recursive,
+                    max_results,
+                )
+
             cmd = ["grep", "-n"]
             if case_insensitive:
                 cmd.append("-i")
@@ -179,6 +201,85 @@ class GrepTool(Tool):
 
             truncated = len(output.strip().split("\n")) > len(matches)
             result = {
+                "success": True,
+                "pattern": pattern,
+                "matches": matches,
+                "count": len(matches),
+                "was_truncated": truncated,
+                "next_offset": len(matches) if truncated else None,
+            }
+            if truncated:
+                result["note"] = (
+                    f"Results capped at {max_results}. Use a more specific pattern to narrow results."
+                )
+            return result
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _python_grep(
+        self,
+        pattern: str,
+        path: str,
+        case_insensitive: bool,
+        recursive: bool,
+        max_results: int,
+    ) -> Dict[str, Any]:
+        """Pure-Python ``grep -n`` fallback for hosts without the binary (Windows).
+
+        Mirrors the subprocess path's result shape. Runs on a worker thread via
+        ``asyncio.to_thread`` so a large tree scan never blocks the event loop.
+        """
+        try:
+            flags = re.IGNORECASE if case_insensitive else 0
+            try:
+                regex = re.compile(pattern, flags)
+            except re.error as e:
+                return {"success": False, "error": f"Invalid regex: {e}"}
+
+            base = Path(path).expanduser()
+            if not base.exists():
+                return {"success": False, "error": f"Path not found: {path}"}
+
+            if base.is_file():
+                files = iter([base])
+            elif recursive:
+                files = (p for p in base.rglob("*") if p.is_file())
+            else:
+                files = (p for p in base.iterdir() if p.is_file())
+
+            matches: List[Dict[str, Any]] = []
+            truncated = False
+            for file_path in files:
+                # Filter on the path *relative to the search base*, not the
+                # absolute path: otherwise a search root that itself lives under
+                # a skip-named dir (e.g. a CI checkout at ``C:\build\proj``)
+                # would skip every file and silently return zero matches.
+                try:
+                    rel_parts = file_path.relative_to(base).parts
+                except ValueError:
+                    rel_parts = file_path.parts
+                if any(part in _GREP_SKIP_DIRS for part in rel_parts):
+                    continue
+                try:
+                    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                        for line_num, line in enumerate(f, 1):
+                            if regex.search(line):
+                                matches.append(
+                                    {
+                                        "file": str(file_path),
+                                        "line": line_num,
+                                        "content": line.strip(),
+                                    }
+                                )
+                                if len(matches) >= max_results:
+                                    truncated = True
+                                    break
+                except OSError:
+                    continue
+                if truncated:
+                    break
+
+            result: Dict[str, Any] = {
                 "success": True,
                 "pattern": pattern,
                 "matches": matches,

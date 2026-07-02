@@ -6,9 +6,20 @@ from typing import Any, Callable, Dict, List, Optional, Type
 
 from pydantic import BaseModel, ValidationError
 
+from coderAI.core.provenance import Provenance
 from coderAI.core.tool_error_codes import ToolErrorCode  # noqa: F401 — re-export
 
-__all__ = ["Tool", "ToolRegistry", "ToolErrorCode"]
+__all__ = ["Tool", "ToolRegistry", "ToolClassificationError", "ToolErrorCode"]
+
+
+class ToolClassificationError(RuntimeError):
+    """Raised when a registered tool declares no safety classification.
+
+    Every tool must declare at least one of ``is_read_only``,
+    ``requires_confirmation``, ``is_egress`` or ``safe`` so the confirmation
+    gate can reason about it. A tool that declares none is ambiguous and, under
+    the Phase 4 fail-closed policy, is refused at registry-build time.
+    """
 
 
 class Tool(ABC):
@@ -23,6 +34,27 @@ class Tool(ABC):
 
     # Parallelism: read-only tools can be executed concurrently.
     is_read_only: bool = False
+
+    # Confirmation opt-out (Phase 4.1). A mutating tool (``is_read_only=False``)
+    # that only touches internal, low-risk state (agent notepad / plan / task
+    # list / memory) sets ``safe = True`` to run without confirmation. This is
+    # the *explicit* escape hatch: any mutating tool that sets neither
+    # ``requires_confirmation`` nor ``safe`` is treated as requiring
+    # confirmation (fail-closed) — see ``permissions.tool_requires_confirmation``.
+    safe: bool = False
+
+    # Provenance (Phase 3): taint label applied to this tool's results. Tools
+    # that ingest data from outside the user's own input (web fetch, MCP output)
+    # set this to ``Provenance.UNTRUSTED_EXTERNAL`` so the result is rendered in a
+    # non-authoritative ``<untrusted_tool_output>`` block and marks the turn as
+    # having ingested untrusted content (which arms the egress gate below).
+    result_provenance: str = Provenance.TRUSTED
+
+    # Egress axis (Phase 3.4): True for tools that perform network egress (and so
+    # can exfiltrate via URL/query strings). Separate from ``is_read_only`` — a
+    # tool can be parallel-safe yet still require confirmation once the turn has
+    # ingested untrusted content. Gated in ToolExecutor's confirmation path.
+    is_egress: bool = False
 
     # Per-tool timeout in seconds. None = use ToolExecutor's default.
     timeout: Optional[float] = None
@@ -82,6 +114,18 @@ class Tool(ABC):
 
         return {"type": "object", "properties": {}}
 
+    @property
+    def is_classified(self) -> bool:
+        """True if this tool declares any safety class.
+
+        A tool is *classified* when it sets at least one of ``is_read_only``,
+        ``requires_confirmation``, ``is_egress`` or ``safe``. Unclassified tools
+        are rejected by :meth:`ToolRegistry.validate_classifications`.
+        """
+        return bool(
+            self.is_read_only or self.requires_confirmation or self.is_egress or self.safe
+        )
+
 
 class ToolRegistry:
     """Registry for managing available tools."""
@@ -116,6 +160,24 @@ class ToolRegistry:
             List of all tools
         """
         return list(self.tools.values())
+
+    def find_unclassified(self) -> List[str]:
+        """Names of registered tools that declare no safety class (Phase 4.1)."""
+        return [name for name, tool in self.tools.items() if not tool.is_classified]
+
+    def validate_classifications(self) -> None:
+        """Fail-closed guard: refuse to run if any tool is unclassified.
+
+        Raises:
+            ToolClassificationError: listing every unclassified tool.
+        """
+        unclassified = self.find_unclassified()
+        if unclassified:
+            raise ToolClassificationError(
+                "Every tool must declare a safety class "
+                "(is_read_only / requires_confirmation / is_egress / safe=True). "
+                "Unclassified: " + ", ".join(sorted(unclassified))
+            )
 
     def get_schemas(self) -> List[Dict[str, Any]]:
         """Get schemas for all tools.

@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 # coderAI.tools.web.<name> as a single point, exactly as they could when
 # everything lived in one module.
 import coderAI.tools.web as _web
+from coderAI.core.provenance import Provenance
 from coderAI.core.tool_error_codes import ToolErrorCode
 from coderAI.tools.base import Tool
 from coderAI.tools.filesystem import _enforce_project_scope, _is_path_protected
@@ -93,6 +94,8 @@ class WebSearchTool(Tool):
         "Use allowed_domains/blocked_domains to constrain results."
     )
     is_read_only = True
+    is_egress = True
+    result_provenance = Provenance.UNTRUSTED_EXTERNAL
     parameters_model = WebSearchParams
 
     async def execute(  # type: ignore[override]
@@ -313,6 +316,8 @@ class ReadURLTool(Tool):
         "Responses larger than 5MB are reported as oversize and truncated."
     )
     is_read_only = True
+    is_egress = True
+    result_provenance = Provenance.UNTRUSTED_EXTERNAL
     parameters_model = ReadURLParams
 
     async def execute(  # type: ignore[override]
@@ -424,7 +429,9 @@ class DownloadFileTool(Tool):
         "local destination. Returns the absolute path to the downloaded file."
     )
     is_read_only = False
+    is_egress = True
     requires_confirmation = True
+    result_provenance = Provenance.UNTRUSTED_EXTERNAL
     parameters_model = DownloadFileParams
     timeout = 300.0
 
@@ -517,7 +524,9 @@ class HTTPRequestTool(Tool):
         "requests to private/loopback IPs."
     )
     is_read_only = False
+    is_egress = True
     requires_confirmation = True
+    result_provenance = Provenance.UNTRUSTED_EXTERNAL
     parameters_model = HTTPRequestParams
 
     async def execute(  # type: ignore[override]
@@ -623,6 +632,8 @@ class WikipediaSearchTool(Tool):
         "Use language= to search other language editions (e.g., 'de' for German)."
     )
     is_read_only = True
+    is_egress = True
+    result_provenance = Provenance.UNTRUSTED_EXTERNAL
     parameters_model = WikipediaSearchParams
 
     async def execute(  # type: ignore[override]
@@ -744,6 +755,8 @@ class ReadFeedTool(Tool):
         "Useful for monitoring blog posts, changelogs, release notes, and news."
     )
     is_read_only = True
+    is_egress = True
+    result_provenance = Provenance.UNTRUSTED_EXTERNAL
     parameters_model = ReadFeedParams
 
     async def execute(  # type: ignore[override]
@@ -843,6 +856,8 @@ class SitemapDiscoverTool(Tool):
         "Useful for understanding a site's structure or finding documentation pages."
     )
     is_read_only = True
+    is_egress = True
+    result_provenance = Provenance.UNTRUSTED_EXTERNAL
     parameters_model = SitemapDiscoverParams
 
     async def execute(  # type: ignore[override]

@@ -275,16 +275,34 @@ class LLMProvider(ABC):
         if hasattr(self, "total_cache_read_tokens"):
             self.total_cache_read_tokens = max(0, int(cache_read_tokens or 0))
 
+    @staticmethod
+    def _strip_tool_images(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Drop the ``tool_images`` vision carrier from tool messages.
+
+        Only the Anthropic provider renders base64 images inside a tool result;
+        every other provider would reject the unknown key (or has no way to use
+        it), so it is stripped before the request. Providers that override
+        ``clean_messages`` (DeepSeek, Gemini) must call this to stay safe.
+        """
+        cleaned = []
+        for m in messages:
+            if "tool_images" in m:
+                m = {k: v for k, v in m.items() if k != "tool_images"}
+            cleaned.append(m)
+        return cleaned
+
     def clean_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Clean messages before sending to the API.
 
         By default, strips reasoning_content from assistant messages for compatibility
         with providers that reject this field. Providers that support round-tripping
         reasoning_content (DeepSeek, Gemini, Anthropic) MUST override this method.
+        The ``tool_images`` vision carrier is always stripped here (Anthropic
+        overrides to keep it).
         """
         cleaned = []
         for m in messages:
             if m.get("role") == "assistant" and "reasoning_content" in m:
                 m = {k: v for k, v in m.items() if k != "reasoning_content"}
             cleaned.append(m)
-        return cleaned
+        return self._strip_tool_images(cleaned)

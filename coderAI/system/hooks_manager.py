@@ -72,7 +72,12 @@ class HooksManager:
         Returns (env, args_file_path) — callers MUST ``os.unlink(args_file_path)``
         after hook execution completes.
         """
-        env = os.environ.copy()
+        # Hooks run repo-supplied shell commands, so start from a minimal
+        # allowlisted env (Phase 2.4): PATH/HOME/locale/toolchain vars only, no
+        # credentials. The CODERAI_* context below is layered on top.
+        from coderAI.system.proc import build_hook_env
+
+        env = build_hook_env()
         env["CODERAI_TOOL_NAME"] = tool_name
 
         args_file_path: Optional[str] = None
@@ -112,9 +117,20 @@ class HooksManager:
         return env, args_file_path
 
     def load_hooks(self) -> Optional[Dict[str, Any]]:
-        """Load project hooks from .coderAI/hooks.json (cached by mtime)."""
+        """Load project hooks from .coderAI/hooks.json (cached by mtime).
+
+        Fail-closed on workspace trust (Phase 2.2): an untrusted project's
+        hooks are never loaded, so a freshly cloned repo cannot fire hooks on
+        first contact. Trust is granted by the user via the first-run prompt
+        (or the ``CODERAI_TRUST_WORKSPACE`` / ``--trust-workspace`` escape hatch).
+        """
         try:
-            hfile = Path(self.agent.config.project_root) / ".coderAI" / "hooks.json"
+            project_root = self.agent.config.project_root
+            from coderAI.system.trust import workspace_trust
+
+            if not workspace_trust.is_trusted(project_root):
+                return None
+            hfile = Path(project_root) / ".coderAI" / "hooks.json"
             if not hfile.exists():
                 return None
             mtime_ns = hfile.stat().st_mtime_ns
@@ -235,7 +251,9 @@ class HooksManager:
 
     async def request_hooks_approval(self, matching_hooks: list) -> bool:
         """Ask user for permission to run project hooks."""
-        cmds_preview = ", ".join(h.get("command", "?")[:60] for h in matching_hooks)
+        # Show the full command(s) — never a truncated preview (Phase 2.4): the
+        # user must see exactly what will execute before approving.
+        cmds_preview = ", ".join(h.get("command", "?") for h in matching_hooks)
         event_emitter.emit(
             "agent_status",
             message=f"\n[bold yellow]⚠ Project hooks detected[/bold yellow]\n[dim]Commands: {cmds_preview}[/dim]",
@@ -449,6 +467,18 @@ class HooksManager:
             entry = results[key]
             if isinstance(entry, dict):
                 status = entry.get("status")
-                if status in VALID_PERMISSION_STATUSES:
-                    return str(status)
+                if status not in VALID_PERMISSION_STATUSES:
+                    continue
+                if status == "allow":
+                    # H1 (Phase 2.4): a repo-supplied permission.ask hook must
+                    # never silently auto-allow a tool. Downgrade to "ask" so
+                    # the user still confirms — only user config / interactive
+                    # approval may upgrade to allow.
+                    logger.warning(
+                        "Ignoring 'allow' from project permission.ask hook for %s; "
+                        "downgrading to 'ask' (repo hooks cannot auto-approve).",
+                        tool_name,
+                    )
+                    return "ask"
+                return str(status)
         return None

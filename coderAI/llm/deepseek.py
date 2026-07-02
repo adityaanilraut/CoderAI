@@ -165,5 +165,5 @@ class DeepSeekProvider(LLMProvider):
         return self.actual_model != "deepseek-reasoner"
 
     def clean_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """DeepSeek V4/R1 supports passing reasoning_content back in the assistant role."""
-        return messages
+        """DeepSeek round-trips reasoning_content but has no vision support."""
+        return self._strip_tool_images(messages)

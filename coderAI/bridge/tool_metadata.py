@@ -110,12 +110,33 @@ def tool_category(name: str, registry: Optional[Any] = None) -> str:
     return _TOOL_CATEGORY_FALLBACK.get(name, "other")
 
 
-def tool_risk(name: str) -> str:
+def tool_risk(name: str, registry: Optional[Any] = None) -> str:
+    """Risk label for the approval UI (Phase 4.3).
+
+    Derives from the tool's declared safety flags when the registry is
+    available, so a new tool is labelled honestly instead of defaulting to
+    "low". Unknown / MCP proxy (``mcp__…``) tools are third-party and are never
+    labelled "low".
+    """
     if name in _HIGH_RISK:
         return "high"
     if name in _MEDIUM_RISK:
         return "medium"
-    return "low"
+    # MCP proxy tools run a third-party server's code — at least medium.
+    if name.startswith("mcp__"):
+        return "medium"
+    tool = registry.get(name) if registry is not None else None
+    if tool is not None:
+        if getattr(tool, "requires_confirmation", False):
+            return "high"
+        if getattr(tool, "is_egress", False):
+            return "medium"
+        if getattr(tool, "is_read_only", False) or getattr(tool, "safe", False):
+            return "low"
+        # Mutating with no opt-out — treat as high (matches the confirm gate).
+        return "high"
+    # Unknown tool with no registry entry — be conservative, never "low".
+    return "medium"
 
 
 def truncate_args(args: Dict[str, Any], limit: int, *, show_count: bool = False) -> Dict[str, Any]:
@@ -131,8 +152,21 @@ def truncate_args(args: Dict[str, Any], limit: int, *, show_count: bool = False)
     return out
 
 
+# Security-relevant argument keys that must be shown in full in the approval
+# preview — truncating what actually runs would hide it (Phase 4.4). Covers
+# both ``run_command``'s ``command`` and ``python_repl``'s ``code`` (an
+# attacker could otherwise hide a payload past the 800-char truncation point).
+_NO_TRUNCATE_APPROVAL_KEYS = ("command", "code")
+
+
 def preview_args_for_approval(arguments: Dict[str, Any]) -> Dict[str, Any]:
-    return truncate_args(arguments, 800, show_count=True)
+    preview = truncate_args(arguments, 800, show_count=True)
+    if isinstance(arguments, dict):
+        for key in _NO_TRUNCATE_APPROVAL_KEYS:
+            val = arguments.get(key)
+            if isinstance(val, str):
+                preview[key] = val
+    return preview
 
 
 def arg_preview(args: Dict[str, Any]) -> Dict[str, Any]:

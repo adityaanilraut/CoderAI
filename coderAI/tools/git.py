@@ -37,6 +37,27 @@ def _truncate_output(text: str, max_bytes: int = MAX_GIT_OUTPUT_BYTES) -> tuple[
     )
 
 
+def _reject_option_like(value: Optional[str], label: str) -> Optional[Dict[str, Any]]:
+    """Guard against argument injection via a user-controlled positional.
+
+    A value that begins with ``-`` (e.g. ``--output=/etc/passwd``) would be
+    parsed by git as an *option* rather than a ref/path, letting a caller
+    create or truncate arbitrary files through read-only tools like
+    ``git diff``/``git show``/``git blame``. Refs and paths never legitimately
+    start with ``-``, so reject it. Returns an error dict, or ``None`` if OK.
+    """
+    if value is not None and value.startswith("-"):
+        return {
+            "success": False,
+            "error": (
+                f"Refusing {label} that starts with '-': {value!r}. It could be "
+                "interpreted as a git option (e.g. --output=…). Provide a plain value."
+            ),
+            "error_code": ToolErrorCode.SCOPE,
+        }
+    return None
+
+
 async def _run_git_command(
     args: List[str],
     repo_path: str,
@@ -162,7 +183,9 @@ class GitAddTool(Tool):
                     "error_code": ToolErrorCode.ALL_FILTERED,
                 }
 
-            result = await _run_git_command(["add"] + allowed, repo_path, needs_lock=True)
+            # ``--`` separates paths from options so a crafted filename can't
+            # inject a git flag.
+            result = await _run_git_command(["add", "--"] + allowed, repo_path, needs_lock=True)
             if not result["success"]:
                 return result  # scope validation error
 
@@ -259,6 +282,11 @@ class GitDiffTool(Tool):
             if staged:
                 args.append("--cached")
             if file_path:
+                reject = _reject_option_like(file_path, "file_path")
+                if reject:
+                    return reject
+                # ``--`` ends option parsing so the path can't become a flag.
+                args.append("--")
                 args.append(file_path)
 
             result = await _run_git_command(args, repo_path)
@@ -887,9 +915,14 @@ class GitShowTool(Tool):
         repo_path: str = ".",
     ) -> Dict[str, Any]:  # type: ignore[override]
         try:
+            reject = _reject_option_like(ref, "ref")
+            if reject:
+                return reject
             args = ["show"]
             if stat_only:
                 args.append("--stat")
+            # A ref cannot precede ``--`` (git would read it as a pathspec), so
+            # the leading-dash reject above is what blocks ``--output=`` here.
             args.append(ref)
 
             result = await _run_git_command(args, repo_path, validate_scope=False)
@@ -1002,11 +1035,16 @@ class GitBlameTool(Tool):
         repo_path: str = ".",
     ) -> Dict[str, Any]:  # type: ignore[override]
         try:
+            reject = _reject_option_like(file_path, "file_path")
+            if reject:
+                return reject
             args = ["blame", "--porcelain"]
             if start_line is not None and end_line is not None:
                 args.extend([f"-L{start_line},{end_line}"])
             elif start_line is not None:
                 args.extend([f"-L{start_line},+30"])
+            # ``--`` ends option parsing so the path can't become a flag.
+            args.append("--")
             args.append(file_path)
 
             result = await _run_git_command(args, repo_path, validate_scope=False)

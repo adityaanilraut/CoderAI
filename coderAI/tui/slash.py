@@ -98,10 +98,16 @@ def _cmd_yolo(ctx: SlashContext, arg: str, head: str) -> bool:
 
 
 def _cmd_allow_tool(ctx: SlashContext, arg: str, head: str) -> bool:
+    arg = arg.strip()
     if not arg:
-        ctx.toast("warning", "Usage: /allow-tool <tool-name>")
+        ctx.toast("warning", "Usage: /allow-tool <tool-name> [command-prefix | path]")
         return True
-    ctx.controller.enqueue_command("allow_tool", tool=arg)
+    parts = arg.split(None, 1)
+    tool = parts[0]
+    if len(parts) > 1 and parts[1].strip():
+        ctx.controller.enqueue_command("allow_tool", tool=tool, scope=parts[1].strip())
+    else:
+        ctx.controller.enqueue_command("allow_tool", tool=tool)
     return True
 
 

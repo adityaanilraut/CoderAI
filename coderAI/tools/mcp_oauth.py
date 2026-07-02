@@ -26,7 +26,6 @@ import logging
 import os
 import secrets
 import socket
-import stat
 import tempfile
 import threading
 import time
@@ -36,6 +35,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
+
+from coderAI.system.fsperms import restrict_fd
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +89,7 @@ def save_mcp_credentials(data: Dict[str, Any]) -> None:
     path.parent.mkdir(mode=0o700, exist_ok=True)
     tmp_fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=".mcp_credentials.")
     try:
-        os.fchmod(tmp_fd, stat.S_IRUSR | stat.S_IWUSR)
+        restrict_fd(tmp_fd)
         with os.fdopen(tmp_fd, "w") as f:
             json.dump(data, f, indent=2)
         os.replace(tmp_path, str(path))

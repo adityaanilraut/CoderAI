@@ -97,6 +97,10 @@ class SaveMemoryTool(Tool):
     name = "save_memory"
     description = "Save information to persistent memory for later recall"
     parameters_model = SaveMemoryParams
+    # Writes only to the agent's own key/value memory store — no arbitrary
+    # filesystem or shell effect — so it runs without per-call confirmation.
+    # (delete_memory still confirms, since removal is destructive.)
+    safe = True
 
     async def execute(self, **kwargs: Any) -> Dict[str, Any]:  # type: ignore[override]
         """Save memory."""

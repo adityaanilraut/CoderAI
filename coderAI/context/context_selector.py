@@ -9,6 +9,8 @@ import logging
 from collections import Counter
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from coderAI.core.provenance import fence_project_context
+
 logger = logging.getLogger(__name__)
 
 _STOP_WORDS = frozenset(
@@ -341,7 +343,15 @@ def build_focused_context(
     total_chars = 0
 
     if project_instructions:
-        parts.append("## Project Instructions\n" + project_instructions)
+        # Defused (Phase 3.3): repo instruction files are advisory project
+        # context, rendered fenced rather than as authoritative system text.
+        parts.append(
+            fence_project_context(
+                title="Project instructions (AGENTS.md / CLAUDE.md / CODERAI.md)",
+                body=project_instructions,
+                origin="instructions",
+            )
+        )
         total_chars += len(parts[-1])
 
     if not relevant:

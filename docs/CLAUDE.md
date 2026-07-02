@@ -36,7 +36,7 @@ config in `pyproject.toml` is lenient, but a `[[tool.mypy.overrides]]` block
 lists modules held to **strict** typing (`disallow_untyped_defs`,
 `check_untyped_defs`, `warn_unused_ignores`). As of Phase 4 the strict set is
 `system.*`, `llm.*`, `bridge.*`, `context.*`, and
-`core.{execution_context,tool_error_codes,services,agent_tracker}`.
+`core.{execution_context,tool_error_codes,services,agent_tracker,provenance,permissions}`.
 
 **The strict-module list only grows — never remove a module from it.** When a
 module becomes clean under strict checking, add it; once added it must stay
@@ -172,5 +172,5 @@ Friendly versioned aliases also supported: `claude-4.7-opus`, `claude-4.6-sonnet
 ## Adding a New Tool
 
 1. Create a class extending `Tool` in `coderAI/tools/` with a no-arg `__init__` — `tools/discovery.py` will pick it up automatically
-2. Set `is_read_only = True` if safe to run in parallel; set `requires_confirmation = True` for dangerous ops
+2. **Declare a safety class** (Phase 4.1 — `ToolRegistry.validate_classifications()` refuses to start if you don't): `is_read_only = True` if safe to run in parallel; `requires_confirmation = True` for dangerous ops; `is_egress = True` for network egress; or `safe = True` for a mutating tool that only touches the agent's own internal state (plan/tasks/notepad/memory). A mutating tool that declares none is treated as requiring confirmation (fail-closed). Do **not** add high-risk tools to `permissions.HIGH_RISK_NO_BLANKET` casually — those can never be blanket-allowed by name.
 3. If the tool needs the `Agent` (e.g. for pinned context), register it manually in `Agent.__init__` after `discover_tools()` — the discovery walker skips classes whose `__init__` has required args

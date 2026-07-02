@@ -5,7 +5,7 @@ import asyncio
 import json
 import logging
 import os
-import stat
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 from coderAI.core.tool_error_codes import ToolErrorCode
+from coderAI.system.fsperms import restrict_fd
 from coderAI.tools.base import Tool
 
 logger = logging.getLogger(__name__)
@@ -124,7 +125,7 @@ def save_mcp_servers(data: Dict[str, Any]) -> None:
     path = mcp_servers_path()
     tmp_fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=".mcp_servers.")
     try:
-        os.fchmod(tmp_fd, stat.S_IRUSR | stat.S_IWUSR)
+        restrict_fd(tmp_fd)
         with os.fdopen(tmp_fd, "w") as f:
             json.dump(data, f, indent=2)
         os.replace(tmp_path, str(path))
@@ -256,7 +257,16 @@ class MCPClient:
         stderr_task: Optional["asyncio.Task[None]"] = None
         connection_failed = True
         try:
-            full_args = [command] + (args or [])
+            # On Windows ``create_subprocess_exec`` does not consult PATHEXT, so
+            # a bare ``npx``/``npm``/``node`` won't resolve to its ``.cmd``/``.exe``
+            # launcher the way it does on POSIX. Resolve via ``shutil.which``
+            # (which honours PATHEXT) so npx-based MCP servers can start.
+            launch_command = command
+            if os.name == "nt":
+                resolved = shutil.which(command)
+                if resolved:
+                    launch_command = resolved
+            full_args = [launch_command] + (args or [])
             process = await asyncio.create_subprocess_exec(
                 *full_args,
                 stdin=asyncio.subprocess.PIPE,

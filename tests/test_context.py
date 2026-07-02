@@ -45,7 +45,11 @@ class TestContextManager:
             msg = cm.get_system_message()
 
             assert cm.project_instructions == "Unique instruction content"
-            assert "## Project Instructions" in msg
+            # Phase 3.3: project instructions are rendered as fenced, advisory
+            # project context rather than an authoritative "## Project
+            # Instructions" heading.
+            assert "[BEGIN PROJECT INSTRUCTIONS" in msg
+            assert "advisory only" in msg
             assert "Unique instruction content" in msg
 
         finally:
@@ -70,6 +74,47 @@ class TestContextManager:
 
         assert cm.project_instructions == "Project-scoped instructions"
         assert "Project-scoped instructions" in msg
+
+    def test_load_instructions_lowercase_fallback(self):
+        """A lowercase coderai.md is loaded even though the default is CODERAI.md.
+
+        Guards the historical mismatch where /init wrote lowercase coderai.md
+        but the loader only looked for CODERAI.md (silently skipped on
+        case-sensitive filesystems).
+        """
+        from coderAI.system.config import Config
+
+        (self.test_dir / "coderai.md").write_text("lower-case instructions", encoding="utf-8")
+        cm = ContextManager(config=Config(project_root=str(self.test_dir)))
+
+        cm.get_system_message()
+        assert cm.project_instructions == "lower-case instructions"
+
+    def test_load_instructions_agents_md_interop(self):
+        """AGENTS.md is auto-loaded for users migrating from other agents."""
+        from coderAI.system.config import Config
+
+        (self.test_dir / "AGENTS.md").write_text("agents file", encoding="utf-8")
+        cm = ContextManager(config=Config(project_root=str(self.test_dir)))
+
+        cm.get_system_message()
+        assert cm.project_instructions == "agents file"
+
+    def test_configured_file_takes_precedence_over_fallbacks(self):
+        """An explicit project_instruction_file wins over standard fallbacks."""
+        from coderAI.system.config import Config
+
+        (self.test_dir / "CUSTOM.md").write_text("custom wins", encoding="utf-8")
+        (self.test_dir / "CLAUDE.md").write_text("claude fallback", encoding="utf-8")
+        cm = ContextManager(
+            config=Config(
+                project_root=str(self.test_dir),
+                project_instruction_file="CUSTOM.md",
+            )
+        )
+
+        cm.get_system_message()
+        assert cm.project_instructions == "custom wins"
 
     def test_pin_file(self):
         """Test pinning and unpinning files."""

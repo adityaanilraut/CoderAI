@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, Optional
 
 from coderAI.core.agent_tracker import AgentStatus
+from coderAI.core.permissions import ApprovalRules
 from coderAI.system.config import config_manager
 
 from coderAI.bridge.serializers import (
@@ -165,14 +166,25 @@ async def _cmd_set_model(server: UIBridge, msg: Dict[str, Any]) -> None:
     server.emit("success", message=f"Switched model → {model}")
 
 
+def _approval_rules(server: UIBridge) -> Optional[ApprovalRules]:
+    rules = getattr(server.agent, "_tool_approval_allowlist", None)
+    return rules if isinstance(rules, ApprovalRules) else None
+
+
 async def _cmd_allow_tool(server: UIBridge, msg: Dict[str, Any]) -> None:
     tool = str(msg.get("tool", "")).strip()
+    scope = str(msg.get("scope", "")).strip()
     if not tool:
-        server.emit("warning", message="Usage: /allow-tool <tool-name>")
+        server.emit(
+            "warning", message="Usage: /allow-tool <tool-name> [command-prefix | path]"
+        )
         return
-    allowlist: set[str] = getattr(server.agent, "_tool_approval_allowlist", set())
-    allowlist.add(tool)
-    server.emit("info", message=f"Tool approval memory enabled for {tool}.")
+    rules = _approval_rules(server)
+    if rules is None:
+        server.emit("warning", message="Approval rules are unavailable in this session.")
+        return
+    accepted, message = rules.allow(tool, scope or None)
+    server.emit("info" if accepted else "warning", message=message)
 
 
 async def _cmd_disallow_tool(server: UIBridge, msg: Dict[str, Any]) -> None:
@@ -180,14 +192,15 @@ async def _cmd_disallow_tool(server: UIBridge, msg: Dict[str, Any]) -> None:
     if not tool:
         server.emit("warning", message="Usage: /disallow-tool <tool-name>")
         return
-    allowlist: set[str] = getattr(server.agent, "_tool_approval_allowlist", set())
-    allowlist.discard(tool)
+    rules = _approval_rules(server)
+    if rules is not None:
+        rules.disallow(tool)
     server.emit("info", message=f"Tool approval memory removed for {tool}.")
 
 
 async def _cmd_list_allowed_tools(server: UIBridge, _msg: Dict[str, Any]) -> None:
-    allowlist: set[str] = getattr(server.agent, "_tool_approval_allowlist", set())
-    names = ", ".join(sorted(allowlist)) if allowlist else "(none)"
+    rules = _approval_rules(server)
+    names = rules.describe() if rules is not None else "(none)"
     server.emit("info", message=f"Always-allowed tools for this session: {names}")
 
 
@@ -674,7 +687,7 @@ async def _cmd_init_project(server: UIBridge, _msg: Dict[str, Any]) -> None:
 
     files_to_create: list[tuple[Path, str]] = [
         (
-            project_root / "coderai.md",
+            project_root / "CODERAI.md",
             "\n".join(
                 [
                     "# Project Guidance for CoderAI",
@@ -811,8 +824,43 @@ async def _cmd_cancel_agent(server: UIBridge, msg: Dict[str, Any]) -> None:
     )
 
 
+async def _cmd_trust(server: UIBridge, msg: Dict[str, Any]) -> None:
+    """``/trust`` — manage workspace trust for the current project root.
+
+    Payload: ``{"action": "grant"|"revoke"|"status"}`` (default ``grant``).
+    Trusting enables this repo's ``.coderAI`` hooks and ``config.json`` overlay;
+    the ``config.json`` overlay applies on the next launch.
+    """
+    from coderAI.system.trust import workspace_trust
+
+    action = str(msg.get("action") or (msg.get("payload") or {}).get("action") or "grant").strip()
+    root = getattr(server.agent.config, "project_root", ".") or "."
+    if action == "revoke":
+        removed = workspace_trust.revoke_trust(root)
+        server.emit(
+            "info",
+            message=(
+                f"Workspace trust revoked for {root}."
+                if removed
+                else f"Workspace was not trusted: {root}"
+            ),
+        )
+    elif action == "status":
+        state = "trusted" if workspace_trust.is_trusted(root) else "untrusted"
+        server.emit("info", message=f"Workspace {root} is {state}.")
+    else:
+        workspace_trust.record_trust(root)
+        server.emit(
+            "success",
+            message=f"Workspace trusted: {root}. Project hooks are now enabled "
+            "(config.json overlay applies on next launch).",
+        )
+    server.emit_status()
+
+
 _COMMAND_HANDLERS: Dict[str, Callable[["UIBridge", Dict[str, Any]], Awaitable[None]]] = {
     "send_message": _cmd_send_message,
+    "trust": _cmd_trust,
     "allow_tool": _cmd_allow_tool,
     "disallow_tool": _cmd_disallow_tool,
     "list_allowed_tools": _cmd_list_allowed_tools,

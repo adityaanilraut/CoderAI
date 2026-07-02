@@ -175,5 +175,5 @@ class GeminiProvider(LLMProvider):
                 self.total_input_tokens += self.count_tokens(input_text)
 
     def clean_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Gemini supports passing reasoning_content back in the assistant role."""
-        return messages
+        """Gemini round-trips reasoning_content but rejects tool-result images."""
+        return self._strip_tool_images(messages)

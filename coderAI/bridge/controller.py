@@ -225,7 +225,7 @@ class UIBridge:
         payload = {
             "name": tool_name,
             "args": preview_args_for_approval(arguments),
-            "risk": tool_risk(tool_name),
+            "risk": tool_risk(tool_name, getattr(self.agent, "tools", None)),
             "requestedBy": requested_by,
             "parentId": parent_id,
             "iteration": iteration,
@@ -307,10 +307,22 @@ class UIBridge:
             # Same: show $0.00 rather than failing the status event.
             logger.debug("cost_tracker failed in emit_status", exc_info=True)
         elapsed = _time.time() - self._session_start_ts if self._session_start_ts else 0.0
+        workspace_trusted = True
+        try:
+            from coderAI.system.trust import workspace_trust
+
+            root = getattr(self.agent.config, "project_root", ".") or "."
+            # Only surface an "untrusted" pill when there is a surface to trust;
+            # a plain repo with no .coderAI automation should read as neutral.
+            if workspace_trust.has_execution_surface(root):
+                workspace_trusted = workspace_trust.is_trusted(root)
+        except Exception:
+            logger.debug("workspace trust lookup failed in emit_status", exc_info=True)
         self.emit(
             "status",
             ctxUsed=used,
             ctxLimit=limit,
+            workspaceTrusted=workspace_trusted,
             costUsd=cost,
             budgetUsd=getattr(self.agent.config, "budget_limit", 0.0) or 0.0,
             promptTokens=getattr(self.agent, "total_prompt_tokens", 0),
@@ -377,7 +389,7 @@ class UIBridge:
                 "name": tool_name,
                 "category": tool_category(tool_name, getattr(self.agent, "tools", None)),
                 "args": arg_preview(arguments),
-                "risk": tool_risk(tool_name),
+                "risk": tool_risk(tool_name, getattr(self.agent, "tools", None)),
             },
         )
 

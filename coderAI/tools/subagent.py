@@ -269,6 +269,12 @@ class DelegateTaskTool(Tool):
     max_parallel_invocations = 0
     parameters_model = DelegateTaskParams
     is_read_only = False
+    # The act of delegating is itself safe: the spawned sub-agent runs each of
+    # its own tools through its own confirmation gate, so a mutating child tool
+    # is still gated inside the child. Classified ``safe`` for now to preserve
+    # the current no-confirmation delegation UX. NOTE: Phase 5.1 replaces this
+    # with an explicit delegation gate + subset-privilege enforcement.
+    safe = True
 
     # Fallback used when no parent config is available (e.g. during
     # auto-discovery before ``_configure_delegate_tool_context`` runs).
