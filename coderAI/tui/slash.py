@@ -207,22 +207,18 @@ def _cmd_tokens(ctx: SlashContext, arg: str, head: str) -> bool:
     # events, so we can render them client-side without another round-trip.
     ctx.controller.enqueue_command("get_state")
     s = ctx.reducer.session
-    used = getattr(s, "ctx_used", 0) or 0
-    limit = getattr(s, "ctx_limit", 0) or 0
+    used = s.ctx_used
+    limit = s.ctx_limit
     pct = (used / limit * 100) if limit else 0.0
-    prompt = getattr(s, "prompt_tokens", 0) or 0
-    completion = getattr(s, "completion_tokens", 0) or 0
-    total = prompt + completion
-    cost = getattr(s, "cost_usd", 0.0) or 0.0
-    budget = getattr(s, "budget_usd", 0.0) or 0.0
-    pinned = getattr(s, "context_files", None) or []
-    cost_line = f"${cost:.4f}" + (f" / ${budget:.2f} budget" if budget else "")
+    total = s.prompt_tokens + s.completion_tokens
+    pinned = s.context_files or []
+    cost_line = f"${s.cost_usd:.4f}" + (f" / ${s.budget_usd:.2f} budget" if s.budget_usd else "")
     lines = [
         "Session usage",
-        f"  Model:       {getattr(s, 'model', '') or '(unknown)'}",
+        f"  Model:       {s.model or '(unknown)'}",
         f"  Context:     {used:,} / {limit:,} tokens ({pct:.0f}%)",
-        f"  Prompt:      {prompt:,}",
-        f"  Completion:  {completion:,}",
+        f"  Prompt:      {s.prompt_tokens:,}",
+        f"  Completion:  {s.completion_tokens:,}",
         f"  Total:       {total:,}",
         f"  Cost:        {cost_line}",
         f"  Pinned:      {len(pinned)} file(s)",

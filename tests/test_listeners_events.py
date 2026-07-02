@@ -30,11 +30,10 @@ def test_hello_populates_session():
         },
     )
     s = r.session
-    assert s.connected and s.model == "claude-opus-4-8" and s.provider == "anthropic"
-    assert s.cwd == "/tmp" and s.version == "0.3.0"
+    assert s.model == "claude-opus-4-8" and s.provider == "anthropic"
+    assert s.cwd == "/tmp"
     assert s.ctx_limit == 200000 and s.budget_usd == 5.0
     assert s.auto_approve is True and s.reasoning == "high"
-    assert s.session_started_at is not None
     assert "full" in r.refreshes
 
 
@@ -186,15 +185,12 @@ def test_progress_event_sets_session_progress():
     r.handle("progress", {"label": "Indexing", "current": 3, "total": 9, "progressKind": "files"})
     p = r.session.progress
     assert p["label"] == "Indexing" and p["current"] == 3 and p["total"] == 9
-    assert p["kind"] == "files"
 
 
 def test_goodbye_event():
     r = _reducer()
     r.handle("hello", {"model": "m"})
     r.handle("goodbye", {})
-    assert r.session.connected is False
-    assert r._goodbye is True
     assert any(it["kind"] == "toast" for it in r.timeline)
 
 

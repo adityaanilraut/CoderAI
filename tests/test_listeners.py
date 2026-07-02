@@ -236,7 +236,7 @@ def test_awaiting_approval_extended_payload_on_timeline() -> None:
     assert item["priorApproved"] == 1
 
 
-def test_agent_info_depth_from_payload() -> None:
+def test_agent_info_from_payload() -> None:
     reducer = EventReducer()
     reducer.handle(
         "agent",
@@ -246,37 +246,14 @@ def test_agent_info_depth_from_payload() -> None:
                 "id": "agent_sub1",
                 "name": "reviewer",
                 "status": "thinking",
-                "depth": 2,
             },
             "parentId": "agent_main",
         },
     )
 
     info = reducer.session.agents["agent_sub1"]
-    assert info.depth == 2
+    assert info.status == "thinking"
     assert info.name == "reviewer"
-
-
-def test_progress_elapsed_maps_to_session() -> None:
-    reducer = EventReducer()
-    reducer.handle(
-        "progress",
-        {
-            "label": "indexing",
-            "current": 3,
-            "total": 10,
-            "progressKind": "files",
-            "elapsed": 4.2,
-        },
-    )
-
-    assert reducer.session.progress == {
-        "label": "indexing",
-        "current": 3,
-        "total": 10,
-        "kind": "files",
-        "elapsed": 4.2,
-    }
 
 
 def test_tasks_card_updates_session_and_chrome_refresh() -> None:

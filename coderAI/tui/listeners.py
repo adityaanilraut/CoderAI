@@ -31,7 +31,6 @@ class EventReducer:
         self._status_pending: Optional[Dict[str, Any]] = None
         self._status_flush_at: Optional[float] = None
         self._awaiting_first_delta = False
-        self._goodbye = False
         self.on_change: Optional[Callable[[RefreshMode], None]] = None
         self._pending_refresh: Optional[RefreshMode] = None
 
@@ -133,17 +132,13 @@ class EventReducer:
         if event == "hello":
             dirty = True
             self._bump_refresh("full")
-            self.session.connected = True
             self.session.model = str(data.get("model", ""))
             self.session.provider = str(data.get("provider", ""))
             self.session.cwd = str(data.get("cwd", ""))
-            self.session.version = str(data.get("version", ""))
             self.session.ctx_limit = int(data.get("contextLimit") or 0)
             self.session.budget_usd = float(data.get("budgetLimit") or 0)
             self.session.auto_approve = bool(data.get("autoApprove"))
             self.session.reasoning = data.get("reasoning") or "none"
-            if self.session.session_started_at is None:
-                self.session.session_started_at = time.time()
         elif event == "ready":
             self.session.ready = True
             self._recover_incomplete_turn()
@@ -430,15 +425,11 @@ class EventReducer:
                 "label": data.get("label", ""),
                 "current": data.get("current"),
                 "total": data.get("total"),
-                "kind": data.get("progressKind", "steps"),
-                "elapsed": data.get("elapsed"),
             }
         elif event == "goodbye":
             dirty = True
             self._bump_refresh("full")
             self._recover_incomplete_turn()
-            self._goodbye = True
-            self.session.connected = False
             self._push(
                 {
                     "kind": "toast",
