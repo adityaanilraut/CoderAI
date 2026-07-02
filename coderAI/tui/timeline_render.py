@@ -109,6 +109,21 @@ def write_timeline_item(log: SupportsWrite, it: Dict[str, Any], *, verbose: bool
         logger.warning("Unknown timeline kind: %s", kind)
 
 
+# The live tail widget is height-capped (max-height: 40%), so only the end of
+# the accumulated message is ever visible. Re-escaping the full text every
+# flush is O(n²) over a long response — render just the tail instead; the
+# complete message goes through the normal timeline path once the turn ends.
+_STREAM_TAIL_CHARS = 4000
+
+
+def _tail_slice(text: str, limit: int = _STREAM_TAIL_CHARS) -> str:
+    if len(text) <= limit:
+        return text
+    cut = text[-limit:]
+    nl = cut.find("\n")
+    return cut[nl + 1 :] if nl != -1 else cut
+
+
 def build_stream_tail_markup(it: Dict[str, Any], *, verbose: bool) -> str:
     """Rich markup for the live streaming assistant tail."""
     ts = _fmt_ts(it.get("ts"))
@@ -119,7 +134,7 @@ def build_stream_tail_markup(it: Dict[str, Any], *, verbose: bool) -> str:
             f"[{Styles.REASONING_GLYPH}]{Glyphs.REASONING}[/] "
             f"[{Styles.REASONING_LABEL}]reasoning[/]" + (f"  {ts}" if ts else "")
         )
-        lines.append(f"  [{Styles.REASONING}]{escape(reasoning)}[/]")
+        lines.append(f"  [{Styles.REASONING}]{escape(_tail_slice(reasoning))}[/]")
         lines.append("")
     lines.append(
         f"[{Styles.ASSISTANT_GLYPH}]{Glyphs.ASSISTANT}[/] [{Styles.ASSISTANT}]assistant[/]"
@@ -127,7 +142,7 @@ def build_stream_tail_markup(it: Dict[str, Any], *, verbose: bool) -> str:
     )
     content = it.get("content", "") or ""
     if content:
-        lines.append(f"  [{Styles.TEXT}]{escape(content)}[/]")
+        lines.append(f"  [{Styles.TEXT}]{escape(_tail_slice(content))}[/]")
     lines.append(f"  [{Tokens.AGENT}]▌[/]")
     return "\n".join(lines)
 

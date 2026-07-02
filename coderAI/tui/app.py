@@ -392,6 +392,9 @@ class CoderAIApp(App[None]):
                     self._hide_stream_tail()
             else:
                 self._hide_stream_tail()
+            # Stream ticks only move the live tail; chrome and composer
+            # don't change until a discrete ("append"/"full") event lands.
+            return
         else:
             # Before the RichLog knows its width it *defers* every write and
             # replays them once sized, so log.lines is empty and strip caching
@@ -656,7 +659,12 @@ class CoderAIApp(App[None]):
         self.run_worker(self._show_file_mention(), exclusive=True)
 
     async def _show_file_mention(self) -> None:
-        await self._scan_project_files()
+        if self.project_files:
+            # Serve the cached scan immediately; refresh it in the background
+            # for the next invocation (_scan_in_progress guards concurrency).
+            self.run_worker(self._scan_project_files())
+        else:
+            await self._scan_project_files()
         result = await self.push_screen_wait(
             FilePickerScreen(
                 self.project_files,
