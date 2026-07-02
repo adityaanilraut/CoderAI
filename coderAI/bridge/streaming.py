@@ -12,6 +12,8 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+from coderAI.llm.base import empty_usage, normalize_usage
+
 if TYPE_CHECKING:
     from coderAI.bridge.controller import UIBridge
 
@@ -69,6 +71,7 @@ class BridgeStreamingHandler:
 
         start_time = time.monotonic()
         finish_reason: Optional[str] = None
+        call_usage = empty_usage()
         self.server.emit("turn", phase="start", reasoningActive=False)
 
         if initial_content:
@@ -79,6 +82,14 @@ class BridgeStreamingHandler:
                 if cancel_event is not None and cancel_event.is_set():
                     finish_reason = "cancelled"
                     break
+                # Per-call usage can ride on any chunk (typically a trailing
+                # usage-only chunk with no choices), so read it before the
+                # choices guard below.
+                chunk_usage = chunk.get("usage")
+                if chunk_usage:
+                    normalized = normalize_usage(chunk_usage)
+                    for key in call_usage:
+                        call_usage[key] += normalized[key]
                 choices = chunk.get("choices", [])
                 if not choices:
                     continue
@@ -197,6 +208,7 @@ class BridgeStreamingHandler:
             "tool_calls": self.tool_calls if self.tool_calls else None,
             "finish_reason": finish_reason,
             "reasoning_content": self.current_reasoning if self.current_reasoning else None,
+            "usage": call_usage,
         }
 
     def _flush_tag_buffer(self) -> None:

@@ -7,6 +7,8 @@ available the next time you start a chat.
 """
 
 import sys
+from collections.abc import Sequence
+from typing import Any, cast
 
 import click
 
@@ -16,6 +18,7 @@ from coderAI.tools.mcp import (
     mcp_servers_path,
     save_mcp_servers,
 )
+from coderAI.ui.display import Display
 
 
 def _launcher_allowed(command: str) -> bool:
@@ -29,13 +32,13 @@ def _launcher_allowed(command: str) -> bool:
 
 @click.group(invoke_without_command=True)
 @click.pass_context
-def mcp(ctx):
+def mcp(ctx: click.Context) -> None:
     """Manage MCP (Model Context Protocol) servers."""
     if ctx.invoked_subcommand is None:
         click.echo(ctx.get_help())
 
 
-def _stdio_entry(launcher, args, display):
+def _stdio_entry(launcher: str, args: Sequence[str], display: Display) -> dict[str, Any]:
     """Build a validated stdio server entry, exiting with an error if disallowed."""
     if not _launcher_allowed(launcher):
         display.print_error(
@@ -46,13 +49,13 @@ def _stdio_entry(launcher, args, display):
     return {"command": launcher, "args": list(args)}
 
 
-def _parse_headers(headers, display):
+def _parse_headers(headers: Sequence[str], display: Display) -> dict[str, str]:
     """Parse repeated ``--header 'Key: Value'`` flags into a dict.
 
     Exits with an error on a malformed header so the user gets immediate
     feedback instead of a silently-dropped auth token.
     """
-    out = {}
+    out: dict[str, str] = {}
     for raw in headers:
         if ":" not in raw:
             display.print_error(f"Invalid --header {raw!r}; expected 'Key: Value'.")
@@ -104,7 +107,16 @@ def _parse_headers(headers, display):
     multiple=True,
     help="Header 'Key: Value' for HTTP transport (e.g. -H 'Authorization: Bearer …'). Repeatable.",
 )
-def mcp_add(name, command_parts, transport, command, args_str, sse_url, http_url, header_list):
+def mcp_add(
+    name: str,
+    command_parts: tuple[str, ...],
+    transport: str | None,
+    command: str | None,
+    args_str: str,
+    sse_url: str | None,
+    http_url: str | None,
+    header_list: tuple[str, ...],
+) -> None:
     """Add (or overwrite) an MCP server named NAME.
 
     \b
@@ -140,6 +152,7 @@ def mcp_add(name, command_parts, transport, command, args_str, sse_url, http_url
 
     header_dict = _parse_headers(header_list, display)
 
+    entry: dict[str, Any]
     if command_parts:
         # Claude-Code-style: `... --transport http -- https://host/mcp`
         effective = transport or "stdio"
@@ -194,7 +207,7 @@ def mcp_add(name, command_parts, transport, command, args_str, sse_url, http_url
 
 
 @mcp.command("list")
-def mcp_list():
+def mcp_list() -> None:
     """List configured MCP servers."""
     from coderAI.ui.display import display
 
@@ -236,7 +249,7 @@ def mcp_list():
 
 @mcp.command("remove")
 @click.argument("name")
-def mcp_remove(name):
+def mcp_remove(name: str) -> None:
     """Remove the MCP server named NAME."""
     from coderAI.ui.display import display
 
@@ -264,7 +277,12 @@ def mcp_remove(name):
     multiple=True,
     help="OAuth scope to request (repeatable). Defaults to the server's advertised scopes.",
 )
-def mcp_login(name, client_id, client_secret, scopes):
+def mcp_login(
+    name: str,
+    client_id: str | None,
+    client_secret: str | None,
+    scopes: tuple[str, ...],
+) -> None:
     """Authorize an HTTP MCP server via OAuth and save the credentials.
 
     Opens your browser to the provider's login page, then stores the access and
@@ -313,7 +331,7 @@ def mcp_login(name, client_id, client_secret, scopes):
 
 @mcp.command("logout")
 @click.argument("name")
-def mcp_logout(name):
+def mcp_logout(name: str) -> None:
     """Revoke and delete saved OAuth credentials for an MCP server."""
     from coderAI.ui.display import display
     from coderAI.tools.mcp_oauth import logout
@@ -324,7 +342,7 @@ def mcp_logout(name):
         display.print_info(f"No saved credentials for '{name}'.")
 
 
-async def _connect_and_list(name, entry, kind):
+async def _connect_and_list(name: str, entry: dict[str, Any], kind: str) -> dict[str, Any]:
     """Connect transiently to a configured server, list resources/prompts, disconnect."""
     from coderAI.tools.mcp import mcp_client
 
@@ -349,18 +367,18 @@ async def _connect_and_list(name, entry, kind):
         await mcp_client.disconnect(name)
 
 
-def _require_server(name, display):
+def _require_server(name: str, display: Display) -> dict[str, Any]:
     """Return the configured entry for NAME or exit with an error."""
     entry = load_mcp_servers().get("mcpServers", {}).get(name)
     if not entry:
         display.print_error(f"No MCP server named '{name}'. Add it first with `mcp add`.")
         sys.exit(1)
-    return entry
+    return cast("dict[str, Any]", entry)
 
 
 @mcp.command("resources")
 @click.argument("name")
-def mcp_resources(name):
+def mcp_resources(name: str) -> None:
     """List resources exposed by the MCP server named NAME."""
     import asyncio
 
@@ -390,7 +408,7 @@ def mcp_resources(name):
 
 @mcp.command("prompts")
 @click.argument("name")
-def mcp_prompts(name):
+def mcp_prompts(name: str) -> None:
     """List prompt templates exposed by the MCP server named NAME."""
     import asyncio
 

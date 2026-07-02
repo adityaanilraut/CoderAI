@@ -124,5 +124,8 @@ class GroqProvider(LLMProvider):
             if usage:
                 self.total_input_tokens += usage.get("prompt_tokens", 0)
                 self.total_output_tokens += usage.get("completion_tokens", 0)
+                # Surface it at the top level so the streaming handler (which
+                # only reads ``chunk["usage"]``) can attribute per-call usage.
+                chunk_data["usage"] = usage
 
             yield chunk_data

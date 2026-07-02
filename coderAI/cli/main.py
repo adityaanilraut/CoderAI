@@ -39,7 +39,14 @@ _REASONING_CHOICES = ("high", "medium", "low", "none")
     help="Resume the most recently updated session",
 )
 @click.pass_context
-def cli(ctx, version, verbose, model, resume, resume_latest):
+def cli(
+    ctx: click.Context,
+    version: bool,
+    verbose: bool,
+    model: str | None,
+    resume: str | None,
+    resume_latest: bool,
+) -> None:
     """CoderAI - Intelligent Coding Agent CLI Tool.
 
     Run 'coderAI chat' for interactive mode.
@@ -88,26 +95,33 @@ def cli(ctx, version, verbose, model, resume, resume_latest):
     help="Persona to load at startup (filename stem in .coderAI/agents/, e.g. 'code-reviewer'). "
     "Personas can also be switched mid-session with /persona <name>.",
 )
-def chat(model, resume, resume_latest, auto_approve, persona):
+def chat(
+    model: str | None,
+    resume: str | None,
+    resume_latest: bool,
+    auto_approve: bool,
+    persona: str | None,
+) -> None:
     """Start an interactive chat session (Textual TUI)."""
     from coderAI.tui import run_chat_app
     from coderAI.ui.display import display
+
+    from .bootstrap import BootstrapError, resolve_resume_id
 
     key_error = missing_api_key_message()
     if key_error:
         display.print_error(key_error)
         sys.exit(1)
 
-    if resume_latest:
-        if resume:
-            click.echo("Pass either --resume or --continue, not both.", err=True)
-            sys.exit(2)
-        sid = history_manager.get_latest_session_id()
-        if not sid:
-            click.echo("No previous sessions found.", err=True)
-            sys.exit(1)
-        resume = sid
-        click.echo(f"Resuming session {sid}")
+    # Resolve --resume/--continue up front so a bad combination is reported
+    # cleanly before the Textual UI launches (shared with the headless path).
+    try:
+        resume = resolve_resume_id(resume, resume_latest)
+    except BootstrapError as e:
+        click.echo(e.message, err=True)
+        sys.exit(e.exit_code)
+    if resume_latest and resume:
+        click.echo(f"Resuming session {resume}")
 
     if auto_approve:
         display.print_warning(
@@ -117,10 +131,12 @@ def chat(model, resume, resume_latest, auto_approve, persona):
         )
 
     try:
+        # ``resume`` is already resolved above (``--continue`` → concrete id), so
+        # continue_=False prevents the session bootstrap from resolving it again.
         run_chat_app(
             model=model,
             resume=resume,
-            continue_=resume_latest,
+            continue_=False,
             auto_approve=auto_approve,
             persona=persona,
         )
@@ -130,7 +146,7 @@ def chat(model, resume, resume_latest, auto_approve, persona):
 
 @cli.command()
 @click.option("--model", "-m", help="Model to use")
-def info(model):
+def info(model: str | None) -> None:
     """Show information about the agent and model."""
     from coderAI.core.agent import Agent
     from coderAI.ui.display import display
@@ -161,30 +177,21 @@ def info(model):
 
 
 @cli.command()
-def models():
+def models() -> None:
     """List available models and providers."""
-    from coderAI.llm.anthropic import MODEL_ALIASES as ANTHROPIC_ALIASES
-    from coderAI.llm.deepseek import DeepSeekProvider
-    from coderAI.llm.groq import GroqProvider
-    from coderAI.llm.openai import OpenAIProvider
-    from coderAI.llm.gemini import GeminiProvider
+    from coderAI.llm.factory import get_models_by_provider
     from coderAI.ui.display import display
 
     display.print_header("Available Models and Providers")
 
-    def _print_group(title: str, names, requires: str) -> None:
+    def _print_group(title: str, names: list[str], requires: str) -> None:
         display.print(f"\n[bold cyan]{title}[/bold cyan]")
         for name in names:
             display.print(f"  • [yellow]{name}[/yellow]")
         display.print(f"\n  [dim]Requires: {requires}[/dim]")
 
-    _print_group("OpenAI Provider", OpenAIProvider.SUPPORTED_MODELS.keys(), "OpenAI API key")
-    _print_group("Anthropic Provider", ANTHROPIC_ALIASES.keys(), "Anthropic API key")
-    _print_group("Groq Provider", GroqProvider.SUPPORTED_MODELS.keys(), "Groq API key")
-    _print_group("DeepSeek Provider", DeepSeekProvider.SUPPORTED_MODELS.keys(), "DeepSeek API key")
-    _print_group("Gemini Provider", GeminiProvider.SUPPORTED_MODELS.keys(), "Gemini API key")
-    _print_group("LM Studio Provider", ["lmstudio"], "LM Studio running locally")
-    _print_group("Ollama Provider", ["ollama"], "Ollama running locally")
+    for title, names, requires in get_models_by_provider():
+        _print_group(title, names, requires)
 
     config = config_manager.load()
     display.print(f"\n[bold]Current default:[/bold] [yellow]{config.default_model}[/yellow]")
@@ -193,7 +200,7 @@ def models():
 
 @cli.command()
 @click.argument("model_name")
-def set_model(model_name):
+def set_model(model_name: str) -> None:
     """Set default model for new sessions."""
     from coderAI.ui.display import display
 
@@ -208,7 +215,7 @@ def set_model(model_name):
 
 
 @cli.command()
-def cost():
+def cost() -> None:
     """Show API cost tracking and pricing info."""
     from coderAI.system.cost import MODEL_PRICING, CostTracker
     from coderAI.ui.display import display
@@ -237,7 +244,7 @@ def cost():
 
 
 @cli.command()
-def status():
+def status() -> None:
     """Show system status and diagnostics."""
     from coderAI.ui.display import display
 
@@ -282,7 +289,7 @@ def status():
 
 
 @cli.command()
-def doctor():
+def doctor() -> None:
     """Diagnose a CoderAI install — config, keys, cache, binary."""
     import os
     import platform
@@ -420,6 +427,6 @@ cli.add_command(run_cmd)
 cli.add_command(mcp_cmd)
 
 
-def main():
+def main() -> None:
     """Main entry point."""
     cli()

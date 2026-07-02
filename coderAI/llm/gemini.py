@@ -164,15 +164,24 @@ class GeminiProvider(LLMProvider):
             yield chunk_data
 
         if not had_usage:
-            if accumulated_content:
-                self.total_output_tokens += self.count_tokens(accumulated_content)
+            est_out = self.count_tokens(accumulated_content) if accumulated_content else 0
+            est_in = 0
             if not self.total_input_tokens:
                 input_text = " ".join(
                     m.get("content", "") or ""
                     for m in messages
                     if isinstance(m.get("content"), str)
                 )
-                self.total_input_tokens += self.count_tokens(input_text)
+                est_in = self.count_tokens(input_text)
+            self.total_output_tokens += est_out
+            self.total_input_tokens += est_in
+            # No usage chunk arrived from the API, so surface the estimate to
+            # the streaming handler as a trailing usage-only chunk.
+            if est_in or est_out:
+                yield {
+                    "choices": [],
+                    "usage": {"prompt_tokens": est_in, "completion_tokens": est_out},
+                }
 
     def clean_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Gemini round-trips reasoning_content but rejects tool-result images."""

@@ -49,30 +49,25 @@ def _build_agent(
     resume_latest: bool,
     max_iterations: Optional[int],
 ) -> Any:
-    """Construct and prepare an Agent for a one-shot run (no UIBridge)."""
-    from coderAI.core.agent import Agent
-    from coderAI.system.history import history_manager
+    """Construct and prepare an Agent for a one-shot run (no UIBridge).
 
-    if resume_latest and not resume:
-        resume = history_manager.get_latest_session_id()
-        if not resume:
-            raise click.ClickException("No previous sessions found to continue.")
+    A one-shot run has no TTY to recover from a bad resume, so a resume that
+    can't be loaded is a hard error (``resume_fresh_on_failure=False``).
+    """
+    from coderAI.cli.bootstrap import BootstrapError, bootstrap_agent
 
-    agent = Agent(
-        model=model,
-        streaming=False,
-        auto_approve=auto_approve,
-        persona_name=persona,
-    )
-
-    if resume:
-        session = agent.load_session(resume)
-        if session is None:
-            raise click.ClickException(f"Could not load session {resume}.")
-    else:
-        agent.create_session()
-
-    agent._configure_delegate_tool_context()
+    try:
+        agent = bootstrap_agent(
+            model=model,
+            resume_id=resume,
+            continue_latest=resume_latest,
+            streaming=False,
+            auto_approve=auto_approve,
+            persona=persona,
+            resume_fresh_on_failure=False,
+        )
+    except BootstrapError as e:
+        raise click.ClickException(e.message) from e
 
     if max_iterations is not None:
         agent.config.max_iterations = max_iterations

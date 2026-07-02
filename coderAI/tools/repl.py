@@ -47,6 +47,8 @@ class PythonREPLTool(Tool):
     )
     parameters_model = PythonREPLParams
     requires_confirmation = True
+    # Arbitrary code execution — no blanket allow, and no safe scope to bind to.
+    high_risk_no_blanket = True
 
     async def execute(  # type: ignore[override]
         self,
@@ -82,10 +84,7 @@ class PythonREPLTool(Tool):
                 # works out of the box on Windows, where a bare ``python3`` is
                 # often missing or a non-functional Store stub.
                 python_cmd = (
-                    sys.executable
-                    or shutil.which("python3")
-                    or shutil.which("python")
-                    or "python3"
+                    sys.executable or shutil.which("python3") or shutil.which("python") or "python3"
                 )
 
                 # ``python_repl`` runs unsandboxed model-authored code. Scrub

@@ -55,16 +55,16 @@ async def test_send_message_is_serialized_per_server() -> None:
 
 
 @pytest.mark.asyncio
-async def test_set_model_aligns_provider_usage_counters() -> None:
+async def test_set_model_leaves_agent_totals_and_skips_usage_sync() -> None:
+    """Switching models must NOT sync usage into the fresh provider.
+
+    The Agent owns the running token totals and the loop attributes each call's
+    usage from the response, so the new provider keeps its zeroed counters and
+    the agent's totals are untouched by the switch.
+    """
+
     def _make_provider() -> SimpleNamespace:
-        ns = SimpleNamespace(total_input_tokens=0, total_output_tokens=0)
-
-        def _set(*, input_tokens=0, output_tokens=0, **_kw):
-            ns.total_input_tokens = max(0, int(input_tokens or 0))
-            ns.total_output_tokens = max(0, int(output_tokens or 0))
-
-        ns.set_cumulative_usage = _set
-        return ns
+        return SimpleNamespace(total_input_tokens=0, total_output_tokens=0)
 
     old_provider = _make_provider()
     old_provider.total_input_tokens = 3
@@ -96,8 +96,13 @@ async def test_set_model_aligns_provider_usage_counters() -> None:
 
     assert agent.model == "new-model"
     assert agent.provider is new_provider
-    assert new_provider.total_input_tokens == 11
-    assert new_provider.total_output_tokens == 7
+    # Agent totals are the source of truth and are left intact by the switch.
+    assert agent.total_prompt_tokens == 11
+    assert agent.total_completion_tokens == 7
+    # The new provider keeps its own zeroed counters (no sync-from-agent).
+    assert new_provider.total_input_tokens == 0
+    assert new_provider.total_output_tokens == 0
+    assert not hasattr(new_provider, "set_cumulative_usage")
     agent._configure_delegate_tool_context.assert_called_once()
 
 
@@ -219,11 +224,11 @@ def test_reset_session_accounting_zeros_counters() -> None:
 
     provider = SimpleNamespace(total_input_tokens=21, total_output_tokens=8)
 
-    def _set(*, input_tokens=0, output_tokens=0, **_kw):
-        provider.total_input_tokens = max(0, int(input_tokens or 0))
-        provider.total_output_tokens = max(0, int(output_tokens or 0))
+    def _reset() -> None:
+        provider.total_input_tokens = 0
+        provider.total_output_tokens = 0
 
-    provider.set_cumulative_usage = _set
+    provider.reset_usage = _reset
     # Build an ``Agent``-shaped namespace without invoking __init__ so the
     # test doesn't require real provider config.
     agent = Agent.__new__(Agent)
@@ -233,6 +238,8 @@ def test_reset_session_accounting_zeros_counters() -> None:
     agent.total_prompt_tokens = 21
     agent.total_completion_tokens = 8
     agent.total_tokens = 29
+    agent.total_cache_creation_tokens = 5
+    agent.total_cache_read_tokens = 7
     agent._hooks_approved = {"some-cmd": True}
 
     Agent._reset_session_accounting(agent)
@@ -240,6 +247,8 @@ def test_reset_session_accounting_zeros_counters() -> None:
     assert agent.total_prompt_tokens == 0
     assert agent.total_completion_tokens == 0
     assert agent.total_tokens == 0
+    assert agent.total_cache_creation_tokens == 0
+    assert agent.total_cache_read_tokens == 0
     assert provider.total_input_tokens == 0
     assert provider.total_output_tokens == 0
     assert agent.cost_tracker.total_cost_usd == 0.0

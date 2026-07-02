@@ -38,6 +38,67 @@ class TestDefaultServices:
 
         assert ToolServices().events is event_emitter
 
+    def test_default_history_is_process_singleton(self):
+        from coderAI.system.history import history_manager
+
+        assert ToolServices().history is history_manager
+
+    def test_default_mcp_client_is_module_singleton(self):
+        # Phase 4.4: the container re-reads the module singleton rather than
+        # building a fresh client, so core and the tool router share one client.
+        from coderAI.tools.mcp import mcp_client
+
+        assert ToolServices().mcp_client is mcp_client
+
+
+class TestExecutorSeesScopedEmitter:
+    """Phase 4.4: core resolves the emitter via ``get_services().events`` so a
+    ``services_scope`` override is observed by the tool executor."""
+
+    def test_scope_swaps_emitter_seen_by_executor(self):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock
+
+        from coderAI.core.tool_executor import ToolExecutor
+        from coderAI.system.history import Session
+        from coderAI.tools.base import ToolRegistry
+
+        registry = ToolRegistry()
+        session = Session(session_id="session_events_scope")
+        agent = SimpleNamespace(
+            auto_approve=True,
+            ipc_server=None,
+            tools=registry,
+            tracker_info=None,
+            session=session,
+            context_controller=SimpleNamespace(summarize_tool_result=lambda r: r),
+            _sync_tracker=MagicMock(),
+            _tool_approval_allowlist=set(),
+            config=None,
+        )
+        executor = ToolExecutor(agent)
+        tc = {
+            "id": "t1",
+            "type": "function",
+            "function": {"name": "nope", "arguments": "{}"},
+        }
+        session.add_message("assistant", None, tool_calls=[tc])
+
+        fake_events = MagicMock()
+        with services_scope(events=fake_events):
+            asyncio.run(
+                executor.orchestrate_tool_calls(
+                    tool_calls=[tc],
+                    messages=session.get_messages_for_api(),
+                    user_message="go",
+                    hooks_data=None,
+                    hooks_manager=SimpleNamespace(run_hooks=AsyncMock(return_value=[])),
+                )
+            )
+
+        emitted = [c.args[0] for c in fake_events.emit.call_args_list if c.args]
+        assert "tool_call" in emitted
+
 
 class TestServicesScope:
     def test_scope_isolates_stores(self):

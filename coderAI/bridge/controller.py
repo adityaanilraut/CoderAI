@@ -81,6 +81,7 @@ from coderAI.bridge.tool_metadata import (
     strip_rich_markup,
     tool_category,
     tool_risk,
+    tool_risk_factors,
 )
 
 logger = logging.getLogger(__name__)
@@ -226,6 +227,7 @@ class UIBridge:
             "name": tool_name,
             "args": preview_args_for_approval(arguments),
             "risk": tool_risk(tool_name, getattr(self.agent, "tools", None)),
+            "riskFactors": tool_risk_factors(tool_name, getattr(self.agent, "tools", None)),
             "requestedBy": requested_by,
             "parentId": parent_id,
             "iteration": iteration,

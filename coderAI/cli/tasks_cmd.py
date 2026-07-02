@@ -8,14 +8,14 @@ import click
 
 @click.group(invoke_without_command=True)
 @click.pass_context
-def tasks(ctx):
+def tasks(ctx: click.Context) -> None:
     """Manage project tasks and TODOs."""
     if ctx.invoked_subcommand is None:
         click.echo(ctx.get_help())
 
 
 @tasks.command("list")
-def tasks_list():
+def tasks_list() -> None:
     """List all tasks."""
     from coderAI.tools.tasks import ManageTasksTool
     from coderAI.ui.display import display

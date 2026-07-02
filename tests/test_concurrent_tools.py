@@ -37,7 +37,7 @@ def _make_registry(tool_map):
     def _get(name):
         return tool_map.get(name)
 
-    async def _execute(name, confirmation_callback=None, **kwargs):
+    async def _execute(name, **kwargs):
         tool = tool_map.get(name)
         if tool is None:
             raise ValueError(f"Tool not found: {name}")
@@ -146,6 +146,7 @@ class TestBatchMutationSerialization:
             is_read_only=False,
             requires_confirmation=False,
             max_parallel_invocations=0,
+            batch_serialize_by_path=True,
             execute=AsyncMock(return_value={"success": True}),
         )
         t_replace = SimpleNamespace(
@@ -153,6 +154,7 @@ class TestBatchMutationSerialization:
             is_read_only=False,
             requires_confirmation=False,
             max_parallel_invocations=0,
+            batch_serialize_by_path=True,
             execute=AsyncMock(return_value={"success": True}),
         )
         registry = _make_registry({"write_file": t_write, "search_replace": t_replace})
@@ -178,6 +180,7 @@ class TestBatchMutationSerialization:
             is_read_only=False,
             requires_confirmation=False,
             max_parallel_invocations=0,
+            batch_serialize_by_path=True,
             execute=AsyncMock(return_value={"success": True}),
         )
         registry = _make_registry({"write_file": t})

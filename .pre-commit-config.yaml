@@ -1,0 +1,25 @@
+# Pre-commit hooks mirroring the CI gate (.github/workflows/ci.yml / `make check`).
+# One-time setup:  pip install pre-commit && pre-commit install
+# Run against everything:  pre-commit run --all-files
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.11
+    hooks:
+      # Lint (check-only, matching `make lint` — no autofix so it fails like CI).
+      - id: ruff
+        files: ^coderAI/
+      # Format check + apply.
+      - id: ruff-format
+        files: ^coderAI/
+
+  # mypy runs over the whole package because the per-module strict config needs
+  # the full import graph, so it ignores the changed-file list and runs the same
+  # command as CI (`make typecheck`).
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy (strict per-module)
+        entry: python -m mypy coderAI/
+        language: system
+        types: [python]
+        pass_filenames: false

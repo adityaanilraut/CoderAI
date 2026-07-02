@@ -7,7 +7,32 @@ import pytest
 from coderAI.core.agent_loop import ExecutionLoop
 from coderAI.core.agent_tracker import AgentInfo, AgentStatus
 from coderAI.system.history import Session
-from coderAI.core.tool_executor import DOOM_LOOP_HARD_THRESHOLD, ToolExecutor
+from coderAI.core.tool_executor import (
+    DOOM_LOOP_HARD_THRESHOLD,
+    BatchStatus,
+    ToolBatchOutcome,
+    ToolExecutor,
+)
+
+_UNSET = object()
+
+
+def _make_tracker_update(info):
+    """A stand-in for ``Agent.tracker_update`` bound to a real ``AgentInfo``.
+
+    The executor mutates tracker fields through ``agent.tracker_update`` (Phase
+    4.1); SimpleNamespace mock agents need a real one that actually writes.
+    """
+
+    def _update(*, status=_UNSET, current_tool=_UNSET, current_task=_UNSET, sync=True):
+        if status is not _UNSET:
+            info.status = status
+        if current_tool is not _UNSET:
+            info.current_tool = current_tool
+        if current_task is not _UNSET:
+            info.current_task = current_task
+
+    return _update
 
 
 @pytest.mark.asyncio
@@ -64,6 +89,7 @@ async def test_confirmation_sets_waiting_for_user_status() -> None:
         ipc_server=FakeIPC(),
         tracker_info=info,
         _sync_tracker=MagicMock(),
+        tracker_update=_make_tracker_update(info),
         config=SimpleNamespace(approval_timeout_seconds=300),
     )
     executor = ToolExecutor(agent)
@@ -120,7 +146,7 @@ async def test_all_failed_tool_calls_request_retry() -> None:
     executor = ToolExecutor(agent)
     messages = session.get_messages_for_api()
 
-    did_error, fatal_res = await executor.orchestrate_tool_calls(
+    outcome = await executor.orchestrate_tool_calls(
         tool_calls=session.messages[-1].tool_calls,
         messages=messages,
         user_message="inspect the file",
@@ -128,8 +154,7 @@ async def test_all_failed_tool_calls_request_retry() -> None:
         hooks_manager=hooks_manager,
     )
 
-    assert did_error is True
-    assert fatal_res == {"retry": True}
+    assert outcome.status is BatchStatus.RETRY
     assert session.messages[-1].role == "tool"
     assert '"success": false' in (session.messages[-1].content or "").lower()
 
@@ -207,7 +232,7 @@ async def test_pre_hook_errors_block_tool_execution() -> None:
 @pytest.mark.asyncio
 async def test_orchestrate_signals_doom_loop_after_hard_threshold() -> None:
     """Same (tool, args) called >= DOOM_LOOP_HARD_THRESHOLD times must
-    surface the _doom_loop_stop signal so the agent loop can terminate.
+    surface a BatchStatus.DOOM_LOOP outcome so the agent loop can terminate.
 
     Real-world repro: gpt-5.4-mini called `plan action=show` 14+ times in
     one turn. The plan tool isn't is_read_only, so the cached short-circuit
@@ -242,8 +267,7 @@ async def test_orchestrate_signals_doom_loop_after_hard_threshold() -> None:
     hooks_manager = SimpleNamespace(run_hooks=AsyncMock(return_value=[]))
     executor = ToolExecutor(agent)
 
-    last_did_error = False
-    last_fatal_res = None
+    last_outcome = None
     for i in range(DOOM_LOOP_HARD_THRESHOLD):
         tool_calls = [
             {
@@ -253,7 +277,7 @@ async def test_orchestrate_signals_doom_loop_after_hard_threshold() -> None:
             }
         ]
         session.add_message("assistant", None, tool_calls=tool_calls)
-        last_did_error, last_fatal_res = await executor.orchestrate_tool_calls(
+        last_outcome = await executor.orchestrate_tool_calls(
             tool_calls=tool_calls,
             messages=session.get_messages_for_api(),
             user_message="complete it",
@@ -261,11 +285,10 @@ async def test_orchestrate_signals_doom_loop_after_hard_threshold() -> None:
             hooks_manager=hooks_manager,
         )
 
-    assert last_did_error is True
-    assert isinstance(last_fatal_res, dict)
-    assert last_fatal_res.get("_doom_loop_stop") is True
-    assert last_fatal_res["tool_name"] == "plan"
-    assert last_fatal_res["count"] == DOOM_LOOP_HARD_THRESHOLD
+    assert last_outcome is not None
+    assert last_outcome.status is BatchStatus.DOOM_LOOP
+    assert last_outcome.doom_tool == "plan"
+    assert last_outcome.doom_count == DOOM_LOOP_HARD_THRESHOLD
 
 
 @pytest.mark.asyncio
@@ -296,7 +319,7 @@ async def test_cached_read_only_repeats_trip_doom_loop_hard_threshold() -> None:
     hooks_manager = SimpleNamespace(run_hooks=AsyncMock(return_value=[]))
     executor = ToolExecutor(agent)
 
-    last_did_error, last_fatal_res = False, None
+    last_outcome = None
     for i in range(DOOM_LOOP_HARD_THRESHOLD):
         tool_calls = [
             {
@@ -306,7 +329,7 @@ async def test_cached_read_only_repeats_trip_doom_loop_hard_threshold() -> None:
             }
         ]
         session.add_message("assistant", None, tool_calls=tool_calls)
-        last_did_error, last_fatal_res = await executor.orchestrate_tool_calls(
+        last_outcome = await executor.orchestrate_tool_calls(
             tool_calls=tool_calls,
             messages=session.get_messages_for_api(),
             user_message="read it",
@@ -315,10 +338,9 @@ async def test_cached_read_only_repeats_trip_doom_loop_hard_threshold() -> None:
         )
 
     assert registry.execute.await_count == 2
-    assert last_did_error is True
-    assert isinstance(last_fatal_res, dict)
-    assert last_fatal_res.get("_doom_loop_stop") is True
-    assert last_fatal_res["count"] == DOOM_LOOP_HARD_THRESHOLD
+    assert last_outcome is not None
+    assert last_outcome.status is BatchStatus.DOOM_LOOP
+    assert last_outcome.doom_count == DOOM_LOOP_HARD_THRESHOLD
 
 
 @pytest.mark.asyncio
@@ -356,7 +378,7 @@ async def test_recoverable_error_repairs_mid_turn_unpaired_tool_calls() -> None:
 
 
 def test_doom_loop_terminates_execution_loop_with_explanatory_message() -> None:
-    """End-to-end: when the executor signals _doom_loop_stop, ExecutionLoop
+    """End-to-end: when the executor returns BatchStatus.DOOM_LOOP, ExecutionLoop
     must exit immediately (not run to max_iterations) and surface a message
     that names the offending tool."""
     with patch("coderAI.core.agent.config_manager") as cm:
@@ -402,23 +424,22 @@ def test_doom_loop_terminates_execution_loop_with_explanatory_message() -> None:
         user_message,
         hooks_data,
         hooks_manager,
+        turn=None,
     ):
         nonlocal call_count
         call_count += 1
         if call_count >= DOOM_LOOP_HARD_THRESHOLD:
-            return True, {
-                "_doom_loop_stop": True,
-                "tool_name": "plan",
-                "count": call_count,
-            }
-        return False, None
+            return ToolBatchOutcome(
+                BatchStatus.DOOM_LOOP, doom_tool="plan", doom_count=call_count
+            )
+        return ToolBatchOutcome(BatchStatus.OK)
 
     loop.tool_executor.orchestrate_tool_calls = AsyncMock(side_effect=fake_orchestrate)
 
     result = asyncio.run(loop.run("complete it"))
 
     assert call_count == DOOM_LOOP_HARD_THRESHOLD, (
-        "loop should exit immediately on _doom_loop_stop, not retry"
+        "loop should exit immediately on doom-loop, not retry"
     )
     assert "plan" in result["content"]
     assert "looping" in result["content"].lower() or "loop" in result["content"].lower()
@@ -461,7 +482,7 @@ async def test_denied_calls_do_not_count_toward_doom_loop_hard_threshold() -> No
     executor = ToolExecutor(agent)
     executor._confirmation_callback = AsyncMock(return_value=False)
 
-    last_did_error, last_fatal_res = False, None
+    last_outcome = None
     for i in range(DOOM_LOOP_HARD_THRESHOLD + 2):
         tool_calls = [
             {
@@ -474,7 +495,7 @@ async def test_denied_calls_do_not_count_toward_doom_loop_hard_threshold() -> No
             }
         ]
         session.add_message("assistant", None, tool_calls=tool_calls)
-        last_did_error, last_fatal_res = await executor.orchestrate_tool_calls(
+        last_outcome = await executor.orchestrate_tool_calls(
             tool_calls=tool_calls,
             messages=session.get_messages_for_api(),
             user_message="write the file",
@@ -482,11 +503,10 @@ async def test_denied_calls_do_not_count_toward_doom_loop_hard_threshold() -> No
             hooks_manager=hooks_manager,
         )
 
-    # All calls denied → executor returns retry-with-denial, never doom_loop_stop.
-    assert last_did_error is True
-    assert isinstance(last_fatal_res, dict)
-    assert last_fatal_res.get("_doom_loop_stop") is not True
-    assert last_fatal_res.get("_denied") is True
+    # All calls denied → executor returns DENIED, never DOOM_LOOP.
+    assert last_outcome is not None
+    assert last_outcome.status is BatchStatus.DENIED
+    assert "write_file" in last_outcome.denied_tools
 
 
 @pytest.mark.asyncio
@@ -526,7 +546,7 @@ async def test_in_batch_duplicate_calls_do_not_count_toward_doom_loop() -> None:
     ]
     session.add_message("assistant", None, tool_calls=tool_calls)
 
-    did_error, fatal_res = await executor.orchestrate_tool_calls(
+    outcome = await executor.orchestrate_tool_calls(
         tool_calls=tool_calls,
         messages=session.get_messages_for_api(),
         user_message="complete it",
@@ -534,8 +554,7 @@ async def test_in_batch_duplicate_calls_do_not_count_toward_doom_loop() -> None:
         hooks_manager=hooks_manager,
     )
 
-    assert did_error is False
-    assert fatal_res is None
+    assert outcome.status is BatchStatus.OK
     assert registry.execute.await_count == 1
 
 
@@ -583,6 +602,7 @@ def test_failed_tool_iterations_accumulate_in_execution_loop() -> None:
         user_message,
         hooks_data,
         hooks_manager,
+        turn=None,
     ):
         nonlocal call_count
         call_count += 1
@@ -590,7 +610,7 @@ def test_failed_tool_iterations_accumulate_in_execution_loop() -> None:
         # (consecutive_tool_errors accumulates across iterations), this
         # will terminate after MAX_CONSECUTIVE_ERRORS attempts rather
         # than running to max_iterations.
-        return True, {"retry": True}
+        return ToolBatchOutcome(BatchStatus.RETRY)
 
     loop.tool_executor.orchestrate_tool_calls = AsyncMock(side_effect=fake_orchestrate)
 
@@ -602,3 +622,81 @@ def test_failed_tool_iterations_accumulate_in_execution_loop() -> None:
 
     assert "consecutive errors" in result["content"]
     assert call_count == MAX_CONSECUTIVE_ERRORS
+
+
+def _build_llm_only_agent() -> "Any":
+    """Agent with a stubbed provider, for driving ExecutionLoop end-to-end."""
+    with patch("coderAI.core.agent.config_manager") as cm:
+        from coderAI.system.config import Config
+
+        cfg = Config(max_iterations=50, budget_limit=0, save_history=False)
+        cm.load.return_value = cfg
+        cm.load_project_config.return_value = cfg
+        from coderAI.core.agent import Agent
+
+        mock_provider = MagicMock()
+        mock_provider.supports_tools.return_value = False
+        mock_provider.count_tokens = lambda text: max(1, len(str(text)) // 4)
+        mock_provider.get_model_info.return_value = {
+            "total_input_tokens": 0,
+            "total_output_tokens": 0,
+            "total_tokens": 0,
+        }
+        with patch.object(Agent, "_create_provider", return_value=mock_provider):
+            agent = Agent(model="gpt-5.4-mini", streaming=False)
+
+    agent.save_session = MagicMock()
+    return agent
+
+
+def test_in_batch_and_cross_iteration_doom_share_message_format() -> None:
+    """Both doom-loop paths (Phase 2.2) surface the *same* stop message.
+
+    The in-batch guard (loop-side, before the executor runs) and the
+    cross-iteration guard (executor-side, via ``BatchStatus.DOOM_LOOP``) both
+    route through ``loop_guard.doom_message`` now, so a given (tool, count)
+    produces byte-identical user-facing text regardless of which path fired.
+    """
+    from coderAI.core.loop_guard import doom_message
+
+    expected = doom_message("read_file", 3)
+
+    # In-batch: the model emits the same call 3× within ONE response. The guard
+    # fires before the executor is ever consulted.
+    loop_a = ExecutionLoop(_build_llm_only_agent())
+    dup_calls = [
+        {
+            "id": f"c{i}",
+            "type": "function",
+            "function": {"name": "read_file", "arguments": '{"path":"x"}'},
+        }
+        for i in range(3)
+    ]
+    loop_a._call_llm_with_retry = AsyncMock(
+        return_value={"content": None, "tool_calls": dup_calls}
+    )
+    in_batch_content = asyncio.run(loop_a.run("go"))["content"]
+
+    # Cross-iteration: the executor reports a DOOM_LOOP outcome for one call.
+    loop_b = ExecutionLoop(_build_llm_only_agent())
+    loop_b._call_llm_with_retry = AsyncMock(
+        return_value={
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "c",
+                    "type": "function",
+                    "function": {"name": "read_file", "arguments": '{"path":"x"}'},
+                }
+            ],
+        }
+    )
+
+    async def fake_cross(*_a, **_kw):
+        return ToolBatchOutcome(BatchStatus.DOOM_LOOP, doom_tool="read_file", doom_count=3)
+
+    loop_b.tool_executor.orchestrate_tool_calls = AsyncMock(side_effect=fake_cross)
+    cross_content = asyncio.run(loop_b.run("go"))["content"]
+
+    assert in_batch_content == expected
+    assert cross_content == expected

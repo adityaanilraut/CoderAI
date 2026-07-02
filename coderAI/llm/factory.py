@@ -1,6 +1,10 @@
-"""LLM Provider Factory."""
+"""LLM Provider Factory.
 
-from typing import Any, Set
+Also the single seam for model-alias resolution and model listings so callers
+outside ``coderAI.llm`` never import a specific provider module.
+"""
+
+from typing import Any, Dict, List, Set, Tuple
 from coderAI.llm.openai import OpenAIProvider
 from coderAI.llm.anthropic import AnthropicProvider, MODEL_ALIASES as ANTHROPIC_MODEL_ALIASES
 from coderAI.llm.lmstudio import LMStudioProvider
@@ -8,6 +12,22 @@ from coderAI.llm.ollama import OllamaProvider
 from coderAI.llm.groq import GroqProvider
 from coderAI.llm.deepseek import DeepSeekProvider
 from coderAI.llm.gemini import GeminiProvider
+
+# Aggregated friendly-name → canonical-model-ID map, collected from the provider
+# modules that expose one (only Anthropic today). Adding a provider with its own
+# alias table is a one-line merge here.
+_MODEL_ALIASES: Dict[str, str] = {**ANTHROPIC_MODEL_ALIASES}
+
+
+def resolve_model_alias(name: str) -> str:
+    """Resolve a friendly model alias to its canonical ID.
+
+    Unknown names (and non-strings) pass through unchanged so callers can hand
+    off arbitrary user input safely.
+    """
+    if not isinstance(name, str):
+        return name
+    return _MODEL_ALIASES.get(name.lower(), name)
 
 
 def get_all_model_ids() -> Set[str]:
@@ -20,6 +40,23 @@ def get_all_model_ids() -> Set[str]:
         | set(GeminiProvider.SUPPORTED_MODELS.keys())
         | {"lmstudio", "ollama"}
     )
+
+
+def get_models_by_provider() -> List[Tuple[str, List[str], str]]:
+    """Return ``(provider label, model names, requirement)`` groups for display.
+
+    Centralises the per-provider model listings so CLI/UI code doesn't import
+    individual provider modules just to enumerate their models.
+    """
+    return [
+        ("OpenAI Provider", list(OpenAIProvider.SUPPORTED_MODELS.keys()), "OpenAI API key"),
+        ("Anthropic Provider", list(ANTHROPIC_MODEL_ALIASES.keys()), "Anthropic API key"),
+        ("Groq Provider", list(GroqProvider.SUPPORTED_MODELS.keys()), "Groq API key"),
+        ("DeepSeek Provider", list(DeepSeekProvider.SUPPORTED_MODELS.keys()), "DeepSeek API key"),
+        ("Gemini Provider", list(GeminiProvider.SUPPORTED_MODELS.keys()), "Gemini API key"),
+        ("LM Studio Provider", ["lmstudio"], "LM Studio running locally"),
+        ("Ollama Provider", ["ollama"], "Ollama running locally"),
+    ]
 
 
 def create_provider(model: str, config: Any) -> Any:

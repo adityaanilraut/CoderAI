@@ -95,6 +95,8 @@ class WebSearchTool(Tool):
     )
     is_read_only = True
     is_egress = True
+    # Removed from the main agent when web_tools_in_main is False (Phase 4.2).
+    network_gate = True
     result_provenance = Provenance.UNTRUSTED_EXTERNAL
     parameters_model = WebSearchParams
 
@@ -317,6 +319,8 @@ class ReadURLTool(Tool):
     )
     is_read_only = True
     is_egress = True
+    # Removed from the main agent when web_tools_in_main is False (Phase 4.2).
+    network_gate = True
     result_provenance = Provenance.UNTRUSTED_EXTERNAL
     parameters_model = ReadURLParams
 
@@ -430,6 +434,8 @@ class DownloadFileTool(Tool):
     )
     is_read_only = False
     is_egress = True
+    # Removed from the main agent when web_tools_in_main is False (Phase 4.2).
+    network_gate = True
     requires_confirmation = True
     result_provenance = Provenance.UNTRUSTED_EXTERNAL
     parameters_model = DownloadFileParams
@@ -525,6 +531,8 @@ class HTTPRequestTool(Tool):
     )
     is_read_only = False
     is_egress = True
+    # Removed from the main agent when web_tools_in_main is False (Phase 4.2).
+    network_gate = True
     requires_confirmation = True
     result_provenance = Provenance.UNTRUSTED_EXTERNAL
     parameters_model = HTTPRequestParams
@@ -633,6 +641,8 @@ class WikipediaSearchTool(Tool):
     )
     is_read_only = True
     is_egress = True
+    # Removed from the main agent when web_tools_in_main is False (Phase 4.2).
+    network_gate = True
     result_provenance = Provenance.UNTRUSTED_EXTERNAL
     parameters_model = WikipediaSearchParams
 
@@ -756,6 +766,8 @@ class ReadFeedTool(Tool):
     )
     is_read_only = True
     is_egress = True
+    # Removed from the main agent when web_tools_in_main is False (Phase 4.2).
+    network_gate = True
     result_provenance = Provenance.UNTRUSTED_EXTERNAL
     parameters_model = ReadFeedParams
 
@@ -857,6 +869,8 @@ class SitemapDiscoverTool(Tool):
     )
     is_read_only = True
     is_egress = True
+    # Removed from the main agent when web_tools_in_main is False (Phase 4.2).
+    network_gate = True
     result_provenance = Provenance.UNTRUSTED_EXTERNAL
     parameters_model = SitemapDiscoverParams
 

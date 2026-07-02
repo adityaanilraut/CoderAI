@@ -113,7 +113,7 @@ class SemanticSearchTool(Tool):
         except ImportError as e:
             return {
                 "success": False,
-                "error": (f"Missing dependency: {e}. Install chromadb: `pip install chromadb`"),
+                "error": str(e),
             }
         except Exception as e:
             logger.warning(f"semantic_search failed: {e}", exc_info=True)

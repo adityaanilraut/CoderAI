@@ -458,7 +458,6 @@ class TestSessionResumeAndCompaction:
         assert agent.provider is restored_provider
         assert agent.context_controller.provider is restored_provider
         assert session.model == "claude-sonnet-4-6"
-        agent.realign_provider_usage_counters.assert_called_once()
         agent._configure_delegate_tool_context.assert_called_once()
 
     def test_activate_resumed_session_model_honors_explicit_override(self):
@@ -479,7 +478,6 @@ class TestSessionResumeAndCompaction:
         assert agent.provider is override_provider
         assert agent.context_controller.provider is override_provider
         assert session.model == "gpt-5.4-mini"
-        agent.realign_provider_usage_counters.assert_called_once()
         agent._configure_delegate_tool_context.assert_called_once()
 
     def test_compact_context_persists_successful_compaction(self):
@@ -515,6 +513,80 @@ class TestSessionResumeAndCompaction:
 
         assert success is True
         agent.save_session.assert_called_once()
+
+
+class TestPerCallUsageAccounting:
+    """3.1 — the loop attributes tokens from each response's per-call ``usage``
+    rather than diffing provider-side cumulative counters, so totals stay
+    continuous across a mid-session provider/model swap."""
+
+    def _make_loop(self, provider):
+        from types import SimpleNamespace
+
+        from coderAI.core.agent_loop import ExecutionLoop
+        from coderAI.system.cost import CostTracker
+
+        agent = SimpleNamespace(
+            provider=provider,
+            streaming=False,
+            model="claude-sonnet-4-6",
+            total_prompt_tokens=0,
+            total_completion_tokens=0,
+            total_tokens=0,
+            total_cache_creation_tokens=0,
+            total_cache_read_tokens=0,
+            cost_tracker=CostTracker(),
+            config=SimpleNamespace(budget_limit=0.0),
+            context_controller=SimpleNamespace(strip_internal_markers=lambda msgs: msgs),
+        )
+        # Bypass __init__ so we don't need the full hooks/executor machinery;
+        # _call_llm_with_retry only touches ``self.agent``.
+        loop = ExecutionLoop.__new__(ExecutionLoop)
+        loop.agent = agent
+        return loop, agent
+
+    def _provider(self, *, actual_model, usage):
+        from types import SimpleNamespace
+
+        async def _chat(messages, tools=None, **kwargs):
+            return {
+                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                "usage": usage,
+            }
+
+        return SimpleNamespace(
+            actual_model=actual_model,
+            clean_messages=lambda msgs: msgs,
+            chat=_chat,
+        )
+
+    def test_totals_continuous_across_provider_swap(self):
+        # Anthropic-shaped usage from the first provider.
+        prov1 = self._provider(
+            actual_model="claude-sonnet-4-6",
+            usage={"input_tokens": 10, "output_tokens": 5},
+        )
+        loop, agent = self._make_loop(prov1)
+
+        asyncio.run(loop._call_llm_with_retry([{"role": "user", "content": "hi"}], None))
+        assert (agent.total_prompt_tokens, agent.total_completion_tokens) == (10, 5)
+        assert agent.total_tokens == 15
+        cost_after_first = agent.cost_tracker.get_total_cost()
+        assert cost_after_first > 0
+
+        # Swap to a fresh provider (OpenAI-shaped usage, zeroed counters). A
+        # cumulative-diff scheme would see a negative delta here; per-call usage
+        # simply keeps adding.
+        prov2 = self._provider(
+            actual_model="gpt-5.4-mini",
+            usage={"prompt_tokens": 20, "completion_tokens": 7},
+        )
+        agent.provider = prov2
+
+        asyncio.run(loop._call_llm_with_retry([{"role": "user", "content": "again"}], None))
+        assert (agent.total_prompt_tokens, agent.total_completion_tokens) == (30, 12)
+        assert agent.total_tokens == 42
+        assert agent.cost_tracker.get_total_cost() > cost_after_first
 
 
 class TestDelegateToolContext:

@@ -47,7 +47,13 @@ cd CoderAI
 # 2a. Install (core)
 pip3 install -e .
 
-# 2b. Or install with browser automation (Playwright)
+# 2b. Optional extras (combine as needed, e.g. ".[semantic,browser]"):
+#   semantic  → ChromaDB-backed `coderAI index` / `search` + semantic_search tool
+#   web       → PDF extraction in read_url (pypdf)
+#   browser   → Playwright browser automation
+pip3 install -e ".[semantic]"
+
+# Browser automation also needs a Chromium download:
 pip3 install -e ".[browser]"
 playwright install chromium
 
@@ -398,12 +404,14 @@ CoderAI registers **92 tools** that the LLM can call (91 auto-discovered plus `m
 
 ### Search & Analysis (4 tools)
 
+*`semantic_search` requires optional `chromadb` — install with `pip install coderAI[semantic]` (plus an OpenAI key for embeddings).*
+
 | Tool | Description |
 |---|---|
 | `text_search` | Fast recursive text search across files |
 | `grep` | Regex pattern matching with context lines |
 | `symbol_search` | Find function/class/variable definitions by name |
-| `semantic_search` | Natural-language code search via embeddings (requires OpenAI key for embeddings) |
+| `semantic_search` | Natural-language code search via embeddings (requires OpenAI key + `coderAI[semantic]`) |
 
 ### Web & HTTP (7 tools)
 
@@ -766,6 +774,9 @@ make typecheck
 | `coderAI chat --resume <id>` | Resume a previous session |
 | `coderAI chat --continue` | Resume the most recently updated session |
 | `coderAI chat -p <persona>` | Start chat with a persona (e.g. `code-reviewer`) |
+| `coderAI run "<prompt>"` | Headless one-shot: run a prompt and exit, no TUI (deny-on-mutate; `--yolo` to allow) |
+| `coderAI run --json "<prompt>"` | Headless run emitting a structured JSON result to stdout |
+| `coderAI mcp list` / `add` / `remove` | Manage MCP servers (also `login` / `logout` / `resources` / `prompts`) |
 | `coderAI setup` | Interactive setup wizard |
 | `coderAI doctor` | Diagnose install (config, keys, dependencies) |
 | `coderAI models` | List available models and providers |

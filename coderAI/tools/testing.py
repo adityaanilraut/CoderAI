@@ -1,6 +1,5 @@
 """Test-running tool — auto-detects test framework, runs tests, and parses results."""
 
-import asyncio
 import logging
 import re
 import shutil
@@ -9,8 +8,10 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
-from coderAI.tools.base import Tool
 from coderAI.system.config import config_manager
+from coderAI.system.proc import run_scrubbed
+from coderAI.system.safeguards import truncate_output
+from coderAI.tools.base import Tool
 
 logger = logging.getLogger(__name__)
 
@@ -372,19 +373,17 @@ class RunTestsTool(Tool):
 
             effective_timeout = timeout or config.get("timeout", 120)
 
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+            # Scrub secrets from the child env — test runs execute project code
+            # (conftest, fixtures, test bodies) that must not be able to read a
+            # secret out of the inherited environment.
+            returncode, stdout, stderr, timed_out = await run_scrubbed(
+                cmd,
                 cwd=str(project_root),
+                timeout=effective_timeout,
+                shell=False,
             )
 
-            try:
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(), timeout=effective_timeout
-                )
-            except asyncio.TimeoutError:
-                process.kill()
+            if timed_out:
                 return {
                     "success": False,
                     "error": f"Tests timed out after {effective_timeout} seconds.",
@@ -394,11 +393,11 @@ class RunTestsTool(Tool):
             stdout_str = stdout.decode("utf-8", errors="replace")
             stderr_str = stderr.decode("utf-8", errors="replace")
 
+            # Phase 4.7: shared head+tail truncation — a test run's pass/fail
+            # summary lives at the tail, so keep both ends rather than head-only.
             max_output = 16000
-            if len(stdout_str) > max_output:
-                stdout_str = stdout_str[:max_output] + "\n... [output truncated]"
-            if len(stderr_str) > max_output:
-                stderr_str = stderr_str[:max_output] + "\n... [stderr truncated]"
+            stdout_str, _ = truncate_output(stdout_str, max_chars=max_output)
+            stderr_str, _ = truncate_output(stderr_str, max_chars=max_output)
 
             if framework_name == "pytest":
                 parsed = _parse_pytest_output(stdout_str)
@@ -419,13 +418,13 @@ class RunTestsTool(Tool):
                     "skipped": 0,
                     "duration_seconds": None,
                     "failures": [],
-                    "passed_clean": process.returncode == 0,
+                    "passed_clean": returncode == 0,
                 }
 
             return {
                 "success": True,
                 "framework": framework_name,
-                "returncode": process.returncode,
+                "returncode": returncode,
                 "results": parsed,
                 "stdout": stdout_str
                 if verbose

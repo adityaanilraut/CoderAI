@@ -357,14 +357,17 @@ class TestAgentProjectSanityWarning:
                 "is_valid_project": False,
                 "reasons": ["Directory is empty."],
             }
-            with patch("coderAI.core.agent.event_emitter") as mock_emit:
+            from coderAI.core.services import services_scope
+
+            mock_emit = MagicMock()
+            with services_scope(events=mock_emit):
                 agent = object.__new__(Agent)
                 agent.config = MagicMock(project_root="/tmp/empty")
                 Agent._emit_project_sanity_warning(agent)
-                mock_emit.emit.assert_called_once_with(
-                    "agent_warning",
-                    message="Project sanity check: Directory is empty.",
-                )
+            mock_emit.emit.assert_called_once_with(
+                "agent_warning",
+                message="Project sanity check: Directory is empty.",
+            )
 
 
 class TestGitReadScope:

@@ -26,6 +26,20 @@ _BATCH_SIZE = 32  # how many chunks to embed in one API call
 
 _COLLECTION_NAME = "codebase"
 
+_CHROMADB_INSTALL_HINT = (
+    "Semantic code search needs ChromaDB, an optional dependency. "
+    "Install it with: pip install 'coderAI[semantic]'"
+)
+
+
+def _import_chromadb() -> Any:
+    """Import ``chromadb`` or raise an ImportError pointing at the optional extra."""
+    try:
+        import chromadb
+    except ImportError as e:
+        raise ImportError(_CHROMADB_INSTALL_HINT) from e
+    return chromadb
+
 
 def _on_walk_error(error: OSError) -> None:
     """Handle os.walk permission errors gracefully during indexing."""
@@ -112,7 +126,7 @@ class CodeIndexer:
 
     def _recreate_collection(self, skip_if_unchanged: bool) -> None:
         """Initialize or re-create the ChromaDB collection."""
-        import chromadb
+        chromadb = _import_chromadb()
 
         if self._client is None:
             chroma_path = str(self._index_dir / "vectordb")
@@ -449,7 +463,7 @@ class CodeIndexer:
     # ------------------------------------------------------------------
 
     def _connect(self) -> None:
-        import chromadb
+        chromadb = _import_chromadb()
 
         if self._client is None:
             chroma_path = str(self._index_dir / "vectordb")

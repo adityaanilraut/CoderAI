@@ -1,6 +1,5 @@
 """Package management tool — safe package installation and dependency management."""
 
-import asyncio
 import json
 import logging
 import shutil
@@ -9,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+from coderAI.system.proc import run_scrubbed
 from coderAI.tools.base import Tool
 
 logger = logging.getLogger(__name__)
@@ -261,6 +261,9 @@ class PackageManagerTool(Tool):
     parameters_model = PackageManagerParams
     is_read_only = False
     requires_confirmation = True
+    # Installs run the manager's own build steps (arbitrary code) — no blanket
+    # allow, and no safe scope abstraction to bind to.
+    high_risk_no_blanket = True
     timeout = None
     category = "other"
 
@@ -417,20 +420,17 @@ class PackageManagerTool(Tool):
 
             project_root = Path(".").resolve()
 
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+            # Scrub secrets from the child env — package managers run
+            # arbitrary install/build scripts (postinstall hooks, build.rs) that
+            # must not be able to read ``$NPM_TOKEN``/``$PYPI_*`` etc. out of it.
+            returncode, stdout, stderr, timed_out = await run_scrubbed(
+                cmd,
                 cwd=str(project_root),
+                timeout=effective_timeout,
+                shell=False,
             )
 
-            try:
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(), timeout=effective_timeout
-                )
-            except asyncio.TimeoutError:
-                process.kill()
-                await process.wait()
+            if timed_out:
                 return {
                     "success": False,
                     "error": f"Package manager operation timed out after {effective_timeout} seconds.",
@@ -444,10 +444,10 @@ class PackageManagerTool(Tool):
                 stdout_str = stdout_str[:max_output] + "\n... [truncated]"
 
             result: Dict[str, Any] = {
-                "success": process.returncode == 0,
+                "success": returncode == 0,
                 "action": action,
                 "manager": manager_name,
-                "returncode": process.returncode,
+                "returncode": returncode,
                 "stdout": stdout_str,
             }
 
@@ -485,9 +485,7 @@ class PackageManagerTool(Tool):
                 except (json.JSONDecodeError, TypeError):
                     pass
 
-            result["message"] = self._format_message(
-                action, manager_name, package, process.returncode == 0
-            )
+            result["message"] = self._format_message(action, manager_name, package, returncode == 0)
             return result
 
         except Exception as e:

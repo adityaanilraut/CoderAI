@@ -44,6 +44,7 @@ class TestReadURLToolSSRF:
         asyncio.run(self.tool.execute(url="example.com/page"))
         assert calls and calls[0].startswith("https://")
 
+    @pytest.mark.enable_socket
     def test_allows_local_urls_with_env_var(self, monkeypatch):
         """CODERAI_ALLOW_LOCAL_URLS=1 bypasses SSRF check (may still fail to connect)."""
         monkeypatch.setenv("CODERAI_ALLOW_LOCAL_URLS", "1")

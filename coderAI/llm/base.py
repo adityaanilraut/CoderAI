@@ -98,8 +98,54 @@ def estimate_tokens_by_chars(text: str) -> int:
     return max(1, math.ceil(len(text) / 4))
 
 
+# Canonical per-call usage schema. Every provider result surfaces usage in
+# these keys so the execution loop can attribute tokens/cost without diffing
+# cumulative counters or knowing which provider produced the response.
+USAGE_KEYS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_creation_tokens",
+    "cache_read_tokens",
+)
+
+
+def empty_usage() -> Dict[str, int]:
+    """Return a zeroed per-call usage dict in the canonical schema."""
+    return {k: 0 for k in USAGE_KEYS}
+
+
+def normalize_usage(raw: Optional[Dict[str, Any]]) -> Dict[str, int]:
+    """Map a provider usage dict to the canonical per-call schema.
+
+    Accepts both the OpenAI shape (``prompt_tokens`` / ``completion_tokens``)
+    and the Anthropic shape (``input_tokens`` / ``output_tokens`` /
+    ``cache_creation_input_tokens`` / ``cache_read_input_tokens``). Missing
+    fields default to ``0``.
+    """
+    raw = raw or {}
+    return {
+        "input_tokens": int(raw.get("input_tokens", raw.get("prompt_tokens", 0)) or 0),
+        "output_tokens": int(raw.get("output_tokens", raw.get("completion_tokens", 0)) or 0),
+        "cache_creation_tokens": int(
+            raw.get("cache_creation_tokens", raw.get("cache_creation_input_tokens", 0)) or 0
+        ),
+        "cache_read_tokens": int(
+            raw.get("cache_read_tokens", raw.get("cache_read_input_tokens", 0)) or 0
+        ),
+    }
+
+
 class LLMProvider(ABC):
     """Abstract base class for LLM providers."""
+
+    # Capability flags — declared here so core never has to sniff a provider's
+    # module path or class name. Providers override as needed.
+    #
+    # ``preserves_tool_calls_on_pause``: whether the provider round-trips the
+    # assistant tool_calls of a ``pause_turn`` response on the resumed request.
+    # Anthropic does (it expects the paused tool_use blocks replayed); OpenAI-
+    # compatible providers do not, so the loop strips them before resuming.
+    preserves_tool_calls_on_pause: bool = False
 
     def __init__(self, model: str, api_key: Optional[str] = None, **kwargs: Any):
         """Initialize the LLM provider.
@@ -119,6 +165,21 @@ class LLMProvider(ABC):
         self.total_input_tokens = 0
         self.total_output_tokens = 0
         self._stream_enabled = kwargs.get("stream", True)
+
+    @property
+    def actual_model(self) -> str:
+        """The concrete API model ID this provider talks to.
+
+        Declared on the base so core can read it without ``getattr`` guards.
+        Providers that alias friendly names to canonical IDs assign
+        ``self.actual_model = ...`` in their constructor (stored on
+        ``_actual_model``); providers that don't fall back to ``self.model``.
+        """
+        return getattr(self, "_actual_model", None) or self.model
+
+    @actual_model.setter
+    def actual_model(self, value: str) -> None:
+        self._actual_model = value
 
     @abstractmethod
     async def chat(
@@ -234,7 +295,7 @@ class LLMProvider(ABC):
         """
         from coderAI.system.cost import CostTracker
 
-        actual_model: str = getattr(self, "actual_model", self.model)
+        actual_model: str = self.actual_model
         input_tokens: int = getattr(self, "total_input_tokens", 0)
         output_tokens: int = getattr(self, "total_output_tokens", 0)
         pricing = CostTracker.get_model_pricing(actual_model)
@@ -252,28 +313,24 @@ class LLMProvider(ABC):
             "model": actual_model,
         }
 
-    def set_cumulative_usage(
-        self,
-        *,
-        input_tokens: int = 0,
-        output_tokens: int = 0,
-        cache_creation_tokens: int = 0,
-        cache_read_tokens: int = 0,
-    ) -> None:
-        """Realign cumulative usage counters after a model switch or reset.
+    def reset_usage(self) -> None:
+        """Zero the provider's cumulative usage counters at a session boundary.
 
-        Providers track different subsets of these (Anthropic exposes cache
-        counters, others don't), so each attribute is updated only when the
-        provider already defines it.
+        The provider outlives individual sessions; the ``Agent`` is the source
+        of truth for session token totals (accumulated per-call from each
+        response's ``usage``). These provider counters are an additive-only
+        convenience used for provider-local cost estimates and before/after
+        deltas around one-off calls (summarization, sub-agent retries), so they
+        are reset — never synced from the agent — when a new session starts.
         """
         if hasattr(self, "total_input_tokens"):
-            self.total_input_tokens = max(0, int(input_tokens or 0))
+            self.total_input_tokens = 0
         if hasattr(self, "total_output_tokens"):
-            self.total_output_tokens = max(0, int(output_tokens or 0))
+            self.total_output_tokens = 0
         if hasattr(self, "total_cache_creation_tokens"):
-            self.total_cache_creation_tokens = max(0, int(cache_creation_tokens or 0))
+            self.total_cache_creation_tokens = 0
         if hasattr(self, "total_cache_read_tokens"):
-            self.total_cache_read_tokens = max(0, int(cache_read_tokens or 0))
+            self.total_cache_read_tokens = 0
 
     @staticmethod
     def _strip_tool_images(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

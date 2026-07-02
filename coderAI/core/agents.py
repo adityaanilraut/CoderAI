@@ -142,15 +142,14 @@ def load_agent_persona(persona_name: str, project_root: str = ".") -> Optional[A
                     logger.warning(f"Failed to parse YAML frontmatter in {file_path.name}: {e}")
         model_name = metadata.get("model", config_manager.load().default_model)
 
-        # Map common aliases using the authoritative MODEL_ALIASES from anthropic.py.
-        # Tolerate both a missing module (optional dep) and a restructured
-        # module (attribute rename); both should degrade gracefully to the
-        # unmapped name.
+        # Resolve friendly aliases via the factory (the single alias seam), so
+        # core never imports a specific provider module. Degrade gracefully to
+        # the unmapped name if the factory can't be imported.
         if isinstance(model_name, str):
             try:
-                from coderAI.llm.anthropic import MODEL_ALIASES as _anthropic_aliases
+                from coderAI.llm.factory import resolve_model_alias
 
-                model_name = _anthropic_aliases.get(model_name.lower(), model_name)
+                model_name = resolve_model_alias(model_name)
             except (ImportError, AttributeError):
                 pass
 

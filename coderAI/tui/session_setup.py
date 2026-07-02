@@ -1,4 +1,9 @@
-"""Bootstrap Agent + UIBridge for the Textual UI."""
+"""Bootstrap Agent + UIBridge for the Textual UI.
+
+The Agent/session construction (flag resolution, load-vs-create, delegate
+wiring) lives in :mod:`coderAI.cli.bootstrap`; this module only layers the
+TUI-specific bridge, streaming handler, and tracker registration on top.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +12,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 from coderAI.core.agent import Agent
 from coderAI.core.agent_tracker import AgentStatus, agent_tracker
-from coderAI.system.history import history_manager
+from coderAI.cli.bootstrap import bootstrap_agent
 from ..bridge.controller import UIBridge
 from ..bridge.streaming import BridgeStreamingHandler
 
@@ -24,7 +29,6 @@ def _activate_resumed_session_model(agent: Agent, requested_model: Optional[str]
         agent.provider = agent._create_provider()
         agent.context_controller.provider = agent.provider
     session.model = effective_model
-    agent.realign_provider_usage_counters()
     agent._configure_delegate_tool_context()
 
 
@@ -38,35 +42,19 @@ def create_agent_session(
     on_event: Callable[[str, Dict[str, Any]], None],
 ) -> Tuple[Agent, UIBridge]:
     """Create Agent and in-process UIBridge wired to ``on_event``."""
-    if continue_ and not resume:
-        resume = history_manager.get_latest_session_id()
-
-    agent = Agent(
+    agent = bootstrap_agent(
         model=model,
+        resume_id=resume,
+        continue_latest=continue_,
         streaming=True,
         auto_approve=auto_approve,
-        persona_name=persona,
+        persona=persona,
+        resume_fresh_on_failure=True,
+        warn=lambda message: on_event("warning", {"message": message}),
     )
-
-    if resume:
-        try:
-            session = agent.load_session(resume)
-        except Exception:
-            session = None
-            logger.exception("Failed to load session %s; starting fresh", resume)
-            try:
-                on_event(
-                    "warning",
-                    {"message": f"Failed to resume session {resume}. Starting a fresh session."},
-                )
-            except Exception:
-                pass
-        if session is None:
-            agent.create_session()
-        else:
-            _activate_resumed_session_model(agent, model)
-    else:
-        agent.create_session()
+    # Align the model/provider with the (possibly resumed) session. A no-op for
+    # a fresh session, where session.model already equals agent.model.
+    _activate_resumed_session_model(agent, model)
 
     controller = UIBridge(agent=agent, on_event=on_event)
     agent.ipc_server = controller

@@ -122,6 +122,7 @@ def test_internal_ip_literals_are_not_public(ip: str) -> None:
 # ── ssrf_redirect_server ────────────────────────────────────────────────────
 
 
+@pytest.mark.enable_socket  # exercises a real localhost aiohttp redirect server
 async def test_ssrf_redirect_server_302_to_target(ssrf_redirect_server) -> None:
     import aiohttp
 
@@ -145,6 +146,7 @@ async def test_ssrf_redirect_server_302_to_target(ssrf_redirect_server) -> None:
     assert any("/ok" in h for h in server.hits)
 
 
+@pytest.mark.enable_socket  # exercises a real localhost aiohttp redirect server
 async def test_ssrf_redirect_server_chain(ssrf_redirect_server) -> None:
     import aiohttp
 

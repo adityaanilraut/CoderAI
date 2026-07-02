@@ -159,7 +159,7 @@ async def test_fetched_page_is_wrapped_and_taints_turn(monkeypatch: pytest.Monke
     # ...the injection text is still present (it's data), but inside the fence.
     assert "PWNED42" in content
     # ...and the turn is now tainted, arming the egress gate.
-    assert agent._turn_ingested_untrusted is True
+    assert executor._turn.ingested_untrusted is True
 
 
 @pytest.mark.asyncio
@@ -175,6 +175,6 @@ async def test_internal_tool_result_is_not_wrapped() -> None:
     content = session.messages[-1].content or ""
     assert "<untrusted_tool_output" not in content
     # A trusted result does not taint the turn.
-    assert getattr(agent, "_turn_ingested_untrusted", False) is False
+    assert executor._turn.ingested_untrusted is False
     # Still valid JSON the model can parse directly.
     assert json.loads(content)["success"] is True

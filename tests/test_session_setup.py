@@ -57,7 +57,8 @@ def test_create_fresh_session():
 def test_continue_resolves_latest_session():
     with _agent_env():
         with (
-            patch("coderAI.tui.session_setup.history_manager") as hm,
+            # Latest-session lookup now lives in the shared cli.bootstrap module.
+            patch("coderAI.cli.bootstrap.history_manager") as hm,
             patch.object(Agent, "load_session", return_value=MagicMock(model="claude-sonnet-4-6")),
         ):
             hm.get_latest_session_id.return_value = "sess-123"

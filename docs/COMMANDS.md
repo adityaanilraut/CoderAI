@@ -61,6 +61,64 @@ Requires the `textual` package (installed with `pip install coderAI`). No separa
 
 ---
 
+### `coderAI run`
+Run a single prompt non-interactively and exit — no Textual TUI. For CI, scripting, git hooks, piping, and evals. Drives the same `Agent`/`ExecutionLoop` core as `chat`, but with no UIBridge and no streaming, so stdout receives one clean final answer (or `--json`).
+
+```bash
+# Prompt as an argument
+coderAI run "refactor utils.py to use pathlib"
+
+# Prompt piped via stdin (or the explicit "-" sentinel)
+echo "list the open TODOs" | coderAI run
+coderAI run -
+
+# Structured result (response, success, session_id, model, cost_usd, blocked_tools)
+coderAI run --json "what is 2+2"
+
+# Resume prior context
+coderAI run --resume <session-id> "continue where we left off"
+coderAI run --continue "and now add tests"
+
+# Allow mutating tools (see deny-on-mutate below)
+coderAI run --yolo "fix the failing test and commit"
+coderAI run --auto-approve "..."   # alias for --yolo
+
+# Other options
+coderAI run -m opus "..."               # model override
+coderAI run -p code-reviewer "..."      # load a persona
+coderAI run --max-iterations 10 "..."   # cap the agent loop
+coderAI run --trust-workspace "..."     # CI: trust this repo's .coderAI hooks/config (DANGEROUS)
+```
+
+**Deny-on-mutate (default).** With no TTY to confirm mutations, a run that needs a mutating tool (e.g. `write_file`, `run_command`, `git_push`) is blocked cleanly instead of prompting: the tool call is denied, the run exits non-zero, and stderr prints which tools were blocked (`--json` lists them under `blocked_tools`). Pass `--yolo`/`--auto-approve` to allow mutations.
+
+**Exit codes:**
+
+| Code | Meaning |
+|---|---|
+| `0` | Success — completed without a blocked mutation |
+| `1` | A mutating tool was blocked (non-yolo), missing API key, interrupted, or an agent/runtime error |
+| `2` | Usage error — no prompt provided, or both `--resume` and `--continue` given |
+
+---
+
+### `coderAI mcp`
+Manage MCP (Model Context Protocol) servers written to `~/.coderAI/mcp_servers.json` — the same file the setup wizard writes and that `coderAI chat` auto-connects on startup. Servers added here become available the next time you start a chat.
+
+```bash
+coderAI mcp list                                   # Show configured servers (+ auth status)
+coderAI mcp add fetch -- npx -y @scope/server      # stdio launcher after '--'
+coderAI mcp add remote --transport sse -- https://example.com/sse
+coderAI mcp add api --http https://host/mcp -H "Authorization: Bearer TOKEN"
+coderAI mcp remove <name>                          # Remove a server (and its saved creds)
+coderAI mcp login <name>                           # OAuth login for an HTTP server (opens browser)
+coderAI mcp logout <name>                          # Revoke + delete saved OAuth credentials
+coderAI mcp resources <name>                        # List resources exposed by a server
+coderAI mcp prompts <name>                          # List prompt templates exposed by a server
+```
+
+---
+
 ### `coderAI models`
 List all available models and providers.
 

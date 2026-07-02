@@ -257,6 +257,7 @@ class EventReducer:
                         "tool": payload.get("name", ""),
                         "args": payload.get("args") or {},
                         "risk": payload.get("risk") or "low",
+                        "riskFactors": payload.get("riskFactors") or [],
                         "decided": "pending",
                         "diff": payload.get("diff"),
                         "requestedBy": payload.get("requestedBy", ""),

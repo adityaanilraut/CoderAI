@@ -24,22 +24,8 @@ from coderAI.tools.web import _is_ip_public
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Tool names — used for discovery / optional-dependency gating in Agent.
-# ---------------------------------------------------------------------------
-
-BROWSER_TOOL_NAMES: tuple[str, ...] = (
-    "browser_navigate",
-    "browser_snapshot",
-    "browser_click",
-    "browser_type",
-    "browser_select_option",
-    "browser_get_content",
-    "browser_screenshot",
-    "browser_evaluate",
-    "browser_wait",
-    "browser_close",
-)
+# The Playwright dependency is declared per tool via ``requires_package``
+# (Phase 4.2); Agent._create_tool_registry drops tools whose package is missing.
 
 # ---------------------------------------------------------------------------
 # Playwright availability check
@@ -565,6 +551,7 @@ class BrowserNavigateTool(Tool):
         "and type all share the same page."
     )
     category = "browser"
+    requires_package = "playwright"
     parameters_model = BrowserNavigateParams
     timeout = 45.0
     # Mutates browser page state rather than the local machine; navigation is
@@ -607,6 +594,7 @@ class BrowserSnapshotTool(Tool):
         "links, and dropdowns before interacting with them."
     )
     category = "browser"
+    requires_package = "playwright"
     parameters_model = BrowserSnapshotParams
     is_read_only = True
     timeout = 15.0
@@ -644,6 +632,7 @@ class BrowserClickTool(Tool):
         "call browser_snapshot to see the updated page state."
     )
     category = "browser"
+    requires_package = "playwright"
     parameters_model = BrowserClickParams
     requires_confirmation = True
     timeout = 20.0
@@ -681,6 +670,7 @@ class BrowserTypeTool(Tool):
         "After typing, call browser_snapshot to see the updated state."
     )
     category = "browser"
+    requires_package = "playwright"
     parameters_model = BrowserTypeParams
     requires_confirmation = True
     timeout = 20.0
@@ -717,6 +707,7 @@ class BrowserSelectOptionTool(Tool):
         "Use this for <select> elements, country pickers, size/color dropdowns, etc."
     )
     category = "browser"
+    requires_package = "playwright"
     parameters_model = BrowserSelectOptionParams
     requires_confirmation = True
     timeout = 20.0
@@ -751,6 +742,7 @@ class BrowserGetContentTool(Tool):
         "confirmation pages)."
     )
     category = "browser"
+    requires_package = "playwright"
     parameters_model = BrowserGetContentParams
     is_read_only = True
     timeout = 15.0
@@ -793,6 +785,7 @@ class BrowserScreenshotTool(Tool):
         "doesn't capture the full picture."
     )
     category = "browser"
+    requires_package = "playwright"
     parameters_model = BrowserScreenshotParams
     is_read_only = True
     timeout = 20.0
@@ -830,6 +823,7 @@ class BrowserEvaluateTool(Tool):
         "behavior. The return value is JSON-serialized."
     )
     category = "browser"
+    requires_package = "playwright"
     parameters_model = BrowserEvaluateParams
     is_read_only = True
     timeout = 15.0
@@ -870,6 +864,7 @@ class BrowserWaitTool(Tool):
         "navigation elements or submitting forms to let the page update."
     )
     category = "browser"
+    requires_package = "playwright"
     parameters_model = BrowserWaitParams
     is_read_only = True
     timeout = 60.0
@@ -904,6 +899,7 @@ class BrowserCloseTool(Tool):
         "browser_navigate."
     )
     category = "browser"
+    requires_package = "playwright"
     parameters_model = BrowserCloseParams
     timeout = 15.0
     # Only tears down the local browser session and frees resources — no

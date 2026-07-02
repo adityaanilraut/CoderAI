@@ -1,14 +1,20 @@
 """Subprocess-hardening helpers: env scrubbing + process-group isolation.
 
-Shared by the terminal (`run_command`/`run_background`), `python_repl`, and
-`package_manager` tools (and, later, the hooks runner) so that:
+Every subprocess CoderAI spawns on the model's behalf runs through these so
+that:
 
-* secret-bearing environment variables never leak into a child process we
-  spawn on the model's behalf (an injected command should not be able to read
-  ``$OPENAI_API_KEY`` out of the environment), and
+* secret-bearing environment variables never leak into the child (an injected
+  command should not be able to read ``$OPENAI_API_KEY`` out of the
+  environment), and
 * a timed-out or cancelled command takes its whole process group down with it
   instead of orphaning grandchildren — e.g. ``bash -c 'sleep 1000 & wait'``
   leaves the inner ``sleep`` running if you only signal the direct child.
+
+:func:`run_scrubbed` bundles both concerns for the common
+"spawn → communicate → enforce timeout" shape used by ``run_command``,
+``git``, ``package_manager`` and ``run_tests``. Callers with bespoke lifetimes
+(``python_repl``'s temp-file dance, the terminal's detached ``run_background``)
+compose :func:`scrub_env` and :func:`new_session_kwargs` directly instead.
 
 Like :mod:`coderAI.system.fsperms`, these helpers degrade gracefully on
 Windows (``start_new_session`` → ``CREATE_NEW_PROCESS_GROUP``; ``killpg`` →
@@ -17,12 +23,13 @@ Windows (``start_new_session`` → ``CREATE_NEW_PROCESS_GROUP``; ``killpg`` →
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
 import signal
 import subprocess
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Mapping, Optional, Sequence, Tuple, Union
 
 logger = logging.getLogger(__name__)
 
@@ -196,3 +203,98 @@ def _kill_direct(process: Any) -> None:
         process.kill()
     except Exception:
         logger.debug("failed to kill process %r", getattr(process, "pid", None), exc_info=True)
+
+
+# ── One-shot scrubbed subprocess runner ──────────────────────────────────────
+
+
+async def run_scrubbed(
+    cmd: Union[str, Sequence[str]],
+    *,
+    cwd: Union[str, os.PathLike[str], None] = None,
+    timeout: Optional[float] = None,
+    shell: bool = False,
+    extra_env: Optional[Mapping[str, str]] = None,
+    stdin: Optional[bytes] = None,
+    term_grace: float = 2.0,
+) -> Tuple[Optional[int], bytes, bytes, bool]:
+    """Spawn a subprocess with a scrubbed env + process-group isolation.
+
+    Bundles the safety concerns shared by every model-driven subprocess:
+
+    * the child's environment is :func:`scrub_env`-ed (``extra_env`` is layered
+      on top, so a caller can add benign context without re-adding secrets),
+    * the child leads its own session/group (:func:`new_session_kwargs`), and
+    * on *timeout* the whole group is signalled — ``SIGTERM`` first, then a
+      ``SIGKILL`` escalation after ``term_grace`` seconds — so backgrounded
+      grandchildren are reaped rather than orphaned. Any output buffered before
+      the kill is still returned.
+
+    ``cmd`` is a shell string when ``shell=True``, otherwise an argv sequence
+    passed straight to ``create_subprocess_exec`` (no shell interpretation).
+    Returns ``(returncode, stdout, stderr, timed_out)``. On cancellation the
+    group is torn down before the ``CancelledError`` propagates.
+    """
+    env = scrub_env()
+    if extra_env:
+        env.update(extra_env)
+
+    stdin_pipe = asyncio.subprocess.PIPE if stdin is not None else None
+
+    if shell:
+        if not isinstance(cmd, str):
+            raise TypeError("run_scrubbed(shell=True) requires a command string")
+        process = await asyncio.create_subprocess_shell(
+            cmd,
+            stdin=stdin_pipe,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=cwd,
+            env=env,
+            **new_session_kwargs(),
+        )
+    else:
+        argv = [cmd] if isinstance(cmd, str) else list(cmd)
+        process = await asyncio.create_subprocess_exec(
+            *argv,
+            stdin=stdin_pipe,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=cwd,
+            env=env,
+            **new_session_kwargs(),
+        )
+
+    timed_out = False
+    try:
+        stdout, stderr = await asyncio.wait_for(process.communicate(input=stdin), timeout=timeout)
+    except asyncio.TimeoutError:
+        timed_out = True
+        # SIGTERM the whole group first — killing only the leader reaps it
+        # before its backgrounded grandchildren, orphaning them. Escalate to a
+        # group SIGKILL if it doesn't die within the grace window.
+        kill_process_group(process, signal.SIGTERM)
+        try:
+            await asyncio.wait_for(process.wait(), timeout=term_grace)
+        except asyncio.TimeoutError:
+            kill_process_group(process)
+            try:
+                await process.wait()
+            except ProcessLookupError:
+                pass
+        # Best-effort read of any partial output buffered before the kill.
+        try:
+            stdout, stderr = await process.communicate()
+        except Exception:
+            logger.debug("could not read output of timed-out process", exc_info=True)
+            stdout, stderr = b"", b""
+    except asyncio.CancelledError:
+        # Cleanup must not mask the cancellation: tear the group down and re-raise.
+        try:
+            kill_process_group(process, signal.SIGTERM)
+            await asyncio.wait_for(process.wait(), timeout=1)
+        except Exception:
+            kill_process_group(process)
+        raise
+
+    return process.returncode, stdout, stderr, timed_out

@@ -206,9 +206,7 @@ class HooksManager:
             if runnable:
 
                 async def _exec_hook(cmd: str) -> Optional[str]:
-                    event_emitter.emit(
-                        "agent_status", message=f"[dim]Running {hook_type} hook...[/dim]"
-                    )
+                    event_emitter.emit("agent_status", message=f"Running {hook_type} hook...")
                     proc = await asyncio.create_subprocess_shell(
                         cmd,
                         stdout=asyncio.subprocess.PIPE,
@@ -256,7 +254,7 @@ class HooksManager:
         cmds_preview = ", ".join(h.get("command", "?") for h in matching_hooks)
         event_emitter.emit(
             "agent_status",
-            message=f"\n[bold yellow]⚠ Project hooks detected[/bold yellow]\n[dim]Commands: {cmds_preview}[/dim]",
+            message=f"\n⚠ Project hooks detected\nCommands: {cmds_preview}",
         )
 
         info = getattr(self.agent, "tracker_info", None)

@@ -14,10 +14,7 @@ def palette_shortcut() -> str:
 
 
 def composer_placeholder() -> str:
-    return (
-        f"Message CoderAI…   / commands   @ mention   ↑ history   "
-        f"{palette_shortcut()} palette"
-    )
+    return f"Message CoderAI…   / commands   @ mention   ↑ history   {palette_shortcut()} palette"
 
 
 def header_palette_hint() -> str:

@@ -665,18 +665,14 @@ class CoderAIApp(App[None]):
             FilePickerScreen(
                 self.project_files,
                 placeholder="🔍 Type to search files to mention…",
-                footer_help=(
-                    f"[{Tokens.TEXT_MUTED}]↑↓ navigate  ↵ insert @path  ⎋ close[/]"
-                ),
+                footer_help=(f"[{Tokens.TEXT_MUTED}]↑↓ navigate  ↵ insert @path  ⎋ close[/]"),
             )
         )
         prompt = self.query_one("#prompt-area", PromptArea)
         if result:
             prompt.insert(f"@{result} ")
             if self.controller:
-                self.controller.enqueue_command(
-                    "manage_context", action="add", path=result
-                )
+                self.controller.enqueue_command("manage_context", action="add", path=result)
         prompt.focus()
 
     def action_command_palette(self) -> None:

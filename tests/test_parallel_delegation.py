@@ -37,7 +37,7 @@ def _make_registry(tool_map):
     def _get(name):
         return tool_map.get(name)
 
-    async def _execute(name, confirmation_callback=None, **kwargs):
+    async def _execute(name, **kwargs):
         tool = tool_map.get(name)
         if tool is None:
             raise ValueError(f"Tool not found: {name}")

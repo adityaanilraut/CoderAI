@@ -15,7 +15,7 @@ import click
     multiple=True,
     help="Specific files or directories to index (can be repeated). If omitted, indexes the whole project.",
 )
-def index_cmd(force, paths):
+def index_cmd(force: bool, paths: tuple[str, ...]) -> None:
     """Build or update the semantic code search index."""
     from coderAI.system.config import config_manager
     from coderAI.embeddings.factory import create_embedding_provider
@@ -60,7 +60,7 @@ def index_cmd(force, paths):
 @click.argument("query")
 @click.option("--top-k", "-n", default=10, help="Number of results (default: 10)")
 @click.option("--file-filter", "-f", default=None, help="Glob to filter results, e.g. '*.py'")
-def search_cmd(query, top_k, file_filter):
+def search_cmd(query: str, top_k: int, file_filter: str | None) -> None:
     """Search the codebase with a natural-language query."""
     from coderAI.system.config import config_manager
     from coderAI.embeddings.factory import create_embedding_provider

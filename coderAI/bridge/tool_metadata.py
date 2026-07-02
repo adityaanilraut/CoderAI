@@ -139,6 +139,62 @@ def tool_risk(name: str, registry: Optional[Any] = None) -> str:
     return "medium"
 
 
+# Curated, high-signal risk factors shown on the approval card (Phase 4.6).
+# This is the single source of the per-tool risk hints — the TUI's
+# ``ApprovalScreen`` renders whatever list it is handed and no longer keeps its
+# own copy. Tools not listed here fall back to attribute-derived factors below.
+_RISK_FACTOR_OVERRIDES: Dict[str, list[str]] = {
+    "run_command": ["Could spawn child processes", "Writes to filesystem"],
+    "run_background": ["Long-running process", "Could consume resources"],
+    "write_file": ["Writes to filesystem", "Could overwrite existing files"],
+    "search_replace": ["Modifies files in place", "Could leave dirty working tree"],
+    "apply_diff": ["Modifies files in place", "Could leave dirty working tree"],
+    "multi_edit": ["Modifies files in place", "Could leave dirty working tree"],
+    "delete_file": ["Permanently deletes files", "Irreversible without git"],
+    "move_file": ["Moves or renames files", "Could overwrite the destination"],
+    "python_repl": ["Executes arbitrary Python", "Full access to the environment"],
+    "package_manager": ["Installs code that runs build steps", "Modifies dependencies"],
+    "git_commit": ["Creates permanent git history", "Could push on next sync"],
+    "git_push": ["Transmits data to remote", "Affects shared repository"],
+    "git_checkout": ["Switches working tree", "Could cause merge conflicts"],
+    "git_reset": ["Destroys uncommitted work", "Irreversible without reflog"],
+}
+
+
+def tool_risk_factors(name: str, registry: Optional[Any] = None) -> list[str]:
+    """Human-readable "why this needs approval" factors for the approval card.
+
+    Single source (Phase 4.6): a curated table for high-signal tools, then a
+    fallback derived from the tool's declared safety attributes
+    (``is_egress`` / ``network_gate`` / ``high_risk_no_blanket`` / mutating).
+    Kept UI-agnostic — the caller renders the returned strings.
+    """
+    override = _RISK_FACTOR_OVERRIDES.get(name)
+    if override is not None:
+        return list(override)
+
+    factors: list[str] = []
+    if name.startswith("mcp__") or name.startswith("mcp_"):
+        factors.append("Runs a third-party MCP server's code")
+
+    tool = registry.get(name) if registry is not None else None
+    if tool is not None:
+        if getattr(tool, "is_egress", False) or getattr(tool, "network_gate", False):
+            factors.append("Sends requests over the network")
+        if getattr(tool, "high_risk_no_blanket", False):
+            factors.append("Broad local effect depending on arguments")
+        elif (
+            getattr(tool, "requires_confirmation", False)
+            and not getattr(tool, "is_read_only", False)
+            and not getattr(tool, "safe", False)
+        ):
+            factors.append("Modifies files or system state")
+
+    if not factors:
+        factors.append("Review the arguments before allowing")
+    return factors
+
+
 def truncate_args(args: Dict[str, Any], limit: int, *, show_count: bool = False) -> Dict[str, Any]:
     if not isinstance(args, dict):
         return {"value": str(args)[:limit]}

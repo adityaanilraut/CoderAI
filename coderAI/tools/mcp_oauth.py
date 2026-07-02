@@ -208,10 +208,7 @@ def _capture_authorization_code(
 
     def _serve() -> None:
         deadline = time.monotonic() + timeout
-        while (
-            getattr(server, "oauth_result", None) is None
-            and time.monotonic() < deadline
-        ):
+        while getattr(server, "oauth_result", None) is None and time.monotonic() < deadline:
             server.handle_request()
 
     worker = threading.Thread(target=_serve, daemon=True)
@@ -431,9 +428,7 @@ def _apply_token(record: Dict[str, Any], token: Dict[str, Any]) -> None:
     if token.get("refresh_token"):
         record["refresh_token"] = token["refresh_token"]
     expires_in = token.get("expires_in")
-    record["expires_at"] = (
-        time.time() + float(expires_in) if expires_in else time.time() + 3600
-    )
+    record["expires_at"] = time.time() + float(expires_in) if expires_in else time.time() + 3600
     if token.get("scope"):
         record["scope"] = token["scope"]
 

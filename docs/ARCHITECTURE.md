@@ -8,11 +8,17 @@ notes, see [`CLAUDE.md`](CLAUDE.md).
 ## Workflow Overview
 
 CoderAI is a pure-Python coding agent CLI. The Click entry point in
-`coderAI/cli.py` dispatches:
+`coderAI/cli/` (`main.py`) dispatches:
 
 - One-shot subcommands (`config`, `history`, `models`, `status`, `cost`,
-  `setup`, `info`, `doctor`, `index`, `search`, `tasks list`) that render
-  output via **Rich** helpers in `coderAI/ui/display.py`.
+  `setup`, `info`, `doctor`, `index`, `search`, `tasks list`, and the
+  `mcp` command group — `mcp list`/`add`/`remove`/`login`/`logout`/
+  `resources`/`prompts`) that render output via **Rich** helpers in
+  `coderAI/ui/display.py`.
+- `coderAI run`, a headless one-shot path (`coderAI/cli/run_cmd.py`) that
+  runs a single prompt through the same `Agent`/`ExecutionLoop` core and
+  exits — no TUI, no UIBridge, no streaming. Defaults to deny-on-mutate
+  (see [`COMMANDS.md`](COMMANDS.md#coderai-run)).
 - `coderAI chat`, which launches an in-process **Textual** TUI
   (`coderAI/tui/`) that drives the agent loop and renders the streaming
   timeline.
@@ -108,8 +114,11 @@ timeline/session state; `timeline_render.py` writes rows to the
 ├── pyproject.toml           # Build metadata, dependencies, ruff/mypy config
 ├── Makefile
 ├── coderAI/                 # Core Python package
-│   ├── cli.py               # Thin entry point → cli/main.py
-│   ├── cli/                 # Click subcommands (config, history, setup, …)
+│   ├── cli/                 # Click entry point + subcommands
+│   │   ├── main.py          # Root group; chat, info, doctor, status, …
+│   │   ├── run_cmd.py       # `coderAI run` (headless one-shot)
+│   │   ├── mcp_cmd.py       # `coderAI mcp` server management
+│   │   └── bootstrap.py     # Shared session bootstrap (TUI + headless)
 │   ├── system_prompt.py     # System prompt + dynamic tool docs
 │   ├── core/                # Agent orchestration
 │   │   ├── agent.py         # Agent lifecycle, sessions, sub-agents
@@ -159,16 +168,23 @@ timeline/session state; `timeline_render.py` writes rows to the
 
 ## Component Details
 
-### 1. CLI Layer (`coderAI/cli.py` → `coderAI/cli/`)
+### 1. CLI Layer (`coderAI/cli/`)
 
-**Responsibility:** Command-line interface and dispatch.
+**Responsibility:** Command-line interface and dispatch. The `coderAI`
+entry point resolves to `main()` in `coderAI/cli/__init__.py` → `cli/main.py`.
 
 **Key entry points:**
 - `main()` / `cli()` in `cli/main.py` — Click group; default invokes `chat`.
 - `chat()` — Calls `coderAI.tui.run_chat_app(...)` to launch the Textual UI.
+- `run` (`cli/run_cmd.py`) — headless one-shot: runs a single prompt and
+  exits with no TUI (deny-on-mutate by default; `--json` for structured
+  output). Shares session bootstrap with `chat` via `cli/bootstrap.py`.
 - `config`, `history`, `info`, `status`, `cost`, `models`, `setup`,
   `doctor`, `index`, `search`, `tasks list` — one-shot subcommands that
   render with Rich.
+- `mcp` (`cli/mcp_cmd.py`) — command group managing MCP servers in
+  `~/.coderAI/mcp_servers.json` (`list`/`add`/`remove`/`login`/`logout`/
+  `resources`/`prompts`).
 
 ### 2. Agent Layer (`coderAI/core/`, `coderAI/context/`)
 

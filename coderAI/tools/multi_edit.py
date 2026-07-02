@@ -1,10 +1,10 @@
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 import logging
 from pathlib import Path
 from pydantic import BaseModel, Field
 
 from coderAI.core.tool_error_codes import ToolErrorCode
-from coderAI.tools.base import Tool
+from coderAI.tools.base import Tool, ToolPreview
 from coderAI.tools.filesystem import (
     _is_path_protected,
     _enforce_project_scope,
@@ -40,6 +40,29 @@ class MultiEditTool(Tool):
     description = "Apply multiple search/replace edits to a file in a single atomic operation."
     parameters_model = MultiEditParams
     requires_confirmation = True
+    # Same-path edits in one batch must serialize (no TOCTOU race).
+    batch_serialize_by_path = True
+
+    @staticmethod
+    def _apply_edit(content: str, search: str, replace: str) -> str:
+        """The per-edit replacement shared by execute() and preview()."""
+        return content.replace(search, replace)
+
+    def preview(self, arguments: Dict[str, Any], original: Optional[str]) -> Optional[ToolPreview]:
+        """Resulting file content after applying each edit sequentially."""
+        if original is None:
+            return None
+        edits = arguments.get("edits") or []
+        if not isinstance(edits, list) or not edits:
+            return None
+        new_content = original
+        for edit in edits:
+            if not isinstance(edit, dict):
+                return None
+            new_content = self._apply_edit(
+                new_content, str(edit.get("search", "")), str(edit.get("replace", ""))
+            )
+        return ToolPreview(new_content=new_content)
 
     async def execute(self, path: str, edits: List[Dict[str, Any]]) -> Dict[str, Any]:  # type: ignore[override]
         try:
@@ -93,7 +116,7 @@ class MultiEditTool(Tool):
                             actual_count,
                         )
 
-                    new_content = new_content.replace(search, replace)
+                    new_content = self._apply_edit(new_content, search, replace)
 
                 backup_store.backup_file(str(path_obj), "modify")
 

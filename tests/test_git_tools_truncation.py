@@ -50,7 +50,7 @@ async def test_git_diff_truncation_large(mock_subprocess):
 
     assert result["success"] is True
     assert result["truncated"] is True
-    assert "[... truncated," in result["diff"]
+    assert "[truncated " in result["diff"]
     # The output should be max bytes + the truncation marker length
     assert len(result["diff"]) < 100_000
 
@@ -68,7 +68,7 @@ async def test_git_status_truncation_large(mock_subprocess):
 
     assert result["success"] is True
     assert result["truncated"] is True
-    assert "[... truncated," in result["status"]
+    assert "[truncated " in result["status"]
 
 
 @pytest.mark.asyncio
@@ -84,7 +84,7 @@ async def test_git_log_truncation_large(mock_subprocess):
 
     assert result["success"] is True
     assert result["truncated"] is True
-    assert "[... truncated," in result["log"]
+    assert "[truncated " in result["log"]
 
 
 @pytest.mark.asyncio
@@ -113,7 +113,7 @@ async def test_git_show_truncation_large(mock_subprocess):
 
     assert result["success"] is True
     assert result["truncated"] is True
-    assert "[... truncated," in result["output"]
+    assert "[truncated " in result["output"]
 
 
 @pytest.mark.asyncio

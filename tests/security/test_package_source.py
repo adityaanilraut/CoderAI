@@ -13,6 +13,7 @@ import asyncio
 
 import pytest
 
+from coderAI.system import proc
 from coderAI.tools import package_manager as pm
 from coderAI.tools.package_manager import PackageManagerTool, _validate_package_name
 
@@ -68,7 +69,11 @@ def test_allow_remote_source_opt_in_permits_vcs() -> None:
 
 
 def _patch_capture(monkeypatch: pytest.MonkeyPatch) -> dict:
-    """Patch shutil.which + create_subprocess_exec, capturing the argv."""
+    """Patch shutil.which + create_subprocess_exec, capturing the argv.
+
+    The spawn now happens inside ``system.proc.run_scrubbed`` (which scrubs the
+    env before delegating to ``create_subprocess_exec``), so patch it there.
+    """
     captured: dict = {}
 
     monkeypatch.setattr(pm.shutil, "which", lambda name: f"/usr/bin/{name}")
@@ -76,7 +81,7 @@ def _patch_capture(monkeypatch: pytest.MonkeyPatch) -> dict:
     class _FakeProc:
         returncode = 0
 
-        async def communicate(self):
+        async def communicate(self, input=None):  # noqa: A002 - matches asyncio API
             return (b"", b"")
 
         async def wait(self):
@@ -89,7 +94,7 @@ def _patch_capture(monkeypatch: pytest.MonkeyPatch) -> dict:
         captured["cmd"] = list(cmd)
         return _FakeProc()
 
-    monkeypatch.setattr(pm.asyncio, "create_subprocess_exec", _fake_exec)
+    monkeypatch.setattr(proc.asyncio, "create_subprocess_exec", _fake_exec)
     return captured
 
 

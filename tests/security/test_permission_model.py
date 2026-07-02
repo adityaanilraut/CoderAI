@@ -195,7 +195,6 @@ def _make_agent(session: Session, registry: ToolRegistry, rules: ApprovalRules) 
         _sync_tracker=MagicMock(),
         _tool_approval_allowlist=rules,
         config=None,
-        _turn_ingested_untrusted=False,
     )
 
 

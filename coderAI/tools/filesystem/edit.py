@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from coderAI.core.tool_error_codes import ToolErrorCode
 from coderAI.system.locks import resource_manager
-from coderAI.tools.base import Tool
+from coderAI.tools.base import Tool, ToolPreview
 from coderAI.tools.undo import backup_store
 
 from coderAI.tools.filesystem._guards import (
@@ -37,6 +37,26 @@ class SearchReplaceTool(Tool):
     parameters_model = SearchReplaceParams
     requires_confirmation = True
     category = "filesystem"
+    # Same-path edits in one batch must serialize (no TOCTOU race).
+    batch_serialize_by_path = True
+
+    @staticmethod
+    def _apply(content: str, search: str, replace: str, replace_all: bool) -> str:
+        """The single search/replace semantics shared by execute() and preview()."""
+        if replace_all:
+            return content.replace(search, replace)
+        return content.replace(search, replace, 1)
+
+    def preview(self, arguments: dict[str, Any], original: Optional[str]) -> Optional[ToolPreview]:
+        """Resulting file content after the (first-only / all) replacement."""
+        if original is None:
+            return None
+        search = str(arguments.get("search", "") or "")
+        if not search:
+            return None
+        replace = str(arguments.get("replace", "") or "")
+        replace_all = bool(arguments.get("replace_all", False))
+        return ToolPreview(new_content=self._apply(original, search, replace, replace_all))
 
     async def execute(  # type: ignore[override]
         self, path: str, search: str, replace: str, replace_all: bool = False
@@ -108,12 +128,8 @@ class SearchReplaceTool(Tool):
                 # Create backup for undo support
                 backup_store.backup_file(str(path_obj), "modify")
 
-                if replace_all:
-                    new_content = content.replace(search, replace)
-                    count = content.count(search)
-                else:
-                    new_content = content.replace(search, replace, 1)
-                    count = 1
+                new_content = self._apply(content, search, replace, replace_all)
+                count = content.count(search) if replace_all else 1
 
                 try:
                     await asyncio.to_thread(_atomic_write_file, path_obj, new_content)
@@ -166,9 +182,25 @@ class ApplyDiffTool(Tool):
     parameters_model = ApplyDiffParams
     requires_confirmation = True
     category = "filesystem"
+    # Same-path patches in one batch must serialize (no TOCTOU race).
+    batch_serialize_by_path = True
 
     # How far from the stated line number to search for a matching hunk
     SEARCH_WINDOW = 50
+
+    def preview(self, arguments: dict[str, Any], original: Optional[str]) -> Optional[ToolPreview]:
+        """Show the model's own unified diff verbatim (the patch it asked to apply).
+
+        Rendering an after-the-fact before/after diff would hide the actual
+        patch text the user is approving, so the raw diff is surfaced directly.
+        """
+        if original is None:
+            return None
+        raw = arguments.get("diff", "")
+        diff_str = str(raw) if raw is not None else ""
+        if not diff_str:
+            return None
+        return ToolPreview(rendered_diff=diff_str)
 
     async def execute(self, path: str, diff: str) -> dict[str, Any]:  # type: ignore[override]
         """Apply a unified diff to a file."""

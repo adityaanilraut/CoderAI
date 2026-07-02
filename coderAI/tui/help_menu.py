@@ -9,7 +9,10 @@ HELP_MENU_ENTRIES = [
     ("/compact", "Summarize long context"),
     ("/reasoning", "Open reasoning picker · /reasoning <high|medium|low|none>"),
     ("/yolo", "Toggle auto-approve for high-risk tools"),
-    ("/allow-tool", "Always allow a tool this session · high-risk needs a scope: /allow-tool run_command <prefix>"),
+    (
+        "/allow-tool",
+        "Always allow a tool this session · high-risk needs a scope: /allow-tool run_command <prefix>",
+    ),
     ("/disallow-tool", "Remove a per-session tool allowlist entry"),
     ("/allowed-tools", "List tools already allowlisted this session"),
     ("/verbose", "Toggle reasoning + expanded tool cards"),

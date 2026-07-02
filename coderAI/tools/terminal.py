@@ -8,13 +8,14 @@ import shlex
 import shutil
 import signal
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, Field
 
 from coderAI.core.services import get_services
 from coderAI.core.tool_error_codes import ToolErrorCode
-from coderAI.system.proc import kill_process_group, new_session_kwargs
+from coderAI.system.proc import kill_process_group, new_session_kwargs, run_scrubbed, scrub_env
+from coderAI.system.safeguards import truncate_output
 from coderAI.tools.base import Tool
 
 logger = logging.getLogger(__name__)
@@ -93,17 +94,30 @@ _BLOCKED_BINARIES = frozenset({"mkfs", "shutdown", "reboot", "halt", "poweroff",
 
 # Bare targets that turn a recursive/forced ``rm`` into a wipe of root, home,
 # or the whole working directory. The pre-existing regex only caught ``/``/``~``.
-_DESTRUCTIVE_RM_TARGETS = frozenset(
-    {"/", "~", "~/", "/*", ".", "./", "*", "..", "../"}
-)
+_DESTRUCTIVE_RM_TARGETS = frozenset({"/", "~", "~/", "/*", ".", "./", "*", "..", "../"})
 
 # Shells / interpreters that can execute a just-downloaded script file. Used to
 # catch the split fetch-then-exec form (``curl -o x evil && sh x``).
 _SHELL_AND_INTERP = frozenset(
     {
-        "sh", "bash", "zsh", "fish", "dash", "ksh", "csh", "tcsh",
-        "python", "python2", "python3", "node", "bun", "deno",
-        "perl", "ruby", "php", "lua",
+        "sh",
+        "bash",
+        "zsh",
+        "fish",
+        "dash",
+        "ksh",
+        "csh",
+        "tcsh",
+        "python",
+        "python2",
+        "python3",
+        "node",
+        "bun",
+        "deno",
+        "perl",
+        "ruby",
+        "php",
+        "lua",
     }
 )
 
@@ -223,6 +237,7 @@ def _argv_is_blocked(command: str) -> bool:
         if _is_destructive_rm(argv):
             return True
     return _is_split_fetch_exec(segments)
+
 
 # Commands that require user confirmation
 DANGEROUS_PREFIXES = [
@@ -433,6 +448,9 @@ class RunCommandTool(Tool):
     )
     parameters_model = RunCommandParams
     requires_confirmation = True
+    # Arbitrary command execution — no blanket allow; scope by command-prefix.
+    high_risk_no_blanket = True
+    approval_scope = "command"
     timeout = None
 
     async def execute(  # type: ignore[override]
@@ -489,28 +507,16 @@ class RunCommandTool(Tool):
 
             # Try to use exec (no shell) for simple commands
             needs_shell = _needs_shell(command)
-            stdin_pipe = asyncio.subprocess.PIPE if input is not None else None
+
+            stdin_bytes = None
+            if input is not None:
+                stdin_bytes = input.encode("utf-8", errors="replace")[:65536]  # cap at 64KB
 
             if needs_shell:
-                process = await asyncio.create_subprocess_shell(
-                    command,
-                    stdin=stdin_pipe,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=working_dir,
-                    **new_session_kwargs(),
-                )
+                spawn_cmd: Union[str, List[str]] = command
             else:
                 try:
-                    args = shlex.split(command)
-                    process = await asyncio.create_subprocess_exec(
-                        *args,
-                        stdin=stdin_pipe,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
-                        cwd=working_dir,
-                        **new_session_kwargs(),
-                    )
+                    spawn_cmd = shlex.split(command)
                 except ValueError:
                     return {
                         "success": False,
@@ -521,78 +527,40 @@ class RunCommandTool(Tool):
                         "error_code": ToolErrorCode.MALFORMED_COMMAND,
                     }
 
-            # Wait for completion with timeout
-            stdin_bytes = None
-            if input is not None:
-                stdin_bytes = input.encode("utf-8", errors="replace")[:65536]  # cap at 64KB
-            try:
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(input=stdin_bytes), timeout=timeout
-                )
-                if process.returncode is None:
-                    await process.wait()
-            except asyncio.TimeoutError:
-                try:
-                    # SIGTERM the whole group, not just the leader: terminating
-                    # only the shell reaps it before its backgrounded
-                    # grandchildren (``bash -c 'sleep 1000 & wait'``), orphaning
-                    # them. Escalate to a group SIGKILL if it doesn't die.
-                    kill_process_group(process, signal.SIGTERM)
-                    try:
-                        await asyncio.wait_for(process.wait(), timeout=2)
-                    except asyncio.TimeoutError:
-                        kill_process_group(process)
-                        await process.wait()
-                except ProcessLookupError:
-                    pass
-                # Attempt to read any partial output that was buffered
-                try:
-                    stdout, stderr = await process.communicate()
-                except Exception:
-                    # Best-effort: the process was just killed for timing out;
-                    # if its pipes are already gone, report empty output.
-                    logger.debug("could not read output of timed-out process", exc_info=True)
-                    stdout, stderr = b"", b""
-                stdout_str = stdout.decode("utf-8", errors="replace")
-                stderr_str = stderr.decode("utf-8", errors="replace")
+            # Spawn with a scrubbed environment (secrets never reach a
+            # model-authored command) and process-group isolation; run_scrubbed
+            # enforces the timeout — group SIGTERM → SIGKILL, reaping any
+            # backgrounded grandchildren — and returns partial output on expiry.
+            returncode, stdout, stderr, timed_out = await run_scrubbed(
+                spawn_cmd,
+                cwd=working_dir,
+                timeout=timeout,
+                shell=needs_shell,
+                stdin=stdin_bytes,
+            )
+
+            stdout_str = stdout.decode("utf-8", errors="replace")
+            stderr_str = stderr.decode("utf-8", errors="replace")
+
+            if timed_out:
                 return {
                     "success": False,
                     "error": f"Command timed out after {timeout} seconds",
                     "error_code": ToolErrorCode.TIMEOUT,
                     "stdout": stdout_str,
                     "stderr": stderr_str,
-                    "returncode": process.returncode,
+                    "returncode": returncode,
                 }
-            except asyncio.CancelledError:
-                # Group SIGTERM → group SIGKILL; cleanup must not mask the cancellation.
-                try:
-                    kill_process_group(process, signal.SIGTERM)
-                    await asyncio.wait_for(process.wait(), timeout=1)
-                except Exception:
-                    kill_process_group(process)
-                raise
 
-            # Truncate very large output to prevent context overflow
-            stdout_str = stdout.decode("utf-8", errors="replace")
-            stderr_str = stderr.decode("utf-8", errors="replace")
-
+            # Truncate very large output to prevent context overflow (Phase 4.7:
+            # shared head+tail helper — the tail carries the command's summary).
             max_output = get_services().config.max_command_output
-            if len(stdout_str) > max_output:
-                stdout_str = (
-                    stdout_str[: max_output // 2]
-                    + f"\n\n... [truncated {len(stdout_str) - max_output} chars] ...\n\n"
-                    + stdout_str[-max_output // 2 :]
-                )
-            if len(stderr_str) > max_output:
-                stderr_str = (
-                    stderr_str[: max_output // 2]
-                    + f"\n\n... [truncated {len(stderr_str) - max_output} chars] ...\n\n"
-                    + stderr_str[-max_output // 2 :]
-                )
+            stdout_str, _ = truncate_output(stdout_str, max_chars=max_output)
+            stderr_str, _ = truncate_output(stderr_str, max_chars=max_output)
 
             return {
-                "success": process.returncode == 0,
-                "returncode": process.returncode,
+                "success": returncode == 0,
+                "returncode": returncode,
                 "stdout": stdout_str,
                 "stderr": stderr_str,
                 "command": command,
@@ -648,6 +616,9 @@ class RunBackgroundTool(Tool):
     description = "Start a command in the background (for long-running processes like servers)"
     parameters_model = RunBackgroundParams
     requires_confirmation = True
+    # Arbitrary command execution — no blanket allow; scope by command-prefix.
+    high_risk_no_blanket = True
+    approval_scope = "command"
 
     def __init__(self):
         super().__init__()
@@ -704,12 +675,16 @@ class RunBackgroundTool(Tool):
                 asyncio.subprocess.PIPE if capture_output else asyncio.subprocess.DEVNULL
             )
 
+            # Detached lifetime (we track it rather than await it), so we can't
+            # use run_scrubbed — but the child still gets a scrubbed env so a
+            # backgrounded command can't read secrets out of the environment.
             if needs_shell:
                 process = await asyncio.create_subprocess_shell(
                     command,
                     stdout=stdout_target,
                     stderr=stderr_target,
                     cwd=working_dir,
+                    env=scrub_env(),
                     **new_session_kwargs(),
                 )
             else:
@@ -720,6 +695,7 @@ class RunBackgroundTool(Tool):
                         stdout=stdout_target,
                         stderr=stderr_target,
                         cwd=working_dir,
+                        env=scrub_env(),
                         **new_session_kwargs(),
                     )
                 except ValueError:

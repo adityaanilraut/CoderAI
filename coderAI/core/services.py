@@ -24,6 +24,7 @@ T = TypeVar("T")
 if TYPE_CHECKING:
     from coderAI.core.agent_tracker import AgentTracker
     from coderAI.system.config import Config
+    from coderAI.system.history import HistoryManager
     from coderAI.system.locks import ResourceManager
     from coderAI.tools.mcp import MCPClient
     from coderAI.tools.memory import MemoryStore
@@ -49,6 +50,7 @@ class ToolServices:
         parent: Optional["ToolServices"] = None,
         config: Optional["Config"] = None,
         events: Any = None,
+        history: Optional["HistoryManager"] = None,
         http: Optional["HttpClient"] = None,
         memory_store: Optional["MemoryStore"] = None,
         backup_store: Optional["FileBackupStore"] = None,
@@ -60,6 +62,7 @@ class ToolServices:
         self._parent = parent
         self._config = config
         self._events = events
+        self._history = history
         self._http = http
         self._memory_store = memory_store
         self._backup_store = backup_store
@@ -113,6 +116,22 @@ class ToolServices:
         return event_emitter
 
     @property
+    def history(self) -> "HistoryManager":
+        """Session history manager; defaults to the process-wide singleton.
+
+        Re-reads the module singleton each access (like ``events``/``config``)
+        so tests that patch ``coderAI.system.history.history_manager`` — or its
+        methods — are observed by core.
+        """
+        if self._history is not None:
+            return self._history
+        if self._parent is not None:
+            return self._parent.history
+        from coderAI.system.history import history_manager
+
+        return history_manager
+
+    @property
     def memory_store(self) -> "MemoryStore":
         def _build() -> "MemoryStore":
             from coderAI.tools.memory import MemoryStore
@@ -159,12 +178,20 @@ class ToolServices:
 
     @property
     def mcp_client(self) -> "MCPClient":
-        def _build() -> "MCPClient":
-            from coderAI.tools.mcp import MCPClient
+        """Shared MCP client; defaults to the process-wide singleton.
 
-            return MCPClient()
+        Re-reads ``coderAI.tools.mcp.mcp_client`` each access (like
+        ``events``) rather than building a fresh client, so core, the tool
+        router, and tests that rebind or patch that singleton all observe the
+        same connected client.
+        """
+        if self._mcp_client is not None:
+            return self._mcp_client
+        if self._parent is not None:
+            return self._parent.mcp_client
+        from coderAI.tools.mcp import mcp_client
 
-        return self._resolve("mcp_client", _build)
+        return mcp_client
 
     @property
     def http(self) -> "HttpClient":

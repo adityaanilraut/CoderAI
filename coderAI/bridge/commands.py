@@ -151,10 +151,9 @@ async def _cmd_set_model(server: UIBridge, msg: Dict[str, Any]) -> None:
             context_controller.provider = old_provider
         server._emit_error("provider", f"Could not switch to {model}: {e}")
         return
-    server.agent.provider.set_cumulative_usage(
-        input_tokens=server.agent.total_prompt_tokens,
-        output_tokens=server.agent.total_completion_tokens,
-    )
+    # No usage re-sync: the Agent owns the running token totals and the loop
+    # attributes each call's usage from the response, so the freshly created
+    # provider's zeroed counters don't perturb session accounting.
     server.agent._configure_delegate_tool_context()
     # Persist the hot-switch on the active session so replays from
     # ``~/.coderAI/history/`` report the model that was actually used for
@@ -175,9 +174,7 @@ async def _cmd_allow_tool(server: UIBridge, msg: Dict[str, Any]) -> None:
     tool = str(msg.get("tool", "")).strip()
     scope = str(msg.get("scope", "")).strip()
     if not tool:
-        server.emit(
-            "warning", message="Usage: /allow-tool <tool-name> [command-prefix | path]"
-        )
+        server.emit("warning", message="Usage: /allow-tool <tool-name> [command-prefix | path]")
         return
     rules = _approval_rules(server)
     if rules is None:

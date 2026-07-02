@@ -1,6 +1,5 @@
 """Git tools for version control operations."""
 
-import asyncio
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -10,30 +9,20 @@ from pydantic import BaseModel, Field
 from coderAI.tools.base import Tool
 from coderAI.core.tool_error_codes import ToolErrorCode
 from coderAI.system.locks import resource_manager
+from coderAI.system.proc import run_scrubbed
+from coderAI.system.safeguards import truncate_output
 
 logger = logging.getLogger(__name__)
 
-MAX_GIT_OUTPUT_BYTES = 64_000
+MAX_GIT_OUTPUT_CHARS = 64_000
+
+_GIT_TRUNCATION_MARKER = "... [truncated {omitted} chars — re-run with a narrower scope] ..."
 
 
-def _truncate_output(text: str, max_bytes: int = MAX_GIT_OUTPUT_BYTES) -> tuple[str, bool]:
-    """Truncate text to max_bytes, returning (text, was_truncated)."""
-    encoded = text.encode("utf-8")
-    if len(encoded) <= max_bytes:
-        return text, False
-    head = encoded[:max_bytes]
-    # Avoid splitting a multi-byte UTF-8 codepoint
-    while head:
-        try:
-            head.decode("utf-8")
-            break
-        except UnicodeDecodeError:
-            head = head[:-1]
-    head_str = head.decode("utf-8")
-    omitted = len(encoded) - max_bytes
-    return (
-        head_str + f"\n\n[... truncated, {omitted} more bytes — re-run with a narrower scope ...]",
-        True,
+def _truncate_output(text: str, max_chars: int = MAX_GIT_OUTPUT_CHARS) -> tuple[str, bool]:
+    """Truncate git output via the shared helper, returning (text, was_truncated)."""
+    return truncate_output(
+        text, max_chars=max_chars, mode="head_tail", marker=_GIT_TRUNCATION_MARKER
     )
 
 
@@ -78,15 +67,14 @@ async def _run_git_command(
             return scope_error
 
     async def _exec():
-        process = await asyncio.create_subprocess_exec(
-            "git",
-            *args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=repo_path,
+        # Scrub secrets from the child env: git subcommands can shell out
+        # (hooks, credential helpers, ``git config alias.* = !sh -c …``), so an
+        # inherited ``$ANTHROPIC_API_KEY`` etc. must not be reachable. scrub_env
+        # is a denylist, so HOME/PATH/GIT_* the user set survive untouched.
+        returncode, stdout, stderr, _ = await run_scrubbed(
+            ["git", *args], cwd=repo_path, shell=False
         )
-        stdout, stderr = await process.communicate()
-        return process.returncode, stdout, stderr
+        return returncode, stdout, stderr
 
     if needs_lock:
         async with resource_manager.git_lock():

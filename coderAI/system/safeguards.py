@@ -605,6 +605,51 @@ _SANITIZE_PATTERNS: tuple[re.Pattern, ...] = (
 )
 
 
+_TRUNCATION_MARKER = "... [truncated {omitted} chars] ..."
+
+
+def truncate_output(
+    text: str,
+    *,
+    max_chars: int,
+    mode: str = "head_tail",
+    marker: str = _TRUNCATION_MARKER,
+) -> Tuple[str, bool]:
+    """Cap oversized tool output, returning ``(text, was_truncated)`` (Phase 4.7).
+
+    Single shared implementation for the git / terminal / testing tools, which
+    previously each rolled their own (divergent thresholds, markers, and
+    head-vs-head+tail behaviour). ``search.py`` keeps its own pagination-style
+    truncation — it is genuinely different.
+
+    * ``mode="head_tail"`` (default) keeps the first and last ``max_chars // 2``
+      characters and elides the middle. Preferred for build/test/command output
+      where the tail carries the summary or the failing assertion.
+    * ``mode="head"`` keeps only the leading ``max_chars`` characters.
+
+    ``marker`` is formatted with ``{omitted}`` — the number of characters
+    removed — and placed at the elision point (middle for ``head_tail``, end for
+    ``head``), fenced with blank lines. ``max_chars <= 0`` disables truncation.
+    """
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text, False
+
+    if mode == "head":
+        omitted = len(text) - max_chars
+        rendered = marker.format(omitted=omitted)
+        return f"{text[:max_chars]}\n\n{rendered}", True
+
+    if mode != "head_tail":
+        raise ValueError(f"Unknown truncation mode: {mode!r}")
+
+    half = max_chars // 2
+    head = text[:half]
+    tail = text[-half:] if half else ""
+    omitted = len(text) - len(head) - len(tail)
+    rendered = marker.format(omitted=omitted)
+    return f"{head}\n\n{rendered}\n\n{tail}", True
+
+
 def sanitize_for_log(text: str) -> str:
     """Redact API keys, auth headers, and bearer tokens from *text*.
 

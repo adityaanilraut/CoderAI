@@ -175,60 +175,6 @@ class ApprovalScreen(ModalScreen[tuple[bool, bool]]):
     }}
     """
 
-    _RISK_BASE = [
-        ("Runs in project sandbox", True),
-    ]
-
-    _RISK_OVERRIDES: Dict[str, List[tuple[str, bool]]] = {
-        "run_command": [
-            ("Could spawn child processes", False),
-            ("Writes to filesystem", False),
-        ],
-        "run_background": [
-            ("Long-running process", False),
-            ("Could consume resources", False),
-        ],
-        "write_file": [
-            ("Writes to filesystem", False),
-            ("Could overwrite existing files", False),
-        ],
-        "search_replace": [
-            ("Modifies files in place", False),
-            ("Could leave dirty working tree", False),
-        ],
-        "apply_diff": [
-            ("Modifies files in place", False),
-            ("Could leave dirty working tree", False),
-        ],
-        "delete_file": [
-            ("Permanently deletes files", False),
-            ("Irreversible without git", False),
-        ],
-        "git_commit": [
-            ("Creates permanent git history", False),
-            ("Could push on next sync", False),
-        ],
-        "git_push": [
-            ("Transmits data to remote", False),
-            ("Affects shared repository", False),
-        ],
-        "git_checkout": [
-            ("Switches working tree", False),
-            ("Could cause merge conflicts", False),
-        ],
-        "git_reset": [
-            ("Destroys uncommitted work", False),
-            ("Irreversible without reflog", False),
-        ],
-    }
-
-    @classmethod
-    def _get_risk_factors(cls, tool_name: str) -> List[tuple[str, bool]]:
-        overrides = cls._RISK_OVERRIDES.get(tool_name)
-        if overrides is None:
-            return cls._RISK_BASE
-        return cls._RISK_BASE + overrides
-
     def __init__(self, approval: Dict[str, Any]) -> None:
         super().__init__()
         self.approval = approval
@@ -279,11 +225,13 @@ class ApprovalScreen(ModalScreen[tuple[bool, bool]]):
             if not diff:
                 yield Label(args_text)
 
-            risk_items = self._get_risk_factors(tool_name)
-            risk_lines = []
-            for label, ok in risk_items[:6]:
-                g, c = (Glyphs.TOOL_OK, Tokens.AGENT) if ok else (Glyphs.APPROVAL, Tokens.WARN)
-                risk_lines.append(f"  [{c}]{g}[/] [{Tokens.TEXT}]{label}[/]")
+            # Risk factors are supplied by the bridge (single source in
+            # bridge/tool_metadata.tool_risk_factors); the screen only renders.
+            risk_factors = a.get("riskFactors") or []
+            risk_lines = [
+                f"  [{Tokens.WARN}]{Glyphs.APPROVAL}[/] [{Tokens.TEXT}]{escape(str(factor))}[/]"
+                for factor in risk_factors[:6]
+            ]
             if risk_lines:
                 yield Label(
                     f"[{Tokens.TEXT_MUTED}]WHY IT'S {risk.upper()} RISK[/]\n"
@@ -568,8 +516,7 @@ class FilePickerScreen(FuzzyPickerScreen):
             list_id="picker-list",
             footer_id="picker-footer",
             placeholder=placeholder or "🔍 Type to search project files to pin...",
-            footer_help=footer_help
-            or f"[{Tokens.TEXT_MUTED}]↑↓ navigate  ↵ pin  ⎋ close[/]",
+            footer_help=footer_help or f"[{Tokens.TEXT_MUTED}]↑↓ navigate  ↵ pin  ⎋ close[/]",
         )
         self.files = files
 

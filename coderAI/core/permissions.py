@@ -18,20 +18,35 @@ from __future__ import annotations
 
 import os
 import shlex
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 __all__ = [
-    "HIGH_RISK_NO_BLANKET",
-    "SCOPABLE_TOOLS",
     "ApprovalRules",
+    "ToolResolver",
+    "is_high_risk_no_blanket",
     "tool_requires_confirmation",
 ]
 
-# Tools for which a blanket, name-level "always allow" is forbidden. Each of
-# these can escalate to arbitrary local effect (code/command execution, file
-# clobber) depending on its arguments, so approval must be per-call or scoped
-# to a reviewed prefix/path — never "allow every run_command forever".
-HIGH_RISK_NO_BLANKET = frozenset(
+# Resolver signature: tool name → the live ``Tool`` object (or ``None`` when the
+# name isn't a registered local tool). ``ApprovalRules`` reads each tool's
+# ``high_risk_no_blanket`` / ``approval_scope`` attributes through this instead
+# of a hand-maintained name list (Phase 4.2).
+ToolResolver = Callable[[str], Any]
+
+# Static fail-closed fallback used only when no resolver is supplied (tests /
+# legacy call sites). It mirrors the attributes declared on the shipped Tool
+# classes so behaviour is identical whether or not the registry is available.
+# The single source of truth remains the Tool classes; this table exists so a
+# bare ``ApprovalRules()`` still refuses blanket-allow for the known high-risk
+# tools and scopes them correctly.
+_STATIC_SCOPE: Dict[str, str] = {
+    "run_command": "command",
+    "run_background": "command",
+    "write_file": "path",
+    "delete_file": "path",
+    "move_file": "path",
+}
+_STATIC_HIGH_RISK = frozenset(
     {
         "run_command",
         "run_background",
@@ -43,23 +58,38 @@ HIGH_RISK_NO_BLANKET = frozenset(
     }
 )
 
-# Subset of high-risk tools that support an argument-scoped allow rule. For the
-# rest (``python_repl``, ``package_manager``) there is no safe prefix
-# abstraction, so they are always per-call.
-SCOPABLE_TOOLS = frozenset(
-    {
-        "run_command",
-        "run_background",
-        "write_file",
-        "delete_file",
-        "move_file",
-    }
-)
-
 # Shell control operators. A scoped command-prefix rule must never match a
 # command that chains, redirects, or substitutes — otherwise a rule allowing
 # "git status" would also authorize "git status; rm -rf /".
 _SHELL_CONTROL = (";", "&&", "||", "|", "`", "$(", "${", ">", "<", "&", "\n")
+
+
+def is_high_risk_no_blanket(tool_name: str, resolver: Optional[ToolResolver] = None) -> bool:
+    """True if *tool_name* forbids a blanket, name-level "always allow" (Phase 4.2).
+
+    With a *resolver*, reads the tool's ``high_risk_no_blanket`` attribute and
+    fails closed (high-risk) for any name the resolver can't map to a Tool.
+    Without a resolver, falls back to the static table of shipped high-risk
+    tools (unknown names are treated as *not* high-risk so low-risk tools stay
+    blanket-allowable in the resolver-less/test path).
+    """
+    if resolver is not None:
+        tool = resolver(tool_name)
+        if tool is None:
+            return True  # fail-closed: an unresolved tool can't be vouched safe
+        return bool(getattr(tool, "high_risk_no_blanket", False))
+    return tool_name in _STATIC_HIGH_RISK
+
+
+def _approval_scope(tool_name: str, resolver: Optional[ToolResolver] = None) -> Optional[str]:
+    """Scope kind (``"command"`` / ``"path"`` / ``None``) for *tool_name*."""
+    if resolver is not None:
+        tool = resolver(tool_name)
+        if tool is None:
+            return None
+        scope = getattr(tool, "approval_scope", None)
+        return scope if scope in ("command", "path") else None
+    return _STATIC_SCOPE.get(tool_name)
 
 
 def tool_requires_confirmation(tool: Any) -> bool:
@@ -133,14 +163,25 @@ def _path_matches_scope(path: str, scope: str) -> bool:
 class ApprovalRules:
     """Session-scoped "always allow" rules, keyed by tool + optional scope.
 
-    Bare-name rules are only accepted for tools outside
-    :data:`HIGH_RISK_NO_BLANKET`. High-risk tools must be either approved on
-    every call or scoped to a reviewed command-prefix / path.
+    Bare-name rules are only accepted for tools whose Tool class does not set
+    ``high_risk_no_blanket``. High-risk tools must be either approved on every
+    call or scoped to a reviewed command-prefix / path (``approval_scope``).
+
+    A *resolver* (``Agent`` → ``self.tools.get``) supplies the per-tool
+    attributes; without one, a static fail-closed fallback covers the shipped
+    high-risk tools so tests and legacy call sites behave identically.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, resolver: Optional[ToolResolver] = None) -> None:
+        self._resolver = resolver
         self._names: set[str] = set()
         self._scopes: Dict[str, set[str]] = {}
+
+    def _is_high_risk(self, tool_name: str) -> bool:
+        return is_high_risk_no_blanket(tool_name, self._resolver)
+
+    def _scope_kind(self, tool_name: str) -> Optional[str]:
+        return _approval_scope(tool_name, self._resolver)
 
     def allow(self, tool_name: str, scope: Optional[str] = None) -> Tuple[bool, str]:
         """Record an allow rule. Returns ``(accepted, user_message)``."""
@@ -149,17 +190,17 @@ class ApprovalRules:
             return False, "Usage: /allow-tool <tool-name> [command-prefix | path]"
         scope = (scope or "").strip()
         if scope:
-            if tool_name not in SCOPABLE_TOOLS:
+            if self._scope_kind(tool_name) is None:
                 return False, (
                     f"'{tool_name}' does not support a scoped allow rule; "
                     "approve each call instead."
                 )
             self._scopes.setdefault(tool_name, set()).add(scope)
             return True, f"Scoped approval added: {tool_name} → “{scope}”."
-        if tool_name in HIGH_RISK_NO_BLANKET:
+        if self._is_high_risk(tool_name):
             hint = (
                 f" Scope it instead: /allow-tool {tool_name} <command-prefix | path>."
-                if tool_name in SCOPABLE_TOOLS
+                if self._scope_kind(tool_name) is not None
                 else " It must be approved on every call."
             )
             return False, (
@@ -182,18 +223,18 @@ class ApprovalRules:
         if tool_name in self._names:
             # High-risk names never enter ``_names`` via ``allow()``; this guard
             # is belt-and-suspenders in case one is injected some other way.
-            return tool_name not in HIGH_RISK_NO_BLANKET
+            return not self._is_high_risk(tool_name)
         scopes = self._scopes.get(tool_name)
         if not scopes:
             return False
         args = arguments if isinstance(arguments, dict) else {}
         return any(self._scope_matches(tool_name, s, args) for s in scopes)
 
-    @staticmethod
-    def _scope_matches(tool_name: str, scope: str, args: Dict[str, Any]) -> bool:
-        if tool_name in ("run_command", "run_background"):
+    def _scope_matches(self, tool_name: str, scope: str, args: Dict[str, Any]) -> bool:
+        kind = self._scope_kind(tool_name)
+        if kind == "command":
             return _command_matches_prefix(str(args.get("command", "")), scope)
-        if tool_name in ("write_file", "delete_file", "move_file"):
+        if kind == "path":
             path = args.get("path") or args.get("file_path") or ""
             return _path_matches_scope(str(path), scope)
         return False

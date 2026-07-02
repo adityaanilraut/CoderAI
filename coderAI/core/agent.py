@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from coderAI.system.config import config_manager
 from coderAI.context.context import ContextManager
 from coderAI.system.cost import CostTracker
-from coderAI.system.history import Message, Session, checkpoint_label, history_manager
+from coderAI.system.history import Message, Session, checkpoint_label
 from coderAI.context.context_controller import (
     ContextController,
     RESPONSE_TOKEN_RESERVE,
@@ -32,16 +32,20 @@ from coderAI.system_prompt import (
 from coderAI.tools import ToolRegistry
 from coderAI.tools.discovery import discover_tools
 from coderAI.tools.context_manage import ManageContextTool
-from coderAI.system.events import event_emitter
 from coderAI.core.agents import load_agent_persona, AgentPersona, expand_persona_tools
-from coderAI.core.agent_tracker import agent_tracker, AgentStatus, AgentInfo
+from coderAI.core.agent_tracker import AgentStatus, AgentInfo
 from coderAI.core.permissions import ApprovalRules
+from coderAI.core.services import get_services
 from coderAI.core.provenance import fence_project_context
 from coderAI.system.hooks_manager import HooksManager
 from coderAI.system.read_cache import FileReadCache
 from coderAI.skills import SkillManager, LocalSkillSource, HasnaSkillSource, SkillSource
 
 logger = logging.getLogger(__name__)
+
+# Sentinel for ``Agent.tracker_update`` so callers can leave a field untouched
+# (distinct from explicitly passing ``None``, which clears ``current_tool``).
+_UNSET: Any = object()
 
 
 class Agent:
@@ -141,33 +145,36 @@ class Agent:
         self._save_executor: Optional[ThreadPoolExecutor] = None
         self._pending_saves: Set["Future[Any]"] = set()
 
-        # Cumulative token usage tracking (#13)
+        # Cumulative token usage tracking (#13). The Agent is the source of
+        # truth for session totals; each turn adds the LLM response's per-call
+        # ``usage`` here (see ExecutionLoop._call_llm_with_retry).
         self.total_prompt_tokens: int = 0
         self.total_completion_tokens: int = 0
         self.total_tokens: int = 0
-
-        # Non-session scratch buffer: assistant text from each LLM turn while
-        # handling one user message (tool loops). Used so IPC ``assistant_end``
-        # can carry the full reply, not only the last model turn.
-        self._assistant_reply_parts: List[str] = []
+        self.total_cache_creation_tokens: int = 0
+        self.total_cache_read_tokens: int = 0
 
         # Register with global agent tracker for observability / cancellation
         self.tracker_info: Optional[AgentInfo] = None
+
+        # Agent-lifetime flags managed by ExecutionLoop but owned here as real
+        # declared attributes (Phase 4.1) rather than attributes conjured on the
+        # agent via getattr/setattr from the loop.
+        self._mcp_initialized: bool = False
+        self._workspace_trust_checked: bool = False
 
         # Per-command approval cache for project hooks. Keyed by command string
         # so new or changed hooks re-prompt instead of inheriting an approval.
         self._hooks_approved: Dict[str, bool] = {}
         # Argument-scoped "always allow" rules (Phase 4.2). High-risk tools
         # (run_command/write_file/…) cannot be blanket-allowed by name; they may
-        # only be scoped to a reviewed command-prefix / path. Initialized eagerly
-        # so the tool executor never races on first access.
-        self._tool_approval_allowlist: ApprovalRules = ApprovalRules()
-
-        # Egress gate taint flag (Phase 3.4). Flips true once this user turn has
-        # ingested UNTRUSTED_EXTERNAL tool output (web/MCP); once armed, network
-        # egress tools require confirmation even if read-only/allowlisted. Reset
-        # per user message in ExecutionLoop.run.
-        self._turn_ingested_untrusted: bool = False
+        # only be scoped to a reviewed command-prefix / path. The resolver reads
+        # each tool's declared ``high_risk_no_blanket`` / ``approval_scope`` from
+        # the live registry, so a new high-risk tool needs no edit here.
+        # Initialized eagerly so the tool executor never races on first access.
+        self._tool_approval_allowlist: ApprovalRules = ApprovalRules(
+            resolver=lambda name: self.tools.get(name)
+        )
 
         self.hooks_manager = HooksManager(self)
 
@@ -203,7 +210,7 @@ class Agent:
             os.environ.get("CODERAI_ALLOW_OUTSIDE_PROJECT") == "1"
         )
         if active:
-            event_emitter.emit(
+            get_services().events.emit(
                 "agent_warning",
                 message=(
                     "allow_outside_project is ON — file tools may read/write outside "
@@ -221,7 +228,7 @@ class Agent:
         reasons = result.get("reasons") or []
         if not reasons:
             return
-        event_emitter.emit(
+        get_services().events.emit(
             "agent_warning",
             message="Project sanity check: " + "; ".join(reasons),
         )
@@ -260,57 +267,10 @@ class Agent:
         if isinstance(plan_tool, CreatePlanTool):
             plan_tool.project_root = self.config.project_root
 
-        # Filter web tools if not allowed for main agent. Sub-agents always
-        # keep web tools so research delegations work.
-        # ``http_request`` is *also* gated here — it was inadvertently left on
-        # the main agent before, giving a back-door to web access even when
-        # web_tools_in_main=False.
-        if not (self.is_subagent or self.config.web_tools_in_main):
-            to_remove = [
-                "web_search",
-                "read_url",
-                "download_file",
-                "http_request",
-                "wikipedia_search",
-                "read_feed",
-                "sitemap_discover",
-            ]
-            removed = [n for n in to_remove if n in registry.tools]
-            for name in removed:
-                del registry.tools[name]
-            if removed:
-                logger.info(
-                    "web_tools_in_main=False — removed from main agent: %s",
-                    ", ".join(removed),
-                )
-
-        from coderAI.tools.desktop import is_macos, DESKTOP_TOOL_NAMES
-
-        if not is_macos():
-            removed_desktop = [n for n in DESKTOP_TOOL_NAMES if n in registry.tools]
-            for name in removed_desktop:
-                del registry.tools[name]
-            if removed_desktop:
-                logger.info(
-                    "Non-macOS host — removed desktop tools: %s",
-                    ", ".join(removed_desktop),
-                )
-
-        # Gate browser tools — remove if Playwright is not installed.
-        try:
-            import playwright  # noqa: F401
-        except ImportError:
-            from coderAI.tools.browser import BROWSER_TOOL_NAMES
-
-            removed_browser = [n for n in BROWSER_TOOL_NAMES if n in registry.tools]
-            for name in removed_browser:
-                del registry.tools[name]
-            if removed_browser:
-                logger.info(
-                    "Playwright not installed — removed browser tools: %s. "
-                    "Install with: pip install coderAI[browser] && playwright install chromium",
-                    ", ".join(removed_browser),
-                )
+        # Generic registry gating (Phase 4.2): tools declare their own
+        # availability via ``platforms`` / ``requires_package`` / ``network_gate``
+        # class attributes rather than being named in hand-maintained lists here.
+        self._filter_gated_tools(registry)
 
         # Phase 4.1 fail-closed guard: every registered tool must declare a
         # safety class. A new tool that forgets refuses to start rather than
@@ -319,6 +279,66 @@ class Agent:
         registry.validate_classifications()
 
         return registry
+
+    def _filter_gated_tools(self, registry: ToolRegistry) -> None:
+        """Drop tools whose declared gating attributes exclude them (Phase 4.2).
+
+        * ``platforms`` — the host ``sys.platform`` must be in the set (the macOS
+          desktop-automation tools declare ``frozenset({"darwin"})``).
+        * ``requires_package`` — the named optional dependency must be importable
+          (browser tools declare ``"playwright"``).
+        * ``network_gate`` — network-egress web tools are removed from the *main*
+          agent when ``web_tools_in_main`` is False; sub-agents keep them so
+          research delegations still work.
+        """
+        import importlib.util
+        import sys
+
+        def _package_available(name: str) -> bool:
+            try:
+                return importlib.util.find_spec(name) is not None
+            except (ImportError, ValueError):
+                return False
+
+        current_platform = sys.platform
+        drop_network = not (self.is_subagent or self.config.web_tools_in_main)
+
+        removed_platform: List[str] = []
+        removed_package: List[str] = []
+        removed_network: List[str] = []
+
+        for name, tool in list(registry.tools.items()):
+            platforms = getattr(tool, "platforms", None)
+            if platforms is not None and current_platform not in platforms:
+                del registry.tools[name]
+                removed_platform.append(name)
+                continue
+            package = getattr(tool, "requires_package", None)
+            if package is not None and not _package_available(package):
+                del registry.tools[name]
+                removed_package.append(name)
+                continue
+            if drop_network and getattr(tool, "network_gate", False):
+                del registry.tools[name]
+                removed_network.append(name)
+
+        if removed_network:
+            logger.info(
+                "web_tools_in_main=False — removed from main agent: %s",
+                ", ".join(sorted(removed_network)),
+            )
+        if removed_platform:
+            logger.info(
+                "Host platform %s — removed platform-gated tools: %s",
+                current_platform,
+                ", ".join(sorted(removed_platform)),
+            )
+        if removed_package:
+            logger.info(
+                "Optional dependency missing — removed tools requiring it: %s. "
+                "Browser tools need: pip install coderAI[browser] && playwright install chromium",
+                ", ".join(sorted(removed_package)),
+            )
 
     def _configure_delegate_tool_context(self) -> None:
         """Keep the delegation tool aligned with the current agent state."""
@@ -390,12 +410,9 @@ class Agent:
             self._replace_provider()
             if self.session:
                 self.session.model = self.model
-            self.provider.set_cumulative_usage(
-                input_tokens=self.total_prompt_tokens,
-                output_tokens=self.total_completion_tokens,
-                cache_creation_tokens=getattr(self, "total_cache_creation_tokens", 0),
-                cache_read_tokens=getattr(self, "total_cache_read_tokens", 0),
-            )
+            # No usage re-sync needed: the Agent owns the running totals and the
+            # loop attributes each call's usage from the response, so the fresh
+            # provider's zeroed counters don't affect session accounting.
 
         self._cached_system_prompt = None  # invalidate before rebuild
         self._rebuild_tool_registry()
@@ -473,7 +490,7 @@ class Agent:
         # appendix mirrors mcp_client.discovered_tools, so toggling a server
         # on/off via /mcp must force a rebuild or the appendix goes stale.
         try:
-            from coderAI.tools.mcp import mcp_client
+            mcp_client = get_services().mcp_client
 
             mcp_fns = sorted(
                 f"{t.get('server', '')}__{t.get('name', '')}" for t in mcp_client.discovered_tools
@@ -645,6 +662,8 @@ class Agent:
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
         self.total_tokens = 0
+        self.total_cache_creation_tokens = 0
+        self.total_cache_read_tokens = 0
         self._hooks_approved.clear()
         allowlist = getattr(self, "_tool_approval_allowlist", None)
         if allowlist is not None:
@@ -656,7 +675,7 @@ class Agent:
             self._wire_read_cache()
         provider = getattr(self, "provider", None)
         if provider is not None:
-            provider.set_cumulative_usage()
+            provider.reset_usage()
 
     def create_session(
         self,
@@ -682,7 +701,7 @@ class Agent:
                     plan_path.unlink()
             except Exception:
                 pass
-        self.session = history_manager.create_session(model=self.model)
+        self.session = get_services().history.create_session(model=self.model)
         # Add system prompt as the first message
         self.session.add_message("system", self._get_system_prompt())
         return self.session
@@ -690,22 +709,10 @@ class Agent:
     def load_session(self, session_id: str) -> Optional[Session]:
         """Load an existing session."""
         self._reset_session_accounting()
-        self.session = history_manager.load_session(session_id)
+        self.session = get_services().history.load_session(session_id)
         if self.session:
             self._refresh_session_system_prompt()
         return self.session
-
-    def realign_provider_usage_counters(self) -> None:
-        """Sync provider cumulative counters to the agent's current totals."""
-        provider = getattr(self, "provider", None)
-        if provider is None:
-            return
-        provider.set_cumulative_usage(
-            input_tokens=self.total_prompt_tokens,
-            output_tokens=self.total_completion_tokens,
-            cache_creation_tokens=getattr(self, "total_cache_creation_tokens", 0),
-            cache_read_tokens=getattr(self, "total_cache_read_tokens", 0),
-        )
 
     def save_session(self):
         """Persist the current session without blocking the agent loop.
@@ -727,14 +734,14 @@ class Agent:
             asyncio.get_running_loop()
         except RuntimeError:
             # No event loop on this thread — safe to write inline.
-            history_manager.save_session_data(snapshot)
+            get_services().history.save_session_data(snapshot)
             return
 
         if self._save_executor is None:
             self._save_executor = ThreadPoolExecutor(
                 max_workers=1, thread_name_prefix="coderAI-save"
             )
-        future = self._save_executor.submit(history_manager.save_session_data, snapshot)
+        future = self._save_executor.submit(get_services().history.save_session_data, snapshot)
         self._pending_saves.add(future)
 
         def _on_done(f: "Future[Any]") -> None:
@@ -778,9 +785,9 @@ class Agent:
         if not self.session:
             return False
 
-        event_emitter.emit(
+        get_services().events.emit(
             "agent_status",
-            message="[bold cyan]Force compacting context...[/bold cyan]",
+            message="Force compacting context...",
         )
 
         # Use a local override instead of mutating the shared config object
@@ -871,15 +878,15 @@ class Agent:
                     if hooks_data:
                         await self.hooks_manager.run_hooks("*", "on_compact", {}, hooks_data)
 
-                    event_emitter.emit(
+                    get_services().events.emit(
                         "agent_status",
-                        message="[bold green]Context compacted successfully![/bold green]",
+                        message="Context compacted successfully!",
                     )
                     return True
 
-            event_emitter.emit(
+            get_services().events.emit(
                 "agent_status",
-                message="[dim]Context already compact or could not be compacted.[/dim]",
+                message="Context already compact or could not be compacted.",
             )
             return False
 
@@ -891,7 +898,7 @@ class Agent:
         self, task: str, role: Optional[str] = None, parent_id: Optional[str] = None
     ) -> AgentInfo:
         """Register this agent with the global tracker."""
-        self.tracker_info = agent_tracker.register(
+        self.tracker_info = get_services().agent_tracker.register(
             name=self.persona.name if self.persona else "main",
             role=role or (self.persona.description if self.persona else None),
             model=self.model,
@@ -905,13 +912,41 @@ class Agent:
         self._tracker_start_cost = self.cost_tracker.get_total_cost()
         self.tracker_info.current_task = task
         self.tracker_info.status = AgentStatus.THINKING
-        event_emitter.emit("agent_lifecycle", action="started", info=self.tracker_info)
+        get_services().events.emit("agent_lifecycle", action="started", info=self.tracker_info)
 
         # Keep DelegateTaskTool aware of who the parent agent is so
         # sub-agents inherit the model and link correctly in the tracker.
         self._configure_delegate_tool_context()
 
         return self.tracker_info
+
+    def tracker_update(
+        self,
+        *,
+        status: Any = _UNSET,
+        current_tool: Any = _UNSET,
+        current_task: Any = _UNSET,
+        sync: bool = True,
+    ) -> None:
+        """Mutate tracker fields through the Agent (Phase 4.1).
+
+        The execution loop and tool executor used to write ``tracker_info.status``
+        / ``current_tool`` directly; those field writes now funnel through here so
+        tracker mutation stays owned by the Agent. No-op when there is no active
+        tracker. Pass ``sync=False`` to batch several field updates without an
+        intermediate ``_sync_tracker`` emit.
+        """
+        info = self.tracker_info
+        if info is None:
+            return
+        if status is not _UNSET:
+            info.status = status
+        if current_tool is not _UNSET:
+            info.current_tool = current_tool
+        if current_task is not _UNSET:
+            info.current_task = current_task
+        if sync:
+            self._sync_tracker()
 
     def _sync_tracker(self):
         """Sync internal token counters to the tracker info."""
@@ -925,7 +960,7 @@ class Agent:
             msgs = self.session.get_messages_for_api()
             info.context_used_tokens = self.context_controller.estimate_tokens(msgs)
         # Let the UI refresh its agents table between lifecycle start/end.
-        event_emitter.emit("agent_tracker_sync", info=info)
+        get_services().events.emit("agent_tracker_sync", info=info)
 
     def _finish_tracker(self, error: bool = False):
         """Mark this agent as done in the tracker and emit completion event."""
@@ -937,7 +972,7 @@ class Agent:
         if info.status != AgentStatus.CANCELLED:
             info.status = AgentStatus.ERROR if error else AgentStatus.DONE
         info.finished_at = _time.time()
-        event_emitter.emit("agent_lifecycle", action="finished", info=info)
+        get_services().events.emit("agent_lifecycle", action="finished", info=info)
 
     async def process_message(self, user_message: str, progress_callback=None) -> Dict[str, Any]:
         """Process a user message using ExecutionLoop.
@@ -1043,8 +1078,21 @@ class Agent:
         return str(result.get("content", "") or "")
 
     def get_model_info(self) -> Dict[str, Any]:
-        """Get information about current model."""
-        return self.provider.get_model_info()  # type: ignore[no-any-return]
+        """Get information about the current model.
+
+        The provider supplies static details (name, model, endpoint), but the
+        token totals come from the Agent — the source of truth for the session —
+        so they stay continuous across a mid-session provider/model swap.
+        """
+        info: Dict[str, Any] = self.provider.get_model_info()
+        info["total_input_tokens"] = self.total_prompt_tokens
+        info["total_output_tokens"] = self.total_completion_tokens
+        info["total_tokens"] = self.total_tokens
+        if "cache_creation_tokens" in info or self.total_cache_creation_tokens:
+            info["cache_creation_tokens"] = self.total_cache_creation_tokens
+        if "cache_read_tokens" in info or self.total_cache_read_tokens:
+            info["cache_read_tokens"] = self.total_cache_read_tokens
+        return info
 
     async def close(self) -> None:
         """Clean up resources (HTTP sessions, background processes, etc.)."""

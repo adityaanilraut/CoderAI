@@ -9,14 +9,14 @@ from coderAI.system.history import history_manager
 
 @click.group(invoke_without_command=True)
 @click.pass_context
-def history(ctx):
+def history(ctx: click.Context) -> None:
     """Manage conversation history."""
     if ctx.invoked_subcommand is None:
         click.echo(ctx.get_help())
 
 
 @history.command("list")
-def history_list():
+def history_list() -> None:
     """List all conversation sessions."""
     from coderAI.ui.display import display
 
@@ -29,7 +29,7 @@ def history_list():
 
 @history.command("clear")
 @click.confirmation_option(prompt="Are you sure you want to clear all history?")
-def history_clear():
+def history_clear() -> None:
     """Clear all conversation history."""
     from coderAI.ui.display import display
 
@@ -39,7 +39,7 @@ def history_clear():
 
 @history.command("delete")
 @click.argument("session_id")
-def history_delete(session_id):
+def history_delete(session_id: str) -> None:
     """Delete a specific session."""
     from coderAI.ui.display import display
 

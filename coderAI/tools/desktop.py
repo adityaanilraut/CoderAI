@@ -12,13 +12,8 @@ from pydantic import BaseModel, Field
 from coderAI.tools.base import Tool
 from coderAI.system.locks import resource_manager
 
-# Tool names used for platform gating in Agent._create_tool_registry.
-DESKTOP_TOOL_NAMES: tuple[str, ...] = (
-    "run_applescript",
-    "get_accessibility_tree",
-    "click_ui_element",
-    "type_keystrokes",
-)
+# macOS-only availability is declared per tool via ``platforms`` (Phase 4.2);
+# Agent._create_tool_registry drops platform-mismatched tools generically.
 
 # Validation pattern: app names must be alphanumeric, spaces, hyphens, dots.
 _SAFE_APP_NAME_RE = re.compile(r"^[\w \-\.]+$")
@@ -131,6 +126,7 @@ class RunAppleScriptTool(Tool):
         "getting system state, or complex UI scripting."
     )
     category = "desktop"
+    platforms = frozenset({"darwin"})
     parameters_model = RunAppleScriptParams
     requires_confirmation = True
     timeout = 35.0
@@ -194,6 +190,7 @@ class GetAccessibilityTreeTool(Tool):
         "Useful for finding the names, roles, and descriptions of UI elements to interact with."
     )
     category = "desktop"
+    platforms = frozenset({"darwin"})
     parameters_model = GetAccessibilityTreeParams
     is_read_only = True
     timeout = 20.0
@@ -354,6 +351,7 @@ class ClickUIElementTool(Tool):
         'Example element_path for \'button "OK" of window 1\': ["window 1", "button \\"OK\\""]'
     )
     category = "desktop"
+    platforms = frozenset({"darwin"})
     parameters_model = ClickUIElementParams
     requires_confirmation = True
     timeout = 15.0
@@ -427,6 +425,7 @@ class TypeKeystrokesTool(Tool):
         "Either 'text' or 'key_code' must be provided. Use modifiers like ['command down'] for shortcuts."
     )
     category = "desktop"
+    platforms = frozenset({"darwin"})
     parameters_model = TypeKeystrokesParams
     requires_confirmation = True
     timeout = 15.0

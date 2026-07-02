@@ -167,6 +167,9 @@ class MoveFileTool(Tool):
     category = "filesystem"
     parameters_model = MoveFileParams
     requires_confirmation = True
+    # Can clobber/relocate arbitrary files — no blanket allow; scope by path.
+    high_risk_no_blanket = True
+    approval_scope = "path"
 
     async def execute(  # type: ignore[override]
         self, source: str, destination: str, overwrite: bool = False
@@ -336,6 +339,11 @@ class DeleteFileTool(Tool):
     category = "filesystem"
     parameters_model = DeleteFileParams
     requires_confirmation = True
+    # Irreversible removal — no blanket allow; scope by path/subtree.
+    high_risk_no_blanket = True
+    approval_scope = "path"
+    # Same-path operations in one batch must serialize (no TOCTOU race).
+    batch_serialize_by_path = True
 
     async def execute(self, path: str, recursive: bool = False) -> dict[str, Any]:  # type: ignore[override]
 

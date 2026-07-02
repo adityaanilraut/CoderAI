@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from coderAI.core.tool_error_codes import ToolErrorCode
 from coderAI.system.locks import resource_manager
-from coderAI.tools.base import Tool
+from coderAI.tools.base import Tool, ToolPreview
 from coderAI.tools.undo import backup_store
 
 from coderAI.tools.filesystem._guards import (
@@ -158,6 +158,18 @@ class WriteFileTool(Tool):
     parameters_model = WriteFileParams
     requires_confirmation = True
     category = "filesystem"
+    # Can clobber arbitrary files — no blanket allow; scope by path/subtree.
+    high_risk_no_blanket = True
+    approval_scope = "path"
+    # Same-path writes in one batch must serialize (no TOCTOU race).
+    batch_serialize_by_path = True
+
+    def preview(self, arguments: dict[str, Any], original: Optional[str]) -> Optional[ToolPreview]:
+        """Resulting file content: appended onto ``original`` or a full overwrite."""
+        content = str(arguments.get("content", "") or "")
+        if arguments.get("append"):
+            return ToolPreview(new_content=(original or "") + content)
+        return ToolPreview(new_content=content)
 
     async def execute(self, path: str, content: str, append: bool = False) -> dict[str, Any]:  # type: ignore[override]
         """Write content to file with path protection."""

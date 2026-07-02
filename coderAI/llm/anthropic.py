@@ -106,6 +106,9 @@ class AnthropicProvider(LLMProvider):
     API_URL = "https://api.anthropic.com/v1/messages"
     API_VERSION = "2023-06-01"
     SUPPORTED_MODELS = list(MODEL_ALIASES.keys())
+    # Anthropic replays the paused assistant tool_use blocks on the resumed
+    # request, so the loop must keep them (see ExecutionLoop pause_turn path).
+    preserves_tool_calls_on_pause = True
 
     def __init__(self, model: str, api_key: Optional[str] = None, **kwargs: Any):
         """Initialize Anthropic provider.
@@ -505,6 +508,12 @@ class AnthropicProvider(LLMProvider):
             current_event = ""
             final_stop_reason = ""
             saw_message_stop = False
+            # Per-call usage accumulated across streaming events so the terminal
+            # message_stop chunk can surface it to the execution loop.
+            call_input = 0
+            call_output = 0
+            call_cache_creation = 0
+            call_cache_read = 0
             # State for reconstructing tool calls from streaming events
             tool_call_blocks: Dict[int, Dict[str, Any]] = {}  # index -> {id, name, arguments}
             async for raw_chunk in response.content:
@@ -526,15 +535,19 @@ class AnthropicProvider(LLMProvider):
                         # Convert Anthropic streaming events to OpenAI chunk format
                         if current_event == "message_start":
                             usage = parsed.get("message", {}).get("usage", {})
-                            self.total_input_tokens += usage.get("input_tokens", 0)
-                            self.total_cache_creation_tokens += usage.get(
-                                "cache_creation_input_tokens", 0
-                            )
-                            self.total_cache_read_tokens += usage.get("cache_read_input_tokens", 0)
+                            inp = usage.get("input_tokens", 0)
+                            cache_creation = usage.get("cache_creation_input_tokens", 0)
+                            cache_read = usage.get("cache_read_input_tokens", 0)
+                            self.total_input_tokens += inp
+                            self.total_cache_creation_tokens += cache_creation
+                            self.total_cache_read_tokens += cache_read
+                            call_input += inp
+                            call_cache_creation += cache_creation
+                            call_cache_read += cache_read
                         elif current_event == "message_delta":
-                            self.total_output_tokens += parsed.get("usage", {}).get(
-                                "output_tokens", 0
-                            )
+                            out = parsed.get("usage", {}).get("output_tokens", 0)
+                            self.total_output_tokens += out
+                            call_output += out
                             if "delta" in parsed and "stop_reason" in parsed["delta"]:
                                 final_stop_reason = parsed["delta"]["stop_reason"]
                         elif current_event == "content_block_start":
@@ -634,7 +647,13 @@ class AnthropicProvider(LLMProvider):
                                         "delta": {},
                                         "finish_reason": final_reason,
                                     }
-                                ]
+                                ],
+                                "usage": {
+                                    "input_tokens": call_input,
+                                    "output_tokens": call_output,
+                                    "cache_creation_input_tokens": call_cache_creation,
+                                    "cache_read_input_tokens": call_cache_read,
+                                },
                             }
             if not saw_message_stop:
                 logger.warning(

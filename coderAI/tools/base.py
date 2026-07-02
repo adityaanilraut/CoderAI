@@ -1,15 +1,31 @@
 """Base tool interface and registry."""
 
-import inspect
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Dict, List, Optional, Type
+from dataclasses import dataclass
+from typing import Any, Dict, List, Literal, Optional, Type
 
 from pydantic import BaseModel, ValidationError
 
 from coderAI.core.provenance import Provenance
 from coderAI.core.tool_error_codes import ToolErrorCode  # noqa: F401 — re-export
 
-__all__ = ["Tool", "ToolRegistry", "ToolClassificationError", "ToolErrorCode"]
+__all__ = ["Tool", "ToolPreview", "ToolRegistry", "ToolClassificationError", "ToolErrorCode"]
+
+
+@dataclass
+class ToolPreview:
+    """Result of :meth:`Tool.preview` — the approval-diff for a mutating call.
+
+    A tool returns exactly one of:
+
+    * ``new_content`` — the file's full resulting text; the executor renders the
+      unified diff against the current file (keeping caching/truncation central).
+    * ``rendered_diff`` — pre-rendered diff text shown verbatim (e.g. ``apply_diff``
+      surfaces the model's own patch); the executor only truncates it.
+    """
+
+    new_content: Optional[str] = None
+    rendered_diff: Optional[str] = None
 
 
 class ToolClassificationError(RuntimeError):
@@ -72,6 +88,40 @@ class Tool(ABC):
     # (unlimited concurrency among themselves).
     max_parallel_invocations: int = 0
 
+    # ── Approval-scope metadata (Phase 4.2) ──────────────────────────────
+    # A blanket, name-level "always allow" is forbidden for this tool: it can
+    # escalate to arbitrary local effect (code/command execution, file clobber)
+    # depending on its arguments, so approval must be per-call or scoped to a
+    # reviewed prefix/path. Consumed by ``permissions.ApprovalRules``.
+    high_risk_no_blanket: bool = False
+
+    # How a scoped "always allow" rule is matched for this tool:
+    #   "command" — by shell command-prefix (run_command / run_background),
+    #   "path"    — by file path/subtree (write_file / delete_file / move_file),
+    #   None      — no safe scope abstraction; the tool is approved per-call.
+    approval_scope: Optional[Literal["command", "path"]] = None
+
+    # ── Registry-gating metadata (Phase 4.2) ─────────────────────────────
+    # ``sys.platform`` values this tool is available on (None = all). Tools
+    # whose platform doesn't match the host are dropped from the registry —
+    # e.g. ``frozenset({"darwin"})`` for the macOS desktop-automation tools.
+    platforms: Optional[frozenset[str]] = None
+
+    # Optional third-party package this tool needs. When it can't be imported
+    # the tool is dropped from the registry (``"playwright"`` for browser tools).
+    requires_package: Optional[str] = None
+
+    # Network-egress tool removed from the *main* agent when
+    # ``config.web_tools_in_main`` is False (sub-agents keep them so research
+    # delegations still work). Distinct from ``is_egress`` — that arms the
+    # untrusted-content egress gate; this controls main-agent availability.
+    network_gate: bool = False
+
+    # File-editing tool whose batch scheduling serializes by target path so two
+    # writes to the same file in one turn can't race (Phase 4.2; replaces the
+    # executor's hardcoded ``safe_file_tools`` set).
+    batch_serialize_by_path: bool = False
+
     @abstractmethod
     async def execute(self, **kwargs) -> Dict[str, Any]:
         """Execute the tool with given parameters.
@@ -99,6 +149,22 @@ class Tool(ABC):
             },
         }
 
+    def preview(
+        self, arguments: Dict[str, Any], original: Optional[str]
+    ) -> Optional["ToolPreview"]:
+        """Approval-diff preview for a mutating call (Phase 4.3).
+
+        File-editing tools override this so the approval diff is computed by the
+        *same* semantics as :meth:`execute` (one implementation, no drift). The
+        executor supplies the file's current text as ``original`` (``None`` when
+        the file doesn't exist) — it has already resolved and project-scope
+        checked the path and read the content through its mtime cache — and the
+        tool returns a :class:`ToolPreview` (or ``None`` when no preview applies).
+
+        Default: no preview.
+        """
+        return None
+
     def get_parameters(self) -> Dict[str, Any]:
         """Get the parameters schema for this tool.
 
@@ -122,9 +188,7 @@ class Tool(ABC):
         ``requires_confirmation``, ``is_egress`` or ``safe``. Unclassified tools
         are rejected by :meth:`ToolRegistry.validate_classifications`.
         """
-        return bool(
-            self.is_read_only or self.requires_confirmation or self.is_egress or self.safe
-        )
+        return bool(self.is_read_only or self.requires_confirmation or self.is_egress or self.safe)
 
 
 class ToolRegistry:
@@ -190,16 +254,16 @@ class ToolRegistry:
     async def execute(
         self,
         name: str,
-        confirmation_callback: Optional[Callable] = None,
         **kwargs,
     ) -> Dict[str, Any]:
         """Execute a tool by name.
 
+        Confirmation/approval is NOT gated here: the live gate is
+        :class:`~coderAI.core.tool_executor.ToolExecutor`'s permissions-based,
+        fail-closed check. This registry just validates arguments and dispatches.
+
         Args:
             name: Tool name
-            confirmation_callback: Optional async/sync callable that receives
-                (tool_name, arguments) and returns True to allow execution.
-                When None, all tools execute without confirmation.
             **kwargs: Tool parameters
 
         Returns:
@@ -211,22 +275,6 @@ class ToolRegistry:
         tool = self.get(name)
         if tool is None:
             raise ValueError(f"Tool not found: {name}")
-
-        # Confirmation gate — supports both sync and async callbacks
-        if tool.requires_confirmation and confirmation_callback is not None:
-            if inspect.iscoroutinefunction(confirmation_callback) or (
-                hasattr(confirmation_callback, "__call__")
-                and inspect.iscoroutinefunction(confirmation_callback.__call__)
-            ):
-                approved = await confirmation_callback(name, kwargs)
-            else:
-                approved = confirmation_callback(name, kwargs)
-            if not approved:
-                return {
-                    "success": False,
-                    "error": f"Tool '{name}' was denied by the user.",
-                    "error_code": ToolErrorCode.DENIED,
-                }
 
         if tool.parameters_model:
             try:

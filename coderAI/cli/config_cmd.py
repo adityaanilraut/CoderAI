@@ -9,14 +9,14 @@ from coderAI.system.config import config_manager
 
 @click.group(invoke_without_command=True)
 @click.pass_context
-def config(ctx):
+def config(ctx: click.Context) -> None:
     """Manage configuration."""
     if ctx.invoked_subcommand is None:
         click.echo(ctx.get_help())
 
 
 @config.command("show")
-def config_show():
+def config_show() -> None:
     """Show current configuration."""
     from coderAI.ui.display import display
 
@@ -27,13 +27,14 @@ def config_show():
 @config.command("set")
 @click.argument("key")
 @click.argument("value")
-def config_set(key, value):
+def config_set(key: str, value: str) -> None:
     """Set a configuration value."""
     from coderAI.ui.display import display
 
+    parsed: str | int | float | bool = value
     try:
         if key in ["temperature", "budget_limit", "subagent_timeout_seconds"]:
-            value = float(value)
+            parsed = float(value)
         elif key in [
             "max_tokens",
             "context_window",
@@ -41,7 +42,7 @@ def config_set(key, value):
             "max_tool_output",
             "approval_timeout_seconds",
         ]:
-            value = int(value)
+            parsed = int(value)
         elif key in [
             "streaming",
             "save_history",
@@ -49,10 +50,10 @@ def config_set(key, value):
             "continue_loop_on_deny",
             "allow_outside_project",
         ]:
-            value = value.lower() in ["true", "1", "yes"]
+            parsed = value.lower() in ["true", "1", "yes"]
 
-        config_manager.set(key, value)
-        display.print_success(f"Set {key} = {value}")
+        config_manager.set(key, parsed)
+        display.print_success(f"Set {key} = {parsed}")
     except Exception as e:
         display.print_error(f"Failed to set config: {str(e)}")
         if isinstance(e, ValueError):
@@ -61,7 +62,7 @@ def config_set(key, value):
 
 
 @config.command("reset")
-def config_reset():
+def config_reset() -> None:
     """Reset configuration to defaults."""
     from coderAI.ui.display import display
 

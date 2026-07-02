@@ -153,6 +153,7 @@ def test_get_valid_token_none_when_refresh_fails(creds_dir):
 # ── interactive login orchestration ──────────────────────────────────────────
 
 
+@pytest.mark.enable_socket  # login() binds a loopback ephemeral port for the callback server
 def test_login_happy_path_persists_tokens(creds_dir):
     rm = {
         "resource": "https://mcp.h/mcp",
@@ -192,6 +193,7 @@ def test_login_happy_path_persists_tokens(creds_dir):
     assert kwargs["code_verifier"]
 
 
+@pytest.mark.enable_socket  # login() binds a loopback ephemeral port for the callback server
 def test_login_errors_without_registration_or_client_id(creds_dir):
     rm = {"resource": "u", "authorization_servers": ["https://h/iss"]}
     as_meta = {"authorization_endpoint": "https://h/a", "token_endpoint": "https://h/t"}

@@ -42,7 +42,6 @@ def _make_agent(
         _sync_tracker=MagicMock(),
         _tool_approval_allowlist=allowlist if allowlist is not None else set(),
         config=None,
-        _turn_ingested_untrusted=False,
     )
 
 
@@ -103,7 +102,7 @@ async def test_egress_confirmed_after_untrusted_ingest(monkeypatch: pytest.Monke
     # First fetch ingests untrusted content — not gated (nothing tainted yet).
     await _orchestrate(executor, session, _tool_call("read_url", {"url": "https://news.example/"}))
     executor._confirmation_callback.assert_not_awaited()
-    assert agent._turn_ingested_untrusted is True
+    assert executor._turn.ingested_untrusted is True
 
     # Second egress call is now gated and prompts.
     await _orchestrate(
@@ -140,8 +139,8 @@ async def test_egress_gate_bypasses_name_allowlist(monkeypatch: pytest.MonkeyPat
     registry.register(ReadURLTool())
     session = Session(session_id="session_allowlist")
     agent = _make_agent(session, registry, auto_approve=False, allowlist={"read_url"})
-    agent._turn_ingested_untrusted = True  # a prior fetch this turn tainted it
     executor = _executor_with_read_url(agent)
+    executor._turn.ingested_untrusted = True  # a prior fetch this turn tainted it
     executor._confirmation_callback = AsyncMock(return_value=False)
 
     await _orchestrate(
@@ -158,8 +157,8 @@ async def test_yolo_still_bypasses_egress_gate(monkeypatch: pytest.MonkeyPatch) 
     registry.register(ReadURLTool())
     session = Session(session_id="session_yolo")
     agent = _make_agent(session, registry, auto_approve=True)
-    agent._turn_ingested_untrusted = True
     executor = _executor_with_read_url(agent)
+    executor._turn.ingested_untrusted = True
     executor._confirmation_callback = AsyncMock(return_value=False)
 
     await _orchestrate(

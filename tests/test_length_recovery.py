@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from coderAI.core.agent_loop import ExecutionLoop
+from coderAI.core.tool_executor import BatchStatus, ToolBatchOutcome
 
 TOOL_CALL_RESPONSE = {
     "content": None,
@@ -27,7 +28,9 @@ async def test_one_auto_retry_on_length_when_tools_were_used(mock_agent):
         {"finish_reason": "stop", "content": "final answer"},
     ]
     loop._call_llm_with_retry = AsyncMock(side_effect=llm_responses)
-    loop.tool_executor.orchestrate_tool_calls = AsyncMock(return_value=(False, None))
+    loop.tool_executor.orchestrate_tool_calls = AsyncMock(
+        return_value=ToolBatchOutcome(BatchStatus.OK)
+    )
 
     result = await loop.run("do work")
 
@@ -45,7 +48,9 @@ async def test_second_length_is_terminal_without_third_retry(mock_agent):
         {"finish_reason": "length", "content": "partial two"},
     ]
     loop._call_llm_with_retry = AsyncMock(side_effect=llm_responses)
-    loop.tool_executor.orchestrate_tool_calls = AsyncMock(return_value=(False, None))
+    loop.tool_executor.orchestrate_tool_calls = AsyncMock(
+        return_value=ToolBatchOutcome(BatchStatus.OK)
+    )
 
     result = await loop.run("do work")
 
