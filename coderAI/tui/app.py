@@ -279,11 +279,7 @@ class CoderAIApp(App[None]):
 
     def _toast(self, level: str, message: str) -> None:
         """Push a toast notification to the timeline."""
-        self.reducer._push(
-            {"kind": "toast", "id": self.reducer.next_id(), "level": level, "message": message}
-        )
-        self.reducer._bump_refresh("append")
-        self.reducer._notify()
+        self.reducer.toast(level, message)
 
     @on(AgentEventMsg)
     async def _on_agent_event(self, msg: AgentEventMsg) -> None:

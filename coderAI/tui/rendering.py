@@ -14,6 +14,7 @@ from rich.tree import Tree
 from coderAI.tui.platform import composer_footer_hints, header_palette_hint
 from coderAI.tui.state import SessionState
 from coderAI.tui.theme import Glyphs, Styles, Tokens
+from coderAI.tui.timeline_render import plan_step_marker
 
 
 def render_session_header(s: SessionState) -> str:
@@ -162,12 +163,7 @@ def render_plan(s: SessionState) -> RenderableType:
         idx = int(s_obj.get("index", 0))
         status = str(s_obj.get("status", "pending"))
         desc = escape(str(s_obj.get("description", "")))
-        if status == "done":
-            g, c = Glyphs.TOOL_OK, Tokens.AGENT
-        elif idx == current + 1:
-            g, c = "▸", Tokens.WARN
-        else:
-            g, c = "·", Tokens.TEXT_MUTED
+        g, c = plan_step_marker(status, idx, current)
 
         table.add_row(
             f"[{c}]{g}[/]",

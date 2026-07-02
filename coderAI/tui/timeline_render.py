@@ -38,6 +38,15 @@ _TOAST_STYLES = {
 }
 
 
+def plan_step_marker(status: str, idx: int, current: int) -> tuple[str, str]:
+    """Return the ``(glyph, color)`` marker for a plan step row."""
+    if status == "done":
+        return Glyphs.TOOL_OK, Tokens.AGENT
+    if idx == current + 1:
+        return "▸", Tokens.WARN
+    return "·", Tokens.TEXT_MUTED
+
+
 def _fmt_ts(ts: float | None) -> str:
     if ts is None:
         return ""
@@ -341,12 +350,7 @@ def write_plan_card(log: SupportsWrite, it: Dict[str, Any]) -> None:
         idx = int(s.get("index", 0))
         status = str(s.get("status", "pending"))
         desc = str(s.get("description", ""))[:100]
-        if status == "done":
-            g, c = Glyphs.TOOL_OK, Tokens.AGENT
-        elif idx == current + 1:
-            g, c = "▸", Tokens.WARN
-        else:
-            g, c = "·", Tokens.TEXT_MUTED
+        g, c = plan_step_marker(status, idx, current)
         markup = f"[{c}]{g}[/] [{Tokens.TEXT_MUTED}]{idx}.[/] [{Tokens.TEXT}]{desc}[/]"
         log.write(Text.from_markup(f"  {markup}"))
     log.write("")

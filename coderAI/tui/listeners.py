@@ -38,6 +38,12 @@ class EventReducer:
         self._id_counter += 1
         return f"t_{self._id_counter}_{uuid.uuid4().hex[:8]}"
 
+    def toast(self, level: str, message: str) -> None:
+        """Push a toast notification to the timeline and refresh."""
+        self._push({"kind": "toast", "id": self.next_id(), "level": level, "message": message})
+        self._bump_refresh("append")
+        self._notify()
+
     def _bump_refresh(self, mode: RefreshMode) -> None:
         if self._pending_refresh is None:
             self._pending_refresh = mode
@@ -68,13 +74,9 @@ class EventReducer:
             it = self.timeline[i]
             if it.get("id") == aid and it.get("kind") == "assistant":
                 if add_c:
-                    chunks = it.setdefault("_content_chunks", [it.get("content", "")])
-                    chunks.append(add_c)
-                    it["content"] = "".join(chunks)
+                    it["content"] = it.get("content", "") + add_c
                 if add_r:
-                    r_chunks = it.setdefault("_reasoning_chunks", [it.get("reasoning", "")])
-                    r_chunks.append(add_r)
-                    it["reasoning"] = "".join(r_chunks)
+                    it["reasoning"] = it.get("reasoning", "") + add_r
                 return True
         return False
 
@@ -113,8 +115,6 @@ class EventReducer:
         for it in self.timeline:
             if it.get("kind") == "assistant" and it.get("streaming"):
                 it["streaming"] = False
-                it.pop("_content_chunks", None)
-                it.pop("_reasoning_chunks", None)
 
     def _apply_status(self, data: Dict[str, Any]) -> None:
         self.session.ctx_used = int(data.get("ctxUsed") or 0)
@@ -200,11 +200,6 @@ class EventReducer:
                                 self.timeline.pop(i)
                             else:
                                 it["streaming"] = False
-                                # content/reasoning already hold the joined
-                                # result — drop the per-delta chunk buffers so
-                                # they don't accumulate across a long session.
-                                it.pop("_content_chunks", None)
-                                it.pop("_reasoning_chunks", None)
                             break
                 self._current_assistant_id = None
                 self.session.streaming = False

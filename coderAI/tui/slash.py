@@ -34,11 +34,7 @@ class SlashContext:
     rewind_timeline: Callable[[int], None]
 
     def toast(self, level: str, message: str) -> None:
-        self.reducer._push(
-            {"kind": "toast", "id": self.reducer.next_id(), "level": level, "message": message}
-        )
-        self.reducer._bump_refresh("append")
-        self.reducer._notify()
+        self.reducer.toast(level, message)
 
 
 # ── individual command handlers ────────────────────────────────────────

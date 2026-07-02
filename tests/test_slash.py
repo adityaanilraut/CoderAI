@@ -42,6 +42,9 @@ class FakeReducer:
     def _notify(self):
         pass
 
+    def toast(self, level, message):
+        self._push({"kind": "toast", "id": self.next_id(), "level": level, "message": message})
+
 
 def _dispatch(raw, controller, reducer, **overrides):
     cb = {
