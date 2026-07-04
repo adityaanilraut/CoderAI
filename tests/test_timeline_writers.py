@@ -189,6 +189,47 @@ def test_write_plan_card_statuses():
     assert _wrote(log)
 
 
+def test_timestamps_render_as_time_not_literal_markup():
+    """Regression: _fmt_ts returned Rich markup which Text.append rendered
+    literally — user rows showed "you [#565f89]05:29:40[/]"."""
+    from rich.console import Console
+
+    log = RecordingLog()
+    tr.write_user(log, {"text": "hi", "ts": 1_700_000_000})
+    console = Console(width=80)
+    rendered = "".join(
+        seg.text
+        for line in console.render_lines(log.writes[0], console.options, pad=False)
+        for seg in line
+    )
+    assert "[#" not in rendered
+    assert "[/]" not in rendered
+    import time as _t
+
+    lt = _t.localtime(1_700_000_000)
+    assert f"{lt.tm_hour:02d}:{lt.tm_min:02d}:{lt.tm_sec:02d}" in rendered
+
+
+def test_write_welcome():
+    from coderAI.tui.theme import Tokens
+
+    # One accent rail block + trailing blank; a long cwd is truncated to
+    # keep the block at its fixed height (calculate_item_lines == 7).
+    log = RecordingLog()
+    tr.write_welcome(
+        log,
+        {"model": "claude-4", "provider": "Anthropic", "cwd": "/x/" + "d" * 100},
+    )
+    assert len(log.writes) == 2
+    assert isinstance(log.writes[0], tr._RailBlock)
+    assert log.writes[0].color == Tokens.ACCENT
+
+    # Missing fields still render the fixed-shape block.
+    log = RecordingLog()
+    tr.write_welcome(log, {})
+    assert len(log.writes) == 2
+
+
 def test_write_timeline_item_dispatch_all_kinds():
     items = [
         {"kind": "user", "text": "hi"},
@@ -201,6 +242,7 @@ def test_write_timeline_item_dispatch_all_kinds():
         {"kind": "approval", "tool": "x"},
         {"kind": "skill_card", "name": "s"},
         {"kind": "plan_card", "title": "p"},
+        {"kind": "welcome", "model": "m"},
     ]
     for it in items:
         log = RecordingLog()

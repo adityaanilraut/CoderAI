@@ -1,37 +1,10 @@
-"""Slash command catalog for /help."""
+"""Slash command catalog for /help.
 
-HELP_MENU_ENTRIES = [
-    ("/help", "Open this command menu"),
-    ("/model", "Open model picker · /model <name> · /model default <name>"),
-    ("/plan", "Show current execution plan (right panel)"),
-    ("/tasks", "Refresh TODO checklist panel"),
-    ("/clear", "Wipe conversation & context"),
-    ("/compact", "Summarize long context"),
-    ("/reasoning", "Open reasoning picker · /reasoning <high|medium|low|none>"),
-    ("/yolo", "Toggle auto-approve for high-risk tools"),
-    (
-        "/allow-tool",
-        "Always allow a tool this session · high-risk needs a scope: /allow-tool run_command <prefix>",
-    ),
-    ("/disallow-tool", "Remove a per-session tool allowlist entry"),
-    ("/allowed-tools", "List tools already allowlisted this session"),
-    ("/verbose", "Toggle reasoning + expanded tool cards"),
-    ("/agents", "Refresh the agents tree (left panel)"),
-    ("/persona", "List or switch persona"),
-    ("/mcp", "List MCP servers · toggle one on/off · /mcp <name>"),
-    ("/skills", "List workflows under .coderAI/skills/"),
-    ("/init", "Scaffold .coderai/ directory for the current project"),
-    ("/show", "Reference info · type /show then a topic"),
-    ("/think", "Reveal the latest hidden reasoning as a toast"),
-    ("/search", "Search conversation transcript"),
-    ("/code-search", "Search the codebase semantically"),
-    ("/export", "Export session to markdown"),
-    ("/copy", "Copy last assistant response (OSC-52)"),
-    ("/undo", "Undo last tool action"),
-    ("/rewind", "Rewind conversation to a past turn · /rewind <n> [--files]"),
-    ("/tokens", "Show token usage, cost & context stats"),
-    ("/context", "View pinned context files"),
-    ("/pin", "Pin a file to context · /pin <path>"),
-    ("/unpin", "Unpin a file from context · /unpin <path>"),
-    ("/exit", "Shut down the agent"),
-]
+Derived from the slash registry so the palette can never drift from the
+commands that actually dispatch — add a command via ``_register`` in
+``slash.py`` and it appears here automatically.
+"""
+
+from coderAI.tui.slash import COMMAND_SPECS
+
+HELP_MENU_ENTRIES = [("/" + spec.names[0], spec.desc) for spec in COMMAND_SPECS]

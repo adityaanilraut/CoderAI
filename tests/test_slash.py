@@ -63,6 +63,7 @@ def _dispatch(raw, controller, reducer, **overrides):
         "set_search_filter": MagicMock(),
         "retry_agent": MagicMock(),
         "rewind_timeline": MagicMock(),
+        "resume_session": MagicMock(),
     }
     cb.update(overrides)
     handled = slash.handle_slash_command(raw, controller, reducer, **cb)
@@ -305,6 +306,21 @@ def test_retry(ctrl, red):
     cb["retry_agent"].assert_called_once()
 
 
+def test_resume_without_arg_opens_picker(ctrl, red):
+    _, cb = _dispatch("/resume", ctrl, red)
+    cb["resume_session"].assert_called_once_with(None)
+
+
+def test_resume_with_id_resumes_directly(ctrl, red):
+    _, cb = _dispatch("/resume session_123_abc", ctrl, red)
+    cb["resume_session"].assert_called_once_with("session_123_abc")
+
+
+def test_resume_alias_sessions(ctrl, red):
+    _, cb = _dispatch("/sessions", ctrl, red)
+    cb["resume_session"].assert_called_once_with(None)
+
+
 def test_kill_resolves_name_to_id(ctrl, red):
     red.session.agents = {"agent-7": SimpleNamespace(name="builder")}
     _dispatch("/kill builder", ctrl, red)
@@ -388,3 +404,30 @@ def test_find_last_assistant_helper():
     ]
     assert slash._find_last_assistant(timeline) == "latest"
     assert slash._find_last_assistant([{"kind": "user", "text": "q"}]) is None
+
+
+# ── help menu / registry sync ──────────────────────────────────────────
+
+
+def test_every_command_spec_appears_in_help_menu():
+    from coderAI.tui.help_menu import HELP_MENU_ENTRIES
+
+    help_commands = {cmd for cmd, _ in HELP_MENU_ENTRIES}
+    for spec in slash.COMMAND_SPECS:
+        assert "/" + spec.names[0] in help_commands
+
+
+def test_every_help_entry_resolves_in_registry():
+    from coderAI.tui.help_menu import HELP_MENU_ENTRIES
+
+    for cmd, desc in HELP_MENU_ENTRIES:
+        name = cmd.lstrip("/")
+        spec = slash._SLASH_REGISTRY.get(name)
+        assert spec is not None, f"{cmd} listed in help but not registered"
+        assert spec.desc == desc
+
+
+def test_aliases_share_spec_with_primary():
+    for spec in slash.COMMAND_SPECS:
+        for name in spec.names:
+            assert slash._SLASH_REGISTRY[name] is spec

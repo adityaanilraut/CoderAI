@@ -73,3 +73,28 @@ def test_calculate_item_lines_diff():
 
     item["collapsed"] = True
     assert calculate_item_lines(item, verbose=False) == 2
+
+
+def test_calculate_item_lines_welcome_matches_render():
+    item = {"kind": "welcome", "model": "m1", "provider": "P", "cwd": "/proj"}
+    assert calculate_item_lines(item, verbose=False) == 7
+
+    # Parity guard: the writer must emit exactly 6 rail lines (+ the trailing
+    # blank write) so the fixed height above stays in sync with the render.
+    from rich.console import Console
+
+    from coderAI.tui import timeline_render as tr
+
+    class _Log:
+        def __init__(self):
+            self.writes = []
+
+        def write(self, renderable):
+            self.writes.append(renderable)
+
+    log = _Log()
+    tr.write_welcome(log, item)
+    assert len(log.writes) == 2  # rail block + trailing blank
+    console = Console(width=100)
+    rail_lines = console.render_lines(log.writes[0], console.options, pad=False)
+    assert len(rail_lines) == 6

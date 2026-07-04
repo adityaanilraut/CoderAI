@@ -77,6 +77,9 @@ coderAI = "coderAI.cli:main"
 where = ["."]
 include = ["coderAI*"]
 
+[tool.setuptools.package-data]
+coderAI = ["prompts/*.mdx"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py310"
@@ -95,6 +98,15 @@ warn_return_any = true
 warn_unused_configs = true
 ignore_missing_imports = true
 exclude = ["tests/"]
+
+# numpy ≥ 2.5 (transitive via chromadb) ships PEP 695 `type` statements in its
+# stubs, which mypy rejects while python_version is 3.10. Nothing in coderAI
+# imports numpy directly — don't follow into it.
+[[tool.mypy.overrides]]
+module = ["numpy", "numpy.*"]
+follow_imports = "skip"
+follow_imports_for_stubs = true
+ignore_errors = true
 
 # Per-module strict typing (Phase 4). This list ONLY GROWS — never shrink it.
 # Modules here must pass disallow_untyped_defs + check_untyped_defs +

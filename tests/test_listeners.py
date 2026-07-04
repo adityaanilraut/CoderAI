@@ -272,3 +272,73 @@ def test_tasks_card_updates_session_and_chrome_refresh() -> None:
 
     assert reducer.session.current_tasks == payload
     assert modes == ["chrome"]
+
+
+# ── context-limit warning toasts ────────────────────────────────────────
+
+
+def _ctx_toasts(reducer: EventReducer) -> list[str]:
+    return [
+        str(it.get("message", ""))
+        for it in reducer.timeline
+        if it.get("kind") == "toast" and "Context" in str(it.get("message", ""))
+    ]
+
+
+def test_hello_seeds_welcome_block_on_empty_timeline() -> None:
+    reducer = EventReducer()
+    reducer.handle("hello", {"model": "m1", "provider": "P", "cwd": "/proj"})
+    welcomes = [it for it in reducer.timeline if it.get("kind") == "welcome"]
+    assert len(welcomes) == 1
+    assert welcomes[0]["model"] == "m1"
+    assert welcomes[0]["provider"] == "P"
+    assert welcomes[0]["cwd"] == "/proj"
+
+
+def test_rehello_on_populated_timeline_skips_welcome() -> None:
+    reducer = EventReducer()
+    reducer.handle("hello", {"model": "m1"})
+    reducer._push({"kind": "user", "id": reducer.next_id(), "text": "hi"})
+    # e.g. agent restart after /retry re-emits hello.
+    reducer.handle("hello", {"model": "m1"})
+    welcomes = [it for it in reducer.timeline if it.get("kind") == "welcome"]
+    assert len(welcomes) == 1
+
+
+def test_ctx_warning_fires_once_at_80_and_90() -> None:
+    reducer = EventReducer()
+    reducer._apply_status(_status_payload(ctxUsed=160_000, ctxLimit=200_000))  # 80%
+    assert len(_ctx_toasts(reducer)) == 1
+    assert "80%" in _ctx_toasts(reducer)[0]
+
+    # Staying between thresholds fires nothing more.
+    reducer._apply_status(_status_payload(ctxUsed=170_000, ctxLimit=200_000))  # 85%
+    assert len(_ctx_toasts(reducer)) == 1
+
+    reducer._apply_status(_status_payload(ctxUsed=185_000, ctxLimit=200_000))  # 92.5%
+    toasts = _ctx_toasts(reducer)
+    assert len(toasts) == 2
+    assert "90%" in toasts[1]
+
+    # Repeated statuses above 90% stay quiet.
+    reducer._apply_status(_status_payload(ctxUsed=190_000, ctxLimit=200_000))
+    assert len(_ctx_toasts(reducer)) == 2
+
+
+def test_ctx_warning_rearms_after_dropping_below_75() -> None:
+    reducer = EventReducer()
+    reducer._apply_status(_status_payload(ctxUsed=185_000, ctxLimit=200_000))  # 92.5%
+    assert len(_ctx_toasts(reducer)) == 1
+
+    reducer._apply_status(_status_payload(ctxUsed=100_000, ctxLimit=200_000))  # 50% (compacted)
+    reducer._apply_status(_status_payload(ctxUsed=165_000, ctxLimit=200_000))  # 82.5%
+    toasts = _ctx_toasts(reducer)
+    assert len(toasts) == 2
+    assert "80%" in toasts[1]
+
+
+def test_ctx_warning_silent_without_limit_or_below_threshold() -> None:
+    reducer = EventReducer()
+    reducer._apply_status(_status_payload(ctxUsed=100, ctxLimit=0))
+    reducer._apply_status(_status_payload(ctxUsed=100_000, ctxLimit=200_000))  # 50%
+    assert _ctx_toasts(reducer) == []

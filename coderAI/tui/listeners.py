@@ -33,6 +33,9 @@ class EventReducer:
         self._awaiting_first_delta = False
         self.on_change: Optional[Callable[[RefreshMode], None]] = None
         self._pending_refresh: Optional[RefreshMode] = None
+        # Highest context-usage threshold already toasted (0, 80, or 90);
+        # resets once usage drops back below 75% (e.g. after /compact).
+        self._ctx_warned = 0
 
     def next_id(self) -> str:
         self._id_counter += 1
@@ -126,6 +129,47 @@ class EventReducer:
         self.session.iteration = int(data.get("iteration") or 0)
         self.session.max_iterations = int(data.get("maxIterations") or 50)
         self.session.elapsed_s = float(data.get("elapsedSeconds") or 0)
+        self._check_ctx_threshold()
+
+    def _check_ctx_threshold(self) -> None:
+        """Toast once when context usage crosses 80% / 90% of the limit."""
+        limit = self.session.ctx_limit
+        if limit <= 0:
+            return
+        ratio = self.session.ctx_used / limit
+        if ratio < 0.75:
+            self._ctx_warned = 0
+            return
+        used = f"{self.session.ctx_used:,}"
+        lim = f"{limit:,}"
+        if ratio >= 0.9 and self._ctx_warned < 90:
+            self._ctx_warned = 90
+            self._push(
+                {
+                    "kind": "toast",
+                    "id": self.next_id(),
+                    "level": "warning",
+                    "message": (
+                        f"Context 90% full ({used} / {lim} tokens). "
+                        "Run /compact to summarize or /clear to reset."
+                    ),
+                }
+            )
+            self._bump_refresh("append")
+        elif ratio >= 0.8 and self._ctx_warned < 80:
+            self._ctx_warned = 80
+            self._push(
+                {
+                    "kind": "toast",
+                    "id": self.next_id(),
+                    "level": "info",
+                    "message": (
+                        f"Context 80% full ({used} / {lim} tokens). "
+                        "Consider /compact to free up room."
+                    ),
+                }
+            )
+            self._bump_refresh("append")
 
     def handle(self, event: str, data: Dict[str, Any]) -> None:
         dirty = False
@@ -139,6 +183,19 @@ class EventReducer:
             self.session.budget_usd = float(data.get("budgetLimit") or 0)
             self.session.auto_approve = bool(data.get("autoApprove"))
             self.session.reasoning = data.get("reasoning") or "none"
+            # First hello on an empty timeline seeds the welcome/empty-state
+            # block; a re-hello (e.g. after /retry) lands on a populated
+            # timeline and skips it.
+            if not self.timeline:
+                self._push(
+                    {
+                        "kind": "welcome",
+                        "id": self.next_id(),
+                        "model": self.session.model,
+                        "provider": self.session.provider,
+                        "cwd": self.session.cwd,
+                    }
+                )
         elif event == "ready":
             self.session.ready = True
             self._recover_incomplete_turn()

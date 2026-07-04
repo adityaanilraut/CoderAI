@@ -120,6 +120,7 @@ timeline/session state; `timeline_render.py` writes rows to the
 │   │   ├── mcp_cmd.py       # `coderAI mcp` server management
 │   │   └── bootstrap.py     # Shared session bootstrap (TUI + headless)
 │   ├── system_prompt.py     # System prompt + dynamic tool docs
+│   ├── prompts/             # MDX prompt templates (intro, interaction, output_style, tail)
 │   ├── core/                # Agent orchestration
 │   │   ├── agent.py         # Agent lifecycle, sessions, sub-agents
 │   │   ├── agent_loop.py    # Per-turn LLM ↔ tool loop

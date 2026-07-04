@@ -256,6 +256,8 @@ These commands are typed inside an active `coderAI chat` session.
 | `/model <name>` | Switch the LLM model for the current session |
 | `/tokens` | Show token usage and estimated cost for the session |
 | `/context` | List files currently pinned to the context window |
+| `/pin <path>` | Pin a file to context |
+| `/unpin <path>` | Unpin a file from context |
 | `/compact` | Force-compress conversation history to reclaim context space |
 | `/agents` | Show all active agents (main + any sub-agents) and their status |
 | `/persona [name\|default\|list]` | List, apply, or clear an agent persona |
@@ -268,6 +270,19 @@ These commands are typed inside an active `coderAI chat` session.
 | `/code-search <query>` | Search the codebase semantically and view results inline |
 | `/think` | Toggle thinking/reasoning display |
 | `/clear` | Clear the conversation history and start fresh |
+| `/allow-tool <tool-name> [scope]` | Always allow a tool this session (high-risk tools need a scope) |
+| `/disallow-tool <tool-name>` | Remove a per-session tool allowlist entry |
+| `/allowed-tools` | List tools already allowlisted this session |
+| `/undo` | Undo last tool action |
+| `/rewind <n> [--files]` | Rewind conversation to a past turn |
+| `/mcp <name>` | List MCP servers or toggle one on/off |
+| `/plan` | Show current execution plan in the right panel |
+| `/export` | Export session to markdown |
+| `/search <query>` | Search conversation transcript |
+| `/retry` | Restart the agent after a crash |
+| `/resume [id]` | Resume a saved session |
+| `/kill <id-or-name>` | Cancel a sub-agent |
+| `/init` | Scaffold `.coderai/` directory in the current project root |
 | `/exit` | End the session |
 
 **Reference-only slash commands** (output rendered inline, no side effects):
@@ -297,6 +312,7 @@ Stored in `~/.coderAI/config.json`. Set via `coderAI config set <key> <value>` o
 | `reasoning_effort` | `medium` | Reasoning depth — `high`, `medium`, `low`, `none` |
 | `streaming` | `true` | Enable streaming token output |
 | `save_history` | `true` | Persist sessions to `~/.coderAI/history/` |
+| `tui_notifications` | `true` | Ring terminal bell + emit OSC 9 notification when terminal is unfocused and needs attention |
 | `budget_limit` | `0` | Max USD per session (`0` = unlimited) |
 | `max_file_size` | `1048576` | Max file size readable by `read_file` (bytes) |
 | `max_glob_results` | `200` | Max results returned by `glob_search` |
@@ -341,6 +357,7 @@ Environment variables take precedence over `~/.coderAI/config.json`.
 | `CODERAI_PROJECT_INSTRUCTION_FILE` | `project_instruction_file` |
 | `LMSTUDIO_ENDPOINT` | `lmstudio_endpoint` |
 | `OLLAMA_ENDPOINT` | `ollama_endpoint` |
+| `CODERAI_TUI_NOTIFICATIONS` | `tui_notifications` |
 | `CODERAI_THEME` | `dark` or `light` for the Textual chat UI |
 | `CODERAI_MODEL` | Model override for the IPC entry point |
 | `CODERAI_RESUME` | Session ID to resume (IPC entry point) |

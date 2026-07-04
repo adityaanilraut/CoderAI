@@ -86,6 +86,12 @@ class Config(BaseModel):
     skill_top_n: int = Field(default=3, ge=1, le=10)
     skills_use_hasna: bool = Field(default=True)
 
+    # --- TUI ---
+    # Ring the terminal bell + emit an OSC 9 desktop notification when the
+    # agent needs attention (tool approval, turn finished) while the terminal
+    # window is unfocused.
+    tui_notifications: bool = Field(default=True)
+
     # --- Browser automation (Playwright) ---
     browser_headless: bool = Field(default=True)
     browser_timeout: float = Field(default=30.0, ge=5.0, le=120.0)
@@ -177,6 +183,7 @@ class ConfigManager:
             "CODERAI_SKILL_CONFIDENCE_THRESHOLD": "skill_confidence_threshold",
             "CODERAI_SKILL_TOP_N": "skill_top_n",
             "CODERAI_SKILLS_USE_HASNA": "skills_use_hasna",
+            "CODERAI_TUI_NOTIFICATIONS": "tui_notifications",
             "CODERAI_BROWSER_HEADLESS": "browser_headless",
             "CODERAI_BROWSER_TIMEOUT": "browser_timeout",
             "CODERAI_BROWSER_ALLOWED_DOMAINS": "browser_allowed_domains",
@@ -212,6 +219,7 @@ class ConfigManager:
                         "concurrent_search",
                         "auto_detect_skills",
                         "skills_use_hasna",
+                        "tui_notifications",
                         "browser_headless",
                     ):
                         value = value.strip().lower() in ("true", "1", "yes", "on")

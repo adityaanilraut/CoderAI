@@ -52,8 +52,10 @@ async def test_full_refresh_reuses_cached_strips(monkeypatch):
 
     monkeypatch.setattr(appmod, "write_timeline_item", counting)
 
+    # 140 cols: no responsive auto-hide, so the render width (part of the
+    # Strip-cache key) cannot shift under the write-count assertions below.
     app = _Harness()
-    async with app.run_test(size=(120, 40)) as pilot:
+    async with app.run_test(size=(140, 40)) as pilot:
         log = app.query_one("#timeline", SelectableRichLog)
         assert log._size_known, "RichLog should be sized inside run_test"
 
@@ -118,3 +120,66 @@ async def test_stream_tail_overlay_does_not_resize_timeline():
         await pilot.pause()
 
         assert timeline.size.height == height_idle
+
+
+async def test_append_does_not_yank_scrollback():
+    """New items must not steal the view while the user reads scrollback.
+
+    RichLog.write() auto-scrolls by default, which bypassed the sticky-follow
+    check in _refresh_ui — the timeline is built with auto_scroll=False and
+    _refresh_ui pins to the bottom only when the user was already there.
+
+    140 cols keeps both side panes visible (no responsive auto-hide), so the
+    timeline width — and therefore scroll offsets — stay stable however late
+    the initial Resize event lands.
+    """
+    app = _Harness()
+    async with app.run_test(size=(140, 40)) as pilot:
+        r = app.reducer
+        for i in range(60):
+            r._push(
+                {
+                    "kind": "assistant",
+                    "id": r.next_id(),
+                    "content": f"message {i}",
+                    "reasoning": "",
+                    "streaming": False,
+                }
+            )
+        app._refresh_ui("full")
+        await pilot.pause()
+        log = app.query_one("#timeline", SelectableRichLog)
+        assert log.is_vertical_scroll_end  # full refresh pins to bottom
+
+        log.scroll_page_up(animate=False)
+        await pilot.pause()
+        y_reading = log.scroll_offset.y
+        assert not log.is_vertical_scroll_end
+
+        r._push(
+            {
+                "kind": "assistant",
+                "id": r.next_id(),
+                "content": "arrives while reading",
+                "reasoning": "",
+                "streaming": False,
+            }
+        )
+        app._refresh_ui("append")
+        await pilot.pause()
+        assert log.scroll_offset.y == y_reading  # view stayed put
+
+        log.scroll_end(animate=False)
+        await pilot.pause()
+        r._push(
+            {
+                "kind": "assistant",
+                "id": r.next_id(),
+                "content": "arrives while pinned",
+                "reasoning": "",
+                "streaming": False,
+            }
+        )
+        app._refresh_ui("append")
+        await pilot.pause()
+        assert log.is_vertical_scroll_end  # auto-follow resumes at bottom

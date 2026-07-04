@@ -32,6 +32,7 @@ class SlashContext:
     set_search_filter: Callable[[str], None]
     retry_agent: Callable[[], None]
     rewind_timeline: Callable[[int], None]
+    resume_session: Callable[[Optional[str]], None]
 
     def toast(self, level: str, message: str) -> None:
         self.reducer.toast(level, message)
@@ -330,6 +331,12 @@ def _cmd_retry(ctx: SlashContext, arg: str, head: str) -> bool:
     return True
 
 
+def _cmd_resume(ctx: SlashContext, arg: str, head: str) -> bool:
+    # No argument → open the session picker; with an id → resume directly.
+    ctx.resume_session(arg.strip() or None)
+    return True
+
+
 def _cmd_kill(ctx: SlashContext, arg: str, head: str) -> bool:
     if not arg:
         ctx.toast("warning", "Usage: /kill <agent-id-or-name>")
@@ -353,37 +360,88 @@ def _cmd_init(ctx: SlashContext, arg: str, head: str) -> bool:
 
 # ── registry ──────────────────────────────────────────────────────────
 
-# Maps command names (normalised to lowercase) to handler.
-# Handler signature: (ctx, arg: str, head: str) -> bool
-_SLASH_REGISTRY: Dict[str, Callable[[SlashContext, str, str], bool]] = {}
+
+@dataclass(frozen=True)
+class CommandSpec:
+    """A slash command: its handler, all invocable names, and help copy.
+
+    ``names[0]`` is the primary name shown in /help and the palette; the
+    rest are aliases. The same spec is stored under every alias so the
+    help menu can be derived from the registry (single source of truth).
+    """
+
+    handler: Callable[[SlashContext, str, str], bool]
+    names: tuple[str, ...]
+    desc: str
 
 
-def _register(handler: Callable[[SlashContext, str, str], bool], *names: str) -> None:
+# Maps command names (normalised to lowercase) to the shared CommandSpec.
+_SLASH_REGISTRY: Dict[str, CommandSpec] = {}
+
+# Specs in registration order (one entry per command, not per alias).
+COMMAND_SPECS: List[CommandSpec] = []
+
+
+def _register(handler: Callable[[SlashContext, str, str], bool], *names: str, desc: str) -> None:
+    spec = CommandSpec(handler=handler, names=names, desc=desc)
+    COMMAND_SPECS.append(spec)
     for name in names:
-        _SLASH_REGISTRY[name] = handler
+        _SLASH_REGISTRY[name] = spec
 
 
-_register(_cmd_help, "help", "?")
-_register(_cmd_clear, "clear")
-_register(_cmd_compact, "compact")
-_register(_cmd_model, "model", "change-model", "changemodel", "switch-model")
-_register(_cmd_reasoning, "reasoning", "thinking")
-_register(_cmd_yolo, "yolo", "auto-approve", "autoapprove")
-_register(_cmd_allow_tool, "allow-tool")
-_register(_cmd_disallow_tool, "disallow-tool")
-_register(_cmd_allowed_tools, "allowed-tools")
-_register(_cmd_undo, "undo")
-_register(_cmd_rewind, "rewind")
-_register(_cmd_persona, "persona")
-_register(_cmd_mcp, "mcp")
-_register(_cmd_skills, "skills")
-_register(_cmd_verbose, "verbose")
-_register(_cmd_think, "think", "reveal")
-_register(_cmd_tokens, "tokens", "status")
-_register(_cmd_context, "context")
-_register(_cmd_code_search, "code-search", "search-code", "cs")
-_register(_cmd_agents, "agents")
-_register(_cmd_tasks, "tasks", "todos", "task")
+_register(_cmd_help, "help", "?", desc="Open this command menu")
+_register(_cmd_clear, "clear", desc="Wipe conversation & context")
+_register(_cmd_compact, "compact", desc="Summarize long context")
+_register(
+    _cmd_model,
+    "model",
+    "change-model",
+    "changemodel",
+    "switch-model",
+    desc="Open model picker · /model <name> · /model default <name>",
+)
+_register(
+    _cmd_reasoning,
+    "reasoning",
+    "thinking",
+    desc="Open reasoning picker · /reasoning <high|medium|low|none>",
+)
+_register(
+    _cmd_yolo,
+    "yolo",
+    "auto-approve",
+    "autoapprove",
+    desc="Toggle auto-approve for high-risk tools",
+)
+_register(
+    _cmd_allow_tool,
+    "allow-tool",
+    desc="Always allow a tool this session · high-risk needs a scope: /allow-tool run_command <prefix>",
+)
+_register(_cmd_disallow_tool, "disallow-tool", desc="Remove a per-session tool allowlist entry")
+_register(_cmd_allowed_tools, "allowed-tools", desc="List tools already allowlisted this session")
+_register(_cmd_undo, "undo", desc="Undo last tool action")
+_register(
+    _cmd_rewind,
+    "rewind",
+    desc="Rewind conversation to a past turn · /rewind <n> [--files]",
+)
+_register(_cmd_persona, "persona", desc="List or switch persona")
+_register(_cmd_mcp, "mcp", desc="List MCP servers · toggle one on/off · /mcp <name>")
+_register(_cmd_skills, "skills", desc="List workflows under .coderAI/skills/")
+_register(_cmd_verbose, "verbose", desc="Toggle reasoning + expanded tool cards")
+_register(_cmd_think, "think", "reveal", desc="Reveal the latest hidden reasoning as a toast")
+_register(_cmd_tokens, "tokens", "status", desc="Show token usage, cost & context stats")
+_register(_cmd_context, "context", desc="View pinned context files")
+_register(
+    _cmd_code_search,
+    "code-search",
+    "search-code",
+    "cs",
+    desc="Search the codebase semantically",
+)
+_register(_cmd_agents, "agents", desc="Refresh the agents tree (left panel)")
+_register(_cmd_tasks, "tasks", "todos", "task", desc="Refresh TODO checklist panel")
 _register(
     _cmd_show,
     "show",
@@ -397,17 +455,24 @@ _register(
     "diagnostics",
     "config",
     "info",
+    desc="Reference info · type /show then a topic",
 )
-_register(_cmd_plan, "plan")
-_register(_cmd_exit, "exit", "quit")
-_register(_cmd_export, "export", "save")
-_register(_cmd_search, "search", "find")
-_register(_cmd_pin, "pin")
-_register(_cmd_unpin, "unpin")
-_register(_cmd_copy, "copy")
-_register(_cmd_retry, "retry")
-_register(_cmd_kill, "kill", "cancel-agent")
-_register(_cmd_init, "init")
+_register(_cmd_plan, "plan", desc="Show current execution plan (right panel)")
+_register(_cmd_exit, "exit", "quit", desc="Shut down the agent")
+_register(_cmd_export, "export", "save", desc="Export session to markdown")
+_register(_cmd_search, "search", "find", desc="Search conversation transcript")
+_register(_cmd_pin, "pin", desc="Pin a file to context · /pin <path>")
+_register(_cmd_unpin, "unpin", desc="Unpin a file from context · /unpin <path>")
+_register(_cmd_copy, "copy", desc="Copy last assistant response (OSC-52)")
+_register(_cmd_retry, "retry", desc="Restart the agent after a crash")
+_register(
+    _cmd_resume,
+    "resume",
+    "sessions",
+    desc="Resume a saved session · /resume [id]",
+)
+_register(_cmd_kill, "kill", "cancel-agent", desc="Cancel a sub-agent · /kill <id-or-name>")
+_register(_cmd_init, "init", desc="Scaffold .coderai/ directory for the current project")
 
 
 # ── dispatcher ────────────────────────────────────────────────────────
@@ -433,6 +498,7 @@ def handle_slash_command(
     set_search_filter: Callable[[str], None],
     retry_agent: Callable[[], None],
     rewind_timeline: Callable[[int], None],
+    resume_session: Callable[[Optional[str]], None],
 ) -> bool:
     """Dispatch a slash command. Returns True if handled."""
 
@@ -453,6 +519,7 @@ def handle_slash_command(
         set_search_filter=set_search_filter,
         retry_agent=retry_agent,
         rewind_timeline=rewind_timeline,
+        resume_session=resume_session,
     )
 
     # Wire the palette callbacks through the section-aware helper.
@@ -480,7 +547,7 @@ def handle_slash_command(
 
     entry = _SLASH_REGISTRY.get(head)
     if entry is not None:
-        return entry(ctx, arg, head)
+        return entry.handler(ctx, arg, head)
 
     ctx.toast("warning", f"Unknown command: /{head} · type /help")
     return True

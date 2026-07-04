@@ -15,6 +15,7 @@ from rich.markdown import Markdown
 from rich.padding import Padding
 
 from coderAI.tui.diff_render import format_diff_gutter
+from coderAI.tui.platform import palette_shortcut
 from coderAI.tui.theme import Categories, Glyphs, Styles, Tokens
 
 logger = logging.getLogger(__name__)
@@ -48,10 +49,13 @@ def plan_step_marker(status: str, idx: int, current: int) -> tuple[str, str]:
 
 
 def _fmt_ts(ts: float | None) -> str:
+    """Plain ``HH:MM:SS`` — style/markup is applied at the call site
+    (``Text.append`` does not parse markup, so returning markup here would
+    render the tags literally)."""
     if ts is None:
         return ""
     lt = _time_mod.localtime(ts)
-    return f"[{Tokens.TEXT_MUTED}]{lt.tm_hour:02d}:{lt.tm_min:02d}:{lt.tm_sec:02d}[/]"
+    return f"{lt.tm_hour:02d}:{lt.tm_min:02d}:{lt.tm_sec:02d}"
 
 
 def _first_lines(text: str, n: int) -> str:
@@ -105,6 +109,8 @@ def write_timeline_item(log: SupportsWrite, it: Dict[str, Any], *, verbose: bool
         write_skill_card(log, it)
     elif kind == "plan_card":
         write_plan_card(log, it)
+    elif kind == "welcome":
+        write_welcome(log, it)
     else:
         logger.warning("Unknown timeline kind: %s", kind)
 
@@ -132,13 +138,14 @@ def build_stream_tail_markup(it: Dict[str, Any], *, verbose: bool) -> str:
     if verbose and reasoning:
         lines.append(
             f"[{Styles.REASONING_GLYPH}]{Glyphs.REASONING}[/] "
-            f"[{Styles.REASONING_LABEL}]reasoning[/]" + (f"  {ts}" if ts else "")
+            f"[{Styles.REASONING_LABEL}]reasoning[/]"
+            + (f"  [{Tokens.TEXT_MUTED}]{ts}[/]" if ts else "")
         )
         lines.append(f"  [{Styles.REASONING}]{escape(_tail_slice(reasoning))}[/]")
         lines.append("")
     lines.append(
         f"[{Styles.ASSISTANT_GLYPH}]{Glyphs.ASSISTANT}[/] [{Styles.ASSISTANT}]assistant[/]"
-        + (f"  {ts}" if ts else "")
+        + (f"  [{Tokens.TEXT_MUTED}]{ts}[/]" if ts else "")
     )
     content = it.get("content", "") or ""
     if content:
@@ -153,7 +160,7 @@ def write_user(log: SupportsWrite, it: Dict[str, Any]) -> None:
     header.append(f"{Glyphs.USER} ", style=Styles.USER_GLYPH)
     header.append("you", style=Styles.USER)
     if ts:
-        header.append(f"  {ts}")
+        header.append(f"  {ts}", style=Tokens.TEXT_MUTED)
     parts: list[Any] = [header]
     body = it.get("text", "") or ""
     if body:
@@ -177,7 +184,7 @@ def write_assistant(log: SupportsWrite, it: Dict[str, Any], verbose: bool) -> No
         rhead.append(f"{Glyphs.REASONING} ", style=Styles.REASONING_GLYPH)
         rhead.append("reasoning", style=Styles.REASONING_LABEL)
         if ts:
-            rhead.append(f"  {ts}")
+            rhead.append(f"  {ts}", style=Tokens.TEXT_MUTED)
         parts.append(rhead)
         parts.append(Text("  " + reasoning, style=Styles.REASONING))
         parts.append(Text(""))
@@ -185,7 +192,7 @@ def write_assistant(log: SupportsWrite, it: Dict[str, Any], verbose: bool) -> No
     head.append(f"{Glyphs.ASSISTANT} ", style=Styles.ASSISTANT_GLYPH)
     head.append("assistant", style=Styles.ASSISTANT)
     if ts:
-        head.append(f"  {ts}")
+        head.append(f"  {ts}", style=Tokens.TEXT_MUTED)
     parts.append(head)
     content = it.get("content", "")
     if content:
@@ -251,7 +258,7 @@ def write_tool(log: SupportsWrite, it: Dict[str, Any]) -> None:
     row.append(f"{glyph} ", style=glyph_color)
     row.append(f"{name:<16}", style=Styles.TOOL_NAME)
     if ts:
-        row.append(f" {ts}")
+        row.append(f" {ts}", style=Tokens.TEXT_MUTED)
     if args_str and not collapsed:
         row.append(f" {args_str}", style=Styles.TOOL_ARGS)
     if preview and not collapsed:
@@ -280,7 +287,7 @@ def write_diff(log: SupportsWrite, it: Dict[str, Any], verbose: bool) -> None:
     head.append("diff", style=Styles.TOOL_NAME)
     head.append(f"  {path}", style=Tokens.TEXT_DIM)
     if ts:
-        head.append(f"  {ts}")
+        head.append(f"  {ts}", style=Tokens.TEXT_MUTED)
     log.write(head)
     if collapsed:
         diff_body = it.get("diff", "")
@@ -299,7 +306,7 @@ def write_error(log: SupportsWrite, it: Dict[str, Any]) -> None:
     head.append(f"{Glyphs.ERROR} ", style=Tokens.DANGER)
     head.append("error", style=Styles.DANGER)
     if ts:
-        head.append(f"  {ts}")
+        head.append(f"  {ts}", style=Tokens.TEXT_MUTED)
     log.write(head)
     log.write(Text("  " + str(it.get("message", "")), style=Styles.TEXT))
     if it.get("hint"):
@@ -368,6 +375,36 @@ def write_plan_card(log: SupportsWrite, it: Dict[str, Any]) -> None:
         g, c = plan_step_marker(status, idx, current)
         markup = f"[{c}]{g}[/] [{Tokens.TEXT_MUTED}]{idx}.[/] [{Tokens.TEXT}]{desc}[/]"
         log.write(Text.from_markup(f"  {markup}"))
+    log.write("")
+
+
+def write_welcome(log: SupportsWrite, it: Dict[str, Any]) -> None:
+    """Empty-state block seeded at session start.
+
+    Renders exactly 7 lines (6 rail lines + trailing blank) — keep
+    ``calculate_item_lines`` in sync when adding or removing a line.
+    """
+    model = escape(str(it.get("model") or "…"))
+    provider = escape(str(it.get("provider") or ""))
+    cwd = str(it.get("cwd") or "")
+    if len(cwd) > 60:
+        cwd = "…" + cwd[-59:]
+    head = Text()
+    head.append(f"{Glyphs.BRAND} ", style=f"bold {Tokens.ACCENT}")
+    head.append("CoderAI", style=f"bold {Tokens.TEXT}")
+    session_line = model + (f" · {provider}" if provider else "")
+    pal = palette_shortcut()
+    parts: list[Any] = [
+        head,
+        Text.from_markup(f"  [{Tokens.TEXT_DIM}]{session_line}[/]"),
+        Text.from_markup(f"  [{Tokens.TEXT_MUTED}]{escape(cwd)}[/]"),
+        Text(""),
+        Text.from_markup(
+            f"  [{Tokens.TEXT_MUTED}]↵ send · @ mention files · / commands · {pal} palette[/]"
+        ),
+        Text.from_markup(f"  [{Tokens.TEXT_MUTED}]PgUp/PgDn scrollback · ^B agents · ^G plan[/]"),
+    ]
+    log.write(_RailBlock(Group(*parts), Tokens.ACCENT))
     log.write("")
 
 
@@ -445,4 +482,6 @@ def calculate_item_lines(it: Dict[str, Any], verbose: bool) -> int:
         lines += min(len(steps), 12)
         lines += 1  # empty line
         return lines
+    elif kind == "welcome":
+        return 7  # 6 rail lines + trailing blank (see write_welcome)
     return 3

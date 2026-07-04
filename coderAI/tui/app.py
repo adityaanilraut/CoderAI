@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from typing import Any, Dict, List, Optional
 
-from textual import on
+from textual import events, on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -35,7 +36,10 @@ from coderAI.tui.screens import (
     FullContentScreen,
     PromptArea,
     SearchScreen,
+    SessionPickerScreen,
 )
+from coderAI.core.agent_tracker import agent_tracker
+from coderAI.system.history import history_manager
 from coderAI.tui.session_setup import create_agent_session
 from coderAI.tui.slash import handle_slash_command
 from coderAI.tui.state import SessionState
@@ -48,6 +52,13 @@ from coderAI.tui.timeline_render import (
 )
 
 STREAM_TICK_S = 0.12
+
+# Responsive breakpoints (terminal columns). Below PANE_RIGHT_MIN_COLS the
+# right (plan/tasks) pane auto-hides; below PANE_LEFT_MIN_COLS the left
+# (agents) pane hides too, leaving the full width to the conversation.
+# Ctrl+B / Ctrl+G override a pane until toggled back to its auto state.
+PANE_LEFT_MIN_COLS = 100
+PANE_RIGHT_MIN_COLS = 130
 
 
 def _build_coderai_css() -> str:
@@ -189,6 +200,12 @@ class CoderAIApp(App[None]):
         Binding("ctrl+k", "command_palette", "Commands", show=True),
         Binding("ctrl+t", "toggle_collapse", "Collapse", show=True),
         Binding("ctrl+o", "expand_full", "Expand", show=True),
+        Binding("ctrl+b", "toggle_left_pane", "Agents pane", show=False),
+        Binding("ctrl+g", "toggle_right_pane", "Plan pane", show=False),
+        Binding("pageup", "timeline_page_up", "Scroll up", show=False),
+        Binding("pagedown", "timeline_page_down", "Scroll down", show=False),
+        Binding("ctrl+home", "timeline_scroll_top", "Top", show=False),
+        Binding("ctrl+end", "timeline_scroll_bottom", "Bottom", show=False),
     ]
 
     def __init__(
@@ -215,6 +232,17 @@ class CoderAIApp(App[None]):
         self.project_files: List[str] = []
         self._scan_in_progress = False
         self._agent_retry_count = 0
+        # None = follow the responsive auto-hide; True/False = user override
+        # via Ctrl+B (left) / Ctrl+G (right).
+        self._left_pane_pref: Optional[bool] = None
+        self._right_pane_pref: Optional[bool] = None
+        # True while a send_message turn is in flight; drives the unfocused
+        # "finished" notification on the next ready event.
+        self._awaiting_response = False
+        # Set when /resume retires the current agent: swallows the old
+        # controller's goodbye so it doesn't toast "session ended" over the
+        # freshly resumed one.
+        self._suppress_goodbye = False
         # Rendered-Strip cache, keyed by (item id, verbose, render width). The
         # expensive part of any refresh is Rich rendering each renderable
         # (Markdown bubbles especially) into terminal Strips; caching the Strips
@@ -232,7 +260,11 @@ class CoderAIApp(App[None]):
                     yield Static("", id="agent-tree-content", markup=True)
             with Vertical(id="center"):
                 yield Static("", id="session-header", markup=True)
-                yield SelectableRichLog(id="timeline", highlight=True, markup=True, wrap=True)
+                # auto_scroll off: _refresh_ui pins to the bottom explicitly,
+                # and only when the user was already there (sticky follow).
+                yield SelectableRichLog(
+                    id="timeline", highlight=True, markup=True, wrap=True, auto_scroll=False
+                )
                 yield Static("", id="stream-tail", markup=True)
             with Vertical(id="right-pane"):
                 with VerticalScroll(id="plan-scroll"):
@@ -255,6 +287,7 @@ class CoderAIApp(App[None]):
         self.run_worker(self._scan_project_files())
         footer = self.query_one("#composer-footer", Static)
         footer.update(self._composer_footer_markup())
+        self._apply_responsive_layout()
         self._refresh_ui("full")
         self.run_worker(
             self._run_agent,  # type: ignore[arg-type]
@@ -263,6 +296,11 @@ class CoderAIApp(App[None]):
             name="agent-loop",
         )
         self._stream_timer = self.set_interval(STREAM_TICK_S, self._stream_tick)
+
+    def on_resize(self, event: events.Resize) -> None:
+        # self.size still reports the pre-resize value while this handler
+        # runs; the event carries the new terminal size.
+        self._apply_responsive_layout(event.size.width)
 
     def on_unmount(self) -> None:
         timer = getattr(self, "_stream_timer", None)
@@ -286,9 +324,17 @@ class CoderAIApp(App[None]):
         if msg.event == "__refresh__":
             self._refresh_ui(str(msg.data.get("mode", "full")))
             return
+        if msg.event == "goodbye" and self._suppress_goodbye:
+            self._suppress_goodbye = False
+            return
         self.reducer.handle(msg.event, msg.data)
         if msg.event == "tool" and msg.data.get("phase") == "awaiting_approval":
+            payload = msg.data.get("payload") or {}
+            self._notify_attention(f"CoderAI: approval needed — {payload.get('name') or 'tool'}")
             self.run_worker(self._maybe_show_approval())
+        elif msg.event == "ready" and self._awaiting_response:
+            self._awaiting_response = False
+            self._notify_attention("CoderAI: finished — ready for your next message")
 
     def _stream_tick(self) -> None:
         flushed_stream = self.reducer._maybe_flush_stream()
@@ -356,6 +402,72 @@ class CoderAIApp(App[None]):
                 )
                 self._emit_bridge("goodbye", {"reason": "loop_crashed"})
 
+    # ── Responsive layout ────────────────────────────────────────────
+
+    def _auto_pane_visibility(self, width: Optional[int] = None) -> tuple[bool, bool]:
+        """(left, right) pane visibility earned by the terminal width."""
+        w = self.size.width if width is None else width
+        return w >= PANE_LEFT_MIN_COLS, w >= PANE_RIGHT_MIN_COLS
+
+    def _apply_responsive_layout(self, width: Optional[int] = None) -> None:
+        w = self.size.width if width is None else width
+        if w <= 0:
+            return
+        auto_left, auto_right = self._auto_pane_visibility(w)
+        for selector, pref, auto in (
+            ("#left-pane", self._left_pane_pref, auto_left),
+            ("#right-pane", self._right_pane_pref, auto_right),
+        ):
+            try:
+                pane = self.query_one(selector)
+            except NoMatches:
+                continue
+            pane.display = auto if pref is None else pref
+
+    def _toggle_pane(self, selector: str, auto: bool, label: str) -> Optional[bool]:
+        """Flip a pane and return the new user override (None = back to auto)."""
+        try:
+            pane = self.query_one(selector)
+        except NoMatches:
+            return None
+        show = not pane.display
+        pane.display = show
+        self.notify(f"{label} pane {'shown' if show else 'hidden'}")
+        # An override that matches the auto state is no override at all —
+        # drop it so future resizes keep auto-hiding/showing as expected.
+        return None if show == auto else show
+
+    def action_toggle_left_pane(self) -> None:
+        auto_left, _ = self._auto_pane_visibility()
+        self._left_pane_pref = self._toggle_pane("#left-pane", auto_left, "Agents")
+
+    def action_toggle_right_pane(self) -> None:
+        _, auto_right = self._auto_pane_visibility()
+        self._right_pane_pref = self._toggle_pane("#right-pane", auto_right, "Plan")
+
+    # ── Desktop notifications ────────────────────────────────────────
+
+    def _notify_attention(self, message: str) -> None:
+        """Bell + OSC 9 desktop notification when the terminal is unfocused."""
+        if self.app_focus:
+            return
+        cfg = getattr(self.agent, "config", None)
+        if not getattr(cfg, "tui_notifications", True):
+            return
+        self.bell()
+        driver = self._driver
+        if driver is None:
+            return
+        safe = "".join(ch for ch in message if ch.isprintable())[:120]
+        try:
+            # OSC 9 desktop notification (iTerm2/WezTerm/kitty/ghostty);
+            # terminals without support ignore the sequence.
+            driver.write(f"\x1b]9;{safe}\x07")
+            driver.flush()
+        except Exception:
+            # Best-effort decoration; never break the UI loop over it.
+            pass
+
     # ── UI refresh ───────────────────────────────────────────────────
 
     def _refresh_ui(self, mode: str = "full") -> None:
@@ -401,6 +513,10 @@ class CoderAIApp(App[None]):
             # would capture nothing. Fall back to plain writes until then.
             width = log.scrollable_content_region.width
             use_cache = bool(getattr(log, "_size_known", False)) and width > 0
+            # Only auto-follow when the user is already pinned to the bottom,
+            # so reading scrollback isn't yanked away by new output. A "full"
+            # refresh rebuilds from scratch and always re-pins.
+            was_at_end = mode == "full" or bool(log.is_vertical_scroll_end)
             idx = self._log_rendered_idx
             while idx < len(timeline):
                 it = timeline[idx]
@@ -416,7 +532,7 @@ class CoderAIApp(App[None]):
             self._log_rendered_idx = idx
             if use_cache:
                 log.virtual_size = Size(log._widest_line_width, len(log.lines))
-            if idx > 0:
+            if idx > 0 and was_at_end:
                 log.scroll_end(animate=False)
             if idx >= len(timeline):
                 if not self.reducer.session.streaming and not any(
@@ -427,7 +543,13 @@ class CoderAIApp(App[None]):
         self._render_chrome(s)
         try:
             prompt = self.query_one("#prompt-area", PromptArea)
+            was_disabled = prompt.disabled
             prompt.disabled = not s.ready
+            # Disabling the composer at startup bounces focus to the next
+            # focusable widget (the agent-tree scroll); hand it back the
+            # moment the agent is ready so the user can just type.
+            if was_disabled and s.ready:
+                prompt.focus()
             if not s.ready:
                 prompt.placeholder = "Starting agent…"
             elif s.progress:
@@ -560,6 +682,32 @@ class CoderAIApp(App[None]):
         else:
             self._exit_armed_at = now
             self.notify("Press Ctrl+C again within 5s to exit")
+
+    def _timeline_log(self) -> Optional[SelectableRichLog]:
+        try:
+            return self.query_one("#timeline", SelectableRichLog)
+        except NoMatches:
+            return None
+
+    def action_timeline_page_up(self) -> None:
+        log = self._timeline_log()
+        if log is not None:
+            log.scroll_page_up()
+
+    def action_timeline_page_down(self) -> None:
+        log = self._timeline_log()
+        if log is not None:
+            log.scroll_page_down()
+
+    def action_timeline_scroll_top(self) -> None:
+        log = self._timeline_log()
+        if log is not None:
+            log.scroll_home(animate=False)
+
+    def action_timeline_scroll_bottom(self) -> None:
+        log = self._timeline_log()
+        if log is not None:
+            log.scroll_end(animate=False)
 
     def action_copy_selection(self) -> None:
         log = self.query_one("#timeline", SelectableRichLog)
@@ -731,12 +879,14 @@ class CoderAIApp(App[None]):
                 set_search_filter=lambda q: setattr(self, "_search_filter", q),
                 retry_agent=self._retry_agent,
                 rewind_timeline=self._rewind_timeline,
+                resume_session=self._resume_session,
             )
             if handled:
                 return
         self.reducer._push({"kind": "user", "id": self.reducer.next_id(), "text": text})
         self.reducer._bump_refresh("append")
         self.reducer._notify()
+        self._awaiting_response = True
         self.controller.enqueue_command("send_message", text=text)
 
     def _show_palette_section(self, section: str | None = None) -> None:
@@ -746,6 +896,60 @@ class CoderAIApp(App[None]):
         self._agent_retry_count = 0
         self.reducer.session.ready = False
         self._toast("info", "Restarting agent…")
+        self.run_worker(
+            self._run_agent,  # type: ignore[arg-type]
+            exclusive=True,
+            thread=True,
+            name="agent-loop",
+        )
+
+    def _resume_session(self, session_id: Optional[str]) -> None:
+        """/resume entry point: with an id, resume it; without, open the picker."""
+        if session_id:
+            self._start_resumed_agent(session_id)
+        else:
+            self.run_worker(self._show_session_picker(), exclusive=True)
+
+    async def _show_session_picker(self) -> None:
+        # list_sessions hits the filesystem (index rebuild, expiry cleanup) —
+        # keep it off the UI loop.
+        sessions = await asyncio.to_thread(history_manager.list_sessions)
+        if not sessions:
+            self._toast("info", "No saved sessions to resume.")
+            return
+        current_id = getattr(getattr(self.agent, "session", None), "session_id", None)
+        result = await self.push_screen_wait(SessionPickerScreen(sessions, current_id=current_id))
+        if result:
+            self._start_resumed_agent(result)
+
+    def _start_resumed_agent(self, session_id: str) -> None:
+        """Swap the live agent for one resumed from a saved session.
+
+        The old controller is asked to exit (its goodbye is suppressed), the
+        local timeline is cleared, and the agent worker restarts with the
+        resume id — same lifecycle as /retry, plus session selection.
+        """
+        current_id = getattr(getattr(self.agent, "session", None), "session_id", None)
+        if session_id == current_id:
+            self._toast("info", "That session is already active.")
+            return
+        if self.controller:
+            self._suppress_goodbye = True
+            self.controller.enqueue_command("exit")
+        # Retire the old session's agents from the tracker before the new
+        # agent registers — the new controller's bootstrap re-emits every
+        # tracked agent, so stale entries would reappear in the tree.
+        agent_tracker.clear_except()
+        self.reducer.session.agents.clear()
+        self.reducer.timeline.clear()
+        self._log_rendered_idx = 0
+        self._resume = session_id
+        self._continue = False
+        self._agent_retry_count = 0
+        self.reducer.session.ready = False
+        self._awaiting_response = False
+        self._toast("info", f"Resuming session {session_id}…")
+        self._refresh_ui("full")
         self.run_worker(
             self._run_agent,  # type: ignore[arg-type]
             exclusive=True,

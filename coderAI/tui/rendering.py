@@ -36,6 +36,13 @@ def render_session_header(s: SessionState) -> str:
         return inner
 
     ctx_ratio = (s.ctx_used / max(1, s.ctx_limit)) if s.ctx_limit else 0
+    # Color is earned: normal until 80%, amber to 90%, then danger.
+    if ctx_ratio >= 0.9:
+        ctx_color = Tokens.DANGER
+    elif ctx_ratio >= 0.8:
+        ctx_color = Tokens.WARN
+    else:
+        ctx_color = Tokens.TEXT
     budget_ratio = (s.cost_usd / s.budget_usd) if s.budget_usd and s.budget_usd > 0 else -1
     cost_val = (
         f"${s.cost_usd:.4f} / ${s.budget_usd:.2f}"
@@ -46,7 +53,7 @@ def render_session_header(s: SessionState) -> str:
     chips = [
         f"[{status_color}]{Glyphs.BRAND}[/] [{Tokens.TEXT}]{model_label}[/]",
         chip("provider", provider, Tokens.TEXT_MUTED),
-        chip("ctx", f"{ctx_used} / {ctx_lim}", Tokens.TEXT, bar=ctx_ratio),
+        chip("ctx", f"{ctx_used} / {ctx_lim}", ctx_color, bar=ctx_ratio),
         chip("$", cost_val, Tokens.TEXT_DIM, bar=budget_ratio),
         chip("iter", f"{s.iteration}/{s.max_iterations}", Tokens.TEXT_DIM),
     ]

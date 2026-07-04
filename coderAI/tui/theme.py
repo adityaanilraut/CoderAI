@@ -108,11 +108,17 @@ class Styles:
     SECTION = f"bold {Tokens.TEXT_DIM}"
     DANGER = f"bold {Tokens.DANGER}"
     GUTTER_LINE = Tokens.TEXT_MUTED
-    GUTTER_ADD = "rgba(158,206,106,1.0)"
-    GUTTER_REMOVE = "rgba(247,118,142,1.0)"
+    GUTTER_ADD = Tokens.AGENT
+    GUTTER_REMOVE = Tokens.DANGER
     GUTTER_CTX = Tokens.TEXT_DIM
-    DIFF_ADD_BG = "rgba(158,206,106,0.10)"
-    DIFF_REMOVE_BG = "rgba(247,118,142,0.10)"
+    # Rich markup (Text.from_markup → RichLog) cannot parse rgba() colors —
+    # they drop silently — so translucent backgrounds are pre-blended
+    # against Tokens.BG into solid hex.
+    DIFF_ADD_BG = "#272d2d"  # AGENT at 10% over BG
+    DIFF_REMOVE_BG = "#302430"  # DANGER at 10% over BG
+    # Intra-line word-diff emphasis: changed words on a paired −/+ line.
+    DIFF_ADD_EMPH = f"bold {Tokens.AGENT} on #42513a"  # AGENT at 30% over BG
+    DIFF_REMOVE_EMPH = f"bold {Tokens.DANGER} on #5c3645"  # DANGER at 30% over BG
 
 
 __all__ = ["Tokens", "Categories", "Glyphs", "Styles"]

@@ -105,7 +105,7 @@ Per-turn flow (`Agent.process_message()` → `agent_loop`):
 - `coderAI/tools/notepad.py` — Shared inter-agent notepad tool.
 - `coderAI/system/error_policy.py` — Central home for retry/error constants and the transient-error regex; modules import from here instead of redefining.
 - `coderAI/system/hooks_manager.py` — Loads `.coderAI/hooks.json` and runs pre/post-tool shell hooks around tool execution.
-- `coderAI/system_prompt.py` — Builds the agent system prompt (tool docs, strategies, rule injection from `.coderAI/rules/*.md`).
+- `coderAI/system_prompt.py` — Builds the agent system prompt (loads static MDX prompt templates from `coderAI/prompts/`, formats dynamic tool docs, and appends project-level rules from `.coderAI/rules/*.md`).
 - `coderAI/context/code_chunker.py` — Splits source files into semantic chunks (AST-aware for Python, regex for JS/TS, sliding window fallback).
 - `coderAI/context/code_indexer.py` — ChromaDB-backed semantic code index with incremental updates via file-hash manifests.
 - `coderAI/embeddings/` — Embedding provider abstraction (OpenAI `text-embedding-3-small` by default; no local provider yet).

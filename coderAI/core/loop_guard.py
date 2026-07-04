@@ -34,7 +34,7 @@ DUPLICATE_CALL_THRESHOLD = 2
 # tool called identically N times almost always indicates a stuck model rather
 # than legitimate work. Triggered in production by gpt-5.4-mini calling
 # ``plan action=show`` 14+ times in a single turn before the user cancelled.
-DOOM_LOOP_HARD_THRESHOLD = 5
+DOOM_LOOP_HARD_THRESHOLD = 10
 DELEGATE_DOOM_LOOP_HARD_THRESHOLD = 3
 
 

@@ -35,6 +35,10 @@ clean:
 	rm -rf __pycache__/
 	rm -rf coderAI/__pycache__/
 	rm -rf coderAI/**/__pycache__/
+	rm -rf .pytest_cache/
+	rm -rf .mypy_cache/
+	rm -rf .ruff_cache/
+	rm -rf .benchmarks/
 	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 	find . -type f -name "*.pyc" -delete
 

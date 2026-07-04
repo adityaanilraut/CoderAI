@@ -50,7 +50,22 @@ class PromptArea(TextArea):
         # prompt recall buffer must use a distinct attribute name.
         self.prompt_history = PromptHistory()
 
+    _TIMELINE_SCROLL_KEYS = {
+        "pageup": "action_timeline_page_up",
+        "pagedown": "action_timeline_page_down",
+        "ctrl+home": "action_timeline_scroll_top",
+        "ctrl+end": "action_timeline_scroll_bottom",
+    }
+
     async def _on_key(self, event: events.Key) -> None:
+        # TextArea consumes pageup/pagedown for cursor movement; redirect
+        # them to the timeline so scrollback works while composing.
+        action_name = self._TIMELINE_SCROLL_KEYS.get(event.key)
+        if action_name is not None and hasattr(self.app, action_name):
+            event.stop()
+            event.prevent_default()
+            getattr(self.app, action_name)()
+            return
         if event.key == "enter":
             event.stop()
             event.prevent_default()
@@ -181,6 +196,8 @@ class ApprovalScreen(ModalScreen[tuple[bool, bool]]):
 
     def on_mount(self) -> None:
         self.query_one("#approve-y", Button).focus()
+        if str(self.approval.get("risk", "low")) == "high":
+            self.query_one("#approval-box").styles.border = ("panel", Tokens.DANGER)
 
     def compose(self) -> ComposeResult:
         a = self.approval
@@ -192,10 +209,11 @@ class ApprovalScreen(ModalScreen[tuple[bool, bool]]):
         parent_id = a.get("parentId")
         iteration = int(a.get("iteration") or 0)
 
+        risk_color = Tokens.DANGER if risk == "high" else Tokens.WARN
         with Container(id="approval-box"):
             yield Label(
-                f"[bold {Tokens.WARN}]▲[/] Approve [bold {Tokens.TEXT}]{escape(tool_name)}[/]"
-                f" · [{Tokens.WARN}]▲ {risk.upper()}[/] risk",
+                f"[bold {risk_color}]▲[/] Approve [bold {Tokens.TEXT}]{escape(tool_name)}[/]"
+                f" · [{risk_color}]▲ {risk.upper()}[/] risk",
                 id="approval-header",
             )
 
@@ -221,9 +239,16 @@ class ApprovalScreen(ModalScreen[tuple[bool, bool]]):
                 diff_text = format_diff_compact(diff, max_lines=14)
                 yield Static(diff_text, id="approval-diff")
 
-            args_text = str(args)[:400]
-            if not diff:
-                yield Label(args_text)
+            if not diff and args and not isinstance(args, dict):
+                yield Label(escape(str(args)[:400]))
+            elif not diff and args:
+                arg_lines = [
+                    f"[{Tokens.TEXT_MUTED}]{escape(str(k))}:[/] [{Tokens.TEXT}]{escape(str(v)[:120])}[/]"
+                    for k, v in list(args.items())[:6]
+                ]
+                if len(args) > 6:
+                    arg_lines.append(f"[{Tokens.TEXT_MUTED}]… {len(args) - 6} more[/]")
+                yield Label("\n".join(arg_lines))
 
             # Risk factors are supplied by the bridge (single source in
             # bridge/tool_metadata.tool_risk_factors); the screen only renders.
@@ -438,8 +463,23 @@ class FuzzyPickerScreen(ModalScreen[Optional[str]]):
     @abstractmethod
     def _update_options(self, query: str) -> None: ...
 
-    @abstractmethod
-    def _get_selected_action_value(self, is_tab: bool = False) -> Optional[str]: ...
+    def _get_selected_action_value(self, is_tab: bool = False) -> Optional[str]:
+        """Default: the highlighted option's id. Subclasses with composite
+        option ids (e.g. the command palette) override this."""
+        try:
+            option_list = self.query_one(f"#{self._list_id}", OptionList)
+        except NoMatches:
+            return None
+        idx = option_list.highlighted
+        if idx is not None and 0 <= idx < option_list.option_count:
+            opt = option_list.get_option_at_index(idx)
+            if not opt.disabled:
+                return opt.id
+        return None
+
+    @on(events.Key)
+    async def _on_key(self, event: events.Key) -> None:
+        self._handle_key(event)
 
     def on_mount(self) -> None:
         self.query_one(f"#{self._input_id}", Input).focus()
@@ -554,21 +594,75 @@ class FilePickerScreen(FuzzyPickerScreen):
         if option_list.option_count > 0:
             option_list.highlighted = 0
 
-    def _get_selected_action_value(self, is_tab: bool = False) -> Optional[str]:
-        try:
-            option_list = self.query_one(f"#{self._list_id}", OptionList)
-        except NoMatches:
-            return None
-        idx = option_list.highlighted
-        if idx is not None and 0 <= idx < option_list.option_count:
-            opt = option_list.get_option_at_index(idx)
-            if not opt.disabled:
-                return opt.id
-        return None
 
-    @on(events.Key)
-    async def _on_key(self, event: events.Key) -> None:
-        self._handle_key(event)
+class SessionPickerScreen(FuzzyPickerScreen):
+    """Fuzzy-searchable saved-session picker for /resume.
+
+    ``sessions`` is the output of ``history_manager.list_sessions()`` (newest
+    first); dismisses with the chosen session id, or None on escape.
+    """
+
+    def __init__(
+        self,
+        sessions: List[Dict[str, Any]],
+        current_id: Optional[str] = None,
+    ) -> None:
+        super().__init__(
+            box_id="picker-box",
+            input_id="picker-input",
+            list_id="picker-list",
+            footer_id="picker-footer",
+            placeholder="🔍 Type to search saved sessions to resume…",
+            footer_help=f"[{Tokens.TEXT_MUTED}]↑↓ navigate  ↵ resume  ⎋ close[/]",
+        )
+        self.sessions = sessions
+        self.current_id = current_id
+
+    def _get_matches(self, query: str) -> List[Dict[str, Any]]:
+        q = query.lower().strip()
+        if not q:
+            return self.sessions[:100]
+        matches = []
+        for s in self.sessions:
+            haystack = " ".join(
+                str(s.get(k, "")) for k in ("session_id", "model", "updated_at", "created_at")
+            ).lower()
+            if q in haystack:
+                matches.append(s)
+        return matches[:100]
+
+    def _update_options(self, query: str) -> None:
+        matches = self._get_matches(query)
+        option_list = self.query_one(f"#{self._list_id}", OptionList)
+        option_list.clear_options()
+
+        options = []
+        for s in matches:
+            sid = str(s.get("session_id", ""))
+            is_current = bool(sid) and sid == self.current_id
+            marker = f"  [{Tokens.WARN}]· current[/]" if is_current else ""
+            # Long ids wrap the row in the 80-col picker box; the trailing
+            # hex chunk is enough to tell sessions apart visually.
+            sid_disp = sid if len(sid) <= 18 else "…" + sid[-8:]
+            prompt = (
+                f"  [{Tokens.TEXT}]{escape(str(s.get('updated_at', '')))}[/]"
+                f"  [{Tokens.TEXT_DIM}]{s.get('messages', 0):>4} msgs[/]"
+                f"  [{Tokens.TEXT_MUTED}]{escape(str(s.get('model', '')))}[/]"
+                f"  [{Tokens.TEXT_MUTED}]{escape(sid_disp)}[/]{marker}"
+            )
+            options.append(Option(prompt, id=sid, disabled=is_current))
+
+        if not options:
+            empty = (
+                f'no sessions matching "{escape(query)}"' if query.strip() else "no saved sessions"
+            )
+            options.append(Option(f"[{Tokens.TEXT_MUTED}]  {empty}[/]", id="none", disabled=True))
+
+        option_list.add_options(options)
+        for idx in range(option_list.option_count):
+            if not option_list.get_option_at_index(idx).disabled:
+                option_list.highlighted = idx
+                break
 
 
 class CommandPaletteScreen(FuzzyPickerScreen):

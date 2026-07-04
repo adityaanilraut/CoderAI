@@ -48,3 +48,21 @@ def test_compose_default_system_prompt_includes_directives() -> None:
     assert "finish_reason=length" in rendered.lower()
     assert "create_plan" in rendered or "action=" in rendered
     assert "do not duplicate items between" in rendered.lower()
+
+
+def test_system_prompt_loaded_from_files() -> None:
+    from coderAI.system_prompt import (
+        SYSTEM_PROMPT_INTRO,
+        SYSTEM_PROMPT_INTERACTION,
+        SYSTEM_PROMPT_OUTPUT_STYLE,
+        SYSTEM_PROMPT_TAIL,
+    )
+    assert len(SYSTEM_PROMPT_INTRO) > 0
+    assert len(SYSTEM_PROMPT_INTERACTION) > 0
+    assert len(SYSTEM_PROMPT_OUTPUT_STYLE) > 0
+    assert len(SYSTEM_PROMPT_TAIL) > 0
+    assert "You are CoderAI" in SYSTEM_PROMPT_INTRO
+    assert "Untrusted Content" in SYSTEM_PROMPT_INTERACTION
+    assert "Output & Communication Style" in SYSTEM_PROMPT_OUTPUT_STYLE
+    assert "Strategy for Common Tasks" in SYSTEM_PROMPT_TAIL
+

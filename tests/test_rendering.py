@@ -123,7 +123,9 @@ def test_render_tasks_empty_and_populated():
 
 
 def test_render_tasks_all_buckets_empty():
-    s = SessionState(current_tasks={"summary": "", "inProgress": [], "pending": [], "completed": []})
+    s = SessionState(
+        current_tasks={"summary": "", "inProgress": [], "pending": [], "completed": []}
+    )
     out = r.render_tasks(s)
     assert "empty list" in out
 
@@ -146,3 +148,19 @@ def test_composer_footer_markup_states():
         SessionState(ready=True, progress={"label": "Spinning"})
     )
     assert "Spinning" in progress_no_total
+
+
+def test_render_session_header_ctx_color_escalates():
+    from coderAI.tui.theme import Tokens
+
+    low = r.render_session_header(SessionState(ctx_used=1_000, ctx_limit=200_000))
+    warn = r.render_session_header(SessionState(ctx_used=165_000, ctx_limit=200_000))
+    danger = r.render_session_header(SessionState(ctx_used=185_000, ctx_limit=200_000))
+
+    def ctx_chip(markup: str) -> str:
+        start = markup.index("ctx")
+        return markup[start : start + 120]
+
+    assert Tokens.WARN not in ctx_chip(low) and Tokens.DANGER not in ctx_chip(low)
+    assert Tokens.WARN in ctx_chip(warn)
+    assert Tokens.DANGER in ctx_chip(danger)
