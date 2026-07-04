@@ -61,8 +61,8 @@ class TestWriteFileTraversal:
             result = asyncio.run(WriteFileTool().execute(path=bad, content="bad"))
             assert result["success"] is False, f"should reject {rel}"
             code = result.get("error_code")
-            # scope or protected depending on resolved path
-            assert code in ("scope", "protected"), f"unexpected code: {code}"
+            # scope or permission_denied depending on resolved path
+            assert code in ("scope", "permission_denied"), f"unexpected code: {code}"
 
 
 class TestDeleteFileTraversal:

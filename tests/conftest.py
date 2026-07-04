@@ -26,6 +26,18 @@ for env_key in [
     if env_key not in os.environ:
         os.environ[env_key] = "mock-key-for-testing"
 
+# Mock tiktoken to prevent network requests for vocabulary files in tests under pytest-socket
+import tiktoken
+from unittest.mock import MagicMock
+
+class MockEncoding:
+    def encode(self, text: str, *args, **kwargs) -> list[int]:
+        return [1] * len(text)
+
+mock_encoding = MockEncoding()
+tiktoken.get_encoding = MagicMock(return_value=mock_encoding)
+tiktoken.encoding_for_model = MagicMock(return_value=mock_encoding)
+
 # Filesystem tools refuse writes outside the project root by default. Tests
 # write to pytest's ``tmp_path`` (typically /tmp/...), which is outside this
 # repo, so opt out for the test session.

@@ -78,6 +78,15 @@ class SearchReplaceTool(Tool):
 
             lock = await resource_manager.get_file_lock(str(path_obj))
             async with lock:
+                if _is_path_protected(path_obj):
+                    return {
+                        "success": False,
+                        "error": f"Cannot modify protected path: {path}",
+                    }
+                scope_err = _enforce_project_scope(path_obj, "search_replace")
+                if scope_err:
+                    return scope_err
+
                 if path_obj.is_dir():
                     return {
                         "success": False,
@@ -91,14 +100,6 @@ class SearchReplaceTool(Tool):
                         "hint": "Check the path with list_directory or glob_search.",
                     }
 
-                if _is_path_protected(path_obj):
-                    return {
-                        "success": False,
-                        "error": f"Cannot modify protected path: {path}",
-                    }
-                scope_err = _enforce_project_scope(path_obj, "search_replace")
-                if scope_err:
-                    return scope_err
                 symlink_err = _reject_symlink_leaf(path_obj, "search_replace in")
                 if symlink_err:
                     return symlink_err
