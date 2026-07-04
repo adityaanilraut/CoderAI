@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from coderAI.tools.web._http import _is_ip_public
-from tests.security.conftest import INTERNAL_IP_TARGETS
+from .conftest import INTERNAL_IP_TARGETS
 
 
 def test_security_marker_is_applied(request: pytest.FixtureRequest) -> None:
