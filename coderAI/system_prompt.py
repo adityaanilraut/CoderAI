@@ -1,8 +1,10 @@
 """System prompt for the CoderAI agent.
 
-The canonical default prompt is built from ``SYSTEM_PROMPT_INTRO`` + a **dynamic**
-tool list from ``format_tools_markdown(registry)`` + ``SYSTEM_PROMPT_TAIL`` so
-documented tools always match ``ToolRegistry`` (personas, web_tools_in_main, etc.).
+The canonical default prompt is built from ``SYSTEM_PROMPT_INTRO`` +
+``SYSTEM_PROMPT_RUNTIME`` + a **dynamic** tool list from
+``format_tools_markdown(registry)`` + ``SYSTEM_PROMPT_INTERACTION`` +
+``SYSTEM_PROMPT_OUTPUT_STYLE`` + ``SYSTEM_PROMPT_TAIL`` so documented tools
+always match ``ToolRegistry`` (personas, web_tools_in_main, etc.).
 
 Note: ``Agent._get_system_prompt`` separately appends the contents of any
 ``.coderAI/rules/*.md`` files to the composed prompt at session start. This file
@@ -45,6 +47,7 @@ def _load_prompt(filename: str) -> str:
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT_INTRO = _load_prompt("intro.mdx")
+SYSTEM_PROMPT_RUNTIME = _load_prompt("runtime.mdx")
 SYSTEM_PROMPT_INTERACTION = _load_prompt("interaction.mdx")
 SYSTEM_PROMPT_OUTPUT_STYLE = _load_prompt("output_style.mdx")
 
@@ -301,7 +304,8 @@ def compose_default_system_prompt(
 ) -> str:
     """Default CoderAI system prompt.
 
-    Order: env (optional) → INTRO → dynamic tool list → INTERACTION → OUTPUT_STYLE → TAIL.
+    Order: env (optional) → INTRO → RUNTIME → dynamic tool list → INTERACTION →
+    OUTPUT_STYLE → TAIL.
     """
     parts = []
     if env_section:
@@ -309,6 +313,7 @@ def compose_default_system_prompt(
     parts.extend(
         [
             SYSTEM_PROMPT_INTRO,
+            SYSTEM_PROMPT_RUNTIME,
             format_tools_markdown(registry),
             SYSTEM_PROMPT_INTERACTION,
             SYSTEM_PROMPT_OUTPUT_STYLE,

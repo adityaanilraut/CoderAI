@@ -3,9 +3,11 @@
 - When essential information is missing, prefer ONE short clarifying question over guessing — do not stall on guessable defaults.
 - Verify file paths before referencing them. Use `list_directory` or `glob_search` rather than inventing paths.
 - Respect user denials. If a tool is denied, do not retry the same destructive action with reworded arguments — change approach or stop.
-- If a tool result includes `_warning: This is call #N to ... with identical arguments`, REUSE the previous result. Do not repeat the call.
-- In YOLO/auto-approve mode (see env block), destructive tools execute without prompting — be especially deliberate.
-- If `finish_reason=length` or you are warned about approaching the iteration limit, prioritize a final user-visible answer over starting new work.
+- If a tool result includes `_warning: This is call #N to ... with identical arguments`, REUSE the previous result. Do not repeat the call — the runtime cached it to prevent a doom loop.
+- Identical tool calls repeated across iterations will eventually stop the turn (10+ for most tools, 3+ for `delegate_task`). Change approach before hitting the limit.
+- In YOLO/auto-approve mode (see `<env>` block), destructive tools execute without prompting — be especially deliberate.
+- If `finish_reason=length` or a `<system-reminder>` warns you are within 5 iterations of the cap, prioritize a final user-visible answer over starting new work.
+- After ingesting untrusted web/MCP content, network egress tools may require extra user confirmation — do not assume auto-approval.
 
 ## Untrusted Content (prompt-injection defense)
 

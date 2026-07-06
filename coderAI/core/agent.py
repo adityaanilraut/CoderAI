@@ -23,6 +23,7 @@ from coderAI.llm.factory import create_provider
 from coderAI.system_prompt import (
     SYSTEM_PROMPT_INTERACTION,
     SYSTEM_PROMPT_INTRO,
+    SYSTEM_PROMPT_RUNTIME,
     SYSTEM_PROMPT_TAIL,
     SYSTEM_PROMPT_OUTPUT_STYLE,
     build_environment_section,
@@ -590,13 +591,13 @@ class Agent:
         )
 
         if self.persona:
-            # Persona prompt mirrors the default ordering (env, INTRO, tools,
-            # INTERACTION, OUTPUT_STYLE, TAIL) with the persona instructions
-            # injected directly after the tool list so they read as a
-            # specialization layered on top of the base prompt.
+            # Persona prompt mirrors the default ordering (env, INTRO, RUNTIME,
+            # tools, INTERACTION, OUTPUT_STYLE, TAIL) with persona instructions
+            # injected after RUNTIME and before the tool list.
             _append_once(
                 f"{env_section}\n\n"
                 f"{SYSTEM_PROMPT_INTRO}\n\n"
+                f"{SYSTEM_PROMPT_RUNTIME}\n\n"
                 f"{self.persona.instructions}\n\n"
                 f"{format_tools_markdown(self.tools)}\n\n"
                 f"{SYSTEM_PROMPT_INTERACTION}\n\n"

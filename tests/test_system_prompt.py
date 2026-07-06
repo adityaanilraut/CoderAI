@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from coderAI.system_prompt import (
     SYSTEM_PROMPT_INTRO,
+    SYSTEM_PROMPT_RUNTIME,
     SYSTEM_PROMPT_TAIL,
     compose_default_system_prompt,
 )
@@ -36,6 +37,13 @@ def test_tail_carries_desktop_automation_section() -> None:
     assert "run_applescript" in tail
 
 
+def test_runtime_carries_execution_loop_section() -> None:
+    runtime = _normalize(SYSTEM_PROMPT_RUNTIME)
+    assert "execution loop" in runtime
+    assert "max_iterations" in runtime
+    assert "delegate_task" in runtime
+
+
 def test_compose_default_system_prompt_includes_directives() -> None:
     registry = ToolRegistry()
     registry.register(CreatePlanTool())
@@ -45,9 +53,10 @@ def test_compose_default_system_prompt_includes_directives() -> None:
 
     assert "plan before you build" in rendered
     assert "plan-first" in rendered
+    assert "execution loop" in rendered
     assert "finish_reason=length" in rendered.lower()
     assert "create_plan" in rendered or "action=" in rendered
-    assert "do not duplicate items between" in rendered.lower()
+    assert "do not duplicate" in rendered.lower()
 
 
 def test_system_prompt_loaded_from_files() -> None:
@@ -55,9 +64,11 @@ def test_system_prompt_loaded_from_files() -> None:
         SYSTEM_PROMPT_INTRO,
         SYSTEM_PROMPT_INTERACTION,
         SYSTEM_PROMPT_OUTPUT_STYLE,
+        SYSTEM_PROMPT_RUNTIME,
         SYSTEM_PROMPT_TAIL,
     )
     assert len(SYSTEM_PROMPT_INTRO) > 0
+    assert len(SYSTEM_PROMPT_RUNTIME) > 0
     assert len(SYSTEM_PROMPT_INTERACTION) > 0
     assert len(SYSTEM_PROMPT_OUTPUT_STYLE) > 0
     assert len(SYSTEM_PROMPT_TAIL) > 0
