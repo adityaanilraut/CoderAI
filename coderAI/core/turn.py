@@ -28,6 +28,11 @@ class TurnContext:
       true once the turn ingests ``UNTRUSTED_EXTERNAL`` tool output; the
       executor sets it and its egress gate reads it. Starts clean each turn
       because the object is created fresh.
+    * ``ingested_untrusted_mcp`` — a narrower taint (Phase 7.3): true once the
+      turn ingests output specifically from an MCP server. Arms the
+      mutating-local-tool gate, which forces a human confirmation for a local
+      mutation in an MCP-triggered turn *even under* ``auto_approve`` so a
+      third-party server can't drive an unattended local write/exec.
 
     All fields carry defaults so a bare ``TurnContext()`` is valid — the
     executor holds one as a fallback for direct (test) invocation that does not
@@ -45,4 +50,5 @@ class TurnContext:
     consecutive_pauses: int = 0
     tools_were_used: bool = False
     ingested_untrusted: bool = False
+    ingested_untrusted_mcp: bool = False
     reply_parts: List[str] = field(default_factory=list)

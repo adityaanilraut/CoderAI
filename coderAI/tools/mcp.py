@@ -22,6 +22,118 @@ logger = logging.getLogger(__name__)
 # and the ``coderAI mcp`` CLI so both validate against the same allow-list.
 ALLOWED_MCP_LAUNCHERS = {"npx", "node", "python", "python3", "uvx", "bun", "deno"}
 
+# Per-launcher tokens that evaluate inline code, turning an *allowed* launcher
+# into an arbitrary-code sink (``python -c "…"``, ``node -e "…"``, ``deno eval
+# "…"``). ``ALLOWED_MCP_LAUNCHERS`` only constrains the launcher itself, so a
+# config planted in ``mcp_servers.json`` with an allowed launcher could still run
+# attacker-chosen code through one of these. Scoped per launcher so npx's
+# legitimate ``-p <pkg>`` (package selector) is not confused with node's ``-p``
+# (eval-and-print). Enforced in the single ``validate_stdio_launch`` choke point.
+_INLINE_EXEC_TOKENS = {
+    "python": {"-c"},
+    "python3": {"-c"},
+    "node": {"-e", "--eval", "-p", "--print"},
+    "bun": {"-e", "--eval", "-p", "--print"},
+    "deno": {"eval"},
+}
+
+
+def validate_stdio_launch(command: str, args: Optional[List[str]]) -> Optional[str]:
+    """Validate a stdio MCP launcher + argv; return an error string or ``None``.
+
+    The single choke point shared by ``MCPConnectTool`` (LLM-driven) and startup
+    autoconnect (``_autoconnect_mcp_servers``, config-driven), so a server planted
+    in ``mcp_servers.json`` is held to the same launcher allow-list, inline-exec
+    block, command blocklist, and interactive-command check as an interactive
+    ``mcp_connect``. Previously only the tool path enforced these; autoconnect
+    called ``connect_stdio`` directly and bypassed them.
+    """
+    if not command:
+        return "Command is required for stdio transport"
+
+    cmd_lower = command.lower()
+    allowed = any(
+        cmd_lower == launcher or cmd_lower.endswith("/" + launcher)
+        for launcher in ALLOWED_MCP_LAUNCHERS
+    )
+    if not allowed:
+        return (
+            f"MCP server launcher '{command}' is not in the allowed set: "
+            f"{', '.join(sorted(ALLOWED_MCP_LAUNCHERS))}"
+        )
+
+    arg_list = list(args or [])
+    base = cmd_lower.rsplit("/", 1)[-1]
+    blocked_tokens = _INLINE_EXEC_TOKENS.get(base, set())
+    for token in arg_list:
+        if token in blocked_tokens:
+            return (
+                f"MCP launcher flag '{command} {token}' runs arbitrary inline code, "
+                "which is not allowed (it defeats the launcher allow-list)."
+            )
+
+    from coderAI.tools.terminal import is_command_blocked
+    from coderAI.system.safeguards import is_interactive_command
+
+    full_cmd = command + " " + " ".join(arg_list) if arg_list else command
+    if is_command_blocked(full_cmd):
+        return "MCP server command is blocked for safety"
+    if is_interactive_command(full_cmd):
+        return "MCP server command appears interactive, which is not allowed"
+    return None
+
+
+def _is_loopback_host(host: str) -> bool:
+    """True for ``localhost`` and any loopback IP literal (127.0.0.0/8, ::1)."""
+    import ipaddress
+
+    h = (host or "").strip().lower()
+    if not h:
+        return False
+    if h == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(h).is_loopback
+    except ValueError:
+        return False
+
+
+def validate_remote_mcp_url(url: str) -> Optional[str]:
+    """Validate a remote MCP/OAuth endpoint URL.
+
+    Returns an error string when *url* is not an acceptable remote endpoint, or
+    ``None`` when it is. Requires ``https://`` for every remote host; plaintext
+    ``http://`` is allowed only for loopback dev hosts (``127.0.0.1``/``localhost``).
+    This is the single scheme gate shared by ``connect_http``/``connect_sse``, the
+    ``coderAI mcp add`` CLI, and the OAuth discovery/token calls, so an untrusted
+    ``mcp_servers.json`` cannot downgrade a connection or an OAuth token exchange
+    onto the network in cleartext.
+    """
+    from urllib.parse import urlparse
+
+    raw = (url or "").strip()
+    if not raw:
+        return "Empty MCP endpoint URL."
+    try:
+        parsed = urlparse(raw)
+    except ValueError:
+        return f"Invalid MCP endpoint URL: {url!r}"
+    scheme = (parsed.scheme or "").lower()
+    if scheme == "https":
+        return None
+    if scheme == "http":
+        if _is_loopback_host(parsed.hostname or ""):
+            return None
+        return (
+            f"Refusing plaintext http:// for remote MCP/OAuth endpoint {url!r}; use "
+            "https:// (http:// is allowed only for loopback dev hosts like "
+            "127.0.0.1/localhost)."
+        )
+    return (
+        f"Unsupported URL scheme {scheme or '(none)'!r} for a remote MCP endpoint "
+        f"(use https://): {url!r}"
+    )
+
 
 class MCPAuthRequiredError(Exception):
     """Raised when an HTTP MCP server demands OAuth (HTTP 401).
@@ -252,6 +364,12 @@ class MCPClient:
                     f"id encoding (got {server_name!r}). Use a name like 'my_server'."
                 ),
             }
+
+        # Single launcher-validation choke point: applies to both LLM-driven
+        # ``mcp_connect`` and config-driven autoconnect (which calls us directly).
+        launch_err = validate_stdio_launch(command, args)
+        if launch_err:
+            return {"success": False, "error": launch_err}
 
         process = None
         stderr_task: Optional["asyncio.Task[None]"] = None
@@ -773,6 +891,10 @@ class MCPClient:
                 "error": "server_name must not contain '__'",
             }
 
+        scheme_err = validate_remote_mcp_url(url)
+        if scheme_err:
+            return {"success": False, "error": scheme_err}
+
         session = None
         try:
             session = aiohttp.ClientSession()
@@ -986,6 +1108,10 @@ class MCPClient:
                 "success": False,
                 "error": "server_name must not contain '__'",
             }
+
+        scheme_err = validate_remote_mcp_url(url)
+        if scheme_err:
+            return {"success": False, "error": scheme_err}
 
         session = None
         try:
@@ -1490,8 +1616,6 @@ class MCPConnectTool(Tool):
     parameters_model = MCPConnectParams
     requires_confirmation = True
 
-    _ALLOWED_MCP_LAUNCHERS = ALLOWED_MCP_LAUNCHERS
-
     async def execute(  # type: ignore[override]
         self,
         server_name: str,
@@ -1520,32 +1644,9 @@ class MCPConnectTool(Tool):
                     entry["headers"] = headers
                 persist_mcp_server(server_name, entry)
             return result
-        if not command:
-            return {"success": False, "error": "Command is required for stdio transport"}
-
-        cmd_lower = command.lower()
-        allowed = any(
-            cmd_lower == launcher or cmd_lower.endswith("/" + launcher)
-            for launcher in self._ALLOWED_MCP_LAUNCHERS
-        )
-        if not allowed:
-            return {
-                "success": False,
-                "error": f"MCP server launcher '{command}' is not in the allowed set: {', '.join(sorted(self._ALLOWED_MCP_LAUNCHERS))}",
-            }
-
-        from coderAI.tools.terminal import is_command_blocked
-        from coderAI.system.safeguards import is_interactive_command
-
-        full_cmd = command + " " + " ".join(args) if args else command
-        if is_command_blocked(full_cmd):
-            return {"success": False, "error": "MCP server command is blocked for safety"}
-        if is_interactive_command(full_cmd):
-            return {
-                "success": False,
-                "error": "MCP server command appears interactive, which is not allowed",
-            }
-
+        # Launcher allow-list, inline-exec block, blocklist and interactive checks
+        # all live in ``connect_stdio`` (via ``validate_stdio_launch``) so this
+        # LLM-driven path and config-driven autoconnect share one choke point.
         result = await mcp_client.connect_stdio(server_name, command, args)
         if result.get("success") and persist:
             persist_mcp_server(server_name, {"command": command, "args": list(args or [])})

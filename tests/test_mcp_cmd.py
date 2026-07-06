@@ -81,13 +81,11 @@ def test_add_after_dashdash_defaults_to_stdio(runner, cfg_file):
 
 
 def test_add_sse_after_dashdash(runner, cfg_file):
-    result = runner.invoke(
-        mcp, ["add", "remote", "--transport", "sse", "--", "http://h/sse"]
-    )
+    result = runner.invoke(mcp, ["add", "remote", "--transport", "sse", "--", "https://h/sse"])
     assert result.exit_code == 0, result.output
     assert _read(cfg_file)["mcpServers"]["remote"] == {
         "transport": "sse",
-        "url": "http://h/sse",
+        "url": "https://h/sse",
     }
 
 
@@ -170,26 +168,20 @@ def test_add_http_after_dashdash_rejects_extra_args(runner, cfg_file):
 
 
 def test_add_header_rejected_for_non_http(runner, cfg_file):
-    result = runner.invoke(
-        mcp, ["add", "remote", "--sse", "http://h/sse", "-H", "X: y"]
-    )
+    result = runner.invoke(mcp, ["add", "remote", "--sse", "http://h/sse", "-H", "X: y"])
     assert result.exit_code == 2
     assert "http" in result.output.lower()
     assert not cfg_file.exists()
 
 
 def test_add_malformed_header_rejected(runner, cfg_file):
-    result = runner.invoke(
-        mcp, ["add", "api", "--http", "https://host/mcp", "-H", "no-colon"]
-    )
+    result = runner.invoke(mcp, ["add", "api", "--http", "https://host/mcp", "-H", "no-colon"])
     assert result.exit_code == 2
     assert not cfg_file.exists()
 
 
 def test_add_rejects_sse_and_http_together(runner, cfg_file):
-    result = runner.invoke(
-        mcp, ["add", "x", "--sse", "http://h/sse", "--http", "https://h/mcp"]
-    )
+    result = runner.invoke(mcp, ["add", "x", "--sse", "http://h/sse", "--http", "https://h/mcp"])
     assert result.exit_code == 2
     assert not cfg_file.exists()
 
@@ -212,9 +204,7 @@ def test_add_rejects_double_underscore_name(runner, cfg_file):
 
 
 def test_add_rejects_both_transports(runner, cfg_file):
-    result = runner.invoke(
-        mcp, ["add", "x", "--command", "npx", "--sse", "http://h/sse"]
-    )
+    result = runner.invoke(mcp, ["add", "x", "--command", "npx", "--sse", "http://h/sse"])
     assert result.exit_code == 2
     assert not cfg_file.exists()
 
@@ -233,18 +223,18 @@ def test_add_allows_pathed_launcher(runner, cfg_file):
 
 def test_add_overwrites_existing(runner, cfg_file):
     runner.invoke(mcp, ["add", "dup", "--command", "npx"])
-    result = runner.invoke(mcp, ["add", "dup", "--sse", "http://h/sse"])
+    result = runner.invoke(mcp, ["add", "dup", "--sse", "https://h/sse"])
     assert result.exit_code == 0, result.output
     assert "Overwriting" in result.output
     assert _read(cfg_file)["mcpServers"]["dup"] == {
         "transport": "sse",
-        "url": "http://h/sse",
+        "url": "https://h/sse",
     }
 
 
 def test_add_preserves_other_servers(runner, cfg_file):
     runner.invoke(mcp, ["add", "one", "--command", "npx"])
-    runner.invoke(mcp, ["add", "two", "--sse", "http://h/sse"])
+    runner.invoke(mcp, ["add", "two", "--sse", "https://h/sse"])
     servers = _read(cfg_file)["mcpServers"]
     assert set(servers) == {"one", "two"}
 
@@ -356,9 +346,7 @@ def test_written_shape_matches_autoconnect_reader(runner, cfg_file):
     """The CLI's output must be loadable by load_mcp_servers (used at startup)."""
     from coderAI.tools.mcp import load_mcp_servers
 
-    runner.invoke(
-        mcp, ["add", "fs", "--command", "python3", "--args", "-m,server"]
-    )
+    runner.invoke(mcp, ["add", "fs", "--command", "python3", "--args", "-m,server"])
     servers = load_mcp_servers().get("mcpServers", {})
     assert servers["fs"] == {"command": "python3", "args": ["-m", "server"]}
 

@@ -198,16 +198,23 @@ class ToolExecutor:
             return Provenance.UNTRUSTED_EXTERNAL
         return Provenance.TRUSTED
 
-    def _mark_turn_untrusted(self) -> None:
+    def _mark_turn_untrusted(self, *, from_mcp: bool = False) -> None:
         """Record that this user turn has ingested untrusted external content.
 
-        Arms the egress gate (:meth:`_turn_has_untrusted`). The taint lives on the
-        shared :class:`TurnContext`, which is fresh per user message.
+        Arms the egress gate (:meth:`_turn_has_untrusted`). When the content came
+        from an MCP server, also arms the stronger mutating-local gate
+        (:meth:`_turn_has_untrusted_mcp`, Phase 7.3). The taint lives on the shared
+        :class:`TurnContext`, which is fresh per user message.
         """
         self._turn.ingested_untrusted = True
+        if from_mcp:
+            self._turn.ingested_untrusted_mcp = True
 
     def _turn_has_untrusted(self) -> bool:
         return self._turn.ingested_untrusted
+
+    def _turn_has_untrusted_mcp(self) -> bool:
+        return self._turn.ingested_untrusted_mcp
 
     @staticmethod
     def _untrusted_source(pc: Dict[str, Any]) -> str:
@@ -568,6 +575,21 @@ class ToolExecutor:
             )
             if egress_gated:
                 needs_confirmation = True
+            # Confused-deputy gate (Phase 7.3): once this turn has ingested MCP
+            # server output, a *local mutating* tool must get an explicit human
+            # decision — even under auto_approve/--yolo — so a third-party MCP
+            # server can't drive an unattended local write/exec. Unlike the egress
+            # gate this survives auto_approve; it routes through the normal
+            # confirmation path, which safely denies (deny-on-mutate override or
+            # EOF at a non-interactive prompt) when there is no approver.
+            mcp_mutation_gated = (
+                tool is not None
+                and not is_mcp_proxy
+                and self._turn_has_untrusted_mcp()
+                and tool_requires_confirmation(tool)
+            )
+            if mcp_mutation_gated:
+                needs_confirmation = True
             if needs_confirmation:
                 # Check permission hooks first (can auto-allow or auto-deny)
                 if hooks_manager is not None and hooks_data:
@@ -883,7 +905,7 @@ class ToolExecutor:
             # transcript is fenced.
             serialized = json.dumps(res)
             if self._result_provenance(pc["tool_name"]) == Provenance.UNTRUSTED_EXTERNAL:
-                self._mark_turn_untrusted()
+                self._mark_turn_untrusted(from_mcp=is_mcp_function_name(pc["tool_name"]))
                 serialized = wrap_untrusted_output(serialized, self._untrusted_source(pc))
             self.agent.session.add_message("tool", serialized, tool_call_id=pc["tool_id"], **extra)
 

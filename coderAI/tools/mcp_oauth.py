@@ -52,6 +52,25 @@ class OAuthError(Exception):
     """Raised when any step of the MCP OAuth flow fails."""
 
 
+def _require_https_endpoint(url: Optional[str], label: str) -> str:
+    """Return *url* if it is an https (or loopback-http) endpoint, else raise.
+
+    Every OAuth endpoint we POST secrets to — token, registration, revocation —
+    and every discovery URL is server-advertised and therefore untrusted. Routing
+    an authorization code, refresh token or bearer over cleartext to a non-loopback
+    host would leak it, so we reject a plaintext downgrade before the request is
+    made. Shares the single scheme gate with the MCP transport layer.
+    """
+    from coderAI.tools.mcp import validate_remote_mcp_url
+
+    if not url:
+        raise OAuthError(f"{label}: missing endpoint URL.")
+    err = validate_remote_mcp_url(url)
+    if err:
+        raise OAuthError(f"{label}: {err}")
+    return url
+
+
 # ---------------------------------------------------------------------------
 # Credential store (~/.coderAI/mcp_credentials.json, 0600)
 # ---------------------------------------------------------------------------
@@ -239,6 +258,65 @@ def _capture_authorization_code(
 # ---------------------------------------------------------------------------
 
 
+_MULTI_LABEL_SUFFIXES = {"co", "com", "org", "net", "gov", "edu", "ac"}
+
+
+def _registrable_domain(host: str) -> str:
+    """Best-effort registrable domain (eTLD+1) for *host*, no PSL dependency.
+
+    Returns the last two labels, or the last three when the second-to-last label
+    is a common two-level public suffix (``co.uk``, ``com.au``). IP literals and
+    already-short hosts are returned unchanged. Only used to decide whether to
+    *warn* about an auth-server/MCP-server domain mismatch, so an approximation is
+    acceptable — a false "differs" warning is safe (it just prompts scrutiny).
+    """
+    host = (host or "").strip().lower().strip(".")
+    if not host:
+        return ""
+    labels = host.split(".")
+    if len(labels) <= 2:
+        return host
+    if labels[-2] in _MULTI_LABEL_SUFFIXES:
+        return ".".join(labels[-3:])
+    return ".".join(labels[-2:])
+
+
+def authorization_origin_warning(server_url: str, authorization_endpoint: str) -> Optional[str]:
+    """Warn when the auth server's domain differs from the MCP server's (7.4).
+
+    The authorization endpoint comes from *server-advertised* metadata, so a
+    malicious MCP server could point the browser (and the user's credentials) at
+    an attacker-controlled issuer. PKCE+state protect the code exchange, but the
+    human should still see, and be able to reject, an unexpected login origin.
+    Returns a warning string on a registrable-domain mismatch, else ``None``.
+    """
+    as_host = urllib.parse.urlparse(authorization_endpoint).hostname or ""
+    mcp_host = urllib.parse.urlparse(server_url).hostname or ""
+    if not as_host or _registrable_domain(as_host) == _registrable_domain(mcp_host):
+        return None
+    return (
+        f"authorization server '{as_host}' is a different domain than the MCP "
+        f"server '{mcp_host}' — only continue if you trust it."
+    )
+
+
+def _announce_authorization_origin(server_url: str, authorization_endpoint: str) -> None:
+    """Show the auth-server origin (and any domain-mismatch warning) pre-browser."""
+    parsed = urllib.parse.urlparse(authorization_endpoint)
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    warning = authorization_origin_warning(server_url, authorization_endpoint)
+    try:
+        from coderAI.ui.display import display
+
+        display.print_info(f"Authorizing at {origin}")
+        if warning:
+            display.print_warning("⚠  " + warning)
+    except Exception:
+        logger.info("Authorizing at %s", origin)
+    if warning:
+        logger.warning("MCP OAuth origin mismatch: %s", warning)
+
+
 def parse_www_authenticate_resource(header: Optional[str]) -> Optional[str]:
     """Extract ``resource_metadata="…"`` from a ``WWW-Authenticate`` header."""
     if not header:
@@ -261,6 +339,7 @@ def discover_protected_resource(
     rm_url = parse_www_authenticate_resource(www_authenticate) or _well_known(
         server_url, "oauth-protected-resource"
     )
+    _require_https_endpoint(rm_url, "protected-resource metadata")
     resp = requests.get(rm_url, timeout=_HTTP_TIMEOUT)
     resp.raise_for_status()
     data = resp.json()
@@ -275,6 +354,7 @@ def discover_auth_server(issuer: str) -> Dict[str, Any]:
     Tries the RFC 8414 path-insertion form first (which is what Strava and most
     multi-tenant issuers use), then the plain issuer-suffixed and OIDC forms.
     """
+    _require_https_endpoint(issuer, "authorization-server issuer")
     parsed = urllib.parse.urlparse(issuer)
     base = f"{parsed.scheme}://{parsed.netloc}"
     path = parsed.path.rstrip("/")
@@ -315,6 +395,12 @@ def discover_metadata(
 
 def probe_www_authenticate(server_url: str) -> Optional[str]:
     """POST a minimal ``initialize`` to detect the ``WWW-Authenticate`` challenge."""
+    from coderAI.tools.mcp import validate_remote_mcp_url
+
+    # Best-effort probe: never POST to a plaintext (non-loopback) server; the
+    # crisp rejection is raised by ``login`` / discovery instead.
+    if validate_remote_mcp_url(server_url):
+        return None
     try:
         resp = requests.post(
             server_url,
@@ -349,6 +435,7 @@ def register_client(
     endpoint = as_meta.get("registration_endpoint")
     if not endpoint:
         return None
+    _require_https_endpoint(endpoint, "registration endpoint")
     body = {
         "client_name": client_name,
         "redirect_uris": [redirect_uri],
@@ -365,6 +452,7 @@ def register_client(
 
 
 def _token_request(token_endpoint: str, data: Dict[str, Optional[str]]) -> Dict[str, Any]:
+    _require_https_endpoint(token_endpoint, "token endpoint")
     resp = requests.post(
         token_endpoint,
         data={k: v for k, v in data.items() if v is not None},
@@ -452,6 +540,7 @@ def login(
     the PKCE authorization-code flow, exchanges the code, and saves the full
     credential record. Returns that record.
     """
+    _require_https_endpoint(server_url, "MCP server")
     www_auth = probe_www_authenticate(server_url)
     rm, as_meta = discover_metadata(server_url, www_auth)
     resource = rm.get("resource") or server_url
@@ -489,8 +578,12 @@ def login(
     }
     if scopes:
         params["scope"] = " ".join(scopes)
-    auth_url = as_meta["authorization_endpoint"] + "?" + urllib.parse.urlencode(params)
+    authorization_endpoint = _require_https_endpoint(
+        as_meta.get("authorization_endpoint"), "authorization endpoint"
+    )
+    auth_url = authorization_endpoint + "?" + urllib.parse.urlencode(params)
 
+    _announce_authorization_origin(server_url, authorization_endpoint)
     code = _capture_authorization_code(port, state, auth_url)
     token = exchange_code(
         as_meta,
@@ -560,9 +653,13 @@ def logout(name: str) -> bool:
     record = get_credentials(name)
     if not record:
         return False
+    from coderAI.tools.mcp import validate_remote_mcp_url
+
     revoke = record.get("revocation_endpoint")
     refresh = record.get("refresh_token")
-    if revoke and refresh:
+    # Best-effort revocation: never raise, and never POST the refresh token to a
+    # plaintext (non-loopback) endpoint — a poisoned record could exfiltrate it.
+    if revoke and refresh and validate_remote_mcp_url(revoke) is None:
         try:
             requests.post(
                 revoke,

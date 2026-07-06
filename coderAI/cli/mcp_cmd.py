@@ -17,6 +17,7 @@ from coderAI.tools.mcp import (
     load_mcp_servers,
     mcp_servers_path,
     save_mcp_servers,
+    validate_remote_mcp_url,
 )
 from coderAI.ui.display import Display
 
@@ -194,6 +195,12 @@ def mcp_add(
             display.print_error("--header is only supported for the 'http' transport.")
             sys.exit(2)
         entry["headers"] = header_dict
+
+    if entry.get("transport") in ("sse", "http"):
+        scheme_err = validate_remote_mcp_url(cast(str, entry.get("url", "")))
+        if scheme_err:
+            display.print_error(scheme_err)
+            sys.exit(2)
 
     data = load_mcp_servers()
     servers = data.setdefault("mcpServers", {})

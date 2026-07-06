@@ -120,11 +120,20 @@ class TestMCPClient:
         assert result["content"] == "all good"
 
     def test_connect_command_not_found(self):
+        # A launcher outside ALLOWED_MCP_LAUNCHERS is now rejected by the
+        # validate_stdio_launch choke point before any spawn is attempted.
         result = asyncio.run(
             self.client.connect_stdio("test", "this_command_does_not_exist_xyz_mcp")
         )
         assert not result["success"]
-        assert "not found" in result["error"].lower() or "Command not found" in result["error"]
+        assert "not in the allowed set" in result["error"]
+
+    def test_connect_allowed_launcher_missing_binary(self):
+        # An *allowed* launcher that isn't installed passes validation but fails
+        # to spawn, surfacing a "not found" error from the FileNotFoundError path.
+        result = asyncio.run(self.client.connect_stdio("test", "/nonexistent/path/to/uvx"))
+        assert not result["success"]
+        assert "not found" in result["error"].lower()
 
     def test_disconnect_not_connected(self):
         result = asyncio.run(self.client.disconnect("nonexistent"))
@@ -190,8 +199,9 @@ class TestMCPClient:
             async def fake_create(*a, **k):
                 return fake_proc
 
-            with patch("asyncio.create_subprocess_exec", side_effect=fake_create), patch.object(
-                client, "_read_response", side_effect=fake_read_response
+            with (
+                patch("asyncio.create_subprocess_exec", side_effect=fake_create),
+                patch.object(client, "_read_response", side_effect=fake_read_response),
             ):
                 result = await client.connect_stdio("srv", "npx", ["foo"])
 
@@ -485,13 +495,11 @@ class TestMCPResourcePromptTools:
         mcp_mod.mcp_client = MCPClient()
         try:
             assert not asyncio.run(MCPListResourcesTool().execute(server_name="x"))["success"]
-            assert not asyncio.run(
-                MCPReadResourceTool().execute(server_name="x", uri="u")
-            )["success"]
+            assert not asyncio.run(MCPReadResourceTool().execute(server_name="x", uri="u"))[
+                "success"
+            ]
             assert not asyncio.run(MCPListPromptsTool().execute(server_name="x"))["success"]
-            assert not asyncio.run(
-                MCPGetPromptTool().execute(server_name="x", name="p")
-            )["success"]
+            assert not asyncio.run(MCPGetPromptTool().execute(server_name="x", name="p"))["success"]
         finally:
             mcp_mod.mcp_client = original
 
@@ -530,8 +538,11 @@ class TestMcpConnectPersistsConfig:
         import coderAI.tools.mcp as mcp_mod
 
         target = tmp_path / "mcp_servers.json"
-        with patch.object(mcp_mod, "mcp_servers_path", return_value=target), patch.object(
-            mcp_mod.mcp_client, "connect_stdio", new=AsyncMock(return_value={"success": True})
+        with (
+            patch.object(mcp_mod, "mcp_servers_path", return_value=target),
+            patch.object(
+                mcp_mod.mcp_client, "connect_stdio", new=AsyncMock(return_value={"success": True})
+            ),
         ):
             result = asyncio.run(
                 self.tool.execute(server_name="fetch", command="npx", args=["-y", "pkg"])
@@ -545,8 +556,11 @@ class TestMcpConnectPersistsConfig:
         import coderAI.tools.mcp as mcp_mod
 
         target = tmp_path / "mcp_servers.json"
-        with patch.object(mcp_mod, "mcp_servers_path", return_value=target), patch.object(
-            mcp_mod.mcp_client, "connect_sse", new=AsyncMock(return_value={"success": True})
+        with (
+            patch.object(mcp_mod, "mcp_servers_path", return_value=target),
+            patch.object(
+                mcp_mod.mcp_client, "connect_sse", new=AsyncMock(return_value={"success": True})
+            ),
         ):
             result = asyncio.run(
                 self.tool.execute(
@@ -562,8 +576,11 @@ class TestMcpConnectPersistsConfig:
         import coderAI.tools.mcp as mcp_mod
 
         target = tmp_path / "mcp_servers.json"
-        with patch.object(mcp_mod, "mcp_servers_path", return_value=target), patch.object(
-            mcp_mod.mcp_client, "connect_http", new=AsyncMock(return_value={"success": True})
+        with (
+            patch.object(mcp_mod, "mcp_servers_path", return_value=target),
+            patch.object(
+                mcp_mod.mcp_client, "connect_http", new=AsyncMock(return_value={"success": True})
+            ),
         ):
             result = asyncio.run(
                 self.tool.execute(
@@ -591,8 +608,11 @@ class TestMcpConnectPersistsConfig:
         import coderAI.tools.mcp as mcp_mod
 
         target = tmp_path / "mcp_servers.json"
-        with patch.object(mcp_mod, "mcp_servers_path", return_value=target), patch.object(
-            mcp_mod.mcp_client, "connect_stdio", new=AsyncMock(return_value={"success": True})
+        with (
+            patch.object(mcp_mod, "mcp_servers_path", return_value=target),
+            patch.object(
+                mcp_mod.mcp_client, "connect_stdio", new=AsyncMock(return_value={"success": True})
+            ),
         ):
             result = asyncio.run(
                 self.tool.execute(server_name="oneoff", command="npx", persist=False)
@@ -605,10 +625,13 @@ class TestMcpConnectPersistsConfig:
         import coderAI.tools.mcp as mcp_mod
 
         target = tmp_path / "mcp_servers.json"
-        with patch.object(mcp_mod, "mcp_servers_path", return_value=target), patch.object(
-            mcp_mod.mcp_client,
-            "connect_stdio",
-            new=AsyncMock(return_value={"success": False, "error": "nope"}),
+        with (
+            patch.object(mcp_mod, "mcp_servers_path", return_value=target),
+            patch.object(
+                mcp_mod.mcp_client,
+                "connect_stdio",
+                new=AsyncMock(return_value={"success": False, "error": "nope"}),
+            ),
         ):
             result = asyncio.run(self.tool.execute(server_name="bad", command="npx"))
 
@@ -619,9 +642,13 @@ class TestMcpConnectPersistsConfig:
         import coderAI.tools.mcp as mcp_mod
 
         target = tmp_path / "mcp_servers.json"
-        with patch.object(mcp_mod, "mcp_servers_path", return_value=target), patch.object(
-            mcp_mod.mcp_client, "connect_stdio", new=AsyncMock(return_value={"success": True})
-        ), patch.object(mcp_mod, "save_mcp_servers", side_effect=OSError("disk full")):
+        with (
+            patch.object(mcp_mod, "mcp_servers_path", return_value=target),
+            patch.object(
+                mcp_mod.mcp_client, "connect_stdio", new=AsyncMock(return_value={"success": True})
+            ),
+            patch.object(mcp_mod, "save_mcp_servers", side_effect=OSError("disk full")),
+        ):
             # A persistence failure must not fail the (already live) connection.
             result = asyncio.run(self.tool.execute(server_name="fetch", command="npx"))
 
@@ -636,9 +663,7 @@ class TestMcpServerPersistence:
 
         target = tmp_path / "mcp_servers.json"
         with patch.object(mcp_mod, "mcp_servers_path", return_value=target):
-            mcp_mod.save_mcp_servers(
-                {"mcpServers": {"a": {"command": "npx", "args": ["x"]}}}
-            )
+            mcp_mod.save_mcp_servers({"mcpServers": {"a": {"command": "npx", "args": ["x"]}}})
             loaded = mcp_mod.load_mcp_servers()
 
         assert loaded["mcpServers"]["a"] == {"command": "npx", "args": ["x"]}
@@ -650,9 +675,7 @@ class TestMcpServerPersistence:
 
         target = tmp_path / "mcp_servers.json"
         with patch.object(mcp_mod, "mcp_servers_path", return_value=target):
-            mcp_mod.save_mcp_servers(
-                {"mcpServers": {"good": {"command": "npx", "args": []}}}
-            )
+            mcp_mod.save_mcp_servers({"mcpServers": {"good": {"command": "npx", "args": []}}})
 
             # A serialization failure mid-write must not touch the good file.
             with patch.object(mcp_mod.json, "dump", side_effect=RuntimeError("boom")):
@@ -792,9 +815,7 @@ class TestMCPHttpTransport:
         session = _FakeHttpSession([init, notif, tools])
         with patch("aiohttp.ClientSession", return_value=session):
             result = asyncio.run(
-                self.client.connect_http(
-                    "remote", "https://h/mcp", {"Authorization": "Bearer T"}
-                )
+                self.client.connect_http("remote", "https://h/mcp", {"Authorization": "Bearer T"})
             )
 
         assert result["success"]
@@ -894,8 +915,9 @@ class TestMCPHttpTransport:
             json_body={"jsonrpc": "2.0", "id": 2, "result": {"tools": []}},
         )
         session = _FakeHttpSession([init, notif, tools])
-        with patch("aiohttp.ClientSession", return_value=session) as cs, patch(
-            "coderAI.tools.mcp_oauth.get_valid_token_sync", return_value="TOK"
+        with (
+            patch("aiohttp.ClientSession", return_value=session) as cs,
+            patch("coderAI.tools.mcp_oauth.get_valid_token_sync", return_value="TOK"),
         ):
             result = asyncio.run(self.client.connect_http("remote", "https://h/mcp"))
 
@@ -917,9 +939,10 @@ class TestMCPHttpTransport:
             json_body={"jsonrpc": "2.0", "id": 2, "result": {"tools": []}},
         )
         session = _FakeHttpSession([init, notif, tools])
-        with patch("aiohttp.ClientSession", return_value=session) as cs, patch(
-            "coderAI.tools.mcp_oauth.get_valid_token_sync", return_value="TOK"
-        ) as gvt:
+        with (
+            patch("aiohttp.ClientSession", return_value=session) as cs,
+            patch("coderAI.tools.mcp_oauth.get_valid_token_sync", return_value="TOK") as gvt,
+        ):
             result = asyncio.run(
                 self.client.connect_http(
                     "remote", "https://h/mcp", {"Authorization": "Bearer EXPLICIT"}
@@ -937,8 +960,9 @@ class TestMCPHttpTransport:
             headers={"WWW-Authenticate": 'Bearer resource_metadata="https://h/.well-known/x"'},
         )
         session = _FakeHttpSession([unauth])
-        with patch("aiohttp.ClientSession", return_value=session), patch(
-            "coderAI.tools.mcp_oauth.get_valid_token_sync", return_value=None
+        with (
+            patch("aiohttp.ClientSession", return_value=session),
+            patch("coderAI.tools.mcp_oauth.get_valid_token_sync", return_value=None),
         ):
             result = asyncio.run(self.client.connect_http("strava", "https://h/mcp"))
 
