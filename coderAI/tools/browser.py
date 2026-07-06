@@ -61,25 +61,59 @@ def _check_playwright() -> Optional[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-def _validate_navigation_url(url: str) -> Optional[Dict[str, Any]]:
-    """Check URL for SSRF before allowing browser navigation."""
+async def _resolve_host_addrs(host: str) -> List[str]:
+    """Resolve ``host`` to its IP addresses without blocking the event loop."""
+    import socket
+
+    try:
+        loop = asyncio.get_running_loop()
+        infos = await loop.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except OSError:
+        return []
+    return [info[4][0] for info in infos if info[0] in (socket.AF_INET, socket.AF_INET6)]
+
+
+async def _validate_navigation_url(url: str) -> Optional[Dict[str, Any]]:
+    """Check a URL for SSRF before allowing browser navigation (6.2).
+
+    Rejects non-http(s) schemes and literal private IPs, then — for a hostname —
+    **resolves it and requires every resolved address to be public**. This is the
+    browser mirror of the web layer's ``_SSRFResolver``: without it a hostname
+    that resolves to link-local/loopback/RFC1918 (including a DNS-rebinding
+    record) would sail past the literal-IP check. The post-navigation ``page.url``
+    re-check in :meth:`BrowserSession.navigate` closes the redirect path.
+    """
     from urllib.parse import urlparse
 
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
         return {"success": False, "error": f"Unsupported URL scheme: {parsed.scheme}"}
 
-    if parsed.hostname:
-        try:
-            ip = ipaddress.ip_address(parsed.hostname)
-            if not _is_ip_public(str(ip)):
-                return {
-                    "success": False,
-                    "error": f"SSRF guard: blocked navigation to {parsed.hostname}",
-                }
-        except ValueError:
-            pass
+    host = parsed.hostname
+    if not host:
+        return {"success": False, "error": "SSRF guard: URL has no host"}
 
+    # Literal IP: validate directly, no DNS lookup needed.
+    try:
+        ip = ipaddress.ip_address(host)
+        if not _is_ip_public(str(ip)):
+            return {
+                "success": False,
+                "error": f"SSRF guard: blocked navigation to {host}",
+            }
+        return None
+    except ValueError:
+        pass  # a hostname → resolve and pin below
+
+    addrs = await _resolve_host_addrs(host)
+    if not addrs:
+        return {"success": False, "error": f"SSRF guard: could not resolve {host}"}
+    for addr in addrs:
+        if not _is_ip_public(addr):
+            return {
+                "success": False,
+                "error": f"SSRF guard: '{host}' resolves to non-public address {addr}",
+            }
     return None
 
 
@@ -189,8 +223,20 @@ class BrowserSession:
             await self._page.goto(
                 url, wait_until="domcontentloaded", timeout=self._get_timeout() * 1000
             )
-            title = await self._page.title()
             current_url = self._page.url
+            # Re-validate the *final* URL after any redirects: a public URL can
+            # 3xx to (or DNS-rebind toward) an internal-resolving host, which the
+            # pre-navigation check on the original URL couldn't catch (6.2). On a
+            # block, reset the page so the internal content isn't left loaded.
+            if (err := await _validate_navigation_url(current_url)) or (
+                err := _check_domain_allowlist(current_url)
+            ):
+                try:
+                    await self._page.goto("about:blank")
+                except Exception:
+                    logger.debug("failed to blank page after blocked redirect", exc_info=True)
+                return err
+            title = await self._page.title()
             return {
                 "success": True,
                 "url": current_url,
@@ -563,7 +609,7 @@ class BrowserNavigateTool(Tool):
     async def execute(self, url: str) -> Dict[str, Any]:  # type: ignore[override]
         if err := _check_playwright():
             return err
-        if err := _validate_navigation_url(url):
+        if err := await _validate_navigation_url(url):
             return err
         if err := _check_domain_allowlist(url):
             return err
@@ -825,7 +871,11 @@ class BrowserEvaluateTool(Tool):
     category = "browser"
     requires_package = "playwright"
     parameters_model = BrowserEvaluateParams
-    is_read_only = True
+    # Runs arbitrary JavaScript in the page: NOT read-only (it can mutate the DOM,
+    # submit forms, or issue in-page fetches — a second SSRF/exfil path), so it
+    # requires confirmation and is excluded from any read-only tool set (6.3).
+    is_read_only = False
+    requires_confirmation = True
     timeout = 15.0
 
     async def execute(self, js: str) -> Dict[str, Any]:  # type: ignore[override]

@@ -69,6 +69,50 @@ def _is_ip_public(ip_str: str) -> bool:
     )
 
 
+# Request headers that carry credentials and must not survive a cross-origin (or
+# https→http downgrade) redirect — otherwise a public→attacker redirect would
+# replay the caller's secrets to a host they were never issued for.
+_SENSITIVE_REDIRECT_HEADERS = frozenset(
+    {
+        "authorization",
+        "proxy-authorization",
+        "cookie",
+        "cookie2",
+        "x-api-key",
+        "api-key",
+        "x-auth-token",
+        "x-amz-security-token",
+    }
+)
+
+
+def _literal_ip_blocked(hostname: Optional[str], allow_local: bool) -> bool:
+    """True if ``hostname`` is a literal IP that SSRF policy forbids.
+
+    aiohttp's :class:`_SSRFResolver` only validates DNS *hostname* lookups; a
+    literal IP address bypasses it entirely. Literal IPs must therefore be
+    checked explicitly — on the initial URL **and on every redirect hop**, since
+    a public URL can 3xx straight to ``169.254.169.254`` / loopback / RFC1918
+    and aiohttp would happily connect.
+    """
+    if not hostname:
+        return False
+    try:
+        ip = ipaddress.ip_address(hostname)
+    except ValueError:
+        return False  # not a literal IP → the SSRF resolver will validate it
+    return not (allow_local or _is_ip_public(str(ip)))
+
+
+def _strip_sensitive_headers(
+    headers: Optional[Dict[str, str]],
+) -> Optional[Dict[str, str]]:
+    """Drop credential-bearing headers (case-insensitive) for a cross-origin hop."""
+    if not headers:
+        return headers
+    return {k: v for k, v in headers.items() if k.lower() not in _SENSITIVE_REDIRECT_HEADERS}
+
+
 def _allow_local(allow_local: bool) -> bool:
     return bool(allow_local) or os.getenv("CODERAI_ALLOW_LOCAL_URLS") == "1"
 
@@ -217,23 +261,26 @@ class HttpClient:
         parsed = urlparse(current)
         await _rate_limit_async(parsed.hostname)
 
-        # Pre-validate IP: aiohttp resolver only fires for hostname lookups,
-        # not literal IP addresses. Do explicit validation here.
-        if parsed.hostname:
-            try:
-                ip = ipaddress.ip_address(parsed.hostname)
-                if not (allow_local or _is_ip_public(str(ip))):
-                    logger.warning(f"SSRF guard: blocked direct IP {parsed.hostname}")
-                    return None
-            except ValueError:
-                pass  # not an IP, resolver will handle it
+        # Per-hop SSRF/redirect state. ``current_headers`` starts as the caller's
+        # headers and is stripped of credentials the moment a redirect crosses
+        # origins; ``current_host``/``current_scheme`` track the last hop so a
+        # host change or an https→http downgrade can be detected (6.4).
+        current_headers = headers
+        current_host = parsed.hostname
+        current_scheme = (parsed.scheme or "").lower()
+
+        # Literal-IP pre-validation: the aiohttp resolver only fires for
+        # hostname lookups, so a literal IP address must be checked explicitly.
+        if _literal_ip_blocked(parsed.hostname, allow_local):
+            logger.warning(f"SSRF guard: blocked direct IP {parsed.hostname}")
+            return None
 
         for _ in range(_MAX_REDIRECTS + 1):
             try:
                 async with session.request(
                     method,
                     current,
-                    headers=headers or _HEADERS_CHROME,
+                    headers=current_headers or _HEADERS_CHROME,
                     timeout=aiohttp.ClientTimeout(total=timeout_s, connect=10),
                     allow_redirects=False,
                     json=json_body,
@@ -251,6 +298,31 @@ class HttpClient:
                         if not next_url.startswith(("http://", "https://")):
                             logger.warning(f"SSRF guard: non-http redirect to {next_url}")
                             return None
+
+                        next_parsed = urlparse(next_url)
+                        # Re-run the literal-IP guard on *this* hop before we
+                        # issue the next request — a public URL can 302 straight
+                        # to metadata/loopback/RFC1918 and the resolver would
+                        # never see a literal IP (6.1).
+                        if _literal_ip_blocked(next_parsed.hostname, allow_local):
+                            logger.warning(
+                                f"SSRF guard: blocked redirect to direct IP {next_parsed.hostname}"
+                            )
+                            return None
+
+                        # Strip credential-bearing headers when the redirect
+                        # leaves the current origin or downgrades https→http, so
+                        # a public→attacker redirect can't replay the caller's
+                        # secrets to a host they were never issued for (6.4).
+                        next_host = next_parsed.hostname
+                        next_scheme = (next_parsed.scheme or "").lower()
+                        if next_host != current_host or (
+                            current_scheme == "https" and next_scheme != "https"
+                        ):
+                            current_headers = _strip_sensitive_headers(current_headers)
+                        current_host = next_host
+                        current_scheme = next_scheme
+
                         current = next_url
                         continue
 

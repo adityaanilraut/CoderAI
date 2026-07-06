@@ -111,10 +111,11 @@ class Tool(ABC):
     # the tool is dropped from the registry (``"playwright"`` for browser tools).
     requires_package: Optional[str] = None
 
-    # Network-egress tool removed from the *main* agent when
-    # ``config.web_tools_in_main`` is False (sub-agents keep them so research
-    # delegations still work). Distinct from ``is_egress`` — that arms the
-    # untrusted-content egress gate; this controls main-agent availability.
+    # Network-egress tool removed whenever ``config.web_tools_in_main`` is False.
+    # Phase 5.1 made this transitive: sub-agents no longer keep web tools, so a
+    # delegated child can't regain a capability the parent gave up. Distinct from
+    # ``is_egress`` — that arms the untrusted-content egress gate; this controls
+    # availability under ``web_tools_in_main``.
     network_gate: bool = False
 
     # File-editing tool whose batch scheduling serializes by target path so two
