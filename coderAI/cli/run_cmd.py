@@ -88,6 +88,12 @@ async def _run_agent(agent: Any, prompt: str, blocked_tools: List[str]) -> Dict[
             return False
 
         agent.confirmation_override = _deny_mutations
+        # Phase 5.2: the delegate tool snapshots the confirmation policy when its
+        # context is configured (at build time, before this override existed).
+        # Re-snapshot now so delegated sub-agents inherit the deny-on-mutate
+        # guard and their denied mutations land in ``blocked_tools`` too.
+        if hasattr(agent, "_configure_delegate_tool_context"):
+            agent._configure_delegate_tool_context()
 
     try:
         result: Dict[str, Any] = await agent.process_message(prompt)

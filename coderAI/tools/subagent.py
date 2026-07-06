@@ -38,6 +38,15 @@ class SubagentContext:
     delegation_depth: int = 0
     parent_config: Optional[Any] = None  # Config — drives subagent_timeout_seconds
     parent_read_cache: Optional[Any] = None  # FileReadCache
+    # Phase 5.1: the parent's registered tool names. A child's tool set is
+    # intersected with this so a delegation can never hold a capability the
+    # parent lacks (transitivity: child ⊆ parent). None means "unknown" —
+    # treated as no ceiling only when the parent context was never wired.
+    parent_tool_names: Optional[frozenset] = None
+    # Phase 5.2: the parent's confirmation policy (e.g. headless deny-on-mutate),
+    # propagated so a child's mutating tools face the same gate and denials land
+    # in the same audit list. An async ``(tool_name, arguments) -> bool`` callable.
+    parent_confirmation_override: Optional[Any] = None
 
 
 # Number of recent parent tool calls to summarise for the sub-agent so it
@@ -437,14 +446,24 @@ class DelegateTaskTool(Tool):
                 )
                 sub_agent.ipc_server = ctx.parent_ipc_server
 
+                # Phase 5.2: inherit the parent's confirmation policy (e.g. the
+                # headless deny-on-mutate guard) so a child's mutating tools face
+                # the same gate and denials land in the parent's audit list.
+                sub_agent.confirmation_override = ctx.parent_confirmation_override
+
+                # Phase 5.4: one delegation-tree-wide cost budget. The cost
+                # tracker is shared (assigned below), so pinning the child's cap
+                # to the parent's makes check_budget_limit trip for the whole
+                # tree — a child can never spend past the parent's ceiling.
+                if ctx.parent_config is not None and sub_agent.config is not None:
+                    sub_agent.config.budget_limit = ctx.parent_config.budget_limit
+
                 persona = None
                 if agent_role:
                     persona = sub_agent.set_persona(
                         agent_role,
                         update_model=model is None,
                     )
-
-                sub_agent._configure_delegate_tool_context()
 
                 if inherit_project_context and ctx.parent_context_manager is not None:
                     sub_agent.context_manager.pinned_files = dict(
@@ -470,6 +489,21 @@ class DelegateTaskTool(Tool):
                     ]
                     for name in mutating:
                         del sub_agent.tools.tools[name]
+
+                # Phase 5.1: enforce child capability ⊆ parent. After persona
+                # and read-only filtering, drop any tool the parent lacks so a
+                # delegation — or a model-chosen agent_role / isolation_domain /
+                # read_only_task=False — can never widen capability beyond the
+                # parent (e.g. web tools stay gone when web_tools_in_main is off).
+                if ctx.parent_tool_names is not None:
+                    for name in list(sub_agent.tools.tools.keys()):
+                        if name not in ctx.parent_tool_names:
+                            del sub_agent.tools.tools[name]
+
+                # Configure the child's own delegation context AFTER all tool
+                # filtering so any grandchild inherits the correct (narrowed)
+                # capability ceiling and confirmation policy.
+                sub_agent._configure_delegate_tool_context()
 
                 if resumed_session is not None:
                     # Continue the same persisted sub-agent session. Keep the

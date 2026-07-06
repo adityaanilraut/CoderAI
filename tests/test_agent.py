@@ -725,7 +725,11 @@ class TestAgentProjectRules:
         assert "web_search" in prompt
         assert "read_url" in prompt
 
-    def test_get_system_prompt_includes_web_tools_for_subagent_when_main_config_off(self):
+    def test_get_system_prompt_omits_web_tools_for_subagent_when_main_config_off(self):
+        # Phase 5.1: disabling web tools is transitive — a sub-agent must NOT
+        # regain the web capability the parent gave up. (Previously sub-agents
+        # kept web tools via a carve-out; that carve-out was removed so
+        # web_tools_in_main=False propagates to delegated children.)
         with patch("coderAI.core.agent.config_manager") as cm:
             from coderAI.system.config import Config
 
@@ -737,7 +741,8 @@ class TestAgentProjectRules:
             with patch.object(Agent, "_create_provider", return_value=MagicMock()):
                 agent = Agent(model="gpt-5.4-mini", streaming=False, is_subagent=True)
                 prompt = agent._get_system_prompt()
-        assert "web_search" in prompt
+        assert "web_search" not in prompt
+        assert "read_url" not in prompt
 
 
 class TestRepositoryPromptHygiene:

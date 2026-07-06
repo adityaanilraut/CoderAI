@@ -33,7 +33,12 @@ from coderAI.system_prompt import (
 from coderAI.tools import ToolRegistry
 from coderAI.tools.discovery import discover_tools
 from coderAI.tools.context_manage import ManageContextTool
-from coderAI.core.agents import load_agent_persona, AgentPersona, expand_persona_tools
+from coderAI.core.agents import (
+    load_agent_persona,
+    AgentPersona,
+    expand_persona_tools,
+    persona_allowed_in_context,
+)
 from coderAI.core.agent_tracker import AgentStatus, AgentInfo
 from coderAI.core.permissions import ApprovalRules
 from coderAI.core.services import get_services
@@ -83,7 +88,20 @@ class Agent:
         # Load custom persona if requested
         self.persona: Optional[AgentPersona] = None
         if persona_name:
-            self.persona = load_agent_persona(persona_name, self.config.project_root)
+            loaded = load_agent_persona(persona_name, self.config.project_root)
+            # Phase 5.3: a subagent/hidden persona cannot be the primary agent.
+            if loaded is not None and not persona_allowed_in_context(
+                loaded, is_subagent=is_subagent
+            ):
+                logger.warning(
+                    "Persona '%s' (mode=%s, hidden=%s) is not allowed as %s — ignoring.",
+                    persona_name,
+                    loaded.mode,
+                    loaded.hidden,
+                    "a sub-agent" if is_subagent else "the primary agent",
+                )
+                loaded = None
+            self.persona = loaded
             if self.persona and self.persona.model:
                 model = self.persona.model
 
@@ -288,9 +306,12 @@ class Agent:
           desktop-automation tools declare ``frozenset({"darwin"})``).
         * ``requires_package`` — the named optional dependency must be importable
           (browser tools declare ``"playwright"``).
-        * ``network_gate`` — network-egress web tools are removed from the *main*
-          agent when ``web_tools_in_main`` is False; sub-agents keep them so
-          research delegations still work.
+        * ``network_gate`` — network-egress web tools are removed whenever
+          ``web_tools_in_main`` is False. Phase 5.1: this now applies to
+          sub-agents too, so disabling web tools is transitive — a delegated
+          child can never regain a capability the parent gave up. (The child's
+          tool set is also intersected with the parent's in ``_build_sub_agent``
+          as a second, tool-agnostic guarantee.)
         """
         import importlib.util
         import sys
@@ -302,7 +323,7 @@ class Agent:
                 return False
 
         current_platform = sys.platform
-        drop_network = not (self.is_subagent or self.config.web_tools_in_main)
+        drop_network = not self.config.web_tools_in_main
 
         removed_platform: List[str] = []
         removed_package: List[str] = []
@@ -361,6 +382,13 @@ class Agent:
                 delegation_depth=getattr(self, "delegation_depth", 0),
                 parent_config=self.config,
                 parent_read_cache=getattr(self, "read_cache", None),
+                # Phase 5.1/5.2: snapshot this agent's capability ceiling and
+                # confirmation policy so a delegated child is provably a subset.
+                # Re-snapshotted on every call (persona swaps, registry rebuilds,
+                # and the post-build ``confirmation_override`` install all
+                # re-invoke this), so children always see the current state.
+                parent_tool_names=frozenset(self.tools.tools.keys()),
+                parent_confirmation_override=getattr(self, "confirmation_override", None),
             )
 
     def _rebuild_tool_registry(self) -> None:
@@ -401,6 +429,19 @@ class Agent:
         self, persona: Optional[AgentPersona], update_model: bool = True
     ) -> Optional[str]:
         """Apply a persona and refresh model, tools, and session prompt."""
+        # Phase 5.3: defensive re-check for direct callers — never apply a
+        # persona that isn't allowed in this agent's launch context.
+        if persona is not None and not persona_allowed_in_context(
+            persona, is_subagent=self.is_subagent
+        ):
+            logger.warning(
+                "Refusing to apply persona '%s' (mode=%s, hidden=%s) as %s.",
+                persona.name,
+                persona.mode,
+                persona.hidden,
+                "a sub-agent" if self.is_subagent else "the primary agent",
+            )
+            return None
         old_model = self.model
         self.persona = persona
 
@@ -435,6 +476,18 @@ class Agent:
         if persona_name:
             persona = load_agent_persona(persona_name, self.config.project_root)
             if persona is None:
+                return None
+            # Phase 5.3: enforce persona mode/hidden for the current context —
+            # a primary-only persona can't back a sub-agent, and a
+            # subagent/hidden persona can't be the primary agent.
+            if not persona_allowed_in_context(persona, is_subagent=self.is_subagent):
+                logger.warning(
+                    "Persona '%s' (mode=%s, hidden=%s) refused as %s.",
+                    persona_name,
+                    persona.mode,
+                    persona.hidden,
+                    "a sub-agent" if self.is_subagent else "the primary agent",
+                )
                 return None
         self.apply_persona(persona, update_model=update_model)
         return persona

@@ -55,6 +55,25 @@ class AgentPersona:
         self.permission: Dict[str, str] = permission or {}
 
 
+def persona_allowed_in_context(persona: "AgentPersona", *, is_subagent: bool) -> bool:
+    """Return whether ``persona`` may run in the given launch context (Phase 5.3).
+
+    Enforces the persona ``mode``/``hidden`` frontmatter so an agent tree stays
+    well-formed and a repo-supplied persona can't be launched where it doesn't
+    belong:
+
+    * A ``subagent`` or ``hidden`` persona can never be the **primary** agent.
+    * A ``primary`` persona can never be launched as a delegated **sub-agent**.
+
+    ``mode == "all"`` (the default) is allowed anywhere.
+    """
+    mode = (getattr(persona, "mode", None) or "all").strip().lower()
+    if is_subagent:
+        return mode != "primary"
+    # Primary / root launch context.
+    return not (bool(getattr(persona, "hidden", False)) or mode in ("subagent", "hidden"))
+
+
 def _normalize_persona_name(name: str) -> str:
     """Normalize user-facing persona names to a filename-friendly key."""
     return re.sub(r"[-_\s]+", "-", name.strip().lower())
