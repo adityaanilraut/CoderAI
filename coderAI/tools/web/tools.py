@@ -42,6 +42,52 @@ from coderAI.tools.web._search import _filter_by_domain, _SearchBackend
 logger = logging.getLogger(__name__)
 
 
+# Destination extensions and response content-types that indicate an executable
+# or script. ``download_file`` refuses these: writing attacker-controlled
+# executable content to disk is a code-execution / supply-chain vector that the
+# path + size + SSRF guards do not cover. (Fetch the text with ``read_url`` and
+# write it via ``write_file`` — a confirmed, previewed edit — if truly needed.)
+_EXECUTABLE_DOWNLOAD_EXTENSIONS = frozenset(
+    {
+        ".sh", ".bash", ".zsh", ".ksh", ".csh", ".command", ".fish",
+        ".exe", ".bat", ".cmd", ".com", ".msi", ".ps1", ".psm1", ".scr",
+        ".vbs", ".vbe", ".jse", ".wsf", ".wsh", ".hta",
+        ".so", ".dylib", ".dll", ".scpt", ".desktop",
+    }
+)  # fmt: skip
+_EXECUTABLE_CONTENT_TYPES = frozenset(
+    {
+        "application/x-sh",
+        "application/x-shellscript",
+        "text/x-shellscript",
+        "application/x-executable",
+        "application/x-msdownload",
+        "application/x-msdos-program",
+        "application/x-mach-binary",
+        "application/x-elf",
+        "application/vnd.microsoft.portable-executable",
+    }
+)
+
+
+def _download_type_blocked(dest: Path, content_type: str) -> Optional[str]:
+    """Return an error string if *dest*/*content_type* names executable content."""
+    suffix = dest.suffix.lower()
+    if suffix in _EXECUTABLE_DOWNLOAD_EXTENSIONS:
+        return (
+            f"Refusing to download to an executable/script destination "
+            f"('{suffix}'). download_file does not fetch runnable code; use "
+            "read_url then write_file if you have reviewed the content."
+        )
+    mime = (content_type or "").split(";", 1)[0].strip().lower()
+    if mime in _EXECUTABLE_CONTENT_TYPES:
+        return (
+            f"Refusing to download executable content (Content-Type '{mime}'). "
+            "download_file does not fetch runnable code."
+        )
+    return None
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # WebSearchTool
 # ═══════════════════════════════════════════════════════════════════════════
@@ -478,6 +524,15 @@ class DownloadFileTool(Tool):
             scope_err = _enforce_project_scope(dest, "download_file")
             if scope_err is not None:
                 return scope_err
+            # Refuse executable/script destinations and payloads (the path, size
+            # and SSRF guards don't cover "download runnable code and execute it").
+            type_err = _download_type_blocked(dest, resp.get("content_type", ""))
+            if type_err is not None:
+                return {
+                    "success": False,
+                    "error": type_err,
+                    "error_code": ToolErrorCode.PERMISSION_DENIED,
+                }
 
             dest.parent.mkdir(parents=True, exist_ok=True)
 

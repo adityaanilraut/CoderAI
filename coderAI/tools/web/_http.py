@@ -49,6 +49,26 @@ from coderAI.tools.web._ratelimit import _rate_limit_async
 logger = logging.getLogger(__name__)
 
 
+def _redact_url(url: str) -> str:
+    """Return ``scheme://host[:port]/path`` for *url*, dropping secrets for logs.
+
+    A URL on the redirect path can carry a secret in its query string
+    (``?token=…``) or userinfo (``https://user:pass@host``). Warnings persist to
+    disk, so we log only the origin + path — never the query, fragment, or
+    credentials — to avoid leaking a token into a log file.
+    """
+    try:
+        p = urlparse(url)
+    except ValueError:
+        return "<unparseable-url>"
+    host = p.hostname or ""
+    if p.port:
+        host = f"{host}:{p.port}"
+    scheme = f"{p.scheme}://" if p.scheme else ""
+    redacted = f"{scheme}{host}{p.path}"
+    return redacted or "<redacted-url>"
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # SSRF Protection
 # ═══════════════════════════════════════════════════════════════════════════
@@ -292,11 +312,13 @@ class HttpClient:
                             return None
                         next_url = urljoin(current, loc)
                         if next_url in seen_urls:
-                            logger.warning(f"SSRF guard: redirect loop at {next_url}")
+                            logger.warning(f"SSRF guard: redirect loop at {_redact_url(next_url)}")
                             return None
                         seen_urls.add(next_url)
                         if not next_url.startswith(("http://", "https://")):
-                            logger.warning(f"SSRF guard: non-http redirect to {next_url}")
+                            logger.warning(
+                                f"SSRF guard: non-http redirect to {_redact_url(next_url)}"
+                            )
                             return None
 
                         next_parsed = urlparse(next_url)
@@ -380,7 +402,7 @@ class HttpClient:
                     return None
                 raise
 
-        logger.warning(f"SSRF guard: exceeded {_MAX_REDIRECTS} redirects from {url}")
+        logger.warning(f"SSRF guard: exceeded {_MAX_REDIRECTS} redirects from {_redact_url(url)}")
         return None
 
     async def safe_request_cf(
@@ -399,7 +421,7 @@ class HttpClient:
 
         fallback_headers = dict(headers or _HEADERS_CHROME)
         fallback_headers["User-Agent"] = _TRANSPARENT_UA
-        logger.info(f"CF block detected for {url}; retrying with transparent UA")
+        logger.info(f"CF block detected for {_redact_url(url)}; retrying with transparent UA")
         return await _web._safe_request(method, url, headers=fallback_headers, **kwargs)
 
     async def fetch_page_text(
