@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from coderAI.system.fsperms import restrict_fd
+from coderAI.system.fsperms import OWNER_RWX, restrict_fd, restrict_path
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +116,11 @@ class ConfigManager:
         self.config_dir = Path.home() / ".coderAI"
         self.config_file = self.config_dir / "config.json"
         self.config_dir.mkdir(mode=0o700, exist_ok=True)
+        # ``mkdir(mode=…, exist_ok=True)`` does not re-chmod an already-existing
+        # dir, and the mode is masked by umask on creation — so restrict it
+        # explicitly to owner-only (0700). This dir holds API keys, OAuth
+        # credentials, the trust store, and session history.
+        restrict_path(self.config_dir, OWNER_RWX)
         self._config: Optional[Config] = None
         # Keys the user explicitly provided (config file or ``set()``) — only
         # these are persisted by ``save()``. Persisting every field froze all

@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import shutil
+import stat
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -11,6 +12,7 @@ from typing import Any, Dict, List, Optional, Protocol, cast, runtime_checkable
 
 from pydantic import BaseModel, Field
 
+from coderAI.system.fsperms import OWNER_RW, OWNER_RWX, restrict_path
 from coderAI.tools.base import Tool
 
 logger = logging.getLogger(__name__)
@@ -20,6 +22,23 @@ MAX_BACKUPS_PER_FILE = 10
 
 # Maximum total backups across all files
 MAX_TOTAL_BACKUPS = 50
+
+
+def _reapply_saved_mode(filepath: Path, entry: Dict[str, Any]) -> None:
+    """Best-effort restore of the file's original permission bits after copy2.
+
+    Backups are chmod'd to 0600 at rest, so ``shutil.copy2`` would otherwise
+    stamp the restored file 0600 and drop bits such as the executable flag. Reapply
+    the mode captured when the backup was taken. No-op on Windows and for legacy
+    backups without a recorded mode.
+    """
+    mode = entry.get("mode")
+    if not isinstance(mode, int) or os.name == "nt":
+        return
+    try:
+        os.chmod(filepath, mode)
+    except OSError:
+        pass
 
 
 @runtime_checkable
@@ -60,6 +79,9 @@ class FileBackupStore:
             else:
                 d = base_dir / "global"
         d.mkdir(parents=True, exist_ok=True)
+        # Backups are copies of project files (potentially secret-bearing) that
+        # live under ~/.coderAI — keep the directory owner-only (0700).
+        restrict_path(d, OWNER_RWX)
         return d
 
     @property
@@ -130,7 +152,7 @@ class FileBackupStore:
         if not source.exists():
             if operation == "create":
                 # For new files, just record that they didn't exist before
-                entry = {
+                entry: Dict[str, Any] = {
                     "filepath": str(source),
                     "backup_path": None,
                     "operation": "create",
@@ -147,13 +169,20 @@ class FileBackupStore:
         backup_name = f"{safe_name}.{timestamp}.bak"
         backup_path = self.backup_dir / backup_name
 
+        # Record the source's permission bits *before* we tighten the backup, so
+        # a restore can re-apply the original mode (e.g. an executable bit).
+        source_mode = stat.S_IMODE(source.stat().st_mode)
         shutil.copy2(source, backup_path)
+        # copy2 preserves the source mode, which may be world-readable — restrict
+        # the at-rest backup to owner-only (0600).
+        restrict_path(backup_path, OWNER_RW)
 
         entry = {
             "filepath": str(source),
             "backup_path": str(backup_path),
             "operation": operation,
             "timestamp": datetime.now().isoformat(),
+            "mode": source_mode,
         }
         self.index.append(entry)
         self._save_index()
@@ -203,6 +232,7 @@ class FileBackupStore:
                 # Ensure parent directory exists (for deleted files)
                 filepath.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(backup_path, filepath)
+                _reapply_saved_mode(filepath, entry)
 
                 # Clean up the backup file
                 backup_path.unlink()
@@ -262,6 +292,7 @@ class FileBackupStore:
                     return {"success": False, "error": f"Backup file not found: {backup_path}"}
                 filepath.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(backup_path, filepath)
+                _reapply_saved_mode(filepath, entry)
                 backup_path.unlink()
                 return {
                     "success": True,
@@ -323,6 +354,7 @@ class FileBackupStore:
                         continue
                     filepath.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(backup_path_str, filepath)
+                    _reapply_saved_mode(filepath, entry)
                     Path(backup_path_str).unlink()
                     restored.append(str(filepath))
                 else:

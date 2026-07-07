@@ -67,6 +67,14 @@ class ReadFileTool(Tool):
                     "hint": "Use list_directory for directories.",
                 }
 
+            # Refuse a symlink leaf and open with O_NOFOLLOW (below): the
+            # scope check above resolves through symlinks, so a link that
+            # currently points inside the project could be swapped to target
+            # /etc/passwd between the check and the open. Mirrors the write path.
+            symlink_err = _reject_symlink_leaf(path_obj, "read")
+            if symlink_err:
+                return symlink_err
+
             # Check file size before reading
             stat = path_obj.stat()
             file_size = stat.st_size
@@ -101,8 +109,9 @@ class ReadFileTool(Tool):
             def _read() -> str:
                 # Offloaded to a worker thread so a large file read doesn't
                 # block the event loop (UnicodeDecodeError propagates out and
-                # is handled by the caller's except clause).
-                with open(path_obj, "r", encoding="utf-8") as f:
+                # is handled by the caller's except clause). O_NOFOLLOW closes
+                # the TOCTOU gap after the _reject_symlink_leaf check above.
+                with _safe_open_no_symlink(path_obj, "r") as f:
                     if is_partial_read:
                         lines = f.readlines()
                         start = (start_line - 1) if start_line else 0

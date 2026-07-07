@@ -83,16 +83,30 @@ def _get_max_glob_results() -> int:
         return DEFAULT_MAX_GLOB_RESULTS
 
 
-# Paths under $HOME that tools should never write to.
+# Paths under $HOME that tools should never write to. These are checked *before*
+# the ``allow_outside_project`` opt-out in every mutating filesystem tool, so they
+# stay protected even when the project-scope sandbox is disabled. ``.coderAI`` is
+# included so a mutating tool cannot rewrite CoderAI's own config / trust store /
+# OAuth credentials (its internal machinery bypasses these tools).
 PROTECTED_HOME_PATHS = [
     ".ssh",
     ".gnupg",
     ".aws",
-    ".config/gcloud",
+    ".config",  # gcloud creds + many other apps' secret stores live here
     ".kube",
     ".docker",
     ".bash_history",
     ".zsh_history",
+    # Shell/tool init files (a persistence vector) and credential stores.
+    ".bashrc",
+    ".zshrc",
+    ".profile",
+    ".bash_profile",
+    ".gitconfig",
+    ".netrc",
+    ".npmrc",
+    ".pypirc",
+    ".coderAI",
 ]
 
 # Absolute system paths that tools should never write to. If the process

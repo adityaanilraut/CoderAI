@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import tempfile
 import threading
 import time
 import uuid
@@ -16,6 +17,35 @@ from pydantic import BaseModel, Field
 from coderAI.system.fsperms import OWNER_RWX, restrict_fd, restrict_path
 
 logger = logging.getLogger(__name__)
+
+
+def _atomic_write_json(target: Path, obj: Any) -> None:
+    """Atomically write *obj* as JSON to *target*, owner-only (0600).
+
+    Uses ``tempfile.mkstemp`` — which creates the temp file at 0600 in one
+    syscall — plus ``os.replace`` so there is never a window where a session
+    file (which holds conversation content) or the index is world-readable, and
+    a crash mid-write can't leave truncated JSON behind. Replaces the older
+    ``open()`` + ``restrict_fd`` pattern that briefly created the temp at the
+    process umask (typically 0644) before chmod-ing it down.
+    """
+    fd, tmp = tempfile.mkstemp(dir=str(target.parent), prefix=f".{target.name}.", suffix=".tmp")
+    try:
+        restrict_fd(fd)
+        with os.fdopen(fd, "w") as f:
+            json.dump(obj, f)
+        os.replace(tmp, str(target))
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
 
 
 class Message(BaseModel):
@@ -340,19 +370,7 @@ class HistoryManager:
             return
 
         session_file = self.history_dir / f"{session_id}.json"
-        tmp_file = session_file.with_name(f"{session_id}.{uuid.uuid4().hex}.tmp")
-        try:
-            with open(tmp_file, "w") as f:
-                restrict_fd(f.fileno())
-                json.dump(data, f)
-            os.replace(tmp_file, session_file)
-        except Exception:
-            # Don't leave an orphan ``.tmp`` when the write itself failed.
-            try:
-                tmp_file.unlink()
-            except OSError:
-                pass
-            raise
+        _atomic_write_json(session_file, data)
 
         self._update_index(data)
 
@@ -388,10 +406,7 @@ class HistoryManager:
                 "model": data.get("model", "unknown"),
             }
             try:
-                tmp_file = index_file.with_name(f"index.{uuid.uuid4().hex}.tmp")
-                with open(tmp_file, "w") as f:
-                    json.dump(index, f)
-                os.replace(tmp_file, index_file)
+                _atomic_write_json(index_file, index)
             except Exception as e:
                 logger.warning(f"Failed to update session index: {e}")
 
@@ -445,10 +460,7 @@ class HistoryManager:
 
         if needs_save:
             try:
-                tmp_file = index_file.with_suffix(".json.tmp")
-                with open(tmp_file, "w") as f:
-                    json.dump(index, f)
-                os.replace(tmp_file, index_file)
+                _atomic_write_json(index_file, index)
             except Exception as e:
                 # The index is a cache; listing still works from the rebuilt
                 # in-memory copy and the save is retried on the next call.
@@ -501,10 +513,7 @@ class HistoryManager:
                     index = json.load(f)
                 if session_id in index:
                     del index[session_id]
-                    tmp_file = index_file.with_suffix(".json.tmp")
-                    with open(tmp_file, "w") as f:
-                        json.dump(index, f)
-                    os.replace(tmp_file, index_file)
+                    _atomic_write_json(index_file, index)
             except Exception as e:
                 logger.warning(f"Failed to update index after session delete: {e}")
 
@@ -547,10 +556,7 @@ class HistoryManager:
                             index = json.load(f)
                         for sid in removed_ids:
                             index.pop(sid, None)
-                        tmp_file = index_file.with_suffix(".json.tmp")
-                        with open(tmp_file, "w") as f:
-                            json.dump(index, f)
-                        os.replace(tmp_file, index_file)
+                        _atomic_write_json(index_file, index)
                 except Exception as e:
                     logger.warning(f"Failed to update index after cleanup: {e}")
 

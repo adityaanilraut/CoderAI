@@ -219,6 +219,14 @@ class MoveFileTool(Tool):
                 backup_store.backup_file(str(dst), "modify")
 
             def _move():
+                # Re-check both leaves right before the move to guard against a
+                # TOCTOU swap between the validation above and the op itself
+                # (mirrors DeleteFileTool._delete).
+                symlink_err2 = _reject_symlink_leaf(src, "move from") or _reject_symlink_leaf(
+                    dst, "move to"
+                )
+                if symlink_err2:
+                    raise OSError("Path was replaced by a symlink after validation")
                 _shutil.move(str(src), str(dst))
 
             await asyncio.to_thread(_move)
@@ -301,6 +309,14 @@ class CopyFileTool(Tool):
                 backup_store.backup_file(str(dst), "modify")
 
             def _copy():
+                # Re-check both leaves right before the copy to guard against a
+                # TOCTOU swap between the validation above and the op itself
+                # (mirrors DeleteFileTool._delete).
+                symlink_err2 = _reject_symlink_leaf(src, "copy from") or _reject_symlink_leaf(
+                    dst, "copy to"
+                )
+                if symlink_err2:
+                    raise OSError("Path was replaced by a symlink after validation")
                 if src.is_dir():
                     if dst.exists():
                         _shutil.rmtree(str(dst))
