@@ -218,7 +218,7 @@ class _LazyAgentTracker:
     Kept so existing ``from coderAI.core.agent_tracker import agent_tracker``
     import sites (agent, bridge controller/serializers, tui session setup)
     keep working after ownership moved into ToolServices. Tests that patch
-    ``coderAI.bridge.controller.agent_tracker`` still rebind that module's
+    ``coderAI.tui.controller.agent_tracker`` still rebind that module's
     own name; everything else resolves through the process-wide default
     container, so all references observe the same tracker by default.
     """

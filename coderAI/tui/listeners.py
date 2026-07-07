@@ -7,7 +7,7 @@ import uuid
 from typing import Any, Callable, Dict, List, Optional
 
 from coderAI.tui.state import AgentInfo, SessionState
-from coderAI.tui.timeline_append import append_capped
+from coderAI.tui.timeline_render import append_capped
 
 STREAM_FLUSH_S = 0.120
 STATUS_THROTTLE_S = 0.250

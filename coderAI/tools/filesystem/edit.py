@@ -1,9 +1,10 @@
 """In-place editing tools: search/replace and unified-diff patching."""
 
 import asyncio
+import logging
 import re
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -19,25 +20,43 @@ from coderAI.tools.filesystem._guards import (
     _is_path_protected,
     _reject_symlink_leaf,
     _safe_open_no_symlink,
+    _get_max_file_size,
 )
+
+logger = logging.getLogger(__name__)
+
+
+class EditChunk(BaseModel):
+    search: str = Field(..., min_length=1, description="Exact text to search for")
+    replace: str = Field(..., description="Text to replace it with")
+    expected_count: int = Field(1, description="Expected number of occurrences to replace")
 
 
 class SearchReplaceParams(BaseModel):
     path: str = Field(..., description="Path to the file")
-    search: str = Field(..., description="Text to search for")
-    replace: str = Field(..., description="Text to replace with")
+    search: str = Field("", description="Text to search for")
+    replace: str = Field("", description="Text to replace with")
     replace_all: bool = Field(False, description="Replace all occurrences (default: first only)")
+    edits: Optional[List[EditChunk]] = Field(
+        None, description="Apply multiple search/replace edits in a single atomic operation"
+    )
 
 
 class SearchReplaceTool(Tool):
-    """Tool for search and replace in files."""
+    """Tool for search and replace in files — single or batch edit mode.
+
+    Supply ``search`` / ``replace`` for a single edit, or ``edits`` for
+    multiple edits applied atomically in one write.
+    """
 
     name = "search_replace"
-    description = "Search for text in a file and replace it"
+    description = (
+        "Search for text in a file and replace it. "
+        "Accepts an optional 'edits' list for batch search/replace operations."
+    )
     parameters_model = SearchReplaceParams
     requires_confirmation = True
     category = "filesystem"
-    # Same-path edits in one batch must serialize (no TOCTOU race).
     batch_serialize_by_path = True
 
     @staticmethod
@@ -48,9 +67,19 @@ class SearchReplaceTool(Tool):
         return content.replace(search, replace, 1)
 
     def preview(self, arguments: dict[str, Any], original: Optional[str]) -> Optional[ToolPreview]:
-        """Resulting file content after the (first-only / all) replacement."""
+        """Resulting file content after the replacement(s)."""
         if original is None:
             return None
+        edits = arguments.get("edits") or []
+        if edits and isinstance(edits, list) and len(edits) > 0:
+            new_content = original
+            for edit in edits:
+                if not isinstance(edit, dict):
+                    return None
+                new_content = new_content.replace(
+                    str(edit.get("search", "")), str(edit.get("replace", ""))
+                )
+            return ToolPreview(new_content=new_content)
         search = str(arguments.get("search", "") or "")
         if not search:
             return None
@@ -59,19 +88,19 @@ class SearchReplaceTool(Tool):
         return ToolPreview(new_content=self._apply(original, search, replace, replace_all))
 
     async def execute(  # type: ignore[override]
-        self, path: str, search: str, replace: str, replace_all: bool = False
+        self,
+        path: str,
+        search: str = "",
+        replace: str = "",
+        replace_all: bool = False,
+        edits: Optional[List[Dict[str, Any]]] = None,
     ) -> dict[str, Any]:
-        """Search and replace in file with protection."""
+        """Search and replace in file with protection. Supports batch edits via *edits*."""
         try:
             if not path or not str(path).strip():
                 return {
                     "success": False,
                     "error": "path is required and must be a non-empty file path.",
-                }
-            if search == "":
-                return {
-                    "success": False,
-                    "error": "search text must be non-empty.",
                 }
 
             path_obj = Path(path).expanduser()
@@ -119,6 +148,77 @@ class SearchReplaceTool(Tool):
                         else ToolErrorCode.IO,
                     }
 
+                # ---- Batch mode (edits list) ----
+                if edits and isinstance(edits, list) and len(edits) > 0:
+                    stat = path_obj.stat()
+                    file_size = stat.st_size
+                    max_file_size = _get_max_file_size()
+                    if file_size > max_file_size:
+                        return {
+                            "success": False,
+                            "error": f"File too large: {file_size:,} bytes (limit: {max_file_size:,} bytes).",
+                            "error_code": ToolErrorCode.TOO_LARGE,
+                            "hint": "Use single-edit or write_file for targeted modifications on large files.",
+                        }
+
+                    new_content = content
+                    actual_counts: list[int] = []
+                    count_mismatches: list[dict[str, Any]] = []
+                    for i, edit in enumerate(edits):
+                        s = edit["search"]
+                        r = edit.get("replace", "")
+                        expected_count = edit.get("expected_count", 1)
+
+                        if not s:
+                            return {
+                                "success": False,
+                                "error": f"Edit {i + 1} failed: search text must be non-empty.",
+                                "hint": "Each edit needs a non-empty search string.",
+                            }
+
+                        actual_count = new_content.count(s)
+                        actual_counts.append(actual_count)
+                        if actual_count == 0:
+                            return {
+                                "success": False,
+                                "error": f"Edit {i + 1} failed: expected to find search text, found 0 occurrences.",
+                                "hint": "Check the file contents and make sure the search text exactly matches what's in the file.",
+                            }
+                        if expected_count == 1 and actual_count > 1:
+                            logger.warning(
+                                "search_replace: edit %d matches %d occurrences but expected_count=1",
+                                i + 1,
+                                actual_count,
+                            )
+                        if actual_count != expected_count:
+                            count_mismatches.append(
+                                {
+                                    "edit_index": i,
+                                    "expected_count": expected_count,
+                                    "actual_count": actual_count,
+                                }
+                            )
+                        new_content = new_content.replace(s, r)
+
+                    backup_store.backup_file(str(path_obj), "modify")
+                    await asyncio.to_thread(_atomic_write_file, path_obj, new_content)
+                    _emit_diff(path_obj, content, new_content)
+
+                    return {
+                        "success": True,
+                        "path": str(path_obj),
+                        "edits_applied": len(edits),
+                        "actual_counts": actual_counts,
+                        "count_mismatches": count_mismatches,
+                    }
+
+                # ---- Single-edit mode ----
+                if search == "":
+                    return {
+                        "success": False,
+                        "error": "search text must be non-empty.",
+                    }
+
                 if search not in content:
                     return {
                         "success": False,
@@ -126,7 +226,6 @@ class SearchReplaceTool(Tool):
                         "hint": "Use text_search or grep to verify the exact text in the file.",
                     }
 
-                # Create backup for undo support
                 backup_store.backup_file(str(path_obj), "modify")
 
                 new_content = self._apply(content, search, replace, replace_all)

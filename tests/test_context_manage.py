@@ -3,18 +3,22 @@
 import asyncio
 import os
 import tempfile
+from unittest.mock import MagicMock
 
 import pytest
 
-from coderAI.context.context import ContextManager
+from coderAI.context.context_controller import ContextController
 from coderAI.tools.context_manage import ManageContextTool
+from coderAI.system.config import Config
 
 
 @pytest.fixture
 def ctx_tool():
-    """Create a ManageContextTool with a fresh ContextManager."""
-    cm = ContextManager()
-    return ManageContextTool(cm)
+    """Create a ManageContextTool with a fresh ContextController."""
+    config = Config(project_root=".")
+    provider = MagicMock()
+    cc = ContextController(config=config, provider=provider)
+    return ManageContextTool(cc)
 
 
 @pytest.fixture

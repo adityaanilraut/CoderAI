@@ -34,9 +34,11 @@ make dist         # build Python distribution
 `mypy coderAI/` is a **CI gate** (runs after ruff, before pytest). The base
 config in `pyproject.toml` is lenient, but a `[[tool.mypy.overrides]]` block
 lists modules held to **strict** typing (`disallow_untyped_defs`,
-`check_untyped_defs`, `warn_unused_ignores`). As of Phase 4 the strict set is
-`system.*`, `llm.*`, `bridge.*`, `context.*`, and
-`core.{execution_context,tool_error_codes,services,agent_tracker,provenance,permissions}`.
+`check_untyped_defs`, `warn_unused_ignores`). The strict set is
+`system.*`, `llm.*`, `context.*`, `cli.*`, most of `core.*` (see
+`pyproject.toml` for the exact list), and the TUI controller modules
+(`tui.commands`, `tui.controller`, `tui.streaming`, `tui.serializers`,
+`tui.state`, `tui.tool_metadata`).
 
 **The strict-module list only grows — never remove a module from it.** When a
 module becomes clean under strict checking, add it; once added it must stay
@@ -53,7 +55,7 @@ elsewhere.
 
 CoderAI is a pure-Python AI coding agent CLI. The Click entry point in
 `coderAI/cli.py` dispatches one-shot subcommands (config, history, models,
-status, doctor, …) using Rich helpers in `coderAI/ui/`. `coderAI chat`
+status, doctor, …) using Rich helpers in `coderAI/cli/utils.py`. `coderAI chat`
 launches an in-process Textual TUI (`coderAI/tui/`) that drives the
 agent loop and renders the streaming timeline.
 
@@ -87,15 +89,15 @@ Per-turn flow (`Agent.process_message()` → `agent_loop`):
 - `coderAI/core/agent.py` — Core orchestrator (agentic loop, context management, sub-agent spawning, session lifecycle). Uses whatever `streaming_handler` the embedding process sets; defaults to `None` (non-streaming fallback).
 - `coderAI/cli.py` / `coderAI/cli/` — Click CLI. `chat` launches the Textual TUI; other commands render with Rich.
 - `coderAI/tui/` — Textual interactive chat (`app.py`, `listeners.py` event reducer, `timeline_render.py` timeline row writers, `diff_render.py`, `slash.py`, `state.py`, `session_setup.py`, `theme.py`). There is no `tui/lib/` shim — rendering lives beside the app.
-- `coderAI/bridge/controller.py` — In-process controller (`UIBridge`): subscribes to `event_emitter`, forwards events to the UI via `on_event`, and dispatches slash commands back into the agent. See [`CHAT_EVENTS.md`](CHAT_EVENTS.md).
-- `coderAI/bridge/streaming.py` — `BridgeStreamingHandler`: emits one phased `turn` event per assistant turn so the Textual timeline streams incrementally.
-- `coderAI/bridge/tool_metadata.py` — Tool category, risk level, and approval-preview helpers for the controller and modals.
+- `coderAI/tui/controller.py` — In-process controller (`UIBridge`): subscribes to `event_emitter`, forwards events to the UI via `on_event`, and dispatches slash commands back into the agent. See [`CHAT_EVENTS.md`](CHAT_EVENTS.md).
+- `coderAI/tui/streaming.py` — `BridgeStreamingHandler`: emits one phased `turn` event per assistant turn so the Textual timeline streams incrementally.
+- `coderAI/tui/tool_metadata.py` — Tool category, risk level, and approval-preview helpers for the controller and modals.
 - `coderAI/llm/` — LLM providers (openai, anthropic, groq, deepseek, gemini, lmstudio, ollama), all extending `base.LLMProvider`. Instantiation goes through `llm/factory.py::create_provider(model, config)` — do not construct providers directly from `agent.py`.
 - `coderAI/tools/` — 92 tools extending `tools/base.Tool`. Registration is automatic via `tools/discovery.py::discover_tools()`, which walks the `coderAI.tools` package and instantiates every `Tool` subclass whose `__init__` takes no required args. Tools requiring constructor args (e.g. `ManageContextTool`, which needs the `Agent`) are registered manually in `Agent._create_tool_registry()`.
 - `coderAI/system/safeguards.py` — reusable validators that run before dangerous actions: interactive-command detection (blocks REPLs invoked via non-interactive pipes), project-directory validation, git-scope guards (prevent operations leaking to a parent repo), staging blocklist for junk files (`.DS_Store`, `__pycache__`, `.coderAI/`, …).
 - `coderAI/system/project_layout.py` — `find_dot_coderai_subdir()` resolves `.coderAI/<subdir>` across project root, cwd, and the package dir (for dev installs). Use this instead of hardcoding `.coderAI/` paths.
-- `coderAI/bridge/chat_reference.py` — plain-text reference output for `/show <topic>` slash commands (`/show models`, `/show cost`, `/show status`, `/show config`, `/show info`, `/show tasks`).
-- `coderAI/ui/` — Rich helpers for one-shot CLI subcommands (`display.py`). Not used by the Textual chat UI.
+- `coderAI/tui/commands.py` — `UIBridge` command handlers, plus plain-text reference output for `/show <topic>` slash commands (`/show models`, `/show cost`, `/show status`, `/show config`, `/show info`, `/show tasks`).
+- `coderAI/cli/utils.py` — Rich display helpers for one-shot CLI subcommands. Not used by the Textual chat UI.
 - `coderAI/system/config.py` — Pydantic-based `ConfigManager` reading from `~/.coderAI/config.json` then env vars.
 - `coderAI/core/agents.py` — `AgentPersona` loader for `.coderAI/agents/*.md` files with YAML frontmatter.
 - `coderAI/core/agent_tracker.py` — Singleton `AgentTracker` for observability (status, tokens, cost, cancellation).
@@ -151,7 +153,7 @@ Inside `coderAI chat` (the Textual TUI), slash commands are available:
 They are routed by `coderAI/tui/slash.py` to the in-process `UIBridge`,
 which dispatches them to the agent. Reference output (`/show models`,
 `/show cost`, `/show status`, `/show info`, `/show tasks`, `/show config`)
-is rendered as plain text by `coderAI/bridge/chat_reference.py`. The full
+is rendered as plain text by `coderAI/tui/commands.py`. The full
 event catalog lives in [`CHAT_EVENTS.md`](CHAT_EVENTS.md).
 
 ## Model Aliases

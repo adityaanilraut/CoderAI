@@ -30,7 +30,7 @@ class SubagentContext:
 
     parent_agent_id: Optional[str] = None
     parent_model: Optional[str] = None
-    parent_context_manager: Optional[Any] = None  # ContextManager
+    parent_context_controller: Optional[Any] = None  # ContextController
     parent_cost_tracker: Optional[Any] = None  # CostTracker (shared)
     parent_auto_approve: bool = False
     parent_ipc_server: Optional[Any] = None
@@ -272,6 +272,7 @@ class DelegateTaskTool(Tool):
         "For pure research, set read_only_task=True — mutating tools are stripped and up to "
         "4 read-only delegations fan out in parallel."
     )
+    category = "agent"
     # Routing is domain-aware in ``ToolExecutor.run_tool_batch`` — not via
     # ``max_parallel_invocations``. Kept at 0 so delegate_task is never
     # lumped into the generic capped-tools bucket.
@@ -465,21 +466,13 @@ class DelegateTaskTool(Tool):
                         update_model=model is None,
                     )
 
-                if inherit_project_context and ctx.parent_context_manager is not None:
-                    sub_agent.context_manager.pinned_files = dict(
-                        ctx.parent_context_manager.pinned_files
+                if inherit_project_context and ctx.parent_context_controller is not None:
+                    sub_agent.context_controller.copy_pinned_state_from(
+                        ctx.parent_context_controller
                     )
-                    sub_agent.context_manager._pinned_mtimes = dict(
-                        ctx.parent_context_manager._pinned_mtimes
-                    )
-                    if ctx.parent_context_manager.project_instructions:
-                        sub_agent.context_manager.project_instructions = (
-                            ctx.parent_context_manager.project_instructions
-                        )
-                        sub_agent.context_manager._instructions_loaded = True
                 else:
-                    sub_agent.context_manager.project_instructions = None
-                    sub_agent.context_manager._instructions_loaded = True
+                    sub_agent.context_controller.project_instructions = None
+                    sub_agent.context_controller._instructions_loaded = True
 
                 if read_only_task:
                     mutating = [

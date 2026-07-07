@@ -45,6 +45,7 @@ class PythonREPLTool(Tool):
         "parsing files, or running one-off scripts. The code runs in a fresh "
         "Python process each time, so state is not preserved between calls."
     )
+    category = "repl"
     parameters_model = PythonREPLParams
     requires_confirmation = True
     # Arbitrary code execution — no blanket allow, and no safe scope to bind to.

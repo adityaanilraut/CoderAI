@@ -11,7 +11,7 @@ _REASONING_CHOICES = ("high", "medium", "low", "none")
 @click.command()
 def setup() -> None:
     """Interactive setup wizard."""
-    from coderAI.ui.display import display
+    from coderAI.cli.utils import display
 
     display.print_header("CoderAI Setup Wizard")
     display.print()

@@ -143,7 +143,9 @@ class WebSearchTool(Tool):
     is_egress = True
     # Removed from the main agent when web_tools_in_main is False (Phase 4.2).
     network_gate = True
+    category = "web"
     result_provenance = Provenance.UNTRUSTED_EXTERNAL
+
     parameters_model = WebSearchParams
 
     async def execute(  # type: ignore[override]
@@ -367,6 +369,8 @@ class ReadURLTool(Tool):
     is_egress = True
     # Removed from the main agent when web_tools_in_main is False (Phase 4.2).
     network_gate = True
+    category = "web"
+
     result_provenance = Provenance.UNTRUSTED_EXTERNAL
     parameters_model = ReadURLParams
 
@@ -484,6 +488,7 @@ class DownloadFileTool(Tool):
     network_gate = True
     requires_confirmation = True
     result_provenance = Provenance.UNTRUSTED_EXTERNAL
+    category = "web"
     parameters_model = DownloadFileParams
     timeout = 300.0
 
@@ -699,6 +704,7 @@ class WikipediaSearchTool(Tool):
     # Removed from the main agent when web_tools_in_main is False (Phase 4.2).
     network_gate = True
     result_provenance = Provenance.UNTRUSTED_EXTERNAL
+    category = "web"
     parameters_model = WikipediaSearchParams
 
     async def execute(  # type: ignore[override]
@@ -824,6 +830,7 @@ class ReadFeedTool(Tool):
     # Removed from the main agent when web_tools_in_main is False (Phase 4.2).
     network_gate = True
     result_provenance = Provenance.UNTRUSTED_EXTERNAL
+    category = "web"
     parameters_model = ReadFeedParams
 
     async def execute(  # type: ignore[override]
@@ -927,6 +934,7 @@ class SitemapDiscoverTool(Tool):
     # Removed from the main agent when web_tools_in_main is False (Phase 4.2).
     network_gate = True
     result_provenance = Provenance.UNTRUSTED_EXTERNAL
+    category = "web"
     parameters_model = SitemapDiscoverParams
 
     async def execute(  # type: ignore[override]

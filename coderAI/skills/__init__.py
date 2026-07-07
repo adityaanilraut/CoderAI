@@ -18,9 +18,13 @@ Usage::
         print(skill.instructions)
 """
 
-from coderAI.skills.skill_loader import Skill, discover_local_skills, load_skill_by_name
-from coderAI.skills.skill_registry import SkillRegistry
-from coderAI.skills.skill_manager import SkillManager
+from coderAI.skills.skill_manager import (
+    Skill,
+    SkillRegistry,
+    SkillManager,
+    discover_local_skills,
+    load_skill_by_name,
+)
 from coderAI.skills.sources.base import SkillSource
 from coderAI.skills.sources.local_source import LocalSkillSource
 from coderAI.skills.sources.hasna_source import HasnaSkillSource

@@ -700,7 +700,7 @@ class ExecutionLoop:
 
         # Manage context window after tool results (or error messages) are added
         state.messages = self.agent.context_controller.inject_context(
-            state.messages, self.agent.context_manager, query=state.user_message
+            state.messages, query=state.user_message
         )
         state.messages = await self.agent.context_controller.manage_context_window(state.messages)
         return None
@@ -818,9 +818,7 @@ class ExecutionLoop:
             self._repair_unpaired_tool_calls()
             self._last_repaired_msg_count = len(session.messages)
         messages = self.agent.session.get_messages_for_api()
-        messages = self.agent.context_controller.inject_context(
-            messages, self.agent.context_manager, query=user_message
-        )
+        messages = self.agent.context_controller.inject_context(messages, query=user_message)
         return await self.agent.context_controller.manage_context_window(messages)  # type: ignore[no-any-return]
 
     def _repair_unpaired_tool_calls(self) -> None:
@@ -944,9 +942,7 @@ class ExecutionLoop:
         )
 
         messages = self.agent.session.get_messages_for_api()
-        messages = self.agent.context_controller.inject_context(
-            messages, self.agent.context_manager, query=user_message
-        )
+        messages = self.agent.context_controller.inject_context(messages, query=user_message)
         messages = await self.agent.context_controller.manage_context_window(messages)
         messages.append({"role": "user", "content": closing_prompt})
         get_services().events.emit(
@@ -1075,9 +1071,7 @@ class ExecutionLoop:
             messages = self.agent.session.get_messages_for_api()
         else:
             messages = [{"role": "system", "content": feedback}]
-        messages = self.agent.context_controller.inject_context(
-            messages, self.agent.context_manager, query=user_message
-        )
+        messages = self.agent.context_controller.inject_context(messages, query=user_message)
         return await self.agent.context_controller.manage_context_window(messages)  # type: ignore[no-any-return]
 
     async def _handle_budget_exceeded(self, e: BudgetExceededError) -> Dict[str, Any]:

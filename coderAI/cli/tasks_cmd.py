@@ -18,7 +18,7 @@ def tasks(ctx: click.Context) -> None:
 def tasks_list() -> None:
     """List all tasks."""
     from coderAI.tools.tasks import ManageTasksTool
-    from coderAI.ui.display import display
+    from coderAI.cli.utils import display
 
     tool = ManageTasksTool()
     result = asyncio.run(tool.execute("list"))

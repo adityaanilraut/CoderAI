@@ -73,6 +73,7 @@ class UseSkillTool(Tool):
         "TDD, testing, etc. Use action='list' to see available skills, then action='use' "
         "with skill_name to load the full instructions."
     )
+    category = "skills"
     parameters_model = UseSkillParams
     is_read_only = True
 

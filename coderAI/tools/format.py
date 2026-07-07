@@ -121,6 +121,7 @@ class FormatTool(Tool):
     )
     parameters_model = FormatParams
     requires_confirmation = True
+    category = "code_quality"
 
     async def execute(  # type: ignore[override]
         self,

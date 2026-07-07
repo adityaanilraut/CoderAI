@@ -9,12 +9,14 @@ intent back through :meth:`UIBridge.enqueue_command` /
 Subscribes to ``event_emitter`` and dispatches UI commands to the agent.
 See ``docs/CHAT_EVENTS.md`` for the event catalog.
 
-The command handlers live in ``coderAI/bridge/commands.py`` and the payload
-serializers in ``coderAI/bridge/serializers.py`` (Phase 2b split); both are
+The command handlers live in ``coderAI/tui/commands.py`` and the payload
+serializers in ``coderAI/tui/serializers.py`` (Phase 2b split); both are
 re-exported here because tests and callers historically import them from
 this module — and because tests patch module attributes such as
-``coderAI.bridge.controller.agent_tracker`` that the handlers resolve
+``coderAI.tui.controller.agent_tracker`` that the handlers resolve
 through this namespace at call time.
+
+Moved here from ``coderAI/bridge/controller.py`` (Phase 3 bridge demolition).
 """
 
 from __future__ import annotations
@@ -32,7 +34,7 @@ from coderAI.system.events import event_emitter
 if TYPE_CHECKING:
     from coderAI.core.agent import Agent
 
-from coderAI.bridge.commands import (  # noqa: F401
+from coderAI.tui.commands import (  # noqa: F401
     _cmd_allow_tool,
     _cmd_cancel,
     _cmd_cancel_agent,
@@ -63,7 +65,7 @@ from coderAI.bridge.commands import (  # noqa: F401
     _COMMAND_HANDLERS,
     _handle_persona_slash,
 )
-from coderAI.bridge.serializers import (  # noqa: F401
+from coderAI.tui.serializers import (  # noqa: F401
     _agent_info_dict,
     _compute_agent_depth,
     _format_plan_message,
@@ -73,16 +75,16 @@ from coderAI.bridge.serializers import (  # noqa: F401
     _serialize_tasks_for_ui,
     _task_ui_item,
 )
-from coderAI.bridge.tool_metadata import (
+from coderAI.tui.tool_metadata import (
     arg_preview,
     parse_skill_steps,
     preview_args_for_approval,
     result_preview,
-    strip_rich_markup,
     tool_category,
     tool_risk,
     tool_risk_factors,
 )
+from coderAI.tui.rendering import strip_rich_markup
 
 logger = logging.getLogger(__name__)
 

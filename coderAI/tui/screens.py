@@ -250,8 +250,8 @@ class ApprovalScreen(ModalScreen[tuple[bool, bool]]):
                     arg_lines.append(f"[{Tokens.TEXT_MUTED}]… {len(args) - 6} more[/]")
                 yield Label("\n".join(arg_lines))
 
-            # Risk factors are supplied by the bridge (single source in
-            # bridge/tool_metadata.tool_risk_factors); the screen only renders.
+            # Risk factors are supplied by the controller (single source in
+            # coderAI/tui/tool_metadata.tool_risk_factors); the screen only renders.
             risk_factors = a.get("riskFactors") or []
             risk_lines = [
                 f"  [{Tokens.WARN}]{Glyphs.APPROVAL}[/] [{Tokens.TEXT}]{escape(str(factor))}[/]"

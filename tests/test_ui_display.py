@@ -1,4 +1,4 @@
-"""Coverage for coderAI/ui/display.py Rich helpers.
+"""Coverage for coderAI/cli/utils.py Display helpers.
 
 A non-terminal Console (force_terminal=False, record=True) lets each method run
 its full rendering path without touching a real TTY.
@@ -6,7 +6,7 @@ its full rendering path without touching a real TTY.
 
 from rich.console import Console
 
-from coderAI.ui.display import Display, display
+from coderAI.cli.utils import Display, display
 
 
 def _quiet_display() -> Display:

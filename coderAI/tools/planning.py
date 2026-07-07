@@ -82,6 +82,7 @@ class CreatePlanTool(Tool):
         "single-step tasks; use notepad for scratch notes. Example: action='create', "
         "title='Refactor auth flow', steps=['Map current flow', 'Patch backend', 'Add tests']."
     )
+    category = "planning"
     parameters_model = PlanParams
     is_read_only = False
     # Mutates only the agent's own in-session plan state — no filesystem,

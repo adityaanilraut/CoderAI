@@ -6,6 +6,9 @@ string.  CoderAIApp methods delegate to these.
 
 from __future__ import annotations
 
+import re
+from typing import Any
+
 from rich.console import Group, RenderableType
 from rich.markup import escape
 from rich.table import Table
@@ -15,6 +18,18 @@ from coderAI.tui.platform import composer_footer_hints, header_palette_hint
 from coderAI.tui.state import SessionState
 from coderAI.tui.theme import Glyphs, Styles, Tokens
 from coderAI.tui.timeline_render import plan_step_marker
+
+_RICH_TAG_RE = re.compile(r"\[/?[a-zA-Z][a-zA-Z0-9 _#\-/]*\]")
+
+
+def strip_rich_markup(text: Any) -> str:
+    """Strip Rich ``[style]`` tags from ``text`` for plain-text output."""
+    if text is None:
+        return ""
+    s = str(text)
+    if "[" not in s:
+        return s
+    return _RICH_TAG_RE.sub("", s)
 
 
 def render_session_header(s: SessionState) -> str:

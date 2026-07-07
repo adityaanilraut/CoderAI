@@ -1,10 +1,10 @@
-"""Timeline row renderers for the Textual chat UI."""
+"""Timeline row renderers and length management for the Textual chat UI."""
 
 from __future__ import annotations
 
 import logging
 import time as _time_mod
-from typing import Any, Dict, Protocol
+from typing import Any, Callable, Dict, List, Protocol
 
 from rich.console import Console, ConsoleOptions, Group, RenderResult
 from rich.markup import escape
@@ -19,6 +19,26 @@ from coderAI.tui.platform import palette_shortcut
 from coderAI.tui.theme import Categories, Glyphs, Styles, Tokens
 
 logger = logging.getLogger(__name__)
+
+MAX_TIMELINE = 500
+KEEP_AFTER_TRIM = 400
+
+
+def append_capped(
+    timeline: List[Dict[str, Any]],
+    item: Dict[str, Any],
+    next_id: Callable[[], str],
+) -> List[Dict[str, Any]]:
+    out = timeline + [item]
+    if len(out) <= MAX_TIMELINE:
+        return out
+    trimmed = out[-KEEP_AFTER_TRIM:]
+    sep = {
+        "kind": "separator",
+        "id": next_id(),
+        "message": f"History trimmed ({len(out) - KEEP_AFTER_TRIM} older messages hidden)",
+    }
+    return [sep] + trimmed
 
 
 class SupportsWrite(Protocol):

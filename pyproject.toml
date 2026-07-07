@@ -115,7 +115,6 @@ ignore_errors = true
 module = [
   "coderAI.system.*",
   "coderAI.llm.*",
-  "coderAI.bridge.*",
   "coderAI.context.*",
   "coderAI.core.execution_context",
   "coderAI.core.tool_error_codes",
@@ -129,6 +128,12 @@ module = [
   "coderAI.core.tool_routing",
   "coderAI.core.agents",
   "coderAI.cli.*",
+  "coderAI.tui.commands",
+  "coderAI.tui.controller",
+  "coderAI.tui.streaming",
+  "coderAI.tui.serializers",
+  "coderAI.tui.state",
+  "coderAI.tui.tool_metadata",
 ]
 disallow_untyped_defs = true
 check_untyped_defs = true

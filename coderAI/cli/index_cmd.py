@@ -18,9 +18,9 @@ import click
 def index_cmd(force: bool, paths: tuple[str, ...]) -> None:
     """Build or update the semantic code search index."""
     from coderAI.system.config import config_manager
-    from coderAI.embeddings.factory import create_embedding_provider
+    from coderAI.embeddings.openai import create_embedding_provider
     from coderAI.context.code_indexer import CodeIndexer
-    from coderAI.ui.display import display
+    from coderAI.cli.utils import display
 
     config = config_manager.load()
     provider = create_embedding_provider(config)
@@ -63,9 +63,9 @@ def index_cmd(force: bool, paths: tuple[str, ...]) -> None:
 def search_cmd(query: str, top_k: int, file_filter: str | None) -> None:
     """Search the codebase with a natural-language query."""
     from coderAI.system.config import config_manager
-    from coderAI.embeddings.factory import create_embedding_provider
+    from coderAI.embeddings.openai import create_embedding_provider
     from coderAI.context.code_indexer import CodeIndexer
-    from coderAI.ui.display import display
+    from coderAI.cli.utils import display
 
     config = config_manager.load()
     provider = create_embedding_provider(config)

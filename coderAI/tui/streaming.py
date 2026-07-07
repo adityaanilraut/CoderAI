@@ -1,9 +1,11 @@
-"""Streaming handler that forwards LLM token deltas to the IPC server.
+"""Streaming handler that forwards LLM token deltas to the UIBridge.
 
 Emits a single phased ``turn`` event (``phase`` of ``start`` /
 ``reasoning`` / ``text`` / ``end``) so the Textual UI can render streaming
 output incrementally. Set as ``agent.streaming_handler`` in
 ``coderAI/tui/session_setup.py``.
+
+Moved here from ``coderAI/bridge/streaming.py`` (Phase 3 bridge demolition).
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from coderAI.llm.base import empty_usage, normalize_usage
 
 if TYPE_CHECKING:
-    from coderAI.bridge.controller import UIBridge
+    from coderAI.tui.controller import UIBridge
 
 # Match EventReducer.STREAM_FLUSH_S so IPC and UI batch at the same cadence.
 STREAM_EMIT_S = 0.120

@@ -111,7 +111,7 @@ See [COMMANDS.md](docs/COMMANDS.md) for the full CLI reference.
 │                          CLI Layer                                │
 │     coderAI/cli.py → coderAI/cli/  —  Click commands & entry      │
 │                                                                   │
-│   one-shot subcommands ──► coderAI/ui (Rich helpers)              │
+│   one-shot subcommands ──► coderAI/cli/utils (Rich helpers)       │
 │   `coderAI chat`        ──► coderAI/tui (Textual TUI)             │
 └──────────────────────────┬───────────────────────────────────────┘
                            │
@@ -132,10 +132,11 @@ See [COMMANDS.md](docs/COMMANDS.md) for the full CLI reference.
    └─────────┘   └────────────┘   └─────────────┘
 ```
 
-`coderAI/bridge/` is an in-process controller used by the Textual TUI: it
-subscribes to `event_emitter`, forwards events to the UI via an
-`on_event` callback, and dispatches slash commands back into the agent.
-See [`docs/CHAT_EVENTS.md`](docs/CHAT_EVENTS.md) for the event catalog.
+`UIBridge` (`coderAI/tui/controller.py`) is an in-process controller used
+by the Textual TUI: it subscribes to `event_emitter`, forwards events to
+the UI via an `on_event` callback, and dispatches slash commands back into
+the agent. See [`docs/CHAT_EVENTS.md`](docs/CHAT_EVENTS.md) for the event
+catalog.
 
 ---
 
@@ -184,12 +185,6 @@ CoderAI-main/
 │   │   ├── context_controller.py # Token estimation, truncation, summarization
 │   │   └── context_selector.py #   Relevance-based snippet selection
 │   │
-│   ├── bridge/                 # ─── In-process controller (UIBridge) ───
-│   │   ├── controller.py       #   event_emitter ↔ UI on_event ↔ slash commands
-│   │   ├── tool_metadata.py    #   Tool category/risk/preview helpers
-│   │   ├── streaming.py        #   BridgeStreamingHandler → phased turn events
-│   │   └── chat_reference.py   #   Plain-text reference output for /show
-│   │
 │   ├── embeddings/             # ─── Embedding providers for semantic search ───
 │   │   ├── base.py             #   Abstract EmbeddingProvider interface
 │   │   ├── openai.py           #   OpenAI embeddings (text-embedding-3-small)
@@ -197,6 +192,10 @@ CoderAI-main/
 │   │
 │   ├── tui/                    # ─── Textual interactive chat UI ───
 │   │   ├── app.py              #   CoderAIApp (Textual screens, key bindings)
+│   │   ├── controller.py       #   UIBridge: event_emitter ↔ UI on_event ↔ slash commands
+│   │   ├── commands.py         #   UIBridge command handlers + /show reference text
+│   │   ├── streaming.py        #   BridgeStreamingHandler → phased turn events
+│   │   ├── tool_metadata.py    #   Tool category/risk/preview helpers
 │   │   ├── listeners.py        #   EventReducer (agent events → timeline state)
 │   │   ├── slash.py            #   Slash-command routing
 │   │   ├── state.py            #   SessionState + AgentInfo dataclasses

@@ -13,7 +13,7 @@ here AND the doc in the same commit.
 import re
 from pathlib import Path
 
-from coderAI.bridge import controller
+from coderAI.tui import controller
 
 BRIDGE_DIR = Path(controller.__file__).parent
 

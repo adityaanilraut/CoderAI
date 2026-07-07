@@ -52,6 +52,7 @@ class ProjectContextTool(Tool):
     )
     parameters_model = ProjectContextParams
     is_read_only = True
+    category = "context"
 
     async def execute(self, path: str = ".", max_depth: int = 2) -> Dict[str, Any]:  # type: ignore[override]
         """Detect project type and load context."""

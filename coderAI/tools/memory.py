@@ -101,6 +101,7 @@ class SaveMemoryTool(Tool):
     # filesystem or shell effect — so it runs without per-call confirmation.
     # (delete_memory still confirms, since removal is destructive.)
     safe = True
+    category = "memory"
 
     async def execute(self, **kwargs: Any) -> Dict[str, Any]:  # type: ignore[override]
         """Save memory."""
@@ -135,6 +136,7 @@ class RecallMemoryTool(Tool):
     description = "Recall previously saved information from memory"
     parameters_model = RecallMemoryParams
     is_read_only = True
+    category = "memory"
 
     async def execute(self, **kwargs: Any) -> Dict[str, Any]:  # type: ignore[override]
         key = kwargs.get("key")

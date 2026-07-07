@@ -18,7 +18,7 @@ def config(ctx: click.Context) -> None:
 @config.command("show")
 def config_show() -> None:
     """Show current configuration."""
-    from coderAI.ui.display import display
+    from coderAI.cli.utils import display
 
     config_data = config_manager.show()
     display.print_tree(config_data, "Configuration")
@@ -29,7 +29,7 @@ def config_show() -> None:
 @click.argument("value")
 def config_set(key: str, value: str) -> None:
     """Set a configuration value."""
-    from coderAI.ui.display import display
+    from coderAI.cli.utils import display
 
     parsed: str | int | float | bool = value
     try:
@@ -64,7 +64,7 @@ def config_set(key: str, value: str) -> None:
 @config.command("reset")
 def config_reset() -> None:
     """Reset configuration to defaults."""
-    from coderAI.ui.display import display
+    from coderAI.cli.utils import display
 
     config_manager.reset()
     display.print_success("Configuration reset to defaults")

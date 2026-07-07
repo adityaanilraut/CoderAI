@@ -1,7 +1,7 @@
 # CoderAI chat event reference
 
 **Transport:** In-process callbacks from
-[`coderAI/bridge/controller.py`](../coderAI/bridge/controller.py)
+[`coderAI/tui/controller.py`](../coderAI/tui/controller.py)
 (`UIBridge`) to the Textual UI in
 [`coderAI/tui/`](../coderAI/tui/).
 The Textual `CoderAIApp` constructs an `UIBridge` and passes an

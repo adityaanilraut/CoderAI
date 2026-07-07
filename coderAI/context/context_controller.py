@@ -2,9 +2,13 @@
 
 import json
 import logging
+import time as _time_module
 from collections import OrderedDict
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
+from coderAI.core.provenance import fence_project_context
+from coderAI.context.context_selector import build_focused_context, summarize_conversation_focus
 from coderAI.system.error_policy import check_budget_limit
 from coderAI.system.events import event_emitter
 
@@ -26,6 +30,11 @@ IMAGE_TOKEN_FLOOR = 1500
 # memory bounded while still serving hot messages from cache.
 _TOKEN_CACHE_MAX_SIZE = 2000
 
+# Total character budget for the pinned-context system message.
+PINNED_CONTEXT_MAX_CHARS = 30_000
+# Per-file truncation cap inside the fallback path.
+PINNED_CONTEXT_PER_FILE_CHARS = 10_000
+
 
 def _content_text_len(content: Any) -> int:
     """Return the character length of message content for token estimation.
@@ -45,7 +54,7 @@ def _content_text_len(content: Any) -> int:
 
 
 class ContextController:
-    """Handles token estimation, context window truncation, and summarization."""
+    """Handles token estimation, context window truncation, summarization, and pinned-file management."""
 
     def __init__(
         self,
@@ -56,23 +65,200 @@ class ContextController:
         self.config = config
         self.provider = provider
         self.cost_tracker = cost_tracker
-        # Optional callback(agent, input_delta, output_delta) invoked after
-        # LLM summarization so the agent's cumulative token counters stay in
-        # sync with the cost tracker.
         self._on_summary_tokens: Optional[Callable] = None
-        # Cache keyed by content fingerprint. id(msg) was unsafe because
-        # CPython recycles freed object ids — Session.get_messages_for_api()
-        # rebuilds dicts each turn, so an id can land on a *different* message
-        # and serve a stale token count.
-        #
-        # OrderedDict + LRU eviction (see _TOKEN_CACHE_MAX_SIZE) prevents the
-        # cache from growing without bound across long sessions; cache hits
-        # move_to_end so hot fingerprints are kept resident.
         self._token_cache: "OrderedDict[str, int]" = OrderedDict()
         self._last_summary_time: float = 0.0
-        # Cache pinned-context injection across tool-loop iterations when pins/query unchanged.
         self._inject_cache_fp: Optional[tuple] = None
         self._inject_cache_msg: Optional[str] = None
+
+        # Pinned-file state (formerly ContextManager)
+        self.pinned_files: Dict[str, str] = {}
+        self._pinned_mtimes: Dict[str, float] = {}
+        self.project_instructions: Optional[str] = None
+        self._instructions_loaded: bool = False
+        self._last_refresh_at: float = 0.0
+
+    # ------------------------------------------------------------------
+    # Pinned-file management (formerly ContextManager)
+    # ------------------------------------------------------------------
+
+    def _load_instructions(self) -> None:
+        configured = getattr(self.config, "project_instruction_file", "CODERAI.md")
+        project_root = Path(getattr(self.config, "project_root", "."))
+        candidates = [
+            configured,
+            "CODERAI.md",
+            "coderai.md",
+            "AGENTS.md",
+            "CLAUDE.md",
+        ]
+        seen: set[str] = set()
+        for name in candidates:
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            path = project_root / name
+            if path.exists() and path.is_file():
+                try:
+                    self.project_instructions = path.read_text(encoding="utf-8")
+                    logger.info(f"Loaded project instructions from {name}")
+                except Exception as e:
+                    logger.error(f"Failed to load project instructions: {e}")
+                return
+
+    def add_file(self, path: str) -> bool:
+        import os
+
+        try:
+            file_path = Path(path).resolve()
+            project_root = (
+                Path(self.config.project_root).resolve() if self.config.project_root else Path.cwd()
+            )
+            allow_outside = os.environ.get("CODERAI_ALLOW_OUTSIDE_PROJECT") == "1"
+            if not allow_outside:
+                try:
+                    file_path.relative_to(project_root)
+                except ValueError:
+                    logger.warning(f"File {path} is outside project root, not pinning")
+                    return False
+            if not file_path.exists():
+                return False
+            if file_path.stat().st_size > 100 * 1024:
+                logger.warning(f"File {path} too large to pin")
+                return False
+            content = file_path.read_text(encoding="utf-8")
+            self.pinned_files[str(file_path)] = content
+            self._pinned_mtimes[str(file_path)] = file_path.stat().st_mtime
+            return True
+        except Exception as e:
+            logger.error(f"Failed to pin file {path}: {e}")
+            return False
+
+    def remove_file(self, path: str) -> bool:
+        try:
+            if path in self.pinned_files:
+                del self.pinned_files[path]
+                self._pinned_mtimes.pop(path, None)
+                return True
+            resolved = str(Path(path).resolve())
+            if resolved in self.pinned_files:
+                del self.pinned_files[resolved]
+                self._pinned_mtimes.pop(resolved, None)
+                return True
+            return False
+        except Exception:
+            return False
+
+    def clear(self) -> None:
+        self.pinned_files.clear()
+        self._pinned_mtimes.clear()
+        self._inject_cache_fp = None
+        self._inject_cache_msg = None
+
+    def refresh_pinned_files(self) -> None:
+        now = _time_module.monotonic()
+        if now - self._last_refresh_at < 2.0:
+            return
+        self._last_refresh_at = now
+        stale_keys = []
+        for path_str in list(self.pinned_files.keys()):
+            try:
+                p = Path(path_str)
+                if p.exists() and p.is_file():
+                    current_mtime = p.stat().st_mtime
+                    cached_mtime = self._pinned_mtimes.get(path_str, 0)
+                    if current_mtime != cached_mtime:
+                        self.pinned_files[path_str] = p.read_text(encoding="utf-8")
+                        self._pinned_mtimes[path_str] = current_mtime
+                else:
+                    stale_keys.append(path_str)
+            except Exception as e:
+                logger.warning(f"Failed to refresh pinned file {path_str}: {e}")
+                stale_keys.append(path_str)
+        for key in stale_keys:
+            del self.pinned_files[key]
+            self._pinned_mtimes.pop(key, None)
+
+    def get_system_message(
+        self,
+        query: Optional[str] = None,
+        messages: Optional[List[dict]] = None,
+    ) -> Optional[str]:
+        if not self._instructions_loaded:
+            self._instructions_loaded = True
+            self._load_instructions()
+        self.refresh_pinned_files()
+        effective_query = query
+        if not effective_query and messages:
+            effective_query = summarize_conversation_focus(messages)
+        if effective_query and self.pinned_files:
+            focused = build_focused_context(
+                files=self.pinned_files,
+                query=effective_query,
+                project_instructions=self.project_instructions,
+                max_total_chars=PINNED_CONTEXT_MAX_CHARS,
+                max_files=5,
+            )
+            if focused:
+                return focused
+        logger.debug(
+            "Focused context path produced no output (query=%s, pinned_files=%d); "
+            "falling back to full pinned context.",
+            effective_query[:80] if effective_query else "<none>",
+            len(self.pinned_files),
+        )
+        parts: List[str] = []
+        if self.project_instructions:
+            parts.append(
+                fence_project_context(
+                    title="Project instructions (AGENTS.md / CLAUDE.md / CODERAI.md)",
+                    body=self.project_instructions,
+                    origin="instructions",
+                )
+            )
+            parts.append("")
+        if self.pinned_files:
+            parts.append("## Pinned Context Files")
+            parts.append(
+                "The following files are pinned to the context and should be used as reference:"
+            )
+            total_chars = 0
+            for fpath, content in self.pinned_files.items():
+                if len(content) > PINNED_CONTEXT_PER_FILE_CHARS:
+                    content = (
+                        content[:PINNED_CONTEXT_PER_FILE_CHARS]
+                        + f"\n... [{len(content) - PINNED_CONTEXT_PER_FILE_CHARS} chars truncated to save context]"
+                    )
+                if total_chars + len(content) > PINNED_CONTEXT_MAX_CHARS:
+                    parts.append(f"\n### File: {fpath}")
+                    parts.append(
+                        "```\n... [File omitted to save context. Ask specific questions to view this file.]\n```"
+                    )
+                    continue
+                total_chars += len(content)
+                parts.append(f"\n### File: {fpath}")
+                parts.append("```")
+                parts.append(content)
+                parts.append("```")
+            parts.append("")
+        if not parts:
+            return None
+        return "\n".join(parts)
+
+    def get_token_usage_estimate(self) -> int:
+        text = self.get_system_message() or ""
+        return len(text) // 4
+
+    def copy_pinned_state_from(self, other: "ContextController") -> None:
+        self.pinned_files = dict(other.pinned_files)
+        self._pinned_mtimes = dict(other._pinned_mtimes)
+        if other.project_instructions:
+            self.project_instructions = other.project_instructions
+            self._instructions_loaded = True
+
+    # ------------------------------------------------------------------
+    # Token estimation
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _msg_fingerprint(msg: Dict[str, Any]) -> str:
@@ -180,23 +366,20 @@ class ContextController:
             cleaned.append(m)
         return cleaned
 
-    @staticmethod
     def _pinned_context_fingerprint(
-        context_manager: Any,
+        self,
         query: Optional[str],
         messages: List[Dict[str, Any]],
     ) -> tuple:
-        pins = tuple(sorted(context_manager.pinned_files.keys()))
-        mtimes = tuple(context_manager._pinned_mtimes.get(k, 0) for k in pins)
+        pins = tuple(sorted(self.pinned_files.keys()))
+        mtimes = tuple(self._pinned_mtimes.get(k, 0) for k in pins)
         effective_query = query
         if not effective_query and messages:
-            from coderAI.context.context_selector import summarize_conversation_focus
-
             effective_query = summarize_conversation_focus(messages)
         return (pins, mtimes, effective_query or "")
 
     def inject_context(
-        self, messages: List[Dict[str, Any]], context_manager: Any, query: Optional[str] = None
+        self, messages: List[Dict[str, Any]], query: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """Inject the pinned-context system message after the last system message.
 
@@ -205,21 +388,20 @@ class ContextController:
         ``_CONTEXT_MARKER_KEY`` flag) are stripped first to prevent
         accumulation across loop iterations.
         """
-        fp = self._pinned_context_fingerprint(context_manager, query, messages)
+        fp = self._pinned_context_fingerprint(query, messages)
+        context_msg: Optional[str] = None
         if fp == self._inject_cache_fp and self._inject_cache_msg is not None:
             context_msg = self._inject_cache_msg
         else:
-            context_msg = context_manager.get_system_message(
+            context_msg = self.get_system_message(
                 query=query,
                 messages=messages,
             )
             self._inject_cache_fp = fp
             self._inject_cache_msg = context_msg
         if not context_msg:
-            # Still strip stale context injections even when there's nothing new
             return [m for m in messages if not self._is_pinned_injection(m)]
 
-        # Work on a copy and strip previous injections
         result = [m for m in messages if not self._is_pinned_injection(m)]
 
         insert_idx = 0
@@ -227,8 +409,6 @@ class ContextController:
             if msg.get("role") == "system":
                 insert_idx = i + 1
 
-        # Keep the human-readable header in ``content`` so logs/transcripts
-        # remain readable; deduplication relies on the marker key, not the text.
         tagged_content = f"{self._CONTEXT_TAG}\n{context_msg}"
         result.insert(
             insert_idx,
@@ -246,8 +426,6 @@ class ContextController:
         context_limit_override: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """Manage context window by summarizing old messages to fit."""
-        import time as _time_module
-
         context_limit = context_limit_override or self.config.context_window
         max_content_tokens = context_limit - RESPONSE_TOKEN_RESERVE - TOOL_OVERHEAD_TOKENS
 

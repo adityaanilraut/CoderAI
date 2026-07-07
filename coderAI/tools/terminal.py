@@ -452,6 +452,7 @@ class RunCommandTool(Tool):
     high_risk_no_blanket = True
     approval_scope = "command"
     timeout = None
+    category = "terminal"
 
     async def execute(  # type: ignore[override]
         self,
@@ -619,6 +620,7 @@ class RunBackgroundTool(Tool):
     # Arbitrary command execution — no blanket allow; scope by command-prefix.
     high_risk_no_blanket = True
     approval_scope = "command"
+    category = "terminal"
 
     def __init__(self):
         super().__init__()

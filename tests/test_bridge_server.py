@@ -5,7 +5,7 @@ from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
-from coderAI.bridge.controller import (
+from coderAI.tui.controller import (
     UIBridge,
     _cmd_cancel,
     _cmd_clear_context,
@@ -117,7 +117,7 @@ async def test_clear_context_invokes_session_reset() -> None:
     prev_agents = dict(agent_tracker._agents)
     try:
         provider = SimpleNamespace(total_input_tokens=21, total_output_tokens=8)
-        context_manager = SimpleNamespace(clear=MagicMock())
+        context_controller = SimpleNamespace(clear=MagicMock())
         cost_tracker = SimpleNamespace(total_cost_usd=12.5)
         main_info = AgentInfo(agent_id="agent_main1234", name="main")
         main_info.status = AgentStatus.THINKING
@@ -131,7 +131,7 @@ async def test_clear_context_invokes_session_reset() -> None:
         agent = SimpleNamespace(
             session=object(),
             provider=provider,
-            context_manager=context_manager,
+            context_controller=context_controller,
             total_prompt_tokens=21,
             total_completion_tokens=8,
             total_tokens=29,
@@ -148,7 +148,7 @@ async def test_clear_context_invokes_session_reset() -> None:
 
         await _cmd_clear_context(server, {})
 
-        context_manager.clear.assert_called_once()
+        context_controller.clear.assert_called_once()
         agent.create_session.assert_called_once()
         assert agent.session is None
         assert sub_info.agent_id not in agent_tracker._agents
@@ -178,7 +178,7 @@ async def test_cancel_resolves_pending_approval_waiters(monkeypatch) -> None:
     )
     tracker = MagicMock()
     tracker.get_active.return_value = []
-    monkeypatch.setattr("coderAI.bridge.controller.agent_tracker", tracker)
+    monkeypatch.setattr("coderAI.tui.controller.agent_tracker", tracker)
 
     await _cmd_cancel(server, {})
 
@@ -266,7 +266,7 @@ def _make_ipc_server(**agent_overrides) -> SimpleNamespace:
             budget_limit=0.0,
             reasoning_effort="none",
         ),
-        "context_manager": SimpleNamespace(pinned_files={}),
+        "context_controller": SimpleNamespace(pinned_files={}),
         "get_context_usage": MagicMock(return_value=(100, 200000)),
         "cost_tracker": SimpleNamespace(get_total_cost=MagicMock(return_value=0.5)),
         "total_prompt_tokens": 10,
@@ -330,7 +330,7 @@ async def test_get_state_re_emits_status_agents_and_context() -> None:
         agent_tracker._agents.clear()
         agent_tracker._agents[info.agent_id] = info
         server = _make_ipc_server(
-            context_manager=SimpleNamespace(
+            context_controller=SimpleNamespace(
                 pinned_files={"/tmp/a.py": "print('hi')"},
             ),
         )
@@ -384,7 +384,7 @@ async def test_compact_context_success_and_failure() -> None:
 async def test_reference_emits_info_for_known_topics(topic, expected_substring) -> None:
     server = _make_ipc_server()
     with patch(
-        "coderAI.bridge.chat_reference.resolve_reference_text",
+        "coderAI.tui.commands._resolve_reference_text",
         return_value=f"Reference output for {topic}: {expected_substring}",
     ):
         await _cmd_reference(server, {"topic": topic})
@@ -472,34 +472,34 @@ async def test_get_plan_emits_plan_card_and_info(tmp_path, monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_manage_context_actions() -> None:
-    context_manager = MagicMock()
-    context_manager.add_file = MagicMock(return_value=True)
-    context_manager.remove_file = MagicMock(return_value=True)
-    context_manager.pinned_files = {"/path/to/file.py": "content"}
+    context_controller = MagicMock()
+    context_controller.add_file = MagicMock(return_value=True)
+    context_controller.remove_file = MagicMock(return_value=True)
+    context_controller.pinned_files = {"/path/to/file.py": "content"}
 
-    server = _make_ipc_server(context_manager=context_manager)
+    server = _make_ipc_server(context_controller=context_controller)
 
     # 1. Test add success
     await _cmd_manage_context(server, {"action": "add", "path": "/path/to/file.py"})
-    context_manager.add_file.assert_called_with("/path/to/file.py")
+    context_controller.add_file.assert_called_with("/path/to/file.py")
     server.emit.assert_any_call("success", message="Added /path/to/file.py to pinned context.")
     server.emit.assert_any_call("context_state", files=[{"path": "/path/to/file.py", "size": 7}])
 
     # Reset mocks
-    context_manager.add_file.reset_mock()
+    context_controller.add_file.reset_mock()
     server.emit.reset_mock()
 
     # 2. Test add failure
-    context_manager.add_file.return_value = False
+    context_controller.add_file.return_value = False
     await _cmd_manage_context(server, {"action": "add", "path": "/path/to/file.py"})
-    context_manager.add_file.assert_called_with("/path/to/file.py")
+    context_controller.add_file.assert_called_with("/path/to/file.py")
     server.emit.assert_any_call(
         "warning",
         message="Failed to add /path/to/file.py to context (may be too large or invalid).",
     )
 
     # Reset mocks
-    context_manager.add_file.reset_mock()
+    context_controller.add_file.reset_mock()
     server.emit.reset_mock()
 
     # 3. Test add missing path
@@ -511,23 +511,23 @@ async def test_manage_context_actions() -> None:
 
     # 4. Test remove success
     await _cmd_manage_context(server, {"action": "remove", "path": "/path/to/file.py"})
-    context_manager.remove_file.assert_called_with("/path/to/file.py")
+    context_controller.remove_file.assert_called_with("/path/to/file.py")
     server.emit.assert_any_call("success", message="Removed /path/to/file.py from context.")
 
     # Reset mocks
-    context_manager.remove_file.reset_mock()
+    context_controller.remove_file.reset_mock()
     server.emit.reset_mock()
 
     # 5. Test remove failure
-    context_manager.remove_file.return_value = False
+    context_controller.remove_file.return_value = False
     await _cmd_manage_context(server, {"action": "remove", "path": "/path/to/file.py"})
-    context_manager.remove_file.assert_called_with("/path/to/file.py")
+    context_controller.remove_file.assert_called_with("/path/to/file.py")
     server.emit.assert_any_call(
         "warning", message="Failed to remove /path/to/file.py from context."
     )
 
     # Reset mocks
-    context_manager.remove_file.reset_mock()
+    context_controller.remove_file.reset_mock()
     server.emit.reset_mock()
 
     # 6. Test remove missing path

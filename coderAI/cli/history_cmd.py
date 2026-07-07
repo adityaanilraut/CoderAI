@@ -18,7 +18,7 @@ def history(ctx: click.Context) -> None:
 @history.command("list")
 def history_list() -> None:
     """List all conversation sessions."""
-    from coderAI.ui.display import display
+    from coderAI.cli.utils import display
 
     sessions = history_manager.list_sessions()
     if not sessions:
@@ -31,7 +31,7 @@ def history_list() -> None:
 @click.confirmation_option(prompt="Are you sure you want to clear all history?")
 def history_clear() -> None:
     """Clear all conversation history."""
-    from coderAI.ui.display import display
+    from coderAI.cli.utils import display
 
     count = history_manager.clear_history()
     display.print_success(f"Deleted {count} sessions")
@@ -41,7 +41,7 @@ def history_clear() -> None:
 @click.argument("session_id")
 def history_delete(session_id: str) -> None:
     """Delete a specific session."""
-    from coderAI.ui.display import display
+    from coderAI.cli.utils import display
 
     if history_manager.delete_session(session_id):
         display.print_success(f"Deleted session: {session_id}")

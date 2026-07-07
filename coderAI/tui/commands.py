@@ -1,9 +1,11 @@
-"""UI command handlers for the bridge (``_COMMAND_HANDLERS`` dispatch table).
+"""UI command handlers for the TUI controller (``_COMMAND_HANDLERS`` dispatch table).
 
 Each handler takes ``(server, msg)`` where ``server`` is the
-:class:`~coderAI.bridge.controller.UIBridge` and ``msg`` is the raw command
+:class:`~coderAI.tui.controller.UIBridge` and ``msg`` is the raw command
 payload. Command names and their emitted events are pinned by
 ``tests/test_event_contract.py`` and documented in ``docs/CHAT_EVENTS.md``.
+
+Moved here from ``coderAI/bridge/commands.py`` (Phase 3 bridge demolition).
 """
 
 from __future__ import annotations
@@ -16,24 +18,263 @@ from coderAI.core.agent_tracker import AgentStatus
 from coderAI.core.permissions import ApprovalRules
 from coderAI.system.config import config_manager
 
-from coderAI.bridge.serializers import (
+from coderAI.tui.serializers import (
     _agent_info_dict,
     _format_plan_message,
     _serialize_plan_for_ui,
 )
 
 if TYPE_CHECKING:
-    from coderAI.bridge.controller import UIBridge
+    from coderAI.tui.controller import UIBridge
     from coderAI.core.agent_tracker import AgentTracker
 
 logger = logging.getLogger(__name__)
 
+# ── Reference text builders (folded from bridge/chat_reference.py) ───────
+
+_MAX_CHARS = 16_000
+
+
+def _truncate(text: str, max_chars: int = _MAX_CHARS) -> str:
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 48].rstrip() + "\n\n… (truncated — run the CLI for full output)"
+
+
+def _mask_keys(data: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(data)
+    for key in (
+        "openai_api_key",
+        "anthropic_api_key",
+        "groq_api_key",
+        "deepseek_api_key",
+        "gemini_api_key",
+    ):
+        v = out.get(key)
+        if isinstance(v, str) and len(v) > 12:
+            out[key] = f"{v[:8]}...{v[-4:]}"
+        elif v:
+            out[key] = "(set)"
+    return out
+
+
+def _build_models_text() -> str:
+
+    cfg = config_manager.load()
+    lines = [
+        "Models & providers (see also: /default <name> for saved default)",
+        "",
+        "OpenAI — requires OPENAI or config openai_api_key",
+        "  gpt-5.4, gpt-5.4-mini, gpt-5.4-nano, o1, o1-mini, o3-mini",
+        "",
+        "Anthropic — requires ANTHROPIC or config anthropic_api_key",
+        "  claude-4-sonnet, claude-4.7-opus, claude-4.5-haiku, claude-3.5-sonnet, …",
+        "",
+        "Groq — requires GROQ or config groq_api_key",
+        "  openai/gpt-oss-120b, openai/gpt-oss-20b, llama3-70b-8192, …",
+        "",
+        "DeepSeek — requires DEEPSEEK or config deepseek_api_key",
+        "  deepseek-v4-flash, deepseek-v4-pro, deepseek-v3.2, deepseek-r1, …",
+        "",
+        "Gemini — requires GEMINI or config gemini_api_key",
+        "  gemini-3.5-flash, gemini-3.1-pro, gemini-3.1-flash-lite, gemini-2.5-flash, …",
+        "",
+        "Local",
+        "  lmstudio — LM Studio at lmstudio_endpoint",
+        "  ollama — Ollama at ollama_endpoint",
+        "",
+        f"Saved default model (config): {cfg.default_model}",
+    ]
+    return _truncate("\n".join(lines))
+
+
+def _build_cost_text() -> str:
+    from coderAI.system.cost import MODEL_PRICING, CostTracker
+
+    cfg = config_manager.load()
+    lines = [
+        "API cost & pricing",
+        "Session spend: use /status or /tokens for live totals in this chat.",
+        "",
+    ]
+    if cfg.budget_limit and cfg.budget_limit > 0:
+        lines.append(
+            f"Budget limit (config): {CostTracker.format_cost(cfg.budget_limit)} per session"
+        )
+        lines.append("")
+    lines.append("Reference pricing (per 1M tokens, USD):")
+    for model, pricing in sorted(MODEL_PRICING.items()):
+        if pricing["input"] == 0 and pricing["output"] == 0:
+            lines.append(f"  {model}: free (local)")
+        else:
+            lines.append(
+                f"  {model}: {CostTracker.format_cost(pricing['input'])} in / "
+                f"{CostTracker.format_cost(pricing['output'])} out"
+            )
+    return _truncate("\n".join(lines))
+
+
+def _build_system_text() -> str:
+    from coderAI.system.history import history_manager
+
+    cfg = config_manager.load()
+    sessions = history_manager.list_sessions()
+    lines = [
+        "System status (like `coderAI status`)",
+        "",
+        "Paths",
+        f"  Config dir: {config_manager.config_dir}",
+        f"  History dir: {history_manager.history_dir}",
+        "",
+        "Core",
+        f"  default_model: {cfg.default_model}",
+        f"  streaming: {cfg.streaming}",
+        f"  save_history: {cfg.save_history}",
+        f"  log_level: {cfg.log_level}",
+        f"  reasoning_effort: {cfg.reasoning_effort}",
+        "",
+        "API keys",
+        f"  OpenAI:     {'yes' if cfg.openai_api_key else 'no'}",
+        f"  Anthropic:  {'yes' if cfg.anthropic_api_key else 'no'}",
+        f"  Groq:       {'yes' if cfg.groq_api_key else 'no'}",
+        f"  DeepSeek:   {'yes' if cfg.deepseek_api_key else 'no'}",
+        f"  Gemini:     {'yes' if cfg.gemini_api_key else 'no'}",
+        "",
+        "LM Studio",
+        f"  endpoint: {cfg.lmstudio_endpoint}",
+        f"  model:    {cfg.lmstudio_model}",
+        "",
+        "Ollama",
+        f"  endpoint: {cfg.ollama_endpoint}",
+        f"  model:    {cfg.ollama_model}",
+        "",
+        "History",
+        f"  sessions on disk: {len(sessions)}",
+    ]
+    return _truncate("\n".join(lines))
+
+
+def _build_config_text(agent: Any) -> str:
+    raw = agent.config.model_dump(exclude_none=True)
+    masked = _mask_keys(raw)
+    lines = [
+        "Effective configuration (this session; API keys masked)",
+        "",
+    ]
+    for key in sorted(masked.keys()):
+        lines.append(f"  {key}: {masked[key]}")
+    return _truncate("\n".join(lines))
+
+
+def _flatten_model_info(obj: Any, indent: int = 0) -> list:
+    pad = "  " * indent
+    lines = []
+    if isinstance(obj, dict):
+        for k, v in sorted(obj.items(), key=lambda x: str(x[0])):
+            if isinstance(v, (dict, list)):
+                lines.append(f"{pad}{k}:")
+                lines.extend(_flatten_model_info(v, indent + 1))
+            else:
+                lines.append(f"{pad}{k}: {v}")
+    elif isinstance(obj, list):
+        for i, item in enumerate(obj):
+            if isinstance(item, (dict, list)):
+                lines.append(f"{pad}[{i}]:")
+                lines.extend(_flatten_model_info(item, indent + 1))
+            else:
+                lines.append(f"{pad}- {item}")
+    else:
+        lines.append(f"{pad}{obj}")
+    return lines
+
+
+def _build_info_text(agent: Any) -> str:
+    from coderAI import __version__ as _ver
+    from coderAI.system.history import history_manager
+
+    lines = [
+        f"CoderAI {_ver}",
+        f"Config dir: {config_manager.config_dir}",
+        f"History dir: {history_manager.history_dir}",
+        "",
+        "Current model (session)",
+        f"  model:    {agent.model}",
+        f"  provider: {agent.provider.__class__.__name__}",
+        "",
+        "Provider / model details",
+    ]
+    try:
+        mi = agent.get_model_info()
+        lines.extend(_flatten_model_info(mi, 1))
+    except Exception as e:
+        lines.append(f"  (could not load: {e})")
+
+    lines.extend(["", "Tools (name — short description)"])
+    try:
+        tools = agent.tools.get_all()
+        for t in tools[:48]:
+            desc = t.description.replace("\n", " ").strip()
+            if len(desc) > 72:
+                desc = desc[:69] + "…"
+            lines.append(f"  {t.name} — {desc}")
+        if len(tools) > 48:
+            lines.append(f"  … and {len(tools) - 48} more")
+    except Exception as e:
+        lines.append(f"  (could not list: {e})")
+
+    return _truncate("\n".join(lines))
+
+
+async def _build_tasks_text(project_root: str) -> str:
+    from ..tools.tasks import ManageTasksTool
+
+    tool = ManageTasksTool()
+    result = await tool.execute("list", project_root=project_root)
+    if not result.get("success"):
+        err = result.get("error", "Unknown error")
+        return f"Tasks: could not load ({err})"
+
+    lines = [result.get("summary", "Tasks"), ""]
+    for status in ("in_progress", "pending", "completed"):
+        bucket = result.get(status, [])
+        if not bucket:
+            continue
+        label = "In progress" if status == "in_progress" else status.title()
+        lines.append(f"{label}:")
+        for t in bucket:
+            desc = f" — {t['description']}" if t.get("description") else ""
+            lines.append(f"  [{t['id']}] {t['title']}{desc}")
+        lines.append("")
+    text = "\n".join(lines).strip()
+    return _truncate(text)
+
+
+def _resolve_reference_text(topic: str, agent: Any) -> str:
+    from coderAI import __version__ as _ver
+
+    t = topic.lower().strip()
+    if t in ("version", "v"):
+        return f"CoderAI {_ver}"
+    if t in ("models", "providers"):
+        return _build_models_text()
+    if t in ("cost", "pricing"):
+        return _build_cost_text()
+    if t in ("system", "diagnostics", "diag"):
+        return _build_system_text()
+    if t == "config":
+        return _build_config_text(agent)
+    if t == "info":
+        return _build_info_text(agent)
+    raise ValueError(
+        f"Unknown topic {topic!r}. Use: version, models, cost, system, config, info, tasks."
+    )
+
 
 def _tracker() -> "AgentTracker":
     # Resolved through the controller module at call time so tests patching
-    # coderAI.bridge.controller.agent_tracker keep working (the handlers
+    # coderAI.tui.controller.agent_tracker keep working (the handlers
     # lived in that module before the Phase 2b split).
-    from coderAI.bridge import controller
+    from coderAI.tui import controller
 
     return controller.agent_tracker
 
@@ -275,7 +516,7 @@ async def _cmd_tool_approval_resp(server: UIBridge, msg: Dict[str, Any]) -> None
 async def _cmd_clear_context(server: UIBridge, msg: Dict[str, Any]) -> None:
     async with server._turn_lock:
         server.agent.session = None
-        server.agent.context_manager.clear()
+        server.agent.context_controller.clear()
         server.agent.create_session()
     main_info = getattr(server.agent, "tracker_info", None)
     if main_info is not None:
@@ -342,7 +583,7 @@ async def _cmd_manage_context(server: UIBridge, msg: Dict[str, Any]) -> None:
             if not path:
                 server.emit("warning", message="Path required to add to context.")
                 return
-            success = server.agent.context_manager.add_file(path)
+            success = server.agent.context_controller.add_file(path)
             if success:
                 server.emit("success", message=f"Added {path} to pinned context.")
             else:
@@ -354,7 +595,7 @@ async def _cmd_manage_context(server: UIBridge, msg: Dict[str, Any]) -> None:
             if not path:
                 server.emit("warning", message="Path required to remove from context.")
                 return
-            success = server.agent.context_manager.remove_file(path)
+            success = server.agent.context_controller.remove_file(path)
             if success:
                 server.emit("success", message=f"Removed {path} from context.")
             else:
@@ -362,7 +603,7 @@ async def _cmd_manage_context(server: UIBridge, msg: Dict[str, Any]) -> None:
 
         # Emit updated context state
         context_files = []
-        pinned = server.agent.context_manager.pinned_files
+        pinned = server.agent.context_controller.pinned_files
         for path_str, content in pinned.items():
             context_files.append({"path": path_str, "size": len(content)})
         server.emit("context_state", files=context_files)
@@ -385,7 +626,7 @@ async def _cmd_get_state(server: UIBridge, msg: Dict[str, Any]) -> None:
         server.emit("agent", phase="update", info=_agent_info_dict(info), parentId=info.parent_id)
 
     context_files = []
-    pinned = server.agent.context_manager.pinned_files
+    pinned = server.agent.context_controller.pinned_files
     for path_str, content in pinned.items():
         context_files.append({"path": path_str, "size": len(content)})
     server.emit("context_state", files=context_files)
@@ -518,7 +759,7 @@ async def _cmd_search_codebase(server: UIBridge, msg: Dict[str, Any]) -> None:
     if not query:
         return
     try:
-        from ..embeddings.factory import create_embedding_provider
+        from ..embeddings.openai import create_embedding_provider
         from coderAI.context.code_indexer import CodeIndexer
 
         project_root = getattr(server.agent.config, "project_root", ".")
@@ -570,8 +811,6 @@ async def _cmd_list_models(server: UIBridge, _msg: Dict[str, Any]) -> None:
 
 async def _cmd_reference(server: UIBridge, msg: Dict[str, Any]) -> None:
     """Emit long-form help text (models, cost, system status, config, info, tasks)."""
-    from coderAI.bridge.chat_reference import build_tasks_text, resolve_reference_text
-
     topic = str(msg.get("topic", "")).strip()
     if not topic:
         server.emit(
@@ -583,14 +822,14 @@ async def _cmd_reference(server: UIBridge, msg: Dict[str, Any]) -> None:
     if t in ("tasks", "todos", "task"):
         pr = getattr(server.agent.config, "project_root", None) or "."
         try:
-            text = await build_tasks_text(pr)
+            text = await _build_tasks_text(pr)
         except Exception as e:
             server.emit("warning", message=f"Tasks: {e}")
             return
         server.emit("info", message=text)
         return
     try:
-        text = resolve_reference_text(t, server.agent)
+        text = _resolve_reference_text(t, server.agent)
     except ValueError as e:
         server.emit("warning", message=str(e))
         return

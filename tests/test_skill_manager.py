@@ -5,8 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from coderAI.skills.skill_loader import Skill
-from coderAI.skills.skill_manager import SkillManager
+from coderAI.skills.skill_manager import Skill, SkillManager
 from coderAI.skills.sources.base import SkillSource
 
 

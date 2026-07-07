@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import List, Optional, Tuple
 
-from coderAI.skills.skill_loader import Skill
+from coderAI.skills.skill_manager import Skill
 
 
 class SkillSource(ABC):

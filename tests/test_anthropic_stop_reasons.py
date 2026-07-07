@@ -24,10 +24,10 @@ def mock_agent():
     agent.tools = MagicMock()
     agent.tools.get_schemas.return_value = []
     agent.context_controller = MagicMock()
-    agent.context_controller.inject_context = lambda msgs, cm, query: msgs
+    agent.context_controller.inject_context = lambda msgs, query: msgs
     agent.context_controller.strip_internal_markers = lambda msgs: msgs
     agent.context_controller.manage_context_window = AsyncMock(side_effect=lambda msgs: msgs)
-    agent.context_manager = MagicMock()
+    agent._context_controller = MagicMock()
     agent._mcp_initialized = True
     agent._workspace_trust_checked = True
     agent.tracker_info = None

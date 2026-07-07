@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from coderAI.skills.skill_loader import Skill, discover_local_skills, load_skill_by_name
+from coderAI.skills.skill_manager import Skill, discover_local_skills, load_skill_by_name
 from coderAI.skills.sources.base import SkillSource
 
 logger = logging.getLogger(__name__)

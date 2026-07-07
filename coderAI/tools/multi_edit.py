@@ -1,143 +1,35 @@
-from typing import Any, Dict, List, Optional
-import logging
-from pathlib import Path
-from pydantic import BaseModel, Field
+"""DEPRECATED: Use ``search_replace`` with the ``edits`` parameter instead.
 
-from coderAI.core.tool_error_codes import ToolErrorCode
-from coderAI.tools.base import Tool, ToolPreview
-from coderAI.tools.filesystem import (
-    _is_path_protected,
-    _enforce_project_scope,
-    _emit_diff,
-    _reject_symlink_leaf,
-    _safe_open_no_symlink,
-    _atomic_write_file,
-    _get_max_file_size,
-)
-from coderAI.tools.undo import backup_store
-from coderAI.system.locks import resource_manager
+MultiEditTool is scheduled for removal in a future release.
+"""
 
-logger = logging.getLogger(__name__)
+from typing import Any, Dict, List
+
+from coderAI.tools.filesystem.edit import EditChunk  # noqa: F401  # re-export for compat
+from coderAI.tools.filesystem import SearchReplaceTool as _SearchReplaceTool
 
 
-class EditChunk(BaseModel):
-    search: str = Field(..., description="Exact text to search for")
-    replace: str = Field(..., description="Text to replace it with")
-    expected_count: int = Field(1, description="Expected number of occurrences to replace")
+class MultiEditTool(_SearchReplaceTool):
+    """DEPRECATED: Use ``SearchReplaceTool`` with the ``edits`` parameter.
 
-
-class MultiEditParams(BaseModel):
-    path: str = Field(..., description="Path to the file to edit")
-    edits: List[EditChunk] = Field(
-        ..., description="List of search/replace operations to apply sequentially"
-    )
-
-
-class MultiEditTool(Tool):
-    """Tool for applying multiple string replacements in a single atomic write."""
+    This alias exists for backwards compatibility and delegates to
+    ``SearchReplaceTool.execute(path=..., edits=...)``.
+    """
 
     name = "multi_edit"
-    description = "Apply multiple search/replace edits to a file in a single atomic operation."
-    parameters_model = MultiEditParams
-    requires_confirmation = True
-    # Same-path edits in one batch must serialize (no TOCTOU race).
-    batch_serialize_by_path = True
+    description = (
+        "DEPRECATED: Apply multiple search/replace edits to a file in a single atomic operation. "
+        "Use the 'search_replace' tool with the 'edits' parameter instead."
+    )
 
-    @staticmethod
-    def _apply_edit(content: str, search: str, replace: str) -> str:
-        """The per-edit replacement shared by execute() and preview()."""
-        return content.replace(search, replace)
+    async def execute(  # type: ignore[override]
+        self, path: str, edits: List[Dict[str, Any]], **_ignored: Any
+    ) -> Dict[str, Any]:
+        import warnings
 
-    def preview(self, arguments: Dict[str, Any], original: Optional[str]) -> Optional[ToolPreview]:
-        """Resulting file content after applying each edit sequentially."""
-        if original is None:
-            return None
-        edits = arguments.get("edits") or []
-        if not isinstance(edits, list) or not edits:
-            return None
-        new_content = original
-        for edit in edits:
-            if not isinstance(edit, dict):
-                return None
-            new_content = self._apply_edit(
-                new_content, str(edit.get("search", "")), str(edit.get("replace", ""))
-            )
-        return ToolPreview(new_content=new_content)
-
-    async def execute(self, path: str, edits: List[Dict[str, Any]]) -> Dict[str, Any]:  # type: ignore[override]
-        try:
-            path_obj = Path(path).expanduser()
-            lock = await resource_manager.get_file_lock(str(path_obj))
-            async with lock:
-                if not path_obj.exists():
-                    return {"success": False, "error": f"File not found: {path}"}
-                if _is_path_protected(path_obj):
-                    return {"success": False, "error": f"Cannot modify protected path: {path}"}
-                scope_err = _enforce_project_scope(path_obj, "multi_edit")
-                if scope_err:
-                    return scope_err
-                symlink_err = _reject_symlink_leaf(path_obj, "multi_edit")
-                if symlink_err:
-                    return symlink_err
-
-                # Check file size before reading (same guard as ReadFileTool)
-                stat = path_obj.stat()
-                file_size = stat.st_size
-                max_file_size = _get_max_file_size()
-                if file_size > max_file_size:
-                    return {
-                        "success": False,
-                        "error": f"File too large: {file_size:,} bytes (limit: {max_file_size:,} bytes).",
-                        "error_code": ToolErrorCode.TOO_LARGE,
-                        "hint": "Use single-edit or write_file for targeted modifications on large files.",
-                    }
-
-                with _safe_open_no_symlink(path_obj, "r") as f:
-                    original_content = f.read()
-
-                new_content = original_content
-
-                for i, edit in enumerate(edits):
-                    search = edit["search"]
-                    replace = edit["replace"]
-                    expected_count = edit.get("expected_count", 1)
-
-                    actual_count = new_content.count(search)
-                    if actual_count == 0:
-                        return {
-                            "success": False,
-                            "error": f"Edit {i + 1} failed: expected to find search text, found 0 occurrences.",
-                            "hint": "Check the file contents and make sure the search text exactly matches what's in the file.",
-                        }
-                    if expected_count == 1 and actual_count > 1:
-                        logger.warning(
-                            "multi_edit: edit %d matches %d occurrences but expected_count=1",
-                            i + 1,
-                            actual_count,
-                        )
-
-                    new_content = self._apply_edit(new_content, search, replace)
-
-                backup_store.backup_file(str(path_obj), "modify")
-
-                _atomic_write_file(path_obj, new_content)
-
-                _emit_diff(path_obj, original_content, new_content)
-
-                return {
-                    "success": True,
-                    "path": str(path_obj),
-                    "edits_applied": len(edits),
-                    "actual_counts": [original_content.count(edit["search"]) for edit in edits],
-                    "count_mismatches": [
-                        {
-                            "edit_index": i,
-                            "expected_count": edit.get("expected_count", 1),
-                            "actual_count": original_content.count(edit["search"]),
-                        }
-                        for i, edit in enumerate(edits)
-                        if original_content.count(edit["search"]) != edit.get("expected_count", 1)
-                    ],
-                }
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+        warnings.warn(
+            "MultiEditTool.execute() is deprecated; use SearchReplaceTool with edits= instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return await super().execute(path=path, edits=edits)

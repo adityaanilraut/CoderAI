@@ -38,6 +38,7 @@ class TextSearchTool(Tool):
         "Do not use this for symbol-aware lookups when you need definitions by name; use "
         "symbol_search instead. Example: query='TODO', file_pattern='*.py'."
     )
+    category = "search"
     parameters_model = TextSearchParams
     is_read_only = True
 
@@ -139,6 +140,7 @@ class GrepTool(Tool):
         "line-based matching across a path. Do not use it for semantic symbol lookup; use "
         "symbol_search for that. Example: pattern='class Foo', path='src'."
     )
+    category = "search"
     parameters_model = GrepParams
     is_read_only = True
 
@@ -316,6 +318,7 @@ class SymbolSearchTool(Tool):
         "the symbol name and want the defining locations instead of raw text matches. Do not "
         "use it for arbitrary prose search; use text_search or grep there. Example: symbol='Agent', kind='class'."
     )
+    category = "search"
     parameters_model = SymbolSearchParams
     is_read_only = True
 

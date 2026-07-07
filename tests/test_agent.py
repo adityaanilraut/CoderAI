@@ -291,13 +291,12 @@ class TestRecoverableErrorMarker:
 
         session = Session(session_id="session_1234567890_marker01")
         context_controller = SimpleNamespace(
-            inject_context=lambda messages, _cm, query=None: messages,
+            inject_context=lambda messages, query=None: messages,
             manage_context_window=AsyncMock(side_effect=lambda messages: messages),
         )
         agent = SimpleNamespace(
             session=session,
             context_controller=context_controller,
-            context_manager=SimpleNamespace(),
             hooks_manager=None,
         )
         loop = ExecutionLoop(agent)
@@ -407,7 +406,7 @@ class TestAgentPersonaSwitching:
             instructions="You are a reviewer.",
         )
 
-        with patch("coderAI.core.agent.load_agent_persona", return_value=persona):
+        with patch("coderAI.core.agent_capabilities.load_agent_persona", return_value=persona):
             applied = agent.set_persona("reviewer")
 
         assert applied is persona
@@ -651,7 +650,7 @@ class TestAgentProjectRules:
         from coderAI.system_prompt import SYSTEM_PROMPT_INTRO
 
         with patch(
-            "coderAI.core.agent.Path",
+            "coderAI.core.agent_capabilities.Path",
             side_effect=lambda *args: mock_rules_dir if ".coderAI" in args else MagicMock(),
         ):
             prompt = agent._get_system_prompt()

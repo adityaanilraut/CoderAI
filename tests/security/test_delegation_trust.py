@@ -62,9 +62,9 @@ def _mock_child(tool_names, *, read_only_map=None):
     child.create_session = MagicMock()
     child._register_tracker = MagicMock()
     child._configure_delegate_tool_context = MagicMock()
-    child.context_manager.pinned_files = {}
-    child.context_manager._pinned_mtimes = {}
-    child.context_manager.project_instructions = None
+    child.context_controller.pinned_files = {}
+    child.context_controller._pinned_mtimes = {}
+    child.context_controller.project_instructions = None
     child.set_persona = MagicMock(return_value=None)
     child.close = AsyncMock()
     # Real objects the Phase-5 code assigns onto, so a test can read them back.

@@ -104,7 +104,7 @@ def chat(
 ) -> None:
     """Start an interactive chat session (Textual TUI)."""
     from coderAI.tui import run_chat_app
-    from coderAI.ui.display import display
+    from coderAI.cli.utils import display
 
     from .bootstrap import BootstrapError, resolve_resume_id
 
@@ -149,7 +149,7 @@ def chat(
 def info(model: str | None) -> None:
     """Show information about the agent and model."""
     from coderAI.core.agent import Agent
-    from coderAI.ui.display import display
+    from coderAI.cli.utils import display
 
     agent = Agent(model=model)
     model_info = agent.get_model_info()
@@ -180,7 +180,7 @@ def info(model: str | None) -> None:
 def models() -> None:
     """List available models and providers."""
     from coderAI.llm.factory import get_models_by_provider
-    from coderAI.ui.display import display
+    from coderAI.cli.utils import display
 
     display.print_header("Available Models and Providers")
 
@@ -202,7 +202,7 @@ def models() -> None:
 @click.argument("model_name")
 def set_model(model_name: str) -> None:
     """Set default model for new sessions."""
-    from coderAI.ui.display import display
+    from coderAI.cli.utils import display
 
     valid = valid_models()
     if model_name not in valid:
@@ -218,7 +218,7 @@ def set_model(model_name: str) -> None:
 def cost() -> None:
     """Show API cost tracking and pricing info."""
     from coderAI.system.cost import MODEL_PRICING, CostTracker
-    from coderAI.ui.display import display
+    from coderAI.cli.utils import display
 
     display.print_header("API Cost Tracking")
     display.print_info("Cost tracking is available during active chat sessions.")
@@ -246,7 +246,7 @@ def cost() -> None:
 @cli.command()
 def status() -> None:
     """Show system status and diagnostics."""
-    from coderAI.ui.display import display
+    from coderAI.cli.utils import display
 
     display.print_header("CoderAI System Status")
 
@@ -296,7 +296,7 @@ def doctor() -> None:
     import tempfile
     import importlib.util
 
-    from coderAI.ui.display import display
+    from coderAI.cli.utils import display
 
     display.print_header("CoderAI Doctor")
 

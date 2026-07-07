@@ -1,6 +1,6 @@
-"""Tests for skill_loader.py — file discovery, parsing, and safety."""
+"""Tests for skill loader — file discovery, parsing, and safety."""
 
-from coderAI.skills.skill_loader import (
+from coderAI.skills.skill_manager import (
     Skill,
     SKILLS_FILE_NAME,
     _parse_frontmatter,
@@ -97,7 +97,7 @@ class TestLoadSkillFromPath:
     def test_file_too_large(self, tmp_path):
         skill_file = tmp_path / SKILLS_FILE_NAME
         skill_file.write_text("x" * (100 * 1024 + 1))
-        from coderAI.skills.skill_loader import MAX_SKILL_FILE_BYTES
+        from coderAI.skills.skill_manager import MAX_SKILL_FILE_BYTES
 
         assert skill_file.stat().st_size > MAX_SKILL_FILE_BYTES
         skill = load_skill_from_path(skill_file)

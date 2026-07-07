@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from coderAI.bridge.tool_metadata import preview_args_for_approval, tool_risk
+from coderAI.tui.tool_metadata import preview_args_for_approval, tool_risk
 from coderAI.core.permissions import ApprovalRules, tool_requires_confirmation
 from coderAI.core.tool_executor import ToolExecutor
 from coderAI.system.history import Session

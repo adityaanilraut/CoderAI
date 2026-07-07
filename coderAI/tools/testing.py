@@ -297,6 +297,7 @@ class RunTestsTool(Tool):
     is_read_only = False
     requires_confirmation = True
     timeout = None
+    category = "code_quality"
 
     async def execute(  # type: ignore[override]
         self,

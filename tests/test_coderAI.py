@@ -537,14 +537,16 @@ class TestSystemPrompt:
     @staticmethod
     def _full_tool_registry():
         """Registry with every discoverable tool plus ``manage_context``."""
-        from coderAI.context.context import ContextManager
+        from coderAI.context.context_controller import ContextController
         from coderAI.tools.base import ToolRegistry
         from coderAI.tools.context_manage import ManageContextTool
         from coderAI.tools.discovery import discover_tools
+        from coderAI.system.config import Config
+        from unittest.mock import MagicMock
 
         reg = ToolRegistry()
         discover_tools(reg)
-        reg.register(ManageContextTool(ContextManager()))
+        reg.register(ManageContextTool(ContextController(config=Config(project_root="."), provider=MagicMock())))
         return reg
 
     def test_system_prompt_exists(self):

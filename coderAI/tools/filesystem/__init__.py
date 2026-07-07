@@ -35,6 +35,7 @@ from coderAI.tools.filesystem.read_write import (
 from coderAI.tools.filesystem.edit import (
     ApplyDiffParams,
     ApplyDiffTool,
+    EditChunk,
     SearchReplaceParams,
     SearchReplaceTool,
 )

@@ -14,7 +14,7 @@ CoderAI is a pure-Python coding agent CLI. The Click entry point in
   `setup`, `info`, `doctor`, `index`, `search`, `tasks list`, and the
   `mcp` command group — `mcp list`/`add`/`remove`/`login`/`logout`/
   `resources`/`prompts`) that render output via **Rich** helpers in
-  `coderAI/ui/display.py`.
+  `coderAI/cli/utils.py`.
 - `coderAI run`, a headless one-shot path (`coderAI/cli/run_cmd.py`) that
   runs a single prompt through the same `Agent`/`ExecutionLoop` core and
   exits — no TUI, no UIBridge, no streaming. Defaults to deny-on-mutate
@@ -23,7 +23,7 @@ CoderAI is a pure-Python coding agent CLI. The Click entry point in
   (`coderAI/tui/`) that drives the agent loop and renders the streaming
   timeline.
 
-Inside the chat app, an `UIBridge` (in `coderAI/bridge/controller.py`)
+Inside the chat app, an `UIBridge` (in `coderAI/tui/controller.py`)
 subscribes to the agent's `event_emitter` and forwards events to the
 Textual UI via an `on_event(name, data)` callback. UI intent flows back
 through `UIBridge.enqueue_command(...)` and is dispatched on the
@@ -145,11 +145,6 @@ timeline/session state; `timeline_render.py` writes rows to the
 │   │   ├── context_selector.py
 │   │   ├── code_chunker.py
 │   │   └── code_indexer.py  # ChromaDB semantic index
-│   ├── bridge/              # In-process UIBridge (agent ↔ Textual TUI)
-│   │   ├── controller.py
-│   │   ├── streaming.py
-│   │   ├── tool_metadata.py
-│   │   └── chat_reference.py
 │   ├── embeddings/          # OpenAI embeddings (default; no local provider yet)
 │   ├── llm/                 # OpenAI, Anthropic, Groq, DeepSeek, Gemini, LM Studio, Ollama
 │   ├── skills/              # Skill discovery + optional hosted sources
@@ -216,22 +211,22 @@ entry point resolves to `main()` in `coderAI/cli/__init__.py` → `cli/main.py`.
 `OllamaProvider`. Instantiation goes through `llm/factory.py::create_provider(model, config)`
 — do not construct providers directly from `agent.py`.
 
-### 4. In-process bridge (`coderAI/bridge/`)
+### 4. In-process controller (`coderAI/tui/controller.py` & co.)
 
 **Responsibility:** Bridge the agent's `event_emitter` and tool lifecycle
 events to the Textual UI on the same Python process.
 
 **Key components:**
-- `UIBridge` (`controller.py`) — Subscribes to `event_emitter`,
+- `UIBridge` (`tui/controller.py`) — Subscribes to `event_emitter`,
   forwards events via `on_event`, and dispatches UI commands
   (`send_message`, `set_model`, `tool_approval_resp`, etc.) back into
   the agent on the asyncio loop. The `_turn_lock` serialises user turns
   so two `send_message` commands can't interleave.
-- `BridgeStreamingHandler` (`streaming.py`) — Bridges LLM token deltas
+- `BridgeStreamingHandler` (`tui/streaming.py`) — Bridges LLM token deltas
   into phased `turn` events (`start` / `reasoning` / `text` / `end`).
-- `chat_reference.py` — Renders plain-text reference output for
-  `/show <topic>` slash commands.
-- `tool_metadata.py` — Tool category, risk level, and approval-preview
+- `tui/commands.py` — Command handlers plus plain-text reference output
+  for `/show <topic>` slash commands.
+- `tui/tool_metadata.py` — Tool category, risk level, and approval-preview
   helpers used by the controller and approval modals.
 
 ### 5. Textual UI (`coderAI/tui/`)

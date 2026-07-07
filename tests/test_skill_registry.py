@@ -2,8 +2,7 @@
 
 import pytest
 
-from coderAI.skills.skill_loader import Skill
-from coderAI.skills.skill_registry import SkillRegistry
+from coderAI.skills.skill_manager import Skill, SkillRegistry
 
 
 class TestSkillRegistry:

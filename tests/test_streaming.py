@@ -8,7 +8,7 @@ read like the older ``stream_delta`` ones.
 
 import asyncio
 
-from coderAI.bridge.streaming import BridgeStreamingHandler
+from coderAI.tui.streaming import BridgeStreamingHandler
 
 
 class _FakeServer:

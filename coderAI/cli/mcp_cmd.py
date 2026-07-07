@@ -19,7 +19,7 @@ from coderAI.tools.mcp import (
     save_mcp_servers,
     validate_remote_mcp_url,
 )
-from coderAI.ui.display import Display
+from coderAI.cli.utils import Display
 
 
 def _launcher_allowed(command: str) -> bool:
@@ -132,7 +132,7 @@ def mcp_add(
         coderAI mcp add remote --sse https://example.com/sse
         coderAI mcp add api --http https://host/mcp -H "Authorization: Bearer TOKEN"
     """
-    from coderAI.ui.display import display
+    from coderAI.cli.utils import display
 
     # ``__`` is reserved for the ``mcp__<server>__<tool>`` id encoding.
     if "__" in name:
@@ -216,7 +216,7 @@ def mcp_add(
 @mcp.command("list")
 def mcp_list() -> None:
     """List configured MCP servers."""
-    from coderAI.ui.display import display
+    from coderAI.cli.utils import display
 
     servers = load_mcp_servers().get("mcpServers", {})
     if not servers:
@@ -258,7 +258,7 @@ def mcp_list() -> None:
 @click.argument("name")
 def mcp_remove(name: str) -> None:
     """Remove the MCP server named NAME."""
-    from coderAI.ui.display import display
+    from coderAI.cli.utils import display
 
     data = load_mcp_servers()
     servers = data.get("mcpServers", {})
@@ -296,7 +296,7 @@ def mcp_login(
     refresh tokens in ~/.coderAI/mcp_credentials.json (0600). After this, every
     `coderAI chat` reconnects silently — no browser — until you `mcp logout`.
     """
-    from coderAI.ui.display import display
+    from coderAI.cli.utils import display
     from coderAI.tools import mcp_oauth
 
     servers = load_mcp_servers().get("mcpServers", {})
@@ -340,7 +340,7 @@ def mcp_login(
 @click.argument("name")
 def mcp_logout(name: str) -> None:
     """Revoke and delete saved OAuth credentials for an MCP server."""
-    from coderAI.ui.display import display
+    from coderAI.cli.utils import display
     from coderAI.tools.mcp_oauth import logout
 
     if logout(name):
@@ -389,7 +389,7 @@ def mcp_resources(name: str) -> None:
     """List resources exposed by the MCP server named NAME."""
     import asyncio
 
-    from coderAI.ui.display import display
+    from coderAI.cli.utils import display
 
     entry = _require_server(name, display)
     result = asyncio.run(_connect_and_list(name, entry, "resources"))
@@ -419,7 +419,7 @@ def mcp_prompts(name: str) -> None:
     """List prompt templates exposed by the MCP server named NAME."""
     import asyncio
 
-    from coderAI.ui.display import display
+    from coderAI.cli.utils import display
 
     entry = _require_server(name, display)
     result = asyncio.run(_connect_and_list(name, entry, "prompts"))

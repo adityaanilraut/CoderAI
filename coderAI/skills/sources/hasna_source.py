@@ -8,7 +8,7 @@ import shutil
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from coderAI.skills.skill_loader import Skill
+from coderAI.skills.skill_manager import Skill
 from coderAI.skills.sources.base import SkillSource
 
 logger = logging.getLogger(__name__)

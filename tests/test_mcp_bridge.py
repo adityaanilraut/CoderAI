@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import coderAI.tools.mcp as mcp_mod
-from coderAI.bridge.commands import _cmd_list_mcp_servers, _cmd_toggle_mcp_server
+from coderAI.tui.commands import _cmd_list_mcp_servers, _cmd_toggle_mcp_server
 
 
 class FakeBridge:

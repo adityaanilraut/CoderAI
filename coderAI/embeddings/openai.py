@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import logging
-from typing import List
+from typing import List, Optional
 
 from openai import AsyncOpenAI
-
-from coderAI.embeddings.base import EmbeddingProvider
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +14,7 @@ _DEFAULT_MODEL = "text-embedding-3-small"
 _DEFAULT_DIMENSIONS = 1536
 
 
-class OpenAIEmbeddingProvider(EmbeddingProvider):
+class OpenAIEmbeddingProvider:
     """Generates embeddings via the OpenAI Embeddings API."""
 
     def __init__(
@@ -37,3 +35,15 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
 
     def dimension(self) -> int:
         return _DEFAULT_DIMENSIONS
+
+
+def create_embedding_provider(config) -> Optional[OpenAIEmbeddingProvider]:
+    """Create an embedding provider from the application config.
+
+    Prefers OpenAI when an API key is present. Returns ``None`` if no
+    embedding backend can be provisioned.
+    """
+    api_key = getattr(config, "openai_api_key", None)
+    if api_key:
+        return OpenAIEmbeddingProvider(api_key=api_key)
+    return None

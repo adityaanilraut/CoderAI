@@ -84,7 +84,7 @@ class Config(BaseModel):
     auto_detect_skills: bool = Field(default=True)
     skill_confidence_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
     skill_top_n: int = Field(default=3, ge=1, le=10)
-    skills_use_hasna: bool = Field(default=True)
+    skills_use_hasna: bool = Field(default=False)
 
     # --- TUI ---
     # Ring the terminal bell + emit an OSC 9 desktop notification when the

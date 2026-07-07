@@ -68,10 +68,10 @@ class TestDelegateTaskDepthLimit:
         mock_agent.tools.get.return_value = None
         mock_agent.create_session = MagicMock()
         mock_agent._register_tracker = MagicMock()
-        mock_agent.context_manager = MagicMock()
-        mock_agent.context_manager.pinned_files = {}
-        mock_agent.context_manager._pinned_mtimes = {}
-        mock_agent.context_manager.project_instructions = None
+        mock_agent.context_controller = MagicMock()
+        mock_agent.context_controller.pinned_files = {}
+        mock_agent.context_controller._pinned_mtimes = {}
+        mock_agent.context_controller.project_instructions = None
         mock_agent.set_persona = MagicMock(return_value=None)
         mock_agent.close = AsyncMock()
 
@@ -117,10 +117,10 @@ class TestDelegateTaskParentState:
         mock_agent.tools.get.return_value = None
         mock_agent.create_session = MagicMock()
         mock_agent._register_tracker = MagicMock()
-        mock_agent.context_manager = MagicMock()
-        mock_agent.context_manager.pinned_files = {}
-        mock_agent.context_manager._pinned_mtimes = {}
-        mock_agent.context_manager.project_instructions = None
+        mock_agent.context_controller = MagicMock()
+        mock_agent.context_controller.pinned_files = {}
+        mock_agent.context_controller._pinned_mtimes = {}
+        mock_agent.context_controller.project_instructions = None
         mock_agent.set_persona = MagicMock(return_value=None)
         mock_agent._configure_delegate_tool_context = MagicMock()
         mock_agent.close = AsyncMock()
@@ -150,10 +150,10 @@ class TestDelegateTaskParentState:
         mock_agent.tools = MagicMock()
         mock_agent.tools.get.return_value = None
         mock_agent._register_tracker = MagicMock()
-        mock_agent.context_manager = MagicMock()
-        mock_agent.context_manager.pinned_files = {}
-        mock_agent.context_manager._pinned_mtimes = {}
-        mock_agent.context_manager.project_instructions = None
+        mock_agent.context_controller = MagicMock()
+        mock_agent.context_controller.pinned_files = {}
+        mock_agent.context_controller._pinned_mtimes = {}
+        mock_agent.context_controller.project_instructions = None
         mock_agent.context_controller = MagicMock()
         mock_agent.provider = MagicMock()
         mock_agent.set_persona = MagicMock(return_value=None)
@@ -198,10 +198,10 @@ class TestDelegateTaskParentState:
         mock_agent.tools.get.return_value = None
         mock_agent.create_session = MagicMock()
         mock_agent._register_tracker = MagicMock()
-        mock_agent.context_manager = MagicMock()
-        mock_agent.context_manager.pinned_files = {}
-        mock_agent.context_manager._pinned_mtimes = {}
-        mock_agent.context_manager.project_instructions = None
+        mock_agent.context_controller = MagicMock()
+        mock_agent.context_controller.pinned_files = {}
+        mock_agent.context_controller._pinned_mtimes = {}
+        mock_agent.context_controller.project_instructions = None
         mock_agent.context_controller = MagicMock()
         mock_agent.provider = MagicMock()
         mock_agent.set_persona = MagicMock(return_value=None)
@@ -251,10 +251,10 @@ class TestDelegateTaskParentState:
         mock_agent.tools = MagicMock()
         mock_agent.tools.get.return_value = None
         mock_agent._register_tracker = MagicMock()
-        mock_agent.context_manager = MagicMock()
-        mock_agent.context_manager.pinned_files = {}
-        mock_agent.context_manager._pinned_mtimes = {}
-        mock_agent.context_manager.project_instructions = None
+        mock_agent.context_controller = MagicMock()
+        mock_agent.context_controller.pinned_files = {}
+        mock_agent.context_controller._pinned_mtimes = {}
+        mock_agent.context_controller.project_instructions = None
         mock_agent.context_controller = MagicMock()
         mock_agent.provider = MagicMock()
         mock_agent.set_persona = MagicMock(return_value=None)
@@ -297,10 +297,10 @@ class TestDelegateTaskDepthPropagation:
         mock_agent.tools.get.return_value = None
         mock_agent.create_session = MagicMock()
         mock_agent._register_tracker = MagicMock()
-        mock_agent.context_manager = MagicMock()
-        mock_agent.context_manager.pinned_files = {}
-        mock_agent.context_manager._pinned_mtimes = {}
-        mock_agent.context_manager.project_instructions = None
+        mock_agent.context_controller = MagicMock()
+        mock_agent.context_controller.pinned_files = {}
+        mock_agent.context_controller._pinned_mtimes = {}
+        mock_agent.context_controller.project_instructions = None
         mock_agent.set_persona = MagicMock(return_value=None)
         mock_agent._configure_delegate_tool_context = MagicMock()
         mock_agent.close = AsyncMock()

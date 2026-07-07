@@ -358,13 +358,12 @@ async def test_recoverable_error_repairs_mid_turn_unpaired_tool_calls() -> None:
         ],
     )
     context_controller = SimpleNamespace(
-        inject_context=lambda messages, _context_manager, query=None: messages,
+        inject_context=lambda messages, query=None: messages,
         manage_context_window=AsyncMock(side_effect=lambda messages: messages),
     )
     agent = SimpleNamespace(
         session=session,
         context_controller=context_controller,
-        context_manager=SimpleNamespace(),
         hooks_manager=None,
     )
     loop = ExecutionLoop(agent)

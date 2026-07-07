@@ -13,7 +13,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from coderAI.bridge.controller import _cmd_rewind
+from coderAI.tui.controller import _cmd_rewind
 from coderAI.core.agent import Agent
 from coderAI.system.history import Checkpoint, Session
 from coderAI.tools.undo import FileBackupStore

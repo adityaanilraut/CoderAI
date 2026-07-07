@@ -42,6 +42,7 @@ class ReadImageTool(Tool):
         "Supports PNG, JPEG, GIF, and WebP. Use this when you need to look at "
         "screenshots, diagrams, UI mockups, or any visual content."
     )
+    category = "vision"
     parameters_model = ReadImageParams
     is_read_only = True
 

@@ -13,8 +13,8 @@ from typing import Any, Callable, Dict, Optional, Tuple
 from coderAI.core.agent import Agent
 from coderAI.core.agent_tracker import AgentStatus, agent_tracker
 from coderAI.cli.bootstrap import bootstrap_agent
-from ..bridge.controller import UIBridge
-from ..bridge.streaming import BridgeStreamingHandler
+from .controller import UIBridge
+from .streaming import BridgeStreamingHandler
 
 logger = logging.getLogger(__name__)
 

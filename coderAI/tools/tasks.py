@@ -63,6 +63,7 @@ class ManageTasksTool(Tool):
         "'complete' (requires task_id), 'update' (requires task_id), 'delete' "
         "(requires task_id), 'clear' (removes completed tasks)."
     )
+    category = "tasks"
     parameters_model = ManageTasksParams
     is_read_only = False
     # Mutates only the agent's own task list (`.coderAI/tasks.json`) — no

@@ -11,7 +11,7 @@ from coderAI.system.history import checkpoint_label
 from coderAI.tui.export import timeline_to_markdown
 
 if TYPE_CHECKING:
-    from ..bridge.controller import UIBridge
+    from .controller import UIBridge
     from coderAI.tui.listeners import EventReducer
 
 

@@ -453,6 +453,7 @@ class UndoTool(Tool):
 
     name = "undo"
     description = "Undo a file modification (restores previous version). Optionally specify an index from undo_history."
+    category = "undo"
     parameters_model = UndoParams
     requires_confirmation = True
 
@@ -472,6 +473,7 @@ class UndoHistoryTool(Tool):
 
     name = "undo_history"
     description = "View recent file modification history for undo"
+    category = "undo"
     parameters_model = UndoHistoryParams
     is_read_only = True
 

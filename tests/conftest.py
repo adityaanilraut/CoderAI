@@ -97,9 +97,9 @@ def mock_agent():
     agent.tools = MagicMock()
     agent.tools.get_schemas.return_value = []
     agent.context_controller = MagicMock()
-    agent.context_controller.inject_context = lambda msgs, cm, query=None: msgs
+    agent.context_controller.inject_context = lambda msgs, query=None: msgs
     agent.context_controller.manage_context_window = AsyncMock(side_effect=lambda msgs: msgs)
-    agent.context_manager = MagicMock()
+    agent._context_controller = MagicMock()
     agent._assistant_reply_parts = []
     agent.tracker_info = None
     agent._register_tracker = MagicMock()

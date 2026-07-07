@@ -99,6 +99,7 @@ class NotepadTool(Tool):
     parameters_model = NotepadParams
     is_read_only = False
     requires_confirmation = True
+    category = "notepad"
 
     async def execute(  # type: ignore[override]
         self,

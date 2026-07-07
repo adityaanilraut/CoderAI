@@ -54,3 +54,65 @@ def test_multi_edit_atomic_write_error(tmp_path, monkeypatch):
 
     # Original file is unchanged
     assert f.read_text(encoding="utf-8") == "hello"
+
+
+def test_multi_edit_registry_dispatch(tmp_path):
+    """MultiEditTool dispatched through ToolRegistry must not raise TypeError."""
+    import os as _os_mod
+    from coderAI.tools.base import ToolRegistry
+    from coderAI.tools.multi_edit import MultiEditTool
+
+    f = tmp_path / "test.txt"
+    f.write_text("hello world\n", encoding="utf-8")
+
+    registry = ToolRegistry()
+    registry.register(MultiEditTool())
+
+    result = asyncio.run(
+        registry.execute(
+            "multi_edit",
+            path=str(f),
+            search="hello",
+            replace="HELLO",
+            replace_all=False,
+            edits=[{"search": "hello", "replace": "HELLO", "expected_count": 1}],
+        )
+    )
+
+    assert result["success"] is True
+    assert f.read_text(encoding="utf-8") == "HELLO world\n"
+
+
+def test_batch_edit_empty_search_rejected(tmp_path):
+    """Batch-mode edit with empty search text is rejected (not silently corrupt)."""
+    from coderAI.tools.filesystem.edit import SearchReplaceTool
+
+    f = tmp_path / "test.txt"
+    f.write_text("abc\n", encoding="utf-8")
+
+    tool = SearchReplaceTool()
+    edits = [{"search": "", "replace": "X"}]
+    result = asyncio.run(tool.execute(path=str(f), edits=edits))
+
+    assert result["success"] is False
+    assert "search text must be non-empty" in result["error"]
+
+
+def test_batch_edit_actual_counts_from_modified_content(tmp_path):
+    """actual_counts and count_mismatches are computed on sequentially modified content."""
+    from coderAI.tools.filesystem.edit import SearchReplaceTool
+
+    f = tmp_path / "test.txt"
+    f.write_text("hello hello world\n", encoding="utf-8")
+
+    tool = SearchReplaceTool()
+    edits = [
+        {"search": "hello", "replace": "hi", "expected_count": 2},
+        {"search": "hi", "replace": "hey", "expected_count": 2},
+    ]
+    result = asyncio.run(tool.execute(path=str(f), edits=edits))
+
+    assert result["success"] is True
+    assert result["actual_counts"] == [2, 2]
+    assert result["count_mismatches"] == []
+    assert f.read_text(encoding="utf-8") == "hey hey world\n"

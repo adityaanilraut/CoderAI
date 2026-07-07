@@ -4,6 +4,8 @@ Shapes ``AgentInfo``, plan, and task data into the payloads documented in
 ``docs/CHAT_EVENTS.md``. No event names or payload keys may change here
 without updating the doc and ``tests/test_event_contract.py`` in the same
 commit.
+
+Moved here from ``coderAI/bridge/serializers.py`` (Phase 3 bridge demolition).
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ def _infer_error_hint(category: str, message: str) -> Optional[str]:
     lower = (message or "").lower()
     if category == "provider":
         if "localhost:1234" in lower or "lmstudio" in lower:
-            return "Start LM Studio: open the app → Developer → Start Server."
+            return "Start LM Studio: open the app -> Developer -> Start Server."
         if "localhost:11434" in lower or "ollama" in lower:
             return "Start Ollama: run `ollama serve` in another terminal."
         if "anthropic" in lower and "key" in lower:
@@ -37,10 +39,10 @@ def _infer_error_hint(category: str, message: str) -> Optional[str]:
         if "gemini" in lower and "key" in lower:
             return "Set GEMINI_API_KEY, or run `coderAI config set gemini_api_key <KEY>`."
         if any(k in lower for k in ("api key", "401", "unauthorized", "authentication")):
-            return "Missing/invalid API key — run `coderAI setup` or `coderAI doctor`."
+            return "Missing/invalid API key -- run `coderAI setup` or `coderAI doctor`."
         if any(k in lower for k in ("rate limit", "429", "too many requests")):
             return (
-                "Rate limited — wait a few seconds and retry, or switch models with /model <name>."
+                "Rate limited -- wait a few seconds and retry, or switch models with /model <name>."
             )
         if "context" in lower and "length" in lower:
             return "Context window exceeded. Try /compact to summarize, or /clear to reset."
@@ -116,12 +118,12 @@ def _format_plan_message(plan: Dict[str, Any]) -> str:
     cur_desc = steps[current]["description"] if current < total else "All steps completed"
     lines = [
         f"Plan: {title}",
-        f"Progress: {completed}/{total} steps · current: {cur_desc}",
+        f"Progress: {completed}/{total} steps . current: {cur_desc}",
         "",
     ]
     for i, s in enumerate(steps):
-        mark = "✓" if s.get("status") == "done" else "○"
-        prefix = "→" if i == current and i < total else " "
+        mark = "\u2713" if s.get("status") == "done" else "\u25cb"
+        prefix = "\u2192" if i == current and i < total else " "
         desc = s.get("description", "")
         lines.append(f"  {prefix}{mark} {i + 1}. {desc}")
     return "\n".join(lines)
