@@ -735,6 +735,31 @@ Configuration is stored in `~/.coderAI/config.json` and managed via `coderAI con
 
 ---
 
+## 🔒 Security
+
+CoderAI treats *untrusted input* — a cloned repo's `.coderAI/*` overlay, fetched
+web pages, MCP server output — as data that must never act with your authority.
+Two boundaries you'll see day to day:
+
+- **Workspace trust.** A newly opened project is untrusted until you run `/trust`
+  (or start with `--trust-workspace`). Until then, repo-supplied hooks, config
+  overlays, and `ask` permission rules are ignored, so a malicious repo can't run
+  a hook on your first message.
+- **Injection-aware egress gating.** Once a turn ingests untrusted content, any
+  network tool needs confirmation for the rest of that turn (so an injected page
+  can't trigger a follow-up exfiltration fetch). MCP output goes further: a local
+  *mutating* tool then needs an explicit OK **even under `--yolo`**.
+
+Mutating tools confirm by default; high-risk tools can't be blanket-allowed;
+credentials and history are stored owner-only; remote MCP/OAuth endpoints must be
+HTTPS. The red-team regression corpus runs as a **blocking** CI job
+(`make test-security`).
+
+See **[SECURITY.md](SECURITY.md)** for the full threat model, the complete list
+of controls, how to report a vulnerability, and the known residual risks.
+
+---
+
 ## 🧪 Testing & CI
 
 Pull requests run **Ruff** and **pytest** on GitHub Actions (see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
@@ -751,6 +776,13 @@ pytest
 
 # Or use the Makefile (also runs install + CLI smoke checks)
 make test
+
+# Run only the red-team security suite (also a blocking CI job)
+make test-security          # == pytest -m security
+
+# Regenerate / audit the pinned, hashed lockfile
+make lock                   # uv pip compile → requirements.lock
+make audit                  # pip-audit -r requirements.lock
 
 # Run specific test categories
 pytest tests/test_agent.py
