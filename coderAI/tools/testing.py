@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from coderAI.system.config import config_manager
 from coderAI.system.proc import run_scrubbed
 from coderAI.system.safeguards import truncate_output
+from coderAI.tools._detect import walk_up_detect
 from coderAI.tools.base import Tool
 
 logger = logging.getLogger(__name__)
@@ -83,35 +84,29 @@ _FRAMEWORK_PREFERENCE = ["pytest", "jest", "vitest", "go_test", "cargo_test", "u
 
 def detect_test_framework(project_root: str = ".") -> Optional[str]:
     """Auto-detect the appropriate test framework for the project."""
+
+    def _available(name: str, current_dir: Path) -> Optional[str]:
+        # jest/vitest run through npx.
+        if name in ("jest", "vitest"):
+            return name if shutil.which("npx") else None
+        if name == "pytest":
+            return "pytest" if shutil.which("pytest") else None
+        if name == "unittest":
+            # Stdlib fallback: only when pytest is absent and test dirs exist.
+            if not shutil.which("pytest"):
+                for td in TEST_FRAMEWORKS["unittest"]["test_dirs"]:
+                    if (current_dir / td).exists():
+                        return "unittest"
+            return None
+        return name if shutil.which(TEST_FRAMEWORKS[name]["cmd"]) else None
+
+    hit = walk_up_detect(project_root, TEST_FRAMEWORKS, _FRAMEWORK_PREFERENCE, _available)
+    if hit:
+        return hit
+
     start_path = Path(project_root).resolve()
     if start_path.is_file():
         start_path = start_path.parent
-
-    for current_dir in [start_path] + list(start_path.parents):
-        for name in _FRAMEWORK_PREFERENCE:
-            config = TEST_FRAMEWORKS[name]
-            for detect_file in config["detect_files"]:
-                if (current_dir / detect_file).exists():
-                    # For jest/vitest, also check for npx
-                    if name in ("jest", "vitest"):
-                        if shutil.which("npx"):
-                            return name
-                        continue
-                    # For python frameworks, check test dirs with appropriate files
-                    if name in ("pytest", "unittest"):
-                        if shutil.which("pytest") and name == "pytest":
-                            return "pytest"
-                        if not shutil.which("pytest") and name == "unittest":
-                            # Check if test files exist
-                            for td in config["test_dirs"]:
-                                if (current_dir / td).exists():
-                                    return "unittest"
-                        continue
-                    # For go/rust, check binary availability
-                    if shutil.which(config["cmd"]):
-                        return name
-        if (current_dir / ".git").exists():
-            break
 
     # Fallback: check for test directories and files
     for name in _FRAMEWORK_PREFERENCE:

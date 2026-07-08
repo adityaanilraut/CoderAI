@@ -12,6 +12,66 @@ from coderAI.system.fsperms import OWNER_RWX, atomic_write_json, restrict_path
 
 logger = logging.getLogger(__name__)
 
+# Target types for config values that arrive as strings (env vars) or
+# loosely-typed JSON (project overlays). One table shared by ``load`` and
+# ``load_project_config`` so the two coercion paths cannot drift.
+_FLOAT_KEYS = frozenset(
+    {
+        "temperature",
+        "budget_limit",
+        "subagent_timeout_seconds",
+        "rate_limit_delay_seconds",
+        "skill_confidence_threshold",
+        "browser_timeout",
+    }
+)
+_INT_KEYS = frozenset(
+    {
+        "max_tokens",
+        "max_iterations",
+        "context_window",
+        "max_tool_output",
+        "max_file_size",
+        "max_glob_results",
+        "max_command_output",
+        "approval_timeout_seconds",
+        "search_cache_ttl_seconds",
+        "page_cache_ttl_seconds",
+        "skill_top_n",
+        "max_concurrent_mutating_subagents",
+    }
+)
+_BOOL_KEYS = frozenset(
+    {
+        "streaming",
+        "web_tools_in_main",
+        "allow_outside_project",
+        "concurrent_search",
+        "auto_detect_skills",
+        "skills_use_hasna",
+        "tui_notifications",
+        "browser_headless",
+    }
+)
+
+
+def _coerce(key: str, value: Any) -> Any:
+    """Coerce *value* to the declared type of config field *key*.
+
+    Raises ``ValueError``/``TypeError`` on bad input; callers warn and skip
+    the key. Keys outside the tables pass through unchanged (strings).
+    """
+    if key in _FLOAT_KEYS:
+        return float(value)
+    if key in _INT_KEYS:
+        return int(value)
+    if key in _BOOL_KEYS:
+        # bool("false") is True in Python; handle string booleans explicitly.
+        if isinstance(value, str):
+            return value.strip().lower() in ("true", "1", "yes", "on")
+        return bool(value)
+    return value
+
 
 class Config(BaseModel):
     """Configuration model for CoderAI.
@@ -194,37 +254,8 @@ class ConfigManager:
         for env_var, config_key in env_mappings.items():
             value: Any = os.getenv(env_var)
             if value is not None:
-                # Convert types if needed
                 try:
-                    if config_key in (
-                        "temperature",
-                        "budget_limit",
-                        "subagent_timeout_seconds",
-                        "rate_limit_delay_seconds",
-                        "skill_confidence_threshold",
-                        "browser_timeout",
-                    ):
-                        value = float(value)
-                    elif config_key in (
-                        "max_tokens",
-                        "max_iterations",
-                        "max_tool_output",
-                        "search_cache_ttl_seconds",
-                        "page_cache_ttl_seconds",
-                        "skill_top_n",
-                        "max_concurrent_mutating_subagents",
-                    ):
-                        value = int(value)
-                    elif config_key in (
-                        "web_tools_in_main",
-                        "allow_outside_project",
-                        "concurrent_search",
-                        "auto_detect_skills",
-                        "skills_use_hasna",
-                        "tui_notifications",
-                        "browser_headless",
-                    ):
-                        value = value.strip().lower() in ("true", "1", "yes", "on")
+                    value = _coerce(config_key, value)
                 except (ValueError, TypeError):
                     logger.warning(
                         "Invalid value for %s=%r (from env %s), ignoring",
@@ -408,29 +439,8 @@ class ConfigManager:
         for key, value in project_data.items():
             if key not in ALLOWED_PROJECT_KEYS:
                 continue
-            # Type coercion for numeric / boolean fields
             try:
-                if key == "temperature":
-                    value = float(value)
-                elif key in {
-                    "max_tokens",
-                    "max_iterations",
-                    "context_window",
-                    "max_tool_output",
-                    "max_file_size",
-                    "max_glob_results",
-                    "max_command_output",
-                    "approval_timeout_seconds",
-                }:
-                    value = int(value)
-                elif key in ("budget_limit", "subagent_timeout_seconds"):
-                    value = float(value)
-                elif key == "streaming":
-                    # bool("false") is True in Python; handle string booleans explicitly
-                    if isinstance(value, str):
-                        value = value.strip().lower() in ("true", "1", "yes")
-                    else:
-                        value = bool(value)
+                value = _coerce(key, value)
             except (ValueError, TypeError) as e:
                 logger.warning(f"Invalid project config value for '{key}': {e}")
                 continue

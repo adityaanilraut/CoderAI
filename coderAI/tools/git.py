@@ -1,8 +1,9 @@
 """Git tools for version control operations."""
 
+import functools
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional, TypeVar, cast
 
 from pydantic import BaseModel, Field
 
@@ -18,12 +19,58 @@ MAX_GIT_OUTPUT_CHARS = 64_000
 
 _GIT_TRUNCATION_MARKER = "... [truncated {omitted} chars — re-run with a narrower scope] ..."
 
+_F = TypeVar("_F", bound=Callable[..., Awaitable[Dict[str, Any]]])
+
+
+def _tool_errors(fn: _F) -> _F:
+    """Turn unexpected exceptions from ``execute()`` into a TOOL_ERROR result."""
+
+    @functools.wraps(fn)
+    async def wrapper(*args: Any, **kwargs: Any) -> Dict[str, Any]:
+        try:
+            return await fn(*args, **kwargs)
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
+
+    return cast(_F, wrapper)
+
 
 def _truncate_output(text: str, max_chars: int = MAX_GIT_OUTPUT_CHARS) -> tuple[str, bool]:
     """Truncate git output via the shared helper, returning (text, was_truncated)."""
     return truncate_output(
         text, max_chars=max_chars, mode="head_tail", marker=_GIT_TRUNCATION_MARKER
     )
+
+
+def _decode(data: bytes) -> str:
+    return data.decode("utf-8", errors="replace")
+
+
+def _stderr_error(result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Error dict when a completed git command exited non-zero, else None."""
+    if result["returncode"] != 0:
+        return {"success": False, "error": _decode(result["stderr"]).strip()}
+    return None
+
+
+def _simple_result(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Shape a completed git command as ``{"success", "output"}`` (stdout+stderr)."""
+    output = _decode(result["stdout"]) + _decode(result["stderr"])
+    return {"success": result["returncode"] == 0, "output": output.strip()}
+
+
+async def _run_simple(
+    args: List[str], repo_path: str, *, needs_lock: bool = True
+) -> Dict[str, Any]:
+    """Run a git command and shape it with :func:`_simple_result`."""
+    result = await _run_git_command(args, repo_path, needs_lock=needs_lock)
+    if not result["success"]:
+        return result
+    return _simple_result(result)
 
 
 def _reject_option_like(value: Optional[str], label: str) -> Optional[Dict[str, Any]]:
@@ -140,67 +187,57 @@ class GitAddTool(Tool):
     requires_confirmation = True
     category = "git"
 
+    @_tool_errors
     async def execute(self, files: list, repo_path: str = ".") -> Dict[str, Any]:  # type: ignore[override]
         """Stage files for git commit with safety checks."""
-        try:
-            if files == ["."] or files == ["*"]:
-                return {
-                    "success": False,
-                    "error": (
-                        "Refusing to stage all files ('git add .'). "
-                        "Please specify explicit file paths to stage only "
-                        "the files you intentionally created or modified."
-                    ),
-                    "error_code": ToolErrorCode.UNSAFE_STAGING,
-                }
-
-            from coderAI.system.safeguards import filter_stageable_files
-
-            allowed, rejected = filter_stageable_files(files)
-
-            if rejected:
-                logger.info(f"git_add: filtered {len(rejected)} junk file(s): {rejected}")
-
-            if not allowed:
-                return {
-                    "success": False,
-                    "error": (
-                        f"All requested files were filtered as junk/internal artifacts: "
-                        f"{rejected}. No files staged."
-                    ),
-                    "error_code": ToolErrorCode.ALL_FILTERED,
-                }
-
-            # ``--`` separates paths from options so a crafted filename can't
-            # inject a git flag.
-            result = await _run_git_command(["add", "--"] + allowed, repo_path, needs_lock=True)
-            if not result["success"]:
-                return result  # scope validation error
-
-            if result["returncode"] != 0:
-                return {
-                    "success": False,
-                    "error": result["stderr"].decode("utf-8", errors="replace"),
-                }
-
-            out = {
-                "success": True,
-                "files_staged": allowed,
-                "message": f"Staged {len(allowed)} file(s)",
-            }
-            if rejected:
-                out["files_filtered"] = rejected
-                out["filter_note"] = (
-                    f"{len(rejected)} file(s) auto-filtered (junk/internal artifacts)"
-                )
-            logger.info(f"git_add: staged {allowed}")
-            return out
-        except Exception as e:
+        if files == ["."] or files == ["*"]:
             return {
                 "success": False,
-                "error": str(e),
-                "error_code": ToolErrorCode.TOOL_ERROR,
+                "error": (
+                    "Refusing to stage all files ('git add .'). "
+                    "Please specify explicit file paths to stage only "
+                    "the files you intentionally created or modified."
+                ),
+                "error_code": ToolErrorCode.UNSAFE_STAGING,
             }
+
+        from coderAI.system.safeguards import filter_stageable_files
+
+        allowed, rejected = filter_stageable_files(files)
+
+        if rejected:
+            logger.info(f"git_add: filtered {len(rejected)} junk file(s): {rejected}")
+
+        if not allowed:
+            return {
+                "success": False,
+                "error": (
+                    f"All requested files were filtered as junk/internal artifacts: "
+                    f"{rejected}. No files staged."
+                ),
+                "error_code": ToolErrorCode.ALL_FILTERED,
+            }
+
+        # ``--`` separates paths from options so a crafted filename can't
+        # inject a git flag.
+        result = await _run_git_command(["add", "--"] + allowed, repo_path, needs_lock=True)
+        if not result["success"]:
+            return result  # scope validation error
+
+        error = _stderr_error(result)
+        if error:
+            return error
+
+        out = {
+            "success": True,
+            "files_staged": allowed,
+            "message": f"Staged {len(allowed)} file(s)",
+        }
+        if rejected:
+            out["files_filtered"] = rejected
+            out["filter_note"] = f"{len(rejected)} file(s) auto-filtered (junk/internal artifacts)"
+        logger.info(f"git_add: staged {allowed}")
+        return out
 
 
 class GitStatusParams(BaseModel):
@@ -216,33 +253,25 @@ class GitStatusTool(Tool):
     is_read_only = True
     category = "git"
 
+    @_tool_errors
     async def execute(self, repo_path: str = ".") -> Dict[str, Any]:  # type: ignore[override]
-        try:
-            result = await _run_git_command(["status", "--porcelain", "-b"], repo_path)
-            if not result["success"]:
-                return result
+        result = await _run_git_command(["status", "--porcelain", "-b"], repo_path)
+        if not result["success"]:
+            return result
 
-            if result["returncode"] != 0:
-                return {
-                    "success": False,
-                    "error": result["stderr"].decode("utf-8", errors="replace"),
-                }
+        error = _stderr_error(result)
+        if error:
+            return error
 
-            output, truncated = _truncate_output(result["stdout"].decode("utf-8", errors="replace"))
-            lines = output.strip().split("\n")
-            change_lines = [line for line in lines if line and not line.startswith("##")]
-            return {
-                "success": True,
-                "status": output,
-                "has_changes": bool(change_lines),
-                "truncated": truncated,
-            }
-        except Exception as e:
-            return {
-                "success": False,
-                "error": str(e),
-                "error_code": ToolErrorCode.TOOL_ERROR,
-            }
+        output, truncated = _truncate_output(_decode(result["stdout"]))
+        lines = output.strip().split("\n")
+        change_lines = [line for line in lines if line and not line.startswith("##")]
+        return {
+            "success": True,
+            "status": output,
+            "has_changes": bool(change_lines),
+            "truncated": truncated,
+        }
 
 
 class GitDiffParams(BaseModel):
@@ -262,44 +291,36 @@ class GitDiffTool(Tool):
     is_read_only = True
     category = "git"
 
+    @_tool_errors
     async def execute(  # type: ignore[override]
         self, repo_path: str = ".", file_path: Optional[str] = None, staged: bool = False
-    ) -> Dict[str, Any]:  # type: ignore[override]
-        try:
-            args = ["diff"]
-            if staged:
-                args.append("--cached")
-            if file_path:
-                reject = _reject_option_like(file_path, "file_path")
-                if reject:
-                    return reject
-                # ``--`` ends option parsing so the path can't become a flag.
-                args.append("--")
-                args.append(file_path)
+    ) -> Dict[str, Any]:
+        args = ["diff"]
+        if staged:
+            args.append("--cached")
+        if file_path:
+            reject = _reject_option_like(file_path, "file_path")
+            if reject:
+                return reject
+            # ``--`` ends option parsing so the path can't become a flag.
+            args.append("--")
+            args.append(file_path)
 
-            result = await _run_git_command(args, repo_path)
-            if not result["success"]:
-                return result
+        result = await _run_git_command(args, repo_path)
+        if not result["success"]:
+            return result
 
-            if result["returncode"] != 0:
-                return {
-                    "success": False,
-                    "error": result["stderr"].decode("utf-8", errors="replace"),
-                }
+        error = _stderr_error(result)
+        if error:
+            return error
 
-            diff, truncated = _truncate_output(result["stdout"].decode("utf-8", errors="replace"))
-            return {
-                "success": True,
-                "diff": diff,
-                "has_diff": bool(diff.strip()),
-                "truncated": truncated,
-            }
-        except Exception as e:
-            return {
-                "success": False,
-                "error": str(e),
-                "error_code": ToolErrorCode.TOOL_ERROR,
-            }
+        diff, truncated = _truncate_output(_decode(result["stdout"]))
+        return {
+            "success": True,
+            "diff": diff,
+            "has_diff": bool(diff.strip()),
+            "truncated": truncated,
+        }
 
 
 class GitCommitParams(BaseModel):
@@ -316,26 +337,14 @@ class GitCommitTool(Tool):
     requires_confirmation = True
     category = "git"
 
+    @_tool_errors
     async def execute(self, message: str, repo_path: str = ".") -> Dict[str, Any]:  # type: ignore[override]
-        try:
-            result = await _run_git_command(["commit", "-m", message], repo_path, needs_lock=True)
-            if not result["success"]:
-                return result
+        result = await _run_git_command(["commit", "-m", message], repo_path, needs_lock=True)
+        if not result["success"]:
+            return result
 
-            output = result["stdout"].decode("utf-8", errors="replace")
-            error = result["stderr"].decode("utf-8", errors="replace")
-            logger.info(f"git_commit: repo={repo_path} message={message!r}")
-
-            return {
-                "success": result["returncode"] == 0,
-                "output": output + error,
-            }
-        except Exception as e:
-            return {
-                "success": False,
-                "error": str(e),
-                "error_code": ToolErrorCode.TOOL_ERROR,
-            }
+        logger.info(f"git_commit: repo={repo_path} message={message!r}")
+        return _simple_result(result)
 
 
 class GitLogParams(BaseModel):
@@ -352,36 +361,25 @@ class GitLogTool(Tool):
     is_read_only = True
     category = "git"
 
+    @_tool_errors
     async def execute(self, repo_path: str = ".", limit: int = 10) -> Dict[str, Any]:  # type: ignore[override]
-        try:
-            if limit < 1:
-                limit = 1
-            elif limit > 1000:
-                limit = 1000
+        limit = max(1, min(limit, 1000))
 
-            result = await _run_git_command(["log", "--oneline", "-n", str(limit)], repo_path)
-            if not result["success"]:
-                return result
+        result = await _run_git_command(["log", "--oneline", "-n", str(limit)], repo_path)
+        if not result["success"]:
+            return result
 
-            if result["returncode"] != 0:
-                return {
-                    "success": False,
-                    "error": result["stderr"].decode("utf-8", errors="replace"),
-                }
+        error = _stderr_error(result)
+        if error:
+            return error
 
-            log, truncated = _truncate_output(result["stdout"].decode("utf-8", errors="replace"))
-            return {
-                "success": True,
-                "log": log,
-                "commits": log.strip().split("\n") if log.strip() else [],
-                "truncated": truncated,
-            }
-        except Exception as e:
-            return {
-                "success": False,
-                "error": str(e),
-                "error_code": ToolErrorCode.TOOL_ERROR,
-            }
+        log, truncated = _truncate_output(_decode(result["stdout"]))
+        return {
+            "success": True,
+            "log": log,
+            "commits": log.strip().split("\n") if log.strip() else [],
+            "truncated": truncated,
+        }
 
 
 class GitBranchParams(BaseModel):
@@ -406,64 +404,49 @@ class GitBranchTool(Tool):
     requires_confirmation = True
     category = "git"
 
+    @_tool_errors
     async def execute(  # type: ignore[override]
         self, action: str, branch_name: Optional[str] = None, repo_path: str = "."
-    ) -> Dict[str, Any]:  # type: ignore[override]
-        try:
-            args: List[str]
-            if action == "list":
-                args = ["branch", "-a"]
-            elif action == "create":
-                if not branch_name:
-                    return {"success": False, "error": "branch_name is required for 'create'."}
-                args = ["branch", branch_name]
-            elif action == "delete":
-                if not branch_name:
-                    return {"success": False, "error": "branch_name is required for 'delete'."}
-                args = ["branch", "-d", branch_name]
-            else:
-                return {"success": False, "error": f"Unknown action: {action}"}
+    ) -> Dict[str, Any]:
+        args: List[str]
+        if action == "list":
+            args = ["branch", "-a"]
+        elif action == "create":
+            if not branch_name:
+                return {"success": False, "error": "branch_name is required for 'create'."}
+            args = ["branch", branch_name]
+        elif action == "delete":
+            if not branch_name:
+                return {"success": False, "error": "branch_name is required for 'delete'."}
+            args = ["branch", "-d", branch_name]
+        else:
+            return {"success": False, "error": f"Unknown action: {action}"}
 
-            result = await _run_git_command(args, repo_path, needs_lock=True)
-            if not result["success"]:
-                return result
+        result = await _run_git_command(args, repo_path, needs_lock=True)
+        if not result["success"]:
+            return result
 
-            if action == "list":
-                if result["returncode"] != 0:
-                    return {
-                        "success": False,
-                        "error": result["stderr"].decode("utf-8", errors="replace"),
-                    }
-                output, truncated = _truncate_output(
-                    result["stdout"].decode("utf-8", errors="replace")
-                )
-                branches = [
-                    b.strip().removeprefix("* ") for b in output.strip().split("\n") if b.strip()
-                ]
-                return {
-                    "success": True,
-                    "branches": branches,
-                    "count": len(branches),
-                    "truncated": truncated,
-                }
-            elif action == "create":
-                if result["returncode"] != 0:
-                    return {
-                        "success": False,
-                        "error": result["stderr"].decode("utf-8", errors="replace"),
-                    }
-                return {"success": True, "message": f"Branch '{branch_name}' created."}
-            else:  # delete
-                output = result["stdout"].decode("utf-8", errors="replace") + result[
-                    "stderr"
-                ].decode("utf-8", errors="replace")
-                return {"success": result["returncode"] == 0, "output": output}
-        except Exception as e:
+        if action == "list":
+            error = _stderr_error(result)
+            if error:
+                return error
+            output, truncated = _truncate_output(_decode(result["stdout"]))
+            branches = [
+                b.strip().removeprefix("* ") for b in output.strip().split("\n") if b.strip()
+            ]
             return {
-                "success": False,
-                "error": str(e),
-                "error_code": ToolErrorCode.TOOL_ERROR,
+                "success": True,
+                "branches": branches,
+                "count": len(branches),
+                "truncated": truncated,
             }
+        elif action == "create":
+            error = _stderr_error(result)
+            if error:
+                return error
+            return {"success": True, "message": f"Branch '{branch_name}' created."}
+        else:  # delete
+            return _simple_result(result)
 
 
 class GitCheckoutParams(BaseModel):
@@ -481,37 +464,24 @@ class GitCheckoutTool(Tool):
     requires_confirmation = True
     category = "git"
 
+    @_tool_errors
     async def execute(  # type: ignore[override]
         self, branch: str, create: bool = False, repo_path: str = "."
-    ) -> Dict[str, Any]:  # type: ignore[override]
-        try:
-            from coderAI.system.safeguards import get_current_branch
+    ) -> Dict[str, Any]:
+        from coderAI.system.safeguards import get_current_branch
 
-            branch_before = await get_current_branch(repo_path)
-            logger.info(
-                f"git_checkout: branch_before={branch_before} "
-                f"target={branch} create={create} repo={repo_path}"
-            )
+        branch_before = await get_current_branch(repo_path)
+        logger.info(
+            f"git_checkout: branch_before={branch_before} "
+            f"target={branch} create={create} repo={repo_path}"
+        )
 
-            args = ["checkout"]
-            if create:
-                args.append("-b")
-            args.append(branch)
+        args = ["checkout"]
+        if create:
+            args.append("-b")
+        args.append(branch)
 
-            result = await _run_git_command(args, repo_path, needs_lock=True)
-            if not result["success"]:
-                return result
-
-            output = result["stdout"].decode("utf-8", errors="replace") + result["stderr"].decode(
-                "utf-8", errors="replace"
-            )
-            return {"success": result["returncode"] == 0, "output": output.strip()}
-        except Exception as e:
-            return {
-                "success": False,
-                "error": str(e),
-                "error_code": ToolErrorCode.TOOL_ERROR,
-            }
+        return await _run_simple(args, repo_path)
 
 
 class GitStashParams(BaseModel):
@@ -535,41 +505,28 @@ class GitStashTool(Tool):
     requires_confirmation = True
     category = "git"
 
+    @_tool_errors
     async def execute(  # type: ignore[override]
         self,
         action: str,
         message: Optional[str] = None,
         stash_index: int = 0,
         repo_path: str = ".",
-    ) -> Dict[str, Any]:  # type: ignore[override]
-        try:
-            if action == "push":
-                args = ["stash", "push"]
-                if message:
-                    args.extend(["-m", message])
-            elif action == "pop":
-                args = ["stash", "pop", f"stash@{{{stash_index}}}"]
-            elif action == "list":
-                args = ["stash", "list"]
-            elif action == "drop":
-                args = ["stash", "drop", f"stash@{{{stash_index}}}"]
-            else:
-                return {"success": False, "error": f"Unknown action: {action}"}
+    ) -> Dict[str, Any]:
+        if action == "push":
+            args = ["stash", "push"]
+            if message:
+                args.extend(["-m", message])
+        elif action == "pop":
+            args = ["stash", "pop", f"stash@{{{stash_index}}}"]
+        elif action == "list":
+            args = ["stash", "list"]
+        elif action == "drop":
+            args = ["stash", "drop", f"stash@{{{stash_index}}}"]
+        else:
+            return {"success": False, "error": f"Unknown action: {action}"}
 
-            result = await _run_git_command(args, repo_path, needs_lock=True)
-            if not result["success"]:
-                return result
-
-            output = result["stdout"].decode("utf-8", errors="replace") + result["stderr"].decode(
-                "utf-8", errors="replace"
-            )
-            return {"success": result["returncode"] == 0, "output": output.strip()}
-        except Exception as e:
-            return {
-                "success": False,
-                "error": str(e),
-                "error_code": ToolErrorCode.TOOL_ERROR,
-            }
+        return await _run_simple(args, repo_path)
 
 
 class GitPushParams(BaseModel):
@@ -595,6 +552,7 @@ class GitPushTool(Tool):
     parameters_model = GitPushParams
     requires_confirmation = True
 
+    @_tool_errors
     async def execute(  # type: ignore[override]
         self,
         remote: str = "origin",
@@ -602,31 +560,17 @@ class GitPushTool(Tool):
         force: bool = False,
         set_upstream: bool = False,
         repo_path: str = ".",
-    ) -> Dict[str, Any]:  # type: ignore[override]
-        try:
-            args = ["push"]
-            if set_upstream:
-                args.append("-u")
-            if force:
-                args.append("--force-with-lease")
-            args.append(remote)
-            if branch:
-                args.append(branch)
+    ) -> Dict[str, Any]:
+        args = ["push"]
+        if set_upstream:
+            args.append("-u")
+        if force:
+            args.append("--force-with-lease")
+        args.append(remote)
+        if branch:
+            args.append(branch)
 
-            result = await _run_git_command(args, repo_path, needs_lock=True)
-            if not result["success"]:
-                return result
-
-            output = result["stdout"].decode("utf-8", errors="replace") + result["stderr"].decode(
-                "utf-8", errors="replace"
-            )
-            return {"success": result["returncode"] == 0, "output": output.strip()}
-        except Exception as e:
-            return {
-                "success": False,
-                "error": str(e),
-                "error_code": ToolErrorCode.TOOL_ERROR,
-            }
+        return await _run_simple(args, repo_path)
 
 
 class GitPullParams(BaseModel):
@@ -649,35 +593,22 @@ class GitPullTool(Tool):
     parameters_model = GitPullParams
     requires_confirmation = True
 
+    @_tool_errors
     async def execute(  # type: ignore[override]
         self,
         remote: str = "origin",
         branch: Optional[str] = None,
         rebase: bool = False,
         repo_path: str = ".",
-    ) -> Dict[str, Any]:  # type: ignore[override]
-        try:
-            args = ["pull"]
-            if rebase:
-                args.append("--rebase")
-            args.append(remote)
-            if branch:
-                args.append(branch)
+    ) -> Dict[str, Any]:
+        args = ["pull"]
+        if rebase:
+            args.append("--rebase")
+        args.append(remote)
+        if branch:
+            args.append(branch)
 
-            result = await _run_git_command(args, repo_path, needs_lock=True)
-            if not result["success"]:
-                return result
-
-            output = result["stdout"].decode("utf-8", errors="replace") + result["stderr"].decode(
-                "utf-8", errors="replace"
-            )
-            return {"success": result["returncode"] == 0, "output": output.strip()}
-        except Exception as e:
-            return {
-                "success": False,
-                "error": str(e),
-                "error_code": ToolErrorCode.TOOL_ERROR,
-            }
+        return await _run_simple(args, repo_path)
 
 
 class GitMergeParams(BaseModel):
@@ -697,6 +628,7 @@ class GitMergeTool(Tool):
     parameters_model = GitMergeParams
     requires_confirmation = True
 
+    @_tool_errors
     async def execute(  # type: ignore[override]
         self,
         branch: str,
@@ -704,31 +636,17 @@ class GitMergeTool(Tool):
         squash: bool = False,
         message: Optional[str] = None,
         repo_path: str = ".",
-    ) -> Dict[str, Any]:  # type: ignore[override]
-        try:
-            args = ["merge"]
-            if no_ff:
-                args.append("--no-ff")
-            if squash:
-                args.append("--squash")
-            if message:
-                args.extend(["-m", message])
-            args.append(branch)
+    ) -> Dict[str, Any]:
+        args = ["merge"]
+        if no_ff:
+            args.append("--no-ff")
+        if squash:
+            args.append("--squash")
+        if message:
+            args.extend(["-m", message])
+        args.append(branch)
 
-            result = await _run_git_command(args, repo_path, needs_lock=True)
-            if not result["success"]:
-                return result
-
-            output = result["stdout"].decode("utf-8", errors="replace") + result["stderr"].decode(
-                "utf-8", errors="replace"
-            )
-            return {"success": result["returncode"] == 0, "output": output.strip()}
-        except Exception as e:
-            return {
-                "success": False,
-                "error": str(e),
-                "error_code": ToolErrorCode.TOOL_ERROR,
-            }
+        return await _run_simple(args, repo_path)
 
 
 class GitRebaseParams(BaseModel):
@@ -750,35 +668,22 @@ class GitRebaseTool(Tool):
     parameters_model = GitRebaseParams
     requires_confirmation = True
 
+    @_tool_errors
     async def execute(  # type: ignore[override]
         self,
         onto: str,
         abort: bool = False,
         continue_rebase: bool = False,
         repo_path: str = ".",
-    ) -> Dict[str, Any]:  # type: ignore[override]
-        try:
-            if abort:
-                args = ["rebase", "--abort"]
-            elif continue_rebase:
-                args = ["rebase", "--continue"]
-            else:
-                args = ["rebase", onto]
+    ) -> Dict[str, Any]:
+        if abort:
+            args = ["rebase", "--abort"]
+        elif continue_rebase:
+            args = ["rebase", "--continue"]
+        else:
+            args = ["rebase", onto]
 
-            result = await _run_git_command(args, repo_path, needs_lock=True)
-            if not result["success"]:
-                return result
-
-            output = result["stdout"].decode("utf-8", errors="replace") + result["stderr"].decode(
-                "utf-8", errors="replace"
-            )
-            return {"success": result["returncode"] == 0, "output": output.strip()}
-        except Exception as e:
-            return {
-                "success": False,
-                "error": str(e),
-                "error_code": ToolErrorCode.TOOL_ERROR,
-            }
+        return await _run_simple(args, repo_path)
 
 
 class GitRevertParams(BaseModel):
@@ -799,32 +704,19 @@ class GitRevertTool(Tool):
     parameters_model = GitRevertParams
     requires_confirmation = True
 
+    @_tool_errors
     async def execute(  # type: ignore[override]
         self,
         commit: str,
         no_commit: bool = False,
         repo_path: str = ".",
-    ) -> Dict[str, Any]:  # type: ignore[override]
-        try:
-            args = ["revert", "--no-edit"]
-            if no_commit:
-                args.append("-n")
-            args.append(commit)
+    ) -> Dict[str, Any]:
+        args = ["revert", "--no-edit"]
+        if no_commit:
+            args.append("-n")
+        args.append(commit)
 
-            result = await _run_git_command(args, repo_path, needs_lock=True)
-            if not result["success"]:
-                return result
-
-            output = result["stdout"].decode("utf-8", errors="replace") + result["stderr"].decode(
-                "utf-8", errors="replace"
-            )
-            return {"success": result["returncode"] == 0, "output": output.strip()}
-        except Exception as e:
-            return {
-                "success": False,
-                "error": str(e),
-                "error_code": ToolErrorCode.TOOL_ERROR,
-            }
+        return await _run_simple(args, repo_path)
 
 
 class GitResetParams(BaseModel):
@@ -852,33 +744,20 @@ class GitResetTool(Tool):
     parameters_model = GitResetParams
     requires_confirmation = True
 
+    @_tool_errors
     async def execute(  # type: ignore[override]
         self,
         ref: str = "HEAD",
         mode: str = "mixed",
         repo_path: str = ".",
-    ) -> Dict[str, Any]:  # type: ignore[override]
-        try:
-            if mode not in ("soft", "mixed", "hard"):
-                return {
-                    "success": False,
-                    "error": f"Invalid mode '{mode}'. Use soft, mixed, or hard.",
-                }
-
-            result = await _run_git_command(["reset", f"--{mode}", ref], repo_path, needs_lock=True)
-            if not result["success"]:
-                return result
-
-            output = result["stdout"].decode("utf-8", errors="replace") + result["stderr"].decode(
-                "utf-8", errors="replace"
-            )
-            return {"success": result["returncode"] == 0, "output": output.strip()}
-        except Exception as e:
+    ) -> Dict[str, Any]:
+        if mode not in ("soft", "mixed", "hard"):
             return {
                 "success": False,
-                "error": str(e),
-                "error_code": ToolErrorCode.TOOL_ERROR,
+                "error": f"Invalid mode '{mode}'. Use soft, mixed, or hard.",
             }
+
+        return await _run_simple(["reset", f"--{mode}", ref], repo_path)
 
 
 class GitShowParams(BaseModel):
@@ -896,41 +775,33 @@ class GitShowTool(Tool):
     parameters_model = GitShowParams
     is_read_only = True
 
+    @_tool_errors
     async def execute(  # type: ignore[override]
         self,
         ref: str = "HEAD",
         stat_only: bool = False,
         repo_path: str = ".",
-    ) -> Dict[str, Any]:  # type: ignore[override]
-        try:
-            reject = _reject_option_like(ref, "ref")
-            if reject:
-                return reject
-            args = ["show"]
-            if stat_only:
-                args.append("--stat")
-            # A ref cannot precede ``--`` (git would read it as a pathspec), so
-            # the leading-dash reject above is what blocks ``--output=`` here.
-            args.append(ref)
+    ) -> Dict[str, Any]:
+        reject = _reject_option_like(ref, "ref")
+        if reject:
+            return reject
+        args = ["show"]
+        if stat_only:
+            args.append("--stat")
+        # A ref cannot precede ``--`` (git would read it as a pathspec), so
+        # the leading-dash reject above is what blocks ``--output=`` here.
+        args.append(ref)
 
-            result = await _run_git_command(args, repo_path, validate_scope=False)
-            if not result["success"]:
-                return result
+        result = await _run_git_command(args, repo_path, validate_scope=False)
+        if not result["success"]:
+            return result
 
-            if result["returncode"] != 0:
-                return {
-                    "success": False,
-                    "error": result["stderr"].decode("utf-8", errors="replace").strip(),
-                }
+        error = _stderr_error(result)
+        if error:
+            return error
 
-            output, truncated = _truncate_output(result["stdout"].decode("utf-8", errors="replace"))
-            return {"success": True, "output": output, "truncated": truncated}
-        except Exception as e:
-            return {
-                "success": False,
-                "error": str(e),
-                "error_code": ToolErrorCode.TOOL_ERROR,
-            }
+        output, truncated = _truncate_output(_decode(result["stdout"]))
+        return {"success": True, "output": output, "truncated": truncated}
 
 
 class GitRemoteParams(BaseModel):
@@ -955,48 +826,35 @@ class GitRemoteTool(Tool):
     parameters_model = GitRemoteParams
     requires_confirmation = True
 
+    @_tool_errors
     async def execute(  # type: ignore[override]
         self,
         action: str,
         name: Optional[str] = None,
         url: Optional[str] = None,
         repo_path: str = ".",
-    ) -> Dict[str, Any]:  # type: ignore[override]
-        try:
-            if action == "list":
-                args = ["remote", "-v"]
-            elif action == "add":
-                if not name or not url:
-                    return {"success": False, "error": "'name' and 'url' required for 'add'."}
-                args = ["remote", "add", name, url]
-            elif action == "remove":
-                if not name:
-                    return {"success": False, "error": "'name' required for 'remove'."}
-                args = ["remote", "remove", name]
-            elif action == "set-url":
-                if not name or not url:
-                    return {
-                        "success": False,
-                        "error": "'name' and 'url' required for 'set-url'.",
-                    }
-                args = ["remote", "set-url", name, url]
-            else:
-                return {"success": False, "error": f"Unknown action: {action}"}
+    ) -> Dict[str, Any]:
+        if action == "list":
+            args = ["remote", "-v"]
+        elif action == "add":
+            if not name or not url:
+                return {"success": False, "error": "'name' and 'url' required for 'add'."}
+            args = ["remote", "add", name, url]
+        elif action == "remove":
+            if not name:
+                return {"success": False, "error": "'name' required for 'remove'."}
+            args = ["remote", "remove", name]
+        elif action == "set-url":
+            if not name or not url:
+                return {
+                    "success": False,
+                    "error": "'name' and 'url' required for 'set-url'.",
+                }
+            args = ["remote", "set-url", name, url]
+        else:
+            return {"success": False, "error": f"Unknown action: {action}"}
 
-            result = await _run_git_command(args, repo_path, needs_lock=True)
-            if not result["success"]:
-                return result
-
-            output = result["stdout"].decode("utf-8", errors="replace") + result["stderr"].decode(
-                "utf-8", errors="replace"
-            )
-            return {"success": result["returncode"] == 0, "output": output.strip()}
-        except Exception as e:
-            return {
-                "success": False,
-                "error": str(e),
-                "error_code": ToolErrorCode.TOOL_ERROR,
-            }
+        return await _run_simple(args, repo_path)
 
 
 class GitBlameParams(BaseModel):
@@ -1015,67 +873,59 @@ class GitBlameTool(Tool):
     parameters_model = GitBlameParams
     is_read_only = True
 
+    @_tool_errors
     async def execute(  # type: ignore[override]
         self,
         file_path: str,
         start_line: Optional[int] = None,
         end_line: Optional[int] = None,
         repo_path: str = ".",
-    ) -> Dict[str, Any]:  # type: ignore[override]
-        try:
-            reject = _reject_option_like(file_path, "file_path")
-            if reject:
-                return reject
-            args = ["blame", "--porcelain"]
-            if start_line is not None and end_line is not None:
-                args.extend([f"-L{start_line},{end_line}"])
-            elif start_line is not None:
-                args.extend([f"-L{start_line},+30"])
-            # ``--`` ends option parsing so the path can't become a flag.
-            args.append("--")
-            args.append(file_path)
+    ) -> Dict[str, Any]:
+        reject = _reject_option_like(file_path, "file_path")
+        if reject:
+            return reject
+        args = ["blame", "--porcelain"]
+        if start_line is not None and end_line is not None:
+            args.extend([f"-L{start_line},{end_line}"])
+        elif start_line is not None:
+            args.extend([f"-L{start_line},+30"])
+        # ``--`` ends option parsing so the path can't become a flag.
+        args.append("--")
+        args.append(file_path)
 
-            result = await _run_git_command(args, repo_path, validate_scope=False)
-            if not result["success"]:
-                return result
+        result = await _run_git_command(args, repo_path, validate_scope=False)
+        if not result["success"]:
+            return result
 
-            if result["returncode"] != 0:
-                return {
-                    "success": False,
-                    "error": result["stderr"].decode("utf-8", errors="replace").strip(),
-                }
+        error = _stderr_error(result)
+        if error:
+            return error
 
-            raw, truncated = _truncate_output(result["stdout"].decode("utf-8", errors="replace"))
-            lines: List[Dict[str, str]] = []
-            current: Dict[str, str] = {}
-            for line in raw.splitlines():
-                if line.startswith("\t"):
-                    current["code"] = line[1:]
-                    lines.append(current)
-                    current = {}
-                elif " " in line:
-                    parts = line.split(" ", 3)
-                    if len(parts[0]) >= 40 and all(c in "0123456789abcdef" for c in parts[0]):
-                        current["commit"] = parts[0]
-                        if len(parts) >= 3:
-                            current["line"] = parts[2]
-                    else:
-                        key, _, value = line.partition(" ")
-                        current[key] = value
+        raw, truncated = _truncate_output(_decode(result["stdout"]))
+        lines: List[Dict[str, str]] = []
+        current: Dict[str, str] = {}
+        for line in raw.splitlines():
+            if line.startswith("\t"):
+                current["code"] = line[1:]
+                lines.append(current)
+                current = {}
+            elif " " in line:
+                parts = line.split(" ", 3)
+                if len(parts[0]) >= 40 and all(c in "0123456789abcdef" for c in parts[0]):
+                    current["commit"] = parts[0]
+                    if len(parts) >= 3:
+                        current["line"] = parts[2]
+                else:
+                    key, _, value = line.partition(" ")
+                    current[key] = value
 
-            return {
-                "success": True,
-                "file": file_path,
-                "annotations": lines,
-                "count": len(lines),
-                "truncated": truncated,
-            }
-        except Exception as e:
-            return {
-                "success": False,
-                "error": str(e),
-                "error_code": ToolErrorCode.TOOL_ERROR,
-            }
+        return {
+            "success": True,
+            "file": file_path,
+            "annotations": lines,
+            "count": len(lines),
+            "truncated": truncated,
+        }
 
 
 class GitCherryPickParams(BaseModel):
@@ -1093,32 +943,19 @@ class GitCherryPickTool(Tool):
     parameters_model = GitCherryPickParams
     requires_confirmation = True
 
+    @_tool_errors
     async def execute(  # type: ignore[override]
         self,
         commits: List[str],
         no_commit: bool = False,
         repo_path: str = ".",
-    ) -> Dict[str, Any]:  # type: ignore[override]
-        try:
-            args = ["cherry-pick"]
-            if no_commit:
-                args.append("-n")
-            args.extend(commits)
+    ) -> Dict[str, Any]:
+        args = ["cherry-pick"]
+        if no_commit:
+            args.append("-n")
+        args.extend(commits)
 
-            result = await _run_git_command(args, repo_path, needs_lock=True)
-            if not result["success"]:
-                return result
-
-            output = result["stdout"].decode("utf-8", errors="replace") + result["stderr"].decode(
-                "utf-8", errors="replace"
-            )
-            return {"success": result["returncode"] == 0, "output": output.strip()}
-        except Exception as e:
-            return {
-                "success": False,
-                "error": str(e),
-                "error_code": ToolErrorCode.TOOL_ERROR,
-            }
+        return await _run_simple(args, repo_path)
 
 
 class GitTagParams(BaseModel):
@@ -1145,6 +982,7 @@ class GitTagTool(Tool):
     parameters_model = GitTagParams
     requires_confirmation = True
 
+    @_tool_errors
     async def execute(  # type: ignore[override]
         self,
         action: str,
@@ -1152,43 +990,31 @@ class GitTagTool(Tool):
         message: Optional[str] = None,
         ref: str = "HEAD",
         repo_path: str = ".",
-    ) -> Dict[str, Any]:  # type: ignore[override]
-        try:
-            if action == "list":
-                args = ["tag", "--list", "--sort=-version:refname"]
-            elif action == "create":
-                if not tag_name:
-                    return {"success": False, "error": "'tag_name' required for create."}
-                if message:
-                    args = ["tag", "-a", tag_name, "-m", message, ref]
-                else:
-                    args = ["tag", tag_name, ref]
-            elif action == "delete":
-                if not tag_name:
-                    return {"success": False, "error": "'tag_name' required for delete."}
-                args = ["tag", "-d", tag_name]
+    ) -> Dict[str, Any]:
+        if action == "list":
+            args = ["tag", "--list", "--sort=-version:refname"]
+        elif action == "create":
+            if not tag_name:
+                return {"success": False, "error": "'tag_name' required for create."}
+            if message:
+                args = ["tag", "-a", tag_name, "-m", message, ref]
             else:
-                return {"success": False, "error": f"Unknown action: {action}"}
+                args = ["tag", tag_name, ref]
+        elif action == "delete":
+            if not tag_name:
+                return {"success": False, "error": "'tag_name' required for delete."}
+            args = ["tag", "-d", tag_name]
+        else:
+            return {"success": False, "error": f"Unknown action: {action}"}
 
-            result = await _run_git_command(args, repo_path, needs_lock=True)
-            if not result["success"]:
-                return result
+        result = await _run_git_command(args, repo_path, needs_lock=True)
+        if not result["success"]:
+            return result
 
-            output = result["stdout"].decode("utf-8", errors="replace")
-            err = result["stderr"].decode("utf-8", errors="replace")
-            if action == "list":
-                tags = [t for t in output.strip().splitlines() if t]
-                return {"success": True, "tags": tags, "count": len(tags)}
-            return {
-                "success": result["returncode"] == 0,
-                "output": (output + err).strip(),
-            }
-        except Exception as e:
-            return {
-                "success": False,
-                "error": str(e),
-                "error_code": ToolErrorCode.TOOL_ERROR,
-            }
+        if action == "list":
+            tags = [t for t in _decode(result["stdout"]).strip().splitlines() if t]
+            return {"success": True, "tags": tags, "count": len(tags)}
+        return _simple_result(result)
 
 
 class GitFetchParams(BaseModel):
@@ -1210,31 +1036,18 @@ class GitFetchTool(Tool):
     is_read_only = False  # --prune deletes remote-tracking branches, so this is not read-only
     requires_confirmation = True
 
+    @_tool_errors
     async def execute(  # type: ignore[override]
         self,
         remote: str = "origin",
         branch: Optional[str] = None,
         prune: bool = False,
         repo_path: str = ".",
-    ) -> Dict[str, Any]:  # type: ignore[override]
-        try:
-            args = ["fetch", remote]
-            if prune:
-                args.append("--prune")
-            if branch:
-                args.append(branch)
+    ) -> Dict[str, Any]:
+        args = ["fetch", remote]
+        if prune:
+            args.append("--prune")
+        if branch:
+            args.append(branch)
 
-            result = await _run_git_command(args, repo_path, needs_lock=True)
-            if not result["success"]:
-                return result
-
-            output = result["stdout"].decode("utf-8", errors="replace") + result["stderr"].decode(
-                "utf-8", errors="replace"
-            )
-            return {"success": result["returncode"] == 0, "output": output.strip()}
-        except Exception as e:
-            return {
-                "success": False,
-                "error": str(e),
-                "error_code": ToolErrorCode.TOOL_ERROR,
-            }
+        return await _run_simple(args, repo_path)

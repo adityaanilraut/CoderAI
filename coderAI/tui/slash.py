@@ -484,12 +484,7 @@ def handle_slash_command(
     controller: "UIBridge",
     reducer: "EventReducer",
     *,
-    show_help: Callable[[], None],
-    show_model_menu: Callable[[], None],
-    show_reasoning_menu: Callable[[], None],
-    show_persona_menu: Callable[[], None],
-    show_skills_menu: Callable[[], None],
-    show_mcp_menu: Callable[[], None],
+    show_palette: Callable[[Optional[str]], None],
     show_search: Callable[[], None],
     show_context: Callable[[], None],
     clear_context: Callable[[], None],
@@ -510,7 +505,7 @@ def handle_slash_command(
     ctx = SlashContext(
         controller=controller,
         reducer=reducer,
-        show_palette=lambda s: None,  # patched below
+        show_palette=show_palette,
         show_search=show_search,
         show_context=show_context,
         clear_context=clear_context,
@@ -522,25 +517,6 @@ def handle_slash_command(
         rewind_timeline=rewind_timeline,
         resume_session=resume_session,
     )
-
-    # Wire the palette callbacks through the section-aware helper.
-    def _show_palette(section: str | None = None) -> None:
-        if section is None:
-            show_help()
-        elif section == "models":
-            show_model_menu()
-        elif section == "reasoning":
-            show_reasoning_menu()
-        elif section == "personas":
-            show_persona_menu()
-        elif section == "skills":
-            show_skills_menu()
-        elif section == "mcp":
-            show_mcp_menu()
-        else:
-            show_help()
-
-    ctx.show_palette = _show_palette
 
     entry = _SLASH_REGISTRY.get(head)
     if entry is not None:

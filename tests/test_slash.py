@@ -48,12 +48,7 @@ class FakeReducer:
 
 def _dispatch(raw, controller, reducer, **overrides):
     cb = {
-        "show_help": MagicMock(),
-        "show_model_menu": MagicMock(),
-        "show_reasoning_menu": MagicMock(),
-        "show_persona_menu": MagicMock(),
-        "show_skills_menu": MagicMock(),
-        "show_mcp_menu": MagicMock(),
+        "show_palette": MagicMock(),
         "show_search": MagicMock(),
         "show_context": MagicMock(),
         "clear_context": MagicMock(),
@@ -87,7 +82,7 @@ def _toast_levels(reducer):
 def test_help_intercepted_before_registry(ctrl, red):
     handled, cb = _dispatch("/help", ctrl, red)
     assert handled
-    cb["show_help"].assert_called_once()
+    cb["show_palette"].assert_called_once_with(None)
 
 
 def test_clear_and_compact(ctrl, red):
@@ -118,7 +113,7 @@ def test_model_variants(ctrl, red):
 
 def test_reasoning_variants(ctrl, red):
     _, cb = _dispatch("/reasoning", ctrl, red)
-    cb["show_reasoning_menu"].assert_called_once()
+    cb["show_palette"].assert_called_once_with("reasoning")
 
     _dispatch("/reasoning high", ctrl, red)
     assert ("set_reasoning", {"effort": "high"}) == ctrl.last()
@@ -149,13 +144,13 @@ def test_yolo_and_tool_allowlist(ctrl, red):
 def test_persona_and_skills(ctrl, red):
     _, cb = _dispatch("/persona", ctrl, red)
     assert "list_personas" in ctrl.names()
-    cb["show_persona_menu"].assert_called_once()
+    cb["show_palette"].assert_called_once_with("personas")
     _dispatch("/persona planner", ctrl, red)
     assert ("set_persona", {"persona": "planner"}) == ctrl.last()
 
     _, cb = _dispatch("/skills", ctrl, red)
     assert "list_skills" in ctrl.names()
-    cb["show_skills_menu"].assert_called_once()
+    cb["show_palette"].assert_called_once_with("skills")
     _dispatch("/skills deploy", ctrl, red)
     assert ("send_message", {"text": "/skills deploy"}) == ctrl.last()
 
@@ -164,11 +159,11 @@ def test_mcp_lists_and_toggles(ctrl, red):
     # No arg → fetch the list and open the mcp picker section.
     _, cb = _dispatch("/mcp", ctrl, red)
     assert "list_mcp_servers" in ctrl.names()
-    cb["show_mcp_menu"].assert_called_once()
+    cb["show_palette"].assert_called_once_with("mcp")
 
     # `/mcp list` behaves the same as no arg.
     _, cb = _dispatch("/mcp list", ctrl, red)
-    cb["show_mcp_menu"].assert_called_once()
+    cb["show_palette"].assert_called_once_with("mcp")
 
     # A name toggles that server (connect/disconnect handled server-side).
     _dispatch("/mcp fetch", ctrl, red)

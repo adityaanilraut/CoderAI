@@ -177,6 +177,38 @@ class FileBackupStore:
 
         return entry
 
+    def _restore_entry(self, entry: Dict[str, Any]) -> Dict[str, Any]:
+        """Revert one index entry: delete a created file or restore from backup.
+
+        Returns ``{"success", "action" ("deleted"|"restored"), "filepath"}`` on
+        success (no ``message`` — callers word their own), or
+        ``{"success": False, "error"}``. Removing the consumed entry from the
+        index is the caller's job.
+        """
+        filepath = Path(entry["filepath"])
+        operation = entry.get("operation")
+        try:
+            if operation == "create":
+                # File was created — undo by deleting it
+                if filepath.exists():
+                    filepath.unlink()
+                return {"success": True, "action": "deleted", "filepath": str(filepath)}
+            elif operation in ("modify", "delete"):
+                backup_path = entry.get("backup_path")
+                if not backup_path or not Path(backup_path).exists():
+                    return {"success": False, "error": f"backup missing: {backup_path}"}
+                # Ensure parent directory exists (for deleted files)
+                filepath.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(backup_path, filepath)
+                _reapply_saved_mode(filepath, entry)
+                # Clean up the backup file
+                Path(backup_path).unlink()
+                return {"success": True, "action": "restored", "filepath": str(filepath)}
+            else:
+                return {"success": False, "error": f"Unknown operation type: {operation}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     def undo_last(self) -> Dict[str, Any]:
         """Undo the most recent file operation.
 
@@ -189,50 +221,15 @@ class FileBackupStore:
         entry = self.index.pop()
         self._save_index()
 
-        filepath = Path(entry["filepath"])
-        operation = entry["operation"]
-
-        try:
-            if operation == "create":
-                # File was created — undo by deleting it
-                if filepath.exists():
-                    filepath.unlink()
-                return {
-                    "success": True,
-                    "action": "deleted",
-                    "filepath": str(filepath),
-                    "message": f"Removed newly created file: {filepath.name}",
-                }
-
-            elif operation in ("modify", "delete"):
-                # Restore from backup
-                backup_path = Path(entry["backup_path"])
-                if not backup_path.exists():
-                    return {
-                        "success": False,
-                        "error": f"Backup file not found: {backup_path}",
-                    }
-
-                # Ensure parent directory exists (for deleted files)
-                filepath.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(backup_path, filepath)
-                _reapply_saved_mode(filepath, entry)
-
-                # Clean up the backup file
-                backup_path.unlink()
-
-                return {
-                    "success": True,
-                    "action": "restored",
-                    "filepath": str(filepath),
-                    "message": f"Restored {filepath.name} to previous version",
-                }
-
-            else:
-                return {"success": False, "error": f"Unknown operation type: {operation}"}
-
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+        result = self._restore_entry(entry)
+        if result.get("success"):
+            name = Path(entry["filepath"]).name
+            result["message"] = (
+                f"Removed newly created file: {name}"
+                if result["action"] == "deleted"
+                else f"Restored {name} to previous version"
+            )
+        return result
 
     def undo_specific(self, index: int) -> Dict[str, Any]:
         """Undo a specific operation by its index in the history.
@@ -257,37 +254,15 @@ class FileBackupStore:
         entry = self.index.pop(actual_idx)
         self._save_index()
 
-        filepath = Path(entry["filepath"])
-        operation = entry["operation"]
-
-        try:
-            if operation == "create":
-                if filepath.exists():
-                    filepath.unlink()
-                return {
-                    "success": True,
-                    "action": "deleted",
-                    "filepath": str(filepath),
-                    "message": f"Removed newly created file: {filepath.name}",
-                }
-            elif operation in ("modify", "delete"):
-                backup_path = Path(entry["backup_path"])
-                if not backup_path.exists():
-                    return {"success": False, "error": f"Backup file not found: {backup_path}"}
-                filepath.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(backup_path, filepath)
-                _reapply_saved_mode(filepath, entry)
-                backup_path.unlink()
-                return {
-                    "success": True,
-                    "action": "restored",
-                    "filepath": str(filepath),
-                    "message": f"Restored {filepath.name} to version from {entry['timestamp']}",
-                }
-            else:
-                return {"success": False, "error": f"Unknown operation type: {operation}"}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+        result = self._restore_entry(entry)
+        if result.get("success"):
+            name = Path(entry["filepath"]).name
+            result["message"] = (
+                f"Removed newly created file: {name}"
+                if result["action"] == "deleted"
+                else f"Restored {name} to version from {entry['timestamp']}"
+            )
+        return result
 
     def restore_after(self, cutoff_epoch: float) -> Dict[str, Any]:
         """Revert every backup recorded after ``cutoff_epoch`` (newest first).
@@ -324,27 +299,12 @@ class FileBackupStore:
 
         # Newest first so layered edits to a single file unwind in order.
         for entry in sorted(to_undo, key=_epoch, reverse=True):
-            filepath = Path(entry["filepath"])
-            operation = entry.get("operation")
-            try:
-                if operation == "create":
-                    if filepath.exists():
-                        filepath.unlink()
-                    deleted.append(str(filepath))
-                elif operation in ("modify", "delete"):
-                    backup_path_str = entry.get("backup_path")
-                    if not backup_path_str or not Path(backup_path_str).exists():
-                        errors.append(f"{filepath.name}: backup missing")
-                        continue
-                    filepath.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(backup_path_str, filepath)
-                    _reapply_saved_mode(filepath, entry)
-                    Path(backup_path_str).unlink()
-                    restored.append(str(filepath))
-                else:
-                    errors.append(f"{filepath.name}: unknown operation {operation!r}")
-            except Exception as e:
-                errors.append(f"{filepath.name}: {e}")
+            result = self._restore_entry(entry)
+            if result.get("success"):
+                target = deleted if result["action"] == "deleted" else restored
+                target.append(result["filepath"])
+            else:
+                errors.append(f"{Path(entry['filepath']).name}: {result['error']}")
 
         # Drop the consumed entries (by identity) and persist the index.
         consumed = {id(e) for e in to_undo}

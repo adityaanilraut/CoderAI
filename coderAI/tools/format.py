@@ -8,6 +8,8 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+from coderAI.system.safeguards import truncate_output
+from coderAI.tools._detect import walk_up_detect
 from coderAI.tools.base import Tool
 
 logger = logging.getLogger(__name__)
@@ -78,23 +80,12 @@ def detect_formatter(project_root: str = ".") -> Optional[str]:
     directory for formatter indicator files.  Returns the first formatter
     whose binary is available on PATH, in preference order.
     """
-    start_path = Path(project_root).resolve()
-    if start_path.is_file():
-        start_path = start_path.parent
 
-    for current_dir in [start_path] + list(start_path.parents):
-        for name in _FORMATTER_PREFERENCE:
-            config = FORMATTERS[name]
-            for detect_file in config["detect_files"]:
-                if (current_dir / detect_file).exists():
-                    cmd = config["cmd"]
-                    # For prettier we check npx availability
-                    if shutil.which(cmd):
-                        return name
-        if (current_dir / ".git").exists():
-            break
+    def _available(name: str, _dir: Path) -> Optional[str]:
+        # For prettier the binary probed is npx.
+        return name if shutil.which(FORMATTERS[name]["cmd"]) else None
 
-    return None
+    return walk_up_detect(project_root, FORMATTERS, _FORMATTER_PREFERENCE, _available)
 
 
 class FormatParams(BaseModel):
@@ -179,10 +170,7 @@ class FormatTool(Tool):
             stderr_str = stderr.decode("utf-8", errors="replace")
 
             # Truncate large diffs
-            max_output = 8000
-            output = stdout_str or stderr_str
-            if len(output) > max_output:
-                output = output[:max_output] + "\n... [truncated]"
+            output, _ = truncate_output(stdout_str or stderr_str, max_chars=8000)
 
             if check:
                 needs_formatting = process.returncode != 0

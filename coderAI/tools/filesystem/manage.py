@@ -150,6 +150,65 @@ class GlobSearchTool(Tool):
             }
 
 
+def _validate_transfer(
+    source: str, destination: str, overwrite: bool, verb: str
+) -> tuple[Path, Path, dict[str, Any] | None]:
+    """Shared security preamble for move/copy: protection, project-scope,
+    symlink-leaf and overwrite checks on both endpoints.
+
+    Returns ``(src, dst, error_or_None)``. Security-sensitive — MoveFileTool
+    and CopyFileTool must not drift apart; both also re-check symlink leaves
+    right before mutating via :func:`_recheck_symlinks`.
+    """
+    src = Path(os.path.expanduser(source))
+    dst = Path(os.path.expanduser(destination))
+
+    if not src.exists():
+        return src, dst, {"success": False, "error": f"Source does not exist: {source}"}
+
+    if _is_path_protected(src):
+        return src, dst, {"success": False, "error": f"Source is in a protected path: {source}"}
+    scope_err = _enforce_project_scope(src, "move/copy")
+    if scope_err:
+        return src, dst, scope_err
+    if _is_path_protected(dst):
+        return (
+            src,
+            dst,
+            {"success": False, "error": f"Destination is in a protected path: {destination}"},
+        )
+    scope_err = _enforce_project_scope(dst, "move/copy")
+    if scope_err:
+        return src, dst, scope_err
+    # Refuse symlink leaves on either side. ``_is_path_protected`` resolves
+    # through symlinks (and ``shutil.copy2`` follows them and copies the
+    # *target's* contents), so a swap between check and operation could
+    # redirect onto a protected target or pull ``/etc/passwd`` into the project.
+    symlink_err = _reject_symlink_leaf(src, f"{verb} from") or _reject_symlink_leaf(
+        dst, f"{verb} to"
+    )
+    if symlink_err:
+        return src, dst, symlink_err
+
+    if dst.exists() and not overwrite:
+        return (
+            src,
+            dst,
+            {
+                "success": False,
+                "error": f"Destination already exists: {destination}. Set overwrite=true to replace it.",
+            },
+        )
+    return src, dst, None
+
+
+def _recheck_symlinks(src: Path, dst: Path, verb: str) -> None:
+    """Re-check both leaves right before the operation to guard against a
+    TOCTOU swap after validation (mirrors DeleteFileTool._delete)."""
+    if _reject_symlink_leaf(src, f"{verb} from") or _reject_symlink_leaf(dst, f"{verb} to"):
+        raise OSError("Path was replaced by a symlink after validation")
+
+
 class MoveFileParams(BaseModel):
     source: str = Field(..., description="Source file or directory path")
     destination: str = Field(..., description="Destination path (file or directory)")
@@ -176,39 +235,9 @@ class MoveFileTool(Tool):
     ) -> dict[str, Any]:
 
         try:
-            src = Path(os.path.expanduser(source))
-            dst = Path(os.path.expanduser(destination))
-
-            if not src.exists():
-                return {"success": False, "error": f"Source does not exist: {source}"}
-
-            if _is_path_protected(src):
-                return {"success": False, "error": f"Source is in a protected path: {source}"}
-            scope_err = _enforce_project_scope(src, "move/copy")
-            if scope_err:
-                return scope_err
-            if _is_path_protected(dst):
-                return {
-                    "success": False,
-                    "error": f"Destination is in a protected path: {destination}",
-                }
-            scope_err = _enforce_project_scope(dst, "move/copy")
-            if scope_err:
-                return scope_err
-            # Refuse symlink leaves on either side. ``_is_path_protected``
-            # resolves through symlinks, so a swap between check and move
-            # could otherwise redirect the operation onto a protected target.
-            symlink_err = _reject_symlink_leaf(src, "move from") or _reject_symlink_leaf(
-                dst, "move to"
-            )
-            if symlink_err:
-                return symlink_err
-
-            if dst.exists() and not overwrite:
-                return {
-                    "success": False,
-                    "error": f"Destination already exists: {destination}. Set overwrite=true to replace it.",
-                }
+            src, dst, error = _validate_transfer(source, destination, overwrite, "move")
+            if error:
+                return error
 
             dst.parent.mkdir(parents=True, exist_ok=True)
 
@@ -219,14 +248,7 @@ class MoveFileTool(Tool):
                 await asyncio.to_thread(backup_store.backup_file, str(dst), "modify")
 
             def _move():
-                # Re-check both leaves right before the move to guard against a
-                # TOCTOU swap between the validation above and the op itself
-                # (mirrors DeleteFileTool._delete).
-                symlink_err2 = _reject_symlink_leaf(src, "move from") or _reject_symlink_leaf(
-                    dst, "move to"
-                )
-                if symlink_err2:
-                    raise OSError("Path was replaced by a symlink after validation")
+                _recheck_symlinks(src, dst, "move")
                 _shutil.move(str(src), str(dst))
 
             await asyncio.to_thread(_move)
@@ -267,40 +289,9 @@ class CopyFileTool(Tool):
     ) -> dict[str, Any]:
 
         try:
-            src = Path(os.path.expanduser(source))
-            dst = Path(os.path.expanduser(destination))
-
-            if not src.exists():
-                return {"success": False, "error": f"Source does not exist: {source}"}
-
-            if _is_path_protected(src):
-                return {"success": False, "error": f"Source is in a protected path: {source}"}
-            scope_err = _enforce_project_scope(src, "move/copy")
-            if scope_err:
-                return scope_err
-            if _is_path_protected(dst):
-                return {
-                    "success": False,
-                    "error": f"Destination is in a protected path: {destination}",
-                }
-            scope_err = _enforce_project_scope(dst, "move/copy")
-            if scope_err:
-                return scope_err
-            # ``shutil.copy2`` follows symlinks by default and copies the
-            # *target's* contents — a swapped src symlink would otherwise let
-            # us copy ``/etc/passwd`` into the project. Refuse symlink leaves
-            # on either side.
-            symlink_err = _reject_symlink_leaf(src, "copy from") or _reject_symlink_leaf(
-                dst, "copy to"
-            )
-            if symlink_err:
-                return symlink_err
-
-            if dst.exists() and not overwrite:
-                return {
-                    "success": False,
-                    "error": f"Destination already exists: {destination}. Set overwrite=true to replace it.",
-                }
+            src, dst, error = _validate_transfer(source, destination, overwrite, "copy")
+            if error:
+                return error
 
             dst.parent.mkdir(parents=True, exist_ok=True)
 
@@ -309,14 +300,7 @@ class CopyFileTool(Tool):
                 await asyncio.to_thread(backup_store.backup_file, str(dst), "modify")
 
             def _copy():
-                # Re-check both leaves right before the copy to guard against a
-                # TOCTOU swap between the validation above and the op itself
-                # (mirrors DeleteFileTool._delete).
-                symlink_err2 = _reject_symlink_leaf(src, "copy from") or _reject_symlink_leaf(
-                    dst, "copy to"
-                )
-                if symlink_err2:
-                    raise OSError("Path was replaced by a symlink after validation")
+                _recheck_symlinks(src, dst, "copy")
                 if src.is_dir():
                     if dst.exists():
                         _shutil.rmtree(str(dst))

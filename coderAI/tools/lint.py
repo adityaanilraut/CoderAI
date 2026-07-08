@@ -8,12 +8,14 @@ from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, Field
 
+from coderAI.system.safeguards import truncate_output
+from coderAI.tools._detect import walk_up_detect
 from coderAI.tools.base import Tool
 
 logger = logging.getLogger(__name__)
 
 # Linter configurations: (command, check_args, fix_args, file_extensions)
-LINTERS = {
+LINTERS: Dict[str, Dict[str, Any]] = {
     "ruff": {
         "cmd": "ruff",
         "check_args": ["check", "--output-format=json"],
@@ -57,24 +59,12 @@ def detect_linter(project_root: str = ".") -> Optional[str]:
     Returns:
         Name of the detected linter, or None
     """
-    start_path = Path(project_root).resolve()
-    if start_path.is_file():
-        start_path = start_path.parent
 
-    for current_dir in [start_path] + list(start_path.parents):
-        for linter_name, config in LINTERS.items():
-            # Check if project indicator files exist
-            for detect_file in config["detect_files"]:
-                if (current_dir / detect_file).exists():
-                    # Check if the linter binary is available
-                    cmd_str = config["cmd"]
-                    assert isinstance(cmd_str, str)
-                    if shutil.which(cmd_str):
-                        return linter_name
-        if (current_dir / ".git").exists():
-            break
+    def _available(name: str, _dir: Path) -> Optional[str]:
+        # For eslint the binary probed is npx.
+        return name if shutil.which(LINTERS[name]["cmd"]) else None
 
-    return None
+    return walk_up_detect(project_root, LINTERS, list(LINTERS), _available)
 
 
 class LintParams(BaseModel):
@@ -122,7 +112,6 @@ class LintTool(Tool):
 
             config = LINTERS[linter_name]
             cmd_binary = config["cmd"]
-            assert isinstance(cmd_binary, str)
             if not shutil.which(cmd_binary):
                 return {
                     "success": False,
@@ -131,7 +120,6 @@ class LintTool(Tool):
 
             # Build command
             args = config["fix_args"] if fix else config["check_args"]
-            assert isinstance(args, list)
             cmd = [cmd_binary] + args
 
             # For file-level linters, append the path
@@ -155,9 +143,7 @@ class LintTool(Tool):
             stderr_str = stderr.decode("utf-8", errors="replace")
 
             # Truncate very large output
-            max_output = 8000
-            if len(stdout_str) > max_output:
-                stdout_str = stdout_str[:max_output] + "\n... [truncated]"
+            stdout_str, _ = truncate_output(stdout_str, max_chars=8000)
 
             # Parse results
             has_issues = process.returncode != 0

@@ -7,6 +7,7 @@ import re
 import shlex
 import shutil
 import signal
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -15,7 +16,7 @@ from pydantic import BaseModel, Field
 from coderAI.core.services import get_services
 from coderAI.core.tool_error_codes import ToolErrorCode
 from coderAI.system.proc import kill_process_group, new_session_kwargs, run_scrubbed, scrub_env
-from coderAI.system.safeguards import truncate_output
+from coderAI.system.safeguards import is_interactive_command, truncate_output
 from coderAI.tools.base import Tool
 
 logger = logging.getLogger(__name__)
@@ -428,6 +429,86 @@ def _rewrite_command_aliases(command: str) -> str:
     return command
 
 
+@dataclass
+class _PreparedCommand:
+    """Outcome of the safety pipeline: what to spawn, how, and where.
+
+    ``spawn_cmd`` is a string for shell spawns and an argv list for exec
+    spawns — its type IS the shell-vs-exec decision.
+    """
+
+    command: str  # alias-rewritten command, for tracking / result payloads
+    working_dir: str
+    spawn_cmd: Union[str, List[str]]
+
+
+def _prepare_command(
+    command: str, working_dir: str, *, background: bool = False
+) -> Union[Dict[str, Any], _PreparedCommand]:
+    """Shared block/interactive/dangerous/alias/shlex pipeline for the run tools.
+
+    Resolves the working dir, applies the safety checks, rewrites aliases, and
+    splits the command for exec-vs-shell spawning. Returns the finished error
+    result dict when a check fails, otherwise the prepared command.
+    """
+    kind = "background command" if background else "command"
+
+    resolved_cwd, cwd_err = _resolve_working_dir(working_dir)
+    if cwd_err:
+        return {"success": False, "error": cwd_err, "error_code": ToolErrorCode.SCOPE}
+
+    # Block known destructive commands (these are never allowed)
+    if is_command_blocked(command):
+        return {
+            "success": False,
+            "error": f"Command blocked for safety: {command}",
+            "error_code": ToolErrorCode.BLOCKED,
+            "blocked": True,
+        }
+
+    # Block interactive commands that would hang without a TTY
+    if is_interactive_command(command):
+        logger.warning(f"Blocked interactive {kind}: {command}")
+        hint = (
+            "Interactive commands cannot run in the background."
+            if background
+            else "Use an interactive terminal session instead."
+        )
+        return {
+            "success": False,
+            "error": f"Command appears interactive (requires TTY/user input): {command!r}. {hint}",
+            "error_code": ToolErrorCode.INTERACTIVE,
+            "interactive": True,
+        }
+
+    # Log dangerous commands (actual confirmation is handled by
+    # requires_confirmation + the confirmation callback in ToolRegistry)
+    if is_command_dangerous(command):
+        logger.warning(f"Executing potentially dangerous {kind}: {command}")
+
+    # Rewrite common aliases (e.g. python -> python3 on macOS)
+    command = _rewrite_command_aliases(command)
+
+    # Use exec (no shell) for simple commands; only shell syntax needs a shell
+    spawn_cmd: Union[str, List[str]]
+    if _needs_shell(command):
+        spawn_cmd = command
+    else:
+        try:
+            spawn_cmd = shlex.split(command)
+        except ValueError:
+            return {
+                "success": False,
+                "error": (
+                    f"Command has malformed quoting — cannot split safely: "
+                    f"{command!r}. Check for unmatched quotes."
+                ),
+                "error_code": ToolErrorCode.MALFORMED_COMMAND,
+            }
+
+    return _PreparedCommand(command, str(resolved_cwd), spawn_cmd)
+
+
 class RunCommandParams(BaseModel):
     command: str = Field(..., description="Shell command to execute")
     working_dir: str = Field(
@@ -469,74 +550,24 @@ class RunCommandTool(Tool):
         try:
             timeout = max(1, min(timeout, 3600))
 
-            resolved_cwd, cwd_err = _resolve_working_dir(working_dir)
-            if cwd_err:
-                return {"success": False, "error": cwd_err, "error_code": ToolErrorCode.SCOPE}
-            working_dir = str(resolved_cwd)
-
-            # Block known destructive commands (these are never allowed)
-            if is_command_blocked(command):
-                return {
-                    "success": False,
-                    "error": f"Command blocked for safety: {command}",
-                    "error_code": ToolErrorCode.BLOCKED,
-                    "blocked": True,
-                }
-
-            # Block interactive commands that would hang without a TTY
-            from coderAI.system.safeguards import is_interactive_command
-
-            if is_interactive_command(command):
-                logger.warning(f"Blocked interactive command: {command}")
-                return {
-                    "success": False,
-                    "error": (
-                        "Command appears interactive (requires TTY/user input): "
-                        f"{command!r}. Use an interactive terminal session instead."
-                    ),
-                    "error_code": ToolErrorCode.INTERACTIVE,
-                    "interactive": True,
-                }
-
-            # Log dangerous commands (actual confirmation is handled by
-            # requires_confirmation + the confirmation callback in ToolRegistry)
-            if is_command_dangerous(command):
-                logger.warning(f"Executing potentially dangerous command: {command}")
-
-            # Rewrite common aliases (e.g. python -> python3 on macOS)
-            command = _rewrite_command_aliases(command)
-
-            # Try to use exec (no shell) for simple commands
-            needs_shell = _needs_shell(command)
+            prep = _prepare_command(command, working_dir)
+            if isinstance(prep, dict):
+                return prep
+            command = prep.command
 
             stdin_bytes = None
             if input is not None:
                 stdin_bytes = input.encode("utf-8", errors="replace")[:65536]  # cap at 64KB
-
-            if needs_shell:
-                spawn_cmd: Union[str, List[str]] = command
-            else:
-                try:
-                    spawn_cmd = shlex.split(command)
-                except ValueError:
-                    return {
-                        "success": False,
-                        "error": (
-                            f"Command has malformed quoting — cannot split safely: "
-                            f"{command!r}. Check for unmatched quotes."
-                        ),
-                        "error_code": ToolErrorCode.MALFORMED_COMMAND,
-                    }
 
             # Spawn with a scrubbed environment (secrets never reach a
             # model-authored command) and process-group isolation; run_scrubbed
             # enforces the timeout — group SIGTERM → SIGKILL, reaping any
             # backgrounded grandchildren — and returns partial output on expiry.
             returncode, stdout, stderr, timed_out = await run_scrubbed(
-                spawn_cmd,
-                cwd=working_dir,
+                prep.spawn_cmd,
+                cwd=prep.working_dir,
                 timeout=timeout,
-                shell=needs_shell,
+                shell=isinstance(prep.spawn_cmd, str),
                 stdin=stdin_bytes,
             )
 
@@ -643,38 +674,10 @@ class RunBackgroundTool(Tool):
         only commands with shell metacharacters fall back to the shell.
         """
         try:
-            resolved_cwd, cwd_err = _resolve_working_dir(working_dir)
-            if cwd_err:
-                return {"success": False, "error": cwd_err, "error_code": ToolErrorCode.SCOPE}
-            working_dir = str(resolved_cwd)
-
-            if is_command_blocked(command):
-                return {
-                    "success": False,
-                    "error": f"Command blocked for safety: {command}",
-                    "blocked": True,
-                }
-
-            # Block interactive commands that would hang without a TTY
-            from coderAI.system.safeguards import is_interactive_command
-
-            if is_interactive_command(command):
-                logger.warning(f"Blocked interactive background command: {command}")
-                return {
-                    "success": False,
-                    "error": (
-                        "Command appears interactive (requires TTY/user input): "
-                        f"{command!r}. Interactive commands cannot run in the background."
-                    ),
-                    "error_code": ToolErrorCode.INTERACTIVE,
-                    "interactive": True,
-                }
-
-            if is_command_dangerous(command):
-                logger.warning(f"Executing potentially dangerous background command: {command}")
-
-            command = _rewrite_command_aliases(command)
-            needs_shell = _needs_shell(command)
+            prep = _prepare_command(command, working_dir, background=True)
+            if isinstance(prep, dict):
+                return prep
+            command = prep.command
 
             stdout_target = (
                 asyncio.subprocess.PIPE if capture_output else asyncio.subprocess.DEVNULL
@@ -686,35 +689,24 @@ class RunBackgroundTool(Tool):
             # Detached lifetime (we track it rather than await it), so we can't
             # use run_scrubbed — but the child still gets a scrubbed env so a
             # backgrounded command can't read secrets out of the environment.
-            if needs_shell:
+            if isinstance(prep.spawn_cmd, str):
                 process = await asyncio.create_subprocess_shell(
-                    command,
+                    prep.spawn_cmd,
                     stdout=stdout_target,
                     stderr=stderr_target,
-                    cwd=working_dir,
+                    cwd=prep.working_dir,
                     env=scrub_env(),
                     **new_session_kwargs(),
                 )
             else:
-                try:
-                    args = shlex.split(command)
-                    process = await asyncio.create_subprocess_exec(
-                        *args,
-                        stdout=stdout_target,
-                        stderr=stderr_target,
-                        cwd=working_dir,
-                        env=scrub_env(),
-                        **new_session_kwargs(),
-                    )
-                except ValueError:
-                    return {
-                        "success": False,
-                        "error": (
-                            f"Command has malformed quoting — cannot split safely: "
-                            f"{command!r}. Check for unmatched quotes."
-                        ),
-                        "error_code": ToolErrorCode.MALFORMED_COMMAND,
-                    }
+                process = await asyncio.create_subprocess_exec(
+                    *prep.spawn_cmd,
+                    stdout=stdout_target,
+                    stderr=stderr_target,
+                    cwd=prep.working_dir,
+                    env=scrub_env(),
+                    **new_session_kwargs(),
+                )
 
             # Track the process
             _ensure_atexit_cleanup()

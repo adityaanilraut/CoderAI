@@ -134,6 +134,37 @@ def validate_remote_mcp_url(url: str) -> Optional[str]:
     )
 
 
+def _shape_tool_result(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Shape a ``tools/call`` result into the tool-facing dict.
+
+    Concatenates the text content parts; MCP's ``isError: true`` marks a
+    tool-level failure (distinct from a JSON-RPC protocol error, which
+    :meth:`MCPClient._request` already turned into ``success=False``).
+    """
+    text_content = "".join(
+        part.get("text", "") for part in result.get("content", []) if part.get("type") == "text"
+    )
+    is_error = bool(result.get("isError"))
+    out: Dict[str, Any] = {"success": not is_error, "content": text_content, "raw": result}
+    if is_error:
+        out["error"] = text_content or "MCP tool returned an error."
+    return out
+
+
+def _reject_reserved_server_name(server_name: str) -> Optional[Dict[str, Any]]:
+    """``mcp__<server>__<tool>`` routing uses the first ``__`` after the prefix;
+    disallow ``__`` in the server segment so names stay unambiguous."""
+    if "__" in server_name:
+        return {
+            "success": False,
+            "error": (
+                "server_name must not contain '__' — it is reserved for MCP tool "
+                f"id encoding (got {server_name!r}). Use a name like 'my_server'."
+            ),
+        }
+    return None
+
+
 class MCPAuthRequiredError(Exception):
     """Raised when an HTTP MCP server demands OAuth (HTTP 401).
 
@@ -323,6 +354,62 @@ class MCPClient:
                 "stderr drain for MCP server '%s' ended unexpectedly", server_name, exc_info=True
             )
 
+    def _init_request(self, init_id: int) -> Dict[str, Any]:
+        """The MCP ``initialize`` request (JSON-RPC 2.0), shared by all transports."""
+        return {
+            "jsonrpc": "2.0",
+            "id": init_id,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "CoderAI", "version": "0.1.0"},
+            },
+        }
+
+    async def _finish_connect(
+        self,
+        server_name: str,
+        entry: Dict[str, Any],
+        init_response: Dict[str, Any],
+        tools_response: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Shared tail of the ``connect_*`` methods.
+
+        Registers the server entry (adding its tools and initialize result),
+        records the discovered tools, probes resources/prompts, and shapes the
+        connection summary.
+        """
+        server_info = tools_response.get("result", {}).get("tools", [])
+        entry["tools"] = server_info
+        entry["server_info"] = init_response.get("result", {})
+        self.servers[server_name] = entry
+
+        for tool in server_info:
+            self.discovered_tools.append(
+                {
+                    "server": server_name,
+                    "name": tool.get("name", ""),
+                    "description": tool.get("description", ""),
+                    "input_schema": tool.get("inputSchema", {}),
+                }
+            )
+
+        extras = await self._discover_extras(server_name)
+
+        out: Dict[str, Any] = {
+            "success": True,
+            "server": server_name,
+            "tools_discovered": len(server_info),
+            "resources_discovered": extras["resources"],
+            "prompts_discovered": extras["prompts"],
+            "tools": [t.get("name") for t in server_info],
+            "server_info": init_response.get("result", {}).get("serverInfo", {}),
+        }
+        if entry["transport"] != "stdio":
+            out["transport"] = entry["transport"]
+        return out
+
     async def connect_stdio(
         self, server_name: str, command: str, args: Optional[List[str]] = None
     ) -> Dict[str, Any]:
@@ -336,16 +423,9 @@ class MCPClient:
         Returns:
             Connection result with discovered tools
         """
-        # ``mcp__<server>__<tool>`` routing uses the first ``__`` after the prefix;
-        # disallow ``__`` in the server segment so names stay unambiguous.
-        if "__" in server_name:
-            return {
-                "success": False,
-                "error": (
-                    "server_name must not contain '__' — it is reserved for MCP tool "
-                    f"id encoding (got {server_name!r}). Use a name like 'my_server'."
-                ),
-            }
+        reject = _reject_reserved_server_name(server_name)
+        if reject:
+            return reject
 
         # Single launcher-validation choke point: applies to both LLM-driven
         # ``mcp_connect`` and config-driven autoconnect (which calls us directly).
@@ -383,21 +463,7 @@ class MCPClient:
 
             # Send MCP initialize request (JSON-RPC 2.0)
             init_id = self._get_next_id()
-            init_request = {
-                "jsonrpc": "2.0",
-                "id": init_id,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {},
-                    "clientInfo": {
-                        "name": "CoderAI",
-                        "version": "0.1.0",
-                    },
-                },
-            }
-
-            process.stdin.write((json.dumps(init_request) + "\n").encode())
+            process.stdin.write((json.dumps(self._init_request(init_id)) + "\n").encode())
             await process.stdin.drain()
 
             # Read response with timeout (skips any interleaved notifications)
@@ -437,40 +503,19 @@ class MCPClient:
                     "error": f"Server '{server_name}' did not respond to tools/list",
                 }
 
-            # Store connection info
-            server_info = tools_response.get("result", {}).get("tools", [])
-            self.servers[server_name] = {
-                "transport": "stdio",
-                "process": process,
-                "stderr_task": stderr_task,
-                "tools": server_info,
-                "server_info": init_response.get("result", {}),
-                "_conn_params": {"command": command, "args": args},
-            }
+            result = await self._finish_connect(
+                server_name,
+                {
+                    "transport": "stdio",
+                    "process": process,
+                    "stderr_task": stderr_task,
+                    "_conn_params": {"command": command, "args": args},
+                },
+                init_response,
+                tools_response,
+            )
             connection_failed = False
-
-            # Store discovered tools
-            for tool in server_info:
-                self.discovered_tools.append(
-                    {
-                        "server": server_name,
-                        "name": tool.get("name", ""),
-                        "description": tool.get("description", ""),
-                        "input_schema": tool.get("inputSchema", {}),
-                    }
-                )
-
-            extras = await self._discover_extras(server_name)
-
-            return {
-                "success": True,
-                "server": server_name,
-                "tools_discovered": len(server_info),
-                "resources_discovered": extras["resources"],
-                "prompts_discovered": extras["prompts"],
-                "tools": [t.get("name") for t in server_info],
-                "server_info": init_response.get("result", {}).get("serverInfo", {}),
-            }
+            return result
 
         except FileNotFoundError:
             return {
@@ -505,88 +550,15 @@ class MCPClient:
     ) -> Dict[str, Any]:
         """Call a tool on a connected MCP server.
 
-        Args:
-            server_name: Name of the connected server
-            tool_name: Name of the tool to call
-            arguments: Tool arguments
-
-        Returns:
-            Tool execution result
+        Dispatches over the connected transport via :meth:`_request` and shapes
+        the reply with :func:`_shape_tool_result`.
         """
-        if server_name not in self.servers:
-            return {"success": False, "error": f"Server not connected: {server_name}"}
-
-        server = self.servers[server_name]
-        transport = server.get("transport", "stdio")
-
-        if transport == "sse":
-            return await self._call_tool_sse(server_name, tool_name, arguments)
-        if transport == "http":
-            return await self._call_tool_http(server_name, tool_name, arguments)
-
-        process = server["process"]
-
-        if process.returncode is not None:
-            return {"success": False, "error": f"Server '{server_name}' process has exited"}
-
-        try:
-            call_id = self._get_next_id()
-            request = {
-                "jsonrpc": "2.0",
-                "id": call_id,
-                "method": "tools/call",
-                "params": {
-                    "name": tool_name,
-                    "arguments": arguments,
-                },
-            }
-
-            assert process.stdin is not None
-            process.stdin.write((json.dumps(request) + "\n").encode())
-            await process.stdin.drain()
-
-            try:
-                response = await self._read_response(process.stdout, call_id, timeout=30)
-            except asyncio.TimeoutError:
-                return {
-                    "success": False,
-                    "error": f"Tool call '{tool_name}' timed out after 30s",
-                }
-
-            result = response.get("result", {})
-            error = response.get("error")
-
-            if error:
-                return {
-                    "success": False,
-                    "error": error.get("message", str(error)),
-                }
-
-            # Extract text content from MCP response
-            content_parts = result.get("content", [])
-            text_content = ""
-            for part in content_parts:
-                if part.get("type") == "text":
-                    text_content += part.get("text", "")
-
-            # MCP spec: isError=true means the tool itself encountered an error
-            # (distinct from a JSON-RPC protocol error above).
-            is_error = bool(result.get("isError"))
-            out: Dict[str, Any] = {
-                "success": not is_error,
-                "content": text_content,
-                "raw": result,
-            }
-            if is_error:
-                out["error"] = text_content or "MCP tool returned an error."
-            return out
-
-        except Exception as e:
-            return {
-                "success": False,
-                "error": str(e),
-                "error_code": ToolErrorCode.TOOL_ERROR,
-            }
+        res = await self._request(
+            server_name, "tools/call", {"name": tool_name, "arguments": arguments}
+        )
+        if not res["success"]:
+            return res
+        return _shape_tool_result(res["result"])
 
     async def _request(
         self,
@@ -867,11 +839,9 @@ class MCPClient:
         """
         import aiohttp
 
-        if "__" in server_name:
-            return {
-                "success": False,
-                "error": "server_name must not contain '__'",
-            }
+        reject = _reject_reserved_server_name(server_name)
+        if reject:
+            return reject
 
         scheme_err = validate_remote_mcp_url(url)
         if scheme_err:
@@ -925,18 +895,7 @@ class MCPClient:
 
             # Send initialize request via POST to message endpoint
             init_id = self._get_next_id()
-            init_request = {
-                "jsonrpc": "2.0",
-                "id": init_id,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {},
-                    "clientInfo": {"name": "CoderAI", "version": "0.1.0"},
-                },
-            }
-
-            async with session.post(message_url, json=init_request) as resp:
+            async with session.post(message_url, json=self._init_request(init_id)) as resp:
                 init_response = await resp.json()
 
             # Send initialized notification
@@ -958,39 +917,18 @@ class MCPClient:
             async with session.post(message_url, json=tools_request) as resp:
                 tools_response = await resp.json()
 
-            server_info = tools_response.get("result", {}).get("tools", [])
-            self.servers[server_name] = {
-                "transport": "sse",
-                "session": session,
-                "message_url": message_url,
-                "sse_url": url,
-                "tools": server_info,
-                "server_info": init_response.get("result", {}),
-                "_conn_params": {"url": url},
-            }
-
-            for tool in server_info:
-                self.discovered_tools.append(
-                    {
-                        "server": server_name,
-                        "name": tool.get("name", ""),
-                        "description": tool.get("description", ""),
-                        "input_schema": tool.get("inputSchema", {}),
-                    }
-                )
-
-            extras = await self._discover_extras(server_name)
-
-            return {
-                "success": True,
-                "server": server_name,
-                "transport": "sse",
-                "tools_discovered": len(server_info),
-                "resources_discovered": extras["resources"],
-                "prompts_discovered": extras["prompts"],
-                "tools": [t.get("name") for t in server_info],
-                "server_info": init_response.get("result", {}).get("serverInfo", {}),
-            }
+            return await self._finish_connect(
+                server_name,
+                {
+                    "transport": "sse",
+                    "session": session,
+                    "message_url": message_url,
+                    "sse_url": url,
+                    "_conn_params": {"url": url},
+                },
+                init_response,
+                tools_response,
+            )
 
         except ImportError:
             if session:
@@ -1001,59 +939,6 @@ class MCPClient:
                 await session.close()
             if server_name in self.servers:
                 del self.servers[server_name]
-            return {
-                "success": False,
-                "error": str(e),
-                "error_code": ToolErrorCode.TOOL_ERROR,
-            }
-
-    async def _call_tool_sse(
-        self, server_name: str, tool_name: str, arguments: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Call a tool on an SSE-connected MCP server."""
-        import aiohttp as _aiohttp
-
-        server = self.servers[server_name]
-        session = server.get("session")
-        message_url = server.get("message_url")
-
-        if not session or not message_url:
-            return {"success": False, "error": f"SSE connection state invalid for '{server_name}'"}
-
-        try:
-            call_id = self._get_next_id()
-            request = {
-                "jsonrpc": "2.0",
-                "id": call_id,
-                "method": "tools/call",
-                "params": {"name": tool_name, "arguments": arguments},
-            }
-            async with session.post(
-                message_url, json=request, timeout=_aiohttp.ClientTimeout(total=30)
-            ) as resp:
-                response = await resp.json()
-
-            result = response.get("result", {})
-            error = response.get("error")
-            if error:
-                return {"success": False, "error": error.get("message", str(error))}
-
-            content_parts = result.get("content", [])
-            text_content = ""
-            for part in content_parts:
-                if part.get("type") == "text":
-                    text_content += part.get("text", "")
-
-            is_error = bool(result.get("isError"))
-            out: Dict[str, Any] = {
-                "success": not is_error,
-                "content": text_content,
-                "raw": result,
-            }
-            if is_error:
-                out["error"] = text_content or "MCP tool returned an error."
-            return out
-        except Exception as e:
             return {
                 "success": False,
                 "error": str(e),
@@ -1085,11 +970,9 @@ class MCPClient:
         """
         import aiohttp
 
-        if "__" in server_name:
-            return {
-                "success": False,
-                "error": "server_name must not contain '__'",
-            }
+        reject = _reject_reserved_server_name(server_name)
+        if reject:
+            return reject
 
         scheme_err = validate_remote_mcp_url(url)
         if scheme_err:
@@ -1116,18 +999,8 @@ class MCPClient:
             session = aiohttp.ClientSession(headers=base_headers)
 
             init_id = self._get_next_id()
-            init_request = {
-                "jsonrpc": "2.0",
-                "id": init_id,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {},
-                    "clientInfo": {"name": "CoderAI", "version": "0.1.0"},
-                },
-            }
             init_response, session_id = await self._http_send(
-                session, url, init_request, expected_id=init_id, session_id=None
+                session, url, self._init_request(init_id), expected_id=init_id, session_id=None
             )
             if init_response is None:
                 await session.close()
@@ -1155,40 +1028,19 @@ class MCPClient:
             )
             tools_response = tools_response or {}
 
-            server_info = tools_response.get("result", {}).get("tools", [])
-            self.servers[server_name] = {
-                "transport": "http",
-                "session": session,
-                "url": url,
-                "session_id": session_id,
-                "headers": headers or {},
-                "tools": server_info,
-                "server_info": init_response.get("result", {}),
-                "_conn_params": {"url": url, "headers": headers or {}},
-            }
-
-            for tool in server_info:
-                self.discovered_tools.append(
-                    {
-                        "server": server_name,
-                        "name": tool.get("name", ""),
-                        "description": tool.get("description", ""),
-                        "input_schema": tool.get("inputSchema", {}),
-                    }
-                )
-
-            extras = await self._discover_extras(server_name)
-
-            return {
-                "success": True,
-                "server": server_name,
-                "transport": "http",
-                "tools_discovered": len(server_info),
-                "resources_discovered": extras["resources"],
-                "prompts_discovered": extras["prompts"],
-                "tools": [t.get("name") for t in server_info],
-                "server_info": init_response.get("result", {}).get("serverInfo", {}),
-            }
+            return await self._finish_connect(
+                server_name,
+                {
+                    "transport": "http",
+                    "session": session,
+                    "url": url,
+                    "session_id": session_id,
+                    "headers": headers or {},
+                    "_conn_params": {"url": url, "headers": headers or {}},
+                },
+                init_response,
+                tools_response,
+            )
 
         except MCPAuthRequiredError as e:
             if session:
@@ -1301,70 +1153,6 @@ class MCPClient:
             if text.startswith("data:"):
                 data_lines.append(text[5:].lstrip())
             # Other SSE fields (event:, id:, retry:) are not needed here.
-
-    async def _call_tool_http(
-        self, server_name: str, tool_name: str, arguments: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Call a tool on a Streamable-HTTP-connected MCP server."""
-        server = self.servers[server_name]
-        session = server.get("session")
-        url = server.get("url")
-        session_id = server.get("session_id")
-
-        if not session or not url:
-            return {
-                "success": False,
-                "error": f"HTTP connection state invalid for '{server_name}'",
-            }
-
-        try:
-            call_id = self._get_next_id()
-            request = {
-                "jsonrpc": "2.0",
-                "id": call_id,
-                "method": "tools/call",
-                "params": {"name": tool_name, "arguments": arguments},
-            }
-            response, _ = await self._http_send(
-                session, url, request, expected_id=call_id, session_id=session_id
-            )
-            response = response or {}
-
-            result = response.get("result", {})
-            error = response.get("error")
-            if error:
-                return {"success": False, "error": error.get("message", str(error))}
-
-            content_parts = result.get("content", [])
-            text_content = ""
-            for part in content_parts:
-                if part.get("type") == "text":
-                    text_content += part.get("text", "")
-
-            is_error = bool(result.get("isError"))
-            out: Dict[str, Any] = {
-                "success": not is_error,
-                "content": text_content,
-                "raw": result,
-            }
-            if is_error:
-                out["error"] = text_content or "MCP tool returned an error."
-            return out
-        except MCPAuthRequiredError:
-            return {
-                "success": False,
-                "needs_auth": True,
-                "error": (
-                    f"Authorization expired for '{server_name}'. "
-                    f"Run: coderAI mcp login {server_name}"
-                ),
-            }
-        except Exception as e:
-            return {
-                "success": False,
-                "error": str(e),
-                "error_code": ToolErrorCode.TOOL_ERROR,
-            }
 
     def get_tools_as_openai_format(self) -> List[Dict[str, Any]]:
         """Get discovered MCP tools in OpenAI function-calling format.

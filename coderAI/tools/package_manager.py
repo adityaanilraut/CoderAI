@@ -9,6 +9,8 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 from coderAI.system.proc import run_scrubbed
+from coderAI.system.safeguards import truncate_output
+from coderAI.tools._detect import walk_up_detect
 from coderAI.tools.base import Tool
 
 logger = logging.getLogger(__name__)
@@ -101,27 +103,14 @@ _DETECTION_ORDER = ["pip3", "pip", "npm", "yarn", "pnpm", "bun", "cargo", "go"]
 
 def detect_package_manager(project_root: str = ".") -> Optional[str]:
     """Auto-detect the package manager used by the project."""
-    start_path = Path(project_root).resolve()
-    if start_path.is_file():
-        start_path = start_path.parent
 
-    for current_dir in [start_path] + list(start_path.parents):
-        for name in _DETECTION_ORDER:
-            config = PACKAGE_MANAGERS[name]
-            for detect_file in config["detect_files"]:
-                if (current_dir / detect_file).exists():
-                    if name == "pip3" and shutil.which("pip3"):
-                        return "pip3"
-                    if name == "pip" and not shutil.which("pip3") and shutil.which("pip"):
-                        return "pip"
-                    if name in ("pip", "pip3"):
-                        continue
-                    if shutil.which(name):
-                        return name
-        if (current_dir / ".git").exists():
-            break
+    def _available(name: str, _dir: Path) -> Optional[str]:
+        # pip3 and pip probe the same indicator files; pip3 wins when present.
+        if name == "pip" and shutil.which("pip3"):
+            return None
+        return name if shutil.which(name) else None
 
-    return None
+    return walk_up_detect(project_root, PACKAGE_MANAGERS, _DETECTION_ORDER, _available)
 
 
 # URL / VCS schemes that make the package manager fetch and execute arbitrary
@@ -439,9 +428,7 @@ class PackageManagerTool(Tool):
             stdout_str = stdout.decode("utf-8", errors="replace")
             stderr_str = stderr.decode("utf-8", errors="replace")
 
-            max_output = 8000
-            if len(stdout_str) > max_output:
-                stdout_str = stdout_str[:max_output] + "\n... [truncated]"
+            stdout_str, _ = truncate_output(stdout_str, max_chars=8000)
 
             result: Dict[str, Any] = {
                 "success": returncode == 0,
