@@ -6,14 +6,13 @@ import logging
 import os
 import shutil
 import stat
-import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Protocol, cast, runtime_checkable
 
 from pydantic import BaseModel, Field
 
-from coderAI.system.fsperms import OWNER_RW, OWNER_RWX, restrict_path
+from coderAI.system.fsperms import OWNER_RW, OWNER_RWX, atomic_write_json, restrict_path
 from coderAI.tools.base import Tool
 
 logger = logging.getLogger(__name__)
@@ -107,36 +106,20 @@ class FileBackupStore:
             try:
                 with open(self.index_file, "r") as f:
                     return cast(List[Dict[str, Any]], json.load(f))
-            except (json.JSONDecodeError, Exception):
+            except Exception as e:
+                logger.warning("Could not load backup index %s: %s", self.index_file, e)
                 return []
         return []
 
     def _save_index(self):
         """Atomically write the backup index to disk.
 
-        A crash between ``open()`` and ``close()`` would otherwise leave a
-        truncated ``index.json`` that fails to parse on the next load, and
-        the store would silently reset to an empty index. Write to a
-        temp file in the same directory, then ``os.replace`` — which is
-        atomic on both POSIX and Windows.
+        A non-atomic write could leave a truncated ``index.json`` that fails to
+        parse on the next load, silently resetting the store to an empty index;
+        :func:`atomic_write_json` writes-then-replaces (and ``fsync``s) to
+        prevent that.
         """
-        fd, tmp_path = tempfile.mkstemp(dir=str(self.backup_dir), prefix=".index-", suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w") as f:
-                json.dump(self.index, f, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp_path, self.index_file)
-        except Exception:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+        atomic_write_json(self.index_file, self.index, fsync=True)
 
     def backup_file(self, filepath: str, operation: str = "modify") -> Dict[str, Any]:
         """Create a backup of a file before modification.

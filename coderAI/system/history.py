@@ -2,9 +2,7 @@
 
 import json
 import logging
-import os
 import re
-import tempfile
 import threading
 import time
 import uuid
@@ -14,38 +12,19 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
-from coderAI.system.fsperms import OWNER_RWX, restrict_fd, restrict_path
+from coderAI.system.fsperms import OWNER_RWX, atomic_write_json, restrict_path
 
 logger = logging.getLogger(__name__)
 
 
 def _atomic_write_json(target: Path, obj: Any) -> None:
-    """Atomically write *obj* as JSON to *target*, owner-only (0600).
+    """Atomically write *obj* as compact, owner-only (0600) JSON to *target*.
 
-    Uses ``tempfile.mkstemp`` — which creates the temp file at 0600 in one
-    syscall — plus ``os.replace`` so there is never a window where a session
-    file (which holds conversation content) or the index is world-readable, and
-    a crash mid-write can't leave truncated JSON behind. Replaces the older
-    ``open()`` + ``restrict_fd`` pattern that briefly created the temp at the
-    process umask (typically 0644) before chmod-ing it down.
+    Session files hold conversation content and the index must never be left
+    truncated by a crash; :func:`atomic_write_json` guarantees both. Compact
+    output (``indent=None``) keeps potentially large session files small.
     """
-    fd, tmp = tempfile.mkstemp(dir=str(target.parent), prefix=f".{target.name}.", suffix=".tmp")
-    try:
-        restrict_fd(fd)
-        with os.fdopen(fd, "w") as f:
-            json.dump(obj, f)
-        os.replace(tmp, str(target))
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-    finally:
-        try:
-            os.close(fd)
-        except OSError:
-            pass
+    atomic_write_json(target, obj, indent=None)
 
 
 class Message(BaseModel):

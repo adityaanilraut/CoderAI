@@ -458,7 +458,6 @@ class FuzzyPickerScreen(ModalScreen[Optional[str]]):
         self._footer_id = footer_id
         self._placeholder = placeholder
         self._footer_help = footer_help
-        self._query = ""
 
     @abstractmethod
     def _update_options(self, query: str) -> None: ...
@@ -497,8 +496,7 @@ class FuzzyPickerScreen(ModalScreen[Optional[str]]):
 
     @on(Input.Changed)
     def _on_input_changed(self, event: Input.Changed) -> None:
-        self._query = event.value or ""
-        self._update_options(self._query)
+        self._update_options(event.value or "")
 
     @on(OptionList.OptionSelected)
     def _on_option_selected(self, event: OptionList.OptionSelected) -> None:

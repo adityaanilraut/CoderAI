@@ -9,9 +9,7 @@ if TYPE_CHECKING:
     from coderAI.system.cost import CostTracker
 
 from coderAI.system.redaction import (
-    SENSITIVE_KEYS as _SENSITIVE_KEYS,  # noqa: F401  (back-compat re-export)
-    SENSITIVE_VALUE_RE as _SENSITIVE_VALUE_RE,  # noqa: F401
-    sanitize_dict as _sanitize_dict,  # noqa: F401
+    sanitize_dict as _sanitize_dict,  # noqa: F401  (back-compat re-export)
 )
 
 logger = logging.getLogger(__name__)

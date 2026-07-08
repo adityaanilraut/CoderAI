@@ -70,7 +70,6 @@ class ExecutionLoop:
         self.progress_callback = progress_callback
         # Use the agent's hooks manager for consistent state (e.g. approval cache)
         self.hooks_manager: Any = agent.hooks_manager
-        self._last_repaired_msg_count: int = 0
         # Turn-scoped flags. ``run()`` resets these at the top of each call so
         # state never leaks across user messages.
         self._plan_reminder_emitted: bool = False
@@ -819,7 +818,6 @@ class ExecutionLoop:
         session = self.agent.session
         if session:
             self._repair_unpaired_tool_calls()
-            self._last_repaired_msg_count = len(session.messages)
         messages = self.agent.session.get_messages_for_api()
         messages = self.agent.context_controller.inject_context(messages, query=user_message)
         return await self.agent.context_controller.manage_context_window(messages)  # type: ignore[no-any-return]
@@ -1054,9 +1052,6 @@ class ExecutionLoop:
             "agent_error", message=f"Error (attempt {count}/{MAX_CONSECUTIVE_ERRORS}): {error_str}"
         )
         self._repair_unpaired_tool_calls()
-        self._last_repaired_msg_count = (
-            len(self.agent.session.messages) if self.agent.session else 0
-        )
 
         # Persist the recovery feedback into the session so it survives the
         # next ``messages.clear(); messages.extend(session.get_messages_for_api())``

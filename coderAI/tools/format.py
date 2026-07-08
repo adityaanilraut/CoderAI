@@ -159,11 +159,8 @@ class FormatTool(Tool):
 
             extra = config["check_args"] if check else config["args"]
 
-            if formatter_name in ("ruff", "black", "gofmt"):
-                cmd: List[str] = [cmd_binary] + extra + [path]
-            else:
-                # prettier: npx prettier [--write|--check] <path>
-                cmd = [cmd_binary] + extra + [path]
+            # Same shape for every formatter, incl. prettier: <binary> <args> <path>
+            cmd: List[str] = [cmd_binary] + extra + [path]
 
             process = await asyncio.create_subprocess_exec(
                 *cmd,

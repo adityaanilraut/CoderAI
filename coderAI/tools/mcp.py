@@ -6,14 +6,13 @@ import json
 import logging
 import os
 import shutil
-import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
 from coderAI.core.tool_error_codes import ToolErrorCode
-from coderAI.system.fsperms import restrict_fd
+from coderAI.system.fsperms import atomic_write_json
 from coderAI.tools.base import Tool
 
 logger = logging.getLogger(__name__)
@@ -234,24 +233,7 @@ def save_mcp_servers(data: Dict[str, Any]) -> None:
     non-atomic write would risk wiping every configured server. Mirrors the
     atomic-save pattern in ``system.config.ConfigManager.save``.
     """
-    path = mcp_servers_path()
-    tmp_fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=".mcp_servers.")
-    try:
-        restrict_fd(tmp_fd)
-        with os.fdopen(tmp_fd, "w") as f:
-            json.dump(data, f, indent=2)
-        os.replace(tmp_path, str(path))
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
-    finally:
-        try:
-            os.close(tmp_fd)
-        except OSError:
-            pass
+    atomic_write_json(mcp_servers_path(), data)
 
 
 class MCPClient:

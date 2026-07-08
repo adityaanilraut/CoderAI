@@ -31,36 +31,10 @@ class LocalSkillSource(SkillSource):
         return discover_local_skills(self._project_root)
 
     async def search(self, query: str, top_n: int = 5) -> List[Tuple[Skill, float]]:
-        """Simple keyword overlap search for local skills.
-
-        NOTE: Full semantic matching is handled by ``SkillManager`` which
-        uses the LLM provider. This method provides a fast baseline for
-        cases where an LLM call is not desired.
-        """
-        skills = await self.discover()
-        if not skills:
-            return []
-
-        query_lower = query.lower()
-        scored: List[Tuple[Skill, float]] = []
-
-        for skill in skills:
-            score = 0.0
-            searchable = f"{skill.name} {skill.description} {' '.join(skill.tags)}".lower()
-
-            # Word-level overlap bonus
-            query_words = set(query_lower.split())
-            text_words = set(searchable.split())
-            overlap = query_words & text_words
-            if overlap:
-                score = len(overlap) / max(len(query_words), 1)
-                score = min(score, 0.6)  # cap keyword-only confidence
-
-            if score > 0.0:
-                scored.append((skill, score))
-
-        scored.sort(key=lambda x: x[1], reverse=True)
-        return scored[:top_n]
+        """Satisfies the ``SkillSource`` ABC but is never called:
+        ``SkillManager`` skips ``source_name == "local"`` when searching and
+        matches local skills via the LLM instead."""
+        return []
 
     async def get_skill(self, name: str) -> Optional[Skill]:
         """Retrieve a single local skill by name."""

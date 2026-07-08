@@ -351,7 +351,6 @@ class DelegateTaskTool(Tool):
             model,
             inherit_project_context,
             read_only_task,
-            isolation_domain,
             task_id,
         )
 
@@ -363,7 +362,6 @@ class DelegateTaskTool(Tool):
         model: Optional[str],
         inherit_project_context: bool,
         read_only_task: bool = False,
-        isolation_domain: str = "auto",
         task_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Core sub-agent spawning and execution logic."""

@@ -34,12 +34,11 @@ import hashlib
 import json
 import logging
 import os
-import tempfile
 import time
 from pathlib import Path
 from typing import Any, Dict, List
 
-from coderAI.system.fsperms import restrict_fd
+from coderAI.system.fsperms import atomic_write_json
 
 logger = logging.getLogger(__name__)
 
@@ -116,23 +115,7 @@ class WorkspaceTrust:
         path = self._store_path()
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         payload = {"version": 1, "folders": folders}
-        tmp_fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=".trust.")
-        try:
-            restrict_fd(tmp_fd)
-            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-                json.dump(payload, f, indent=2)
-            os.replace(tmp_path, str(path))
-        except Exception:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
-        finally:
-            try:
-                os.close(tmp_fd)
-            except OSError:
-                pass
+        atomic_write_json(path, payload)
         # Invalidate cache so the next read reflects the write.
         self._cache = None
 

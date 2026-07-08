@@ -110,7 +110,11 @@ class AgentSessionMixin:
                 if plan_path.exists():
                     plan_path.unlink()
             except Exception:
-                pass
+                logger.warning(
+                    "Failed to clear stale current_plan.json; it may leak into the "
+                    "next session's system prompt",
+                    exc_info=True,
+                )
         self.session = get_services().history.create_session(model=self.model)
         self.session.add_message("system", self._get_system_prompt())
         return self.session
@@ -136,7 +140,7 @@ class AgentSessionMixin:
         try:
             snapshot = self.session.model_dump()
         except Exception:
-            logger.debug("save_session snapshot failed", exc_info=True)
+            logger.warning("save_session snapshot failed", exc_info=True)
             return
         try:
             asyncio.get_running_loop()
@@ -296,15 +300,13 @@ class AgentSessionMixin:
         status: Any = _UNSET,
         current_tool: Any = _UNSET,
         current_task: Any = _UNSET,
-        sync: bool = True,
     ) -> None:
         """Mutate tracker fields through the Agent (Phase 4.1).
 
         The execution loop and tool executor used to write ``tracker_info.status``
         / ``current_tool`` directly; those field writes now funnel through here so
         tracker mutation stays owned by the Agent. No-op when there is no active
-        tracker. Pass ``sync=False`` to batch several field updates without an
-        intermediate ``_sync_tracker`` emit.
+        tracker.
         """
         info = self.tracker_info
         if info is None:
@@ -315,8 +317,7 @@ class AgentSessionMixin:
             info.current_tool = current_tool
         if current_task is not _UNSET:
             info.current_task = current_task
-        if sync:
-            self._sync_tracker()
+        self._sync_tracker()
 
     def _sync_tracker(self) -> None:
         """Sync internal token counters to the tracker info."""

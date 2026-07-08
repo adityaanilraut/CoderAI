@@ -397,7 +397,9 @@ class SkillManager:
         cache_key = f"{task_description}:{effective_top_n}:{effective_threshold}"
         async with self._match_lock:
             if cache_key in self._match_cache:
-                logger.debug("%s Cache hit for task: %s...", SKILL_MGR_PREFIX, task_description[:60])
+                logger.debug(
+                    "%s Cache hit for task: %s...", SKILL_MGR_PREFIX, task_description[:60]
+                )
                 return [s for s, _ in self._match_cache[cache_key]]
             logger.info("%s Searching skills for: %s...", SKILL_MGR_PREFIX, task_description[:80])
             local_skills = self.registry.find_by_source("local")

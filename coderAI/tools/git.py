@@ -156,7 +156,7 @@ class GitAddTool(Tool):
 
             from coderAI.system.safeguards import filter_stageable_files
 
-            allowed, rejected = filter_stageable_files(files, repo_path)
+            allowed, rejected = filter_stageable_files(files)
 
             if rejected:
                 logger.info(f"git_add: filtered {len(rejected)} junk file(s): {rejected}")

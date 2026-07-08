@@ -1,8 +1,6 @@
 """Planning tool for structured plan-and-execute workflows."""
 
 import json
-import os
-import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
@@ -13,25 +11,14 @@ from coderAI.core.tool_error_codes import ToolErrorCode
 from coderAI.tools.base import Tool
 from coderAI.system.config import config_manager
 from coderAI.system.events import event_emitter
+from coderAI.system.fsperms import atomic_write_json
 from coderAI.system.project_layout import find_dot_coderai_subdir
 
 _PLANS_DIR = ".coderAI"
 
 
 def _atomic_write_json(filepath: Path, data: dict) -> None:
-    fd, tmp_path = tempfile.mkstemp(dir=str(filepath.parent), prefix=".plan-", suffix=".json.tmp")
-    try:
-        with os.fdopen(fd, "w") as f:
-            json.dump(data, f, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, filepath)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    atomic_write_json(filepath, data, fsync=True)
 
 
 def _get_plan_file(project_root: str = ".") -> Path:

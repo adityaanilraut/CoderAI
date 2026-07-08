@@ -1,14 +1,16 @@
 """Memory tools for storing and recalling information."""
 
 import json
-import os
-import tempfile
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
+from coderAI.system.fsperms import atomic_write_json
 from coderAI.tools.base import Tool
+
+logger = logging.getLogger(__name__)
 
 
 class MemoryStore:
@@ -24,27 +26,21 @@ class MemoryStore:
 
     def load(self) -> None:
         """Load memories from disk."""
-        if self.memory_file.exists():
+        if not self.memory_file.exists():
+            return
+        try:
             with open(self.memory_file, "r") as f:
                 self._memories = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            logger.warning(
+                "Memory store %s is corrupted or unreadable; starting with an empty store.",
+                self.memory_file,
+            )
+            self._memories = {}
 
     def save(self) -> None:
         """Save memories to disk atomically."""
-        fd, tmp_path = tempfile.mkstemp(
-            dir=str(self.memory_dir), prefix=".memories-", suffix=".json.tmp"
-        )
-        try:
-            with os.fdopen(fd, "w") as f:
-                json.dump(self._memories, f, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp_path, self.memory_file)
-        except Exception:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+        atomic_write_json(self.memory_file, self._memories, fsync=True)
 
     def add(self, key: str, value: Any) -> None:
         """Add or update a memory."""
@@ -141,7 +137,6 @@ class RecallMemoryTool(Tool):
     async def execute(self, **kwargs: Any) -> Dict[str, Any]:  # type: ignore[override]
         key = kwargs.get("key")
         query = kwargs.get("query")
-        """Recall memory."""
         try:
             store = get_memory_store()
             if key:

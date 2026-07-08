@@ -671,6 +671,7 @@ class TestMcpServerPersistence:
         assert [p.name for p in tmp_path.iterdir()] == ["mcp_servers.json"]
 
     def test_failed_write_preserves_existing_file(self, tmp_path):
+        import coderAI.system.fsperms as fsperms_mod
         import coderAI.tools.mcp as mcp_mod
 
         target = tmp_path / "mcp_servers.json"
@@ -678,7 +679,7 @@ class TestMcpServerPersistence:
             mcp_mod.save_mcp_servers({"mcpServers": {"good": {"command": "npx", "args": []}}})
 
             # A serialization failure mid-write must not touch the good file.
-            with patch.object(mcp_mod.json, "dump", side_effect=RuntimeError("boom")):
+            with patch.object(fsperms_mod.json, "dumps", side_effect=RuntimeError("boom")):
                 with pytest.raises(RuntimeError):
                     mcp_mod.save_mcp_servers({"mcpServers": {"bad": {}}})
 

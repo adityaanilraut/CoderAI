@@ -3,13 +3,12 @@
 import json
 import logging
 import os
-import tempfile
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from coderAI.system.fsperms import OWNER_RWX, restrict_fd, restrict_path
+from coderAI.system.fsperms import OWNER_RWX, atomic_write_json, restrict_path
 
 logger = logging.getLogger(__name__)
 
@@ -23,8 +22,6 @@ class Config(BaseModel):
     """
 
     model_config = ConfigDict(extra="ignore", validate_assignment=True)
-
-    config_version: int = Field(default=1, description="Schema version for migration support")
 
     openai_api_key: Optional[str] = Field(default=None)
     anthropic_api_key: Optional[str] = Field(default=None)
@@ -248,7 +245,6 @@ class ConfigManager:
                 ", ".join(sorted(unknown)),
             )
 
-        # Run schema migrations before constructing the Config object
         self._config = Config(**config_data)
         return self._config
 
@@ -282,23 +278,7 @@ class ConfigManager:
         if config is None:
             return
 
-        tmp_fd, tmp_path = tempfile.mkstemp(dir=str(self.config_dir), prefix=".config.")
-        try:
-            restrict_fd(tmp_fd)
-            with os.fdopen(tmp_fd, "w") as f:
-                json.dump(self._data_to_persist(config), f, indent=2)
-            os.replace(tmp_path, str(self.config_file))
-        except Exception:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
-        finally:
-            try:
-                os.close(tmp_fd)
-            except OSError:
-                pass
+        atomic_write_json(self.config_file, self._data_to_persist(config))
 
     def set(self, key: str, value: Any) -> None:
         """Set a configuration value."""
@@ -419,8 +399,7 @@ class ConfigManager:
             return config
         except OSError as e:
             logger.warning(
-                "Project config file %s could not be read: %s. "
-                "Using global defaults.",
+                "Project config file %s could not be read: %s. Using global defaults.",
                 project_config_path,
                 e,
             )

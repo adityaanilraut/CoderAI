@@ -214,7 +214,7 @@ def _parse_cargo_test_output(stdout: str) -> Dict[str, Any]:
     }
 
 
-def _parse_jest_vitest_output(stdout: str, framework: str) -> Dict[str, Any]:
+def _parse_jest_vitest_output(stdout: str) -> Dict[str, Any]:
     m_total = re.search(r"Tests:\s+(\d+)\s+(passed|total)", stdout)
     m_failed = re.search(r"(\d+)\s+failed", stdout)
     m_passed = re.search(r"(\d+)\s+passed", stdout)
@@ -403,7 +403,7 @@ class RunTestsTool(Tool):
             if framework_name == "pytest":
                 parsed = _parse_pytest_output(stdout_str)
             elif framework_name in ("jest", "vitest"):
-                parsed = _parse_jest_vitest_output(stdout_str, framework_name)
+                parsed = _parse_jest_vitest_output(stdout_str)
             elif framework_name == "go_test":
                 parsed = _parse_go_test_output(stdout_str)
             elif framework_name == "cargo_test":

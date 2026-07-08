@@ -65,7 +65,7 @@ class HooksManager:
         self._hooks_cache: Dict[str, Tuple[int, Optional[Dict[str, Any]]]] = {}
 
     def _prepare_hook_environment(
-        self, tool_name: str, hook_type: str, arguments: dict
+        self, tool_name: str, arguments: dict
     ) -> Tuple[Dict[str, str], Optional[str]]:
         """Build the env dict and optional temp-file path for hook execution.
 
@@ -191,7 +191,7 @@ class HooksManager:
                 if not matching_hooks:
                     return hooks_results
 
-            env, args_file_path = self._prepare_hook_environment(tool_name, hook_type, arguments)
+            env, args_file_path = self._prepare_hook_environment(tool_name, arguments)
 
             runnable = []
             for hook in matching_hooks:
@@ -348,7 +348,7 @@ class HooksManager:
                 if not matching_hooks:
                     return hooks_results
 
-            env, args_file_path = self._prepare_hook_environment(tool_name, hook_type, arguments)
+            env, args_file_path = self._prepare_hook_environment(tool_name, arguments)
 
             async def _exec_structured_hook(
                 cmd: str,

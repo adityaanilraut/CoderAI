@@ -23,10 +23,8 @@ import hashlib
 import http.server
 import json
 import logging
-import os
 import secrets
 import socket
-import tempfile
 import threading
 import time
 import urllib.parse
@@ -36,7 +34,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
-from coderAI.system.fsperms import restrict_fd
+from coderAI.system.fsperms import atomic_write_json
 
 logger = logging.getLogger(__name__)
 
@@ -106,23 +104,7 @@ def save_mcp_credentials(data: Dict[str, Any]) -> None:
     """
     path = mcp_credentials_path()
     path.parent.mkdir(mode=0o700, exist_ok=True)
-    tmp_fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=".mcp_credentials.")
-    try:
-        restrict_fd(tmp_fd)
-        with os.fdopen(tmp_fd, "w") as f:
-            json.dump(data, f, indent=2)
-        os.replace(tmp_path, str(path))
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
-    finally:
-        try:
-            os.close(tmp_fd)
-        except OSError:
-            pass
+    atomic_write_json(path, data)
 
 
 def get_credentials(name: str) -> Optional[Dict[str, Any]]:

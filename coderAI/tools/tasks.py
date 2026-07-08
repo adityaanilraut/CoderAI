@@ -1,8 +1,6 @@
 """Task management tool for persistent planning across invocations."""
 
 import json
-import os
-import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, cast
@@ -10,6 +8,7 @@ from typing import Any, Dict, List, Optional, cast
 from pydantic import BaseModel, Field
 
 from coderAI.system.events import event_emitter
+from coderAI.system.fsperms import atomic_write_json
 from coderAI.tools.base import Tool
 
 
@@ -208,21 +207,7 @@ class ManageTasksTool(Tool):
             return []
 
     def _save_tasks(self, filepath: Path, tasks: List[Dict[str, Any]]) -> None:
-        fd, tmp_path = tempfile.mkstemp(
-            dir=str(filepath.parent), prefix=".tasks-", suffix=".json.tmp"
-        )
-        try:
-            with os.fdopen(fd, "w") as f:
-                json.dump(tasks, f, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp_path, filepath)
-        except Exception:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+        atomic_write_json(filepath, tasks, fsync=True)
         event_emitter.emit("tasks_update", tasks=tasks)
 
     def _format_tasks(self, tasks: List[Dict[str, Any]]) -> Dict[str, Any]:

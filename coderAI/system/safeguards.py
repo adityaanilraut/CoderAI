@@ -541,13 +541,11 @@ JUNK_PATTERNS: tuple[str, ...] = (
 
 def filter_stageable_files(
     files: List[str],
-    working_dir: str = ".",
 ) -> Tuple[List[str], List[str]]:
     """Filter a list of files to remove junk that should not be staged.
 
     Args:
         files: List of file paths (relative or absolute) to evaluate.
-        working_dir: Base directory for resolving relative paths.
 
     Returns:
         Tuple of (allowed_files, rejected_files).

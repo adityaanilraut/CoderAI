@@ -16,6 +16,7 @@ from typing import IO, Any, Optional
 from coderAI.core.services import get_services
 from coderAI.core.tool_error_codes import ToolErrorCode
 from coderAI.system.events import event_emitter
+from coderAI.system.fsperms import atomic_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -23,22 +24,12 @@ logger = logging.getLogger(__name__)
 def _atomic_write_file(path_obj: Path, content: str) -> None:
     """Write *content* to *path_obj* atomically via tempfile+replace.
 
-    Raises ``OSError`` on write failure; the caller is responsible for
-    translating it into a tool-shaped error response.
+    Uses ``mode=None`` so the written file keeps the process umask — these are
+    the user's own project files, which must not be forced down to owner-only
+    like the ``.coderAI`` metadata stores are. Raises ``OSError`` on write
+    failure; the caller translates it into a tool-shaped error response.
     """
-    import tempfile
-
-    fd, tmp_path = tempfile.mkstemp(dir=str(path_obj.parent), prefix="." + path_obj.name + ".")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(content)
-        os.replace(tmp_path, str(path_obj))
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    atomic_write_text(path_obj, content, mode=None)
 
 
 def _emit_diff(path_obj: Path, before: str, after: str) -> None:

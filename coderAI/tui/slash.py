@@ -542,10 +542,6 @@ def handle_slash_command(
 
     ctx.show_palette = _show_palette
 
-    if head in ("help", "?"):
-        show_help()
-        return True
-
     entry = _SLASH_REGISTRY.get(head)
     if entry is not None:
         return entry.handler(ctx, arg, head)

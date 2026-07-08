@@ -120,60 +120,56 @@ class RefactorTool(Tool):
                     "files": all_refs,
                 }
 
-            if action == "rename_symbol":
-                name_err = self._validate_new_name(str(new_name), files)
-                if name_err is not None:
-                    return name_err
-                all_refs = self._find_all_references(files, symbol, kind)
+            # action == "rename_symbol" — the only remaining case after the
+            # validation at the top of execute().
+            name_err = self._validate_new_name(str(new_name), files)
+            if name_err is not None:
+                return name_err
+            all_refs = self._find_all_references(files, symbol, kind)
 
-                if sum(len(r["references"]) for r in all_refs) == 0:
-                    return {
-                        "success": False,
-                        "error": f"No references found for symbol '{symbol}'. Verify the symbol name and path.",
-                    }
+            if sum(len(r["references"]) for r in all_refs) == 0:
+                return {
+                    "success": False,
+                    "error": f"No references found for symbol '{symbol}'. Verify the symbol name and path.",
+                }
 
-                if dry_run:
-                    return {
-                        "success": True,
-                        "action": "rename_symbol",
-                        "dry_run": True,
-                        "symbol": symbol,
-                        "new_name": new_name,
-                        "total_changes": sum(len(r["references"]) for r in all_refs),
-                        "files_affected": len(all_refs),
-                        "files": [
-                            {
-                                "file": f["file"],
-                                "changes": f["references"],
-                            }
-                            for f in all_refs
-                        ],
-                        "message": (
-                            f"Dry run: would rename '{symbol}' to '{new_name}' "
-                            f"in {len(all_refs)} file(s) with {sum(len(r['references']) for r in all_refs)} change(s). "
-                            "Review the changes above, then run again with dry_run=false to apply."
-                        ),
-                    }
-
-                assert new_name is not None
-                modified_files = self._apply_rename(all_refs, symbol, new_name, base)
+            if dry_run:
                 return {
                     "success": True,
                     "action": "rename_symbol",
-                    "dry_run": False,
+                    "dry_run": True,
                     "symbol": symbol,
                     "new_name": new_name,
-                    "files_modified": len(modified_files),
-                    "files": modified_files,
+                    "total_changes": sum(len(r["references"]) for r in all_refs),
+                    "files_affected": len(all_refs),
+                    "files": [
+                        {
+                            "file": f["file"],
+                            "changes": f["references"],
+                        }
+                        for f in all_refs
+                    ],
                     "message": (
-                        f"Renamed '{symbol}' to '{new_name}' in {len(modified_files)} file(s)."
+                        f"Dry run: would rename '{symbol}' to '{new_name}' "
+                        f"in {len(all_refs)} file(s) with {sum(len(r['references']) for r in all_refs)} change(s). "
+                        "Review the changes above, then run again with dry_run=false to apply."
                     ),
                 }
-            else:
-                return {
-                    "success": False,
-                    "error": f"Unknown action: {action}",
-                }
+
+            assert new_name is not None
+            modified_files = self._apply_rename(all_refs, symbol, new_name)
+            return {
+                "success": True,
+                "action": "rename_symbol",
+                "dry_run": False,
+                "symbol": symbol,
+                "new_name": new_name,
+                "files_modified": len(modified_files),
+                "files": modified_files,
+                "message": (
+                    f"Renamed '{symbol}' to '{new_name}' in {len(modified_files)} file(s)."
+                ),
+            }
 
         except Exception as e:
             logger.exception("refactor failed")
@@ -451,7 +447,7 @@ class RefactorTool(Tool):
         return "".join(out)
 
     def _apply_rename(
-        self, all_refs: List[Dict[str, Any]], symbol: str, new_name: str, base: Path
+        self, all_refs: List[Dict[str, Any]], symbol: str, new_name: str
     ) -> List[Dict[str, Any]]:
         modified: List[Dict[str, Any]] = []
 
@@ -488,11 +484,7 @@ class RefactorTool(Tool):
                         next_char and re.match(r"[A-Za-z0-9_$]", next_char)
                     ):
                         continue
-                    if ref["kind"] == "attribute_access":
-                        new_line = before + new_name + after[len(symbol) :]
-                    else:
-                        new_line = before + new_name + after[len(symbol) :]
-                    lines[idx] = new_line
+                    lines[idx] = before + new_name + after[len(symbol) :]
 
             new_content = "".join(lines)
             if new_content != original_content:
@@ -501,7 +493,13 @@ class RefactorTool(Tool):
                 try:
                     backup_store.backup_file(str(file_path), "modify")
                 except Exception:
-                    pass
+                    logger.warning(
+                        "Skipping rename in %s: backup failed, refusing to overwrite "
+                        "without an undo point",
+                        file_path,
+                        exc_info=True,
+                    )
+                    continue
                 file_path.write_text(new_content, encoding="utf-8")
                 modified.append(
                     {
