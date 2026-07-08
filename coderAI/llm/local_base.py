@@ -44,27 +44,6 @@ class OpenAICompatibleLocalProvider(LLMProvider):
         if self._session and not self._session.closed:
             await self._session.close()
 
-    def _build_payload(
-        self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
-        *,
-        stream: bool = False,
-        **kwargs: Any,
-    ) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": kwargs.get("temperature", self.temperature),
-            "max_tokens": kwargs.get("max_tokens", self.max_tokens),
-        }
-        if stream:
-            payload["stream"] = True
-        if tools:
-            payload["tools"] = tools
-            payload["tool_choice"] = kwargs.get("tool_choice", "auto")
-        return payload
-
     def _get_url(self) -> str:
         return f"{self.endpoint}/chat/completions"
 

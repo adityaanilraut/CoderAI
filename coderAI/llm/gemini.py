@@ -5,17 +5,18 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 from openai import AsyncOpenAI
 
-from coderAI.llm.base import HTTP_TOTAL_TIMEOUT, LLMProvider
-from coderAI.llm.base import _retry_async as _retry
+from coderAI.llm.base import HTTP_TOTAL_TIMEOUT
+from coderAI.llm.cloud_base import OpenAICompatibleCloudProvider
 from coderAI.system.error_policy import _try_extract_response_body
 from coderAI.system.redaction import sanitize_dict as _sanitize_dict
-from coderAI.system.safeguards import sanitize_for_log
 
 logger = logging.getLogger(__name__)
 
 
-class GeminiProvider(LLMProvider):
+class GeminiProvider(OpenAICompatibleCloudProvider):
     """Gemini LLM provider using the OpenAI-compatible API."""
+
+    PROVIDER_LABEL = "Gemini"
 
     SUPPORTED_MODELS = {
         "gemini-3.5-flash": "gemini-3.5-flash",
@@ -30,89 +31,24 @@ class GeminiProvider(LLMProvider):
     }
 
     def __init__(self, model: str, api_key: Optional[str] = None, **kwargs: Any):
-        """Initialize Gemini provider.
-
-        Args:
-            model: Model name
-            api_key: Gemini API key
-            **kwargs: Additional options (temperature, max_tokens, etc.)
-        """
         super().__init__(model, api_key, **kwargs)
 
-        if not api_key:
-            raise ValueError("Gemini API key is required")
-
-        self.actual_model = self.SUPPORTED_MODELS.get(model.lower(), model.lower())
-
-        # Gemini uses OpenAI-compatible API
         self.client = AsyncOpenAI(
             api_key=api_key,
             base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
             timeout=HTTP_TOTAL_TIMEOUT,
         )
 
-    def _build_request_params(
-        self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
-        *,
-        stream: bool = False,
-        **kwargs: Any,
-    ) -> Dict[str, Any]:
-        params: Dict[str, Any] = {
-            "model": self.actual_model,
-            "messages": messages,
-            "temperature": kwargs.get("temperature", self.temperature),
-            "max_tokens": kwargs.get("max_tokens", self.max_tokens),
-        }
+    def _resolve_model(self, model: str) -> str:
+        return self.SUPPORTED_MODELS.get(model.lower(), model.lower())
 
-        if stream:
-            params["stream"] = True
-
-        if tools:
-            params["tools"] = tools
-            params["tool_choice"] = kwargs.get("tool_choice", "auto")
-
-        return params
-
-    async def chat(
-        self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
-        **kwargs: Any,
-    ) -> Dict[str, Any]:
-        """Send a chat completion request to Gemini.
-
-        Args:
-            messages: List of message dictionaries
-            tools: Optional list of tool definitions
-            **kwargs: Additional request parameters
-
-        Returns:
-            Response dictionary
-        """
-        params = self._build_request_params(messages, tools, **kwargs)
-
-        try:
-
-            async def _call() -> Any:
-                return await self.client.chat.completions.create(**params)
-
-            response = await _retry(_call, description="Gemini chat", max_retries=3)
-        except Exception as e:
-            logger.error("Gemini API error: %s", e)
-            body = _try_extract_response_body(e)
-            if body is not None:
-                logger.error("Gemini API error body: %s", _sanitize_dict(body))
-            raise RuntimeError(f"Gemini API error: {sanitize_for_log(str(e))}") from e
-        result = response.model_dump()
-        assert isinstance(result, dict)
-
-        usage = result.get("usage") or {}
-        self.total_input_tokens += usage.get("prompt_tokens", 0)
-        self.total_output_tokens += usage.get("completion_tokens", 0)
-
-        return result
+    def _handle_api_error(self, exc: Exception, *, streaming: bool) -> None:
+        verb = "streaming error" if streaming else "error"
+        logger.error("Gemini API %s: %s", verb, exc)
+        body = _try_extract_response_body(exc)
+        if body is not None:
+            logger.error("Gemini API %s body: %s", verb, _sanitize_dict(body))
+        super()._handle_api_error(exc, streaming=streaming)
 
     async def stream(
         self,
@@ -120,41 +56,13 @@ class GeminiProvider(LLMProvider):
         tools: Optional[List[Dict[str, Any]]] = None,
         **kwargs: Any,
     ) -> AsyncIterator[Dict[str, Any]]:
-        """Send a streaming chat completion request to Gemini.
-
-        Args:
-            messages: List of message dictionaries
-            tools: Optional list of tool definitions
-            **kwargs: Additional request parameters
-
-        Yields:
-            Response chunks
-        """
-        params = self._build_request_params(messages, tools, stream=True, **kwargs)
-
-        try:
-
-            async def _create_stream() -> Any:
-                return await self.client.chat.completions.create(**params)
-
-            stream = await _retry(_create_stream, description="Gemini stream", max_retries=3)
-        except Exception as e:
-            logger.error("Gemini API streaming error: %s", e)
-            body = _try_extract_response_body(e)
-            if body is not None:
-                logger.error("Gemini API streaming error body: %s", _sanitize_dict(body))
-            raise RuntimeError(f"Gemini API streaming error: {sanitize_for_log(str(e))}") from e
-
+        # Gemini's OpenAI-compatible endpoint may finish a stream without ever
+        # reporting usage; accumulate content so we can estimate in that case.
         accumulated_content = ""
         had_usage = False
-        async for chunk in stream:
-            chunk_data = chunk.model_dump()
-
-            usage = chunk_data.get("usage")
-            if usage:
+        async for chunk_data in super().stream(messages, tools, **kwargs):
+            if chunk_data.get("usage"):
                 had_usage = True
-                self.total_input_tokens += usage.get("prompt_tokens", 0)
-                self.total_output_tokens += usage.get("completion_tokens", 0)
 
             choices = chunk_data.get("choices", [])
             if choices:

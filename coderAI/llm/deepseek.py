@@ -1,16 +1,18 @@
 """DeepSeek LLM provider implementation."""
 
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from openai import AsyncOpenAI
 
-from coderAI.llm.base import HTTP_TOTAL_TIMEOUT, LLMProvider, REASONING_BUDGET_MAP
-from coderAI.llm.base import _retry_async as _retry
-from coderAI.system.safeguards import sanitize_for_log
+from coderAI.llm.base import HTTP_TOTAL_TIMEOUT, REASONING_BUDGET_MAP
+from coderAI.llm.cloud_base import OpenAICompatibleCloudProvider
 
 
-class DeepSeekProvider(LLMProvider):
-    """DeepSeek LLM provider."""
+class DeepSeekProvider(OpenAICompatibleCloudProvider):
+    """DeepSeek LLM provider (OpenAI-compatible API)."""
+
+    PROVIDER_LABEL = "DeepSeek"
+    STREAM_INCLUDES_USAGE = True
 
     SUPPORTED_MODELS = {
         "deepseek-v4-flash": "deepseek-v4-flash",
@@ -23,21 +25,8 @@ class DeepSeekProvider(LLMProvider):
     }
 
     def __init__(self, model: str, api_key: Optional[str] = None, **kwargs: Any):
-        """Initialize DeepSeek provider.
-
-        Args:
-            model: Model name
-            api_key: DeepSeek API key
-            **kwargs: Additional options (temperature, max_tokens, etc.)
-        """
         super().__init__(model, api_key, **kwargs)
 
-        if not api_key:
-            raise ValueError("DeepSeek API key is required")
-
-        self.actual_model = self.SUPPORTED_MODELS.get(model.lower(), model.lower())
-
-        # DeepSeek uses OpenAI-compatible API
         self.client = AsyncOpenAI(
             api_key=api_key,
             base_url="https://api.deepseek.com",
@@ -47,6 +36,9 @@ class DeepSeekProvider(LLMProvider):
         # DeepSeek reasoning is disabled by default
         if "reasoning_effort" not in kwargs:
             self.reasoning_effort = "none"
+
+    def _resolve_model(self, model: str) -> str:
+        return self.SUPPORTED_MODELS.get(model.lower(), model.lower())
 
     @property
     def _uses_v4_family(self) -> bool:
@@ -60,20 +52,9 @@ class DeepSeekProvider(LLMProvider):
         stream: bool = False,
         **kwargs: Any,
     ) -> Dict[str, Any]:
-        params: Dict[str, Any] = {
-            "model": self.actual_model,
-            "messages": messages,
-            "temperature": kwargs.get("temperature", self.temperature),
-            "max_tokens": kwargs.get("max_tokens", self.max_tokens),
-        }
-
-        if stream:
-            params["stream"] = True
-            params["stream_options"] = {"include_usage": True}
-
-        if tools and self.actual_model != "deepseek-reasoner":
-            params["tools"] = tools
-            params["tool_choice"] = kwargs.get("tool_choice", "auto")
+        if self.actual_model == "deepseek-reasoner":
+            tools = None
+        params = super()._build_request_params(messages, tools, stream=stream, **kwargs)
 
         # DeepSeek V4 supports a thinking mode that produces reasoning_content
         # in the response. The agent loop now round-trips reasoning_content
@@ -87,80 +68,6 @@ class DeepSeekProvider(LLMProvider):
                 params["extra_body"] = {"thinking": {"type": "disabled"}}
 
         return params
-
-    async def chat(
-        self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
-        **kwargs: Any,
-    ) -> Dict[str, Any]:
-        """Send a chat completion request to DeepSeek.
-
-        Args:
-            messages: List of message dictionaries
-            tools: Optional list of tool definitions
-            **kwargs: Additional request parameters
-
-        Returns:
-            Response dictionary
-        """
-        params = self._build_request_params(messages, tools, **kwargs)
-
-        try:
-
-            async def _call() -> Any:
-                return await self.client.chat.completions.create(**params)
-
-            response = await _retry(_call, description="DeepSeek chat", max_retries=3)
-        except Exception as e:
-            raise RuntimeError(f"DeepSeek API error: {sanitize_for_log(str(e))}") from e
-        result = response.model_dump()
-        assert isinstance(result, dict)
-
-        usage = result.get("usage", {})
-        self.total_input_tokens += usage.get("prompt_tokens", 0)
-        self.total_output_tokens += usage.get("completion_tokens", 0)
-
-        return result
-
-    async def stream(
-        self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
-        **kwargs: Any,
-    ) -> AsyncIterator[Dict[str, Any]]:
-        """Send a streaming chat completion request to DeepSeek.
-
-        Args:
-            messages: List of message dictionaries
-            tools: Optional list of tool definitions
-            **kwargs: Additional request parameters
-
-        Yields:
-            Response chunks
-        """
-        params = self._build_request_params(messages, tools, stream=True, **kwargs)
-
-        try:
-
-            async def _create_stream() -> Any:
-                return await self.client.chat.completions.create(**params)
-
-            stream = await _retry(_create_stream, description="DeepSeek stream", max_retries=3)
-        except Exception as e:
-            raise RuntimeError(f"DeepSeek API streaming error: {sanitize_for_log(str(e))}") from e
-        async for chunk in stream:
-            chunk_data = chunk.model_dump()
-
-            # OpenAI clients return usage in chunks when stream_options={"include_usage": True} is passed
-            usage = chunk_data.get("usage")
-            if usage:
-                self.total_input_tokens += usage.get("prompt_tokens", 0)
-                # Ensure we account for completion / reasoning tokens appropriately if provided
-                completion_tokens = usage.get("completion_tokens", 0)
-                self.total_output_tokens += completion_tokens
-
-            yield chunk_data
 
     def supports_tools(self) -> bool:
         """DeepSeek Reasoner model does not support tool use."""

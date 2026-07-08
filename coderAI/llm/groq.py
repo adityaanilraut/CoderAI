@@ -1,16 +1,17 @@
 """Groq LLM provider implementation."""
 
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from groq import AsyncGroq
 
-from coderAI.llm.base import HTTP_TOTAL_TIMEOUT, LLMProvider
-from coderAI.llm.base import _retry_async as _retry
-from coderAI.system.safeguards import sanitize_for_log
+from coderAI.llm.base import HTTP_TOTAL_TIMEOUT
+from coderAI.llm.cloud_base import OpenAICompatibleCloudProvider
 
 
-class GroqProvider(LLMProvider):
+class GroqProvider(OpenAICompatibleCloudProvider):
     """Groq LLM provider."""
+
+    PROVIDER_LABEL = "Groq"
 
     SUPPORTED_MODELS = {
         "openai/gpt-oss-120b": "openai/gpt-oss-120b",
@@ -22,111 +23,14 @@ class GroqProvider(LLMProvider):
     }
 
     def __init__(self, model: str, api_key: Optional[str] = None, **kwargs: Any):
-        """Initialize Groq provider.
-
-        Args:
-            model: Model name
-            api_key: Groq API key
-            **kwargs: Additional options (temperature, max_tokens, etc.)
-        """
         super().__init__(model, api_key, **kwargs)
-
-        if not api_key:
-            raise ValueError("Groq API key is required")
-
-        self.actual_model = self.SUPPORTED_MODELS.get(model, model)
         self.client = AsyncGroq(api_key=api_key, timeout=HTTP_TOTAL_TIMEOUT)
 
-    async def chat(
-        self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
-        **kwargs: Any,
-    ) -> Dict[str, Any]:
-        """Send a chat completion request to Groq.
-
-        Args:
-            messages: List of message dictionaries
-            tools: Optional list of tool definitions
-            **kwargs: Additional request parameters
-
-        Returns:
-            Response dictionary
-        """
-        params = {
-            "model": self.actual_model,
-            "messages": messages,
-            "temperature": kwargs.get("temperature", self.temperature),
-            "max_tokens": kwargs.get("max_tokens", self.max_tokens),
-        }
-
-        if tools:
-            params["tools"] = tools
-            params["tool_choice"] = kwargs.get("tool_choice", "auto")
-
-        try:
-
-            async def _call() -> Any:
-                return await self.client.chat.completions.create(**params)
-
-            response = await _retry(_call, description="Groq chat", max_retries=3)
-        except Exception as e:
-            raise RuntimeError(f"Groq API error: {sanitize_for_log(str(e))}") from e
-        result = response.model_dump()
-        assert isinstance(result, dict)
-
-        usage = result.get("usage", {})
-        self.total_input_tokens += usage.get("prompt_tokens", 0)
-        self.total_output_tokens += usage.get("completion_tokens", 0)
-
-        return result
-
-    async def stream(
-        self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
-        **kwargs: Any,
-    ) -> AsyncIterator[Dict[str, Any]]:
-        """Send a streaming chat completion request to Groq.
-
-        Args:
-            messages: List of message dictionaries
-            tools: Optional list of tool definitions
-            **kwargs: Additional request parameters
-
-        Yields:
-            Response chunks
-        """
-        params = {
-            "model": self.actual_model,
-            "messages": messages,
-            "temperature": kwargs.get("temperature", self.temperature),
-            "max_tokens": kwargs.get("max_tokens", self.max_tokens),
-            "stream": True,
-        }
-
-        if tools:
-            params["tools"] = tools
-            params["tool_choice"] = kwargs.get("tool_choice", "auto")
-
-        try:
-
-            async def _create_stream() -> Any:
-                return await self.client.chat.completions.create(**params)
-
-            stream = await _retry(_create_stream, description="Groq stream", max_retries=3)
-        except Exception as e:
-            raise RuntimeError(f"Groq API streaming error: {sanitize_for_log(str(e))}") from e
-        async for chunk in stream:
-            chunk_data = chunk.model_dump()
-
-            # Groq streaming may include usage in the chunk data dict.
-            usage = chunk_data.get("x_groq", {}).get("usage")
-            if usage:
-                self.total_input_tokens += usage.get("prompt_tokens", 0)
-                self.total_output_tokens += usage.get("completion_tokens", 0)
-                # Surface it at the top level so the streaming handler (which
-                # only reads ``chunk["usage"]``) can attribute per-call usage.
-                chunk_data["usage"] = usage
-
-            yield chunk_data
+    def _extract_stream_usage(self, chunk_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        # Groq reports streaming usage under ``x_groq`` rather than top-level.
+        usage = chunk_data.get("x_groq", {}).get("usage")
+        if usage:
+            # Surface it at the top level so the streaming handler (which
+            # only reads ``chunk["usage"]``) can attribute per-call usage.
+            chunk_data["usage"] = usage
+        return usage if isinstance(usage, dict) else None
