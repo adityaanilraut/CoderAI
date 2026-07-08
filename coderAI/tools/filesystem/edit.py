@@ -200,7 +200,7 @@ class SearchReplaceTool(Tool):
                             )
                         new_content = new_content.replace(s, r)
 
-                    backup_store.backup_file(str(path_obj), "modify")
+                    await asyncio.to_thread(backup_store.backup_file, str(path_obj), "modify")
                     await asyncio.to_thread(_atomic_write_file, path_obj, new_content)
                     _emit_diff(path_obj, content, new_content)
 

@@ -2,7 +2,7 @@
 name: e2e-runner
 description: End-to-end testing specialist that works with the repo's existing browser-test setup.
 tools: ["Read", "Write", "Edit", "Bash", "Grep", "Glob"]
-model: sonnet
+model: deepseek-v4-flash
 ---
 
 You own end-to-end test work for this repository.

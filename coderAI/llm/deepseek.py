@@ -4,8 +4,9 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 from openai import AsyncOpenAI
 
-from coderAI.llm.base import LLMProvider, REASONING_BUDGET_MAP
+from coderAI.llm.base import HTTP_TOTAL_TIMEOUT, LLMProvider, REASONING_BUDGET_MAP
 from coderAI.llm.base import _retry_async as _retry
+from coderAI.system.safeguards import sanitize_for_log
 
 
 class DeepSeekProvider(LLMProvider):
@@ -40,6 +41,7 @@ class DeepSeekProvider(LLMProvider):
         self.client = AsyncOpenAI(
             api_key=api_key,
             base_url="https://api.deepseek.com",
+            timeout=HTTP_TOTAL_TIMEOUT,
         )
 
         # DeepSeek reasoning is disabled by default
@@ -111,7 +113,7 @@ class DeepSeekProvider(LLMProvider):
 
             response = await _retry(_call, description="DeepSeek chat", max_retries=3)
         except Exception as e:
-            raise RuntimeError(f"DeepSeek API error: {e}") from e
+            raise RuntimeError(f"DeepSeek API error: {sanitize_for_log(str(e))}") from e
         result = response.model_dump()
         assert isinstance(result, dict)
 
@@ -146,7 +148,7 @@ class DeepSeekProvider(LLMProvider):
 
             stream = await _retry(_create_stream, description="DeepSeek stream", max_retries=3)
         except Exception as e:
-            raise RuntimeError(f"DeepSeek API streaming error: {e}") from e
+            raise RuntimeError(f"DeepSeek API streaming error: {sanitize_for_log(str(e))}") from e
         async for chunk in stream:
             chunk_data = chunk.model_dump()
 

@@ -2,7 +2,7 @@
 
 import json
 import logging
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional, cast
 from urllib.parse import urljoin
 
 import aiohttp
@@ -13,6 +13,7 @@ from coderAI.llm.base import (
     HTTP_TOTAL_TIMEOUT,
     LLMProvider,
 )
+from coderAI.llm.base import _retry_async as _retry
 
 logger = logging.getLogger(__name__)
 
@@ -83,25 +84,29 @@ class OpenAICompatibleLocalProvider(LLMProvider):
     ) -> Dict[str, Any]:
         url = self._get_url()
         payload = self._build_payload(messages, tools, **kwargs)
-        async with self._get_session().post(
-            url,
-            json=payload,
-            timeout=aiohttp.ClientTimeout(
-                connect=HTTP_CONNECT_TIMEOUT,
-                sock_read=HTTP_SOCK_READ_TIMEOUT,
-                total=HTTP_TOTAL_TIMEOUT,
-            ),
-        ) as response:
-            response.raise_for_status()
-            try:
-                result = await response.json()
-            except Exception as e:
-                label = self._get_provider_label()
-                raise RuntimeError(f"{label} returned malformed JSON response: {e}") from e
+        label = self._get_provider_label()
 
-            assert isinstance(result, dict)
-            self._track_usage(result.get("usage", {}))
-            return self._transform_chat_response(result)
+        async def _call() -> Dict[str, Any]:
+            async with self._get_session().post(
+                url,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(
+                    connect=HTTP_CONNECT_TIMEOUT,
+                    sock_read=HTTP_SOCK_READ_TIMEOUT,
+                    total=HTTP_TOTAL_TIMEOUT,
+                ),
+            ) as response:
+                response.raise_for_status()
+                try:
+                    result = await response.json()
+                except Exception as e:
+                    raise RuntimeError(f"{label} returned malformed JSON response: {e}") from e
+
+                assert isinstance(result, dict)
+                self._track_usage(result.get("usage", {}))
+                return self._transform_chat_response(result)
+
+        return cast(Dict[str, Any], await _retry(_call, description=f"{label} chat"))
 
     def _transform_chat_response(self, result: Dict[str, Any]) -> Dict[str, Any]:
         """Hook for subclasses to mutate the chat response before returning."""
@@ -115,16 +120,27 @@ class OpenAICompatibleLocalProvider(LLMProvider):
     ) -> AsyncIterator[Dict[str, Any]]:
         url = self._get_url()
         payload = self._build_payload(messages, tools, stream=True, **kwargs)
-        async with self._get_session().post(
-            url,
-            json=payload,
-            timeout=aiohttp.ClientTimeout(
-                connect=HTTP_CONNECT_TIMEOUT,
-                sock_read=HTTP_SOCK_READ_TIMEOUT,
-                total=HTTP_TOTAL_TIMEOUT,
-            ),
-        ) as response:
-            response.raise_for_status()
+        label = self._get_provider_label()
+
+        async def _connect() -> aiohttp.ClientResponse:
+            resp = await self._get_session().post(
+                url,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(
+                    connect=HTTP_CONNECT_TIMEOUT,
+                    sock_read=HTTP_SOCK_READ_TIMEOUT,
+                    total=HTTP_TOTAL_TIMEOUT,
+                ),
+            )
+            try:
+                resp.raise_for_status()
+            except Exception:
+                resp.release()
+                raise
+            return resp
+
+        response = await _retry(_connect, description=f"{label} stream")
+        async with response:
             buffer = ""
             async for raw_chunk in response.content:
                 buffer += raw_chunk.decode("utf-8")

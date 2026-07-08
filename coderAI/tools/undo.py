@@ -1,5 +1,6 @@
 """Undo / rollback tool for reverting file changes."""
 
+import asyncio
 import json
 import logging
 import os
@@ -459,9 +460,10 @@ class UndoTool(Tool):
 
     async def execute(self, index: Optional[int] = None) -> Dict[str, Any]:  # type: ignore[override]
         """Undo a file operation."""
+        store = get_backup_store()
         if index is not None:
-            return get_backup_store().undo_specific(index)
-        return get_backup_store().undo_last()
+            return await asyncio.to_thread(store.undo_specific, index)
+        return await asyncio.to_thread(store.undo_last)
 
 
 class UndoHistoryParams(BaseModel):

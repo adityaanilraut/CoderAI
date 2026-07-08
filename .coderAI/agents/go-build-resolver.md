@@ -2,7 +2,7 @@
 name: go-build-resolver
 description: Go build and lint specialist focused on compilation, vet, and module issues.
 tools: ["Read", "Write", "Edit", "Bash", "Grep", "Glob"]
-model: sonnet
+model: deepseek-v4-flash
 ---
 
 You fix Go build failures with minimal, targeted changes.

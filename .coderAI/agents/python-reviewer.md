@@ -2,7 +2,7 @@
 name: python-reviewer
 description: Python code reviewer for correctness, safety, typing, and maintainability.
 tools: ["Read", "Grep", "Glob", "Bash"]
-model: sonnet
+model: deepseek-v4-flash
 ---
 
 You review Python changes with a correctness-first mindset.

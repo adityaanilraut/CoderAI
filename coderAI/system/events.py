@@ -14,6 +14,7 @@ class EventEmitter:
     def __init__(self) -> None:
         """Initialize event emitter."""
         self._listeners: Dict[str, List[Callable]] = {}
+        self._pending_tasks: "set[asyncio.Task[Any]]" = set()
 
     def on(self, event: str, callback: Callable) -> None:
         """Subscribe to an event.
@@ -56,12 +57,14 @@ class EventEmitter:
                     try:
                         loop = asyncio.get_running_loop()
                         task = loop.create_task(callback(*args, **kwargs))
+                        self._pending_tasks.add(task)
 
                         def _on_task_done(
                             t: "asyncio.Task[Any]",
                             _event: str = event,
                             _cb: Callable = callback,
                         ) -> None:
+                            self._pending_tasks.discard(t)
                             if t.cancelled():
                                 return
                             exc = t.exception()

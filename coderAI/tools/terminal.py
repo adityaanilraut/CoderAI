@@ -595,6 +595,12 @@ class BgProcessInfo:
         self.stderr_buf: List[str] = []
         self._buf_bytes = 0
         self._max_buf_bytes = 65536  # 64KB total cap
+        self._reader_tasks: "List[asyncio.Task[None]]" = []
+
+    def cancel_readers(self) -> None:
+        for task in self._reader_tasks:
+            task.cancel()
+        self._reader_tasks.clear()
 
     def _append(self, buf: List[str], data: str) -> None:
         if self._buf_bytes >= self._max_buf_bytes:
@@ -725,9 +731,11 @@ class RunBackgroundTool(Tool):
                         info._append(buf_list, line_bytes.decode("utf-8", errors="replace"))
 
                 if process.stdout:
-                    asyncio.create_task(_read_stream(process.stdout, info.stdout_buf))
+                    t = asyncio.create_task(_read_stream(process.stdout, info.stdout_buf))
+                    info._reader_tasks.append(t)
                 if process.stderr:
-                    asyncio.create_task(_read_stream(process.stderr, info.stderr_buf))
+                    t = asyncio.create_task(_read_stream(process.stderr, info.stderr_buf))
+                    info._reader_tasks.append(t)
 
             return {
                 "success": True,
@@ -753,6 +761,8 @@ class RunBackgroundTool(Tool):
             pid for pid, info in self._processes.items() if info.process.returncode is not None
         ]
         for pid in finished:
+            info = self._processes[pid]
+            info.cancel_readers()
             del self._processes[pid]
         return len(finished)
 
@@ -760,6 +770,7 @@ class RunBackgroundTool(Tool):
         """Forcefully terminate all remaining tracked processes."""
         terminated = 0
         for pid, info in dict(self._processes).items():
+            info.cancel_readers()
             if info.process.returncode is None:
                 try:
                     kill_process_group(info.process)
@@ -775,6 +786,7 @@ class RunBackgroundTool(Tool):
 def _cleanup_all_background():
     """Terminate background processes from the shared module-level registry."""
     for pid, info in dict(_tracked_bg_processes).items():
+        info.cancel_readers()
         if info.process.returncode is None:
             try:
                 kill_process_group(info.process)

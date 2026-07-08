@@ -224,7 +224,7 @@ class WriteFileTool(Tool):
                 before_content: Optional[str] = None
                 if not append:
                     if path_obj.exists():
-                        backup_store.backup_file(str(path_obj), "modify")
+                        await asyncio.to_thread(backup_store.backup_file, str(path_obj), "modify")
                         try:
                             before_content = await asyncio.to_thread(
                                 path_obj.read_text, encoding="utf-8"
@@ -234,11 +234,11 @@ class WriteFileTool(Tool):
                             # the write itself proceeds (backup already taken).
                             before_content = None
                     else:
-                        backup_store.backup_file(str(path_obj), "create")
+                        await asyncio.to_thread(backup_store.backup_file, str(path_obj), "create")
                         before_content = ""
                 else:
                     op = "modify" if path_obj.exists() else "create"
-                    backup_result = backup_store.backup_file(str(path_obj), op)
+                    backup_result = await asyncio.to_thread(backup_store.backup_file, str(path_obj), op)
                     if isinstance(backup_result, dict) and backup_result.get("error"):
                         logger.warning("Backup before append failed: %s", backup_result["error"])
 

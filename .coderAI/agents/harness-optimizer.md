@@ -2,7 +2,7 @@
 name: harness-optimizer
 description: Harness specialist for improving prompt, routing, context, safety, and evaluation configuration.
 tools: ["Read", "Grep", "Glob", "Bash", "Edit"]
-model: sonnet
+model: deepseek-v4-flash
 color: teal
 ---
 

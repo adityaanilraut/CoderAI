@@ -15,6 +15,7 @@ from coderAI.llm.base import (
     HTTP_TOTAL_TIMEOUT,
 )
 from coderAI.llm.base import _retry_async as _retry
+from coderAI.system.safeguards import sanitize_for_log
 
 logger = logging.getLogger(__name__)
 
@@ -476,7 +477,7 @@ class AnthropicProvider(LLMProvider):
         response = await self._post_to_anthropic(payload)
         async with response:
             if response.status != 200:
-                error_body = await response.text()
+                error_body = sanitize_for_log(await response.text())
                 raise RuntimeError(f"Anthropic API error {response.status}: {error_body[:200]}")
             result = await response.json()
 
@@ -501,7 +502,7 @@ class AnthropicProvider(LLMProvider):
         response = await self._post_to_anthropic(payload)
         async with response:
             if response.status != 200:
-                error_body = await response.text()
+                error_body = sanitize_for_log(await response.text())
                 raise RuntimeError(f"Anthropic API error {response.status}: {error_body[:200]}")
 
             buffer = ""

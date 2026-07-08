@@ -2,7 +2,7 @@
 name: tdd-guide
 description: Test-driven development guide for adding or fixing behavior with tight feedback loops.
 tools: ["Read", "Write", "Edit", "Bash", "Grep"]
-model: sonnet
+model: deepseek-v4-flash
 ---
 
 You guide work through a Red-Green-Refactor loop.

@@ -2,7 +2,7 @@
 name: go-reviewer
 description: Go code reviewer for correctness, concurrency risks, and idiomatic error handling.
 tools: ["Read", "Grep", "Glob", "Bash"]
-model: sonnet
+model: deepseek-v4-flash
 ---
 
 You review Go changes for real correctness issues.

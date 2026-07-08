@@ -4,8 +4,9 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 from groq import AsyncGroq
 
-from coderAI.llm.base import LLMProvider
+from coderAI.llm.base import HTTP_TOTAL_TIMEOUT, LLMProvider
 from coderAI.llm.base import _retry_async as _retry
+from coderAI.system.safeguards import sanitize_for_log
 
 
 class GroqProvider(LLMProvider):
@@ -34,7 +35,7 @@ class GroqProvider(LLMProvider):
             raise ValueError("Groq API key is required")
 
         self.actual_model = self.SUPPORTED_MODELS.get(model, model)
-        self.client = AsyncGroq(api_key=api_key)
+        self.client = AsyncGroq(api_key=api_key, timeout=HTTP_TOTAL_TIMEOUT)
 
     async def chat(
         self,
@@ -70,7 +71,7 @@ class GroqProvider(LLMProvider):
 
             response = await _retry(_call, description="Groq chat", max_retries=3)
         except Exception as e:
-            raise RuntimeError(f"Groq API error: {e}") from e
+            raise RuntimeError(f"Groq API error: {sanitize_for_log(str(e))}") from e
         result = response.model_dump()
         assert isinstance(result, dict)
 
@@ -115,7 +116,7 @@ class GroqProvider(LLMProvider):
 
             stream = await _retry(_create_stream, description="Groq stream", max_retries=3)
         except Exception as e:
-            raise RuntimeError(f"Groq API streaming error: {e}") from e
+            raise RuntimeError(f"Groq API streaming error: {sanitize_for_log(str(e))}") from e
         async for chunk in stream:
             chunk_data = chunk.model_dump()
 

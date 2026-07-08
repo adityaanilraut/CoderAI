@@ -1,8 +1,13 @@
 """Tests for skill loader — file discovery, parsing, and safety."""
 
+import os
+
+import pytest
+
 from coderAI.skills.skill_manager import (
     Skill,
     SKILLS_FILE_NAME,
+    _is_safe_path,
     _parse_frontmatter,
     discover_local_skills,
     load_skill_by_name,
@@ -202,3 +207,30 @@ class TestLoadSkillByName:
 
         skill = load_skill_by_name("nonexistent", str(tmp_path))
         assert skill is None
+
+
+class TestIsSafePath:
+    def test_child_and_root_accepted(self, tmp_path):
+        root = tmp_path / "skills"
+        root.mkdir()
+        assert _is_safe_path(root, root)
+        assert _is_safe_path(root / "sub" / "SKILLS.md", root)
+
+    def test_sibling_with_shared_prefix_rejected(self, tmp_path):
+        root = tmp_path / "skills"
+        root.mkdir()
+        evil = tmp_path / "skills-evil"
+        evil.mkdir()
+        assert not _is_safe_path(evil / "payload.md", root)
+
+    @pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+    def test_symlink_escape_to_prefix_sibling_rejected(self, tmp_path):
+        dot_dir = tmp_path / ".coderAI" / "skills"
+        dot_dir.mkdir(parents=True)
+        evil = tmp_path / ".coderAI" / "skills-evil"
+        evil.mkdir()
+        target = evil / "escape.md"
+        target.write_text("---\nname: escape\ndescription: outside\n---\n\n# Escape\n")
+        (dot_dir / "escape.md").symlink_to(target)
+
+        assert load_skill_by_name("escape", str(tmp_path)) is None

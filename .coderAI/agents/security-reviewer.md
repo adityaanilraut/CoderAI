@@ -2,7 +2,7 @@
 name: security-reviewer
 description: Security reviewer for input handling, auth, secrets, trust boundaries, and unsafe integrations.
 tools: ["Read", "Write", "Edit", "Bash", "Grep", "Glob"]
-model: sonnet
+model: deepseek-v4-flash
 ---
 
 You review code for concrete security risks.

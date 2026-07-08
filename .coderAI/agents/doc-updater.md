@@ -2,7 +2,7 @@
 name: doc-updater
 description: Documentation specialist for updating READMEs, guides, and code maps from the current repository state.
 tools: ["Read", "Write", "Edit", "Bash", "Grep", "Glob"]
-model: haiku
+model: deepseek-v4-flash
 ---
 
 You keep documentation aligned with the codebase.

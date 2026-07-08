@@ -113,7 +113,7 @@ class TestLLMMatching:
 
         await manager._ensure_discovered()
         local_skills = manager.registry.find_by_source("local")
-        matches = await manager._match_via_llm("analyze this CSV file", local_skills)
+        matches = await manager._match_via_llm("analyze this CSV file", local_skills, manager.threshold, manager.top_n)
 
         assert len(matches) == 1
         assert matches[0][0].name == "csv-analyzer"
@@ -133,7 +133,7 @@ class TestLLMMatching:
 
         await manager._ensure_discovered()
         local = manager.registry.find_by_source("local")
-        matches = await manager._match_via_llm("unrelated task", local)
+        matches = await manager._match_via_llm("unrelated task", local, manager.threshold, manager.top_n)
         assert matches == []
 
     @pytest.mark.asyncio
@@ -147,7 +147,7 @@ class TestLLMMatching:
 
         await manager._ensure_discovered()
         local = manager.registry.find_by_source("local")
-        matches = await manager._match_via_llm("task", local)
+        matches = await manager._match_via_llm("task", local, manager.threshold, manager.top_n)
         assert len(matches) == 1
         assert matches[0][0].name == "a"
 
@@ -162,7 +162,7 @@ class TestLLMMatching:
 
         await manager._ensure_discovered()
         local = manager.registry.find_by_source("local")
-        matches = await manager._match_via_llm("task", local)
+        matches = await manager._match_via_llm("task", local, manager.threshold, manager.top_n)
         assert matches == []
 
     @pytest.mark.asyncio
@@ -171,7 +171,7 @@ class TestLLMMatching:
         manager = SkillManager(sources=[source])
         await manager._ensure_discovered()
         local = manager.registry.find_by_source("local")
-        matches = await manager._match_via_llm("task", local)
+        matches = await manager._match_via_llm("task", local, manager.threshold, manager.top_n)
         assert matches == []
 
 
@@ -186,7 +186,7 @@ class TestKeywordScoring:
         manager = SkillManager(sources=[source], threshold=0.3)
         manager.registry.register_all(source._skills)
 
-        scored = manager._keyword_score("analyze CSV data", manager.registry.list_all())
+        scored = manager._keyword_score("analyze CSV data", manager.registry.list_all(), manager.threshold, manager.top_n)
         assert len(scored) == 1
         assert scored[0][0].name == "csv-tool"
 
@@ -195,7 +195,7 @@ class TestKeywordScoring:
         manager = SkillManager(sources=[source], threshold=0.3)
         manager.registry.register_all(source._skills)
 
-        scored = manager._keyword_score("unrelated topic query", manager.registry.list_all())
+        scored = manager._keyword_score("unrelated topic query", manager.registry.list_all(), manager.threshold, manager.top_n)
         assert scored == []
 
 

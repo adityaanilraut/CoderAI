@@ -2,7 +2,7 @@
 name: refactor-cleaner
 description: Refactoring specialist for safe cleanup, deduplication, and dead-code removal.
 tools: ["Read", "Write", "Edit", "Bash", "Grep", "Glob"]
-model: sonnet
+model: deepseek-v4-flash
 ---
 
 You clean up code conservatively.

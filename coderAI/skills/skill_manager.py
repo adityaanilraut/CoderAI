@@ -10,6 +10,7 @@ import asyncio
 import json as _json
 import logging
 import re
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -24,6 +25,7 @@ SKILL_MGR_PREFIX = "[SkillManager]"
 SKILLS_FILE_NAME = "SKILLS.md"
 LEGACY_SKILLS_DIR_NAME = "skills"
 MAX_SKILL_FILE_BYTES = 100 * 1024
+_MATCH_CACHE_MAX_ENTRIES = 128
 
 # ------------------------------------------------------------------
 # Skill dataclass
@@ -105,14 +107,10 @@ def _find_skills_root(project_root: str = ".") -> Optional[Path]:
 
 
 def _is_safe_path(file_path: Path, skills_root: Path) -> bool:
+    # String-prefix checks would accept sibling directories like
+    # ``<root>-evil`` (reachable via symlinks inside the skills dir).
     try:
-        resolved = file_path.resolve()
-        root_resolved = skills_root.resolve()
-        return (
-            str(resolved).startswith(str(root_resolved) + "/")
-            or resolved == root_resolved
-            or str(resolved).startswith(str(root_resolved))
-        )
+        return file_path.resolve().is_relative_to(skills_root.resolve())
     except Exception:
         return False
 
@@ -243,7 +241,7 @@ class SkillManager:
         self._discovery_complete = False
         self._discovery_lock = asyncio.Lock()
         self._match_lock = asyncio.Lock()
-        self._match_cache: Dict[str, List[Tuple[Skill, float]]] = {}
+        self._match_cache: "OrderedDict[str, List[Tuple[Skill, float]]]" = OrderedDict()
 
     @property
     def provider(self) -> Any:
@@ -284,7 +282,7 @@ class SkillManager:
             )
 
     async def _match_via_llm(
-        self, task_description: str, skills: List[Skill]
+        self, task_description: str, skills: List[Skill], threshold: float, top_n: int
     ) -> List[Tuple[Skill, float]]:
         if not self._provider or not skills:
             return []
@@ -314,7 +312,7 @@ class SkillManager:
         content = self._extract_response_content(response)
         if not content:
             return []
-        matches = self._parse_matches_json(content, skill_index)
+        matches = self._parse_matches_json(content, skill_index, threshold, top_n)
         return matches
 
     def _extract_response_content(self, response: Any) -> Optional[str]:
@@ -330,7 +328,7 @@ class SkillManager:
             return ""
 
     def _parse_matches_json(
-        self, content: str, skill_index: Dict[str, Skill]
+        self, content: str, skill_index: Dict[str, Skill], threshold: float, top_n: int
     ) -> List[Tuple[Skill, float]]:
         text = content.strip()
         text = re.sub(r"^```(?:json)?\s*", "", text)
@@ -354,7 +352,7 @@ class SkillManager:
                 confidence = float(item.get("confidence", 0))
             except (ValueError, TypeError):
                 confidence = 0.0
-            if confidence < self.threshold:
+            if confidence < threshold:
                 continue
             skill = skill_index.get(skill_name)
             if skill is None:
@@ -366,10 +364,10 @@ class SkillManager:
             )
             results.append((skill, confidence))
         results.sort(key=lambda x: x[1], reverse=True)
-        return results[: self.top_n]
+        return results[:top_n]
 
     def _keyword_score(
-        self, task_description: str, skills: List[Skill]
+        self, task_description: str, skills: List[Skill], threshold: float, top_n: int
     ) -> List[Tuple[Skill, float]]:
         query_lower = task_description.lower()
         query_words = set(query_lower.split())
@@ -381,11 +379,11 @@ class SkillManager:
             if not overlap:
                 continue
             score = len(overlap) / max(len(query_words), 1)
-            score = min(score * 1.2, 0.7)
-            if score >= self.threshold:
+            score = min(score * 1.2, 1.0)
+            if score >= threshold:
                 scored.append((skill, score))
         scored.sort(key=lambda x: x[1], reverse=True)
-        return scored[: self.top_n]
+        return scored[:top_n]
 
     async def get_top_skills(
         self,
@@ -397,68 +395,66 @@ class SkillManager:
         effective_top_n = top_n if top_n is not None else self.top_n
         effective_threshold = threshold if threshold is not None else self.threshold
         cache_key = f"{task_description}:{effective_top_n}:{effective_threshold}"
-        if cache_key in self._match_cache:
-            logger.debug("%s Cache hit for task: %s...", SKILL_MGR_PREFIX, task_description[:60])
-            return [s for s, _ in self._match_cache[cache_key]]
-        logger.info("%s Searching skills for: %s...", SKILL_MGR_PREFIX, task_description[:80])
         async with self._match_lock:
-            original_threshold = self.threshold
-            self.threshold = effective_threshold
-            original_top_n = self.top_n
-            self.top_n = effective_top_n
-            try:
-                local_skills = self.registry.find_by_source("local")
-                llm_matches: List[Tuple[Skill, float]] = []
-                if local_skills:
-                    logger.debug(
-                        "%s Evaluating %d local skill(s) via LLM...",
-                        SKILL_MGR_PREFIX,
-                        len(local_skills),
-                    )
-                    llm_matches = await self._match_via_llm(task_description, local_skills)
-                source_matches: List[Tuple[Skill, float]] = []
-                for source in self._sources:
-                    if source.source_name == "local":
-                        continue
-                    try:
-                        results = await source.search(task_description, top_n=effective_top_n)
-                        source_matches.extend(results)
-                        for skill, conf in results:
-                            logger.info(
-                                "%s Matched (hasna): %s (%.2f)",
-                                SKILL_MGR_PREFIX,
-                                skill.name,
-                                conf,
-                            )
-                    except Exception as e:
-                        logger.warning(
-                            "%s Source '%s' search failed: %s",
+            if cache_key in self._match_cache:
+                logger.debug("%s Cache hit for task: %s...", SKILL_MGR_PREFIX, task_description[:60])
+                return [s for s, _ in self._match_cache[cache_key]]
+            logger.info("%s Searching skills for: %s...", SKILL_MGR_PREFIX, task_description[:80])
+            local_skills = self.registry.find_by_source("local")
+            llm_matches: List[Tuple[Skill, float]] = []
+            if local_skills:
+                logger.debug(
+                    "%s Evaluating %d local skill(s) via LLM...",
+                    SKILL_MGR_PREFIX,
+                    len(local_skills),
+                )
+                llm_matches = await self._match_via_llm(
+                    task_description, local_skills, effective_threshold, effective_top_n
+                )
+            source_matches: List[Tuple[Skill, float]] = []
+            for source in self._sources:
+                if source.source_name == "local":
+                    continue
+                try:
+                    results = await source.search(task_description, top_n=effective_top_n)
+                    source_matches.extend(results)
+                    for skill, conf in results:
+                        logger.info(
+                            "%s Matched (hasna): %s (%.2f)",
                             SKILL_MGR_PREFIX,
-                            source.source_name,
-                            e,
+                            skill.name,
+                            conf,
                         )
-                if not llm_matches and local_skills:
-                    logger.debug(
-                        "%s LLM matching returned no results — trying keyword fallback",
+                except Exception as e:
+                    logger.warning(
+                        "%s Source '%s' search failed: %s",
                         SKILL_MGR_PREFIX,
+                        source.source_name,
+                        e,
                     )
-                    llm_matches = self._keyword_score(task_description, local_skills)
-                merged: Dict[str, Tuple[Skill, float]] = {}
-                for skill, conf in llm_matches + source_matches:
-                    existing = merged.get(skill.name)
-                    if existing is None or conf > existing[1]:
-                        merged[skill.name] = (skill, conf)
-                final = sorted(merged.values(), key=lambda x: x[1], reverse=True)[:effective_top_n]
-                self._match_cache[cache_key] = final
-                if final:
-                    skill_names = [f"{s.name} ({c:.2f})" for s, c in final]
-                    logger.info("%s Skills selected: %s", SKILL_MGR_PREFIX, ", ".join(skill_names))
-                else:
-                    logger.debug("%s No relevant skills found", SKILL_MGR_PREFIX)
-                return [s for s, _ in final]
-            finally:
-                self.threshold = original_threshold
-                self.top_n = original_top_n
+            if not llm_matches and local_skills:
+                logger.debug(
+                    "%s LLM matching returned no results — trying keyword fallback",
+                    SKILL_MGR_PREFIX,
+                )
+                llm_matches = self._keyword_score(
+                    task_description, local_skills, effective_threshold, effective_top_n
+                )
+            merged: Dict[str, Tuple[Skill, float]] = {}
+            for skill, conf in llm_matches + source_matches:
+                existing = merged.get(skill.name)
+                if existing is None or conf > existing[1]:
+                    merged[skill.name] = (skill, conf)
+            final = sorted(merged.values(), key=lambda x: x[1], reverse=True)[:effective_top_n]
+            self._match_cache[cache_key] = final
+            while len(self._match_cache) > _MATCH_CACHE_MAX_ENTRIES:
+                self._match_cache.popitem(last=False)
+            if final:
+                skill_names = [f"{s.name} ({c:.2f})" for s, c in final]
+                logger.info("%s Skills selected: %s", SKILL_MGR_PREFIX, ", ".join(skill_names))
+            else:
+                logger.debug("%s No relevant skills found", SKILL_MGR_PREFIX)
+            return [s for s, _ in final]
 
     async def get_relevant_skill(self, task_description: str) -> Optional[Skill]:
         skills = await self.get_top_skills(task_description, top_n=1)

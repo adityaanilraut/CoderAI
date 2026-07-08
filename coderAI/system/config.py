@@ -409,7 +409,21 @@ class ConfigManager:
         try:
             with open(project_config_path, "r") as f:
                 project_data = json.load(f)
-        except (json.JSONDecodeError, OSError):
+        except json.JSONDecodeError as e:
+            logger.warning(
+                "Project config file %s is corrupted (JSON parse error: %s). "
+                "Using global defaults.",
+                project_config_path,
+                e,
+            )
+            return config
+        except OSError as e:
+            logger.warning(
+                "Project config file %s could not be read: %s. "
+                "Using global defaults.",
+                project_config_path,
+                e,
+            )
             return config
 
         for key, value in project_data.items():

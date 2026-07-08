@@ -733,6 +733,9 @@ class ExecutionLoop:
             except Exception as e:
                 logger.debug("MCP health check failed: %s", e)
 
+        old = self._mcp_health_task
+        if old is not None and not old.done():
+            old.cancel()
         self._mcp_health_task = asyncio.create_task(_run_health_check())
 
     async def _autoconnect_mcp_servers(self):

@@ -214,9 +214,9 @@ class MoveFileTool(Tool):
 
             # Backup source (it will be removed) and destination (if overwritten)
             if src.is_file():
-                backup_store.backup_file(str(src), "delete")
+                await asyncio.to_thread(backup_store.backup_file, str(src), "delete")
             if dst.exists() and dst.is_file():
-                backup_store.backup_file(str(dst), "modify")
+                await asyncio.to_thread(backup_store.backup_file, str(dst), "modify")
 
             def _move():
                 # Re-check both leaves right before the move to guard against a
@@ -306,7 +306,7 @@ class CopyFileTool(Tool):
 
             # Backup destination if it will be overwritten
             if dst.exists() and dst.is_file():
-                backup_store.backup_file(str(dst), "modify")
+                await asyncio.to_thread(backup_store.backup_file, str(dst), "modify")
 
             def _copy():
                 # Re-check both leaves right before the copy to guard against a
@@ -385,7 +385,7 @@ class DeleteFileTool(Tool):
 
             # Backup file before deletion for undo support
             if target.is_file():
-                backup_store.backup_file(str(target), "delete")
+                await asyncio.to_thread(backup_store.backup_file, str(target), "delete")
 
             def _delete():
                 # Re-check symlink right before deletion to guard against

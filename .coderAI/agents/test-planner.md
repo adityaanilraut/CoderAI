@@ -2,7 +2,7 @@
 name: test-planner
 description: Test strategy specialist that designs the smallest set of tests that meaningfully cover a change.
 tools: ["Read", "Grep", "Glob", "Bash"]
-model: sonnet
+model: deepseek-v4-flash
 ---
 
 You design test plans that are specific, focused on behavior, and cheap to run.

@@ -5,7 +5,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 from openai import AsyncOpenAI
 
-from coderAI.llm.base import LLMProvider
+from coderAI.llm.base import HTTP_TOTAL_TIMEOUT, LLMProvider
 from coderAI.llm.base import _retry_async as _retry
 from coderAI.system.error_policy import _try_extract_response_body
 from coderAI.system.redaction import sanitize_dict as _sanitize_dict
@@ -48,6 +48,7 @@ class GeminiProvider(LLMProvider):
         self.client = AsyncOpenAI(
             api_key=api_key,
             base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+            timeout=HTTP_TOTAL_TIMEOUT,
         )
 
     def _build_request_params(

@@ -6,7 +6,7 @@ import openai
 import tiktoken
 from openai import AsyncOpenAI
 
-from coderAI.llm.base import LLMProvider
+from coderAI.llm.base import HTTP_TOTAL_TIMEOUT, LLMProvider
 from coderAI.llm.base import _retry_async as _retry
 
 
@@ -38,7 +38,7 @@ class OpenAIProvider(LLMProvider):
             raise ValueError("OpenAI API key is required")
 
         self.actual_model = self.SUPPORTED_MODELS.get(model, model)
-        self.client = AsyncOpenAI(api_key=api_key)
+        self.client = AsyncOpenAI(api_key=api_key, timeout=HTTP_TOTAL_TIMEOUT)
 
         # OpenAI default temperature is 1.0, not 0.7
         if "temperature" not in kwargs:

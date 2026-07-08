@@ -197,7 +197,7 @@ class TestOpenAICompatibleLocalProvider:
         mock_response.content.__aiter__.return_value = [sse_data]
 
         mock_session_cls = MagicMock()
-        mock_session_cls.post.return_value.__aenter__.return_value = mock_response
+        mock_session_cls.post = AsyncMock(return_value=mock_response)
         mock_session_cls.closed = True
 
         with patch.object(provider, "_get_session", return_value=mock_session_cls):
@@ -219,7 +219,7 @@ class TestOpenAICompatibleLocalProvider:
         mock_response.content.__aiter__.return_value = [sse_data]
 
         mock_session_cls = MagicMock()
-        mock_session_cls.post.return_value.__aenter__.return_value = mock_response
+        mock_session_cls.post = AsyncMock(return_value=mock_response)
         mock_session_cls.closed = True
 
         with patch.object(provider, "_get_session", return_value=mock_session_cls):
