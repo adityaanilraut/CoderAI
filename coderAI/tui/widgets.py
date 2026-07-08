@@ -3,6 +3,7 @@
 from functools import lru_cache
 from rich.segment import Segment
 from rich.style import Style
+from textual.geometry import Size
 from textual.strip import Strip
 from textual.widgets._rich_log import RichLog
 
@@ -45,3 +46,42 @@ class SelectableRichLog(RichLog):
 
         strip = Strip(new_segments)
         return strip
+
+    # ── Strip-blit fast path (relies on RichLog private internals) ──────
+    # The methods below read and mutate RichLog private state
+    # (``_size_known``, ``lines``, ``_widest_line_width``, ``virtual_size``)
+    # so the app can blit pre-rendered Strips straight into the log without
+    # re-rendering through Rich/Markdown — the cost the strip cache avoids.
+    # Verified against Textual 8.2.4 / 8.2.8; re-verify these internals on
+    # any Textual upgrade (see the pinned `textual>=8.0,<9` in pyproject).
+
+    def sized_for_blit(self) -> bool:
+        """True once the widget knows its width, so blitting strips is valid.
+
+        Before the size is known, RichLog *defers* every write and replays
+        them once sized, so ``lines`` is empty — blitting cached strips then
+        would capture nothing.
+        """
+        return bool(self._size_known)
+
+    def line_count(self) -> int:
+        """Number of rendered strips currently in the log (blit start index)."""
+        return len(self.lines)
+
+    def blit_strips(self, strips: list[Strip]) -> None:
+        """Append pre-rendered ``strips`` and refresh the scroll extent.
+
+        Mirrors the tail of ``RichLog.write`` (widest-width bump +
+        ``virtual_size``) without going through Rich, since the strips are
+        already rendered.
+        """
+        self.lines.extend(strips)
+        if strips:
+            self._widest_line_width = max(
+                self._widest_line_width, max(s.cell_length for s in strips)
+            )
+        self.virtual_size = Size(self._widest_line_width, len(self.lines))
+
+    def strips_since(self, start: int) -> list[Strip]:
+        """Strips appended since index ``start`` (for render-cache capture)."""
+        return self.lines[start:]

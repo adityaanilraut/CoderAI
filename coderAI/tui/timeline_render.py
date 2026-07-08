@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import time as _time_mod
-from typing import Any, Callable, Dict, List, Protocol
+from typing import Any, Callable, Dict, List, Optional, Protocol
 
 from rich.console import Console, ConsoleOptions, Group, RenderResult
 from rich.markup import escape
@@ -56,6 +56,15 @@ _TOAST_STYLES = {
     "success": Tokens.AGENT,
     "warning": Tokens.WARN,
     "error": Tokens.DANGER,
+}
+
+# Level-specific leading glyph so toasts read at a glance, not by hue alone
+# (accessibility). Single-width chars + a space, so the toast line-count in
+# calculate_item_lines (newline-based) is unaffected.
+_TOAST_GLYPHS = {
+    "success": Glyphs.TOOL_OK,
+    "warning": Glyphs.APPROVAL,
+    "error": Glyphs.ERROR,
 }
 
 
@@ -222,10 +231,29 @@ def write_assistant(log: SupportsWrite, it: Dict[str, Any], verbose: bool) -> No
             )
         else:
             parts.append(Padding(Markdown(content), (0, 0, 0, 2)))
-    if it.get("streaming") and not collapsed:
-        parts.append(Text("  ▌", style=f"blink {Tokens.AGENT}"))
+    # Streaming assistant turns are diverted to #stream-tail (app.py) before
+    # reaching this writer, so no live cursor is drawn here.
     log.write(_RailBlock(Group(*parts), Tokens.AGENT))
     log.write("")
+
+
+# The first of these keys present in a tool's args becomes its one-line preview.
+_ARG_PREVIEW_KEYS = (
+    "path",
+    "file_path",
+    "command",
+    "query",
+    "url",
+    "pattern",
+    "target",
+    "content",
+    "regex",
+    "text",
+    "code",
+    "message",
+    "description",
+    "search",
+)
 
 
 def write_tool(log: SupportsWrite, it: Dict[str, Any]) -> None:
@@ -245,27 +273,7 @@ def write_tool(log: SupportsWrite, it: Dict[str, Any]) -> None:
     name = str(it.get("name") or "")
     args = it.get("args") or {}
     if isinstance(args, dict):
-        argbits = []
-        for k in (
-            "path",
-            "file_path",
-            "command",
-            "query",
-            "url",
-            "pattern",
-            "target",
-            "content",
-            "regex",
-            "text",
-            "code",
-            "message",
-            "description",
-            "search",
-        ):
-            if k in args:
-                argbits.append(str(args[k]))
-                break
-        args_str = argbits[0] if argbits else ""
+        args_str = next((str(args[k]) for k in _ARG_PREVIEW_KEYS if k in args), "")
     else:
         args_str = str(args)
     args_str = args_str.replace("\n", " ")[:60]
@@ -284,7 +292,7 @@ def write_tool(log: SupportsWrite, it: Dict[str, Any]) -> None:
     if preview and not collapsed:
         row.append(f"   {preview}", style=Styles.TOOL_PREVIEW)
     if collapsed and (args_str or preview):
-        row.append(f" [{Tokens.TEXT_MUTED}][…][/]")
+        row.append(" […]", style=Tokens.TEXT_MUTED)
     # Risk is earned: low risk gets no badge, medium/high are flagged inline.
     risk = str(it.get("risk") or "low")
     if risk in ("medium", "high") and not collapsed:
@@ -336,7 +344,8 @@ def write_error(log: SupportsWrite, it: Dict[str, Any]) -> None:
 def write_toast(log: SupportsWrite, it: Dict[str, Any]) -> None:
     level = it.get("level", "info")
     color = _TOAST_STYLES.get(level, Tokens.TEXT_DIM)
-    log.write(Text("· " + str(it.get("message", "")), style=color))
+    glyph = _TOAST_GLYPHS.get(level, "·")
+    log.write(Text(f"{glyph} " + str(it.get("message", "")), style=color))
 
 
 def write_approval(log: SupportsWrite, it: Dict[str, Any]) -> None:
@@ -428,8 +437,28 @@ def write_welcome(log: SupportsWrite, it: Dict[str, Any]) -> None:
     log.write("")
 
 
-def calculate_item_lines(it: Dict[str, Any], verbose: bool) -> int:
-    """Precisely calculate the height (in lines) of a rendered timeline item."""
+def _body_lines(body: str, width: Optional[int]) -> int:
+    """Display-line count for a text body.
+
+    With ``width=None`` this is the logical line count (``splitlines()``), which
+    keeps every pinned height in ``test_timeline_render.py`` unchanged. With a
+    width it accounts for soft-wrapping: each logical line occupies
+    ``ceil(len / usable)`` display rows, where ``usable`` reserves the 2-space
+    left padding the bodies render with.
+    """
+    if width is None:
+        return len(body.splitlines())
+    usable = max(1, width - 2)
+    return sum(max(1, -(-len(line) // usable)) for line in body.splitlines())
+
+
+def calculate_item_lines(it: Dict[str, Any], verbose: bool, width: Optional[int] = None) -> int:
+    """Precisely calculate the height (in lines) of a rendered timeline item.
+
+    When ``width`` is given, text bodies and multi-line toasts are measured at
+    their wrapped display height; ``width=None`` returns the logical-line
+    heights the render-parity tests pin.
+    """
     kind = it.get("kind")
     if kind == "user":
         body = it.get("text", "") or ""
@@ -437,7 +466,7 @@ def calculate_item_lines(it: Dict[str, Any], verbose: bool) -> int:
             parsed_len = len(body.splitlines())
             body_lines = parsed_len if parsed_len <= 2 else 3
         else:
-            body_lines = len(body.splitlines())
+            body_lines = _body_lines(body, width)
         return 1 + body_lines + 1
     elif kind == "assistant":
         collapsed = it.get("collapsed")
@@ -445,7 +474,7 @@ def calculate_item_lines(it: Dict[str, Any], verbose: bool) -> int:
         reasoning = (it.get("reasoning") or "").strip()
         if verbose and reasoning and not collapsed:
             lines += 1  # reasoning header
-            lines += len(reasoning.splitlines())  # reasoning body
+            lines += _body_lines(reasoning, width)  # reasoning body
             lines += 1  # empty line
         lines += 1  # assistant header
         content = it.get("content", "")
@@ -454,10 +483,8 @@ def calculate_item_lines(it: Dict[str, Any], verbose: bool) -> int:
                 parsed_len = len(content.splitlines())
                 content_lines = parsed_len if parsed_len <= 3 else 4
             else:
-                content_lines = len(content.splitlines())
+                content_lines = _body_lines(content, width)
             lines += content_lines
-        if it.get("streaming") and not collapsed:
-            lines += 1  # cursor block
         lines += 1  # empty line
         return lines
     elif kind == "tool":
@@ -481,11 +508,15 @@ def calculate_item_lines(it: Dict[str, Any], verbose: bool) -> int:
             return 1 + diff_lines
     elif kind == "error":
         lines = 1  # header
-        lines += len(str(it.get("message", "")).splitlines())
+        lines += _body_lines(str(it.get("message", "")), width)
         if it.get("hint"):
-            lines += len(str(it["hint"]).splitlines())
+            lines += _body_lines(str(it["hint"]), width)
         return lines
-    elif kind in ("toast", "separator", "approval"):
+    elif kind == "toast":
+        # write_toast emits one Text whose embedded newlines each start a new
+        # display row, so height tracks the newline count regardless of width.
+        return str(it.get("message", "")).count("\n") + 1
+    elif kind in ("separator", "approval"):
         return 1
     elif kind == "skill_card":
         lines = 1

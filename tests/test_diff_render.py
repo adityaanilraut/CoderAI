@@ -30,12 +30,6 @@ def test_window_lines_truncates_with_ellipsis():
     assert "lines elided" in windowed[3][1]
 
 
-def test_format_diff_compact_returns_text_lines():
-    diff = "@@ -1 +1 @@\n-a\n+b\n c"
-    out = dr.format_diff_compact(diff)
-    assert "a" in out and "b" in out and "c" in out
-
-
 def test_format_diff_gutter_empty_returns_empty_string():
     assert dr.format_diff_gutter("") == ""
 

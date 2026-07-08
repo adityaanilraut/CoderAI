@@ -75,6 +75,23 @@ def test_calculate_item_lines_diff():
     assert calculate_item_lines(item, verbose=False) == 2
 
 
+def test_calculate_item_lines_toast_counts_embedded_newlines():
+    # write_toast emits a single Text; each embedded newline is a display row.
+    assert calculate_item_lines({"kind": "toast", "message": "one line"}, verbose=False) == 1
+    assert calculate_item_lines({"kind": "toast", "message": "a\nb\nc"}, verbose=False) == 3
+    # Width-independent: newlines force the breaks regardless of terminal width.
+    assert calculate_item_lines({"kind": "toast", "message": "a\nb"}, verbose=False, width=20) == 2
+
+
+def test_calculate_item_lines_wraps_text_bodies_at_width():
+    # A 30-char body line wraps to 2 rows at width=18 (usable = 16), but counts
+    # as one logical line when width is unknown.
+    long = "x" * 30
+    item = {"kind": "user", "text": long}
+    assert calculate_item_lines(item, verbose=False) == 3  # header + 1 + blank
+    assert calculate_item_lines(item, verbose=False, width=18) == 4  # header + 2 + blank
+
+
 def test_calculate_item_lines_welcome_matches_render():
     item = {"kind": "welcome", "model": "m1", "provider": "P", "cwd": "/proj"}
     assert calculate_item_lines(item, verbose=False) == 7

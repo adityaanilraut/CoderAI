@@ -15,7 +15,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
-from coderAI.tui.diff_render import format_diff_compact
+from coderAI.tui.diff_render import format_diff_gutter
 from coderAI.tui.help_menu import HELP_MENU_ENTRIES
 from coderAI.tui.platform import palette_input_placeholder
 from coderAI.tui.prompt_history import PromptHistory
@@ -236,7 +236,7 @@ class ApprovalScreen(ModalScreen[tuple[bool, bool]]):
                     )
 
             if diff:
-                diff_text = format_diff_compact(diff, max_lines=14)
+                diff_text = format_diff_gutter(diff, max_lines=14)
                 yield Static(diff_text, id="approval-diff")
 
             if not diff and args and not isinstance(args, dict):

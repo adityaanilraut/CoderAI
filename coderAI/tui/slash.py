@@ -256,9 +256,10 @@ def _cmd_show(ctx: SlashContext, arg: str, head: str) -> bool:
         ctx.toast("warning", "Usage: /show <version|models|cost|info|config|system|tasks|plan>")
         return True
     topic = "models" if topic in ("providers", "models") else topic
-    if topic in ("tasks", "todos", "task"):
-        ctx.controller.enqueue_command("get_tasks")
-    elif topic == "plan":
+    # `/show tasks` prints the text listing via the server's reference handler
+    # (single source of truth); the dedicated `/tasks` command still refreshes
+    # the panel. `plan` has no reference topic, so it keeps its panel refresh.
+    if topic == "plan":
         ctx.controller.enqueue_command("get_plan")
     else:
         ctx.controller.enqueue_command("reference", topic=topic)

@@ -137,6 +137,22 @@ def test_session_patch_updates_fields():
     assert r.session.active_persona is None
 
 
+def test_session_patch_verbosity_syncs_verbose_flag():
+    r = _reducer()
+    assert r.session.verbose is False
+    r.handle("session_patch", {"verbosity": "verbose"})
+    assert r.session.verbose is True
+    # Any non-verbose level clears the bool.
+    r.handle("session_patch", {"verbosity": "normal"})
+    assert r.session.verbose is False
+    r.handle("session_patch", {"verbosity": "quiet"})
+    assert r.session.verbose is False
+    # Absent verbosity leaves the flag untouched.
+    r.session.verbose = True
+    r.handle("session_patch", {"model": "sonnet"})
+    assert r.session.verbose is True
+
+
 def test_file_diff_appends_diff_item():
     r = _reducer()
     r.handle("file_diff", {"path": "f.py", "diff": "+added"})
@@ -144,22 +160,6 @@ def test_file_diff_appends_diff_item():
     assert item["kind"] == "diff"
     assert item["path"] == "f.py"
     assert item["diff"] == "+added"
-
-
-def test_plan_update_sets_plan_and_toasts():
-    r = _reducer()
-    r.handle(
-        "plan_update",
-        {"plan": {"title": "Big plan", "completed": 1, "total": 3, "currentIdx": 0}},
-    )
-    assert r.session.current_plan["title"] == "Big plan"
-    toast = next(it for it in r.timeline if it["kind"] == "toast")
-    assert "Big plan" in toast["message"]
-
-    # Plan with no title -> generic message.
-    r2 = _reducer()
-    r2.handle("plan_update", {"plan": {}})
-    assert any("Plan updated" in it.get("message", "") for it in r2.timeline)
 
 
 def test_info_warning_success_toasts():

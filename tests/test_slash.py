@@ -235,8 +235,10 @@ def test_agents_tasks_plan(ctrl, red):
 def test_show_topic_routing(ctrl, red):
     _dispatch("/show plan", ctrl, red)
     assert "get_plan" in ctrl.names()
+    # /show tasks routes to the server's reference handler (text listing); the
+    # dedicated /tasks command is what refreshes the panel (get_tasks).
     _dispatch("/show tasks", ctrl, red)
-    assert "get_tasks" in ctrl.names()
+    assert ("reference", {"topic": "tasks"}) == ctrl.last()
     _dispatch("/show config", ctrl, red)
     assert ("reference", {"topic": "config"}) == ctrl.last()
     # Alias form: /version -> reference topic=version.

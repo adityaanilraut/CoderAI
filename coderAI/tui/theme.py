@@ -43,14 +43,14 @@ class Categories:
     tool card). ``other`` is the neutral fallback.
     """
 
-    FS = "#7dcfff"  # filesystem — cyan
-    GIT = "#e0af68"  # git — amber
-    SHELL = "#f7768e"  # shell — pink/danger
-    WEB = "#bb9af7"  # web — purple
-    SEARCH = "#7aa2f7"  # search — blue/accent
-    AGENT = "#9ece6a"  # agent — green
-    MCP = "#ff9e64"  # mcp — orange
-    OTHER = "#a9b1d6"  # fallback — blue-gray
+    FS = Tokens.INFO  # filesystem — cyan
+    GIT = Tokens.WARN  # git — amber
+    SHELL = Tokens.DANGER  # shell — pink/danger
+    WEB = Tokens.THOUGHT  # web — purple
+    SEARCH = Tokens.ACCENT  # search — blue/accent
+    AGENT = Tokens.AGENT  # agent — green
+    MCP = "#ff9e64"  # mcp — orange (no matching semantic token)
+    OTHER = Tokens.TEXT_DIM  # fallback — blue-gray
 
     _MAP = {
         "fs": FS,
@@ -77,7 +77,7 @@ class Glyphs:
     # Brand / turn markers
     BRAND = "◆"  # ◆ brand/agent mark — status bar model label
     USER = "❯"  # ❯ user turn / live composer prompt (caret)
-    REASONING = "◆"  # ◆ reasoning
+    REASONING = "◇"  # ◇ reasoning (hollow, distinct from brand ◆)
     ASSISTANT = "◈"  # ◈ assistant turn
 
     # Tool & status glyphs
@@ -105,6 +105,10 @@ class Styles:
     TEXT_DIM = Tokens.TEXT_DIM
     TEXT_MUTED = Tokens.TEXT_MUTED
     TEXT = Tokens.TEXT
+    # Terminal "dim" attribute — de-emphasize a whole line (incl. nested color
+    # tags, which a color swap couldn't reach). Centralized so it isn't a raw
+    # `[dim]` scattered through renderers.
+    DE_EMPHASIS = "dim"
     SECTION = f"bold {Tokens.TEXT_DIM}"
     DANGER = f"bold {Tokens.DANGER}"
     GUTTER_LINE = Tokens.TEXT_MUTED

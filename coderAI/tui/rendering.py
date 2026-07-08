@@ -145,7 +145,7 @@ def render_agent_tree(s: SessionState) -> RenderableType:
         status_label = f"[{color}]{'▸' if glow else status[:4]}[/]"
         line = f"{dot} [{Tokens.TEXT}]{name}[/] {status_label} [{Tokens.TEXT_DIM}]{task}[/]"
         if status in ("done", "cancelled"):
-            line = f"[dim]{line}[/]"
+            line = f"[{Styles.DE_EMPHASIS}]{line}[/]"
 
         node = parent_node.add(line)
         children = [a for a in agents if a.parent_id == aid]
@@ -251,10 +251,10 @@ def render_tasks(s: SessionState) -> RenderableType:
             )
 
     if completed:
-        lines.append("\n[dim]Completed[/]")
+        lines.append(f"\n[{Tokens.TEXT_MUTED}]Completed[/]")
         for t in completed:
             lines.append(
-                f"[dim]{_task_row(Glyphs.TOOL_OK, Tokens.TEXT_MUTED, int(t.get('id', 0)), str(t.get('title', '')), str(t.get('priority', '')))}[/]"
+                f"[{Styles.DE_EMPHASIS}]{_task_row(Glyphs.TOOL_OK, Tokens.TEXT_MUTED, int(t.get('id', 0)), str(t.get('title', '')), str(t.get('priority', '')))}[/]"
             )
 
     if not in_progress and not pending and not completed:

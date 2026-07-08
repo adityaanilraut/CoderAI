@@ -5,14 +5,13 @@ from __future__ import annotations
 import asyncio
 import os
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from textual import events, on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
-from textual.geometry import Size
 from textual.strip import Strip
 from textual.widgets import Footer, Static
 
@@ -252,6 +251,11 @@ class CoderAIApp(App[None]):
         self._render_cache: Dict[
             tuple[str | None, bool, int], tuple[Dict[str, Any], list[Strip]]
         ] = {}
+        # Height side cache for Ctrl-collapse targeting. Keyed on the fields that
+        # change an item's rendered height so a stale height never lingers, and
+        # kept OFF the timeline dicts themselves (mutating them would poison
+        # ``_render_cache``'s ``cached[0] == it`` comparison).
+        self._line_count_cache: Dict[tuple[str | None, bool, bool, int], int] = {}
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="main"):
@@ -286,16 +290,11 @@ class CoderAIApp(App[None]):
         prompt.focus()
         self.run_worker(self._scan_project_files())
         footer = self.query_one("#composer-footer", Static)
-        footer.update(self._composer_footer_markup())
+        footer.update(composer_footer_markup(self.reducer.session))
         self._apply_responsive_layout()
         self._refresh_ui("full")
-        self.run_worker(
-            self._run_agent,  # type: ignore[arg-type]
-            exclusive=True,
-            thread=True,
-            name="agent-loop",
-        )
-        self._stream_timer = self.set_interval(STREAM_TICK_S, self._stream_tick)
+        self._start_agent_worker()
+        self._stream_timer = self.set_interval(STREAM_TICK_S, self.reducer.tick)
 
     def on_resize(self, event: events.Resize) -> None:
         # self.size still reports the pre-resize value while this handler
@@ -335,19 +334,6 @@ class CoderAIApp(App[None]):
         elif msg.event == "ready" and self._awaiting_response:
             self._awaiting_response = False
             self._notify_attention("CoderAI: finished — ready for your next message")
-
-    def _stream_tick(self) -> None:
-        flushed_stream = self.reducer._maybe_flush_stream()
-        # When streaming ends, the time-gate may leave un-flushed content
-        # in the buffers. Force one last flush so the user sees final output.
-        if not flushed_stream and self.reducer._stream_flush_at is None:
-            if self.reducer._stream_pending_content or self.reducer._stream_pending_reasoning:
-                flushed_stream = self.reducer._flush_stream_buffers()
-        if flushed_stream:
-            self.reducer._bump_refresh("stream")
-        flushed_status = self.reducer._maybe_flush_status()
-        if flushed_stream or flushed_status:
-            self.reducer._notify()
 
     def _emit_bridge(self, event: str, data: Dict[str, Any]) -> None:
         try:
@@ -389,12 +375,7 @@ class CoderAIApp(App[None]):
                     "info",
                     {"message": "Auto-restarting agent…"},
                 )
-                self.run_worker(
-                    self._run_agent,  # type: ignore[arg-type]
-                    exclusive=True,
-                    thread=True,
-                    name="agent-loop",
-                )
+                self._start_agent_worker()
             else:
                 self._emit_bridge(
                     "info",
@@ -512,7 +493,7 @@ class CoderAIApp(App[None]):
             # replays them once sized, so log.lines is empty and strip caching
             # would capture nothing. Fall back to plain writes until then.
             width = log.scrollable_content_region.width
-            use_cache = bool(getattr(log, "_size_known", False)) and width > 0
+            use_cache = log.sized_for_blit() and width > 0
             # Only auto-follow when the user is already pinned to the bottom,
             # so reading scrollback isn't yanked away by new output. A "full"
             # refresh rebuilds from scratch and always re-pins.
@@ -530,8 +511,6 @@ class CoderAIApp(App[None]):
                     write_timeline_item(log, it, verbose=verbose)
                 idx += 1
             self._log_rendered_idx = idx
-            if use_cache:
-                log.virtual_size = Size(log._widest_line_width, len(log.lines))
             if idx > 0 and was_at_end:
                 log.scroll_end(animate=False)
             if idx >= len(timeline):
@@ -560,7 +539,7 @@ class CoderAIApp(App[None]):
             caret_color = Tokens.ACCENT if s.ready else Tokens.LINE
             self.query_one("#prompt-caret", Static).update(f"[{caret_color}]{Glyphs.USER}[/]")
             footer = self.query_one("#composer-footer", Static)
-            footer.update(self._composer_footer_markup())
+            footer.update(composer_footer_markup(self.reducer.session))
         except NoMatches:
             pass
 
@@ -578,24 +557,28 @@ class CoderAIApp(App[None]):
         cache_key = (it.get("id"), verbose, width)
         cached = self._render_cache.get(cache_key)
         if cached is not None and cached[0] == it:
-            strips = cached[1]
-            log.lines.extend(strips)
-            if strips:
-                log._widest_line_width = max(
-                    log._widest_line_width, max(s.cell_length for s in strips)
-                )
+            log.blit_strips(cached[1])
             return
-        start = len(log.lines)
+        start = log.line_count()
         write_timeline_item(log, it, verbose=verbose)
-        self._render_cache[cache_key] = (it.copy(), log.lines[start:])
+        self._render_cache[cache_key] = (it.copy(), log.strips_since(start))
 
     # ── Chrome (delegates to rendering.py) ───────────────────────────
 
     def _render_chrome(self, s: SessionState) -> None:
-        self._render_session_header(s)
-        self._render_agent_tree(s)
-        self._render_plan(s)
-        self._render_tasks(s)
+        # The four chrome panes always co-exist in the DOM (breakpoints toggle
+        # `display`; they are never unmounted), so one guard covering the
+        # transient teardown window is enough.
+        try:
+            for selector, render in (
+                ("#session-header", render_session_header),
+                ("#agent-tree-content", render_agent_tree),
+                ("#plan-pane", render_plan),
+                ("#tasks-pane", render_tasks),
+            ):
+                self.query_one(selector, Static).update(render(s))
+        except NoMatches:
+            pass
 
     def _render_stream_tail(self, it: Dict[str, Any], verbose: bool) -> None:
         try:
@@ -612,37 +595,6 @@ class CoderAIApp(App[None]):
             return
         tail.update("")
         tail.display = False
-
-    def _render_session_header(self, s: SessionState) -> None:
-        try:
-            header = self.query_one("#session-header", Static)
-        except NoMatches:
-            return
-        header.update(render_session_header(s))
-
-    def _render_agent_tree(self, s: SessionState) -> None:
-        try:
-            tree = self.query_one("#agent-tree-content", Static)
-        except NoMatches:
-            return
-        tree.update(render_agent_tree(s))
-
-    def _render_plan(self, s: SessionState) -> None:
-        try:
-            pane = self.query_one("#plan-pane", Static)
-        except NoMatches:
-            return
-        pane.update(render_plan(s))
-
-    def _render_tasks(self, s: SessionState) -> None:
-        try:
-            pane = self.query_one("#tasks-pane", Static)
-        except NoMatches:
-            return
-        pane.update(render_tasks(s))
-
-    def _composer_footer_markup(self) -> str:
-        return composer_footer_markup(self.reducer.session)
 
     # ── Approval flow ────────────────────────────────────────────────
 
@@ -674,13 +626,9 @@ class CoderAIApp(App[None]):
             self.controller.enqueue_command("cancel")
 
     def action_ctrl_c(self) -> None:
-        now = time.monotonic()
-        if self._exit_armed_at and now - self._exit_armed_at < 5:
-            if self.controller:
-                self.controller.enqueue_command("exit")
-            self.exit()
-        else:
-            self._exit_armed_at = now
+        # _confirm_exit arms on first press (returns False) and exits on a
+        # second press within the window (returns True).
+        if not self._confirm_exit():
             self.notify("Press Ctrl+C again within 5s to exit")
 
     def _timeline_log(self) -> Optional[SelectableRichLog]:
@@ -689,25 +637,22 @@ class CoderAIApp(App[None]):
         except NoMatches:
             return None
 
-    def action_timeline_page_up(self) -> None:
+    def _scroll_timeline(self, scroll: Callable[[SelectableRichLog], None]) -> None:
         log = self._timeline_log()
         if log is not None:
-            log.scroll_page_up()
+            scroll(log)
+
+    def action_timeline_page_up(self) -> None:
+        self._scroll_timeline(lambda log: log.scroll_page_up())
 
     def action_timeline_page_down(self) -> None:
-        log = self._timeline_log()
-        if log is not None:
-            log.scroll_page_down()
+        self._scroll_timeline(lambda log: log.scroll_page_down())
 
     def action_timeline_scroll_top(self) -> None:
-        log = self._timeline_log()
-        if log is not None:
-            log.scroll_home(animate=False)
+        self._scroll_timeline(lambda log: log.scroll_home(animate=False))
 
     def action_timeline_scroll_bottom(self) -> None:
-        log = self._timeline_log()
-        if log is not None:
-            log.scroll_end(animate=False)
+        self._scroll_timeline(lambda log: log.scroll_end(animate=False))
 
     def action_copy_selection(self) -> None:
         log = self.query_one("#timeline", SelectableRichLog)
@@ -732,17 +677,25 @@ class CoderAIApp(App[None]):
         if scroll_y == 0:
             return self._find_last_content_item()
 
-        estimated_lines = 0
+        width = log.scrollable_content_region.width
         verbose = self.reducer.session.verbose
+        estimated_lines = 0
         for i in range(len(self.reducer.timeline) - 1, -1, -1):
             it = self.reducer.timeline[i]
+            # Accumulate every item's height so the running offset matches what
+            # is actually rendered; only content items can be the return target.
+            if it.get("streaming", False):
+                lines = calculate_item_lines(it, verbose, width)
+            else:
+                key = (it.get("id"), verbose, bool(it.get("collapsed")), width)
+                cached = self._line_count_cache.get(key)
+                if cached is None:
+                    cached = calculate_item_lines(it, verbose, width)
+                    self._line_count_cache[key] = cached
+                lines = cached
+            estimated_lines += lines
             if it.get("kind") not in ("user", "assistant", "tool", "diff"):
                 continue
-            cache_key = f"_line_count_{verbose}"
-            if it.get("streaming", False) or cache_key not in it:
-                it[cache_key] = calculate_item_lines(it, verbose)
-            lines = it[cache_key]
-            estimated_lines += lines
             if estimated_lines >= scroll_y:
                 return i, it
         return self._find_last_content_item()
@@ -892,16 +845,20 @@ class CoderAIApp(App[None]):
     def _show_palette_section(self, section: str | None = None) -> None:
         self.run_worker(self._show_palette(section), exclusive=True)
 
-    def _retry_agent(self) -> None:
-        self._agent_retry_count = 0
-        self.reducer.session.ready = False
-        self._toast("info", "Restarting agent…")
+    def _start_agent_worker(self) -> None:
+        """Run the backend agent loop on the exclusive background worker thread."""
         self.run_worker(
             self._run_agent,  # type: ignore[arg-type]
             exclusive=True,
             thread=True,
             name="agent-loop",
         )
+
+    def _retry_agent(self) -> None:
+        self._agent_retry_count = 0
+        self.reducer.session.ready = False
+        self._toast("info", "Restarting agent…")
+        self._start_agent_worker()
 
     def _resume_session(self, session_id: Optional[str]) -> None:
         """/resume entry point: with an id, resume it; without, open the picker."""
@@ -942,6 +899,7 @@ class CoderAIApp(App[None]):
         agent_tracker.clear_except()
         self.reducer.session.agents.clear()
         self.reducer.timeline.clear()
+        self._line_count_cache.clear()
         self._log_rendered_idx = 0
         self._resume = session_id
         self._continue = False
@@ -950,17 +908,10 @@ class CoderAIApp(App[None]):
         self._awaiting_response = False
         self._toast("info", f"Resuming session {session_id}…")
         self._refresh_ui("full")
-        self.run_worker(
-            self._run_agent,  # type: ignore[arg-type]
-            exclusive=True,
-            thread=True,
-            name="agent-loop",
-        )
+        self._start_agent_worker()
 
     def _show_search(self) -> None:
-        self.run_worker(self._show_search_async(), exclusive=True)
-
-    async def _show_search_async(self) -> None:
+        # push_screen is synchronous; no worker/async wrapper needed.
         self.push_screen(SearchScreen(self.reducer.timeline, self._search_filter))
 
     def _show_context(self) -> None:
@@ -968,16 +919,21 @@ class CoderAIApp(App[None]):
         msg = "\n".join(f"  {f.get('path')} ({f.get('size', 0)} B)" for f in files) or "(none)"
         self._toast("info", f"Pinned context:\n{msg}")
 
-    def _clear_context(self) -> None:
-        if self.controller:
-            self.controller.enqueue_command("clear_context")
-        self.reducer.timeline.clear()
+    def _reset_timeline_view(self) -> None:
+        """Repaint after clearing/truncating the timeline and re-pin to bottom."""
+        self._line_count_cache.clear()
         self._log_rendered_idx = 0
         self._refresh_ui("full")
         try:
             self.query_one("#timeline", SelectableRichLog).scroll_end(animate=False)
         except NoMatches:
             pass
+
+    def _clear_context(self) -> None:
+        if self.controller:
+            self.controller.enqueue_command("clear_context")
+        self.reducer.timeline.clear()
+        self._reset_timeline_view()
 
     def _rewind_timeline(self, turn: int) -> None:
         """Truncate the local timeline to before the Nth user message.
@@ -997,6 +953,7 @@ class CoderAIApp(App[None]):
         if cut_idx is None:
             return
         del self.reducer.timeline[cut_idx:]
+        self._line_count_cache.clear()
         self._log_rendered_idx = 0
         self._refresh_ui("full")
         try:

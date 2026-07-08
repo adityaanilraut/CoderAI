@@ -110,6 +110,24 @@ class EventReducer:
             return True
         return False
 
+    def tick(self) -> None:
+        """Drive one coalescing pass: flush stream/status buffers on cadence.
+
+        Called from the app's timer so the app doesn't reach into the
+        reducer's flush privates directly.
+        """
+        flushed_stream = self._maybe_flush_stream()
+        # When streaming ends, the time-gate may leave un-flushed content
+        # in the buffers. Force one last flush so the user sees final output.
+        if not flushed_stream and self._stream_flush_at is None:
+            if self._stream_pending_content or self._stream_pending_reasoning:
+                flushed_stream = self._flush_stream_buffers()
+        if flushed_stream:
+            self._bump_refresh("stream")
+        flushed_status = self._maybe_flush_status()
+        if flushed_stream or flushed_status:
+            self._notify()
+
     def _recover_incomplete_turn(self) -> None:
         self._reset_stream()
         self._current_assistant_id = None
@@ -369,6 +387,8 @@ class EventReducer:
                 self.session.reasoning = data["reasoning"]
             if data.get("persona") is not None:
                 self.session.active_persona = data["persona"] or None
+            if data.get("verbosity") is not None:
+                self.session.verbose = data["verbosity"] == "verbose"
         elif event == "file_diff":
             dirty = True
             self._bump_refresh("append")
@@ -378,25 +398,6 @@ class EventReducer:
                     "id": self.next_id(),
                     "path": str(data.get("path", "")),
                     "diff": str(data.get("diff", "")),
-                }
-            )
-        elif event == "plan_update":
-            dirty = True
-            self._bump_refresh("append")
-            self.session.current_plan = data.get("plan")
-            plan = data.get("plan") or {}
-            completed = int(plan.get("completed") or 0)
-            total = int(plan.get("total") or 0)
-            current = int(plan.get("currentIdx") or 0)
-            title = plan.get("title", "")
-            msg = f"Plan: {title}" if title else "Plan updated"
-            detail = f"  step {current + 1}/{total} ({completed} done)" if total else ""
-            self._push(
-                {
-                    "kind": "toast",
-                    "id": self.next_id(),
-                    "level": "info",
-                    "message": f"{msg}{detail}",
                 }
             )
         elif event == "plan_card":

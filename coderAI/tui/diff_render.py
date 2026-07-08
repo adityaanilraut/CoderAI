@@ -51,12 +51,6 @@ def parse_unified_diff(diff: str) -> List[Tuple[str, str]]:
     return lines
 
 
-def format_diff_compact(diff: str, max_lines: int = DIFF_MAX_LINES) -> str:
-    parsed = parse_unified_diff(diff)
-    windowed = _window_lines(parsed, max_lines)
-    return "\n".join(t for _, t in windowed)
-
-
 def _word_spans(old: str, new: str) -> Optional[Tuple[List[Span], List[Span]]]:
     """Char-offset spans that differ between a paired −/+ line.
 

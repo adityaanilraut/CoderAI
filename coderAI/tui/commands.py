@@ -10,6 +10,7 @@ Moved here from ``coderAI/bridge/commands.py`` (Phase 3 bridge demolition).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, Optional
@@ -252,22 +253,26 @@ async def _build_tasks_text(project_root: str) -> str:
 def _resolve_reference_text(topic: str, agent: Any) -> str:
     from coderAI import __version__ as _ver
 
-    t = topic.lower().strip()
-    if t in ("version", "v"):
-        return f"CoderAI {_ver}"
-    if t in ("models", "providers"):
-        return _build_models_text()
-    if t in ("cost", "pricing"):
-        return _build_cost_text()
-    if t in ("system", "diagnostics", "diag"):
-        return _build_system_text()
-    if t == "config":
-        return _build_config_text(agent)
-    if t == "info":
-        return _build_info_text(agent)
-    raise ValueError(
-        f"Unknown topic {topic!r}. Use: version, models, cost, system, config, info, tasks."
-    )
+    resolvers: Dict[str, Callable[[], str]] = {
+        "version": lambda: f"CoderAI {_ver}",
+        "v": lambda: f"CoderAI {_ver}",
+        "models": _build_models_text,
+        "providers": _build_models_text,
+        "cost": _build_cost_text,
+        "pricing": _build_cost_text,
+        "system": _build_system_text,
+        "diagnostics": _build_system_text,
+        "diag": _build_system_text,
+        "config": lambda: _build_config_text(agent),
+        "info": lambda: _build_info_text(agent),
+    }
+    resolver = resolvers.get(topic.lower().strip())
+    if resolver is None:
+        # `tasks` is handled upstream in _cmd_reference, not here.
+        raise ValueError(
+            f"Unknown topic {topic!r}. Use: version, models, cost, system, config, info."
+        )
+    return resolver()
 
 
 def _tracker() -> "AgentTracker":
@@ -390,6 +395,13 @@ async def _cmd_set_model(server: UIBridge, msg: Dict[str, Any]) -> None:
         context_controller = getattr(server.agent, "context_controller", None)
         if context_controller is not None:
             context_controller.provider = old_provider
+        # Re-wire the delegate tool context to the restored provider so a failed
+        # switch doesn't leave it pointing at a dead/half-built one (mirrors the
+        # success path below).
+        try:
+            server.agent._configure_delegate_tool_context()
+        except Exception:
+            pass
         server._emit_error("provider", f"Could not switch to {model}: {e}")
         return
     # No usage re-sync: the Agent owns the running token totals and the loop
@@ -575,6 +587,19 @@ async def _cmd_rewind(server: UIBridge, msg: Dict[str, Any]) -> None:
     server.emit_status()
 
 
+def _emit_context_state(server: UIBridge) -> None:
+    """Emit the pinned-context file listing as a ``context_state`` event.
+
+    Keeps the ``emit("context_state"…)`` literal here so the event-contract
+    scanner (which greps ``tui/**`` for emit literals) still finds it.
+    """
+    context_files = []
+    pinned = server.agent.context_controller.pinned_files
+    for path_str, content in pinned.items():
+        context_files.append({"path": path_str, "size": len(content)})
+    server.emit("context_state", files=context_files)
+
+
 async def _cmd_manage_context(server: UIBridge, msg: Dict[str, Any]) -> None:
     action = msg.get("action")
     path = msg.get("path")
@@ -602,11 +627,7 @@ async def _cmd_manage_context(server: UIBridge, msg: Dict[str, Any]) -> None:
                 server.emit("warning", message=f"Failed to remove {path} from context.")
 
         # Emit updated context state
-        context_files = []
-        pinned = server.agent.context_controller.pinned_files
-        for path_str, content in pinned.items():
-            context_files.append({"path": path_str, "size": len(content)})
-        server.emit("context_state", files=context_files)
+        _emit_context_state(server)
         server.emit_status()
 
 
@@ -625,11 +646,7 @@ async def _cmd_get_state(server: UIBridge, msg: Dict[str, Any]) -> None:
     for info in _tracker().get_all():
         server.emit("agent", phase="update", info=_agent_info_dict(info), parentId=info.parent_id)
 
-    context_files = []
-    pinned = server.agent.context_controller.pinned_files
-    for path_str, content in pinned.items():
-        context_files.append({"path": path_str, "size": len(content)})
-    server.emit("context_state", files=context_files)
+    _emit_context_state(server)
 
 
 async def _cmd_get_plan(server: UIBridge, msg: Dict[str, Any]) -> None:
@@ -829,7 +846,9 @@ async def _cmd_reference(server: UIBridge, msg: Dict[str, Any]) -> None:
         server.emit("info", message=text)
         return
     try:
-        text = _resolve_reference_text(t, server.agent)
+        # Off-loop: list_sessions (the /sessions topic) scans the history
+        # directory — same treatment app.py gives its own list_sessions call.
+        text = await asyncio.to_thread(_resolve_reference_text, t, server.agent)
     except ValueError as e:
         server.emit("warning", message=str(e))
         return
@@ -891,6 +910,11 @@ async def _cmd_set_verbosity(server: UIBridge, msg: Dict[str, Any]) -> None:
         )
         return
     server._verbosity = level
+    # Echo the authoritative level back so the reducer's session.verbose stays
+    # in sync with the tri-state _verbosity (the app's optimistic flip on
+    # Ctrl-V is idempotent on this echo). Reuses the existing session_patch
+    # contract event — no new event.
+    server.emit("session_patch", verbosity=level)
 
 
 async def _cmd_exit(server: UIBridge, msg: Dict[str, Any]) -> None:
@@ -901,6 +925,34 @@ async def _cmd_exit(server: UIBridge, msg: Dict[str, Any]) -> None:
 
 async def _cmd_init_project(server: UIBridge, _msg: Dict[str, Any]) -> None:
     project_root = Path(getattr(server.agent.config, "project_root", ".")).resolve()
+    # Scaffolding is blocking filesystem I/O (mkdir + write_text) — run it off
+    # the event loop so the TUI stays responsive.
+    created_dirs, created_files, skipped_files, error = await asyncio.to_thread(
+        _do_init_project, project_root
+    )
+    if error is not None:
+        server._emit_error("tool", error)
+        return
+
+    lines = [f"Scaffolded .coderai/ in {project_root.name}:"]
+    if created_dirs:
+        lines.append(f"  {len(created_dirs)} directories created")
+    for f in created_files:
+        lines.append(f"  created: {f}")
+    for f in skipped_files:
+        lines.append(f"  skipped (exists): {f}")
+    server.emit("success", message="\n".join(lines))
+
+
+def _do_init_project(
+    project_root: Path,
+) -> tuple[list[str], list[str], list[str], Optional[str]]:
+    """Blocking filesystem scaffolding for ``/init`` (runs off the event loop).
+
+    Returns ``(created_dirs, created_files, skipped_files, error)``. On the
+    first mkdir/write failure it returns early with a human-readable ``error``
+    message (the async caller emits it); otherwise ``error`` is ``None``.
+    """
     dot_dir = project_root / ".coderAI"
 
     created_dirs: list[str] = []
@@ -918,8 +970,7 @@ async def _cmd_init_project(server: UIBridge, _msg: Dict[str, Any]) -> None:
             d.mkdir(parents=True, exist_ok=True)
             created_dirs.append(str(d.relative_to(project_root)))
         except OSError as e:
-            server._emit_error("tool", f"Cannot create {d.name}: {e}")
-            return
+            return created_dirs, created_files, skipped_files, f"Cannot create {d.name}: {e}"
 
     files_to_create: list[tuple[Path, str]] = [
         (
@@ -1030,18 +1081,9 @@ async def _cmd_init_project(server: UIBridge, _msg: Dict[str, Any]) -> None:
             filepath.write_text(content, encoding="utf-8")
             created_files.append(rel)
         except OSError as e:
-            server._emit_error("tool", f"Cannot write {rel}: {e}")
-            return
+            return created_dirs, created_files, skipped_files, f"Cannot write {rel}: {e}"
 
-    lines = [f"Scaffolded .coderai/ in {project_root.name}:"]
-    if created_dirs:
-        lines.append(f"  {len(created_dirs)} directories created")
-    for f in created_files:
-        lines.append(f"  created: {f}")
-    for f in skipped_files:
-        lines.append(f"  skipped (exists): {f}")
-
-    server.emit("success", message="\n".join(lines))
+    return created_dirs, created_files, skipped_files, None
 
 
 async def _cmd_cancel_agent(server: UIBridge, msg: Dict[str, Any]) -> None:
