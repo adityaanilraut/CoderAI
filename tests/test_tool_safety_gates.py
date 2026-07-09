@@ -3,9 +3,10 @@
 import inspect
 
 from coderAI.core.agent import Agent
-from coderAI.tools.git import GitFetchTool
+from coderAI.tools.git import GitAddTool, GitCommitTool
+from coderAI.tools.git_extended import GitFetchTool
 from coderAI.tools.lint import LintTool
-from coderAI.tools.mcp import MCPCallTool, MCPDisconnectTool
+from coderAI.tools.mcp import MCPDisconnectTool
 from coderAI.tools.testing import RunTestsTool
 from coderAI.tools.undo import UndoTool
 from coderAI.tools.web import DownloadFileTool, HTTPRequestTool
@@ -21,9 +22,10 @@ def test_side_effecting_tools_require_confirmation() -> None:
         LintTool(),
         DownloadFileTool(),
         HTTPRequestTool(),
-        MCPCallTool(),
         MCPDisconnectTool(),
         UndoTool(),
+        GitAddTool(),
+        GitCommitTool(),
         GitFetchTool(),
         RunTestsTool(),
         RunAppleScriptTool(),

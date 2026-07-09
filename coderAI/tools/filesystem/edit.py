@@ -9,9 +9,9 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 from coderAI.core.tool_error_codes import ToolErrorCode
-from coderAI.system.locks import resource_manager
+from coderAI.system.locks import get_lock_manager
 from coderAI.tools.base import Tool, ToolPreview
-from coderAI.tools.undo import backup_store
+from coderAI.tools.undo import get_backup_store
 
 from coderAI.tools.filesystem._guards import (
     _atomic_write_file,
@@ -105,7 +105,7 @@ class SearchReplaceTool(Tool):
 
             path_obj = Path(path).expanduser()
 
-            lock = await resource_manager.get_file_lock(str(path_obj))
+            lock = await get_lock_manager().get_file_lock(str(path_obj))
             async with lock:
                 if _is_path_protected(path_obj):
                     return {
@@ -200,7 +200,7 @@ class SearchReplaceTool(Tool):
                             )
                         new_content = new_content.replace(s, r)
 
-                    await asyncio.to_thread(backup_store.backup_file, str(path_obj), "modify")
+                    await asyncio.to_thread(get_backup_store().backup_file, str(path_obj), "modify")
                     await asyncio.to_thread(_atomic_write_file, path_obj, new_content)
                     _emit_diff(path_obj, content, new_content)
 
@@ -223,10 +223,10 @@ class SearchReplaceTool(Tool):
                     return {
                         "success": False,
                         "error": "Search text not found in file",
-                        "hint": "Use text_search or grep to verify the exact text in the file.",
+                        "hint": "Use grep to verify the exact text in the file.",
                     }
 
-                backup_store.backup_file(str(path_obj), "modify")
+                get_backup_store().backup_file(str(path_obj), "modify")
 
                 new_content = self._apply(content, search, replace, replace_all)
                 count = content.count(search) if replace_all else 1
@@ -307,7 +307,7 @@ class ApplyDiffTool(Tool):
         try:
             path_obj = Path(path).expanduser()
 
-            lock = await resource_manager.get_file_lock(str(path_obj))
+            lock = await get_lock_manager().get_file_lock(str(path_obj))
             async with lock:
                 if not path_obj.exists():
                     return {
@@ -363,7 +363,7 @@ class ApplyDiffTool(Tool):
                     }
 
                 # Create backup BEFORE modifying — consistent with other write tools
-                backup_store.backup_file(str(path_obj), "modify")
+                get_backup_store().backup_file(str(path_obj), "modify")
 
                 result_lines = list(original_lines)
                 hunks_applied = 0

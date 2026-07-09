@@ -68,15 +68,6 @@ _TOAST_GLYPHS = {
 }
 
 
-def plan_step_marker(status: str, idx: int, current: int) -> tuple[str, str]:
-    """Return the ``(glyph, color)`` marker for a plan step row."""
-    if status == "done":
-        return Glyphs.TOOL_OK, Tokens.AGENT
-    if idx == current + 1:
-        return "▸", Tokens.WARN
-    return "·", Tokens.TEXT_MUTED
-
-
 def _fmt_ts(ts: float | None) -> str:
     """Plain ``HH:MM:SS`` — style/markup is applied at the call site
     (``Text.append`` does not parse markup, so returning markup here would
@@ -136,8 +127,6 @@ def write_timeline_item(log: SupportsWrite, it: Dict[str, Any], *, verbose: bool
         write_approval(log, it)
     elif kind == "skill_card":
         write_skill_card(log, it)
-    elif kind == "plan_card":
-        write_plan_card(log, it)
     elif kind == "welcome":
         write_welcome(log, it)
     else:
@@ -382,31 +371,6 @@ def write_skill_card(log: SupportsWrite, it: Dict[str, Any]) -> None:
     log.write("")
 
 
-def write_plan_card(log: SupportsWrite, it: Dict[str, Any]) -> None:
-    title = str(it.get("title") or "")
-    completed = int(it.get("completed") or 0)
-    total = int(it.get("total") or 0)
-    current = int(it.get("currentIdx") or 0)
-    steps = it.get("steps") or []
-
-    head = Text()
-    head.append("▎ ", style=Tokens.LINE_SOFT)
-    head.append("PLAN", style=Tokens.TEXT_DIM)
-    head.append(f" · {title}", style=Tokens.TEXT)
-    if total:
-        head.append(f" · {completed}/{total}", style=Tokens.TEXT_MUTED)
-    log.write(head)
-
-    for s in steps[:12]:
-        idx = int(s.get("index", 0))
-        status = str(s.get("status", "pending"))
-        desc = str(s.get("description", ""))[:100]
-        g, c = plan_step_marker(status, idx, current)
-        markup = f"[{c}]{g}[/] [{Tokens.TEXT_MUTED}]{idx}.[/] [{Tokens.TEXT}]{desc}[/]"
-        log.write(Text.from_markup(f"  {markup}"))
-    log.write("")
-
-
 def write_welcome(log: SupportsWrite, it: Dict[str, Any]) -> None:
     """Empty-state block seeded at session start.
 
@@ -523,12 +487,6 @@ def calculate_item_lines(it: Dict[str, Any], verbose: bool, width: Optional[int]
         desc = str(it.get("description") or "")
         if desc:
             lines += 1
-        steps = it.get("steps") or []
-        lines += min(len(steps), 12)
-        lines += 1  # empty line
-        return lines
-    elif kind == "plan_card":
-        lines = 1
         steps = it.get("steps") or []
         lines += min(len(steps), 12)
         lines += 1  # empty line

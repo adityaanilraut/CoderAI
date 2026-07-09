@@ -77,28 +77,10 @@ def test_render_agent_tree_with_hierarchy_and_statuses():
     assert "child-done" in text
 
 
-def test_render_plan_empty_and_populated():
-    empty = r.render_plan(SessionState())
-    assert isinstance(empty, str)
-    assert "no active plan" in empty
-
-    s = SessionState(
-        current_plan={
-            "title": "Build feature",
-            "completed": 1,
-            "total": 3,
-            "currentIdx": 0,
-            "steps": [
-                {"index": 1, "status": "done", "description": "scaffold"},
-                {"index": 2, "status": "pending", "description": "implement"},
-                {"index": 3, "status": "pending", "description": "test"},
-            ],
-        }
-    )
-    text = _to_text(r.render_plan(s))
-    assert "Build feature" in text
-    assert "scaffold" in text
-    assert "implement" in text
+def test_render_plan_points_to_tasks():
+    text = r.render_plan(SessionState())
+    assert isinstance(text, str)
+    assert "manage_tasks" in text or "/tasks" in text
 
 
 def test_render_tasks_empty_and_populated():

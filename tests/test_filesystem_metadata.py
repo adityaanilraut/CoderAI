@@ -1,6 +1,6 @@
 """Behavioral coverage for the filesystem metadata tools (finding 12).
 
-file_stat / file_chmod / file_chown / file_readlink had zero tests. These
+file_stat / file_chmod / file_readlink had zero tests. These
 exercise the happy paths plus the security guards added in the remediation:
 symlink-leaf refusal (TOCTOU), protected-path refusal, and the broken-symlink
 readlink fix.
@@ -15,7 +15,6 @@ import pytest
 
 from coderAI.tools.filesystem.metadata import (
     FileChmodTool,
-    FileChownTool,
     FileReadlinkTool,
     FileStatTool,
 )
@@ -116,32 +115,3 @@ class TestFileChmod:
         assert result["success"] is False
         assert "protected" in result["error"].lower()
 
-
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX only")
-class TestFileChown:
-    def test_chown_to_own_group(self, tmp_path):
-        # Changing a file you own to your own primary group is permitted
-        # without privileges — exercises the fd-based no-follow fchown path.
-        f = tmp_path / "f.txt"
-        f.write_text("x")
-        result = _run(FileChownTool().execute(path=str(f), group=str(os.getgid())))
-        assert result["success"] is True, result
-
-    def test_rejects_symlink_leaf(self, tmp_path):
-        target = tmp_path / "real.txt"
-        target.write_text("x")
-        link = tmp_path / "link.txt"
-        link.symlink_to(target)
-        result = _run(FileChownTool().execute(path=str(link), group=str(os.getgid())))
-        assert result["success"] is False
-        assert result.get("error_code") == "symlink", result
-
-    def test_rejects_protected_path(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        ssh_dir = tmp_path / ".ssh"
-        ssh_dir.mkdir()
-        key = ssh_dir / "id_rsa"
-        key.write_text("secret")
-        result = _run(FileChownTool().execute(path=str(key), group=str(os.getgid())))
-        assert result["success"] is False
-        assert "protected" in result["error"].lower()

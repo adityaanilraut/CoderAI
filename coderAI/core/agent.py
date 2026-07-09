@@ -238,17 +238,6 @@ class Agent(AgentCapabilitiesMixin, AgentSessionMixin):
     async def close(self) -> None:
         """Clean up resources (HTTP sessions, background processes, etc.)."""
         await super().close()
-        # Background jobs are shared through the service container, so only the
-        # root agent tears them down — a closing sub-agent must not kill jobs
-        # the parent is still waiting on. jobs_if_built() never lazily creates
-        # a manager just to shut it down.
-        if not getattr(self, "is_subagent", False):
-            jobs = get_services().jobs_if_built()
-            if jobs is not None:
-                try:
-                    await jobs.shutdown()
-                except Exception:
-                    logger.debug("JobManager shutdown failed", exc_info=True)
         if hasattr(self, "streaming_handler") and self.streaming_handler is not None:
             if hasattr(self.streaming_handler, "close"):
                 await self.streaming_handler.close()

@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 SKILL_MGR_PREFIX = "[SkillManager]"
 SKILLS_FILE_NAME = "SKILLS.md"
-LEGACY_SKILLS_DIR_NAME = "skills"
+SKILLS_DIR_NAME = "skills"
 MAX_SKILL_FILE_BYTES = 100 * 1024
 _MATCH_CACHE_MAX_ENTRIES = 128
 
@@ -103,7 +103,7 @@ class SkillRegistry:
 
 
 def _find_skills_root(project_root: str = ".") -> Optional[Path]:
-    return find_dot_coderai_subdir(LEGACY_SKILLS_DIR_NAME, project_root)
+    return find_dot_coderai_subdir(SKILLS_DIR_NAME, project_root)
 
 
 def _is_safe_path(file_path: Path, skills_root: Path) -> bool:
@@ -174,13 +174,6 @@ def discover_local_skills(project_root: str = ".") -> List[Skill]:
                 if skill and skill.name not in seen_names:
                     skills.append(skill)
                     seen_names.add(skill.name)
-    for md_file in sorted(skills_root.glob("*.md")):
-        if md_file.stem in seen_names:
-            continue
-        skill = load_skill_from_path(md_file, source="local")
-        if skill and skill.name not in seen_names:
-            skills.append(skill)
-            seen_names.add(skill.name)
     return skills
 
 
@@ -194,9 +187,6 @@ def load_skill_by_name(skill_name: str, project_root: str = ".") -> Optional[Ski
     subdir_file = (skills_root / skill_name / SKILLS_FILE_NAME).resolve()
     if subdir_file.is_file() and _is_safe_path(subdir_file, skills_root):
         return load_skill_from_path(subdir_file, source="local")
-    legacy_file = (skills_root / f"{skill_name}.md").resolve()
-    if legacy_file.is_file() and _is_safe_path(legacy_file, skills_root):
-        return load_skill_from_path(legacy_file, source="local")
     return None
 
 
@@ -413,27 +403,6 @@ class SkillManager:
                 llm_matches = await self._match_via_llm(
                     task_description, local_skills, effective_threshold, effective_top_n
                 )
-            source_matches: List[Tuple[Skill, float]] = []
-            for source in self._sources:
-                if source.source_name == "local":
-                    continue
-                try:
-                    results = await source.search(task_description, top_n=effective_top_n)
-                    source_matches.extend(results)
-                    for skill, conf in results:
-                        logger.info(
-                            "%s Matched (hasna): %s (%.2f)",
-                            SKILL_MGR_PREFIX,
-                            skill.name,
-                            conf,
-                        )
-                except Exception as e:
-                    logger.warning(
-                        "%s Source '%s' search failed: %s",
-                        SKILL_MGR_PREFIX,
-                        source.source_name,
-                        e,
-                    )
             if not llm_matches and local_skills:
                 logger.debug(
                     "%s LLM matching returned no results — trying keyword fallback",
@@ -443,7 +412,7 @@ class SkillManager:
                     task_description, local_skills, effective_threshold, effective_top_n
                 )
             merged: Dict[str, Tuple[Skill, float]] = {}
-            for skill, conf in llm_matches + source_matches:
+            for skill, conf in llm_matches:
                 existing = merged.get(skill.name)
                 if existing is None or conf > existing[1]:
                     merged[skill.name] = (skill, conf)

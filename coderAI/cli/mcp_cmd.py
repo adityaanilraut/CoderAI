@@ -14,6 +14,7 @@ import click
 
 from coderAI.tools.mcp import (
     ALLOWED_MCP_LAUNCHERS,
+    effective_mcp_servers,
     load_mcp_servers,
     mcp_servers_path,
     save_mcp_servers,
@@ -218,7 +219,7 @@ def mcp_list() -> None:
     """List configured MCP servers."""
     from coderAI.cli.utils import display
 
-    servers = load_mcp_servers().get("mcpServers", {})
+    servers = effective_mcp_servers().get("mcpServers", {})
     if not servers:
         display.print_info(f"No MCP servers configured ({mcp_servers_path()}).")
         return
@@ -240,7 +241,7 @@ def mcp_list() -> None:
             auth = "n/a"
         rows.append(
             {
-                "Name": name,
+                "Name": name + (" (bundled)" if cfg.get("bundled") else ""),
                 "Transport": transport,
                 "Command/URL": target,
                 "Args": args,
@@ -375,8 +376,8 @@ async def _connect_and_list(name: str, entry: dict[str, Any], kind: str) -> dict
 
 
 def _require_server(name: str, display: Display) -> dict[str, Any]:
-    """Return the configured entry for NAME or exit with an error."""
-    entry = load_mcp_servers().get("mcpServers", {}).get(name)
+    """Return the configured (or bundled) entry for NAME or exit with an error."""
+    entry = effective_mcp_servers().get("mcpServers", {}).get(name)
     if not entry:
         display.print_error(f"No MCP server named '{name}'. Add it first with `mcp add`.")
         sys.exit(1)

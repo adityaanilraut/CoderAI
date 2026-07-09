@@ -94,27 +94,10 @@ class AgentSessionMixin:
         if provider is not None:
             provider.reset_usage()
 
-    def create_session(self, *, reset_accounting: bool = True, clear_plan: bool = True) -> Session:
+    def create_session(self, *, reset_accounting: bool = True) -> Session:
         """Create a new conversation session."""
         if reset_accounting:
             self._reset_session_accounting()
-        if clear_plan:
-            try:
-                from coderAI.system.project_layout import find_dot_coderai_subdir
-
-                pr = str(self.config.project_root)
-                dot_dir = find_dot_coderai_subdir("", pr)
-                if dot_dir is None:
-                    dot_dir = Path(pr).resolve() / ".coderAI"
-                plan_path = dot_dir / "current_plan.json"
-                if plan_path.exists():
-                    plan_path.unlink()
-            except Exception:
-                logger.warning(
-                    "Failed to clear stale current_plan.json; it may leak into the "
-                    "next session's system prompt",
-                    exc_info=True,
-                )
         self.session = get_services().history.create_session(model=self.model)
         self.session.add_message("system", self._get_system_prompt())
         return self.session

@@ -8,9 +8,9 @@ from typing import Any, Optional
 from pydantic import BaseModel, Field
 
 from coderAI.core.tool_error_codes import ToolErrorCode
-from coderAI.system.locks import resource_manager
+from coderAI.system.locks import get_lock_manager
 from coderAI.tools.base import Tool, ToolPreview
-from coderAI.tools.undo import backup_store
+from coderAI.tools.undo import get_backup_store
 
 from coderAI.tools.filesystem._guards import (
     _atomic_write_file,
@@ -186,7 +186,7 @@ class WriteFileTool(Tool):
             path_obj = Path(path).expanduser()
 
             # Acquire lock for this specific file
-            lock = await resource_manager.get_file_lock(str(path_obj))
+            lock = await get_lock_manager().get_file_lock(str(path_obj))
             async with lock:
                 # Check path protection
                 if _is_path_protected(path_obj):
@@ -224,7 +224,7 @@ class WriteFileTool(Tool):
                 before_content: Optional[str] = None
                 if not append:
                     if path_obj.exists():
-                        await asyncio.to_thread(backup_store.backup_file, str(path_obj), "modify")
+                        await asyncio.to_thread(get_backup_store().backup_file, str(path_obj), "modify")
                         try:
                             before_content = await asyncio.to_thread(
                                 path_obj.read_text, encoding="utf-8"
@@ -234,12 +234,12 @@ class WriteFileTool(Tool):
                             # the write itself proceeds (backup already taken).
                             before_content = None
                     else:
-                        await asyncio.to_thread(backup_store.backup_file, str(path_obj), "create")
+                        await asyncio.to_thread(get_backup_store().backup_file, str(path_obj), "create")
                         before_content = ""
                 else:
                     op = "modify" if path_obj.exists() else "create"
                     backup_result = await asyncio.to_thread(
-                        backup_store.backup_file, str(path_obj), op
+                        get_backup_store().backup_file, str(path_obj), op
                     )
                     if isinstance(backup_result, dict) and backup_result.get("error"):
                         logger.warning("Backup before append failed: %s", backup_result["error"])

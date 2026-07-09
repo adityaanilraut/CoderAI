@@ -3,12 +3,11 @@ from unittest.mock import AsyncMock, patch
 
 from coderAI.tools.git import (
     GitDiffTool,
-    GitShowTool,
     GitStatusTool,
     GitLogTool,
     GitBranchTool,
-    GitBlameTool,
 )
+from coderAI.tools.git_extended import GitBlameTool, GitShowTool
 
 
 @pytest.fixture

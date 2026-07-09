@@ -245,7 +245,9 @@ def test_add_preserves_other_servers(runner, cfg_file):
 def test_list_empty(runner, cfg_file):
     result = runner.invoke(mcp, ["list"])
     assert result.exit_code == 0
-    assert "No MCP servers configured" in result.output
+    # Bundled git_extended always appears even with an empty on-disk config.
+    assert "git_extended" in result.output
+    assert "bundled" in result.output
 
 
 def test_list_shows_servers(runner, cfg_file):

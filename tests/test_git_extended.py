@@ -10,10 +10,12 @@ import pytest
 from coderAI.tools.git import (
     GIT_NETWORK_TIMEOUT_SECONDS,
     GitBranchTool,
+    GitStatusTool,
+)
+from coderAI.tools.git_extended import (
     GitCheckoutTool,
     GitPushTool,
     GitStashTool,
-    GitStatusTool,
 )
 
 

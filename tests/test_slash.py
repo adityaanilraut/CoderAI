@@ -224,12 +224,12 @@ def test_agents_tasks_plan(ctrl, red):
     _dispatch("/tasks", ctrl, red)
     assert "get_tasks" in ctrl.names()
     _dispatch("/plan", ctrl, red)
-    assert "get_plan" in ctrl.names()
+    assert "get_tasks" in ctrl.names()
 
 
 def test_show_topic_routing(ctrl, red):
     _dispatch("/show plan", ctrl, red)
-    assert "get_plan" in ctrl.names()
+    assert "get_tasks" in ctrl.names()
     # /show tasks routes to the server's reference handler (text listing); the
     # dedicated /tasks command is what refreshes the panel (get_tasks).
     _dispatch("/show tasks", ctrl, red)

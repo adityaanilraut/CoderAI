@@ -165,16 +165,8 @@ class TestRefactorTraversal:
 
 
 class TestSearchToolsScope:
-    """text_search / grep / symbol_search must not read outside the project."""
+    """grep / symbol_search must not read outside the project."""
 
-    def test_text_search_rejects_outside_project(self, tmp_path, monkeypatch):
-        _set_project_root(monkeypatch, tmp_path)
-        from coderAI.tools.search import TextSearchTool
-
-        bad = str(tmp_path / "../..")
-        result = asyncio.run(TextSearchTool().execute(query="secret", base_path=bad))
-        assert result["success"] is False
-        assert result.get("error_code") == "scope", result
 
     def test_grep_rejects_outside_project(self, tmp_path, monkeypatch):
         _set_project_root(monkeypatch, tmp_path)
@@ -194,16 +186,6 @@ class TestSearchToolsScope:
         assert result["success"] is False
         assert result.get("error_code") == "scope", result
 
-
-class TestProjectContextScope:
-    def test_rejects_outside_project(self, tmp_path, monkeypatch):
-        _set_project_root(monkeypatch, tmp_path)
-        from coderAI.tools.project import ProjectContextTool
-
-        bad = str(tmp_path / "../..")
-        result = asyncio.run(ProjectContextTool().execute(path=bad))
-        assert result["success"] is False
-        assert result.get("error_code") == "scope", result
 
 
 class TestMetadataScope:

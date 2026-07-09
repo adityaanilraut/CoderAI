@@ -29,7 +29,7 @@ from coderAI.core.agents import (
 )
 from coderAI.core.services import get_services
 from coderAI.core.provenance import fence_project_context
-from coderAI.skills import SkillManager, LocalSkillSource, HasnaSkillSource, SkillSource
+from coderAI.skills import SkillManager, LocalSkillSource
 from coderAI.system_prompt import (
     SYSTEM_PROMPT_INTERACTION,
     SYSTEM_PROMPT_INTRO,
@@ -72,11 +72,8 @@ class AgentCapabilitiesMixin:
 
     def init_skills(self, project_root: str) -> None:
         config = self.config
-        sources: List[SkillSource] = [LocalSkillSource(project_root)]
-        if config.skills_use_hasna:
-            sources.append(HasnaSkillSource(project_root))
         self.skill_manager = SkillManager(
-            sources=sources,
+            sources=[LocalSkillSource(project_root)],
             threshold=config.skill_confidence_threshold,
             top_n=config.skill_top_n,
             provider=self.provider,
@@ -109,16 +106,6 @@ class AgentCapabilitiesMixin:
         registry = ToolRegistry()
         discover_tools(registry)
         registry.register(ManageContextTool(self._context_controller))
-        # start_job needs the live agent (registry + tracker), so it can't be
-        # zero-arg auto-discovered — registered manually like ManageContextTool.
-        from coderAI.tools.jobs import StartJobTool
-
-        registry.register(StartJobTool(self))
-        from coderAI.tools.planning import CreatePlanTool
-
-        plan_tool = registry.get("plan")
-        if isinstance(plan_tool, CreatePlanTool):
-            plan_tool.project_root = self.config.project_root
         self._filter_gated_tools(registry)
         registry.validate_classifications()
         return registry
@@ -335,20 +322,16 @@ class AgentCapabilitiesMixin:
                 except Exception:
                     pass
         try:
-            from coderAI.system.project_layout import read_current_plan
+            from coderAI.tools.tasks import get_tasks_file
 
-            plan = read_current_plan(str(self.config.project_root))
-            if plan:
-                plan_path = (
-                    Path(self.config.project_root).resolve() / ".coderAI" / "current_plan.json"
-                )
-                mtime = plan_path.stat().st_mtime
-                current_idx = int(plan.get("current_step", 0))
-                parts.append(f"plan:{mtime}:{current_idx}")
+            tasks_path = get_tasks_file(str(self.config.project_root))
+            if tasks_path.exists():
+                mtime = tasks_path.stat().st_mtime
+                parts.append(f"tasks:{mtime}")
             else:
-                parts.append("plan:none")
+                parts.append("tasks:none")
         except Exception:
-            parts.append("plan:none")
+            parts.append("tasks:none")
         return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
     def _get_system_prompt(self) -> str:
@@ -372,29 +355,6 @@ class AgentCapabilitiesMixin:
         project_root = getattr(self.config, "project_root", os.getcwd())
         is_git = os.path.isdir(os.path.join(project_root, ".git"))
 
-        active_plan: Optional[Dict[str, Any]] = None
-        try:
-            from coderAI.system.project_layout import read_current_plan
-
-            _plan_data = read_current_plan(str(project_root))
-            if _plan_data:
-                _steps = _plan_data.get("steps", []) or []
-                _total = len(_steps)
-                _completed = sum(1 for s in _steps if s.get("status") == "done")
-                _current = int(_plan_data.get("current_step", 0))
-                if _current < _total:
-                    _current_desc = _steps[_current].get("description", "")
-                else:
-                    _current_desc = "All steps completed"
-                active_plan = {
-                    "title": _plan_data.get("title", ""),
-                    "completed": _completed,
-                    "total": _total,
-                    "current_desc": _current_desc,
-                }
-        except Exception as e:
-            logger.debug("Failed to load active plan for system prompt: %s", e)
-
         env_section = build_environment_section(
             model=self.model,
             working_directory=os.getcwd(),
@@ -404,7 +364,6 @@ class AgentCapabilitiesMixin:
             auto_approve=self.auto_approve,
             persona_name=self.persona.name if self.persona else None,
             persona_description=(self.persona.description if self.persona else None),
-            active_plan=active_plan,
         )
 
         if self.persona:

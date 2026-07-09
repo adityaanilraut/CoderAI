@@ -102,13 +102,11 @@ class TestExecutionConfigKeys:
         assert cfg.subprocess_timeout_seconds == 90.0
         assert cfg.tool_retry_max_attempts == 3
         assert cfg.tool_retry_base_delay == 0.5
-        assert cfg.max_background_jobs == 5
         assert cfg.max_background_processes == 12
 
     def test_garbage_env_value_ignored(self, manager, monkeypatch):
         monkeypatch.setenv("CODERAI_MAX_BACKGROUND_JOBS", "lots")
         cfg = manager.load()
-        assert cfg.max_background_jobs == Config().max_background_jobs
 
     def test_env_derived_keys_never_persisted(self, manager, monkeypatch):
         monkeypatch.setenv("CODERAI_TOOL_TIMEOUT_SECONDS", "45.5")
@@ -117,7 +115,6 @@ class TestExecutionConfigKeys:
         manager.set("temperature", 0.1)
         data = json.loads(manager.config_file.read_text())
         assert "tool_timeout_seconds" not in data
-        assert "max_background_jobs" not in data
 
     def test_project_overlay_applies_timeout_keys(self, manager, tmp_path):
         proj = tmp_path / "proj"
@@ -138,10 +135,9 @@ class TestExecutionConfigKeys:
         proj = tmp_path / "proj"
         (proj / ".coderAI").mkdir(parents=True)
         (proj / ".coderAI" / "config.json").write_text(
-            json.dumps({"max_background_jobs": 16, "max_background_processes": 64})
+            json.dumps({"max_background_processes": 64})
         )
         cfg = manager.load_project_config(str(proj))
-        assert cfg.max_background_jobs == Config().max_background_jobs
         assert cfg.max_background_processes == Config().max_background_processes
 
 

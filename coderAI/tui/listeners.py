@@ -400,22 +400,6 @@ class EventReducer:
                     "diff": str(data.get("diff", "")),
                 }
             )
-        elif event == "plan_card":
-            dirty = True
-            self._bump_refresh("append")
-            plan = data.get("plan") or {}
-            self.session.current_plan = data.get("plan")
-            self._push(
-                {
-                    "kind": "plan_card",
-                    "id": self.next_id(),
-                    "title": plan.get("title", ""),
-                    "completed": int(plan.get("completed") or 0),
-                    "total": int(plan.get("total") or 0),
-                    "currentIdx": int(plan.get("currentIdx") or 0),
-                    "steps": plan.get("steps") or [],
-                }
-            )
         elif event == "tasks_card":
             dirty = True
             self._bump_refresh("chrome")

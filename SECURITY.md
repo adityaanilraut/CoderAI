@@ -79,7 +79,7 @@ Confirmation-by-default: a mutating tool that doesn't explicitly opt out with
 treated as dangerous. High-risk tools (`run_command`, `write_file`,
 `delete_file`, …) refuse a blanket "always allow" — approvals are per-call or
 scoped to a reviewed command prefix / path subtree. Static MCP relay tools
-(`mcp_call_tool`, `mcp_read_resource`, `mcp_get_prompt`, …) declare
+(`mcp__server__tool` proxies, `mcp_read_resource`, `mcp_get_prompt`, …) declare
 `mcp_source = True` so they share the same confused-deputy mutation gate as
 dynamic `mcp__<server>__<tool>` proxies.
 
@@ -111,7 +111,7 @@ argument injection (`--upload-pack`, `-o`) is neutralised with `--`.
   tools **even with the project-scope sandbox disabled**.
 - Symlink leaves are refused and files are opened with `O_NOFOLLOW`, closing
   symlink-swap TOCTOU escapes of the project scope. Metadata mutators
-  (`file_chmod` / `file_chown`) use fd-based no-follow on POSIX; `file_stat`
+  (`file_chmod` / `file_chmod`) use fd-based no-follow on POSIX; `file_stat`
   and `file_readlink` enforce project scope.
 - Secrets at rest are owner-only (0600) in owner-only directories (0700): API
   keys, OAuth credentials, session history, and undo backups. Session files are

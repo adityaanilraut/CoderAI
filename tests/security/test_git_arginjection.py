@@ -15,7 +15,8 @@ from pathlib import Path
 
 import pytest
 
-from coderAI.tools.git import GitBlameTool, GitDiffTool, GitShowTool
+from coderAI.tools.git import GitDiffTool
+from coderAI.tools.git_extended import GitBlameTool, GitShowTool
 
 
 @pytest.fixture

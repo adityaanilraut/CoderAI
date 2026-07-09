@@ -95,7 +95,7 @@ Per-turn flow (`Agent.process_message()` → `agent_loop`):
 - `coderAI/tui/streaming.py` — `BridgeStreamingHandler`: emits one phased `turn` event per assistant turn so the Textual timeline streams incrementally.
 - `coderAI/tui/tool_metadata.py` — Tool category, risk level, and approval-preview helpers for the controller and modals.
 - `coderAI/llm/` — LLM providers (openai, anthropic, groq, deepseek, gemini, lmstudio, ollama), all extending `base.LLMProvider`. Instantiation goes through `llm/factory.py::create_provider(model, config)` — do not construct providers directly from `agent.py`.
-- `coderAI/tools/` — 96 tools (94 auto-discovered + `manage_context` + `start_job`) extending `tools/base.Tool`. Registration is automatic via `tools/discovery.py::discover_tools()`, which walks the `coderAI.tools` package (including `filesystem/` and `web/` subpackages) and instantiates every `Tool` subclass whose `__init__` takes no required args. Tools requiring constructor args (e.g. `ManageContextTool`, `StartJobTool`) are registered manually in `AgentCapabilitiesMixin._create_tool_registry()`. Snapshot: `tests/test_tool_registry_snapshot.py`.
+- `coderAI/tools/` — ~68 native tools (67 auto-discovered + `manage_context`) extending `tools/base.Tool`. Registration is automatic via `tools/discovery.py::discover_tools()`, which walks the `coderAI.tools` package (including `filesystem/` and `web/` subpackages) and instantiates every `Tool` subclass whose `__init__` takes no required args. `git_extended` is skipped (served only via the bundled MCP server). Tools requiring constructor args (e.g. `ManageContextTool`) are registered manually in `AgentCapabilitiesMixin._create_tool_registry()`. Snapshot: `tests/test_tool_registry_snapshot.py`.
 - `coderAI/system/safeguards.py` — reusable validators that run before dangerous actions: interactive-command detection (blocks REPLs invoked via non-interactive pipes), project-directory validation, git-scope guards (prevent operations leaking to a parent repo), staging blocklist for junk files (`.DS_Store`, `__pycache__`, `.coderAI/`, …).
 - `coderAI/system/proc.py` — scrubbed subprocess runner used by lint/format/terminal (env scrub, timeout, process-group kill).
 - `coderAI/system/trust.py` — workspace trust gate for repo-supplied overlays/hooks.
@@ -108,10 +108,8 @@ Per-turn flow (`Agent.process_message()` → `agent_loop`):
 - `coderAI/context/context_controller.py` — pinned-file context + token budget / summarization.
 - `coderAI/system/cost.py` — Per-model token cost tracking; enforces `budget_limit` from config.
 - `coderAI/system/history.py` — `Session` + `HistoryManager`; sessions in `~/.coderAI/history/`.
-- `coderAI/tools/notepad.py` — Shared inter-agent notepad tool.
 - `coderAI/system/error_policy.py` — Central home for retry/error constants and the transient-error regex (`is_transient_error` for exceptions, `is_transient_message` for tool error dicts); modules import from here instead of redefining.
 - `coderAI/system/retry.py` — Canonical exponential-backoff-with-jitter (`backoff_delay`) and generic `retry_async`; used by LLM providers, the tool executor's opt-in transient retries (`Tool.retryable`), and sub-agent delegation.
-- `coderAI/core/jobs.py` — `JobManager` for background tool jobs (`Tool.backgroundable` targets, semaphore-capped by `max_background_jobs`, LRU-pruned finished records); exposed lazily as `get_services().jobs`, torn down by the root `Agent.close()`.
 - `coderAI/system/hooks_manager.py` — Loads `.coderAI/hooks.json` and runs pre/post-tool shell hooks around tool execution.
 - `coderAI/system_prompt.py` — Builds the agent system prompt (loads static MDX prompt templates from `coderAI/prompts/`, formats dynamic tool docs, and appends project-level rules from `.coderAI/rules/*.md`).
 - `coderAI/context/code_chunker.py` — Splits source files into semantic chunks (AST-aware for Python, regex for JS/TS, sliding window fallback).
@@ -123,20 +121,19 @@ Per-turn flow (`Agent.process_message()` → `agent_loop`):
 **Tool categories** (`coderAI/tools/`):
 - `filesystem/` — package (`read_write.py`, `edit.py`, `manage.py`, `metadata.py`, `_guards.py`): read_file, write_file, search_replace (batch via `edits`), apply_diff, list_directory, glob_search, **move_file, copy_file, delete_file, create_directory**, file_stat/chmod/chown/readlink
 - `terminal.py` — run_command (safety blocklist), run_background, **list_processes, kill_process, read_bg_output**
-- `git.py` — git_add, git_status, git_diff, git_commit, git_log, git_branch, git_checkout, git_stash, **git_push, git_pull, git_merge, git_rebase, git_revert, git_reset, git_show, git_remote, git_blame, git_cherry_pick, git_tag, git_fetch**
-- `search.py` — text_search, grep, symbol_search
+- `git.py` — native: git_add, git_status, git_diff, git_commit, git_log, git_branch
+- `git_extended.py` + `mcp_servers/git_extended.py` — rare git ops via bundled MCP (`mcp__git_extended__git_*`)
+- `search.py` — grep, symbol_search
 - `semantic_search.py` — semantic_search (natural-language code search via embeddings)
-- `web/` — package (`tools.py` + helpers): web_search, read_url, download_file, http_request, **wikipedia_search, read_feed, sitemap_discover**
+- `web/` — package (`tools.py` + helpers): web_search, read_url, download_file, http_request
 - `browser.py` — browser_navigate … browser_close (requires Playwright extra)
 - `desktop.py` — run_applescript, get_accessibility_tree, click_ui_element, type_keystrokes (macOS only)
 - `memory.py` — save_memory, recall_memory, **delete_memory**
 - `subagent.py` — delegate_task (max depth 3, transient failures retried 2× with backoff on the same sub-agent)
-- `jobs.py` — start_job, job_status, job_result, wait_job, cancel_job (background jobs for `backgroundable` tools: run_tests, package_manager, lint, download_file; `start_job` takes `Agent` at construction → registered manually)
-- `mcp.py` — mcp_connect, mcp_disconnect, mcp_call_tool, mcp_list, mcp_list_resources, mcp_read_resource, mcp_list_prompts, mcp_get_prompt (connected servers expose functions as `mcp__<server>__<tool>`; static MCP relays set `mcp_source=True`)
+- `mcp.py` — mcp_connect, mcp_disconnect, mcp_list, mcp_list_resources, mcp_read_resource, mcp_list_prompts, mcp_get_prompt (connected servers expose functions as `mcp__<server>__<tool>`; static MCP relays set `mcp_source=True`)
 - `undo.py` — undo, undo_history
 - `context_manage.py` — pin/unpin files into the pinned-context manager (takes `Agent` at construction → registered manually)
 - `planning.py`, `tasks.py` — in-session plan + task list management
-- `notepad.py` — shared inter-agent notepad
 - `skills.py` — `use_skill` loads a workflow from `.coderAI/skills/<name>/SKILLS.md`
 - `project.py`, `format.py`, `lint.py`, `repl.py`, `vision.py` — project-info, code formatting, linting, Python REPL, image/vision helpers (`lint`/`format` use `run_scrubbed()` from project root)
 - `_detect.py` — shared `walk_up_detect()` used by lint/format/testing/package_manager
@@ -184,6 +181,6 @@ Friendly versioned aliases also supported: `claude-4.7-opus`, `claude-4.6-sonnet
 ## Adding a New Tool
 
 1. Create a class extending `Tool` in `coderAI/tools/` (or a subpackage such as `filesystem/` / `web/`) with a no-arg `__init__` — `tools/discovery.py` will pick it up automatically via `pkgutil.walk_packages`
-2. **Declare a safety class** (`ToolRegistry.validate_classifications()` refuses to start if you don't): `is_read_only = True` if safe to run in parallel; `requires_confirmation = True` for dangerous ops; `is_egress = True` for network egress; `mcp_source = True` for static MCP relay tools; or `safe = True` for a mutating tool that only touches the agent's own internal state (plan/tasks/notepad/memory). A mutating tool that declares none is treated as requiring confirmation (fail-closed). Do **not** add high-risk tools to `permissions.HIGH_RISK_NO_BLANKET` casually — those can never be blanket-allowed by name.
+2. **Declare a safety class** (`ToolRegistry.validate_classifications()` refuses to start if you don't): `is_read_only = True` if safe to run in parallel; `requires_confirmation = True` for dangerous ops; `is_egress = True` for network egress; `mcp_source = True` for static MCP relay tools; or `safe = True` for a mutating tool that only touches the agent's own internal state (tasks/memory). A mutating tool that declares none is treated as requiring confirmation (fail-closed). Do **not** add high-risk tools to `permissions.HIGH_RISK_NO_BLANKET` casually — those can never be blanket-allowed by name.
 3. If the tool needs the `Agent` (e.g. for pinned context), register it manually in `AgentCapabilitiesMixin._create_tool_registry()` after `discover_tools()` — the discovery walker skips classes whose `__init__` has required args
 4. Update `EXPECTED_TOOLS` in `tests/test_tool_registry_snapshot.py` in the same commit

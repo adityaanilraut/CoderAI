@@ -60,27 +60,9 @@ _SKIP_SUFFIXES: set[str] = {
     ".sqlite3",
 }
 
-_SKIP_DIRS: set[str] = {
-    ".git",
-    "node_modules",
-    "__pycache__",
-    ".venv",
-    "venv",
-    "dist",
-    "build",
-    ".next",
-    ".nuxt",
-    "target",
-    ".tox",
-    ".eggs",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".ruff_cache",
-    "vendor",
-    "bower_components",
-    ".coderAI",
-    ".claude",
-}
+from coderAI.system.constants import SKIP_DIRS
+
+_SKIP_DIRS: set[str] = set(SKIP_DIRS)
 
 # File suffixes we attempt to chunk.
 _CODE_SUFFIXES: Dict[str, str] = {

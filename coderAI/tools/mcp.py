@@ -185,11 +185,36 @@ def mcp_servers_path() -> Path:
     return config_manager.config_dir / "mcp_servers.json"
 
 
+# Bundled MCP server name for rarely used git tools (see mcp_servers/git_extended.py).
+BUNDLED_GIT_EXTENDED_SERVER = "git_extended"
+
+
+def bundled_mcp_servers() -> Dict[str, Dict[str, Any]]:
+    """Built-in MCP servers shipped with CoderAI.
+
+    These are merged by :func:`effective_mcp_servers` so they auto-connect on
+    startup unless the user overrides or disables the same name in
+    ``mcp_servers.json``.
+    """
+    import sys
+
+    return {
+        BUNDLED_GIT_EXTENDED_SERVER: {
+            "transport": "stdio",
+            "command": sys.executable,
+            "args": ["-m", "coderAI.mcp_servers.git_extended"],
+            "bundled": True,
+        }
+    }
+
+
 def load_mcp_servers() -> Dict[str, Any]:
-    """Read the MCP server config, tolerating a missing or corrupt file.
+    """Read the on-disk MCP server config, tolerating a missing or corrupt file.
 
     Always returns a dict with an ``mcpServers`` mapping so callers can index
-    into it without extra guards.
+    into it without extra guards. Does **not** include bundled servers — use
+    :func:`effective_mcp_servers` for autoconnect / listing so saves never
+    accidentally persist built-in entries into ``mcp_servers.json``.
     """
     path = mcp_servers_path()
     if not path.exists():
@@ -204,6 +229,24 @@ def load_mcp_servers() -> Dict[str, Any]:
     except Exception:
         logger.warning("Failed to read %s; treating as empty", path, exc_info=True)
         return {"mcpServers": {}}
+
+
+def effective_mcp_servers() -> Dict[str, Any]:
+    """On-disk MCP config merged with bundled servers.
+
+    User entries win on name collision (so ``disabled: true`` or a custom
+    launcher for ``git_extended`` overrides the built-in). Bundled defaults
+    are only injected when the name is absent from disk.
+    """
+    data = load_mcp_servers()
+    servers = data.setdefault("mcpServers", {})
+    if not isinstance(servers, dict):
+        servers = {}
+        data["mcpServers"] = servers
+    for name, entry in bundled_mcp_servers().items():
+        if name not in servers:
+            servers[name] = dict(entry)
+    return data
 
 
 def persist_mcp_server(name: str, entry: Dict[str, Any]) -> None:
@@ -240,18 +283,31 @@ def set_mcp_server_disabled(name: str, disabled: bool) -> bool:
     auto-reconnect until re-enabled. Enabling simply removes the flag (absence
     means enabled) to keep the on-disk config tidy.
 
-    Returns ``True`` if the flag was changed/persisted, ``False`` when no server
-    of that name exists in the config.
+    Bundled servers (e.g. ``git_extended``) may not have an on-disk entry yet;
+    disabling them writes a stub so the override sticks. Returns ``False`` only
+    when the name is neither on disk nor bundled.
     """
     data = load_mcp_servers()
-    servers = data.get("mcpServers", {})
+    servers = data.setdefault("mcpServers", {})
     entry = servers.get(name)
     if not isinstance(entry, dict):
-        return False
+        bundled = bundled_mcp_servers().get(name)
+        if bundled is None:
+            return False
+        entry = dict(bundled)
+        servers[name] = entry
     if disabled:
         entry["disabled"] = True
     else:
         entry.pop("disabled", None)
+        # Drop a pure disable-stub for a bundled server so the built-in returns.
+        if entry.get("bundled") and set(entry.keys()) <= {
+            "transport",
+            "command",
+            "args",
+            "bundled",
+        }:
+            servers.pop(name, None)
     save_mcp_servers(data)
     return True
 
@@ -1428,34 +1484,6 @@ class MCPConnectTool(Tool):
         return result
 
 
-class MCPCallToolParams(BaseModel):
-    server_name: str = Field(..., description="Name of the connected MCP server")
-    tool_name: str = Field(..., description="Name of the tool to call on the server")
-    arguments: Optional[Dict[str, Any]] = Field(None, description="Arguments to pass to the tool")
-
-
-class MCPCallTool(Tool):
-    """Tool for calling tools on connected MCP servers."""
-
-    name = "mcp_call_tool"
-    description = "Call a tool on a connected MCP server"
-    category = "mcp"
-    parameters_model = MCPCallToolParams
-    requires_confirmation = True
-    # Relays raw third-party server output → untrusted, and the arguments are an
-    # outbound channel. mcp_source arms the confused-deputy gate the way an
-    # ``mcp__server__tool`` proxy call does (this static tool has a local object,
-    # so name-based detection alone would miss it).
-    result_provenance = Provenance.UNTRUSTED_EXTERNAL
-    is_egress = True
-    mcp_source = True
-
-    async def execute(  # type: ignore[override]
-        self, server_name: str, tool_name: str, arguments: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
-        """Call a tool on a connected MCP server."""
-        return await mcp_client.call_tool(server_name, tool_name, arguments or {})
-
 
 class MCPListParams(BaseModel):
     pass
@@ -1471,8 +1499,8 @@ class MCPListTool(Tool):
     is_read_only = True
 
     async def execute(self) -> Dict[str, Any]:  # type: ignore[override]
-        """List MCP servers and tools (both live connections and saved config)."""
-        configured = load_mcp_servers().get("mcpServers", {})
+        """List MCP servers and tools (live connections + effective config)."""
+        configured = effective_mcp_servers().get("mcpServers", {})
         servers = {}
         for name, info in mcp_client.servers.items():
             servers[name] = {

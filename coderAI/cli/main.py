@@ -87,7 +87,12 @@ def cli(
     is_flag=True,
     help="Resume the most recently updated session (alias for --continue-session)",
 )
-@click.option("--auto-approve", "--yolo", is_flag=True, help="Skip tool confirmation prompts")
+@click.option(
+    "--auto-approve",
+    "--yolo",
+    is_flag=True,
+    help="Skip tool confirmation prompts (primary: --auto-approve; --yolo is an alias)",
+)
 @click.option(
     "--persona",
     "-p",
@@ -245,7 +250,11 @@ def cost() -> None:
 
 @cli.command()
 def status() -> None:
-    """Show system status and diagnostics."""
+    """Show a quick config summary (model, keys, history).
+
+    For a deeper install check (writable dirs, optional deps, binary), use
+    ``coderAI doctor``.
+    """
     from coderAI.cli.utils import display
 
     display.print_header("CoderAI System Status")
@@ -290,7 +299,10 @@ def status() -> None:
 
 @cli.command()
 def doctor() -> None:
-    """Diagnose a CoderAI install — config, keys, cache, binary."""
+    """Deep install check — config, keys, cache, binary, optional deps.
+
+    Prefer this over ``coderAI status`` when diagnosing a broken install.
+    """
     import os
     import platform
     import tempfile

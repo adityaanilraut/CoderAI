@@ -60,7 +60,6 @@ _RISK_OVERRIDES: Dict[str, str] = {
     "git_cherry_pick": "medium",
     "git_merge": "medium",
     "http_request": "medium",
-    "mcp_call_tool": "medium",
 }
 
 

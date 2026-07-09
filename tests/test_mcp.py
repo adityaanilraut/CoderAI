@@ -1,10 +1,10 @@
-"""Tests for MCPClient, MCPListTool, and MCPCallTool."""
+"""Tests for MCPClient and MCPListTool."""
 
 import asyncio
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from coderAI.tools.mcp import MCPClient, MCPListTool, MCPCallTool, MCPConnectTool
+from coderAI.tools.mcp import MCPClient, MCPListTool, MCPConnectTool
 
 
 class TestMCPClient:
@@ -285,24 +285,6 @@ class TestMCPListTool:
         finally:
             mcp_mod.mcp_client = original
 
-
-class TestMCPCallTool:
-    @pytest.fixture(autouse=True)
-    def setup(self):
-        self.tool = MCPCallTool()
-
-    def test_call_not_connected_server(self):
-        import coderAI.tools.mcp as mcp_mod
-
-        original = mcp_mod.mcp_client
-        mcp_mod.mcp_client = MCPClient()
-        try:
-            result = asyncio.run(
-                self.tool.execute(server_name="missing", tool_name="tool", arguments={})
-            )
-            assert not result["success"]
-        finally:
-            mcp_mod.mcp_client = original
 
 
 class TestMCPConnectTool:

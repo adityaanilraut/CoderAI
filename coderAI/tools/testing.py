@@ -291,7 +291,6 @@ class RunTestsTool(Tool):
     parameters_model = RunTestsParams
     is_read_only = False
     requires_confirmation = True
-    backgroundable = True
     timeout = None
     category = "code_quality"
 

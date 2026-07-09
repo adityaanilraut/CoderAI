@@ -317,32 +317,6 @@ class TestGitTools:
 # ============================================================================
 
 
-class TestTextSearchTool:
-    """Tests for TextSearchTool (formerly CodebaseSearchTool)."""
-
-    def test_search_finds_content(self, temp_dir, sample_file):
-        from coderAI.tools.search import TextSearchTool
-
-        tool = TextSearchTool()
-        result = asyncio.run(tool.execute(query="Hello", base_path=temp_dir))
-        assert result["success"] is True
-        assert result["count"] > 0
-
-    def test_search_no_results(self, temp_dir, sample_file):
-        from coderAI.tools.search import TextSearchTool
-
-        tool = TextSearchTool()
-        result = asyncio.run(tool.execute(query="NONEXISTENT_TEXT_xyz123", base_path=temp_dir))
-        assert result["success"] is True
-        assert result["count"] == 0
-
-    def test_search_invalid_path(self):
-        from coderAI.tools.search import TextSearchTool
-
-        tool = TextSearchTool()
-        result = asyncio.run(tool.execute(query="test", base_path="/nonexistent/path/xyz"))
-        assert result["success"] is False
-
 
 class TestGrepTool:
     """Tests for GrepTool."""
@@ -917,52 +891,6 @@ class TestUndoTools:
 # ============================================================================
 
 
-class TestProjectContextTool:
-    """Tests for project context auto-detection."""
-
-    def test_detect_python_project(self, temp_dir):
-        from coderAI.tools.project import ProjectContextTool
-
-        tool = ProjectContextTool()
-        # Create a Python project indicator
-        with open(os.path.join(temp_dir, "requirements.txt"), "w") as f:
-            f.write("flask==2.0\nrequests\n")
-
-        result = asyncio.run(tool.execute(path=temp_dir))
-        assert result["success"] is True
-        assert "python" in result["detected_types"]
-
-    def test_detect_node_project(self, temp_dir):
-        from coderAI.tools.project import ProjectContextTool
-
-        tool = ProjectContextTool()
-        with open(os.path.join(temp_dir, "package.json"), "w") as f:
-            json.dump(
-                {"name": "test-app", "version": "1.0.0", "dependencies": {"express": "^4.0.0"}}, f
-            )
-
-        result = asyncio.run(tool.execute(path=temp_dir))
-        assert result["success"] is True
-        assert "node" in result["detected_types"]
-        assert "express" in result["context"]["node"]["dependencies"]
-
-    def test_directory_structure(self, temp_dir):
-        from coderAI.tools.project import ProjectContextTool
-
-        tool = ProjectContextTool()
-        os.makedirs(os.path.join(temp_dir, "src"), exist_ok=True)
-        with open(os.path.join(temp_dir, "src", "main.py"), "w") as f:
-            f.write("print('hello')")
-
-        result = asyncio.run(tool.execute(path=temp_dir))
-        assert result["success"] is True
-        assert any("src/" in entry for entry in result["directory_structure"])
-
-
-# ============================================================================
-# Anthropic Provider
-# ============================================================================
-
 
 class TestAnthropicProvider:
     """Tests for Anthropic provider (no API calls)."""
@@ -1037,19 +965,6 @@ class TestMCPTools:
         assert result["success"] is True
         assert result["connected_servers"] == 0
 
-    def test_mcp_call_tool_not_connected(self):
-        from coderAI.tools.mcp import MCPCallTool
-
-        tool = MCPCallTool()
-        result = asyncio.run(tool.execute(server_name="nonexistent", tool_name="test"))
-        assert result["success"] is False
-        assert "not connected" in result["error"].lower()
-
-
-# ============================================================================
-# Updated System Prompt
-# ============================================================================
-
 
 class TestUpdatedSystemPrompt:
     """Tests that composed prompt mentions tools registered in the full registry."""
@@ -1060,7 +975,6 @@ class TestUpdatedSystemPrompt:
         text = compose_default_system_prompt(TestSystemPrompt._full_tool_registry())
         assert "mcp_connect" in text
         assert "undo" in text
-        assert "project_context" in text
 
 
 # ============================================================================

@@ -170,25 +170,6 @@ def test_write_skill_card_with_and_without_steps():
     assert _wrote(log)
 
 
-def test_write_plan_card_statuses():
-    log = RecordingLog()
-    tr.write_plan_card(
-        log,
-        {
-            "title": "Ship it",
-            "completed": 1,
-            "total": 3,
-            "currentIdx": 0,
-            "steps": [
-                {"index": 1, "status": "done", "description": "did it"},
-                {"index": 2, "status": "pending", "description": "current step"},
-                {"index": 3, "status": "pending", "description": "later"},
-            ],
-        },
-    )
-    assert _wrote(log)
-
-
 def test_timestamps_render_as_time_not_literal_markup():
     """Regression: _fmt_ts returned Rich markup which Text.append rendered
     literally — user rows showed "you [#565f89]05:29:40[/]"."""
@@ -241,7 +222,6 @@ def test_write_timeline_item_dispatch_all_kinds():
         {"kind": "separator", "message": "sep"},
         {"kind": "approval", "tool": "x"},
         {"kind": "skill_card", "name": "s"},
-        {"kind": "plan_card", "title": "p"},
         {"kind": "welcome", "model": "m"},
     ]
     for it in items:

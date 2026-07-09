@@ -105,55 +105,6 @@ def _compute_agent_depth(info: AgentInfo) -> int:
     return depth
 
 
-def _format_plan_message(plan: Dict[str, Any]) -> str:
-    """Plain-text summary for UI toast (matches `plan` tool show semantics)."""
-    title = plan.get("title") or "Untitled"
-    steps = plan.get("steps") or []
-    total = len(steps)
-    try:
-        current = int(plan.get("current_step", 0))
-    except (TypeError, ValueError):
-        current = 0
-    completed = sum(1 for s in steps if s.get("status") == "done")
-    cur_desc = steps[current]["description"] if current < total else "All steps completed"
-    lines = [
-        f"Plan: {title}",
-        f"Progress: {completed}/{total} steps . current: {cur_desc}",
-        "",
-    ]
-    for i, s in enumerate(steps):
-        mark = "\u2713" if s.get("status") == "done" else "\u25cb"
-        prefix = "\u2192" if i == current and i < total else " "
-        desc = s.get("description", "")
-        lines.append(f"  {prefix}{mark} {i + 1}. {desc}")
-    return "\n".join(lines)
-
-
-def _serialize_plan_for_ui(plan: Dict[str, Any]) -> Dict[str, Any]:
-    """Serialize plan data into a structured payload for the plan_card UI event."""
-    steps = plan.get("steps") or []
-    total = len(steps)
-    try:
-        current = int(plan.get("current_step", 0))
-    except (TypeError, ValueError):
-        current = 0
-    completed = sum(1 for s in steps if s.get("status") == "done")
-    return {
-        "title": plan.get("title", "Untitled"),
-        "completed": completed,
-        "total": total,
-        "currentIdx": current,
-        "steps": [
-            {
-                "index": i + 1,
-                "description": s.get("description", ""),
-                "status": s.get("status", "pending"),
-            }
-            for i, s in enumerate(steps)
-        ],
-    }
-
-
 _PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}
 _COMPLETED_CAP = 5
 

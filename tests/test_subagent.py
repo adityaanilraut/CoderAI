@@ -161,8 +161,7 @@ class TestDelegateTaskParentState:
         mock_agent._configure_delegate_tool_context = MagicMock()
         mock_agent.close = AsyncMock()
 
-        def create_session(*, clear_plan=True, **_kwargs):
-            assert clear_plan is False
+        def create_session(**_kwargs):
             mock_agent.cost_tracker.reset()
             mock_agent.session = Session(session_id="session_1001_bbbbbbbb", model="claude")
             return mock_agent.session
@@ -262,8 +261,7 @@ class TestDelegateTaskParentState:
         mock_agent._configure_delegate_tool_context = MagicMock()
         mock_agent.close = AsyncMock()
 
-        def create_session(*, clear_plan=True, **_kwargs):
-            assert clear_plan is False
+        def create_session(**_kwargs):
             mock_agent.session = Session(session_id="session_1001_bbbbbbbb", model="claude")
             return mock_agent.session
 

@@ -166,7 +166,7 @@ coderAI status
 
 ---
 
-### `coderAI doctor`
+### `coderAI doctor` (deep install check)
 Run a post-install health check: Python version, config directory writability, default model, API keys (masked), Textual availability, and history directory.
 
 ```bash
@@ -318,7 +318,7 @@ Stored in `~/.coderAI/config.json`. Set via `coderAI config set <key> <value>` o
 | `max_glob_results` | `200` | Max results returned by `glob_search` |
 | `max_command_output` | `10000` | Max characters captured from `run_command` output |
 | `max_tool_output` | `8000` | Max characters of any tool result kept in context |
-| `web_tools_in_main` | `true` | Allow web tools in the main agent (`web_search`, `read_url`, `http_request`, `download_file`, `wikipedia_search`, `read_feed`, `sitemap_discover`) |
+| `web_tools_in_main` | `true` | Allow web tools in the main agent (`web_search`, `read_url`, `http_request`, `download_file`) |
 | `gemini_api_key` | — | Google Gemini API key (or set `GEMINI_API_KEY`) |
 | `browser_headless` | `true` | Run Playwright browser in headless mode |
 | `browser_timeout` | `30.0` | Browser operation timeout (seconds) |
@@ -375,7 +375,7 @@ Environment variables take precedence over `~/.coderAI/config.json`.
 
 ## Tool Quick Reference
 
-All **96 tools** available to the agent when optional dependencies are installed (94 auto-discovered plus `manage_context` and `start_job`). Browser tools require `pip install coderAI[browser]`; PDF extraction in `read_url` requires `pip install coderAI[web]`; desktop tools are macOS-only. Batch edits use `search_replace` with an `edits` list. Confirmation required (`✓`) means the agent asks before running.
+All **~68 native tools** available to the agent when optional dependencies are installed (67 auto-discovered plus `manage_context`), plus rare git ops on the bundled `git_extended` MCP server. Browser tools require `pip install coderAI[browser]`; PDF extraction in `read_url` requires `pip install coderAI[web]`; desktop tools are macOS-only. Batch edits use `search_replace` with an `edits` list. Confirmation required (`✓`) means the agent asks before running.
 
 ### Filesystem
 
@@ -393,7 +393,6 @@ All **96 tools** available to the agent when optional dependencies are installed
 | `create_directory` | ✓ | Create directories (like `mkdir -p`) |
 | `file_stat` | — | Get file metadata (size, permissions, mtime) |
 | `file_chmod` | ✓ | Change file permissions |
-| `file_chown` | ✓ | Change file ownership |
 | `file_readlink` | — | Read symlink targets |
 
 ### Terminal
@@ -416,26 +415,16 @@ All **96 tools** available to the agent when optional dependencies are installed
 | `git_commit` | ✓ | Create a commit |
 | `git_log` | — | View commit history |
 | `git_branch` | ✓ | List/create/delete branches |
-| `git_checkout` | ✓ | Switch or create branches |
-| `git_stash` | ✓ | Stash/restore changes |
-| `git_push` | ✓ | Push to remote (`--force-with-lease`) |
-| `git_pull` | ✓ | Fetch and merge/rebase from remote |
-| `git_merge` | ✓ | Merge a branch |
-| `git_rebase` | ✓ | Rebase; supports `--abort`/`--continue` |
-| `git_revert` | ✓ | Create a revert commit |
-| `git_reset` | ✓ | Reset HEAD (soft/mixed/hard) |
-| `git_show` | — | Show commit details and diff |
-| `git_remote` | ✓ | Manage remotes |
-| `git_blame` | — | Annotate lines with commit/author |
-| `git_cherry_pick` | ✓ | Apply specific commits |
-| `git_tag` | ✓ | List/create/delete tags |
-| `git_fetch` | ✓ | Fetch objects and refs from a remote |
+
+Rare git ops auto-connect via the bundled `git_extended` MCP server as
+`mcp__git_extended__git_checkout`, `…__git_push`, `…__git_pull`, `…__git_fetch`,
+`…__git_merge`, `…__git_rebase`, `…__git_revert`, `…__git_reset`, `…__git_show`,
+`…__git_remote`, `…__git_blame`, `…__git_cherry_pick`, `…__git_stash`, `…__git_tag`.
 
 ### Search
 
 | Tool | Confirm | Description |
 |---|---|---|
-| `text_search` | — | Fast recursive text search |
 | `grep` | — | Regex search with context |
 | `symbol_search` | — | Find function/class/variable definitions by name |
 | `semantic_search` | — | Natural-language code search via embeddings |
@@ -448,9 +437,6 @@ All **96 tools** available to the agent when optional dependencies are installed
 | `read_url` | — | Fetch a URL and return text (PDF with optional `pypdf`) |
 | `download_file` | ✓ | Download a file from a URL |
 | `http_request` | ✓ | Generic HTTP client (any method, headers, body) |
-| `wikipedia_search` | — | Search Wikipedia and return article summaries |
-| `read_feed` | — | Parse RSS/Atom feeds from a URL |
-| `sitemap_discover` | — | Discover pages via `sitemap.xml` / `robots.txt` |
 
 ### Memory
 
@@ -484,7 +470,6 @@ All **96 tools** available to the agent when optional dependencies are installed
 
 | Tool | Confirm | Description |
 |---|---|---|
-| `project_context` | — | Auto-detect project type and structure |
 | `manage_context` | — | Pin/unpin files from the context window |
 | `manage_tasks` | — | Persistent TODO list management |
 
@@ -493,24 +478,17 @@ All **96 tools** available to the agent when optional dependencies are installed
 | Tool | Confirm | Description |
 |---|---|---|
 | `delegate_task` | ✓ | Spawn an isolated sub-agent |
-| `notepad` | — | Shared inter-agent notepad |
 
 ### Background Jobs
 
 | Tool | Confirm | Description |
 |---|---|---|
-| `start_job` | ✓ | Run a backgroundable tool (`run_tests`, `package_manager`, `lint`, `download_file`) as a detached job |
-| `job_status` | — | Check one job or list all tracked jobs |
-| `job_result` | — | Collect a finished job's result payload |
-| `wait_job` | — | Wait (bounded) for a job to finish |
-| `cancel_job` | — | Cancel a queued or running job |
 
 ### Execution & Planning
 
 | Tool | Confirm | Description |
 |---|---|---|
 | `python_repl` | ✓ | Run Python code in an isolated subprocess |
-| `plan` | — | Structured multi-step execution plans |
 | `use_skill` | — | Load a skill workflow |
 
 ### Vision
@@ -525,7 +503,6 @@ All **96 tools** available to the agent when optional dependencies are installed
 |---|---|---|
 | `mcp_connect` | ✓ | Connect to an external MCP server |
 | `mcp_disconnect` | ✓ | Disconnect from an MCP server |
-| `mcp_call_tool` | ✓ | Call a tool on a connected server |
 | `mcp_list` | — | List connected servers, tools, resources, and prompts |
 | `mcp_list_resources` | — | List resources exposed by a connected server |
 | `mcp_read_resource` | — | Read a resource (by URI) from a connected server |

@@ -6,7 +6,7 @@ help:
 	@echo "CoderAI Development Commands"
 	@echo "============================"
 	@echo "make install       - Install the package"
-	@echo "make dev           - Install in development mode"
+	@echo "make dev           - Install in development mode (alias: install-dev)"
 	@echo "make test          - Run test suite"
 	@echo "make test-security - Run only the red-team security suite (pytest -m security)"
 	@echo "make clean         - Clean build artifacts"
@@ -90,7 +90,6 @@ dist: clean
 	python3 -m build
 	@echo "Distribution built in dist/"
 
-# Install dev dependencies
-install-dev:
-	pip install -e ".[dev]"
+# Alias for `make dev`
+install-dev: dev
 

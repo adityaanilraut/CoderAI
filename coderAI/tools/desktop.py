@@ -9,8 +9,8 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from coderAI.system.locks import get_lock_manager, resource_manager  # noqa: F401 — tests patch resource_manager
 from coderAI.tools.base import Tool
-from coderAI.system.locks import resource_manager
 
 # macOS-only availability is declared per tool via ``platforms`` (Phase 4.2);
 # Agent._create_tool_registry drops platform-mismatched tools generically.
@@ -31,6 +31,7 @@ _MAX_A11Y_CHILDREN_PER_NODE = 50
 
 
 def is_macos() -> bool:
+    # Uses this module's ``sys`` so tests can patch ``coderAI.tools.desktop.sys``.
     return sys.platform == "darwin"
 
 
@@ -134,7 +135,7 @@ class RunAppleScriptTool(Tool):
     async def execute(self, script: str, is_jxa: bool = False) -> Dict[str, Any]:  # type: ignore[override]
         if err := _check_platform():
             return err
-        async with resource_manager.desktop_lock():
+        async with get_lock_manager().desktop_lock():
             try:
                 cmd = ["osascript"]
                 if is_jxa:
@@ -283,7 +284,7 @@ class GetAccessibilityTreeTool(Tool):
             JSON.stringify({{error: e.message || e.toString()}});
         }}
         """
-        async with resource_manager.desktop_lock():
+        async with get_lock_manager().desktop_lock():
             try:
                 process = await _run_osascript(
                     ["osascript", "-l", "JavaScript"],
@@ -377,7 +378,7 @@ class ClickUIElementTool(Tool):
         end tell
         """
 
-        async with resource_manager.desktop_lock():
+        async with get_lock_manager().desktop_lock():
             try:
                 process = await _run_osascript(["osascript"], script, timeout=10)
                 if process.returncode == 0:
@@ -470,7 +471,7 @@ tell application "System Events"
     {action_str}{modifier_str}
 end tell
 """
-        async with resource_manager.desktop_lock():
+        async with get_lock_manager().desktop_lock():
             try:
                 process = await _run_osascript(["osascript"], script, timeout=10)
                 if process.returncode == 0:

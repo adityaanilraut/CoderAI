@@ -21,8 +21,6 @@ from coderAI.system.config import config_manager
 
 from coderAI.tui.serializers import (
     _agent_info_dict,
-    _format_plan_message,
-    _serialize_plan_for_ui,
 )
 
 if TYPE_CHECKING:
@@ -649,21 +647,6 @@ async def _cmd_get_state(server: UIBridge, msg: Dict[str, Any]) -> None:
     _emit_context_state(server)
 
 
-async def _cmd_get_plan(server: UIBridge, msg: Dict[str, Any]) -> None:
-    from coderAI.system.project_layout import read_current_plan
-
-    pr = getattr(server.agent.config, "project_root", None) or "."
-    plan = read_current_plan(str(pr))
-    if not plan or not isinstance(plan, dict):
-        server.emit(
-            "info",
-            message="No active execution plan. The agent can create one with the plan tool.",
-        )
-        return
-    server.emit("plan_card", plan=_serialize_plan_for_ui(plan))
-    server.emit("info", message=_format_plan_message(plan))
-
-
 async def _cmd_get_tasks(server: UIBridge, _msg: Dict[str, Any]) -> None:
     server._emit_tasks_from_disk()
 
@@ -687,9 +670,9 @@ async def _cmd_list_skills(server: UIBridge, _msg: Dict[str, Any]) -> None:
 
 async def _cmd_list_mcp_servers(server: UIBridge, _msg: Dict[str, Any]) -> None:
     """Emit the merged live + configured MCP server list for the /mcp picker."""
-    from coderAI.tools.mcp import load_mcp_servers, mcp_client
+    from coderAI.tools.mcp import effective_mcp_servers, mcp_client
 
-    configured = load_mcp_servers().get("mcpServers", {})
+    configured = effective_mcp_servers().get("mcpServers", {})
     rows: list[Dict[str, Any]] = []
     seen: set[str] = set()
     for name, info in mcp_client.servers.items():
@@ -735,7 +718,7 @@ async def _cmd_toggle_mcp_server(server: UIBridge, msg: Dict[str, Any]) -> None:
     connect path mirrors ``ExecutionLoop._autoconnect_mcp_servers`` — the config
     was validated when the server was added, so no launcher re-check is needed.
     """
-    from coderAI.tools.mcp import load_mcp_servers, mcp_client, set_mcp_server_disabled
+    from coderAI.tools.mcp import effective_mcp_servers, mcp_client, set_mcp_server_disabled
 
     name = str(msg.get("server", "")).strip()
     if not name:
@@ -749,7 +732,7 @@ async def _cmd_toggle_mcp_server(server: UIBridge, msg: Dict[str, Any]) -> None:
         await _cmd_list_mcp_servers(server, {})
         return
 
-    cfg = load_mcp_servers().get("mcpServers", {}).get(name)
+    cfg = effective_mcp_servers().get("mcpServers", {}).get(name)
     if not isinstance(cfg, dict):
         server.emit("warning", message=f"No MCP server named '{name}' is configured.")
         return
@@ -1154,7 +1137,6 @@ _COMMAND_HANDLERS: Dict[str, Callable[["UIBridge", Dict[str, Any]], Awaitable[No
     "compact_context": _cmd_compact_context,
     "manage_context": _cmd_manage_context,
     "get_state": _cmd_get_state,
-    "get_plan": _cmd_get_plan,
     "get_tasks": _cmd_get_tasks,
     "list_models": _cmd_list_models,
     "list_personas": _cmd_list_personas,

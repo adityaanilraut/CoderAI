@@ -48,10 +48,11 @@ yarn-error.log*
 .pnpm-debug.log*
 
 # UI build artifacts
-ui/dist/
-ui/build/
-ui/.next/
-ui/out/
+# Legacy UI build artifacts (no ui/ package in this repo)
+# ui/dist/
+# ui/build/
+# ui/.next/
+# ui/out/
 
 # Misc
 *.log

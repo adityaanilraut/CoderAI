@@ -72,8 +72,6 @@ class ExecutionLoop:
         self.hooks_manager: Any = agent.hooks_manager
         # Turn-scoped flags. ``run()`` resets these at the top of each call so
         # state never leaks across user messages.
-        self._plan_reminder_emitted: bool = False
-        self._last_plan_step: Optional[int] = None
         self._length_retry_used: bool = False
         self._hard_cap_warned: bool = False
         self._health_check_counter: int = 0
@@ -85,78 +83,19 @@ class ExecutionLoop:
         self._mcp_health_task: Optional["asyncio.Task[None]"] = None
         self._tool_schemas_dirty: bool = False
 
-    def _read_active_plan_step(self) -> Optional[Dict[str, Any]]:
-        """Return ``{current_step, total_steps, description}`` for the on-disk
-        plan, or ``None`` when no plan is active.
-
-        Reads ``.coderAI/current_plan.json`` via the shared ``read_current_plan``
-        utility.
-        """
-        try:
-            from coderAI.system.project_layout import read_current_plan
-
-            project_root = str(getattr(self.agent.config, "project_root", "."))
-            plan = read_current_plan(project_root)
-            if not plan:
-                return None
-            steps = plan.get("steps") or []
-            total = len(steps)
-            if total == 0:
-                return None
-            current = int(plan.get("current_step", 0) or 0)
-            if current < 0:
-                current = 0
-            if current >= total:
-                desc = "All plan steps complete"
-            else:
-                desc = str(steps[current].get("description") or "")
-            return {"current_step": current, "total_steps": total, "description": desc}
-        except Exception:
-            return None
-
     def _inject_step_reminders(
         self,
         messages: List[Dict[str, Any]],
         iteration: int,
         max_iterations: int,
     ) -> List[Dict[str, Any]]:
-        """Append a single ``system`` reminder combining plan progress and the
-        approaching-step-limit warning, when applicable.
+        """Append a ``system`` reminder when the iteration budget is nearly spent.
 
-        The plan reminder is emitted at most once per turn and re-emitted only
-        when the on-disk plan's ``current_step`` has advanced since the last
-        injection (tracked via ``self._plan_reminder_emitted`` /
-        ``self._last_plan_step``). The step-limit hint is emitted on every
-        iteration that falls inside the 5-step window so the model can see
-        the budget shrink in real time.
+        The step-limit hint is emitted on every iteration that falls inside the
+        5-step window so the model can see the budget shrink in real time.
         """
         result = list(messages)
         parts: List[str] = []
-
-        plan_info = self._read_active_plan_step()
-        if plan_info is not None:
-            current_step = plan_info["current_step"]
-            total_steps = plan_info["total_steps"]
-            description = plan_info["description"]
-            advanced = self._last_plan_step is not None and current_step != self._last_plan_step
-            if (not self._plan_reminder_emitted) or advanced:
-                self._plan_reminder_emitted = True
-                self._last_plan_step = current_step
-                if current_step >= total_steps:
-                    parts.append(
-                        "A plan is active and every step is marked complete "
-                        "(use `plan` action='show' to confirm). If the work is "
-                        "really done, give the user a final summary; otherwise "
-                        "open a new plan or fix the remaining gaps."
-                    )
-                else:
-                    parts.append(
-                        f"A plan is active. Currently on step {current_step + 1} "
-                        f'of {total_steps}: "{description}". Consult it with '
-                        f"`plan` action='show' before changing course and "
-                        f"advance it with `plan` action='advance' once the step "
-                        f"is finished."
-                    )
 
         steps_left = max_iterations - iteration
         if 1 <= steps_left <= 5:
@@ -183,8 +122,6 @@ class ExecutionLoop:
         """Process a user message and return response."""
 
         # Reset turn-scoped flags so state never leaks across user messages.
-        self._plan_reminder_emitted = False
-        self._last_plan_step = None
         self._length_retry_used = False
         self._hard_cap_warned = False
 
@@ -738,11 +675,11 @@ class ExecutionLoop:
         self._mcp_health_task = asyncio.create_task(_run_health_check())
 
     async def _autoconnect_mcp_servers(self):
-        """Auto-connect configured MCP servers from ~/.coderAI/mcp_servers.json."""
-        from coderAI.tools.mcp import load_mcp_servers
+        """Auto-connect configured + bundled MCP servers (e.g. git_extended)."""
+        from coderAI.tools.mcp import effective_mcp_servers
 
         try:
-            servers = load_mcp_servers().get("mcpServers", {})
+            servers = effective_mcp_servers().get("mcpServers", {})
             if not servers:
                 return
             mcp_client = get_services().mcp_client

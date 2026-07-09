@@ -66,7 +66,7 @@ class Tool(ABC):
     is_read_only: bool = False
 
     # Confirmation opt-out (Phase 4.1). A mutating tool (``is_read_only=False``)
-    # that only touches internal, low-risk state (agent notepad / plan / task
+    # that only touches internal, low-risk state (agent task
     # list / memory) sets ``safe = True`` to run without confirmation. This is
     # the *explicit* escape hatch: any mutating tool that sets neither
     # ``requires_confirmation`` nor ``safe`` is treated as requiring
@@ -87,7 +87,7 @@ class Tool(ABC):
     is_egress: bool = False
 
     # True for *local* tools whose results are relayed from a third-party MCP
-    # server (the static ``mcp_call_tool`` / ``mcp_read_resource`` /
+    # server (the static ``mcp_read_resource`` /
     # ``mcp_get_prompt`` family). An ``mcp__server__tool`` *proxy* call has no
     # local Tool object and is detected by name; these static tools do, so they
     # must self-declare to arm the confused-deputy (MCP-mutation) gate the same
@@ -109,7 +109,6 @@ class Tool(ABC):
     # Background-job opt-in: ``start_job`` may run this tool detached from the
     # turn (JobManager). Reserved for long-running tools whose effects don't
     # race live foreground edits (test runs, package installs, downloads).
-    backgroundable: bool = False
 
     # UI grouping. Used by the Textual UI to categorize tools (filesystem,
     # search, git, terminal, web, memory, agent, mcp, other). Subclasses

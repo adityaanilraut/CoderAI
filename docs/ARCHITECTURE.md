@@ -153,7 +153,7 @@ timeline/session state; `timeline_render.py` writes rows to the
 │   ├── embeddings/          # OpenAI embeddings (default; no local provider yet)
 │   ├── llm/                 # OpenAI, Anthropic, Groq, DeepSeek, Gemini, LM Studio, Ollama
 │   ├── skills/              # Skill discovery + optional hosted sources
-│   ├── tools/               # 96 agent tools (94 auto-discovered + manage_context + start_job)
+│   ├── tools/               # ~68 native tools (+ git_extended via bundled MCP)
 │   │   ├── discovery.py
 │   │   ├── _detect.py       # Shared walk-up project-tool detection
 │   │   ├── filesystem/      # Package: read_write, edit, manage, metadata, _guards
@@ -162,7 +162,7 @@ timeline/session state; `timeline_render.py` writes rows to the
 │   │   ├── browser.py, desktop.py, memory.py, mcp.py, undo.py
 │   │   ├── subagent.py, tasks.py, lint.py, format.py, testing.py
 │   │   ├── package_manager.py, refactor.py, project.py
-│   │   ├── context_manage.py, planning.py, notepad.py
+│   │   ├── context_manage.py
 │   │   ├── repl.py, vision.py, skills.py
 │   │   └── …
 │   ├── tui/                 # Textual interactive chat
@@ -300,6 +300,6 @@ events to the Textual UI on the same Python process.
   explicit OK even under `--yolo`.
 - **Filesystem guards** (`tools/filesystem/_guards.py`) — Project scope,
   protected paths, symlink-leaf rejection, atomic writes. Metadata tools
-  (`file_chmod`/`file_chown`) use fd-based no-follow on POSIX.
+  (`file_chmod`) uses fd-based no-follow on POSIX.
 - **Persistence** — Session-based history stored in
   `~/.coderAI/history/`; semantic index under `.coderAI/index/`.

@@ -273,7 +273,7 @@ async def test_orchestrate_signals_doom_loop_after_hard_threshold() -> None:
             {
                 "id": f"t{i}",
                 "type": "function",
-                "function": {"name": "plan", "arguments": '{"action":"show"}'},
+                "function": {"name": "manage_tasks", "arguments": '{"action":"show"}'},
             }
         ]
         session.add_message("assistant", None, tool_calls=tool_calls)
@@ -287,7 +287,7 @@ async def test_orchestrate_signals_doom_loop_after_hard_threshold() -> None:
 
     assert last_outcome is not None
     assert last_outcome.status is BatchStatus.DOOM_LOOP
-    assert last_outcome.doom_tool == "plan"
+    assert last_outcome.doom_tool == "manage_tasks"
     assert last_outcome.doom_count == DOOM_LOOP_HARD_THRESHOLD
 
 
@@ -409,7 +409,7 @@ def test_doom_loop_terminates_execution_loop_with_explanatory_message() -> None:
                 {
                     "id": "call_plan",
                     "type": "function",
-                    "function": {"name": "plan", "arguments": '{"action":"show"}'},
+                    "function": {"name": "manage_tasks", "arguments": '{"action":"show"}'},
                 }
             ],
         }
@@ -429,7 +429,7 @@ def test_doom_loop_terminates_execution_loop_with_explanatory_message() -> None:
         call_count += 1
         if call_count >= DOOM_LOOP_HARD_THRESHOLD:
             return ToolBatchOutcome(
-                BatchStatus.DOOM_LOOP, doom_tool="plan", doom_count=call_count
+                BatchStatus.DOOM_LOOP, doom_tool="manage_tasks", doom_count=call_count
             )
         return ToolBatchOutcome(BatchStatus.OK)
 
@@ -440,7 +440,7 @@ def test_doom_loop_terminates_execution_loop_with_explanatory_message() -> None:
     assert call_count == DOOM_LOOP_HARD_THRESHOLD, (
         "loop should exit immediately on doom-loop, not retry"
     )
-    assert "plan" in result["content"]
+    assert "manage_tasks" in result["content"]
     assert "looping" in result["content"].lower() or "loop" in result["content"].lower()
     # Critically: did NOT run to max_iterations.
     assert "maximum number of iterations" not in result["content"]
@@ -539,7 +539,7 @@ async def test_in_batch_duplicate_calls_do_not_count_toward_doom_loop() -> None:
         {
             "id": f"t{i}",
             "type": "function",
-            "function": {"name": "plan", "arguments": '{"action":"show"}'},
+            "function": {"name": "manage_tasks", "arguments": '{"action":"show"}'},
         }
         for i in range(DOOM_LOOP_HARD_THRESHOLD)
     ]

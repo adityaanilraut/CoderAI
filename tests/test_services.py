@@ -19,10 +19,10 @@ class TestDefaultServices:
 
     def test_fields_built_lazily(self):
         svc = ToolServices()
-        assert svc._notepad is None
-        pad = svc.notepad
-        assert svc._notepad is pad
-        assert svc.notepad is pad
+        assert svc._memory_store is None
+        store = svc.memory_store
+        assert svc._memory_store is store
+        assert svc.memory_store is store
 
     def test_unbound_config_stays_dynamic(self):
         from coderAI.system.config import config_manager
@@ -103,14 +103,14 @@ class TestExecutorSeesScopedEmitter:
 class TestServicesScope:
     def test_scope_isolates_stores(self):
         with services_scope() as outer:
-            pad_outer = outer.notepad
+            store_outer = outer.memory_store
             tracker_outer = outer.agent_tracker
             with services_scope() as inner:
                 assert get_services() is inner
-                assert inner.notepad is not pad_outer
+                assert inner.memory_store is not store_outer
                 assert inner.agent_tracker is not tracker_outer
             assert get_services() is outer
-            assert outer.notepad is pad_outer
+            assert outer.memory_store is store_outer
 
     def test_scope_restores_previous_on_exit(self):
         before = get_services()
@@ -126,10 +126,10 @@ class TestServicesScope:
     def test_inherit_shares_parent_stores_but_overrides_config(self):
         fake_config = object()
         with services_scope() as parent:
-            pad = parent.notepad
+            store = parent.memory_store
             with services_scope(inherit=True, config=fake_config) as child:
                 assert child.config is fake_config
-                assert child.notepad is pad
+                assert child.memory_store is store
             # Parent scope keeps its own (dynamic) config resolution.
             assert parent.config is not fake_config
 

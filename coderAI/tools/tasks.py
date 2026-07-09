@@ -53,13 +53,11 @@ class ManageTasksTool(Tool):
 
     name = "manage_tasks"
     description = (
-        "Optional persistent TODO list with priorities (file-backed at "
-        "`.coderAI/tasks.json`; survives across turns). Distinct from `plan`: "
-        "`plan` is the ordered, user-facing narrative for a multi-step request; "
-        "`manage_tasks` is a side checklist for fine-grained sub-actions or "
-        "follow-ups the user asked you to track. Do not duplicate items between "
-        "`plan` and `manage_tasks`. Actions: 'list' (groups by status), 'add' "
-        "(requires title; optional priority), 'start' (requires task_id), "
+        "Persistent TODO / plan checklist (file-backed at `.coderAI/tasks.json`; "
+        "survives across turns). Use for multi-step work: add ordered tasks, "
+        "start/complete them as you go, and list status before changing course. "
+        "Skip for trivial single-step work. Actions: 'list' (groups by status), "
+        "'add' (requires title; optional priority), 'start' (requires task_id), "
         "'complete' (requires task_id), 'update' (requires task_id), 'delete' "
         "(requires task_id), 'clear' (removes completed tasks)."
     )

@@ -77,14 +77,16 @@ class TestApplyDiffTool:
 
     def test_creates_backup(self, sample_file, monkeypatch):
         backups = []
-        from coderAI.tools import filesystem as fs_mod
+        from coderAI.tools.undo import get_backup_store
 
-        original_backup = fs_mod.backup_store.backup_file
-        monkeypatch.setattr(
-            fs_mod.backup_store,
-            "backup_file",
-            lambda path, op="modify": backups.append(path) or original_backup(path, op),
-        )
+        store = get_backup_store()
+        original_backup = store.backup_file
+
+        def _wrap(path, op="modify"):
+            backups.append(path)
+            return original_backup(path, op)
+
+        monkeypatch.setattr(store, "backup_file", _wrap)
         diff = "@@ -1,2 +1,2 @@\n-def foo():\n-    return 1\n+def foo():\n+    return 7\n"
         asyncio.run(self.tool.execute(path=str(sample_file), diff=diff))
         assert len(backups) >= 1

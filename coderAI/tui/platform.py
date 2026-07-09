@@ -2,11 +2,7 @@
 
 from __future__ import annotations
 
-import sys
-
-
-def is_macos() -> bool:
-    return sys.platform == "darwin"
+from coderAI.system.constants import is_macos
 
 
 def palette_shortcut() -> str:
@@ -35,5 +31,7 @@ __all__ = [
     "composer_footer_hints",
     "composer_placeholder",
     "header_palette_hint",
+    "is_macos",
     "palette_input_placeholder",
+    "palette_shortcut",
 ]

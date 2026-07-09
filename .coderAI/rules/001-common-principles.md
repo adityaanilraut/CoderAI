@@ -20,7 +20,6 @@ This rule applies universally to all agents operating within this project. Follo
 - **Clarity and Precision:** When reporting findings or documenting code, be concise but factually complete.
 - **Cite Sources:** Reference specific file paths and line numbers when discussing code changes.
 
-## 5. Plan-First Workflow
-- **Plan before you build:** For any task involving multiple steps, multiple file edits, or non-trivial implementation work, call the `plan` tool with `action='create'` before starting. Reference and `advance` the plan as you complete steps.
-- **Track granular work:** Use `manage_tasks` (`add` / `start` / `complete`) alongside the plan to maintain a working checklist that survives across tool-loop iterations.
-- **Skip planning only for trivial asks:** Single-file reads, greetings, one-line answers, and simple lookups do not need a plan.
+## 5. Task Workflow
+- **Track multi-step work:** For any task involving multiple steps, multiple file edits, or non-trivial implementation work, use `manage_tasks` (`add` / `start` / `complete` / `list`) before and during the work.
+- **Skip task tracking only for trivial asks:** Single-file reads, greetings, one-line answers, and simple lookups do not need a checklist.

@@ -10,7 +10,6 @@ from coderAI.tui.controller import (
     _cmd_cancel,
     _cmd_clear_context,
     _cmd_compact_context,
-    _cmd_get_plan,
     _cmd_get_state,
     _cmd_get_tasks,
     _cmd_manage_context,
@@ -438,36 +437,6 @@ async def test_set_verbosity_updates_filter(level) -> None:
     server = _make_ipc_server()
     await _cmd_set_verbosity(server, {"level": level})
     assert server._verbosity == level
-
-
-@pytest.mark.asyncio
-async def test_get_plan_emits_plan_card_and_info(tmp_path, monkeypatch) -> None:
-    dot_coderai = tmp_path / ".coderAI"
-    dot_coderai.mkdir()
-    plan = {
-        "title": "Ship feature",
-        "current_step": 0,
-        "steps": [
-            {"description": "Design", "status": "pending"},
-            {"description": "Implement", "status": "pending"},
-        ],
-    }
-    (dot_coderai / "current_plan.json").write_text(json.dumps(plan), encoding="utf-8")
-
-    server = _make_ipc_server(
-        config=SimpleNamespace(project_root=str(tmp_path), max_iterations=50, budget_limit=0.0),
-    )
-    monkeypatch.setattr(
-        "coderAI.system.project_layout.read_current_plan",
-        lambda *_args, **_kwargs: plan,
-    )
-
-    await _cmd_get_plan(server, {})
-
-    server.emit.assert_any_call("plan_card", plan=ANY)
-    info_calls = [c for c in server.emit.call_args_list if c.args[0] == "info"]
-    assert info_calls
-    assert "Ship feature" in info_calls[0].kwargs["message"]
 
 
 @pytest.mark.asyncio

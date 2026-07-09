@@ -4,22 +4,25 @@ import asyncio
 import pytest
 
 from coderAI.tools.skills import UseSkillTool, load_skill, get_available_skills
+from coderAI.skills.skill_manager import SKILLS_FILE_NAME
 
 
 @pytest.fixture
 def skills_dir(tmp_path):
-    """Create a temp skills directory with sample skills."""
+    """Create a temp skills directory with sample skills (subdir format)."""
     sd = tmp_path / ".coderAI" / "skills"
     sd.mkdir(parents=True)
 
-    # Create a test skill
-    (sd / "test-skill.md").write_text(
+    skill_a = sd / "test-skill"
+    skill_a.mkdir()
+    (skill_a / SKILLS_FILE_NAME).write_text(
         "---\nname: test-skill\ndescription: A test skill\n---\n\n"
         "# Test Skill\n\n## Step 1\nDo step 1.\n\n## Step 2\nDo step 2.\n"
     )
 
-    # Create a skill without frontmatter
-    (sd / "plain-skill.md").write_text("# Plain Skill\n\nJust instructions.\n")
+    skill_b = sd / "plain-skill"
+    skill_b.mkdir()
+    (skill_b / SKILLS_FILE_NAME).write_text("# Plain Skill\n\nJust instructions.\n")
 
     return tmp_path
 

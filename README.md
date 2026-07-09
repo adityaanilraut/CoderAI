@@ -11,17 +11,17 @@
 
 ---
 
-CoderAI is a Python CLI tool that pairs an LLM with **96 built-in tools** to read, write, search, debug, test, automate browsers, and ship code — all from a single terminal session. It supports **7 LLM providers**, **17 specialist agent personas**, a **multi-agent delegation system** with retry logic, a **semantic code search engine**, a **cross-platform browser automation engine**, and a **plan-and-execute workflow** to tackle complex tasks autonomously.
+CoderAI is a Python CLI tool that pairs an LLM with a focused set of coding tools to read, write, search, debug, test, and ship code from your terminal. It supports **7 LLM providers**, **6 specialist agent personas**, multi-agent delegation, optional semantic search and browser automation, and a persistent task checklist for multi-step work.
 
 ## ✨ Key Features
 
 | Feature | Description |
 |---|---|
 | **Multi-Provider LLM** | OpenAI, Anthropic Claude, Groq, DeepSeek, Gemini, LM Studio, Ollama |
-| **96 Tools** | File I/O, Git, terminal, web, browser automation, HTTP, memory, process management, background jobs, semantic search, and more |
+| **~68 Native Tools** | File I/O, core Git, terminal, web, browser automation, HTTP, memory, process management, semantic search; rare git via bundled MCP |
 | **Browser Automation** | Cross-platform browser control via Playwright — form filling, shopping, data entry, web scraping |
 | **Multi-Agent System** | Spawn isolated sub-agents for code review, security audit, research, etc. |
-| **Planning & Tasks** | Structured plan-and-execute workflows with persistent task tracking |
+| **Task Tracking** | Persistent TODO checklist via `manage_tasks` (also `/tasks` / `/plan`) |
 | **Textual interactive UI** | `coderAI chat` uses a pure-Python [Textual](https://textual.textualize.io/) TUI ([`docs/CHAT_EVENTS.md`](docs/CHAT_EVENTS.md)) |
 | **Rich CLI output** | Non-interactive commands (`status`, `config`, `history`, …) use [Rich](https://github.com/Textualize/rich) for tables and formatting |
 | **Semantic Search** | Natural-language code search via embeddings (OpenAI + ChromaDB) |
@@ -177,7 +177,6 @@ CoderAI/
 │   │   ├── agent_session.py    #   Session lifecycle, checkpoints, rewind
 │   │   ├── agent_tracker.py    #   Real-time agent registry & cooperative cancellation
 │   │   ├── agents.py           #   AgentPersona loader from .coderAI/agents/*.md
-│   │   ├── jobs.py             #   JobManager: background tool jobs (start_job & co.)
 │   │   ├── permissions.py      #   Approval / high-risk policy
 │   │   ├── provenance.py       #   Untrusted-ingest tainting
 │   │   ├── tool_executor.py    #   Tool execution runner & confirmation gates
@@ -231,14 +230,15 @@ CoderAI/
 │   │   ├── lmstudio.py         #   LM Studio (local OpenAI-compatible)
 │   │   └── ollama.py           #   Ollama (local models)
 │   │
-│   └── tools/                  # ─── Agent Tool Implementations (96 total) ───
+│   └── tools/                  # ─── Agent Tool Implementations (~68 native) ───
 │       ├── base.py             #   Tool ABC + ToolRegistry
 │       ├── discovery.py        #   Auto-discovery of no-arg Tool subclasses
 │       ├── _detect.py          #   Shared walk-up project-tool detection
 │       ├── filesystem/         #   read/write/edit/manage/metadata (+ _guards)
 │       ├── terminal.py         #   run_command, run_background, list/kill_processes, read_bg_output
-│       ├── git.py              #   git_add … git_tag, git_fetch (20 git tools)
-│       ├── search.py           #   text_search, grep, symbol_search
+│       ├── git.py              #   git_add/status/diff/commit/log/branch (core)
+│       ├── git_extended.py     #   rare git ops → bundled git_extended MCP
+│       ├── search.py           #   grep, symbol_search
 │       ├── semantic_search.py  #   semantic_search (natural-language code search)
 │       ├── web/                #   web_search, read_url, download_file, http_request, …
 │       ├── browser.py          #   browser_navigate … browser_close (Playwright; optional)
@@ -246,11 +246,9 @@ CoderAI/
 │       ├── memory.py           #   save_memory, recall_memory, delete_memory
 │       ├── mcp.py              #   mcp_connect/disconnect/call_tool/list (+resources, prompts)
 │       ├── undo.py             #   undo, undo_history
-│       ├── project.py          #   project_context
 │       ├── context_manage.py   #   manage_context (pin/unpin; manual registration)
 │       ├── tasks.py            #   manage_tasks
 │       ├── subagent.py         #   delegate_task
-│       ├── jobs.py             #   start_job, job_status, job_result, wait_job, cancel_job
 │       ├── lint.py / format.py #   lint, format (scrubbed subprocess from project root)
 │       ├── testing.py          #   run_tests
 │       ├── package_manager.py  #   package_manager (pip, npm, …)
@@ -259,7 +257,6 @@ CoderAI/
 │       ├── skills.py           #   use_skill
 │       ├── repl.py             #   python_repl
 │       ├── planning.py         #   plan
-│       └── notepad.py          #   notepad
 │
 ├── docs/
 │   ├── ARCHITECTURE.md         # Detailed architecture documentation
@@ -270,7 +267,7 @@ CoderAI/
 │   └── INSTALL.md              # Installation guide
 │
 ├── .coderAI/                   # ─── Project Configuration ───
-│   ├── agents/                 #   17 agent personas (YAML frontmatter + markdown)
+│   ├── agents/                 #   6 agent personas (YAML frontmatter + markdown)
 │   ├── skills/                 #   Reusable skill workflows (each dir has SKILLS.md)
 │   │   ├── security-audit/     #     Step-by-step security audit
 │   │   └── tdd-workflow/       #     TDD workflow guide
@@ -327,9 +324,9 @@ The heart of CoderAI is the **agentic loop** in `coderAI/core/agent.py → proce
 
 ## 🛠️ Tools Reference
 
-CoderAI registers **96 tools** that the LLM can call (94 auto-discovered plus `manage_context` and `start_job`, which are registered manually). Each tool follows the `Tool` abstract base class. Browser, desktop, and some web tools are removed at runtime when optional dependencies or the host OS are unavailable — see notes below. Batch edits use `search_replace` with an `edits` list (there is no separate `multi_edit` tool).
+CoderAI registers **~68 native tools** that the LLM can call (67 auto-discovered plus `manage_context`, registered manually), plus rare git ops on the bundled `git_extended` MCP server. Each tool follows the `Tool` abstract base class. Browser, desktop, and some web tools are removed at runtime when optional dependencies or the host OS are unavailable — see notes below. Batch edits use `search_replace` with an `edits` list (there is no separate `multi_edit` tool).
 
-### Filesystem (14 tools)
+### Filesystem (13 tools)
 
 | Tool | Description |
 |---|---|
@@ -345,7 +342,6 @@ CoderAI registers **96 tools** that the LLM can call (94 auto-discovered plus `m
 | `create_directory` | Create directories including parents (`mkdir -p`) |
 | `file_stat` | Get file metadata (size, permissions, timestamps) |
 | `file_chmod` | Change file permissions |
-| `file_chown` | Change file ownership |
 | `file_readlink` | Read symlink targets | |
 
 ### Terminal (5 tools)
@@ -358,7 +354,9 @@ CoderAI registers **96 tools** that the LLM can call (94 auto-discovered plus `m
 | `kill_process` | Terminate a background process by PID |
 | `read_bg_output` | Read buffered output from a `run_background` process |
 
-### Git (20 tools)
+### Git (6 native + extended via MCP)
+
+Everyday git stays native. Rare ops auto-connect on the bundled `git_extended` MCP server as `mcp__git_extended__git_*` (disable with `coderAI mcp` / `disabled: true` in `mcp_servers.json`).
 
 | Tool | Description |
 |---|---|
@@ -368,20 +366,8 @@ CoderAI registers **96 tools** that the LLM can call (94 auto-discovered plus `m
 | `git_commit` | Create commits |
 | `git_log` | View commit history |
 | `git_branch` | List, create, or delete branches |
-| `git_checkout` | Switch or create branches |
-| `git_stash` | Stash/restore uncommitted changes |
-| `git_push` | Push commits to remote (uses `--force-with-lease` for safety) |
-| `git_pull` | Fetch and merge/rebase from remote |
-| `git_merge` | Merge a branch into the current branch |
-| `git_rebase` | Rebase onto another branch; supports `--abort`/`--continue` |
-| `git_revert` | Create a revert commit (safe, doesn't rewrite history) |
-| `git_reset` | Reset HEAD — soft / mixed / hard |
-| `git_show` | Inspect a commit's message and diff |
-| `git_remote` | List, add, remove, or update remotes |
-| `git_blame` | Annotate file lines with commit and author |
-| `git_cherry_pick` | Apply specific commits onto the current branch |
-| `git_tag` | List, create, or delete tags |
-| `git_fetch` | Fetch objects and refs from a remote |
+
+**Via MCP (`mcp__git_extended__…`):** `git_checkout`, `git_stash`, `git_push`, `git_pull`, `git_fetch`, `git_merge`, `git_rebase`, `git_revert`, `git_reset`, `git_show`, `git_remote`, `git_blame`, `git_cherry_pick`, `git_tag`.
 
 ### Search & Analysis (4 tools)
 
@@ -389,7 +375,6 @@ CoderAI registers **96 tools** that the LLM can call (94 auto-discovered plus `m
 
 | Tool | Description |
 |---|---|
-| `text_search` | Fast recursive text search across files |
 | `grep` | Regex pattern matching with context lines |
 | `symbol_search` | Find function/class/variable definitions by name |
 | `semantic_search` | Natural-language code search via embeddings (requires OpenAI key + `coderAI[semantic]`) |
@@ -404,9 +389,6 @@ CoderAI registers **96 tools** that the LLM can call (94 auto-discovered plus `m
 | `read_url` | Fetch and extract text from any URL (HTML or PDF with `pypdf`) |
 | `download_file` | Download files (ZIP, images, etc.) from URLs |
 | `http_request` | Generic HTTP client — any method, headers, JSON body (SSRF-protected) |
-| `wikipedia_search` | Search Wikipedia and return article summaries |
-| `read_feed` | Parse RSS/Atom feeds from a URL |
-| `sitemap_discover` | Discover pages via `sitemap.xml` / `robots.txt` |
 
 ### Memory (3 tools)
 
@@ -420,7 +402,6 @@ CoderAI registers **96 tools** that the LLM can call (94 auto-discovered plus `m
 
 | Tool | Description |
 |---|---|
-| `project_context` | Auto-detect project type, deps, and structure |
 | `manage_context` | Pin/unpin files to the LLM context window |
 
 ### Planning & Tasks (2 tools)
@@ -435,19 +416,7 @@ CoderAI registers **96 tools** that the LLM can call (94 auto-discovered plus `m
 | Tool | Description |
 |---|---|
 | `delegate_task` | Spawn an isolated sub-agent for complex tasks |
-| `notepad` | Shared notepad for inter-agent communication |
 
-### Background Jobs (5 tools)
-
-Run long tools detached from the turn so the agent keeps working while they run. Only tools marked *backgroundable* (`run_tests`, `package_manager`, `lint`, `download_file`) may be targets; `start_job` always confirms (one approval covers the whole unattended job) and jobs are capped by `max_background_jobs`.
-
-| Tool | Description |
-|---|---|
-| `start_job` | Submit a backgroundable tool as a detached job; returns a `job_id` immediately |
-| `job_status` | Check one job (or list all): queued/running/done/failed/timeout/cancelled |
-| `job_result` | Collect a finished job's full result payload |
-| `wait_job` | Block up to a bounded timeout until a job finishes |
-| `cancel_job` | Cancel a queued or running job |
 
 ### Code Quality (3 tools)
 
@@ -532,7 +501,6 @@ Browser tools provide full control over a headless Chromium browser for form fil
 |---|---|
 | `mcp_connect` | Connect to an external MCP server |
 | `mcp_disconnect` | Disconnect from an MCP server |
-| `mcp_call_tool` | Call a tool on a connected MCP server |
 | `mcp_list` | List connected servers and their tools, resources, and prompts |
 | `mcp_list_resources` | List resources exposed by a connected MCP server |
 | `mcp_read_resource` | Read a resource (by URI) from a connected MCP server |
@@ -552,7 +520,7 @@ Browser tools provide full control over a headless Chromium browser for form fil
 
 ### Agent Personas
 
-CoderAI supports **17 specialist agent personas** defined as Markdown files with YAML frontmatter in `.coderAI/agents/`. Each persona has:
+CoderAI ships **6 specialist agent personas** as Markdown files with YAML frontmatter in `.coderAI/agents/`. Each persona has:
 
 - **`name`** — Identifier used for `/agent` or delegated persona selection
 - **`description`** — What the agent specializes in
@@ -566,19 +534,8 @@ CoderAI supports **17 specialist agent personas** defined as Markdown files with
 | `code-reviewer` | Code quality, correctness, and conventions |
 | `architect` | Architecture analysis and design |
 | `security-reviewer` | Security vulnerability analysis |
-| `chief-of-staff` | Coordination and orchestration |
 | `tdd-guide` | Test-driven development guidance |
-| `python-reviewer` | Python-specific code review |
-| `go-reviewer` | Go-specific code review |
-| `database-reviewer` | Database and SQL review |
-| `doc-updater` | Documentation maintenance |
-| `e2e-runner` | End-to-end test execution |
 | `build-error-resolver` | Build error diagnosis and fixing |
-| `go-build-resolver` | Go build error specialist |
-| `refactor-cleaner` | Refactoring specialist |
-| `harness-optimizer` | Test harness optimization |
-| `loop-operator` | Iterative loop operations |
-| `test-planner` | Test strategy planning |
 
 ### Sub-Agent Delegation
 
@@ -729,7 +686,6 @@ Configuration is stored in `~/.coderAI/config.json` and managed via `coderAI con
 | `subprocess_timeout_seconds` | `60.0` | Default timeout for one-shot tool subprocesses (format/lint/grep/git) |
 | `tool_retry_max_attempts` | `2` | Transient-failure retries for opt-in tools (web fetches); `0` disables |
 | `tool_retry_base_delay` | `1.0` | Base delay (seconds) for tool-retry exponential backoff |
-| `max_background_jobs` | `3` | Concurrent `start_job` background jobs (global only — not project-overridable) |
 | `max_background_processes` | `10` | Tracked `run_background` processes (global only — not project-overridable) |
 
 ---

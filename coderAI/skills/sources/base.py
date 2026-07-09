@@ -3,32 +3,21 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 from coderAI.skills.skill_manager import Skill
 
 
 class SkillSource(ABC):
-    """A backend that can discover and search for skills.
+    """A backend that can discover skills.
 
-    Concrete sources include:
-
-    - ``LocalSkillSource`` — project-local ``.coderAI/skills/`` files
-    - ``HasnaSkillSource`` — hosted ``@hasna/skills`` registry
+    The built-in source is ``LocalSkillSource`` (project-local
+    ``.coderAI/skills/<name>/SKILLS.md``).
     """
 
     @abstractmethod
     async def discover(self) -> List[Skill]:
         """Return every skill available from this source."""
-        ...
-
-    @abstractmethod
-    async def search(self, query: str, top_n: int = 5) -> List[Tuple[Skill, float]]:
-        """Search for skills relevant to *query*.
-
-        Returns a list of ``(Skill, confidence)`` tuples sorted by
-        descending confidence.
-        """
         ...
 
     @abstractmethod
@@ -39,5 +28,5 @@ class SkillSource(ABC):
     @property
     @abstractmethod
     def source_name(self) -> str:
-        """Human-readable label for this source (``"local"``, ``"hasna"``)."""
+        """Human-readable label for this source (e.g. ``"local"``)."""
         ...

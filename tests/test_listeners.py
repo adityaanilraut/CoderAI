@@ -119,33 +119,6 @@ def test_ready_recovers_incomplete_turn() -> None:
     assert reducer._current_assistant_id is None
 
 
-def test_plan_card_appends_structured_timeline_item() -> None:
-    reducer = EventReducer()
-    reducer.handle(
-        "plan_card",
-        {
-            "plan": {
-                "title": "Refactor auth",
-                "completed": 1,
-                "total": 3,
-                "currentIdx": 1,
-                "steps": [
-                    {"index": 1, "description": "Audit", "status": "done"},
-                    {"index": 2, "description": "Extract", "status": "pending"},
-                ],
-            }
-        },
-    )
-
-    item = reducer.timeline[-1]
-    assert item["kind"] == "plan_card"
-    assert item["title"] == "Refactor auth"
-    assert item["completed"] == 1
-    assert item["total"] == 3
-    assert item["currentIdx"] == 1
-    assert len(item["steps"]) == 2
-
-
 def test_skill_card_appends_structured_timeline_item() -> None:
     reducer = EventReducer()
     reducer.handle(

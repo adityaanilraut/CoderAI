@@ -17,7 +17,7 @@ from __future__ import annotations
 import importlib.resources
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 from .tools.base import ToolRegistry
 
@@ -62,7 +62,6 @@ def build_environment_section(
     auto_approve: bool = False,
     persona_name: Optional[str] = None,
     persona_description: Optional[str] = None,
-    active_plan: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Build an environment-info block injected at the top of the system prompt.
 
@@ -74,10 +73,6 @@ def build_environment_section(
 
     - ``auto_approve``: emits ``Mode: YOLO (auto-approve)`` vs ``confirm-on-mutate``.
     - ``persona_name`` / ``persona_description``: emits ``Persona: <name> — <desc>``.
-    - ``active_plan``: a small dict (e.g. ``{"title", "completed", "total",
-      "current_desc"}``) used to render ``Active plan: <title> (c/t steps,
-      current: <desc>)``. The caller is responsible for keeping this short —
-      we never dump the full step list here.
     """
     import datetime
 
@@ -97,12 +92,6 @@ def build_environment_section(
             lines.append(f"  Persona: {persona_name} — {persona_description}")
         else:
             lines.append(f"  Persona: {persona_name}")
-    if active_plan:
-        title = active_plan.get("title") or "(untitled)"
-        completed = active_plan.get("completed", 0)
-        total = active_plan.get("total", 0)
-        current_desc = active_plan.get("current_desc") or "—"
-        lines.append(f"  Active plan: {title} ({completed}/{total} steps, current: {current_desc})")
     lines.append("</env>")
     return "\n".join(lines)
 
@@ -126,7 +115,6 @@ _TOOL_SECTIONS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
             "create_directory",
             "file_stat",
             "file_chmod",
-            "file_chown",
             "file_readlink",
         ),
     ),
@@ -143,23 +131,9 @@ _TOOL_SECTIONS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
             "git_commit",
             "git_log",
             "git_branch",
-            "git_checkout",
-            "git_stash",
-            "git_push",
-            "git_pull",
-            "git_fetch",
-            "git_merge",
-            "git_rebase",
-            "git_revert",
-            "git_reset",
-            "git_show",
-            "git_remote",
-            "git_blame",
-            "git_cherry_pick",
-            "git_tag",
         ),
     ),
-    ("Search & Analysis", ("text_search", "grep", "symbol_search", "semantic_search")),
+    ("Search & Analysis", ("grep", "symbol_search", "semantic_search")),
     ("Code Quality", ("lint", "format", "run_tests")),
     ("Refactoring", ("refactor",)),
     ("Package Management", ("package_manager",)),
@@ -171,25 +145,19 @@ _TOOL_SECTIONS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
             "read_url",
             "download_file",
             "http_request",
-            "wikipedia_search",
-            "read_feed",
-            "sitemap_discover",
         ),
     ),
     ("Memory (Persistent)", ("save_memory", "recall_memory", "delete_memory")),
-    ("Project Context", ("project_context", "manage_context")),
+    ("Project Context", ("manage_context",)),
     ("Task Management", ("manage_tasks",)),
     ("Multi-Agent Delegation", ("delegate_task",)),
     ("Skills", ("use_skill",)),
     ("Python REPL", ("python_repl",)),
-    ("Planning", ("plan",)),
-    ("Inter-Agent Notepad", ("notepad",)),
     (
         "MCP (Model Context Protocol)",
         (
             "mcp_connect",
             "mcp_disconnect",
-            "mcp_call_tool",
             "mcp_list",
             "mcp_list_resources",
             "mcp_read_resource",
@@ -264,7 +232,9 @@ def format_tools_markdown(registry: ToolRegistry) -> str:
         lines.append(mcp_extra)
 
     lines.append(
-        "*After `mcp_connect`, additional functions appear as `mcp__<server>__<tool>`. Use those exact names.*"
+        "*After `mcp_connect`, additional functions appear as `mcp__<server>__<tool>`. "
+        "Use those exact names. Rare git ops (push/pull/merge/rebase/…) ship on the "
+        "bundled `git_extended` MCP server as `mcp__git_extended__git_*`.*"
     )
     return "\n".join(lines).rstrip() + "\n"
 

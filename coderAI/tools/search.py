@@ -14,122 +14,7 @@ from coderAI.system.proc import run_scrubbed, subprocess_timeout
 from coderAI.tools.base import Tool
 from coderAI.tools.filesystem._guards import _enforce_project_scope
 
-# Directories skipped by the pure-Python grep fallback to avoid scanning
-# build artifacts and VCS metadata.
-_GREP_SKIP_DIRS = frozenset(
-    {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build"}
-)
-
-
-class TextSearchParams(BaseModel):
-    query: str = Field(..., description="Search query")
-    regex: bool = Field(
-        False, description="Treat query as a regex (default: false → literal match)"
-    )
-    base_path: str = Field(".", description="Base path to search from (default: current directory)")
-    file_pattern: str = Field("*", description="File pattern to include (e.g., '*.py', '*.js')")
-    max_results: int = Field(20, description="Maximum number of results (default: 20)")
-
-
-class TextSearchTool(Tool):
-    """Tool for text-based codebase search."""
-
-    name = "text_search"
-    description = (
-        "Search file contents by literal text or regex. Use this when you know part of the "
-        "text you want to find, like an error message, config key, or function call. "
-        "Do not use this for symbol-aware lookups when you need definitions by name; use "
-        "symbol_search instead. Example: query='TODO', file_pattern='*.py'."
-    )
-    category = "search"
-    parameters_model = TextSearchParams
-    is_read_only = True
-
-    async def execute(  # type: ignore[override]
-        self,
-        query: str,
-        regex: bool = False,
-        base_path: str = ".",
-        file_pattern: str = "*",
-        max_results: int = 20,
-    ) -> Dict[str, Any]:
-        """Search codebase."""
-        try:
-            base = Path(base_path).expanduser()
-            scope_err = _enforce_project_scope(base, "search")
-            if scope_err:
-                return scope_err
-            if not base.exists():
-                return {"success": False, "error": f"Base path not found: {base_path}"}
-
-            if regex:
-                try:
-                    pattern = re.compile(query, re.IGNORECASE)
-                except re.error as e:
-                    return {"success": False, "error": f"Invalid regex: {e}"}
-            else:
-                pattern = re.compile(re.escape(query), re.IGNORECASE)
-
-            # Offload the rglob/open scan to a worker thread so a large tree
-            # never blocks the event loop (mirrors GrepTool._python_grep).
-            results, was_truncated = await asyncio.to_thread(
-                self._scan, base, pattern, file_pattern, max_results
-            )
-
-            return {
-                "success": True,
-                "query": query,
-                "results": results,
-                "count": len(results),
-                "was_truncated": was_truncated,
-                "next_offset": len(results) if was_truncated else None,
-            }
-        except Exception as e:
-            return {"success": False, "error": str(e), "error_code": ToolErrorCode.TOOL_ERROR}
-
-    def _scan(
-        self,
-        base: Path,
-        pattern: "re.Pattern[str]",
-        file_pattern: str,
-        max_results: int,
-    ) -> tuple[List[Dict[str, Any]], bool]:
-        """Synchronous rglob/open scan — runs on a worker thread."""
-        results: List[Dict[str, Any]] = []
-        was_truncated = False
-        for file_path in base.rglob(file_pattern):
-            if not file_path.is_file():
-                continue
-
-            # Skip common ignore patterns
-            if any(p in file_path.parts for p in _GREP_SKIP_DIRS):
-                continue
-
-            try:
-                with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                    for line_num, line in enumerate(f, 1):
-                        if pattern.search(line):
-                            results.append(
-                                {
-                                    "file": str(
-                                        file_path.relative_to(base)
-                                        if file_path.is_relative_to(base)
-                                        else file_path
-                                    ),
-                                    "line": line_num,
-                                    "content": line.strip(),
-                                }
-                            )
-                            if len(results) >= max_results:
-                                was_truncated = True
-                                break
-            except Exception:
-                continue
-
-            if len(results) >= max_results:
-                was_truncated = True
-                break
-        return results, was_truncated
+from coderAI.system.constants import SKIP_DIRS as _GREP_SKIP_DIRS
 
 
 class GrepParams(BaseModel):
@@ -146,8 +31,8 @@ class GrepTool(Tool):
     name = "grep"
     description = (
         "Search files with grep-compatible patterns. Use this when you want fast regex or "
-        "line-based matching across a path. Do not use it for semantic symbol lookup; use "
-        "symbol_search for that. Example: pattern='class Foo', path='src'."
+        "line-based matching across a path (literal or regex). Do not use it for semantic "
+        "symbol lookup; use symbol_search for that. Example: pattern='class Foo', path='src'."
     )
     category = "search"
     parameters_model = GrepParams
@@ -336,7 +221,7 @@ class SymbolSearchTool(Tool):
     description = (
         "Find symbol definitions by name in Python and TS/TSX files. Use this when you know "
         "the symbol name and want the defining locations instead of raw text matches. Do not "
-        "use it for arbitrary prose search; use text_search or grep there. Example: symbol='Agent', kind='class'."
+        "use it for arbitrary prose search; use grep there. Example: symbol='Agent', kind='class'."
     )
     category = "search"
     parameters_model = SymbolSearchParams

@@ -1,9 +1,9 @@
-"""Tests for TextSearchTool, GrepTool, and SymbolSearchTool."""
+"""Tests for GrepTool and SymbolSearchTool."""
 
 import asyncio
 import pytest
 
-from coderAI.tools.search import TextSearchTool, GrepTool, SymbolSearchTool
+from coderAI.tools.search import GrepTool, SymbolSearchTool
 
 
 @pytest.fixture
@@ -18,53 +18,6 @@ def search_tree(tmp_path):
     (tmp_path / "node_modules" / "ignored.js").write_text("should be ignored\n")
     return tmp_path
 
-
-class TestTextSearchTool:
-    @pytest.fixture(autouse=True)
-    def setup(self):
-        self.tool = TextSearchTool()
-
-    def test_finds_match(self, search_tree):
-        result = asyncio.run(self.tool.execute(query="hello", base_path=str(search_tree)))
-        assert result["success"]
-        assert result["count"] >= 1
-        files = [r["file"] for r in result["results"]]
-        assert any("a.py" in f or "c.txt" in f for f in files)
-
-    def test_no_match(self, search_tree):
-        result = asyncio.run(self.tool.execute(query="ZZZNOMATCH999", base_path=str(search_tree)))
-        assert result["success"]
-        assert result["count"] == 0
-
-    def test_file_pattern_filter(self, search_tree):
-        result = asyncio.run(
-            self.tool.execute(query="def", base_path=str(search_tree), file_pattern="*.py")
-        )
-        assert result["success"]
-        for r in result["results"]:
-            assert r["file"].endswith(".py")
-
-    def test_node_modules_ignored(self, search_tree):
-        result = asyncio.run(self.tool.execute(query="ignored", base_path=str(search_tree)))
-        assert result["success"]
-        assert result["count"] == 0
-
-    def test_max_results_respected(self, search_tree):
-        result = asyncio.run(
-            self.tool.execute(query="def", base_path=str(search_tree), max_results=1)
-        )
-        assert result["success"]
-        assert result["count"] <= 1
-        assert result["was_truncated"] is True
-
-    def test_invalid_path(self):
-        result = asyncio.run(self.tool.execute(query="anything", base_path="/nonexistent/path/xyz"))
-        assert not result["success"]
-
-    def test_case_insensitive_search(self, search_tree):
-        result = asyncio.run(self.tool.execute(query="HELLO", base_path=str(search_tree)))
-        assert result["success"]
-        assert result["count"] >= 1
 
 
 class TestGrepTool:

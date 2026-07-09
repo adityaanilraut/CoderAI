@@ -5,10 +5,10 @@ and injects relevant skill instructions before task execution.
 
 Usage::
 
-    from coderAI.skills import SkillManager, LocalSkillSource, HasnaSkillSource
+    from coderAI.skills import SkillManager, LocalSkillSource
 
     manager = SkillManager(
-        sources=[LocalSkillSource(project_root), HasnaSkillSource(project_root)],
+        sources=[LocalSkillSource(project_root)],
         threshold=0.7,
         top_n=3,
         provider=agent.provider,
@@ -27,7 +27,6 @@ from coderAI.skills.skill_manager import (
 )
 from coderAI.skills.sources.base import SkillSource
 from coderAI.skills.sources.local_source import LocalSkillSource
-from coderAI.skills.sources.hasna_source import HasnaSkillSource
 
 __all__ = [
     "Skill",
@@ -35,7 +34,6 @@ __all__ = [
     "SkillManager",
     "SkillSource",
     "LocalSkillSource",
-    "HasnaSkillSource",
     "discover_local_skills",
     "load_skill_by_name",
 ]

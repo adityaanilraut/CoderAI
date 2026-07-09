@@ -257,7 +257,6 @@ class PackageManagerTool(Tool):
     # Installs run the manager's own build steps (arbitrary code) — no blanket
     # allow, and no safe scope abstraction to bind to.
     high_risk_no_blanket = True
-    backgroundable = True
     timeout = None
     category = "other"
 

@@ -31,10 +31,7 @@ __all__ = [
 
 
 def load_skill(skill_name: str, project_root: str = ".") -> Optional[Skill]:
-    """Load a single skill from ``.coderAI/skills/``.
-
-    Prefer the subdirectory format (``skills/<name>/SKILLS.md``) but fall
-    back to the legacy flat file (``skills/<name>.md``).
+    """Load a single skill from ``.coderAI/skills/<name>/SKILLS.md``.
 
     Maintained for backward compatibility; delegates to
     :func:`coderAI.skills.load_skill_by_name`.

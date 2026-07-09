@@ -776,7 +776,9 @@ class TestRepositoryPromptHygiene:
         root = Path(__file__).resolve().parents[1]
         agents_dir = root / ".coderAI" / "agents"
         skills_dir = root / ".coderAI" / "skills"
-        available_skills = {path.stem for path in skills_dir.glob("*.md")}
+        available_skills = {
+            path.name for path in skills_dir.iterdir() if path.is_dir() and (path / "SKILLS.md").is_file()
+        }
 
         pattern = r"skill:\s*`([^`]+)`"
 

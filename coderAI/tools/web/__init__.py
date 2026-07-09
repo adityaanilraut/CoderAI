@@ -1,5 +1,5 @@
 # ruff: noqa: F401
-"""Web and URL tools for search, content fetching, feeds, and sitemaps.
+"""Web and URL tools for search and content fetching.
 
 This package replaces the former ``coderAI/tools/web.py`` monolith. The full
 public *and* private surface of that module is re-exported here so existing
@@ -79,29 +79,13 @@ from coderAI.tools.web._search import (
     _select_search_backend,
     _TavilyBackend,
 )
-from coderAI.tools.web._feeds import (
-    _discover_sitemap_from_robots,
-    _extract_feed_metadata,
-    _fetch_sitemap_urls,
-    _parse_atom_entry,
-    _parse_feed,
-    _parse_rss_item,
-    _parse_sitemap,
-    _url_exists,
-)
 from coderAI.tools.web.tools import (
     DownloadFileParams,
     DownloadFileTool,
     HTTPRequestParams,
     HTTPRequestTool,
-    ReadFeedParams,
-    ReadFeedTool,
     ReadURLParams,
     ReadURLTool,
-    SitemapDiscoverParams,
-    SitemapDiscoverTool,
     WebSearchParams,
     WebSearchTool,
-    WikipediaSearchParams,
-    WikipediaSearchTool,
 )

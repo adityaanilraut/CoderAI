@@ -43,7 +43,6 @@ _INT_KEYS = frozenset(
         "skill_top_n",
         "max_concurrent_mutating_subagents",
         "tool_retry_max_attempts",
-        "max_background_jobs",
         "max_background_processes",
     }
 )
@@ -54,7 +53,6 @@ _BOOL_KEYS = frozenset(
         "allow_outside_project",
         "concurrent_search",
         "auto_detect_skills",
-        "skills_use_hasna",
         "tui_notifications",
         "browser_headless",
     }
@@ -160,14 +158,12 @@ class Config(BaseModel):
     tool_retry_base_delay: float = Field(default=1.0, ge=0.0)
     # Global resource caps — deliberately NOT project-overridable, so a cloned
     # repo's config cannot widen concurrency on the host.
-    max_background_jobs: int = Field(default=3, ge=1, le=16)
     max_background_processes: int = Field(default=10, ge=1, le=64)
 
     # --- Skill auto-detection ---
     auto_detect_skills: bool = Field(default=True)
     skill_confidence_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
     skill_top_n: int = Field(default=3, ge=1, le=10)
-    skills_use_hasna: bool = Field(default=False)
 
     # --- TUI ---
     # Ring the terminal bell + emit an OSC 9 desktop notification when the
@@ -271,12 +267,10 @@ class ConfigManager:
             "CODERAI_SUBPROCESS_TIMEOUT_SECONDS": "subprocess_timeout_seconds",
             "CODERAI_TOOL_RETRY_MAX_ATTEMPTS": "tool_retry_max_attempts",
             "CODERAI_TOOL_RETRY_BASE_DELAY": "tool_retry_base_delay",
-            "CODERAI_MAX_BACKGROUND_JOBS": "max_background_jobs",
             "CODERAI_MAX_BACKGROUND_PROCESSES": "max_background_processes",
             "CODERAI_AUTO_DETECT_SKILLS": "auto_detect_skills",
             "CODERAI_SKILL_CONFIDENCE_THRESHOLD": "skill_confidence_threshold",
             "CODERAI_SKILL_TOP_N": "skill_top_n",
-            "CODERAI_SKILLS_USE_HASNA": "skills_use_hasna",
             "CODERAI_TUI_NOTIFICATIONS": "tui_notifications",
             "CODERAI_BROWSER_HEADLESS": "browser_headless",
             "CODERAI_BROWSER_TIMEOUT": "browser_timeout",
@@ -447,14 +441,13 @@ class ConfigManager:
             "subprocess_timeout_seconds",
             "tool_retry_max_attempts",
             "tool_retry_base_delay",
-            # max_background_jobs / max_background_processes intentionally
+            # max_background_processes intentionally
             # excluded: global host resource caps stay global-config only.
             "search_backend",
             "auto_detect_skills",
             "skill_confidence_threshold",
             "skill_top_n",
-            "skills_use_hasna",
-        }
+            }
 
         try:
             with open(project_config_path, "r") as f:

@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from coderAI.core.tool_error_codes import ToolErrorCode
 from coderAI.tools.base import Tool
-from coderAI.tools.undo import backup_store
+from coderAI.tools.undo import get_backup_store
 
 from coderAI.tools.filesystem._guards import (
     _enforce_project_scope,
@@ -243,9 +243,9 @@ class MoveFileTool(Tool):
 
             # Backup source (it will be removed) and destination (if overwritten)
             if src.is_file():
-                await asyncio.to_thread(backup_store.backup_file, str(src), "delete")
+                await asyncio.to_thread(get_backup_store().backup_file, str(src), "delete")
             if dst.exists() and dst.is_file():
-                await asyncio.to_thread(backup_store.backup_file, str(dst), "modify")
+                await asyncio.to_thread(get_backup_store().backup_file, str(dst), "modify")
 
             def _move():
                 _recheck_symlinks(src, dst, "move")
@@ -297,7 +297,7 @@ class CopyFileTool(Tool):
 
             # Backup destination if it will be overwritten
             if dst.exists() and dst.is_file():
-                await asyncio.to_thread(backup_store.backup_file, str(dst), "modify")
+                await asyncio.to_thread(get_backup_store().backup_file, str(dst), "modify")
 
             def _copy():
                 _recheck_symlinks(src, dst, "copy")
@@ -369,7 +369,7 @@ class DeleteFileTool(Tool):
 
             # Backup file before deletion for undo support
             if target.is_file():
-                await asyncio.to_thread(backup_store.backup_file, str(target), "delete")
+                await asyncio.to_thread(get_backup_store().backup_file, str(target), "delete")
 
             def _delete():
                 # Re-check symlink right before deletion to guard against

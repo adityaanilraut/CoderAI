@@ -89,7 +89,7 @@ def _build_real_agent(*, is_subagent: bool = False, **config_kwargs):
     from coderAI.core.agent import Agent
     from coderAI.system.config import Config
 
-    cfg_kwargs = dict(skills_use_hasna=False, auto_detect_skills=False)
+    cfg_kwargs = dict(auto_detect_skills=False)
     cfg_kwargs.update(config_kwargs)
     cfg = Config(**cfg_kwargs)
     with patch("coderAI.core.agent.config_manager") as cm:

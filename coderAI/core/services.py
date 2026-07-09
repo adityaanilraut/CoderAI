@@ -3,7 +3,7 @@
 The container is carried in a ``ContextVar`` mirroring
 ``core/execution_context.py``. ``get_services()`` falls back to a
 lazily-built process-wide instance, which preserves the intentional
-cross-agent sharing of these services (notepad, tracker, undo, MCP) by
+cross-agent sharing of these services (tracker, undo, MCP) by
 construction — sub-agents see the parent's container automatically because
 asyncio copies contextvars into new tasks. Tests get isolation by entering
 ``services_scope()`` instead of monkeypatching module globals.
@@ -23,13 +23,11 @@ T = TypeVar("T")
 
 if TYPE_CHECKING:
     from coderAI.core.agent_tracker import AgentTracker
-    from coderAI.core.jobs import JobManager
     from coderAI.system.config import Config
     from coderAI.system.history import HistoryManager
     from coderAI.system.locks import ResourceManager
     from coderAI.tools.mcp import MCPClient
     from coderAI.tools.memory import MemoryStore
-    from coderAI.tools.notepad import SharedNotepad
     from coderAI.tools.undo import FileBackupStore
     from coderAI.tools.web._http import HttpClient
 
@@ -55,11 +53,9 @@ class ToolServices:
         http: Optional["HttpClient"] = None,
         memory_store: Optional["MemoryStore"] = None,
         backup_store: Optional["FileBackupStore"] = None,
-        notepad: Optional["SharedNotepad"] = None,
         lock_manager: Optional["ResourceManager"] = None,
         agent_tracker: Optional["AgentTracker"] = None,
         mcp_client: Optional["MCPClient"] = None,
-        jobs: Optional["JobManager"] = None,
     ) -> None:
         self._parent = parent
         self._config = config
@@ -68,15 +64,12 @@ class ToolServices:
         self._http = http
         self._memory_store = memory_store
         self._backup_store = backup_store
-        self._notepad = notepad
         self._lock_manager = lock_manager
         self._agent_tracker = agent_tracker
         self._mcp_client = mcp_client
-        self._jobs = jobs
         # Guards lazy builds; tool batches may resolve services from worker
         # threads (e.g. asyncio.to_thread bodies).
         self._build_lock = threading.Lock()
-
     def _resolve(self, field: str, build: Callable[[], T]) -> T:
         attr = f"_{field}"
         val = getattr(self, attr)
@@ -153,15 +146,6 @@ class ToolServices:
         return self._resolve("backup_store", _build)
 
     @property
-    def notepad(self) -> "SharedNotepad":
-        def _build() -> "SharedNotepad":
-            from coderAI.tools.notepad import SharedNotepad
-
-            return SharedNotepad()
-
-        return self._resolve("notepad", _build)
-
-    @property
     def lock_manager(self) -> "ResourceManager":
         def _build() -> "ResourceManager":
             from coderAI.system.locks import ResourceManager
@@ -178,29 +162,6 @@ class ToolServices:
             return AgentTracker()
 
         return self._resolve("agent_tracker", _build)
-
-    @property
-    def jobs(self) -> "JobManager":
-        """Background-job manager (start_job / job_status / … tools)."""
-
-        def _build() -> "JobManager":
-            from coderAI.core.jobs import JobManager
-
-            return JobManager()
-
-        return self._resolve("jobs", _build)
-
-    def jobs_if_built(self) -> Optional["JobManager"]:
-        """The JobManager if one exists anywhere on the chain — never builds.
-
-        Teardown paths use this so closing an agent that never started a job
-        doesn't lazily construct a manager just to shut it down.
-        """
-        if self._jobs is not None:
-            return self._jobs
-        if self._parent is not None:
-            return self._parent.jobs_if_built()
-        return None
 
     @property
     def mcp_client(self) -> "MCPClient":

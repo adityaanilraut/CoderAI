@@ -9,15 +9,13 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from rich.console import Group, RenderableType
+from rich.console import RenderableType
 from rich.markup import escape
-from rich.table import Table
 from rich.tree import Tree
 
 from coderAI.tui.platform import composer_footer_hints, header_palette_hint
 from coderAI.tui.state import SessionState
 from coderAI.tui.theme import Glyphs, Styles, Tokens
-from coderAI.tui.timeline_render import plan_step_marker
 
 _RICH_TAG_RE = re.compile(r"\[/?[a-zA-Z][a-zA-Z0-9 _#\-/]*\]")
 
@@ -160,40 +158,11 @@ def render_agent_tree(s: SessionState) -> RenderableType:
 
 
 def render_plan(s: SessionState) -> RenderableType:
-    """Return a rich Table for the current plan pane."""
-    title = f"[{Styles.SECTION}]CURRENT PLAN[/]"
-    if not s.current_plan:
-        return f"{title}\n\n[{Tokens.TEXT_MUTED}](no active plan)[/]"
-
-    plan = s.current_plan
-    p_title = str(plan.get("title") or "")
-    completed = int(plan.get("completed") or 0)
-    total = int(plan.get("total") or 0)
-    current = int(plan.get("currentIdx") or 0)
-    steps = plan.get("steps") or []
-
-    head = f"[{Tokens.TEXT}]{escape(p_title)}[/]"
-    if total:
-        head += f" [{Tokens.TEXT_MUTED}]· {completed}/{total}[/]"
-
-    table = Table(show_header=False, show_edge=False, box=None, padding=(0, 1, 0, 0))
-    table.add_column("Icon", justify="right")
-    table.add_column("Index", style=Tokens.TEXT_MUTED)
-    table.add_column("Description")
-
-    for s_obj in steps:
-        idx = int(s_obj.get("index", 0))
-        status = str(s_obj.get("status", "pending"))
-        desc = escape(str(s_obj.get("description", "")))
-        g, c = plan_step_marker(status, idx, current)
-
-        table.add_row(
-            f"[{c}]{g}[/]",
-            f"{idx}.",
-            f"[{Tokens.TEXT}]{desc}[/]",
-        )
-
-    return Group(f"{title}\n{head}\n", table)
+    """Plan pane retired — tasks are the single checklist surface."""
+    return (
+        f"[{Styles.SECTION}]CURRENT PLAN[/]\n\n"
+        f"[{Tokens.TEXT_MUTED}](use /tasks — planning lives in manage_tasks)[/]"
+    )
 
 
 def _task_row(icon: str, color: str, task_id: int, title: str, priority: str) -> str:

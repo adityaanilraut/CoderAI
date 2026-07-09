@@ -28,7 +28,6 @@ consumers because unknown phases are ignored.
 | `tool`          | `{id, phase: "queued" \| "awaiting_approval" \| "running" \| "ok" \| "err" \| "cancelled", payload}` | Lifecycle of a single tool call. `payload` shape depends on phase (see below). `queued` is reserved for future use — Python currently emits `running` first. |
 | `file_diff`     | `{path, diff}`                                                                                | Unified diff string                                                                  |
 | `status`        | `{ctxUsed, ctxLimit, workspaceTrusted, costUsd, budgetUsd, promptTokens, completionTokens, totalTokens, iteration, maxIterations, elapsedSeconds}` | Emitted after every turn. `iteration` is the current agent-loop pass (1-based after the first user message). `maxIterations` mirrors `config.max_iterations` (default 50). `elapsedSeconds` is wall time since session bootstrap. `workspaceTrusted` is `false` only when the project root carries untrusted `.coderAI` automation (Phase 2); `true` otherwise. |
-| `plan_card`     | `{plan: {title, completed, total, currentIdx, steps: [{index, description, status}]}}`        | Structured plan snapshot for the timeline card (from `/plan` or the plan tool)       |
 | `skill_card`    | `{id?, name, description, steps: [{index, label}]}`                                           | Parsed skill workflow card emitted after a successful `use_skill` call               |
 | `tasks_card`    | `{tasks: {summary, inProgress, pending, completed, total}}`                                   | Task-list snapshot. `inProgress`/`pending`/`completed` are arrays of `{id, title, priority, status}` sorted by priority; `completed` holds only the last 5. `summary` is a human-readable count string. Updates the session task panel (chrome), not a timeline row. |
 | `agent`         | `{phase: "update" \| "started" \| "finished", info: AgentInfo, parentId}`                     | Per-agent snapshot; `started`/`finished` are lifecycle edges, `update` is throttled live sync |
@@ -92,7 +91,6 @@ rows the Textual UI renders:
 | ------------ | ----------------- | -------------------------------------------------- |
 | `turn`       | `assistant`       | streaming text/reasoning coalesced ~120 ms         |
 | `tool`       | `tool` / `approval` | `awaiting_approval` becomes an `approval` row    |
-| `plan_card`  | `plan_card`       | title, step list, progress counters                |
 | `skill_card` | `skill_card`      | skill name, description, numbered steps            |
 | `file_diff`  | `diff`            | unified diff block                                 |
 | `info`/`warning`/`success` | `toast` | level mirrors the wire event name          |

@@ -7,30 +7,7 @@ import os
 from pathlib import Path
 from typing import List
 
-
-SKIP_DIRS = frozenset(
-    {
-        ".git",
-        "node_modules",
-        "__pycache__",
-        ".venv",
-        "venv",
-        "dist",
-        "build",
-        ".next",
-        ".nuxt",
-        "target",
-        ".tox",
-        ".eggs",
-        ".mypy_cache",
-        ".pytest_cache",
-        ".ruff_cache",
-        "vendor",
-        "bower_components",
-        ".coderAI",
-        ".claude",
-    }
-)
+from coderAI.system.constants import SKIP_DIRS
 
 SKIP_EXTENSIONS = frozenset(
     {

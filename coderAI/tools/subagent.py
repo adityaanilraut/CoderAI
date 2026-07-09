@@ -517,7 +517,7 @@ class DelegateTaskTool(Tool):
                 else:
                     # Sub-agents share project state with the parent, so their
                     # session bootstrap must not clear the parent's active plan.
-                    sub_agent.create_session(clear_plan=False)
+                    sub_agent.create_session()
                     if sub_agent.session is not None:
                         sub_agent.session.metadata.update(
                             {

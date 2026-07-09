@@ -253,21 +253,20 @@ def _cmd_show(ctx: SlashContext, arg: str, head: str) -> bool:
     # When invoked via alias (e.g. /version, /models), use the alias as the topic.
     topic = arg.lower() if head == "show" and arg else head.lower()
     if not topic:
-        ctx.toast("warning", "Usage: /show <version|models|cost|info|config|system|tasks|plan>")
+        ctx.toast("warning", "Usage: /show <version|models|cost|info|config|system|tasks>")
         return True
     topic = "models" if topic in ("providers", "models") else topic
-    # `/show tasks` prints the text listing via the server's reference handler
-    # (single source of truth); the dedicated `/tasks` command still refreshes
-    # the panel. `plan` has no reference topic, so it keeps its panel refresh.
+    # `/show plan` aliases to the tasks panel. `/show tasks` keeps the text
+    # listing via the reference handler; dedicated `/tasks` refreshes the panel.
     if topic == "plan":
-        ctx.controller.enqueue_command("get_plan")
+        ctx.controller.enqueue_command("get_tasks")
     else:
         ctx.controller.enqueue_command("reference", topic=topic)
     return True
 
 
 def _cmd_plan(ctx: SlashContext, arg: str, head: str) -> bool:
-    ctx.controller.enqueue_command("get_plan")
+    ctx.controller.enqueue_command("get_tasks")
     return True
 
 
@@ -356,6 +355,15 @@ def _cmd_kill(ctx: SlashContext, arg: str, head: str) -> bool:
 def _cmd_init(ctx: SlashContext, arg: str, head: str) -> bool:
     ctx.toast("info", "Scaffolding .coderai/ project directory…")
     ctx.controller.enqueue_command("init_project")
+    return True
+
+
+def _cmd_trust(ctx: SlashContext, arg: str, head: str) -> bool:
+    action = (arg or "grant").strip().lower() or "grant"
+    if action not in ("grant", "revoke", "status"):
+        ctx.toast("warning", "Usage: /trust [grant|revoke|status]")
+        return True
+    ctx.controller.enqueue_command("trust", action=action)
     return True
 
 
@@ -458,7 +466,7 @@ _register(
     "info",
     desc="Reference info · type /show then a topic",
 )
-_register(_cmd_plan, "plan", desc="Show current execution plan (right panel)")
+_register(_cmd_plan, "plan", desc="Show task checklist (same as /tasks)")
 _register(_cmd_exit, "exit", "quit", desc="Shut down the agent")
 _register(_cmd_export, "export", "save", desc="Export session to markdown")
 _register(_cmd_search, "search", "find", desc="Search conversation transcript")
@@ -474,6 +482,11 @@ _register(
 )
 _register(_cmd_kill, "kill", "cancel-agent", desc="Cancel a sub-agent · /kill <id-or-name>")
 _register(_cmd_init, "init", desc="Scaffold .coderai/ directory for the current project")
+_register(
+    _cmd_trust,
+    "trust",
+    desc="Trust this workspace · /trust [grant|revoke|status]",
+)
 
 
 # ── dispatcher ────────────────────────────────────────────────────────

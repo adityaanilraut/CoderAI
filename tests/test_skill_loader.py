@@ -129,36 +129,6 @@ class TestDiscoverLocalSkills:
         names = {s.name for s in skills}
         assert names == {"skill-a", "skill-b"}
 
-    def test_legacy_flat_format(self, tmp_path):
-        dot_dir = tmp_path / ".coderAI" / "skills"
-        dot_dir.mkdir(parents=True)
-
-        (dot_dir / "old-skill.md").write_text(
-            "---\nname: old-skill\ndescription: Legacy skill\n---\n\n## Old\n"
-        )
-
-        skills = discover_local_skills(str(tmp_path))
-        assert len(skills) == 1
-        assert skills[0].name == "old-skill"
-
-    def test_subdir_takes_precedence_over_legacy(self, tmp_path):
-        dot_dir = tmp_path / ".coderAI" / "skills"
-        dot_dir.mkdir(parents=True)
-
-        # Subdirectory version
-        (dot_dir / "dup").mkdir()
-        (dot_dir / "dup" / SKILLS_FILE_NAME).write_text(
-            "---\nname: dup\ndescription: New format\n---\n\n# New\n"
-        )
-        # Legacy flat version
-        (dot_dir / "dup.md").write_text(
-            "---\nname: dup\ndescription: Legacy format\n---\n\n# Legacy\n"
-        )
-
-        skills = discover_local_skills(str(tmp_path))
-        assert len(skills) == 1
-        assert skills[0].description == "New format"
-
     def test_empty_directory(self, tmp_path):
         dot_dir = tmp_path / ".coderAI" / "skills"
         dot_dir.mkdir(parents=True)
@@ -179,17 +149,6 @@ class TestLoadSkillByName:
         assert skill is not None
         assert skill.name == "csv-analyzer"
         assert "CSV" in skill.instructions
-
-    def test_load_by_name_legacy(self, tmp_path):
-        dot_dir = tmp_path / ".coderAI" / "skills"
-        dot_dir.mkdir(parents=True)
-        (dot_dir / "legacy.md").write_text(
-            "---\nname: legacy\ndescription: Old\n---\n\n# Legacy Skill\n"
-        )
-
-        skill = load_skill_by_name("legacy", str(tmp_path))
-        assert skill is not None
-        assert skill.name == "legacy"
 
     def test_path_traversal_rejected(self, tmp_path):
         dot_dir = tmp_path / ".coderAI" / "skills"

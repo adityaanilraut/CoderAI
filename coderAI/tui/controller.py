@@ -42,7 +42,6 @@ from coderAI.tui.commands import (  # noqa: F401
     _cmd_compact_context,
     _cmd_disallow_tool,
     _cmd_exit,
-    _cmd_get_plan,
     _cmd_get_state,
     _cmd_get_tasks,
     _cmd_init_project,
@@ -68,10 +67,8 @@ from coderAI.tui.commands import (  # noqa: F401
 from coderAI.tui.serializers import (  # noqa: F401
     _agent_info_dict,
     _compute_agent_depth,
-    _format_plan_message,
     _infer_error_hint,
     _load_tasks_from_disk,
-    _serialize_plan_for_ui,
     _serialize_tasks_for_ui,
     _task_ui_item,
 )
@@ -367,7 +364,6 @@ class UIBridge:
         _bind("agent_lifecycle", self._on_agent_lifecycle)
         _bind("agent_tracker_sync", self._on_agent_tracker_sync)
         _bind("tool_progress", self._on_tool_progress)
-        _bind("plan_update", self._on_plan_update)
         _bind("tasks_update", self._on_tasks_update)
 
     def _unwire_event_listeners(self) -> None:
@@ -490,12 +486,6 @@ class UIBridge:
             payload["elapsed"] = elapsed
         self.emit("progress", **payload)
 
-    def _on_plan_update(self, plan: Optional[Dict[str, Any]] = None) -> None:
-        if plan is None:
-            self.emit("plan_card", plan=None)
-        else:
-            self.emit("plan_card", plan=_serialize_plan_for_ui(plan))
-
     def _on_tasks_update(self, tasks: Optional[List[Dict[str, Any]]] = None) -> None:
         self.emit("tasks_card", tasks=_serialize_tasks_for_ui(tasks or []))
 
@@ -592,12 +582,6 @@ class UIBridge:
                 info=_agent_info_dict(info),
                 parentId=info.parent_id,
             )
-        from coderAI.system.project_layout import read_current_plan
-
-        pr = getattr(self.agent.config, "project_root", None) or "."
-        plan = read_current_plan(str(pr))
-        if plan and isinstance(plan, dict):
-            self.emit("plan_card", plan=_serialize_plan_for_ui(plan))
         self._emit_tasks_from_disk()
 
     async def _shutdown(self) -> None:

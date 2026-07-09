@@ -30,7 +30,14 @@ def discover_tools(registry: ToolRegistry, package_name: str = "coderAI.tools") 
     registered_classes: Set[Type[Tool]] = set()
 
     for loader, module_name, is_pkg in pkgutil.walk_packages(pkg.__path__, pkg.__name__ + "."):
-        if is_pkg or module_name.endswith(".base") or module_name.endswith(".discovery"):
+        # git_extended tools are served only via the bundled MCP server — skip
+        # native auto-registration so they don't inflate the default tool list.
+        if (
+            is_pkg
+            or module_name.endswith(".base")
+            or module_name.endswith(".discovery")
+            or module_name.endswith(".git_extended")
+        ):
             continue
 
         try:

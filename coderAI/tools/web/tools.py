@@ -1,4 +1,4 @@
-"""The web Tool classes: search, read_url, download, HTTP, Wikipedia, feeds, sitemaps."""
+"""The web Tool classes: search, read_url, download, and HTTP."""
 
 import asyncio
 import json
@@ -6,7 +6,7 @@ import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import quote, quote_plus, urlparse
+from urllib.parse import quote_plus, urlparse
 
 from pydantic import BaseModel, Field
 
@@ -22,20 +22,12 @@ from coderAI.tools.base import Tool
 from coderAI.tools.filesystem import _enforce_project_scope, _is_path_protected
 from coderAI.tools.web._cache import _cache_key, _DEFAULT_SEARCH_TTL
 from coderAI.tools.web._constants import _HEADERS_CHROME, _VALID_FORMATS
-from coderAI.tools.web._feeds import (
-    _discover_sitemap_from_robots,
-    _extract_feed_metadata,
-    _fetch_sitemap_urls,
-    _parse_feed,
-    _url_exists,
-)
 from coderAI.tools.web._html import (
     _extract_main_content,
     _extract_metadata,
     _extract_pdf_text,
     _html_to_text,
     _looks_like_html,
-    _strip_tags,
 )
 from coderAI.tools.web._search import _filter_by_domain, _SearchBackend
 
@@ -495,7 +487,6 @@ class DownloadFileTool(Tool):
     category = "web"
     parameters_model = DownloadFileParams
     timeout = 300.0
-    backgroundable = True
 
     async def execute(self, url: str, destination_path: str) -> Dict[str, Any]:  # type: ignore[override]
         if not url.startswith(("http://", "https://")):
@@ -676,318 +667,4 @@ class HTTPRequestTool(Tool):
             "response_length": len(response_body),
             "truncated": truncated,
             "oversize": resp.get("oversize", False),
-        }
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# WikipediaSearchTool
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-class WikipediaSearchParams(BaseModel):
-    query: str = Field(..., description="Search query for Wikipedia")
-    num_results: int = Field(5, description="Number of results (default 5, max 10)")
-    language: str = Field("en", description="Wikipedia language code: en, de, fr, es, ja, zh, etc.")
-    fetch_content: bool = Field(
-        False, description="Fetch and return the full page text of the top result."
-    )
-    max_content_length: int = Field(8000, description="Max characters when fetch_content=true")
-
-
-class WikipediaSearchTool(Tool):
-    """Search Wikipedia directly — free, no API key required."""
-
-    name = "wikipedia_search"
-    description = (
-        "Search Wikipedia for articles. Free, no API key needed. "
-        "Returns titles, URLs, and text snippets from Wikipedia search. "
-        "Set fetch_content=true to also read the full article text of the top result. "
-        "Use language= to search other language editions (e.g., 'de' for German)."
-    )
-    is_read_only = True
-    is_egress = True
-    # Transient network failures (429/5xx/resets) are worth one more try.
-    retryable = True
-    # Removed from the main agent when web_tools_in_main is False (Phase 4.2).
-    network_gate = True
-    result_provenance = Provenance.UNTRUSTED_EXTERNAL
-    category = "web"
-    parameters_model = WikipediaSearchParams
-
-    async def execute(  # type: ignore[override]
-        self,
-        query: str,
-        num_results: int = 5,
-        language: str = "en",
-        fetch_content: bool = False,
-        max_content_length: int = 8000,
-    ) -> Dict[str, Any]:
-        num_results = max(1, min(num_results, 10))
-        lang = language.strip().lower()[:2] or "en"
-
-        base_url = f"https://{lang}.wikipedia.org/w/api.php"
-        params = {
-            "action": "query",
-            "list": "search",
-            "srsearch": query,
-            "srlimit": str(num_results),
-            "format": "json",
-        }
-        qs = "&".join(f"{k}={quote_plus(str(v))}" for k, v in params.items())
-        api_url = f"{base_url}?{qs}"
-
-        try:
-            resp = await _web._safe_request_cf("GET", api_url, timeout_s=15.0)
-        except Exception as e:
-            return {
-                "success": False,
-                "error": f"Wikipedia request failed: {e}",
-                "error_code": ToolErrorCode.TOOL_ERROR,
-            }
-
-        if resp is None:
-            return {"success": False, "error": "Wikipedia request blocked by SSRF guard"}
-        if resp["status"] != 200:
-            return {"success": False, "error": f"Wikipedia HTTP {resp['status']}"}
-
-        try:
-            data = json.loads(resp["text"])
-        except json.JSONDecodeError:
-            return {"success": False, "error": "Wikipedia returned non-JSON response"}
-
-        results = []
-        for r in data.get("query", {}).get("search", []):
-            title = r.get("title", "")
-            results.append(
-                {
-                    "title": title,
-                    "url": f"https://{lang}.wikipedia.org/wiki/{quote(title.replace(' ', '_'))}",
-                    "snippet": _strip_tags(r.get("snippet", "")),
-                    "page_id": r.get("pageid"),
-                    "word_count": r.get("wordcount"),
-                }
-            )
-
-        if fetch_content and results:
-            page_title = results[0]["title"]
-            content_params = {
-                "action": "query",
-                "prop": "extracts",
-                "exintro": "1",
-                "explaintext": "1",
-                "titles": page_title,
-                "format": "json",
-            }
-            cqs = "&".join(f"{k}={quote_plus(str(v))}" for k, v in content_params.items())
-            content_url = f"{base_url}?{cqs}"
-
-            try:
-                c_resp = await _web._safe_request_cf("GET", content_url, timeout_s=15.0)
-                if c_resp and c_resp["status"] == 200:
-                    c_data = json.loads(c_resp["text"])
-                    pages = c_data.get("query", {}).get("pages", {})
-                    for pid, page in pages.items():
-                        extract = page.get("extract", "")
-                        if len(extract) > max_content_length:
-                            extract = extract[:max_content_length] + "\n\n[...truncated...]"
-                        results[0]["page_content"] = extract
-                        results[0]["page_content_length"] = len(extract)
-                        break
-            except Exception as e:
-                # Best-effort enrichment; the search results are still returned.
-                logger.debug(f"Wikipedia content fetch failed: {e}", exc_info=True)
-
-        return {
-            "success": True,
-            "results": results,
-            "query": query,
-            "language": lang,
-            "result_count": len(results),
-        }
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# FeedReaderTool (RSS / Atom)
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-class ReadFeedParams(BaseModel):
-    url: str = Field(..., description="URL of the RSS or Atom feed")
-    max_entries: int = Field(10, description="Maximum feed entries to return (default 10, max 50)")
-    fetch_content: bool = Field(
-        False, description="If true, also fetch linked page content for each entry (up to 5)."
-    )
-    max_content_length: int = Field(
-        4000, description="Max characters per entry content when fetch_content=true"
-    )
-
-
-class ReadFeedTool(Tool):
-    """Read RSS and Atom feeds — no API key needed."""
-
-    name = "read_feed"
-    description = (
-        "Read and parse an RSS or Atom feed. Returns feed metadata and entries "
-        "with title, link, published date, and summary. Set fetch_content=true "
-        "to also read the linked article content for the top entries. "
-        "Useful for monitoring blog posts, changelogs, release notes, and news."
-    )
-    is_read_only = True
-    is_egress = True
-    # Transient network failures (429/5xx/resets) are worth one more try.
-    retryable = True
-    # Removed from the main agent when web_tools_in_main is False (Phase 4.2).
-    network_gate = True
-    result_provenance = Provenance.UNTRUSTED_EXTERNAL
-    category = "web"
-    parameters_model = ReadFeedParams
-
-    async def execute(  # type: ignore[override]
-        self,
-        url: str,
-        max_entries: int = 10,
-        fetch_content: bool = False,
-        max_content_length: int = 4000,
-    ) -> Dict[str, Any]:
-        if not url.startswith(("http://", "https://")):
-            url = "https://" + url
-        max_entries = max(1, min(max_entries, 50))
-
-        try:
-            resp = await _web._safe_request_cf("GET", url, timeout_s=20.0)
-        except asyncio.TimeoutError:
-            return {
-                "success": False,
-                "error": f"Timeout fetching feed: {url}",
-                "error_code": ToolErrorCode.TIMEOUT,
-            }
-        except Exception as e:
-            return {
-                "success": False,
-                "error": f"Failed to fetch feed: {e}",
-                "error_code": ToolErrorCode.TOOL_ERROR,
-            }
-
-        if resp is None:
-            return {"success": False, "error": f"SSRF Protection blocked {url}"}
-        if resp["status"] != 200:
-            return {"success": False, "error": f"HTTP {resp['status']} for {url}"}
-
-        raw = resp["text"]
-        entries = _parse_feed(raw, max_entries)
-
-        if not entries:
-            return {"success": False, "error": "Could not parse feed — may not be valid RSS/Atom"}
-
-        if fetch_content:
-            entries = await self._fetch_entry_content(
-                entries, min(5, len(entries)), max_content_length
-            )
-
-        return {
-            "success": True,
-            "feed_url": url,
-            "feed_title": _extract_feed_metadata(raw).get("title", ""),
-            "entries": entries,
-            "entry_count": len(entries),
-        }
-
-    async def _fetch_entry_content(
-        self, entries: List[Dict[str, Any]], count: int, max_length: int
-    ) -> List[Dict[str, Any]]:
-        async def _fetch_one(entry: Dict[str, Any]) -> Dict[str, Any]:
-            link = entry.get("link", "")
-            if not link:
-                return entry
-            try:
-                text = await _web._fetch_page_text(link, max_length, extract_main=True)
-                if text:
-                    entry["page_content"] = text
-            except Exception as e:
-                # Best-effort enrichment; the entry is still returned without content.
-                logger.debug(f"Feed content fetch failed for {link}: {e}", exc_info=True)
-            return entry
-
-        fetched = await asyncio.gather(*[_fetch_one(e) for e in entries[:count]])
-        return list(fetched) + entries[count:]
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# SitemapDiscoverTool
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-class SitemapDiscoverParams(BaseModel):
-    url: str = Field(
-        ..., description="Base URL of the website. Auto-discovers sitemap.xml from robots.txt."
-    )
-    sitemap_url: Optional[str] = Field(None, description="Direct URL to a sitemap.xml if known.")
-    max_urls: int = Field(50, description="Maximum number of URLs to return (default 50, max 200)")
-    filter_path: Optional[str] = Field(
-        None, description="Only return URLs whose path contains this string"
-    )
-
-
-class SitemapDiscoverTool(Tool):
-    """Discover pages on a website via sitemap.xml and robots.txt."""
-
-    name = "sitemap_discover"
-    description = (
-        "Discover pages on a website by parsing its sitemap.xml (auto-discovered "
-        "from robots.txt if not explicitly provided). Returns a list of URLs. "
-        "Use filter_path to narrow results (e.g., '/docs/' or '/api/'). "
-        "Useful for understanding a site's structure or finding documentation pages."
-    )
-    is_read_only = True
-    is_egress = True
-    # Transient network failures (429/5xx/resets) are worth one more try.
-    retryable = True
-    # Removed from the main agent when web_tools_in_main is False (Phase 4.2).
-    network_gate = True
-    result_provenance = Provenance.UNTRUSTED_EXTERNAL
-    category = "web"
-    parameters_model = SitemapDiscoverParams
-
-    async def execute(  # type: ignore[override]
-        self,
-        url: str,
-        sitemap_url: Optional[str] = None,
-        max_urls: int = 50,
-        filter_path: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        if not url.startswith(("http://", "https://")):
-            url = "https://" + url
-        max_urls = max(1, min(max_urls, 200))
-
-        discovered: List[str] = []
-
-        if not sitemap_url:
-            parsed = urlparse(url)
-            robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
-            sitemap_url = await _discover_sitemap_from_robots(robots_url)
-            if not sitemap_url:
-                for path in ["/sitemap.xml", "/sitemap_index.xml", "/sitemap-index.xml"]:
-                    candidate = f"{parsed.scheme}://{parsed.netloc}{path}"
-                    if await _url_exists(candidate):
-                        sitemap_url = candidate
-                        break
-
-        if sitemap_url:
-            discovered = await _fetch_sitemap_urls(sitemap_url, max_urls)
-        else:
-            return {
-                "success": False,
-                "error": f"Could not discover sitemap for {url}. Provide sitemap_url manually.",
-            }
-
-        if filter_path:
-            discovered = [u for u in discovered if filter_path in u]
-
-        return {
-            "success": True,
-            "site_url": url,
-            "sitemap_url": sitemap_url,
-            "urls": discovered[:max_urls],
-            "url_count": min(len(discovered), max_urls),
-            "total_discovered": len(discovered),
         }

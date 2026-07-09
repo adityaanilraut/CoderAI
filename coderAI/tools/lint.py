@@ -88,7 +88,6 @@ class LintTool(Tool):
     parameters_model = LintParams
     is_read_only = False
     requires_confirmation = True
-    backgroundable = True
     category = "code_quality"
 
     async def execute(  # type: ignore[override]

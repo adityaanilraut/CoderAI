@@ -21,8 +21,8 @@ PERSONA_TOOL_ALIASES: Dict[str, Set[str]] = {
     "read": {"read_file", "list_directory", "glob_search"},
     "write": {"write_file", "search_replace", "apply_diff"},
     "edit": {"search_replace", "apply_diff"},
-    "search": {"grep", "glob_search", "text_search"},
-    "grep": {"grep", "text_search"},
+    "search": {"grep", "glob_search"},
+    "grep": {"grep"},
     "glob": {"glob_search"},
     "bash": {"run_command", "run_background", "python_repl"},
 }
