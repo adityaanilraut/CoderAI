@@ -45,6 +45,7 @@ clean:
 	rm -rf .mypy_cache/
 	rm -rf .ruff_cache/
 	rm -rf .benchmarks/
+	rm -f .coverage
 	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 	find . -type f -name "*.pyc" -delete
 
@@ -72,7 +73,7 @@ lock:
 
 # Audit the locked dependency set against the PyPI advisory database.
 audit:
-	pip-audit -r requirements.lock --desc
+	pip-audit -r requirements.lock --desc --strict
 
 setup:
 	coderAI setup

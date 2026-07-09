@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tests.security.conftest import INTERNAL_IP_TARGETS
+from .conftest import INTERNAL_IP_TARGETS
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Fake aiohttp session — drives HttpClient.safe_request's manual redirect loop

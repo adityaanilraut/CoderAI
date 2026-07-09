@@ -120,8 +120,8 @@ argument injection (`--upload-pack`, `-o`) is neutralised with `--`.
 ### Supply chain (Phase 9)
 
 - Dependencies resolve to a pinned, hashed `requirements.lock` (regenerate with
-  `make lock`). `make audit` and a (non-blocking) CI step run `pip-audit` against
-  it; Dependabot is configured for update PRs.
+  `make lock`). `make audit` and a (non-blocking) CI step run
+  `pip-audit --strict` against it; Dependabot is configured for update PRs.
 - `pre-commit` runs ruff/mypy locally; CI runs format, lint, strict-per-module
   mypy, the coverage-gated test suite, and the blocking security suite.
 
@@ -152,6 +152,16 @@ the code provides:
 - **Broad protected paths trade usability for safety.** `~/.config` is protected
   wholesale, so the agent cannot edit application configs living there; do such
   edits yourself or move the file into the project.
+
+## Supported platforms
+
+| Platform | Status |
+|---|---|
+| Linux | Fully supported (CI blocking) |
+| macOS | Fully supported (CI blocking) |
+| Windows | Best-effort — CI runs experimentally (`continue-on-error`); secret-at-rest hardening is ACL-based rather than POSIX mode bits |
+
+Desktop automation tools (`run_applescript`, Accessibility) are macOS-only.
 
 ## Supported versions
 

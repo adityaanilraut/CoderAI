@@ -267,10 +267,18 @@ If you get `coderAI: command not found`:
 
 ### Import Errors
 
-If you see import errors:
+If you see import errors, reinstall from the package metadata (not
+`requirements.txt` — that file is only a `-e .` shim):
 
 ```bash
-pip install --upgrade -r requirements.txt
+pip install -e ".[dev]" --upgrade
+```
+
+For a fully pinned, hashed install matching CI audits:
+
+```bash
+pip install -r requirements.lock
+# or regenerate: make lock
 ```
 
 ### API Key Issues
@@ -321,7 +329,7 @@ If LM Studio isn't working:
 If you installed from source:
 
 ```bash
-cd coderAI
+cd CoderAI
 git pull
 pip install -e . --upgrade
 ```
@@ -342,31 +350,35 @@ rm -rf ~/.coderAI
 
 ## Environment Variables
 
-CoderAI supports these environment variables:
+See [`.env.example`](../.env.example) for the full list of provider keys and
+`CODERAI_*` flags. Common ones:
 
-- `ANTHROPIC_API_KEY` - Anthropic (Claude) API key
-- `OPENAI_API_KEY` - OpenAI API key
-- `GROQ_API_KEY` - Groq API key
-- `DEEPSEEK_API_KEY` - DeepSeek API key
-- `GEMINI_API_KEY` - Google Gemini API key
-- `CODERAI_DEFAULT_MODEL` - Default model to use
-- `CODERAI_TEMPERATURE` - Temperature for generation (0.0-2.0)
-- `CODERAI_MAX_TOKENS` - Maximum tokens to generate
-- `CODERAI_REASONING_EFFORT` - Reasoning depth (high/medium/low/none)
-- `CODERAI_BUDGET_LIMIT` - Max cost in USD per session (0 = unlimited)
-- `CODERAI_MAX_ITERATIONS` - Max agentic loop iterations per message
-- `CODERAI_LOG_LEVEL` - Python-side log level (default `WARNING`)
-- `LMSTUDIO_ENDPOINT` - LM Studio API endpoint
-- `OLLAMA_ENDPOINT` - Ollama API endpoint
+| Variable | Purpose |
+|---|---|
+| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GROQ_API_KEY` / `DEEPSEEK_API_KEY` / `GEMINI_API_KEY` | Provider credentials |
+| `CODERAI_DEFAULT_MODEL` | Default model / alias |
+| `CODERAI_TEMPERATURE` | Sampling temperature (0.0–2.0) |
+| `CODERAI_MAX_TOKENS` | Max generation tokens |
+| `CODERAI_REASONING_EFFORT` | `high` / `medium` / `low` / `none` |
+| `CODERAI_BUDGET_LIMIT` | Max USD per session (`0` = unlimited) |
+| `CODERAI_MAX_ITERATIONS` | Max agentic loop iterations per message |
+| `CODERAI_LOG_LEVEL` | Python log level (default `WARNING`) |
+| `LMSTUDIO_ENDPOINT` / `OLLAMA_ENDPOINT` | Local inference endpoints |
+| `CODERAI_TRUST_WORKSPACE` | `1` = trust every workspace (escape hatch) |
+| `CODERAI_ALLOW_OUTSIDE_PROJECT` | `1` = allow FS tools outside project root |
+| `CODERAI_ALLOW_LOCAL_URLS` | `1` = allow web tools to hit localhost |
 
 Example:
 
 ```bash
+cp .env.example .env   # then edit; or export in your shell
 export OPENAI_API_KEY="sk-..."
 export CODERAI_DEFAULT_MODEL="gpt-5.4-mini"
-export CODERAI_TEMPERATURE="0.7"
 coderAI chat
 ```
+
+**Platforms:** Linux and macOS are fully supported. Windows is best-effort
+(see [SECURITY.md](../SECURITY.md#supported-platforms)).
 
 ## Next Steps
 

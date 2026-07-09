@@ -12,10 +12,9 @@ concurrency:
 jobs:
   test:
     runs-on: ${{ matrix.os }}
-    # The Windows entry is non-blocking for now (matrix.experimental). It runs
-    # despite a POSIX-oriented codebase (there was a Windows-compat pass — see
-    # tests/test_windows_compat.py) but hasn't been proven green on a real
-    # runner yet. Promote it to blocking (drop experimental) once it passes.
+    # Windows is best-effort / non-blocking (matrix.experimental). Primary
+    # support is POSIX (Linux + macOS). See SECURITY.md "Supported platforms".
+    # Promote to blocking (drop experimental) once the Windows runner is green.
     continue-on-error: ${{ matrix.experimental || false }}
     strategy:
       fail-fast: false
@@ -51,7 +50,7 @@ jobs:
         run: python -m mypy coderAI/
 
       - name: Pytest
-        run: pytest -q --cov=coderAI --cov-fail-under=65
+        run: pytest -q --cov=coderAI --cov-fail-under=70
 
       - name: CLI smoke test
         run: coderAI --version
@@ -81,11 +80,11 @@ jobs:
       - name: Security tests
         run: pytest -m security -q
 
-      # Informational (non-blocking): surface known-vulnerable dependencies.
-      # Remediation is driven by Dependabot; a fresh advisory in a transitive dep
-      # should not block unrelated PRs, so this is advisory until triaged.
+      # Advisory (non-blocking): pip-audit has no severity filter, so a fresh
+      # transitive CVE must not block unrelated PRs. Dependabot opens update
+      # PRs; triage failures here before promoting this step to blocking.
       - name: Dependency audit (pip-audit)
         continue-on-error: true
         run: |
           python -m pip install pip-audit
-          pip-audit -r requirements.lock --desc
+          pip-audit -r requirements.lock --desc --strict

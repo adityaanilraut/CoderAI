@@ -38,10 +38,14 @@ jobs:
         shell: bash
         run: |
           if [[ -n "${{ inputs.version }}" ]]; then
-            echo "tag=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+            TAG="${{ inputs.version }}"
           else
-            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+            TAG="${GITHUB_REF_NAME}"
           fi
+          # Git tags are v0.3.0; PyPI versions are 0.3.0 (no leading v).
+          VERSION="${TAG#v}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Create / update release
         uses: softprops/action-gh-release@v2
@@ -55,7 +59,7 @@ jobs:
           body: |
             Python wheel and sdist. Install with:
             ```bash
-            pip install coderAI==${{ steps.tag.outputs.tag }}
+            pip install coderAI==${{ steps.tag.outputs.version }}
             ```
             Run interactive chat:
             ```bash

@@ -71,10 +71,12 @@ coderAI chat --resume ID   # resume a saved session
 
 Don't want to run the wizard? Set a provider key as an environment variable
 instead — `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GROQ_API_KEY`,
-`DEEPSEEK_API_KEY`, or `GEMINI_API_KEY`. For local inference, run
+`DEEPSEEK_API_KEY`, or `GEMINI_API_KEY`. Copy [`.env.example`](.env.example)
+for the full flag list. For local inference, run
 `coderAI config set default_model lmstudio` (or `ollama`).
 
-See [INSTALL.md](docs/INSTALL.md) for platform-specific notes and offline builds.
+**Platforms:** Linux and macOS are fully supported; Windows is best-effort.
+See [INSTALL.md](docs/INSTALL.md) and [SECURITY.md](SECURITY.md#supported-platforms).
 
 ### Interactive chat commands
 
@@ -144,12 +146,16 @@ catalog.
 ## 📁 Project Structure Tree
 
 ```
-CoderAI-main/
+CoderAI/
 ├── pyproject.toml              # Package metadata, dependencies, entry point
-├── requirements.txt            # Pinned dependencies
+├── requirements.lock           # Pinned, hashed deps (make lock / pip-audit)
+├── requirements.txt            # Compat shim → `pip install -e .`
+├── .env.example                # Provider keys + CODERAI_* flags
+├── CHANGELOG.md                # Release notes
 ├── Makefile                    # Dev shortcuts (test, lint, install)
 ├── LICENSE                     # MIT License
 ├── README.md                   # ← You are here
+├── SECURITY.md                 # Threat model, controls, residual risks
 │
 ├── coderAI/                    # ─── Main Python Package ───
 │   ├── __init__.py             # Package version
@@ -195,7 +201,6 @@ CoderAI-main/
 │   ├── context/                # ─── Context Window Management ───
 │   │   ├── code_chunker.py     #   AST/regex/sliding-window code chunker for embedding
 │   │   ├── code_indexer.py     #   ChromaDB-backed semantic code index
-│   │   ├── context.py          #   Compatibility shim (pinned state lives in controller)
 │   │   ├── context_controller.py # Token estimation, truncation, summarization, pins
 │   │   └── context_selector.py #   Relevance-based snippet selection
 │   │
@@ -262,46 +267,19 @@ CoderAI-main/
 │   ├── CLAUDE.md               # Contributor / LLM-oriented guide
 │   ├── COMMANDS.md             # CLI command reference
 │   ├── EXAMPLES.md             # Usage examples
-│   ├── INSTALL.md              # Installation guide
-│   └── REFACTOR_PLAN.md        # Historical refactoring roadmap
+│   └── INSTALL.md              # Installation guide
 │
 ├── .coderAI/                   # ─── Project Configuration ───
 │   ├── agents/                 #   17 agent personas (YAML frontmatter + markdown)
-│   │   ├── planner.md          #     Planning specialist
-│   │   ├── code-reviewer.md    #     Code review expert
-│   │   ├── architect.md        #     Architecture analyst
-│   │   ├── security-reviewer.md#     Security auditor
-│   │   ├── chief-of-staff.md   #     Coordination / orchestration
-│   │   ├── tdd-guide.md        #     Test-driven development guide
-│   │   ├── python-reviewer.md  #     Python code reviewer
-│   │   ├── go-reviewer.md      #     Go code reviewer
-│   │   ├── database-reviewer.md#     Database/SQL reviewer
-│   │   ├── doc-updater.md      #     Documentation specialist
-│   │   ├── e2e-runner.md       #     End-to-end test runner
-│   │   ├── build-error-resolver.md  # Build error debugger
-│   │   ├── go-build-resolver.md#     Go build error specialist
-│   │   ├── refactor-cleaner.md #     Refactoring specialist
-│   │   ├── harness-optimizer.md#     Test harness optimizer
-│   │   ├── loop-operator.md    #     Loop/iteration operator
-│   │   └── test-planner.md     #     Test planning specialist
-│   │
 │   ├── skills/                 #   Reusable skill workflows (each dir has SKILLS.md)
 │   │   ├── security-audit/     #     Step-by-step security audit
-│   │   ├── tdd-workflow/       #     TDD workflow guide
-│   │   ├── spotify-control/    #     Spotify control skill
-│   │   └── test-skill/         #     Test skill template
-│   │
-│   ├── rules/                  #   Per-project coding rules (auto-injected into prompts)
-│   │   ├── 001-common-principles.md  # TDD, security-first, tool usage
-│   │   └── 101-python-standards.md   # Python-specific conventions
-│   │
-│   └── current_plan.json       #   Active execution plan (managed by plan tool)
+│   │   └── tdd-workflow/       #     TDD workflow guide
+│   └── rules/                  #   Per-project coding rules (auto-injected into prompts)
 │
 └── tests/                      # ─── Test Suite (100+ modules) ───
     ├── test_coderAI.py         #   Comprehensive tool tests
     ├── test_agent.py           #   Agent orchestration tests
     ├── test_tool_registry_snapshot.py  # Pins the 94 auto-discovered tools
-    ├── test_refactor.py        #   Refactor tool tests
     ├── security/               #   Red-team / security regression suite
     └── …
 ```
@@ -662,8 +640,6 @@ Skills are predefined step-by-step workflows stored in `.coderAI/skills/<name>/S
 |---|---|
 | `security-audit` | 5-step security review (credentials, injection, auth, deps, logging) |
 | `tdd-workflow` | Test-driven development workflow guide |
-| `spotify-control` | Control Spotify playback from the agent |
-| `test-skill` | Template/test skill |
 
 Use them via the `use_skill` tool:
 ```
