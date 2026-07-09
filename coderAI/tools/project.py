@@ -7,7 +7,9 @@ from typing import Any, Dict, List, Optional, Set
 
 from pydantic import BaseModel, Field
 
+from coderAI.core.tool_error_codes import ToolErrorCode
 from coderAI.tools.base import Tool
+from coderAI.tools.filesystem._guards import _enforce_project_scope
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +60,9 @@ class ProjectContextTool(Tool):
         """Detect project type and load context."""
         try:
             project_root = Path(path).expanduser().resolve()
+            scope_err = _enforce_project_scope(project_root, "read project context in")
+            if scope_err:
+                return scope_err
             if not project_root.is_dir():
                 return {"success": False, "error": f"Not a directory: {path}"}
 
@@ -103,7 +108,7 @@ class ProjectContextTool(Tool):
             }
 
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": str(e), "error_code": ToolErrorCode.TOOL_ERROR}
 
     async def _load_python_context(self, root: Path) -> Dict[str, Any]:
         """Load Python project context."""

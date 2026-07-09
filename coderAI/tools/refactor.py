@@ -1,6 +1,7 @@
 """Cross-file refactoring tool — rename symbols and extract code across files."""
 
 import ast
+import asyncio
 import logging
 import re
 from pathlib import Path
@@ -10,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from coderAI.core.tool_error_codes import ToolErrorCode
 from coderAI.tools.base import Tool
-from coderAI.tools.filesystem import _enforce_project_scope
+from coderAI.tools.filesystem import WriteFileTool, _enforce_project_scope
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +102,9 @@ class RefactorTool(Tool):
             if scope_err is not None:
                 return scope_err
 
-            files = self._collect_files(base)
+            # Offload the tree walk + parse to a worker thread so a large tree
+            # never blocks the event loop.
+            files = await asyncio.to_thread(self._collect_files, base)
             if not files:
                 return {
                     "success": False,
@@ -109,7 +112,7 @@ class RefactorTool(Tool):
                 }
 
             if action == "find_references":
-                all_refs = self._find_all_references(files, symbol, kind)
+                all_refs = await asyncio.to_thread(self._find_all_references, files, symbol, kind)
                 return {
                     "success": True,
                     "action": "find_references",
@@ -125,7 +128,7 @@ class RefactorTool(Tool):
             name_err = self._validate_new_name(str(new_name), files)
             if name_err is not None:
                 return name_err
-            all_refs = self._find_all_references(files, symbol, kind)
+            all_refs = await asyncio.to_thread(self._find_all_references, files, symbol, kind)
 
             if sum(len(r["references"]) for r in all_refs) == 0:
                 return {
@@ -157,8 +160,11 @@ class RefactorTool(Tool):
                 }
 
             assert new_name is not None
-            modified_files = self._apply_rename(all_refs, symbol, new_name)
-            return {
+            modified_files, skipped_files = await self._apply_rename(all_refs, symbol, new_name)
+            message = f"Renamed '{symbol}' to '{new_name}' in {len(modified_files)} file(s)."
+            if skipped_files:
+                message += f" Skipped {len(skipped_files)} file(s); see files_skipped."
+            result: Dict[str, Any] = {
                 "success": True,
                 "action": "rename_symbol",
                 "dry_run": False,
@@ -166,10 +172,11 @@ class RefactorTool(Tool):
                 "new_name": new_name,
                 "files_modified": len(modified_files),
                 "files": modified_files,
-                "message": (
-                    f"Renamed '{symbol}' to '{new_name}' in {len(modified_files)} file(s)."
-                ),
+                "message": message,
             }
+            if skipped_files:
+                result["files_skipped"] = skipped_files
+            return result
 
         except Exception as e:
             logger.exception("refactor failed")
@@ -446,19 +453,33 @@ class RefactorTool(Tool):
 
         return "".join(out)
 
-    def _apply_rename(
+    async def _apply_rename(
         self, all_refs: List[Dict[str, Any]], symbol: str, new_name: str
-    ) -> List[Dict[str, Any]]:
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Apply the rename to each file, returning ``(modified, skipped)``.
+
+        Per-file writes are delegated to :class:`WriteFileTool`, which supplies
+        the per-file lock, protected-path + project-scope checks, symlink-leaf
+        guard, backup, atomic write, and diff emission — none of which the old
+        raw ``write_text`` had. A file that fails any of those guards is recorded
+        in ``skipped`` (with the reason) rather than silently dropped.
+        """
         modified: List[Dict[str, Any]] = []
+        skipped: List[Dict[str, Any]] = []
+        writer = WriteFileTool()
 
         for file_info in all_refs:
             file_path = Path(file_info["file"])
             if not file_path.exists():
+                skipped.append({"file": str(file_path), "error": "file no longer exists"})
                 continue
 
             try:
-                content = file_path.read_text(encoding="utf-8", errors="replace")
-            except Exception:
+                content = await asyncio.to_thread(
+                    file_path.read_text, encoding="utf-8", errors="replace"
+                )
+            except Exception as e:
+                skipped.append({"file": str(file_path), "error": f"read failed: {e}"})
                 continue
 
             original_content = content
@@ -487,25 +508,24 @@ class RefactorTool(Tool):
                     lines[idx] = before + new_name + after[len(symbol) :]
 
             new_content = "".join(lines)
-            if new_content != original_content:
-                from coderAI.tools.undo import backup_store
+            if new_content == original_content:
+                continue
 
-                try:
-                    backup_store.backup_file(str(file_path), "modify")
-                except Exception:
-                    logger.warning(
-                        "Skipping rename in %s: backup failed, refusing to overwrite "
-                        "without an undo point",
-                        file_path,
-                        exc_info=True,
-                    )
-                    continue
-                file_path.write_text(new_content, encoding="utf-8")
-                modified.append(
+            write_res = await writer.execute(path=str(file_path), content=new_content)
+            if not write_res.get("success"):
+                skipped.append(
                     {
                         "file": str(file_path),
-                        "changes_applied": len(file_info["references"]),
+                        "error": write_res.get("error", "write failed"),
+                        "error_code": write_res.get("error_code"),
                     }
                 )
+                continue
+            modified.append(
+                {
+                    "file": str(file_path),
+                    "changes_applied": len(file_info["references"]),
+                }
+            )
 
-        return modified
+        return modified, skipped

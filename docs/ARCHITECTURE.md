@@ -124,8 +124,12 @@ timeline/session state; `timeline_render.py` writes rows to the
 │   ├── core/                # Agent orchestration
 │   │   ├── agent.py         # Agent lifecycle, sessions, sub-agents
 │   │   ├── agent_loop.py    # Per-turn LLM ↔ tool loop
+│   │   ├── agent_capabilities.py  # Tool registry, personas, approvals
+│   │   ├── agent_session.py # Session state, checkpoints, rewind
 │   │   ├── agent_tracker.py # Status, tokens, cost, cancellation
 │   │   ├── agents.py        # AgentPersona loader (.coderAI/agents/*.md)
+│   │   ├── permissions.py   # Approval / high-risk policy
+│   │   ├── provenance.py    # Untrusted-ingest tainting
 │   │   ├── tool_executor.py # Confirmation gates for risky tools
 │   │   └── tool_routing.py  # ToolRegistry + MCP wire format dispatch
 │   ├── system/              # Config, persistence, safeguards
@@ -136,12 +140,13 @@ timeline/session state; `timeline_render.py` writes rows to the
 │   │   ├── history.py       # Session persistence
 │   │   ├── hooks_manager.py # .coderAI/hooks.json
 │   │   ├── locks.py         # Async resource locks
+│   │   ├── proc.py          # Scrubbed subprocess / exec sandbox
+│   │   ├── trust.py         # Workspace trust gate
 │   │   ├── project_layout.py
 │   │   ├── read_cache.py
 │   │   └── safeguards.py
 │   ├── context/             # Context window management
-│   │   ├── context.py       # Pinned-file manager
-│   │   ├── context_controller.py
+│   │   ├── context_controller.py  # Pins + token budget / summarization
 │   │   ├── context_selector.py
 │   │   ├── code_chunker.py
 │   │   └── code_indexer.py  # ChromaDB semantic index
@@ -150,16 +155,19 @@ timeline/session state; `timeline_render.py` writes rows to the
 │   ├── skills/              # Skill discovery + optional hosted sources
 │   ├── tools/               # 91 agent tools (90 auto-discovered + manage_context)
 │   │   ├── discovery.py
-│   │   ├── filesystem.py, multi_edit.py, terminal.py, git.py
-│   │   ├── search.py, semantic_search.py, web.py, browser.py, desktop.py
-│   │   ├── memory.py, mcp.py, undo.py, subagent.py, tasks.py
-│   │   ├── lint.py, format.py, testing.py, package_manager.py, refactor.py
-│   │   ├── project.py, context_manage.py, planning.py, notepad.py
+│   │   ├── _detect.py       # Shared walk-up project-tool detection
+│   │   ├── filesystem/      # Package: read_write, edit, manage, metadata, _guards
+│   │   ├── web/             # Package: tools.py + HTTP/search/HTML helpers
+│   │   ├── terminal.py, git.py, search.py, semantic_search.py
+│   │   ├── browser.py, desktop.py, memory.py, mcp.py, undo.py
+│   │   ├── subagent.py, tasks.py, lint.py, format.py, testing.py
+│   │   ├── package_manager.py, refactor.py, project.py
+│   │   ├── context_manage.py, planning.py, notepad.py
 │   │   ├── repl.py, vision.py, skills.py
 │   │   └── …
 │   ├── tui/                 # Textual interactive chat
-│   └── ui/                  # Rich helpers for one-shot CLI commands
-└── tests/                   # Pytest test suite (66+ test modules)
+│   └── cli/utils.py         # Rich helpers for one-shot CLI commands
+└── tests/                   # Pytest test suite (100+ modules; security/ red-team)
 ```
 
 ## Component Details
@@ -188,7 +196,8 @@ entry point resolves to `main()` in `coderAI/cli/__init__.py` → `cli/main.py`.
 
 **Key components:**
 - `Agent` (`core/agent.py`) — Lifecycle, persona loading, provider wiring,
-  session state, sub-agent spawning, tool registry filtering.
+  session state, sub-agent spawning, tool registry filtering. Split across
+  `AgentCapabilitiesMixin` and `AgentSessionMixin` for testability.
 - The per-turn loop (`core/agent_loop.py`) — Retry/backoff for transient LLM
   errors, JSON-arg coercion, iteration cap. Constants
   (`MAX_RETRIES_PER_ITERATION`, `MAX_CONSECUTIVE_ERRORS`,
@@ -198,8 +207,8 @@ entry point resolves to `main()` in `coderAI/cli/__init__.py` → `cli/main.py`.
   Textual UI is attached; otherwise falls back to a terminal prompt.
 - `tool_routing.py` — Dispatches `function.name` to either the
   `ToolRegistry` or an MCP server (`mcp__<server>__<tool>` wire format).
-- `context/context_controller.py` — Token estimation, truncation, and
-  summarization. Reserves `RESPONSE_TOKEN_RESERVE=1024` and
+- `context/context_controller.py` — Pinned-file state, token estimation,
+  truncation, and summarization. Reserves `RESPONSE_TOKEN_RESERVE=1024` and
   `TOOL_OVERHEAD_TOKENS=512` when budgeting.
 
 ### 3. LLM Providers (`coderAI/llm/`)
@@ -283,5 +292,14 @@ events to the Textual UI on the same Python process.
 - **Optional tool gating** — Browser tools require Playwright; desktop tools
   require macOS; web tools can be removed from the main agent when
   `web_tools_in_main=false`.
+- **Workspace trust** (`system/trust.py`) — Untrusted repos ignore hooks/config
+  overlays until `/trust` or `--trust-workspace`.
+- **Provenance / egress gating** (`core/provenance.py`, `tool_executor.py`) —
+  Web/MCP output taints the turn; network tools then need confirmation.
+  MCP-sourced mutating tools (`mcp_source=True` or `mcp__*`) require an
+  explicit OK even under `--yolo`.
+- **Filesystem guards** (`tools/filesystem/_guards.py`) — Project scope,
+  protected paths, symlink-leaf rejection, atomic writes. Metadata tools
+  (`file_chmod`/`file_chown`) use fd-based no-follow on POSIX.
 - **Persistence** — Session-based history stored in
   `~/.coderAI/history/`; semantic index under `.coderAI/index/`.

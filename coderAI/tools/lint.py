@@ -1,6 +1,5 @@
 """Linter integration tool for auto-detecting and running project linters."""
 
-import asyncio
 import logging
 import shutil
 from pathlib import Path
@@ -8,6 +7,9 @@ from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, Field
 
+from coderAI.core.tool_error_codes import ToolErrorCode
+from coderAI.system.config import config_manager
+from coderAI.system.proc import run_scrubbed
 from coderAI.system.safeguards import truncate_output
 from coderAI.tools._detect import walk_up_detect
 from coderAI.tools.base import Tool
@@ -122,21 +124,24 @@ class LintTool(Tool):
             args = config["fix_args"] if fix else config["check_args"]
             cmd = [cmd_binary] + args
 
-            # For file-level linters, append the path
+            # Resolve the target against the project root and run under it, so the
+            # linter finds project config and the child env is scrubbed of secrets
+            # with a bounded timeout + process-group kill (finding 3).
+            cfg = config_manager.load_project_config(".")
+            project_root = Path(getattr(cfg, "project_root", ".") or ".").resolve()
+
+            # For file-level linters, append the resolved path; project-level
+            # linters (clippy, golangci-lint) operate on the cwd instead.
             if linter_name in ("ruff", "eslint"):
-                cmd.append(path)
+                cmd.append(str((project_root / path).resolve()))
 
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=".",
+            returncode, stdout, stderr, timed_out = await run_scrubbed(
+                cmd,
+                cwd=str(project_root),
+                timeout=60,
+                shell=False,
             )
-
-            try:
-                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=60)
-            except asyncio.TimeoutError:
-                process.kill()
+            if timed_out:
                 return {"success": False, "error": "Linter timed out after 60 seconds."}
 
             stdout_str = stdout.decode("utf-8", errors="replace")
@@ -146,7 +151,7 @@ class LintTool(Tool):
             stdout_str, _ = truncate_output(stdout_str, max_chars=8000)
 
             # Parse results
-            has_issues = process.returncode != 0
+            has_issues = returncode != 0
 
             result = {
                 "success": True,
@@ -154,7 +159,7 @@ class LintTool(Tool):
                 "mode": "fix" if fix else "check",
                 "has_issues": has_issues,
                 "output": stdout_str or stderr_str,
-                "returncode": process.returncode,
+                "returncode": returncode,
             }
 
             if fix:
@@ -173,4 +178,4 @@ class LintTool(Tool):
             return result
 
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": str(e), "error_code": ToolErrorCode.TOOL_ERROR}

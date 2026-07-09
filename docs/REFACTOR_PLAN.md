@@ -17,7 +17,7 @@
 |---|---|
 | Merged `ContextManager` → `ContextController` | Pinned-file state + methods moved into `ContextController`. `inject_context` no longer takes a separate `context_manager` param. `agent.context_manager` → `agent.context_controller` everywhere. `context/context.py` reduced to docstring shim. |
 | Collapsed `skills/`: merged `skill_registry.py` + `skill_loader.py` into `skill_manager.py` | `Skill`, `SkillRegistry`, loader functions, and `SkillManager` all in one file. `skill_registry.py` + `skill_loader.py` deleted (2 files removed). Sources import from `skill_manager.py`. |
-| Added `edits` param to `SearchReplaceTool`, deprecated `MultiEditTool` | `EditChunk` moved to `filesystem/edit.py`. `SearchReplaceTool.execute()` handles batch edits via `edits: List[EditChunk]`. `MultiEditTool` delegates to `SearchReplaceTool` with deprecation warning. `multi_edit.py` reduced to ~35 LOC stub. |
+| Added `edits` param to `SearchReplaceTool`, removed `MultiEditTool` | `EditChunk` lives in `filesystem/edit.py`. `SearchReplaceTool.execute()` handles batch edits via `edits: List[EditChunk]`. `multi_edit.py` deleted; use `search_replace` with `edits=` (tool count: 91 = 90 discovered + `manage_context`). |
 
 ## Completed (Phase 3)
 
@@ -59,7 +59,7 @@
 | `ui/display.py` + `ui/__init__.py` | **DONE (P1)** | ~90 |
 | `timeline_append.py` | **DONE (P1)** | ~25 |
 | `embeddings/base.py` + `factory.py` | **DONE (P1)** | ~80 |
-| `multi_edit.py` | **DONE (P2)** | ~140 |
+| `multi_edit.py` | **DONE (P2)** — stub removed; batch via `search_replace` | ~140 |
 | `skills/` (consolidate 7→3) | **DONE (P2)** | ~300 |
 | `context/` (merge Manager→Controller) | **DONE (P2)** | ~150 |
 | `core/agent.py` (extract AgentSession + AgentCapabilities) | **DONE (P4)** — Agent: 1158→487 LOC | ~671 |

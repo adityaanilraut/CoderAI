@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
+from coderAI.core.tool_error_codes import ToolErrorCode
 from coderAI.system.fsperms import atomic_write_json
 from coderAI.tools.base import Tool
 
@@ -111,7 +112,7 @@ class SaveMemoryTool(Tool):
                 "message": "Memory saved successfully",
             }
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": str(e), "error_code": ToolErrorCode.TOOL_ERROR}
 
 
 class RecallMemoryParams(BaseModel):
@@ -170,7 +171,7 @@ class RecallMemoryTool(Tool):
                     "count": len(memories),
                 }
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": str(e), "error_code": ToolErrorCode.TOOL_ERROR}
 
 
 class DeleteMemoryParams(BaseModel):
@@ -195,4 +196,4 @@ class DeleteMemoryTool(Tool):
                 return {"success": True, "key": key, "message": f"Memory '{key}' deleted."}
             return {"success": False, "error": f"Memory key not found: '{key}'"}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": str(e), "error_code": ToolErrorCode.TOOL_ERROR}

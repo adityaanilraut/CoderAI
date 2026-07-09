@@ -292,4 +292,4 @@ class CreatePlanTool(Tool):
                 }
 
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": str(e), "error_code": ToolErrorCode.TOOL_ERROR}

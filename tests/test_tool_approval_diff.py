@@ -14,7 +14,6 @@ from coderAI.core.tool_executor import ToolExecutor
 from coderAI.tools.base import ToolRegistry
 from coderAI.tools.filesystem.edit import ApplyDiffTool, SearchReplaceTool
 from coderAI.tools.filesystem.read_write import WriteFileTool
-from coderAI.tools.multi_edit import MultiEditTool
 
 
 def _executor() -> ToolExecutor:
@@ -24,7 +23,7 @@ def _executor() -> ToolExecutor:
     so previews can target ``tmp_path`` files outside the repo root.
     """
     reg = ToolRegistry()
-    for tool in (WriteFileTool(), SearchReplaceTool(), ApplyDiffTool(), MultiEditTool()):
+    for tool in (WriteFileTool(), SearchReplaceTool(), ApplyDiffTool()):
         reg.register(tool)
     agent = SimpleNamespace(tools=reg, config=None)
     return ToolExecutor(agent)
@@ -71,13 +70,13 @@ def test_compute_preview_diff_apply_diff(tmp_path):
     assert diff == raw_diff
 
 
-def test_compute_preview_diff_multi_edit(tmp_path):
+def test_compute_preview_diff_batch_edits(tmp_path):
     f = tmp_path / "test.txt"
     f.write_text("a\nb\n", encoding="utf-8")
     executor = _executor()
 
     diff = executor._compute_preview_diff(
-        "multi_edit",
+        "search_replace",
         {
             "path": str(f),
             "edits": [{"search": "a", "replace": "A"}, {"search": "b", "replace": "B"}],

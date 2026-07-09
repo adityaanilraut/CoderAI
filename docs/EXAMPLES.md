@@ -33,12 +33,20 @@ Or with a specific model:
 coderAI --model gpt-5.4 chat
 ```
 
-### 3. Ask in the chat UI
+### 3. Interactive chat or headless one-shot
 
-There is no separate “one-shot” CLI argument: launch the Textual TUI with `coderAI chat`, then type your question at the prompt:
+Launch the Textual TUI and type at the prompt:
 
 ```bash
 coderAI chat
+```
+
+Or run a single prompt headlessly (no TUI; mutating tools denied by default):
+
+```bash
+coderAI run "Summarize the architecture of this project"
+coderAI run --yolo "Add a README section about installation"
+coderAI run --json "List the top-level packages"
 ```
 
 ## Example Use Cases

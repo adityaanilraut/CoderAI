@@ -53,19 +53,21 @@ elsewhere.
 
 ## Architecture
 
-CoderAI is a pure-Python AI coding agent CLI. The Click entry point in
-`coderAI/cli.py` dispatches one-shot subcommands (config, history, models,
-status, doctor, …) using Rich helpers in `coderAI/cli/utils.py`. `coderAI chat`
-launches an in-process Textual TUI (`coderAI/tui/`) that drives the
-agent loop and renders the streaming timeline.
+CoderAI is a pure-Python AI coding agent CLI. The Click entry point
+(`coderAI.cli:main` → `coderAI/cli/__init__.py` → `cli/main.py`) dispatches
+one-shot subcommands (config, history, models, status, doctor, `run`, …)
+using Rich helpers in `coderAI/cli/utils.py`. `coderAI chat` launches an
+in-process Textual TUI (`coderAI/tui/`) that drives the agent loop and
+renders the streaming timeline. `coderAI run` is the headless one-shot path
+(no TUI; deny-on-mutate by default).
 
 The orchestration is split across modules under `coderAI/core/` and `coderAI/context/` so each concern is independently testable:
 
-- `coderAI/core/agent.py` — `Agent` class: lifecycle, persona loading, provider wiring, session state, sub-agent spawning.
+- `coderAI/core/agent.py` — `Agent` class: lifecycle, persona loading, provider wiring, session state, sub-agent spawning (mixins: `AgentCapabilitiesMixin`, `AgentSessionMixin`).
 - `coderAI/core/agent_loop.py` — the per-turn execution loop (retry/backoff for transient LLM errors, JSON-arg coercion, iteration cap). Retry/error constants (`MAX_RETRIES_PER_ITERATION=3`, `MAX_CONSECUTIVE_ERRORS=5`, transient-error regex for 429/5xx) live in `coderAI/system/error_policy.py` and are imported from there.
 - `coderAI/core/tool_executor.py` — `ToolExecutor`: confirmation UX for gated tools. Routes through `UIBridge` when the Textual UI is attached, otherwise prompts in the terminal.
 - `coderAI/core/tool_routing.py` — dispatches a tool-call `function.name` to either `ToolRegistry` or an MCP server. MCP functions use the wire format `mcp__<server>__<tool>` (server must not contain `__`; tool may).
-- `coderAI/context/context_controller.py` — token estimation, truncation, summarization. Reserves `RESPONSE_TOKEN_RESERVE=1024` and `TOOL_OVERHEAD_TOKENS=512` when budgeting.
+- `coderAI/context/context_controller.py` — token estimation, truncation, summarization, and pinned-file state. Reserves `RESPONSE_TOKEN_RESERVE=1024` and `TOOL_OVERHEAD_TOKENS=512` when budgeting.
 
 Per-turn flow (`Agent.process_message()` → `agent_loop`):
 
@@ -77,7 +79,7 @@ Per-turn flow (`Agent.process_message()` → `agent_loop`):
 
 **Runtime shape of `coderAI chat`:**
 
-1. `coderAI/cli.py` → `coderAI/cli/main.py` → `chat()` calls `coderAI.tui.run_chat_app(...)`.
+1. `coderAI/cli/__init__.py` → `cli/main.py` → `chat()` calls `coderAI.tui.run_chat_app(...)`.
 2. The Textual app (`coderAI/tui/app.py::CoderAIApp`) creates an `Agent`
    and an `UIBridge`, passing the app's `on_event` callback so events
    land on the UI thread.
@@ -87,21 +89,23 @@ Per-turn flow (`Agent.process_message()` → `agent_loop`):
 
 **Key components:**
 - `coderAI/core/agent.py` — Core orchestrator (agentic loop, context management, sub-agent spawning, session lifecycle). Uses whatever `streaming_handler` the embedding process sets; defaults to `None` (non-streaming fallback).
-- `coderAI/cli.py` / `coderAI/cli/` — Click CLI. `chat` launches the Textual TUI; other commands render with Rich.
+- `coderAI/cli/` — Click CLI (`coderAI.cli:main`). `chat` launches the Textual TUI; `run` is headless one-shot; other commands render with Rich.
 - `coderAI/tui/` — Textual interactive chat (`app.py`, `listeners.py` event reducer, `timeline_render.py` timeline row writers, `diff_render.py`, `slash.py`, `state.py`, `session_setup.py`, `theme.py`). There is no `tui/lib/` shim — rendering lives beside the app.
 - `coderAI/tui/controller.py` — In-process controller (`UIBridge`): subscribes to `event_emitter`, forwards events to the UI via `on_event`, and dispatches slash commands back into the agent. See [`CHAT_EVENTS.md`](CHAT_EVENTS.md).
 - `coderAI/tui/streaming.py` — `BridgeStreamingHandler`: emits one phased `turn` event per assistant turn so the Textual timeline streams incrementally.
 - `coderAI/tui/tool_metadata.py` — Tool category, risk level, and approval-preview helpers for the controller and modals.
 - `coderAI/llm/` — LLM providers (openai, anthropic, groq, deepseek, gemini, lmstudio, ollama), all extending `base.LLMProvider`. Instantiation goes through `llm/factory.py::create_provider(model, config)` — do not construct providers directly from `agent.py`.
-- `coderAI/tools/` — 92 tools extending `tools/base.Tool`. Registration is automatic via `tools/discovery.py::discover_tools()`, which walks the `coderAI.tools` package and instantiates every `Tool` subclass whose `__init__` takes no required args. Tools requiring constructor args (e.g. `ManageContextTool`, which needs the `Agent`) are registered manually in `Agent._create_tool_registry()`.
+- `coderAI/tools/` — 91 tools (90 auto-discovered + `manage_context`) extending `tools/base.Tool`. Registration is automatic via `tools/discovery.py::discover_tools()`, which walks the `coderAI.tools` package (including `filesystem/` and `web/` subpackages) and instantiates every `Tool` subclass whose `__init__` takes no required args. Tools requiring constructor args (e.g. `ManageContextTool`) are registered manually in `AgentCapabilitiesMixin._create_tool_registry()`. Snapshot: `tests/test_tool_registry_snapshot.py`.
 - `coderAI/system/safeguards.py` — reusable validators that run before dangerous actions: interactive-command detection (blocks REPLs invoked via non-interactive pipes), project-directory validation, git-scope guards (prevent operations leaking to a parent repo), staging blocklist for junk files (`.DS_Store`, `__pycache__`, `.coderAI/`, …).
+- `coderAI/system/proc.py` — scrubbed subprocess runner used by lint/format/terminal (env scrub, timeout, process-group kill).
+- `coderAI/system/trust.py` — workspace trust gate for repo-supplied overlays/hooks.
 - `coderAI/system/project_layout.py` — `find_dot_coderai_subdir()` resolves `.coderAI/<subdir>` across project root, cwd, and the package dir (for dev installs). Use this instead of hardcoding `.coderAI/` paths.
 - `coderAI/tui/commands.py` — `UIBridge` command handlers, plus plain-text reference output for `/show <topic>` slash commands (`/show models`, `/show cost`, `/show status`, `/show config`, `/show info`, `/show tasks`).
 - `coderAI/cli/utils.py` — Rich display helpers for one-shot CLI subcommands. Not used by the Textual chat UI.
 - `coderAI/system/config.py` — Pydantic-based `ConfigManager` reading from `~/.coderAI/config.json` then env vars.
 - `coderAI/core/agents.py` — `AgentPersona` loader for `.coderAI/agents/*.md` files with YAML frontmatter.
 - `coderAI/core/agent_tracker.py` — Singleton `AgentTracker` for observability (status, tokens, cost, cancellation).
-- `coderAI/context/context.py` — Pinned-file context manager with relevance filtering.
+- `coderAI/context/context_controller.py` — pinned-file context + token budget / summarization.
 - `coderAI/system/cost.py` — Per-model token cost tracking; enforces `budget_limit` from config.
 - `coderAI/system/history.py` — `Session` + `HistoryManager`; sessions in `~/.coderAI/history/`.
 - `coderAI/tools/notepad.py` — Shared inter-agent notepad tool.
@@ -110,36 +114,36 @@ Per-turn flow (`Agent.process_message()` → `agent_loop`):
 - `coderAI/system_prompt.py` — Builds the agent system prompt (loads static MDX prompt templates from `coderAI/prompts/`, formats dynamic tool docs, and appends project-level rules from `.coderAI/rules/*.md`).
 - `coderAI/context/code_chunker.py` — Splits source files into semantic chunks (AST-aware for Python, regex for JS/TS, sliding window fallback).
 - `coderAI/context/code_indexer.py` — ChromaDB-backed semantic code index with incremental updates via file-hash manifests.
-- `coderAI/embeddings/` — Embedding provider abstraction (OpenAI `text-embedding-3-small` by default; no local provider yet).
-- `.github/workflows/ci.yml` — On push/PR: matrix of (ubuntu-latest, macos-latest) × (Python 3.10, 3.12). Installs `pip install -e ".[dev]"`, then runs `ruff format --check coderAI/`, `ruff check coderAI/`, `mypy coderAI/`, `pytest -q --cov-fail-under=…`, and a `coderAI --version` smoke test. `make test` mirrors the pytest + smoke portion; `make check` runs the full sequence.
+- `coderAI/embeddings/openai.py` — OpenAI `text-embedding-3-small` embeddings (default; no local provider yet).
+- `.github/workflows/ci.yml` — On push/PR: matrix of (ubuntu-latest, macos-latest) × (Python 3.10, 3.12). Installs `pip install -e ".[dev]"`, then runs `ruff format --check coderAI/`, `ruff check coderAI/`, `mypy coderAI/`, `pytest -q --cov-fail-under=…`, and a `coderAI --version` smoke test. `make test` mirrors the pytest + smoke portion; `make check` runs the full sequence. Security suite: `make test-security`.
 - `.github/workflows/release.yml` — On tagged releases (`v*`), builds the Python wheel + sdist with `python -m build`, attaches them to the GitHub Release, and publishes the wheel to PyPI via trusted publishing.
 
 **Tool categories** (`coderAI/tools/`):
-- `filesystem.py` — read_file, write_file, search_replace, apply_diff, list_directory, glob_search, **move_file, copy_file, delete_file, create_directory**, file_stat/chmod/chown/readlink
-- `multi_edit.py` — multi_edit (batch search/replace in one file)
+- `filesystem/` — package (`read_write.py`, `edit.py`, `manage.py`, `metadata.py`, `_guards.py`): read_file, write_file, search_replace (batch via `edits`), apply_diff, list_directory, glob_search, **move_file, copy_file, delete_file, create_directory**, file_stat/chmod/chown/readlink
 - `terminal.py` — run_command (safety blocklist), run_background, **list_processes, kill_process, read_bg_output**
 - `git.py` — git_add, git_status, git_diff, git_commit, git_log, git_branch, git_checkout, git_stash, **git_push, git_pull, git_merge, git_rebase, git_revert, git_reset, git_show, git_remote, git_blame, git_cherry_pick, git_tag, git_fetch**
 - `search.py` — text_search, grep, symbol_search
 - `semantic_search.py` — semantic_search (natural-language code search via embeddings)
-- `web.py` — web_search, read_url, download_file, http_request, **wikipedia_search, read_feed, sitemap_discover**
+- `web/` — package (`tools.py` + helpers): web_search, read_url, download_file, http_request, **wikipedia_search, read_feed, sitemap_discover**
 - `browser.py` — browser_navigate … browser_close (requires Playwright extra)
 - `desktop.py` — run_applescript, get_accessibility_tree, click_ui_element, type_keystrokes (macOS only)
 - `memory.py` — save_memory, recall_memory, **delete_memory**
 - `subagent.py` — delegate_task (max depth 3, retried 2×)
-- `mcp.py` — mcp_connect, mcp_disconnect, mcp_call_tool, mcp_list, mcp_list_resources, mcp_read_resource, mcp_list_prompts, mcp_get_prompt (connected servers expose functions as `mcp__<server>__<tool>`)
+- `mcp.py` — mcp_connect, mcp_disconnect, mcp_call_tool, mcp_list, mcp_list_resources, mcp_read_resource, mcp_list_prompts, mcp_get_prompt (connected servers expose functions as `mcp__<server>__<tool>`; static MCP relays set `mcp_source=True`)
 - `undo.py` — undo, undo_history
 - `context_manage.py` — pin/unpin files into the pinned-context manager (takes `Agent` at construction → registered manually)
 - `planning.py`, `tasks.py` — in-session plan + task list management
 - `notepad.py` — shared inter-agent notepad
-- `skills.py` — `use_skill` loads a workflow from `.coderAI/skills/*.md`
-- `project.py`, `format.py`, `lint.py`, `repl.py`, `vision.py` — project-info, code formatting, linting, Python REPL, image/vision helpers
-- `package_manager.py`, `refactor.py`, `testing.py` — package install/remove, rename_symbol/find_references refactor, test runner dispatch
+- `skills.py` — `use_skill` loads a workflow from `.coderAI/skills/<name>/SKILLS.md`
+- `project.py`, `format.py`, `lint.py`, `repl.py`, `vision.py` — project-info, code formatting, linting, Python REPL, image/vision helpers (`lint`/`format` use `run_scrubbed()` from project root)
+- `_detect.py` — shared `walk_up_detect()` used by lint/format/testing/package_manager
+- `package_manager.py`, `refactor.py`, `testing.py` — package install/remove, rename_symbol/find_references refactor (writes via `WriteFileTool`), test runner dispatch
 
 **Agent personas** are `.md` files in `.coderAI/agents/` with YAML frontmatter (`name`, `description`, `tools`, `model`). Built-in personas: planner, code-reviewer, architect, security-reviewer, tdd-guide, and others. The `delegate_task` tool spawns these as isolated sub-agents.
 
 **Project-level config** lives in `.coderAI/`:
 - `agents/*.md` — persona definitions
-- `skills/*.md` — reusable skill workflows (loaded by `use_skill` tool)
+- `skills/<name>/SKILLS.md` — reusable skill workflows (loaded by `use_skill` tool)
 - `rules/*.md` — project rules injected into system prompt automatically
 - `hooks.json` — pre/post tool hooks (shell commands run around tool execution)
 - `config.json` — project-scoped config overrides
@@ -148,13 +152,16 @@ Per-turn flow (`Agent.process_message()` → `agent_loop`):
 
 ## Interactive chat commands
 
-Inside `coderAI chat` (the Textual TUI), slash commands are available:
-`/help`, `/model <name>`, `/clear`, `/compact`, `/reasoning`, `/yolo`, `/verbose`, `/agents`, `/show`, `/think`, `/exit`.
-They are routed by `coderAI/tui/slash.py` to the in-process `UIBridge`,
-which dispatches them to the agent. Reference output (`/show models`,
-`/show cost`, `/show status`, `/show info`, `/show tasks`, `/show config`)
-is rendered as plain text by `coderAI/tui/commands.py`. The full
-event catalog lives in [`CHAT_EVENTS.md`](CHAT_EVENTS.md).
+Inside `coderAI chat` (the Textual TUI), slash commands include:
+`/help`, `/model`, `/tokens`, `/context`, `/pin`, `/unpin`, `/compact`,
+`/agents`, `/persona`, `/skills`, `/reasoning`, `/yolo`, `/verbose`,
+`/show`, `/copy`, `/code-search`, `/think`, `/clear`, `/allow-tool`,
+`/disallow-tool`, `/allowed-tools`, `/undo`, `/rewind`, `/mcp`, `/plan`,
+`/export`, `/search`, `/retry`, `/resume`, `/kill`, `/init`, `/exit`,
+`/trust`. They are routed by `coderAI/tui/slash.py` to the in-process
+`UIBridge`. Reference output (`/show models`, `/show cost`, …) is rendered
+as plain text by `coderAI/tui/commands.py`. Full CLI + slash reference:
+[`COMMANDS.md`](COMMANDS.md). Event catalog: [`CHAT_EVENTS.md`](CHAT_EVENTS.md).
 
 ## Model Aliases
 
@@ -173,6 +180,7 @@ Friendly versioned aliases also supported: `claude-4.7-opus`, `claude-4.6-sonnet
 
 ## Adding a New Tool
 
-1. Create a class extending `Tool` in `coderAI/tools/` with a no-arg `__init__` — `tools/discovery.py` will pick it up automatically
-2. **Declare a safety class** (Phase 4.1 — `ToolRegistry.validate_classifications()` refuses to start if you don't): `is_read_only = True` if safe to run in parallel; `requires_confirmation = True` for dangerous ops; `is_egress = True` for network egress; or `safe = True` for a mutating tool that only touches the agent's own internal state (plan/tasks/notepad/memory). A mutating tool that declares none is treated as requiring confirmation (fail-closed). Do **not** add high-risk tools to `permissions.HIGH_RISK_NO_BLANKET` casually — those can never be blanket-allowed by name.
-3. If the tool needs the `Agent` (e.g. for pinned context), register it manually in `Agent.__init__` after `discover_tools()` — the discovery walker skips classes whose `__init__` has required args
+1. Create a class extending `Tool` in `coderAI/tools/` (or a subpackage such as `filesystem/` / `web/`) with a no-arg `__init__` — `tools/discovery.py` will pick it up automatically via `pkgutil.walk_packages`
+2. **Declare a safety class** (`ToolRegistry.validate_classifications()` refuses to start if you don't): `is_read_only = True` if safe to run in parallel; `requires_confirmation = True` for dangerous ops; `is_egress = True` for network egress; `mcp_source = True` for static MCP relay tools; or `safe = True` for a mutating tool that only touches the agent's own internal state (plan/tasks/notepad/memory). A mutating tool that declares none is treated as requiring confirmation (fail-closed). Do **not** add high-risk tools to `permissions.HIGH_RISK_NO_BLANKET` casually — those can never be blanket-allowed by name.
+3. If the tool needs the `Agent` (e.g. for pinned context), register it manually in `AgentCapabilitiesMixin._create_tool_registry()` after `discover_tools()` — the discovery walker skips classes whose `__init__` has required args
+4. Update `EXPECTED_TOOLS` in `tests/test_tool_registry_snapshot.py` in the same commit

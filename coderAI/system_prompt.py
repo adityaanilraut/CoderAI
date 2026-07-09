@@ -117,7 +117,6 @@ _TOOL_SECTIONS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
             "read_file",
             "write_file",
             "search_replace",
-            "multi_edit",
             "apply_diff",
             "list_directory",
             "glob_search",

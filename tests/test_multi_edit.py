@@ -1,7 +1,16 @@
+"""Batch (``edits=``) editing via SearchReplaceTool.
+
+The deprecated ``multi_edit`` alias was removed; these cover the batch path it
+used to delegate to — ``SearchReplaceTool.execute(path=..., edits=[...])`` —
+including its atomic-write and registry-dispatch behavior.
+"""
+
 import asyncio
 import os
+
 import pytest
-from coderAI.tools.multi_edit import MultiEditTool
+
+from coderAI.tools.filesystem.edit import SearchReplaceTool
 
 
 @pytest.fixture
@@ -11,8 +20,8 @@ def temp_file(tmp_path):
     return f
 
 
-def test_multi_edit_success(temp_file):
-    tool = MultiEditTool()
+def test_batch_edit_success(temp_file):
+    tool = SearchReplaceTool()
     edits = [
         {"search": "line1\n", "replace": "LINE1\n", "expected_count": 1},
         {"search": "line3", "replace": "LINE3", "expected_count": 1},
@@ -25,8 +34,8 @@ def test_multi_edit_success(temp_file):
     assert content == "LINE1\nline2\nLINE3\n"
 
 
-def test_multi_edit_count_mismatch(temp_file):
-    tool = MultiEditTool()
+def test_batch_edit_count_mismatch(temp_file):
+    tool = SearchReplaceTool()
     edits = [{"search": "line2\n", "replace": "LINE2\n", "expected_count": 2}]
     result = asyncio.run(tool.execute(path=str(temp_file), edits=edits))
 
@@ -36,11 +45,11 @@ def test_multi_edit_count_mismatch(temp_file):
     assert temp_file.read_text(encoding="utf-8") == "line1\nLINE2\nline3\n"
 
 
-def test_multi_edit_atomic_write_error(tmp_path, monkeypatch):
+def test_batch_edit_atomic_write_error(tmp_path, monkeypatch):
     f = tmp_path / "test.txt"
     f.write_text("hello", encoding="utf-8")
 
-    tool = MultiEditTool()
+    tool = SearchReplaceTool()
     edits = [{"search": "hello", "replace": "world", "expected_count": 1}]
 
     def fake_replace(src, dst):
@@ -56,25 +65,20 @@ def test_multi_edit_atomic_write_error(tmp_path, monkeypatch):
     assert f.read_text(encoding="utf-8") == "hello"
 
 
-def test_multi_edit_registry_dispatch(tmp_path):
-    """MultiEditTool dispatched through ToolRegistry must not raise TypeError."""
-    import os as _os_mod
+def test_batch_edit_registry_dispatch(tmp_path):
+    """search_replace dispatched through ToolRegistry with edits= must not raise."""
     from coderAI.tools.base import ToolRegistry
-    from coderAI.tools.multi_edit import MultiEditTool
 
     f = tmp_path / "test.txt"
     f.write_text("hello world\n", encoding="utf-8")
 
     registry = ToolRegistry()
-    registry.register(MultiEditTool())
+    registry.register(SearchReplaceTool())
 
     result = asyncio.run(
         registry.execute(
-            "multi_edit",
+            "search_replace",
             path=str(f),
-            search="hello",
-            replace="HELLO",
-            replace_all=False,
             edits=[{"search": "hello", "replace": "HELLO", "expected_count": 1}],
         )
     )
@@ -85,8 +89,6 @@ def test_multi_edit_registry_dispatch(tmp_path):
 
 def test_batch_edit_empty_search_rejected(tmp_path):
     """Batch-mode edit with empty search text is rejected (not silently corrupt)."""
-    from coderAI.tools.filesystem.edit import SearchReplaceTool
-
     f = tmp_path / "test.txt"
     f.write_text("abc\n", encoding="utf-8")
 
@@ -100,8 +102,6 @@ def test_batch_edit_empty_search_rejected(tmp_path):
 
 def test_batch_edit_actual_counts_from_modified_content(tmp_path):
     """actual_counts and count_mismatches are computed on sequentially modified content."""
-    from coderAI.tools.filesystem.edit import SearchReplaceTool
-
     f = tmp_path / "test.txt"
     f.write_text("hello hello world\n", encoding="utf-8")
 

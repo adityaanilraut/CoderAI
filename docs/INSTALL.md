@@ -12,9 +12,9 @@ This guide will help you install and set up CoderAI on your system.
 
 CoderAI ships as a single pure-Python wheel on PyPI. The agent, tools,
 one-shot CLI commands (`status`, `setup`, `history`, `models`, `config`,
-`info`, `cost`, `doctor`, `index`, `search`), and the interactive Textual
-TUI all live inside the wheel. There are no native binaries or extra
-download steps — `pip install coderAI` is the whole story.
+`info`, `cost`, `doctor`, `index`, `search`, `run`, `mcp`, `tasks`), and
+the interactive Textual TUI all live inside the wheel. There are no native
+binaries or extra download steps — `pip install coderAI` is the whole story.
 
 ## Installation Methods
 
@@ -38,12 +38,15 @@ source venv/bin/activate  # Windows: venv\Scripts\activate
 pip install -e ".[dev]"
 ```
 
-`pip install -e ".[dev]"` adds pytest/ruff/black/mypy for the test and
-lint targets. `make dev` is a shortcut for the same install.
+`pip install -e ".[dev]"` adds pytest/ruff/mypy (and related stubs) for the
+test and lint targets. `make dev` is a shortcut for the same install.
 
 ### Optional extras
 
 ```bash
+# Semantic code search (ChromaDB) — enables `coderAI index` / `search`
+pip install -e ".[semantic]"
+
 # Browser automation (Playwright)
 pip install -e ".[browser]"
 playwright install chromium

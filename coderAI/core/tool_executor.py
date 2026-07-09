@@ -905,7 +905,15 @@ class ToolExecutor:
             # transcript is fenced.
             serialized = json.dumps(res)
             if self._result_provenance(pc["tool_name"]) == Provenance.UNTRUSTED_EXTERNAL:
-                self._mark_turn_untrusted(from_mcp=is_mcp_function_name(pc["tool_name"]))
+                # A static mcp_* tool (mcp_call_tool, mcp_read_resource, …) relays
+                # third-party server output but has a local Tool object, so the
+                # name-based proxy check misses it — self-declared mcp_source is
+                # what arms the confused-deputy (MCP-mutation) gate for it.
+                tool_obj = self.agent.tools.get(pc["tool_name"])
+                from_mcp = is_mcp_function_name(pc["tool_name"]) or bool(
+                    getattr(tool_obj, "mcp_source", False)
+                )
+                self._mark_turn_untrusted(from_mcp=from_mcp)
                 serialized = wrap_untrusted_output(serialized, self._untrusted_source(pc))
             self.agent.session.add_message("tool", serialized, tool_call_id=pc["tool_id"], **extra)
 

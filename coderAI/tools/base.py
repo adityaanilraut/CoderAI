@@ -72,6 +72,15 @@ class Tool(ABC):
     # ingested untrusted content. Gated in ToolExecutor's confirmation path.
     is_egress: bool = False
 
+    # True for *local* tools whose results are relayed from a third-party MCP
+    # server (the static ``mcp_call_tool`` / ``mcp_read_resource`` /
+    # ``mcp_get_prompt`` family). An ``mcp__server__tool`` *proxy* call has no
+    # local Tool object and is detected by name; these static tools do, so they
+    # must self-declare to arm the confused-deputy (MCP-mutation) gate the same
+    # way a proxy call does. Kept distinct from ``is_egress`` because a listing
+    # tool ingests untrusted MCP content without an outbound payload channel.
+    mcp_source: bool = False
+
     # Per-tool timeout in seconds. None = use ToolExecutor's default.
     timeout: Optional[float] = None
 

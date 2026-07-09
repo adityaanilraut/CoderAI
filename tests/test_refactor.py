@@ -1,6 +1,9 @@
 """Tests for RefactorTool — cross-file symbol renaming and reference finding."""
 
 import asyncio
+import sys
+from pathlib import Path
+
 import pytest
 
 from coderAI.tools.refactor import RefactorTool
@@ -337,3 +340,63 @@ function oldFunc() {
         )
         assert result["success"]
         assert result["total_references"] == 0
+
+
+class TestRefactorWriteGuards:
+    """Rename delegates writes to WriteFileTool, so its guards apply per file."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        self.tool = RefactorTool()
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink")
+    def test_rename_skips_symlink_leaf(self, tmp_path):
+        # The real file lives outside the search base; only a symlink to it is
+        # inside. WriteFileTool must refuse to write through the symlink, and the
+        # refactor tool records it in files_skipped instead of clobbering it.
+        real = tmp_path / "real.py"
+        real.write_text("def old_name():\n    return old_name()\n")
+        base = tmp_path / "src"
+        base.mkdir()
+        (base / "alias.py").symlink_to(real)
+
+        result = asyncio.run(
+            self.tool.execute(
+                action="rename_symbol",
+                symbol="old_name",
+                new_name="new_name",
+                path=str(base),
+                dry_run=False,
+            )
+        )
+        assert result["success"] is True, result
+        assert result["files_modified"] == 0
+        skipped = result.get("files_skipped")
+        assert skipped and skipped[0]["error_code"] == "symlink", result
+        # The real file behind the symlink is untouched.
+        assert "old_name" in real.read_text()
+
+    def test_rename_skips_protected_path(self, tmp_path, monkeypatch):
+        # A source file living under a protected home dir (~/.config) must not be
+        # rewritten; WriteFileTool refuses and it is recorded as skipped.
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        base = tmp_path / ".config" / "proj"
+        base.mkdir(parents=True)
+        src = base / "module.py"
+        src.write_text("def old_name():\n    return old_name()\n")
+
+        result = asyncio.run(
+            self.tool.execute(
+                action="rename_symbol",
+                symbol="old_name",
+                new_name="new_name",
+                path=str(base),
+                dry_run=False,
+            )
+        )
+        assert result["success"] is True, result
+        assert result["files_modified"] == 0
+        skipped = result.get("files_skipped")
+        assert skipped and skipped[0]["error_code"] == "permission_denied", result
+        # The protected file is unchanged.
+        assert "old_name" in src.read_text()

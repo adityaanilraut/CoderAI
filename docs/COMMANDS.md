@@ -369,7 +369,7 @@ Environment variables take precedence over `~/.coderAI/config.json`.
 
 ## Tool Quick Reference
 
-All **92 tools** available to the agent when optional dependencies are installed (91 auto-discovered plus `manage_context`). Browser tools require `pip install coderAI[browser]`; PDF extraction in `read_url` requires `pip install coderAI[web]`; desktop tools are macOS-only. Confirmation required (`✓`) means the agent asks before running.
+All **91 tools** available to the agent when optional dependencies are installed (90 auto-discovered plus `manage_context`). Browser tools require `pip install coderAI[browser]`; PDF extraction in `read_url` requires `pip install coderAI[web]`; desktop tools are macOS-only. Batch edits use `search_replace` with an `edits` list. Confirmation required (`✓`) means the agent asks before running.
 
 ### Filesystem
 
@@ -377,14 +377,13 @@ All **92 tools** available to the agent when optional dependencies are installed
 |---|---|---|
 | `read_file` | — | Read file contents (optional line range) |
 | `write_file` | ✓ | Create or overwrite a file |
-| `search_replace` | ✓ | Find-and-replace with verification |
+| `search_replace` | ✓ | Find-and-replace with verification (batch via `edits`) |
 | `apply_diff` | ✓ | Apply a unified diff patch |
 | `list_directory` | — | List directory contents |
 | `glob_search` | — | Find files by glob pattern |
 | `move_file` | ✓ | Move or rename a file/directory |
 | `copy_file` | ✓ | Copy a file or directory tree |
 | `delete_file` | ✓ | Delete a file or directory |
-| `multi_edit` | ✓ | Apply multiple edits to a file atomically |
 | `create_directory` | ✓ | Create directories (like `mkdir -p`) |
 | `file_stat` | — | Get file metadata (size, permissions, mtime) |
 | `file_chmod` | ✓ | Change file permissions |
@@ -467,7 +466,7 @@ All **92 tools** available to the agent when optional dependencies are installed
 
 | Tool | Confirm | Description |
 |---|---|---|
-| `refactor` | ✓ | Cross-file `rename_symbol` or `find_references` (use `dry_run=true` first) |
+| `refactor` | ✓ | Cross-file `rename_symbol` or `find_references` (writes via `write_file` pipeline; use `dry_run=true` first) |
 
 ### Package Management
 

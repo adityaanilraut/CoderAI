@@ -1,6 +1,5 @@
 """Code formatter tool — auto-detects and runs formatters (ruff format, black, prettier, gofmt)."""
 
-import asyncio
 import logging
 import shutil
 from pathlib import Path
@@ -8,6 +7,9 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+from coderAI.core.tool_error_codes import ToolErrorCode
+from coderAI.system.config import config_manager
+from coderAI.system.proc import run_scrubbed
 from coderAI.system.safeguards import truncate_output
 from coderAI.tools._detect import walk_up_detect
 from coderAI.tools.base import Tool
@@ -150,20 +152,24 @@ class FormatTool(Tool):
 
             extra = config["check_args"] if check else config["args"]
 
+            # Resolve the target against the project root and run under it: the
+            # formatter finds project config (e.g. prettier's .prettierrc), and
+            # run_scrubbed scrubs secrets from the child env with a bounded
+            # timeout + process-group kill — the raw exec did neither (finding 3).
+            cfg = config_manager.load_project_config(".")
+            project_root = Path(getattr(cfg, "project_root", ".") or ".").resolve()
+            target = str((project_root / path).resolve())
+
             # Same shape for every formatter, incl. prettier: <binary> <args> <path>
-            cmd: List[str] = [cmd_binary] + extra + [path]
+            cmd: List[str] = [cmd_binary] + extra + [target]
 
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=".",
+            returncode, stdout, stderr, timed_out = await run_scrubbed(
+                cmd,
+                cwd=str(project_root),
+                timeout=60,
+                shell=False,
             )
-
-            try:
-                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=60)
-            except asyncio.TimeoutError:
-                process.kill()
+            if timed_out:
                 return {"success": False, "error": "Formatter timed out after 60 seconds."}
 
             stdout_str = stdout.decode("utf-8", errors="replace")
@@ -173,7 +179,7 @@ class FormatTool(Tool):
             output, _ = truncate_output(stdout_str or stderr_str, max_chars=8000)
 
             if check:
-                needs_formatting = process.returncode != 0
+                needs_formatting = returncode != 0
                 return {
                     "success": True,
                     "formatter": formatter_name,
@@ -187,7 +193,7 @@ class FormatTool(Tool):
                     ),
                 }
 
-            formatted = process.returncode == 0
+            formatted = returncode == 0
             return {
                 "success": formatted,
                 "formatter": formatter_name,
@@ -201,4 +207,4 @@ class FormatTool(Tool):
             }
 
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": str(e), "error_code": ToolErrorCode.TOOL_ERROR}

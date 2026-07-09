@@ -11,8 +11,10 @@ from coderAI.core.tool_error_codes import ToolErrorCode
 from coderAI.tools.base import Tool
 
 from coderAI.tools.filesystem._guards import (
+    _O_NOFOLLOW,
     _enforce_project_scope,
     _is_path_protected,
+    _reject_symlink_leaf,
 )
 
 
@@ -32,6 +34,9 @@ class FileStatTool(Tool):
     async def execute(self, path: str) -> dict[str, Any]:  # type: ignore[override]
         try:
             target = Path(path).expanduser()
+            scope_err = _enforce_project_scope(target, "stat")
+            if scope_err:
+                return scope_err
             if not target.exists():
                 return {"success": False, "error": f"Path does not exist: {path}"}
             stat = target.stat()
@@ -82,7 +87,23 @@ class FileChmodTool(Tool):
             scope_err = _enforce_project_scope(target, "chmod")
             if scope_err:
                 return scope_err
-            target.chmod(int(mode, 8))
+            symlink_err = _reject_symlink_leaf(target, "chmod")
+            if symlink_err:
+                return symlink_err
+            mode_int = int(mode, 8)
+            if sys.platform == "win32":
+                # No O_NOFOLLOW on Windows; the lstat-based leaf check above is
+                # the guard (same rationale as _guards.py's _safe_open_no_symlink).
+                target.chmod(mode_int)
+            else:
+                # fd-based no-follow chmod: a swap-to-symlink in the TOCTOU gap
+                # after the leaf check fails the open with ELOOP instead of
+                # silently following the link.
+                fd = os.open(str(target), os.O_RDONLY | _O_NOFOLLOW)
+                try:
+                    os.fchmod(fd, mode_int)
+                finally:
+                    os.close(fd)
             return {"success": True, "path": str(target.resolve()), "mode": mode}
         except PermissionError:
             return {"success": False, "error": f"Permission denied: {path}"}
@@ -134,6 +155,9 @@ class FileChownTool(Tool):
             scope_err = _enforce_project_scope(target, "chown")
             if scope_err:
                 return scope_err
+            symlink_err = _reject_symlink_leaf(target, "chown")
+            if symlink_err:
+                return symlink_err
             uid = int(owner) if (owner and owner.isdigit()) else -1
             gid = int(group) if (group and group.isdigit()) else -1
             import pwd
@@ -143,7 +167,13 @@ class FileChownTool(Tool):
                 uid = pwd.getpwnam(owner).pw_uid
             if group and gid == -1:
                 gid = grp.getgrnam(group).gr_gid
-            os.chown(str(target.resolve()), uid if owner else -1, gid if group else -1)
+            # fd-based no-follow chown (POSIX-only tool): closes the same
+            # symlink-TOCTOU gap that os.chown(target.resolve()) leaves open.
+            fd = os.open(str(target), os.O_RDONLY | _O_NOFOLLOW)
+            try:
+                os.fchown(fd, uid if owner else -1, gid if group else -1)
+            finally:
+                os.close(fd)
             return {"success": True, "path": str(target.resolve()), "owner": owner, "group": group}
         except PermissionError:
             return {"success": False, "error": f"Permission denied changing ownership of: {path}"}
@@ -171,9 +201,16 @@ class FileReadlinkTool(Tool):
     async def execute(self, path: str) -> dict[str, Any]:  # type: ignore[override]
         try:
             target = Path(path).expanduser()
-            if not target.exists():
-                return {"success": False, "error": f"Path does not exist: {path}"}
+            scope_err = _enforce_project_scope(target, "readlink")
+            if scope_err:
+                return scope_err
+            # Check is_symlink() (lstat-based) before exists() (follows the
+            # link): a broken symlink has exists()==False but is a valid
+            # readlink target, so testing exists() first misreports it as
+            # "Path does not exist".
             if not target.is_symlink():
+                if not target.exists():
+                    return {"success": False, "error": f"Path does not exist: {path}"}
                 return {"success": False, "error": f"Not a symlink: {path}"}
             resolved = target.readlink()
             return {"success": True, "path": str(target.resolve()), "target": str(resolved)}

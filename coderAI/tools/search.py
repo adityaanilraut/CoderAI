@@ -9,7 +9,10 @@ from typing import Any, Dict, List
 
 from pydantic import BaseModel, Field
 
+from coderAI.core.tool_error_codes import ToolErrorCode
+from coderAI.system.proc import run_scrubbed
 from coderAI.tools.base import Tool
+from coderAI.tools.filesystem._guards import _enforce_project_scope
 
 # Directories skipped by the pure-Python grep fallback to avoid scanning
 # build artifacts and VCS metadata.
@@ -53,11 +56,12 @@ class TextSearchTool(Tool):
         """Search codebase."""
         try:
             base = Path(base_path).expanduser()
+            scope_err = _enforce_project_scope(base, "search")
+            if scope_err:
+                return scope_err
             if not base.exists():
                 return {"success": False, "error": f"Base path not found: {base_path}"}
 
-            results = []
-            was_truncated = False
             if regex:
                 try:
                     pattern = re.compile(query, re.IGNORECASE)
@@ -66,50 +70,11 @@ class TextSearchTool(Tool):
             else:
                 pattern = re.compile(re.escape(query), re.IGNORECASE)
 
-            # Search recursively
-            for file_path in base.rglob(file_pattern):
-                if not file_path.is_file():
-                    continue
-
-                # Skip common ignore patterns
-                if any(
-                    p in file_path.parts
-                    for p in [
-                        ".git",
-                        "node_modules",
-                        "__pycache__",
-                        ".venv",
-                        "venv",
-                        "dist",
-                        "build",
-                    ]
-                ):
-                    continue
-
-                try:
-                    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                        for line_num, line in enumerate(f, 1):
-                            if pattern.search(line):
-                                results.append(
-                                    {
-                                        "file": str(
-                                            file_path.relative_to(base)
-                                            if file_path.is_relative_to(base)
-                                            else file_path
-                                        ),
-                                        "line": line_num,
-                                        "content": line.strip(),
-                                    }
-                                )
-                                if len(results) >= max_results:
-                                    was_truncated = True
-                                    break
-                except Exception:
-                    continue
-
-                if len(results) >= max_results:
-                    was_truncated = True
-                    break
+            # Offload the rglob/open scan to a worker thread so a large tree
+            # never blocks the event loop (mirrors GrepTool._python_grep).
+            results, was_truncated = await asyncio.to_thread(
+                self._scan, base, pattern, file_pattern, max_results
+            )
 
             return {
                 "success": True,
@@ -120,7 +85,51 @@ class TextSearchTool(Tool):
                 "next_offset": len(results) if was_truncated else None,
             }
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": str(e), "error_code": ToolErrorCode.TOOL_ERROR}
+
+    def _scan(
+        self,
+        base: Path,
+        pattern: "re.Pattern[str]",
+        file_pattern: str,
+        max_results: int,
+    ) -> tuple[List[Dict[str, Any]], bool]:
+        """Synchronous rglob/open scan — runs on a worker thread."""
+        results: List[Dict[str, Any]] = []
+        was_truncated = False
+        for file_path in base.rglob(file_pattern):
+            if not file_path.is_file():
+                continue
+
+            # Skip common ignore patterns
+            if any(p in file_path.parts for p in _GREP_SKIP_DIRS):
+                continue
+
+            try:
+                with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                    for line_num, line in enumerate(f, 1):
+                        if pattern.search(line):
+                            results.append(
+                                {
+                                    "file": str(
+                                        file_path.relative_to(base)
+                                        if file_path.is_relative_to(base)
+                                        else file_path
+                                    ),
+                                    "line": line_num,
+                                    "content": line.strip(),
+                                }
+                            )
+                            if len(results) >= max_results:
+                                was_truncated = True
+                                break
+            except Exception:
+                continue
+
+            if len(results) >= max_results:
+                was_truncated = True
+                break
+        return results, was_truncated
 
 
 class GrepParams(BaseModel):
@@ -159,6 +168,9 @@ class GrepTool(Tool):
         same result shape.
         """
         try:
+            scope_err = _enforce_project_scope(Path(path).expanduser(), "search")
+            if scope_err:
+                return scope_err
             if shutil.which("grep") is None:
                 return await asyncio.to_thread(
                     self._python_grep,
@@ -177,12 +189,18 @@ class GrepTool(Tool):
             cmd.append(pattern)
             cmd.append(path)
 
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await process.communicate()
+            # run_scrubbed bounds the scan with a timeout (grep on a huge tree
+            # was the only unbounded subprocess in the suite), scrubs secrets
+            # from the child env, and group-kills on timeout. grep exits 1 on
+            # "no matches" — that is not an error, so returncode is ignored and
+            # only an actual timeout is surfaced.
+            _, stdout, _, timed_out = await run_scrubbed(cmd, timeout=60, shell=False)
+            if timed_out:
+                return {
+                    "success": False,
+                    "error": "grep timed out after 60s; narrow the path or pattern.",
+                    "error_code": ToolErrorCode.TIMEOUT,
+                }
 
             output = stdout.decode("utf-8", errors="replace")
             matches = []
@@ -216,7 +234,7 @@ class GrepTool(Tool):
                 )
             return result
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": str(e), "error_code": ToolErrorCode.TOOL_ERROR}
 
     def _python_grep(
         self,
@@ -295,7 +313,7 @@ class GrepTool(Tool):
                 )
             return result
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": str(e), "error_code": ToolErrorCode.TOOL_ERROR}
 
 
 class SymbolSearchParams(BaseModel):
@@ -331,40 +349,17 @@ class SymbolSearchTool(Tool):
     ) -> Dict[str, Any]:
         try:
             base = Path(path).expanduser()
+            scope_err = _enforce_project_scope(base, "search")
+            if scope_err:
+                return scope_err
             if not base.exists():
                 return {"success": False, "error": f"Path not found: {path}"}
 
-            files = [base] if base.is_file() else [p for p in base.rglob("*") if p.is_file()]
-            results: List[Dict[str, Any]] = []
-            was_truncated = False
-            for file_path in files:
-                if any(
-                    part in file_path.parts
-                    for part in (
-                        ".git",
-                        "node_modules",
-                        "__pycache__",
-                        ".venv",
-                        "venv",
-                        "dist",
-                        "build",
-                    )
-                ):
-                    continue
-                suffix = file_path.suffix.lower()
-                if suffix == ".py":
-                    matches = self._search_python(file_path, symbol, kind)
-                elif suffix in {".ts", ".tsx", ".js", ".jsx"}:
-                    matches = self._search_jsts(file_path, symbol, kind)
-                else:
-                    continue
-                for match in matches:
-                    results.append(match)
-                    if len(results) >= max_results:
-                        was_truncated = True
-                        break
-                if len(results) >= max_results:
-                    break
+            # Offload the tree walk + ast.parse to a worker thread so a large
+            # tree never blocks the event loop.
+            results, was_truncated = await asyncio.to_thread(
+                self._walk, base, symbol, kind, max_results
+            )
             return {
                 "success": True,
                 "symbol": symbol,
@@ -375,7 +370,33 @@ class SymbolSearchTool(Tool):
                 "next_offset": len(results) if was_truncated else None,
             }
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": str(e), "error_code": ToolErrorCode.TOOL_ERROR}
+
+    def _walk(
+        self, base: Path, symbol: str, kind: str, max_results: int
+    ) -> tuple[List[Dict[str, Any]], bool]:
+        """Synchronous tree walk + ast/regex parse — runs on a worker thread."""
+        files = [base] if base.is_file() else [p for p in base.rglob("*") if p.is_file()]
+        results: List[Dict[str, Any]] = []
+        was_truncated = False
+        for file_path in files:
+            if any(part in file_path.parts for part in _GREP_SKIP_DIRS):
+                continue
+            suffix = file_path.suffix.lower()
+            if suffix == ".py":
+                matches = self._search_python(file_path, symbol, kind)
+            elif suffix in {".ts", ".tsx", ".js", ".jsx"}:
+                matches = self._search_jsts(file_path, symbol, kind)
+            else:
+                continue
+            for match in matches:
+                results.append(match)
+                if len(results) >= max_results:
+                    was_truncated = True
+                    break
+            if len(results) >= max_results:
+                break
+        return results, was_truncated
 
     def _search_python(self, file_path: Path, symbol: str, kind: str) -> List[Dict[str, Any]]:
         try:

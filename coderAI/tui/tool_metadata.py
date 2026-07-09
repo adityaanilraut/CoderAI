@@ -88,7 +88,6 @@ _RISK_FACTOR_OVERRIDES: Dict[str, list[str]] = {
     "write_file": ["Writes to filesystem", "Could overwrite existing files"],
     "search_replace": ["Modifies files in place", "Could leave dirty working tree"],
     "apply_diff": ["Modifies files in place", "Could leave dirty working tree"],
-    "multi_edit": ["Modifies files in place", "Could leave dirty working tree"],
     "delete_file": ["Permanently deletes files", "Irreversible without git"],
     "move_file": ["Moves or renames files", "Could overwrite the destination"],
     "python_repl": ["Executes arbitrary Python", "Full access to the environment"],

@@ -136,3 +136,38 @@ def test_package_manager_env_has_no_secrets(
     assert "ANTHROPIC_API_KEY" not in env
     assert "NPM_TOKEN" not in env
     assert env.get("PKG_BENIGN_MARKER") == "keepme"
+
+
+def test_format_env_has_no_secrets(monkeypatch: pytest.MonkeyPatch, spawn_spy: dict) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-123")
+    monkeypatch.setenv("FMT_BENIGN_MARKER", "keepme")
+    # Pretend the formatter binary is on PATH so we reach the spawn boundary.
+    monkeypatch.setattr("coderAI.tools.format.shutil.which", lambda name: f"/usr/bin/{name}")
+
+    from coderAI.tools.format import FormatTool
+
+    result = asyncio.run(FormatTool().execute(path=".", formatter="ruff"))
+
+    assert result["success"] is True, result
+    assert spawn_spy["argv"][0] == "ruff"
+    env = spawn_spy["env"]
+    assert env is not None
+    assert "ANTHROPIC_API_KEY" not in env
+    assert env.get("FMT_BENIGN_MARKER") == "keepme"
+
+
+def test_lint_env_has_no_secrets(monkeypatch: pytest.MonkeyPatch, spawn_spy: dict) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-123")
+    monkeypatch.setenv("LINT_BENIGN_MARKER", "keepme")
+    monkeypatch.setattr("coderAI.tools.lint.shutil.which", lambda name: f"/usr/bin/{name}")
+
+    from coderAI.tools.lint import LintTool
+
+    result = asyncio.run(LintTool().execute(path=".", linter="ruff"))
+
+    assert result["success"] is True, result
+    assert spawn_spy["argv"][0] == "ruff"
+    env = spawn_spy["env"]
+    assert env is not None
+    assert "ANTHROPIC_API_KEY" not in env
+    assert env.get("LINT_BENIGN_MARKER") == "keepme"

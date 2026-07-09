@@ -28,6 +28,13 @@ from coderAI.core.provenance import (
 from coderAI.core.tool_executor import ToolExecutor
 from coderAI.system.history import Session
 from coderAI.tools.base import Tool, ToolRegistry
+from coderAI.tools.mcp import (
+    MCPCallTool,
+    MCPGetPromptTool,
+    MCPListPromptsTool,
+    MCPListResourcesTool,
+    MCPReadResourceTool,
+)
 from coderAI.tools.web.tools import (
     DownloadFileTool,
     HTTPRequestTool,
@@ -148,6 +155,37 @@ def test_all_web_tools_declare_untrusted_provenance(tool_cls: type[Tool]) -> Non
     assert t.result_provenance == Provenance.UNTRUSTED_EXTERNAL, (
         f"{t.name} must declare result_provenance == UNTRUSTED_EXTERNAL"
     )
+
+
+# Static MCP tools relay third-party server output but carry a local Tool object
+# (unlike an ``mcp__`` proxy), so they must self-declare untrusted provenance and
+# ``mcp_source``. The data-plane trio also performs egress via its arguments; the
+# listing tools do not (only server_name arg, no payload channel).
+MCP_DATA_PLANE_TOOLS: list[type[Tool]] = [
+    MCPCallTool,
+    MCPReadResourceTool,
+    MCPGetPromptTool,
+]
+MCP_LISTING_TOOLS: list[type[Tool]] = [
+    MCPListResourcesTool,
+    MCPListPromptsTool,
+]
+
+
+@pytest.mark.parametrize("tool_cls", MCP_DATA_PLANE_TOOLS)
+def test_mcp_data_plane_tools_declare_untrusted_egress_and_source(tool_cls: type[Tool]) -> None:
+    t = tool_cls()
+    assert t.result_provenance == Provenance.UNTRUSTED_EXTERNAL, t.name
+    assert t.is_egress is True, t.name
+    assert t.mcp_source is True, t.name
+
+
+@pytest.mark.parametrize("tool_cls", MCP_LISTING_TOOLS)
+def test_mcp_listing_tools_declare_untrusted_and_source_no_egress(tool_cls: type[Tool]) -> None:
+    t = tool_cls()
+    assert t.result_provenance == Provenance.UNTRUSTED_EXTERNAL, t.name
+    assert t.mcp_source is True, t.name
+    assert t.is_egress is False, t.name
 
 
 # ── end-to-end through the executor ─────────────────────────────────────────

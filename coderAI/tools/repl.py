@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from coderAI.core.services import get_services
 from coderAI.core.tool_error_codes import ToolErrorCode
 from coderAI.system.proc import kill_process_group, new_session_kwargs, scrub_env
+from coderAI.system.safeguards import truncate_output
 from coderAI.tools.base import Tool
 from coderAI.tools.terminal import _resolve_working_dir
 
@@ -122,16 +123,11 @@ class PythonREPLTool(Tool):
                 stdout_str = stdout.decode("utf-8", errors="replace")
                 stderr_str = stderr.decode("utf-8", errors="replace")
 
-                # Truncate large output
+                # Truncate large output — head+tail for stdout (keep the tail,
+                # where tracebacks/results land), head-only for stderr.
                 max_output = get_services().config.max_command_output
-                if len(stdout_str) > max_output:
-                    stdout_str = (
-                        stdout_str[: max_output // 2]
-                        + f"\n\n... [truncated {len(stdout_str) - max_output} chars] ...\n\n"
-                        + stdout_str[-max_output // 2 :]
-                    )
-                if len(stderr_str) > max_output:
-                    stderr_str = stderr_str[:max_output]
+                stdout_str, _ = truncate_output(stdout_str, max_chars=max_output, mode="head_tail")
+                stderr_str, _ = truncate_output(stderr_str, max_chars=max_output, mode="head")
 
                 return {
                     "success": process.returncode == 0,

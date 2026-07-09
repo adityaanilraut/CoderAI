@@ -157,3 +157,72 @@ class TestRefactorTraversal:
             )
         )
         assert result["success"] is False
+
+
+# ---------------------------------------------------------------------------
+# Search + project + metadata tools scope enforcement (finding 1)
+# ---------------------------------------------------------------------------
+
+
+class TestSearchToolsScope:
+    """text_search / grep / symbol_search must not read outside the project."""
+
+    def test_text_search_rejects_outside_project(self, tmp_path, monkeypatch):
+        _set_project_root(monkeypatch, tmp_path)
+        from coderAI.tools.search import TextSearchTool
+
+        bad = str(tmp_path / "../..")
+        result = asyncio.run(TextSearchTool().execute(query="secret", base_path=bad))
+        assert result["success"] is False
+        assert result.get("error_code") == "scope", result
+
+    def test_grep_rejects_outside_project(self, tmp_path, monkeypatch):
+        _set_project_root(monkeypatch, tmp_path)
+        from coderAI.tools.search import GrepTool
+
+        bad = str(tmp_path / "../..")
+        result = asyncio.run(GrepTool().execute(pattern="secret", path=bad))
+        assert result["success"] is False
+        assert result.get("error_code") == "scope", result
+
+    def test_symbol_search_rejects_outside_project(self, tmp_path, monkeypatch):
+        _set_project_root(monkeypatch, tmp_path)
+        from coderAI.tools.search import SymbolSearchTool
+
+        bad = str(tmp_path / "../..")
+        result = asyncio.run(SymbolSearchTool().execute(symbol="Agent", path=bad))
+        assert result["success"] is False
+        assert result.get("error_code") == "scope", result
+
+
+class TestProjectContextScope:
+    def test_rejects_outside_project(self, tmp_path, monkeypatch):
+        _set_project_root(monkeypatch, tmp_path)
+        from coderAI.tools.project import ProjectContextTool
+
+        bad = str(tmp_path / "../..")
+        result = asyncio.run(ProjectContextTool().execute(path=bad))
+        assert result["success"] is False
+        assert result.get("error_code") == "scope", result
+
+
+class TestMetadataScope:
+    """file_stat / file_readlink read parity with read_file scope."""
+
+    def test_file_stat_rejects_outside_project(self, tmp_path, monkeypatch):
+        _set_project_root(monkeypatch, tmp_path)
+        from coderAI.tools.filesystem.metadata import FileStatTool
+
+        bad = str(tmp_path / "../../etc/passwd")
+        result = asyncio.run(FileStatTool().execute(path=bad))
+        assert result["success"] is False
+        assert result.get("error_code") == "scope", result
+
+    def test_file_readlink_rejects_outside_project(self, tmp_path, monkeypatch):
+        _set_project_root(monkeypatch, tmp_path)
+        from coderAI.tools.filesystem.metadata import FileReadlinkTool
+
+        bad = str(tmp_path / "../../etc/passwd")
+        result = asyncio.run(FileReadlinkTool().execute(path=bad))
+        assert result["success"] is False
+        assert result.get("error_code") == "scope", result

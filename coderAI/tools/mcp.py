@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+from coderAI.core.provenance import Provenance
 from coderAI.core.tool_error_codes import ToolErrorCode
 from coderAI.system.fsperms import atomic_write_json
 from coderAI.tools.base import Tool
@@ -1383,8 +1384,12 @@ class MCPConnectTool(Tool):
 
     name = "mcp_connect"
     description = "Connect to an MCP (Model Context Protocol) server to discover and use its tools"
+    category = "mcp"
     parameters_model = MCPConnectParams
     requires_confirmation = True
+    # url/headers are an outbound channel (they can carry exfiltrated data to an
+    # attacker-chosen endpoint), so this control-plane call performs egress.
+    is_egress = True
 
     async def execute(  # type: ignore[override]
         self,
@@ -1434,8 +1439,16 @@ class MCPCallTool(Tool):
 
     name = "mcp_call_tool"
     description = "Call a tool on a connected MCP server"
+    category = "mcp"
     parameters_model = MCPCallToolParams
     requires_confirmation = True
+    # Relays raw third-party server output → untrusted, and the arguments are an
+    # outbound channel. mcp_source arms the confused-deputy gate the way an
+    # ``mcp__server__tool`` proxy call does (this static tool has a local object,
+    # so name-based detection alone would miss it).
+    result_provenance = Provenance.UNTRUSTED_EXTERNAL
+    is_egress = True
+    mcp_source = True
 
     async def execute(  # type: ignore[override]
         self, server_name: str, tool_name: str, arguments: Optional[Dict[str, Any]] = None
@@ -1453,6 +1466,7 @@ class MCPListTool(Tool):
 
     name = "mcp_list"
     description = "List all connected MCP servers and discovered tools"
+    category = "mcp"
     parameters_model = MCPListParams
     is_read_only = True
 
@@ -1547,6 +1561,10 @@ class MCPListResourcesTool(Tool):
     category = "mcp"
     parameters_model = MCPListResourcesParams
     is_read_only = True
+    # Resource URIs/names come from the third-party server → untrusted. No
+    # is_egress: the only argument is server_name, so there is no payload channel.
+    result_provenance = Provenance.UNTRUSTED_EXTERNAL
+    mcp_source = True
 
     async def execute(self, server_name: str) -> Dict[str, Any]:  # type: ignore[override]
         return await mcp_client.list_resources(server_name)
@@ -1565,6 +1583,11 @@ class MCPReadResourceTool(Tool):
     category = "mcp"
     parameters_model = MCPReadResourceParams
     is_read_only = True
+    # Returns raw resource content from the third-party server → untrusted, and
+    # the uri argument is an outbound channel.
+    result_provenance = Provenance.UNTRUSTED_EXTERNAL
+    is_egress = True
+    mcp_source = True
 
     async def execute(self, server_name: str, uri: str) -> Dict[str, Any]:  # type: ignore[override]
         return await mcp_client.read_resource(server_name, uri)
@@ -1587,6 +1610,10 @@ class MCPListPromptsTool(Tool):
     category = "mcp"
     parameters_model = MCPListPromptsParams
     is_read_only = True
+    # Prompt names/metadata come from the third-party server → untrusted. No
+    # is_egress: the only argument is server_name.
+    result_provenance = Provenance.UNTRUSTED_EXTERNAL
+    mcp_source = True
 
     async def execute(self, server_name: str) -> Dict[str, Any]:  # type: ignore[override]
         return await mcp_client.list_prompts(server_name)
@@ -1608,6 +1635,11 @@ class MCPGetPromptTool(Tool):
     category = "mcp"
     parameters_model = MCPGetPromptParams
     is_read_only = True
+    # Returns raw prompt content from the third-party server → untrusted, and the
+    # arguments are an outbound channel.
+    result_provenance = Provenance.UNTRUSTED_EXTERNAL
+    is_egress = True
+    mcp_source = True
 
     async def execute(  # type: ignore[override]
         self, server_name: str, name: str, arguments: Optional[Dict[str, Any]] = None
