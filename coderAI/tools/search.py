@@ -10,7 +10,7 @@ from typing import Any, Dict, List
 from pydantic import BaseModel, Field
 
 from coderAI.core.tool_error_codes import ToolErrorCode
-from coderAI.system.proc import run_scrubbed
+from coderAI.system.proc import run_scrubbed, subprocess_timeout
 from coderAI.tools.base import Tool
 from coderAI.tools.filesystem._guards import _enforce_project_scope
 
@@ -194,7 +194,9 @@ class GrepTool(Tool):
             # from the child env, and group-kills on timeout. grep exits 1 on
             # "no matches" — that is not an error, so returncode is ignored and
             # only an actual timeout is surfaced.
-            _, stdout, _, timed_out = await run_scrubbed(cmd, timeout=60, shell=False)
+            _, stdout, _, timed_out = await run_scrubbed(
+                cmd, timeout=subprocess_timeout(), shell=False
+            )
             if timed_out:
                 return {
                     "success": False,

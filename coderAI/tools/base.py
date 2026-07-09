@@ -9,7 +9,21 @@ from pydantic import BaseModel, ValidationError
 from coderAI.core.provenance import Provenance
 from coderAI.core.tool_error_codes import ToolErrorCode  # noqa: F401 — re-export
 
-__all__ = ["Tool", "ToolPreview", "ToolRegistry", "ToolClassificationError", "ToolErrorCode"]
+__all__ = [
+    "SUBPROCESS_TIMEOUT_MARGIN_SECONDS",
+    "Tool",
+    "ToolPreview",
+    "ToolRegistry",
+    "ToolClassificationError",
+    "ToolErrorCode",
+]
+
+# Head-room added on top of a tool's own (clamped) subprocess timeout when it
+# derives the executor's outer wall-clock cap via ``Tool.resolve_timeout``.
+# Covers ``run_scrubbed``'s 2s SIGTERM grace, the SIGKILL escalation, and the
+# partial-output read, so the inner timeout path — which returns the tool's
+# richer partial-output dict — always fires before the outer ``wait_for``.
+SUBPROCESS_TIMEOUT_MARGIN_SECONDS = 10.0
 
 
 @dataclass
@@ -83,6 +97,19 @@ class Tool(ABC):
 
     # Per-tool timeout in seconds. None = use ToolExecutor's default.
     timeout: Optional[float] = None
+
+    # Transient-failure retry opt-in. The executor re-attempts a tool call
+    # (bounded by ``config.tool_retry_max_attempts``) only when this is True,
+    # the call needed no confirmation, and the failure looks transient
+    # (429/5xx/connection-reset…). Explicit opt-in only — read-only does NOT
+    # imply idempotent/cheap, so the default is fail-closed. Reserved for
+    # read-only network fetch tools whose errors are HTTP-shaped.
+    retryable: bool = False
+
+    # Background-job opt-in: ``start_job`` may run this tool detached from the
+    # turn (JobManager). Reserved for long-running tools whose effects don't
+    # race live foreground edits (test runs, package installs, downloads).
+    backgroundable: bool = False
 
     # UI grouping. Used by the Textual UI to categorize tools (filesystem,
     # search, git, terminal, web, memory, agent, mcp, other). Subclasses
@@ -158,6 +185,19 @@ class Tool(ABC):
                 "parameters": self.get_parameters(),
             },
         }
+
+    def resolve_timeout(self, arguments: Dict[str, Any]) -> Optional[float]:
+        """Argument-derived wall-clock cap for one call, or ``None`` to defer.
+
+        Tools whose ``execute`` accepts its own ``timeout`` argument (e.g.
+        ``run_command``) override this to return that inner timeout — clamped
+        exactly as ``execute`` clamps it — plus
+        :data:`SUBPROCESS_TIMEOUT_MARGIN_SECONDS`, so the executor's outer
+        ``wait_for`` can never fire first and bypass the tool's own
+        process-group cleanup. Returning ``None`` (the default) defers to the
+        ``timeout`` class attribute / config / executor default chain.
+        """
+        return None
 
     def preview(
         self, arguments: Dict[str, Any], original: Optional[str]

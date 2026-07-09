@@ -1,5 +1,6 @@
 """Sub-agent delegation tool for multi-agent capabilities."""
 
+import asyncio
 import logging
 import os
 import time as _time
@@ -12,12 +13,20 @@ from coderAI.core.tool_error_codes import ToolErrorCode
 from coderAI.tools.base import Tool
 from coderAI.core.agent_loop import RECOVERABLE_ERROR_MARKER
 from coderAI.core.agent_tracker import AgentStatus
+from coderAI.system.error_policy import BudgetExceededError, is_transient_error
 from coderAI.system.events import event_emitter
+from coderAI.system.retry import backoff_delay
 
 logger = logging.getLogger(__name__)
 
 # Maximum depth for nested sub-agent delegation to prevent infinite recursion
 MAX_DELEGATION_DEPTH = 3
+
+# Transient-failure retries for one delegation (documented "retried up to 2
+# times with exponential backoff"). Retries re-run on the SAME sub-agent /
+# session — cheaper than a fresh spawn and it preserves task_id resume.
+MAX_DELEGATION_RETRIES = 2
+DELEGATION_RETRY_DELAY_CAP_SECONDS = 30.0
 
 # How many recent recoverable-error notes from the parent session to surface
 # to the sub-agent. Keeps the preamble focused on the latest failures.
@@ -618,9 +627,43 @@ class DelegateTaskTool(Tool):
                 event_emitter.emit("agent_tracker_sync", info=info)
 
             try:
-                final_report = await sub_agent.process_single_shot(
-                    task_description, progress_callback=_on_tool_progress
-                )
+                attempt = 0
+                while True:
+                    attempt += 1
+                    try:
+                        final_report = await sub_agent.process_single_shot(
+                            task_description, progress_callback=_on_tool_progress
+                        )
+                        break
+                    except Exception as retry_exc:
+                        cancel_evt = (
+                            sub_agent.tracker_info._cancel_event if sub_agent.tracker_info else None
+                        )
+                        if (
+                            attempt > MAX_DELEGATION_RETRIES
+                            or isinstance(retry_exc, BudgetExceededError)
+                            or not is_transient_error(retry_exc)
+                            or (cancel_evt is not None and cancel_evt.is_set())
+                        ):
+                            raise
+                        delay = backoff_delay(
+                            attempt, base=1.0, cap=DELEGATION_RETRY_DELAY_CAP_SECONDS
+                        )
+                        logger.warning(
+                            "Sub-agent transient failure (attempt %d/%d) — retrying in %.1fs: %s",
+                            attempt,
+                            MAX_DELEGATION_RETRIES + 1,
+                            delay,
+                            retry_exc,
+                        )
+                        event_emitter.emit(
+                            "agent_status",
+                            message=(
+                                f"[dim]Sub-Agent{role_label} hit a transient error — "
+                                f"retrying (attempt {attempt + 1}/{MAX_DELEGATION_RETRIES + 1})…[/dim]"
+                            ),
+                        )
+                        await asyncio.sleep(delay)
 
                 if not (final_report and final_report.strip()):
                     from coderAI.core.agent_loop import ExecutionLoop

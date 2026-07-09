@@ -98,6 +98,31 @@ class TestRewriteCommandAliases:
         assert result == "node server.js"
 
 
+class TestRunCommandResolveTimeout:
+    """The executor's outer cap must mirror execute()'s own clamp plus the
+    subprocess-cleanup margin — a run_command(timeout=600) was previously
+    killed at the outer 120s default, bypassing process-group cleanup."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        self.tool = RunCommandTool()
+
+    def test_requested_timeout_plus_margin(self):
+        assert self.tool.resolve_timeout({"timeout": 600}) == 610.0
+
+    def test_default_timeout_plus_margin(self):
+        assert self.tool.resolve_timeout({}) == 70.0
+
+    def test_clamped_to_max(self):
+        assert self.tool.resolve_timeout({"timeout": 999999}) == 3610.0
+
+    def test_clamped_to_min(self):
+        assert self.tool.resolve_timeout({"timeout": -5}) == 11.0
+
+    def test_garbage_falls_back_to_default(self):
+        assert self.tool.resolve_timeout({"timeout": "garbage"}) == 70.0
+
+
 class TestRunCommandTool:
     @pytest.fixture(autouse=True)
     def setup(self):
@@ -220,3 +245,51 @@ class TestRunBackgroundTool:
         count = self.tool.terminate_all()
         assert count >= 1
         assert len(self.tool.get_tracked_processes()) == 0
+
+
+class TestRunBackgroundCap:
+    """The tracked-process registry was previously unbounded; spawns beyond
+    config.max_background_processes must be refused until entries are reaped."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from types import SimpleNamespace
+
+        self.tool = RunBackgroundTool()
+        # The registry is module-level and shared; snapshot and restore so
+        # fakes never leak into other tests.
+        self._saved = dict(self.tool._processes)
+        self.tool._processes.clear()
+        self._fake = lambda returncode: SimpleNamespace(
+            process=SimpleNamespace(returncode=returncode),
+            command="fake",
+            cancel_readers=lambda: None,
+        )
+        yield
+        self.tool.terminate_all()
+        self.tool._processes.clear()
+        self.tool._processes.update(self._saved)
+
+    def _config_scope(self, cap):
+        from coderAI.core.services import services_scope
+        from coderAI.system.config import Config
+
+        return services_scope(config=Config(max_background_processes=cap))
+
+    def test_spawn_refused_at_cap(self):
+        for pid in (91001, 91002):
+            self.tool._processes[pid] = self._fake(returncode=None)  # live
+        with self._config_scope(2):
+            result = asyncio.run(self.tool.execute(command="echo hi"))
+        assert result["success"] is False
+        assert "background processes" in result["error"]
+        assert "kill_process" in result["error"]
+
+    def test_exited_processes_reaped_then_spawn_succeeds(self):
+        for pid in (91001, 91002):
+            self.tool._processes[pid] = self._fake(returncode=0)  # exited
+        with self._config_scope(2):
+            result = asyncio.run(self.tool.execute(command="sleep 0"))
+        assert result["success"] is True
+        assert 91001 not in self.tool._processes
+        assert 91002 not in self.tool._processes

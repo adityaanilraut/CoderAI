@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from coderAI.core.tool_error_codes import ToolErrorCode
 from coderAI.system.config import config_manager
-from coderAI.system.proc import run_scrubbed
+from coderAI.system.proc import run_scrubbed, subprocess_timeout
 from coderAI.system.safeguards import truncate_output
 from coderAI.tools._detect import walk_up_detect
 from coderAI.tools.base import Tool
@@ -88,6 +88,7 @@ class LintTool(Tool):
     parameters_model = LintParams
     is_read_only = False
     requires_confirmation = True
+    backgroundable = True
     category = "code_quality"
 
     async def execute(  # type: ignore[override]
@@ -135,14 +136,18 @@ class LintTool(Tool):
             if linter_name in ("ruff", "eslint"):
                 cmd.append(str((project_root / path).resolve()))
 
+            lint_timeout = subprocess_timeout()
             returncode, stdout, stderr, timed_out = await run_scrubbed(
                 cmd,
                 cwd=str(project_root),
-                timeout=60,
+                timeout=lint_timeout,
                 shell=False,
             )
             if timed_out:
-                return {"success": False, "error": "Linter timed out after 60 seconds."}
+                return {
+                    "success": False,
+                    "error": f"Linter timed out after {lint_timeout:.0f} seconds.",
+                }
 
             stdout_str = stdout.decode("utf-8", errors="replace")
             stderr_str = stderr.decode("utf-8", errors="replace")

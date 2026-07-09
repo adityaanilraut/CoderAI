@@ -12,7 +12,7 @@ from coderAI.system.config import config_manager
 from coderAI.system.proc import run_scrubbed
 from coderAI.system.safeguards import truncate_output
 from coderAI.tools._detect import walk_up_detect
-from coderAI.tools.base import Tool
+from coderAI.tools.base import SUBPROCESS_TIMEOUT_MARGIN_SECONDS, Tool
 
 logger = logging.getLogger(__name__)
 
@@ -291,8 +291,19 @@ class RunTestsTool(Tool):
     parameters_model = RunTestsParams
     is_read_only = False
     requires_confirmation = True
+    backgroundable = True
     timeout = None
     category = "code_quality"
+
+    def resolve_timeout(self, arguments: Dict[str, Any]) -> Optional[float]:
+        # The framework isn't detected yet at this point, so fall back to the
+        # largest per-framework default (300s) when no explicit timeout is
+        # passed; execute()'s inner run_scrubbed timeout is always <= that.
+        try:
+            requested = int(arguments.get("timeout") or 300)
+        except (TypeError, ValueError):
+            requested = 300
+        return float(max(1, min(requested, 3600))) + SUBPROCESS_TIMEOUT_MARGIN_SECONDS
 
     async def execute(  # type: ignore[override]
         self,

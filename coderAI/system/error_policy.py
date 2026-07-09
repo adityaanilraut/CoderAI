@@ -90,6 +90,19 @@ _TRANSIENT_PATTERNS = (
 _TRANSIENT_HTTP_RE = re.compile(r"\b(429|500|502|503|504)\b")
 
 
+def is_transient_message(msg: str) -> bool:
+    """True when an error *message* looks transient (rate limit, 5xx, timeout…).
+
+    The string-level half of :func:`is_transient_error`, split out so callers
+    holding a tool error *dict* (tools return failures, they don't raise) can
+    classify it without synthesizing an exception.
+    """
+    msg = msg.lower()
+    if any(pattern in msg for pattern in _TRANSIENT_PATTERNS):
+        return True
+    return bool(_TRANSIENT_HTTP_RE.search(msg))
+
+
 def is_transient_error(exc: Exception) -> bool:
     """Determine if an exception is transient and worth retrying.
 
@@ -98,10 +111,7 @@ def is_transient_error(exc: Exception) -> bool:
     """
     if isinstance(exc, BudgetExceededError):
         return False
-    msg = str(exc).lower()
-    if any(pattern in msg for pattern in _TRANSIENT_PATTERNS):
-        return True
-    if _TRANSIENT_HTTP_RE.search(msg):
+    if is_transient_message(str(exc)):
         return True
     # Check for structured error bodies (e.g. OpenAI-style JSON errors)
     body = _try_extract_response_body(exc)

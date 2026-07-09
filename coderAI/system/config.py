@@ -23,6 +23,9 @@ _FLOAT_KEYS = frozenset(
         "rate_limit_delay_seconds",
         "skill_confidence_threshold",
         "browser_timeout",
+        "tool_timeout_seconds",
+        "subprocess_timeout_seconds",
+        "tool_retry_base_delay",
     }
 )
 _INT_KEYS = frozenset(
@@ -39,6 +42,9 @@ _INT_KEYS = frozenset(
         "page_cache_ttl_seconds",
         "skill_top_n",
         "max_concurrent_mutating_subagents",
+        "tool_retry_max_attempts",
+        "max_background_jobs",
+        "max_background_processes",
     }
 )
 _BOOL_KEYS = frozenset(
@@ -136,6 +142,26 @@ class Config(BaseModel):
     # Maximum concurrent mutating sub-agent delegations when using non-workspace
     # isolation domains (browser, desktop). Workspace/auto delegations stay serial.
     max_concurrent_mutating_subagents: int = Field(default=3, ge=1, le=8)
+
+    # --- Tool execution: timeouts / retries / background jobs ---
+    # Outer wall-clock cap the executor applies to a single tool call when the
+    # tool declares nothing itself. Only honoured when explicitly set (config
+    # file / env / project overlay); otherwise the executor's module default
+    # (DEFAULT_TOOL_TIMEOUT_SECONDS) applies.
+    tool_timeout_seconds: float = Field(default=120.0, gt=0.0)
+    # Per-tool-name overrides of the outer cap, e.g. {"run_tests": 900}.
+    tool_timeout_overrides: Dict[str, float] = Field(default_factory=dict)
+    # Default timeout for one-shot tool subprocesses (format/lint/grep/git…)
+    # that previously hardcoded 60s.
+    subprocess_timeout_seconds: float = Field(default=60.0, gt=0.0)
+    # Transient-failure retries for tools that opt in with ``retryable = True``
+    # (0 disables). Delays follow exponential backoff from tool_retry_base_delay.
+    tool_retry_max_attempts: int = Field(default=2, ge=0, le=5)
+    tool_retry_base_delay: float = Field(default=1.0, ge=0.0)
+    # Global resource caps — deliberately NOT project-overridable, so a cloned
+    # repo's config cannot widen concurrency on the host.
+    max_background_jobs: int = Field(default=3, ge=1, le=16)
+    max_background_processes: int = Field(default=10, ge=1, le=64)
 
     # --- Skill auto-detection ---
     auto_detect_skills: bool = Field(default=True)
@@ -241,6 +267,12 @@ class ConfigManager:
             "CODERAI_ALLOW_OUTSIDE_PROJECT": "allow_outside_project",
             "CODERAI_SUBAGENT_TIMEOUT_SECONDS": "subagent_timeout_seconds",
             "CODERAI_MAX_CONCURRENT_MUTATING_SUBAGENTS": "max_concurrent_mutating_subagents",
+            "CODERAI_TOOL_TIMEOUT_SECONDS": "tool_timeout_seconds",
+            "CODERAI_SUBPROCESS_TIMEOUT_SECONDS": "subprocess_timeout_seconds",
+            "CODERAI_TOOL_RETRY_MAX_ATTEMPTS": "tool_retry_max_attempts",
+            "CODERAI_TOOL_RETRY_BASE_DELAY": "tool_retry_base_delay",
+            "CODERAI_MAX_BACKGROUND_JOBS": "max_background_jobs",
+            "CODERAI_MAX_BACKGROUND_PROCESSES": "max_background_processes",
             "CODERAI_AUTO_DETECT_SKILLS": "auto_detect_skills",
             "CODERAI_SKILL_CONFIDENCE_THRESHOLD": "skill_confidence_threshold",
             "CODERAI_SKILL_TOP_N": "skill_top_n",
@@ -410,6 +442,13 @@ class ConfigManager:
             "log_level",
             "approval_timeout_seconds",
             "subagent_timeout_seconds",
+            "tool_timeout_seconds",
+            "tool_timeout_overrides",
+            "subprocess_timeout_seconds",
+            "tool_retry_max_attempts",
+            "tool_retry_base_delay",
+            # max_background_jobs / max_background_processes intentionally
+            # excluded: global host resource caps stay global-config only.
             "search_backend",
             "auto_detect_skills",
             "skill_confidence_threshold",

@@ -109,6 +109,11 @@ class AgentCapabilitiesMixin:
         registry = ToolRegistry()
         discover_tools(registry)
         registry.register(ManageContextTool(self._context_controller))
+        # start_job needs the live agent (registry + tracker), so it can't be
+        # zero-arg auto-discovered — registered manually like ManageContextTool.
+        from coderAI.tools.jobs import StartJobTool
+
+        registry.register(StartJobTool(self))
         from coderAI.tools.planning import CreatePlanTool
 
         plan_tool = registry.get("plan")

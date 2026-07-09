@@ -23,6 +23,7 @@ T = TypeVar("T")
 
 if TYPE_CHECKING:
     from coderAI.core.agent_tracker import AgentTracker
+    from coderAI.core.jobs import JobManager
     from coderAI.system.config import Config
     from coderAI.system.history import HistoryManager
     from coderAI.system.locks import ResourceManager
@@ -58,6 +59,7 @@ class ToolServices:
         lock_manager: Optional["ResourceManager"] = None,
         agent_tracker: Optional["AgentTracker"] = None,
         mcp_client: Optional["MCPClient"] = None,
+        jobs: Optional["JobManager"] = None,
     ) -> None:
         self._parent = parent
         self._config = config
@@ -70,6 +72,7 @@ class ToolServices:
         self._lock_manager = lock_manager
         self._agent_tracker = agent_tracker
         self._mcp_client = mcp_client
+        self._jobs = jobs
         # Guards lazy builds; tool batches may resolve services from worker
         # threads (e.g. asyncio.to_thread bodies).
         self._build_lock = threading.Lock()
@@ -175,6 +178,29 @@ class ToolServices:
             return AgentTracker()
 
         return self._resolve("agent_tracker", _build)
+
+    @property
+    def jobs(self) -> "JobManager":
+        """Background-job manager (start_job / job_status / … tools)."""
+
+        def _build() -> "JobManager":
+            from coderAI.core.jobs import JobManager
+
+            return JobManager()
+
+        return self._resolve("jobs", _build)
+
+    def jobs_if_built(self) -> Optional["JobManager"]:
+        """The JobManager if one exists anywhere on the chain — never builds.
+
+        Teardown paths use this so closing an agent that never started a job
+        doesn't lazily construct a manager just to shut it down.
+        """
+        if self._jobs is not None:
+            return self._jobs
+        if self._parent is not None:
+            return self._parent.jobs_if_built()
+        return None
 
     @property
     def mcp_client(self) -> "MCPClient":

@@ -10,12 +10,18 @@ from pydantic import BaseModel, Field
 from coderAI.tools.base import Tool
 from coderAI.core.tool_error_codes import ToolErrorCode
 from coderAI.system.locks import resource_manager
-from coderAI.system.proc import run_scrubbed
+from coderAI.system.proc import run_scrubbed, subprocess_timeout
 from coderAI.system.safeguards import truncate_output
 
 logger = logging.getLogger(__name__)
 
 MAX_GIT_OUTPUT_CHARS = 64_000
+
+# Network git operations (push/pull/fetch) get a wider subprocess timeout than
+# the config-driven local default — a slow remote is normal, an unbounded hang
+# is not. The owning tools set ``timeout = GIT_NETWORK_TIMEOUT_SECONDS + 10``
+# so the executor's outer cap stays behind the inner group-kill cleanup.
+GIT_NETWORK_TIMEOUT_SECONDS = 300.0
 
 _GIT_TRUNCATION_MARKER = "... [truncated {omitted} chars — re-run with a narrower scope] ..."
 
@@ -64,10 +70,14 @@ def _simple_result(result: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def _run_simple(
-    args: List[str], repo_path: str, *, needs_lock: bool = True
+    args: List[str],
+    repo_path: str,
+    *,
+    needs_lock: bool = True,
+    timeout: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Run a git command and shape it with :func:`_simple_result`."""
-    result = await _run_git_command(args, repo_path, needs_lock=needs_lock)
+    result = await _run_git_command(args, repo_path, needs_lock=needs_lock, timeout=timeout)
     if not result["success"]:
         return result
     return _simple_result(result)
@@ -100,34 +110,48 @@ async def _run_git_command(
     *,
     needs_lock: bool = False,
     validate_scope: bool = True,
+    timeout: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Run a git command with scope validation and optional lock acquisition.
 
-    Returns ``{"success": False, ...}`` on scope validation error, or
-    ``{"success": True, "returncode": int, "stdout": bytes, "stderr": bytes}``
+    Returns ``{"success": False, ...}`` on scope validation error or timeout,
+    or ``{"success": True, "returncode": int, "stdout": bytes, "stderr": bytes}``
     on command completion.  The caller is responsible for checking returncode
     and formatting the tool-level result.
+
+    *timeout* defaults to ``config.subprocess_timeout_seconds`` (git previously
+    ran unbounded); network operations pass :data:`GIT_NETWORK_TIMEOUT_SECONDS`.
     """
     if validate_scope:
         scope_error = await _validate_git_scope(repo_path)
         if scope_error:
             return scope_error
 
+    if timeout is None:
+        timeout = subprocess_timeout()
+
     async def _exec():
         # Scrub secrets from the child env: git subcommands can shell out
         # (hooks, credential helpers, ``git config alias.* = !sh -c …``), so an
         # inherited ``$ANTHROPIC_API_KEY`` etc. must not be reachable. scrub_env
         # is a denylist, so HOME/PATH/GIT_* the user set survive untouched.
-        returncode, stdout, stderr, _ = await run_scrubbed(
-            ["git", *args], cwd=repo_path, shell=False
+        returncode, stdout, stderr, timed_out = await run_scrubbed(
+            ["git", *args], cwd=repo_path, shell=False, timeout=timeout
         )
-        return returncode, stdout, stderr
+        return returncode, stdout, stderr, timed_out
 
     if needs_lock:
         async with resource_manager.git_lock():
-            returncode, stdout, stderr = await _exec()
+            returncode, stdout, stderr, timed_out = await _exec()
     else:
-        returncode, stdout, stderr = await _exec()
+        returncode, stdout, stderr, timed_out = await _exec()
+
+    if timed_out:
+        return {
+            "success": False,
+            "error": f"git {args[0] if args else ''} timed out after {timeout:.0f}s",
+            "error_code": ToolErrorCode.TIMEOUT,
+        }
 
     return {
         "success": True,
@@ -551,6 +575,7 @@ class GitPushTool(Tool):
     category = "git"
     parameters_model = GitPushParams
     requires_confirmation = True
+    timeout = GIT_NETWORK_TIMEOUT_SECONDS + 10.0
 
     @_tool_errors
     async def execute(  # type: ignore[override]
@@ -570,7 +595,7 @@ class GitPushTool(Tool):
         if branch:
             args.append(branch)
 
-        return await _run_simple(args, repo_path)
+        return await _run_simple(args, repo_path, timeout=GIT_NETWORK_TIMEOUT_SECONDS)
 
 
 class GitPullParams(BaseModel):
@@ -592,6 +617,7 @@ class GitPullTool(Tool):
     category = "git"
     parameters_model = GitPullParams
     requires_confirmation = True
+    timeout = GIT_NETWORK_TIMEOUT_SECONDS + 10.0
 
     @_tool_errors
     async def execute(  # type: ignore[override]
@@ -608,7 +634,7 @@ class GitPullTool(Tool):
         if branch:
             args.append(branch)
 
-        return await _run_simple(args, repo_path)
+        return await _run_simple(args, repo_path, timeout=GIT_NETWORK_TIMEOUT_SECONDS)
 
 
 class GitMergeParams(BaseModel):
@@ -1035,6 +1061,7 @@ class GitFetchTool(Tool):
     parameters_model = GitFetchParams
     is_read_only = False  # --prune deletes remote-tracking branches, so this is not read-only
     requires_confirmation = True
+    timeout = GIT_NETWORK_TIMEOUT_SECONDS + 10.0
 
     @_tool_errors
     async def execute(  # type: ignore[override]
@@ -1050,4 +1077,4 @@ class GitFetchTool(Tool):
         if branch:
             args.append(branch)
 
-        return await _run_simple(args, repo_path)
+        return await _run_simple(args, repo_path, timeout=GIT_NETWORK_TIMEOUT_SECONDS)

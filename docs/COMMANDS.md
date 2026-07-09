@@ -355,6 +355,12 @@ Environment variables take precedence over `~/.coderAI/config.json`.
 | `CODERAI_BUDGET_LIMIT` | `budget_limit` |
 | `CODERAI_LOG_LEVEL` | `log_level` |
 | `CODERAI_PROJECT_INSTRUCTION_FILE` | `project_instruction_file` |
+| `CODERAI_TOOL_TIMEOUT_SECONDS` | `tool_timeout_seconds` |
+| `CODERAI_SUBPROCESS_TIMEOUT_SECONDS` | `subprocess_timeout_seconds` |
+| `CODERAI_TOOL_RETRY_MAX_ATTEMPTS` | `tool_retry_max_attempts` |
+| `CODERAI_TOOL_RETRY_BASE_DELAY` | `tool_retry_base_delay` |
+| `CODERAI_MAX_BACKGROUND_JOBS` | `max_background_jobs` |
+| `CODERAI_MAX_BACKGROUND_PROCESSES` | `max_background_processes` |
 | `LMSTUDIO_ENDPOINT` | `lmstudio_endpoint` |
 | `OLLAMA_ENDPOINT` | `ollama_endpoint` |
 | `CODERAI_TUI_NOTIFICATIONS` | `tui_notifications` |
@@ -369,7 +375,7 @@ Environment variables take precedence over `~/.coderAI/config.json`.
 
 ## Tool Quick Reference
 
-All **91 tools** available to the agent when optional dependencies are installed (90 auto-discovered plus `manage_context`). Browser tools require `pip install coderAI[browser]`; PDF extraction in `read_url` requires `pip install coderAI[web]`; desktop tools are macOS-only. Batch edits use `search_replace` with an `edits` list. Confirmation required (`✓`) means the agent asks before running.
+All **96 tools** available to the agent when optional dependencies are installed (94 auto-discovered plus `manage_context` and `start_job`). Browser tools require `pip install coderAI[browser]`; PDF extraction in `read_url` requires `pip install coderAI[web]`; desktop tools are macOS-only. Batch edits use `search_replace` with an `edits` list. Confirmation required (`✓`) means the agent asks before running.
 
 ### Filesystem
 
@@ -488,6 +494,16 @@ All **91 tools** available to the agent when optional dependencies are installed
 |---|---|---|
 | `delegate_task` | ✓ | Spawn an isolated sub-agent |
 | `notepad` | — | Shared inter-agent notepad |
+
+### Background Jobs
+
+| Tool | Confirm | Description |
+|---|---|---|
+| `start_job` | ✓ | Run a backgroundable tool (`run_tests`, `package_manager`, `lint`, `download_file`) as a detached job |
+| `job_status` | — | Check one job or list all tracked jobs |
+| `job_result` | — | Collect a finished job's result payload |
+| `wait_job` | — | Wait (bounded) for a job to finish |
+| `cancel_job` | — | Cancel a queued or running job |
 
 ### Execution & Planning
 

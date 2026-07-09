@@ -141,6 +141,8 @@ class WebSearchTool(Tool):
     )
     is_read_only = True
     is_egress = True
+    # Transient network failures (429/5xx/resets) are worth one more try.
+    retryable = True
     # Removed from the main agent when web_tools_in_main is False (Phase 4.2).
     network_gate = True
     category = "web"
@@ -367,6 +369,8 @@ class ReadURLTool(Tool):
     )
     is_read_only = True
     is_egress = True
+    # Transient network failures (429/5xx/resets) are worth one more try.
+    retryable = True
     # Removed from the main agent when web_tools_in_main is False (Phase 4.2).
     network_gate = True
     category = "web"
@@ -491,6 +495,7 @@ class DownloadFileTool(Tool):
     category = "web"
     parameters_model = DownloadFileParams
     timeout = 300.0
+    backgroundable = True
 
     async def execute(self, url: str, destination_path: str) -> Dict[str, Any]:  # type: ignore[override]
         if not url.startswith(("http://", "https://")):
@@ -701,6 +706,8 @@ class WikipediaSearchTool(Tool):
     )
     is_read_only = True
     is_egress = True
+    # Transient network failures (429/5xx/resets) are worth one more try.
+    retryable = True
     # Removed from the main agent when web_tools_in_main is False (Phase 4.2).
     network_gate = True
     result_provenance = Provenance.UNTRUSTED_EXTERNAL
@@ -827,6 +834,8 @@ class ReadFeedTool(Tool):
     )
     is_read_only = True
     is_egress = True
+    # Transient network failures (429/5xx/resets) are worth one more try.
+    retryable = True
     # Removed from the main agent when web_tools_in_main is False (Phase 4.2).
     network_gate = True
     result_provenance = Provenance.UNTRUSTED_EXTERNAL
@@ -931,6 +940,8 @@ class SitemapDiscoverTool(Tool):
     )
     is_read_only = True
     is_egress = True
+    # Transient network failures (429/5xx/resets) are worth one more try.
+    retryable = True
     # Removed from the main agent when web_tools_in_main is False (Phase 4.2).
     network_gate = True
     result_provenance = Provenance.UNTRUSTED_EXTERNAL

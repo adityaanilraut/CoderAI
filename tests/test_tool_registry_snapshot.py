@@ -24,6 +24,7 @@ EXPECTED_TOOLS = {
     "browser_snapshot",
     "browser_type",
     "browser_wait",
+    "cancel_job",
     "click_ui_element",
     "copy_file",
     "create_directory",
@@ -60,6 +61,8 @@ EXPECTED_TOOLS = {
     "glob_search",
     "grep",
     "http_request",
+    "job_result",
+    "job_status",
     "kill_process",
     "lint",
     "list_directory",
@@ -100,6 +103,7 @@ EXPECTED_TOOLS = {
     "undo",
     "undo_history",
     "use_skill",
+    "wait_job",
     "web_search",
     "wikipedia_search",
     "write_file",
@@ -122,4 +126,4 @@ def test_discovered_tool_names_match_snapshot():
 def test_discovered_tool_count():
     registry = ToolRegistry()
     discover_tools(registry)
-    assert len(registry.tools) == len(EXPECTED_TOOLS) == 90
+    assert len(registry.tools) == len(EXPECTED_TOOLS) == 94

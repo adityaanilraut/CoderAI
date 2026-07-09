@@ -3,9 +3,10 @@
 import asyncio
 import logging
 import math
-import random
 from abc import ABC, abstractmethod
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional
+
+from coderAI.system.retry import backoff_delay
 
 # Shared reasoning-effort → budget-tokens mapping used by Anthropic and DeepSeek.
 REASONING_BUDGET_MAP = {"high": 16384, "medium": 8192, "low": 2048}
@@ -33,9 +34,9 @@ def _exponential_backoff_sleep(
     cap: float = 8.0,
     jitter: float = 0.3,
 ) -> float:
-    delay = min(base * (2 ** (attempt - 1)), cap)
-    delay += random.uniform(0, delay * jitter)
-    return float(delay)
+    # Thin delegate kept for the existing provider call sites; the canonical
+    # curve lives in coderAI.system.retry.
+    return backoff_delay(attempt, base=base, cap=cap, jitter=jitter)
 
 
 async def _retry_async(

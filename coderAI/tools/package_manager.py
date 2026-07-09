@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from coderAI.system.proc import run_scrubbed
 from coderAI.system.safeguards import truncate_output
 from coderAI.tools._detect import walk_up_detect
-from coderAI.tools.base import Tool
+from coderAI.tools.base import SUBPROCESS_TIMEOUT_MARGIN_SECONDS, Tool
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +97,10 @@ PACKAGE_MANAGERS: Dict[str, Dict[str, Any]] = {
         "timeout": 300,
     },
 }
+
+# Largest per-manager subprocess timeout above — the argument-independent
+# basis for this tool's executor-level cap (see resolve_timeout).
+PACKAGE_MANAGER_MAX_TIMEOUT_SECONDS = 300.0
 
 _DETECTION_ORDER = ["pip3", "pip", "npm", "yarn", "pnpm", "bun", "cargo", "go"]
 
@@ -253,8 +257,14 @@ class PackageManagerTool(Tool):
     # Installs run the manager's own build steps (arbitrary code) — no blanket
     # allow, and no safe scope abstraction to bind to.
     high_risk_no_blanket = True
+    backgroundable = True
     timeout = None
     category = "other"
+
+    def resolve_timeout(self, arguments: Dict[str, Any]) -> Optional[float]:
+        # No timeout argument on this tool; the inner run_scrubbed timeout is
+        # at most PACKAGE_MANAGER_MAX_TIMEOUT_SECONDS regardless of manager.
+        return PACKAGE_MANAGER_MAX_TIMEOUT_SECONDS + SUBPROCESS_TIMEOUT_MARGIN_SECONDS
 
     async def execute(  # type: ignore[override]
         self,

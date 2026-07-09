@@ -3,9 +3,18 @@
 import asyncio
 import os
 import subprocess
+from unittest.mock import AsyncMock, patch
+
 import pytest
 
-from coderAI.tools.git import GitBranchTool, GitCheckoutTool, GitStashTool
+from coderAI.tools.git import (
+    GIT_NETWORK_TIMEOUT_SECONDS,
+    GitBranchTool,
+    GitCheckoutTool,
+    GitPushTool,
+    GitStashTool,
+    GitStatusTool,
+)
 
 
 @pytest.fixture
@@ -94,3 +103,39 @@ class TestGitStashTool:
         # Pop it back
         result = asyncio.run(self.tool.execute(action="pop", repo_path=git_repo))
         assert result["success"]
+
+
+class TestGitSubprocessTimeouts:
+    """git subprocesses previously ran unbounded; every run_scrubbed call must
+    now carry a timeout — the config default locally, the wider network
+    constant for push/pull/fetch."""
+
+    def _scrubbed_mock(self):
+        return AsyncMock(return_value=(0, b"", b"", False))
+
+    def test_git_status_passes_default_timeout(self, git_repo):
+        mock = self._scrubbed_mock()
+        with patch("coderAI.tools.git.run_scrubbed", mock):
+            result = asyncio.run(GitStatusTool().execute(repo_path=git_repo))
+        assert result["success"]
+        timeout = mock.call_args.kwargs["timeout"]
+        assert timeout is not None and timeout > 0
+
+    def test_git_push_passes_network_timeout(self, git_repo):
+        mock = self._scrubbed_mock()
+        with patch("coderAI.tools.git.run_scrubbed", mock):
+            result = asyncio.run(GitPushTool().execute(repo_path=git_repo))
+        assert result["success"]
+        assert mock.call_args.kwargs["timeout"] == GIT_NETWORK_TIMEOUT_SECONDS
+
+    def test_network_tools_outer_cap_sits_above_inner_timeout(self):
+        # The executor's outer wait_for must never fire before run_scrubbed's
+        # own group-kill cleanup at GIT_NETWORK_TIMEOUT_SECONDS.
+        assert GitPushTool.timeout > GIT_NETWORK_TIMEOUT_SECONDS
+
+    def test_timed_out_git_command_reports_timeout(self, git_repo):
+        mock = AsyncMock(return_value=(124, b"", b"", True))
+        with patch("coderAI.tools.git.run_scrubbed", mock):
+            result = asyncio.run(GitStatusTool().execute(repo_path=git_repo))
+        assert result["success"] is False
+        assert result["error_code"] == "timeout"

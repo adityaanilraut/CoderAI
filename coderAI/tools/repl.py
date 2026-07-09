@@ -4,7 +4,7 @@ import asyncio
 import logging
 import tempfile
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, Field
 
@@ -12,7 +12,7 @@ from coderAI.core.services import get_services
 from coderAI.core.tool_error_codes import ToolErrorCode
 from coderAI.system.proc import kill_process_group, new_session_kwargs, scrub_env
 from coderAI.system.safeguards import truncate_output
-from coderAI.tools.base import Tool
+from coderAI.tools.base import SUBPROCESS_TIMEOUT_MARGIN_SECONDS, Tool
 from coderAI.tools.terminal import _resolve_working_dir
 
 logger = logging.getLogger(__name__)
@@ -51,6 +51,15 @@ class PythonREPLTool(Tool):
     requires_confirmation = True
     # Arbitrary code execution — no blanket allow, and no safe scope to bind to.
     high_risk_no_blanket = True
+
+    def resolve_timeout(self, arguments: Dict[str, Any]) -> Optional[float]:
+        # Same clamp as execute(), plus margin, so the outer executor cap
+        # never pre-empts this tool's own process-group timeout cleanup.
+        try:
+            requested = int(arguments.get("timeout", 30))
+        except (TypeError, ValueError):
+            requested = 30
+        return float(max(1, min(requested, 3600))) + SUBPROCESS_TIMEOUT_MARGIN_SECONDS
 
     async def execute(  # type: ignore[override]
         self,

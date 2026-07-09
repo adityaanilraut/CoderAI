@@ -205,6 +205,25 @@ def _kill_direct(process: Any) -> None:
         logger.debug("failed to kill process %r", getattr(process, "pid", None), exc_info=True)
 
 
+# ── Config-driven default subprocess timeout ─────────────────────────────────
+
+
+def subprocess_timeout(default: float = 60.0) -> float:
+    """Default timeout (seconds) for one-shot tool subprocesses.
+
+    Reads ``config.subprocess_timeout_seconds`` through the active service
+    container (imported lazily to keep this module dependency-free), falling
+    back to *default* when config is unavailable or the value is unusable.
+    """
+    try:
+        from coderAI.core.services import get_services
+
+        value = float(getattr(get_services().config, "subprocess_timeout_seconds", default))
+        return value if value > 0 else default
+    except Exception:
+        return default
+
+
 # ── One-shot scrubbed subprocess runner ──────────────────────────────────────
 
 

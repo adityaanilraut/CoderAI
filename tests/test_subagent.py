@@ -3,6 +3,7 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from coderAI.system.error_policy import BudgetExceededError
 from coderAI.system.history import Session
 from coderAI.tools.subagent import (
     DelegateTaskTool,
@@ -274,6 +275,105 @@ class TestDelegateTaskParentState:
         assert result["success"] is True
         assert mock_agent.session.metadata["purpose"] == "delegation"
         assert mock_agent.session.metadata["parent_session_id"] == parent.session_id
+
+
+def _retry_mock_agent():
+    """Mock sub-agent for the transient-retry tests.
+
+    ``tracker_info`` must be a real None (a MagicMock auto-attr is truthy and
+    its ``is_set()`` returns a truthy MagicMock, which would read as
+    'cancelled' and suppress the retry)."""
+    mock_agent = MagicMock()
+    mock_agent.total_tokens = 0
+    mock_agent.cost_tracker = MagicMock()
+    mock_agent.cost_tracker.get_total_cost.return_value = 0.0
+    mock_agent._finish_tracker = MagicMock()
+    mock_agent.session = MagicMock()
+    mock_agent.session.messages = []
+    mock_agent.tools = MagicMock()
+    mock_agent.tools.get.return_value = None
+    mock_agent.create_session = MagicMock()
+    mock_agent._register_tracker = MagicMock()
+    mock_agent.tracker_info = None
+    mock_agent.context_controller = MagicMock()
+    mock_agent.context_controller.pinned_files = {}
+    mock_agent.context_controller._pinned_mtimes = {}
+    mock_agent.context_controller.project_instructions = None
+    mock_agent.set_persona = MagicMock(return_value=None)
+    mock_agent._configure_delegate_tool_context = MagicMock()
+    mock_agent.close = AsyncMock()
+    return mock_agent
+
+
+class TestDelegateTaskTransientRetry:
+    """The documented delegation retry: transient failures re-run
+    process_single_shot on the same sub-agent, up to 2 retries."""
+
+    def test_transient_failure_retried_then_succeeds(self):
+        tool = DelegateTaskTool()
+        mock_agent = _retry_mock_agent()
+        mock_agent.process_single_shot = AsyncMock(
+            side_effect=[RuntimeError("503 service unavailable"), "done"]
+        )
+
+        with (
+            patch("coderAI.core.agent.Agent", return_value=mock_agent),
+            patch("coderAI.tools.subagent.backoff_delay", return_value=0.0),
+        ):
+            result = asyncio.run(tool.execute(task_description="flaky task"))
+
+        assert result["success"] is True
+        assert mock_agent.process_single_shot.await_count == 2
+
+    def test_budget_exceeded_never_retried(self):
+        tool = DelegateTaskTool()
+        mock_agent = _retry_mock_agent()
+        # Transient-looking message, but the exception type must win.
+        mock_agent.process_single_shot = AsyncMock(
+            side_effect=BudgetExceededError("budget hit during 429 storm")
+        )
+
+        with (
+            patch("coderAI.core.agent.Agent", return_value=mock_agent),
+            patch("coderAI.tools.subagent.backoff_delay", return_value=0.0),
+        ):
+            result = asyncio.run(tool.execute(task_description="expensive task"))
+
+        assert result["success"] is False
+        assert mock_agent.process_single_shot.await_count == 1
+
+    def test_non_transient_failure_not_retried(self):
+        tool = DelegateTaskTool()
+        mock_agent = _retry_mock_agent()
+        mock_agent.process_single_shot = AsyncMock(
+            side_effect=ValueError("invalid model name")
+        )
+
+        with (
+            patch("coderAI.core.agent.Agent", return_value=mock_agent),
+            patch("coderAI.tools.subagent.backoff_delay", return_value=0.0),
+        ):
+            result = asyncio.run(tool.execute(task_description="broken task"))
+
+        assert result["success"] is False
+        assert mock_agent.process_single_shot.await_count == 1
+
+    def test_retries_exhausted_surfaces_failure(self):
+        tool = DelegateTaskTool()
+        mock_agent = _retry_mock_agent()
+        mock_agent.process_single_shot = AsyncMock(
+            side_effect=RuntimeError("connection reset by peer")
+        )
+
+        with (
+            patch("coderAI.core.agent.Agent", return_value=mock_agent),
+            patch("coderAI.tools.subagent.backoff_delay", return_value=0.0),
+        ):
+            result = asyncio.run(tool.execute(task_description="doomed task"))
+
+        assert result["success"] is False
+        # 1 initial attempt + MAX_DELEGATION_RETRIES retries
+        assert mock_agent.process_single_shot.await_count == 3
 
 
 class TestDelegateTaskDepthPropagation:

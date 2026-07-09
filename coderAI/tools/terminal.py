@@ -17,7 +17,7 @@ from coderAI.core.services import get_services
 from coderAI.core.tool_error_codes import ToolErrorCode
 from coderAI.system.proc import kill_process_group, new_session_kwargs, run_scrubbed, scrub_env
 from coderAI.system.safeguards import is_interactive_command, truncate_output
-from coderAI.tools.base import Tool
+from coderAI.tools.base import SUBPROCESS_TIMEOUT_MARGIN_SECONDS, Tool
 
 logger = logging.getLogger(__name__)
 
@@ -535,6 +535,17 @@ class RunCommandTool(Tool):
     timeout = None
     category = "terminal"
 
+    def resolve_timeout(self, arguments: Dict[str, Any]) -> Optional[float]:
+        # Mirror execute()'s clamp so the executor's outer cap always sits
+        # SUBPROCESS_TIMEOUT_MARGIN_SECONDS above run_scrubbed's inner timeout
+        # — previously a run_command(timeout=600) was killed at the outer 120s,
+        # bypassing the process-group SIGTERM→SIGKILL escalation.
+        try:
+            requested = int(arguments.get("timeout", 60))
+        except (TypeError, ValueError):
+            requested = 60
+        return float(max(1, min(requested, 3600))) + SUBPROCESS_TIMEOUT_MARGIN_SECONDS
+
     async def execute(  # type: ignore[override]
         self,
         command: str,
@@ -674,6 +685,24 @@ class RunBackgroundTool(Tool):
         only commands with shell metacharacters fall back to the shell.
         """
         try:
+            # Reap finished entries, then enforce the global cap — the tracked
+            # registry was previously unbounded.
+            self.cleanup_finished()
+            try:
+                cap = int(getattr(get_services().config, "max_background_processes", 10))
+            except Exception:
+                cap = 10
+            if len(self._processes) >= cap:
+                return {
+                    "success": False,
+                    "error": (
+                        f"Too many tracked background processes ({len(self._processes)} running, "
+                        f"cap {cap}). Use list_processes to inspect them and kill_process to "
+                        "stop ones you no longer need before starting more."
+                    ),
+                    "error_code": ToolErrorCode.TOOL_ERROR,
+                }
+
             prep = _prepare_command(command, working_dir, background=True)
             if isinstance(prep, dict):
                 return prep

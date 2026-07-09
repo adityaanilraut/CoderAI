@@ -38,6 +38,8 @@ from coderAI.core.permissions import (
 from coderAI.core.provenance import Provenance, wrap_untrusted_output
 from coderAI.core.tool_error_codes import ToolErrorCode
 from coderAI.core.turn import TurnContext
+from coderAI.system.error_policy import is_transient_error, is_transient_message
+from coderAI.system.retry import backoff_delay
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +47,72 @@ logger = logging.getLogger(__name__)
 MAX_CONCURRENT_READ_ONLY = 20
 
 DEFAULT_TOOL_TIMEOUT_SECONDS = 120.0
+
+# Ceiling on the exponential backoff between transient-failure tool retries.
+TOOL_RETRY_DELAY_CAP_SECONDS = 10.0
+
+
+def resolve_tool_timeout(tool: Any, tool_name: str, arguments: Any) -> float:
+    """Effective outer wall-clock cap for one tool call.
+
+    Precedence (first hit wins):
+
+    1. ``tool.resolve_timeout(arguments)`` — argument-derived cap (a tool with
+       its own ``timeout`` argument returns it clamped + margin, so the outer
+       ``wait_for`` can't fire before the tool's own subprocess cleanup);
+    2. ``config.tool_timeout_overrides[tool_name]`` — per-tool config override;
+    3. ``tool.timeout`` class attribute;
+    4. ``config.tool_timeout_seconds`` — only when explicitly set (config
+       file / env / project overlay), so the pydantic default doesn't shadow
+       the monkeypatchable module default below;
+    5. ``DEFAULT_TOOL_TIMEOUT_SECONDS`` (read live so tests can patch it).
+
+    All access is defensive (``getattr`` / try-except): tests exercise the
+    executor with ``SimpleNamespace`` tools and mock agents, and a broken
+    ``resolve_timeout`` must degrade to the next level, never sink the call.
+    """
+    resolver = getattr(tool, "resolve_timeout", None)
+    if callable(resolver):
+        try:
+            resolved = resolver(arguments if isinstance(arguments, dict) else {})
+            if resolved is not None:
+                return float(resolved)
+        except Exception:
+            logger.debug("resolve_timeout failed for %s; falling back", tool_name, exc_info=True)
+
+    config: Any = None
+    try:
+        config = get_services().config
+    except Exception:
+        config = None
+
+    if config is not None:
+        overrides = getattr(config, "tool_timeout_overrides", None)
+        if isinstance(overrides, dict):
+            override = overrides.get(tool_name)
+            if override is not None:
+                try:
+                    return float(override)
+                except (TypeError, ValueError):
+                    pass
+
+    tool_timeout = getattr(tool, "timeout", None)
+    if tool_timeout:
+        try:
+            return float(tool_timeout)
+        except (TypeError, ValueError):
+            pass
+
+    if config is not None and "tool_timeout_seconds" in getattr(config, "model_fields_set", ()):
+        try:
+            value = float(config.tool_timeout_seconds)
+            if value > 0:
+                return value
+        except (TypeError, ValueError):
+            pass
+
+    return DEFAULT_TOOL_TIMEOUT_SECONDS
+
 
 # Cap concurrent read-only sub-agent delegations. Each sub-agent is a full
 # LLM session with its own tool loop, so we fan out far less aggressively
@@ -635,7 +703,7 @@ class ToolExecutor:
                         "error_code": ToolErrorCode.HOOK_BLOCKED,
                     }
 
-            timeout = getattr(tool, "timeout", None) or DEFAULT_TOOL_TIMEOUT_SECONDS
+            timeout = resolve_tool_timeout(tool, tool_name, arguments)
 
             async def _inner_execute() -> Any:
                 if is_mcp_proxy:
@@ -646,16 +714,79 @@ class ToolExecutor:
                         **arguments,
                     )
 
+            # Transient-failure retries (opt-in): only for tools that declare
+            # ``retryable = True``, and never for a call that needed
+            # confirmation (a single approval must not cover a second, unseen
+            # attempt) or an MCP proxy call (third-party side effects are
+            # unknowable). The gate above and PreToolUse hooks run once per
+            # call; PostToolUse hooks run once on the final result.
+            attempts_allowed = 1
+            retry_base_delay = 1.0
+            if (
+                tool is not None
+                and getattr(tool, "retryable", False)
+                and not needs_confirmation
+                and not is_mcp_proxy
+            ):
+                try:
+                    cfg = get_services().config
+                    attempts_allowed = 1 + max(0, int(getattr(cfg, "tool_retry_max_attempts", 2)))
+                    retry_base_delay = float(getattr(cfg, "tool_retry_base_delay", 1.0))
+                except Exception:
+                    attempts_allowed = 3
+
+            cancel_event = (
+                self.agent.tracker_info._cancel_event if self.agent.tracker_info else None
+            )
+
+            def _cancelled() -> bool:
+                try:
+                    return cancel_event is not None and bool(cancel_event.is_set())
+                except Exception:
+                    return False
+
+            async def _retry_pause(attempt: int, why: str) -> None:
+                delay = backoff_delay(
+                    attempt, base=retry_base_delay, cap=TOOL_RETRY_DELAY_CAP_SECONDS
+                )
+                message = (
+                    f"Tool '{tool_name}' hit a transient failure "
+                    f"(attempt {attempt}/{attempts_allowed}) — retrying in {delay:.1f}s: {why}"
+                )
+                logger.warning(message)
+                get_services().events.emit("agent_warning", message=message)
+                await asyncio.sleep(delay)
+
             tool_timed_out = False
-            try:
-                result = await asyncio.wait_for(_inner_execute(), timeout=timeout)
-            except asyncio.TimeoutError:
-                tool_timed_out = True
-                result = {
-                    "success": False,
-                    "error": f"Tool '{tool_name}' exceeded timeout of {timeout}s",
-                    "error_code": ToolErrorCode.TIMEOUT,
-                }
+            result: Any = None
+            for attempt in range(1, attempts_allowed + 1):
+                try:
+                    result = await asyncio.wait_for(_inner_execute(), timeout=timeout)
+                except asyncio.TimeoutError:
+                    # The executor's own timeout is never retried: a call that
+                    # already proved slow would just burn another full budget.
+                    tool_timed_out = True
+                    result = {
+                        "success": False,
+                        "error": f"Tool '{tool_name}' exceeded timeout of {timeout}s",
+                        "error_code": ToolErrorCode.TIMEOUT,
+                    }
+                    break
+                except Exception as e:
+                    if attempt < attempts_allowed and not _cancelled() and is_transient_error(e):
+                        await _retry_pause(attempt, str(e))
+                        continue
+                    raise
+                if (
+                    attempt < attempts_allowed
+                    and isinstance(result, dict)
+                    and result.get("success") is False
+                    and not _cancelled()
+                    and is_transient_message(str(result.get("error") or ""))
+                ):
+                    await _retry_pause(attempt, str(result.get("error") or ""))
+                    continue
+                break
 
             post_hook_args = dict(arguments or {})
             if tool_timed_out:

@@ -86,6 +86,65 @@ class TestDefaultWins:
         assert cfg.temperature == 0.3
 
 
+class TestExecutionConfigKeys:
+    """Env coercion / persistence / project overlay for the timeout, retry,
+    and background-job keys added by the execution-hardening work."""
+
+    def test_env_values_coerced_to_declared_types(self, manager, monkeypatch):
+        monkeypatch.setenv("CODERAI_TOOL_TIMEOUT_SECONDS", "45.5")
+        monkeypatch.setenv("CODERAI_SUBPROCESS_TIMEOUT_SECONDS", "90")
+        monkeypatch.setenv("CODERAI_TOOL_RETRY_MAX_ATTEMPTS", "3")
+        monkeypatch.setenv("CODERAI_TOOL_RETRY_BASE_DELAY", "0.5")
+        monkeypatch.setenv("CODERAI_MAX_BACKGROUND_JOBS", "5")
+        monkeypatch.setenv("CODERAI_MAX_BACKGROUND_PROCESSES", "12")
+        cfg = manager.load()
+        assert cfg.tool_timeout_seconds == 45.5
+        assert cfg.subprocess_timeout_seconds == 90.0
+        assert cfg.tool_retry_max_attempts == 3
+        assert cfg.tool_retry_base_delay == 0.5
+        assert cfg.max_background_jobs == 5
+        assert cfg.max_background_processes == 12
+
+    def test_garbage_env_value_ignored(self, manager, monkeypatch):
+        monkeypatch.setenv("CODERAI_MAX_BACKGROUND_JOBS", "lots")
+        cfg = manager.load()
+        assert cfg.max_background_jobs == Config().max_background_jobs
+
+    def test_env_derived_keys_never_persisted(self, manager, monkeypatch):
+        monkeypatch.setenv("CODERAI_TOOL_TIMEOUT_SECONDS", "45.5")
+        monkeypatch.setenv("CODERAI_MAX_BACKGROUND_JOBS", "5")
+        manager.load()
+        manager.set("temperature", 0.1)
+        data = json.loads(manager.config_file.read_text())
+        assert "tool_timeout_seconds" not in data
+        assert "max_background_jobs" not in data
+
+    def test_project_overlay_applies_timeout_keys(self, manager, tmp_path):
+        proj = tmp_path / "proj"
+        (proj / ".coderAI").mkdir(parents=True)
+        (proj / ".coderAI" / "config.json").write_text(
+            json.dumps(
+                {
+                    "tool_timeout_seconds": 240,
+                    "tool_timeout_overrides": {"run_tests": 900},
+                }
+            )
+        )
+        cfg = manager.load_project_config(str(proj))
+        assert cfg.tool_timeout_seconds == 240.0
+        assert cfg.tool_timeout_overrides == {"run_tests": 900}
+
+    def test_project_overlay_cannot_raise_host_resource_caps(self, manager, tmp_path):
+        proj = tmp_path / "proj"
+        (proj / ".coderAI").mkdir(parents=True)
+        (proj / ".coderAI" / "config.json").write_text(
+            json.dumps({"max_background_jobs": 16, "max_background_processes": 64})
+        )
+        cfg = manager.load_project_config(str(proj))
+        assert cfg.max_background_jobs == Config().max_background_jobs
+        assert cfg.max_background_processes == Config().max_background_processes
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permissions")
 class TestPermissions:
     def test_config_dir_created_0700(self, tmp_path, monkeypatch):

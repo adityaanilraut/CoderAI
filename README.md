@@ -11,14 +11,14 @@
 
 ---
 
-CoderAI is a Python CLI tool that pairs an LLM with **91 built-in tools** to read, write, search, debug, test, automate browsers, and ship code — all from a single terminal session. It supports **7 LLM providers**, **17 specialist agent personas**, a **multi-agent delegation system** with retry logic, a **semantic code search engine**, a **cross-platform browser automation engine**, and a **plan-and-execute workflow** to tackle complex tasks autonomously.
+CoderAI is a Python CLI tool that pairs an LLM with **96 built-in tools** to read, write, search, debug, test, automate browsers, and ship code — all from a single terminal session. It supports **7 LLM providers**, **17 specialist agent personas**, a **multi-agent delegation system** with retry logic, a **semantic code search engine**, a **cross-platform browser automation engine**, and a **plan-and-execute workflow** to tackle complex tasks autonomously.
 
 ## ✨ Key Features
 
 | Feature | Description |
 |---|---|
 | **Multi-Provider LLM** | OpenAI, Anthropic Claude, Groq, DeepSeek, Gemini, LM Studio, Ollama |
-| **91 Tools** | File I/O, Git, terminal, web, browser automation, HTTP, memory, process management, semantic search, and more |
+| **96 Tools** | File I/O, Git, terminal, web, browser automation, HTTP, memory, process management, background jobs, semantic search, and more |
 | **Browser Automation** | Cross-platform browser control via Playwright — form filling, shopping, data entry, web scraping |
 | **Multi-Agent System** | Spawn isolated sub-agents for code review, security audit, research, etc. |
 | **Planning & Tasks** | Structured plan-and-execute workflows with persistent task tracking |
@@ -129,7 +129,7 @@ See [COMMANDS.md](docs/COMMANDS.md) for the full CLI reference.
    ┌────┴────┐   ┌─────┴──────┐   ┌──────┴──────┐
    │   LLM   │   │   Tools    │   │  Sub-Agent  │
    │Providers│   │  Registry  │   │  Delegation │
-   │ (7)     │   │  (91)      │   │  (Isolated) │
+   │ (7)     │   │  (96)      │   │  (Isolated) │
    └─────────┘   └────────────┘   └─────────────┘
 ```
 
@@ -171,6 +171,7 @@ CoderAI-main/
 │   │   ├── agent_session.py    #   Session lifecycle, checkpoints, rewind
 │   │   ├── agent_tracker.py    #   Real-time agent registry & cooperative cancellation
 │   │   ├── agents.py           #   AgentPersona loader from .coderAI/agents/*.md
+│   │   ├── jobs.py             #   JobManager: background tool jobs (start_job & co.)
 │   │   ├── permissions.py      #   Approval / high-risk policy
 │   │   ├── provenance.py       #   Untrusted-ingest tainting
 │   │   ├── tool_executor.py    #   Tool execution runner & confirmation gates
@@ -185,6 +186,7 @@ CoderAI-main/
 │   │   ├── hooks_manager.py    #   Execution hooks manager
 │   │   ├── locks.py            #   Async resource locks for parallel agent safety
 │   │   ├── proc.py             #   Scrubbed subprocess / exec sandbox
+│   │   ├── retry.py            #   Canonical backoff+jitter / async retry helpers
 │   │   ├── trust.py            #   Workspace trust gate
 │   │   ├── project_layout.py   #   Project folder detection helpers
 │   │   ├── read_cache.py       #   Caching layer for repeated file reads
@@ -224,7 +226,7 @@ CoderAI-main/
 │   │   ├── lmstudio.py         #   LM Studio (local OpenAI-compatible)
 │   │   └── ollama.py           #   Ollama (local models)
 │   │
-│   └── tools/                  # ─── Agent Tool Implementations (91 total) ───
+│   └── tools/                  # ─── Agent Tool Implementations (96 total) ───
 │       ├── base.py             #   Tool ABC + ToolRegistry
 │       ├── discovery.py        #   Auto-discovery of no-arg Tool subclasses
 │       ├── _detect.py          #   Shared walk-up project-tool detection
@@ -243,6 +245,7 @@ CoderAI-main/
 │       ├── context_manage.py   #   manage_context (pin/unpin; manual registration)
 │       ├── tasks.py            #   manage_tasks
 │       ├── subagent.py         #   delegate_task
+│       ├── jobs.py             #   start_job, job_status, job_result, wait_job, cancel_job
 │       ├── lint.py / format.py #   lint, format (scrubbed subprocess from project root)
 │       ├── testing.py          #   run_tests
 │       ├── package_manager.py  #   package_manager (pip, npm, …)
@@ -297,7 +300,7 @@ CoderAI-main/
 └── tests/                      # ─── Test Suite (100+ modules) ───
     ├── test_coderAI.py         #   Comprehensive tool tests
     ├── test_agent.py           #   Agent orchestration tests
-    ├── test_tool_registry_snapshot.py  # Pins the 90 auto-discovered tools
+    ├── test_tool_registry_snapshot.py  # Pins the 94 auto-discovered tools
     ├── test_refactor.py        #   Refactor tool tests
     ├── security/               #   Red-team / security regression suite
     └── …
@@ -346,7 +349,7 @@ The heart of CoderAI is the **agentic loop** in `coderAI/core/agent.py → proce
 
 ## 🛠️ Tools Reference
 
-CoderAI registers **91 tools** that the LLM can call (90 auto-discovered plus `manage_context`, which is registered manually). Each tool follows the `Tool` abstract base class. Browser, desktop, and some web tools are removed at runtime when optional dependencies or the host OS are unavailable — see notes below. Batch edits use `search_replace` with an `edits` list (there is no separate `multi_edit` tool).
+CoderAI registers **96 tools** that the LLM can call (94 auto-discovered plus `manage_context` and `start_job`, which are registered manually). Each tool follows the `Tool` abstract base class. Browser, desktop, and some web tools are removed at runtime when optional dependencies or the host OS are unavailable — see notes below. Batch edits use `search_replace` with an `edits` list (there is no separate `multi_edit` tool).
 
 ### Filesystem (14 tools)
 
@@ -455,6 +458,18 @@ CoderAI registers **91 tools** that the LLM can call (90 auto-discovered plus `m
 |---|---|
 | `delegate_task` | Spawn an isolated sub-agent for complex tasks |
 | `notepad` | Shared notepad for inter-agent communication |
+
+### Background Jobs (5 tools)
+
+Run long tools detached from the turn so the agent keeps working while they run. Only tools marked *backgroundable* (`run_tests`, `package_manager`, `lint`, `download_file`) may be targets; `start_job` always confirms (one approval covers the whole unattended job) and jobs are capped by `max_background_jobs`.
+
+| Tool | Description |
+|---|---|
+| `start_job` | Submit a backgroundable tool as a detached job; returns a `job_id` immediately |
+| `job_status` | Check one job (or list all): queued/running/done/failed/timeout/cancelled |
+| `job_result` | Collect a finished job's full result payload |
+| `wait_job` | Block up to a bounded timeout until a job finishes |
+| `cancel_job` | Cancel a queued or running job |
 
 ### Code Quality (3 tools)
 
@@ -733,6 +748,13 @@ Configuration is stored in `~/.coderAI/config.json` and managed via `coderAI con
 | `browser_timeout` | `30.0` | Browser operation timeout in seconds |
 | `browser_allowed_domains` | — | Comma-separated domain allowlist (blank = all allowed) |
 | `approval_timeout_seconds` | `300` | Seconds before approval prompts auto-deny (0 = wait forever) |
+| `tool_timeout_seconds` | `120.0` | Outer wall-clock cap per tool call (tools with their own `timeout` argument derive a larger cap automatically) |
+| `tool_timeout_overrides` | `{}` | Per-tool-name overrides of the outer cap, e.g. `{"run_tests": 900}` |
+| `subprocess_timeout_seconds` | `60.0` | Default timeout for one-shot tool subprocesses (format/lint/grep/git) |
+| `tool_retry_max_attempts` | `2` | Transient-failure retries for opt-in tools (web fetches); `0` disables |
+| `tool_retry_base_delay` | `1.0` | Base delay (seconds) for tool-retry exponential backoff |
+| `max_background_jobs` | `3` | Concurrent `start_job` background jobs (global only — not project-overridable) |
+| `max_background_processes` | `10` | Tracked `run_background` processes (global only — not project-overridable) |
 
 ---
 
