@@ -3,6 +3,7 @@
 import logging
 import os
 import shutil
+import socket
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -12,6 +13,23 @@ import tiktoken
 from coderAI.system.config import config_manager
 
 logger = logging.getLogger(__name__)
+
+# Windows asyncio builds its self-pipe with a TCP-backed socketpair. Let that
+# stdlib helper use the real socket class while pytest-socket continues to block
+# every ordinary socket created by the application or tests.
+if os.name == "nt":
+    _stdlib_socket = socket.socket
+    _stdlib_socketpair = socket.socketpair
+
+    def _windows_socketpair(*args, **kwargs):
+        guarded_socket = socket.socket
+        socket.socket = _stdlib_socket
+        try:
+            return _stdlib_socketpair(*args, **kwargs)
+        finally:
+            socket.socket = guarded_socket
+
+    socket.socketpair = _windows_socketpair
 
 # Redirect config to a temporary location during tests to prevent local config files from affecting tests
 config_manager.config_dir = Path(tempfile.gettempdir()) / ".coderAI_test"
