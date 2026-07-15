@@ -8,8 +8,9 @@ from coderAI.tools.undo import FileBackupStore, UndoTool, UndoHistoryTool
 
 
 @pytest.fixture
-def backup_store(tmp_path):
+def backup_store(tmp_path, monkeypatch):
     """Return a fresh FileBackupStore backed by a temp directory."""
+    monkeypatch.setenv("CODERAI_ALLOW_OUTSIDE_PROJECT", "1")
     return FileBackupStore(backup_dir=str(tmp_path / "backups"))
 
 
@@ -69,6 +70,21 @@ class TestFileBackupStore:
         result = backup_store.undo_specific(99)
         assert not result["success"]
 
+    def test_failed_undo_retains_history_entry(self, backup_store, sample_file, monkeypatch):
+        backup_store.backup_file(str(sample_file))
+        sample_file.write_text("changed")
+        monkeypatch.setattr(
+            backup_store,
+            "_restore_entry",
+            lambda entry: {"success": False, "error": "restore failed"},
+        )
+
+        result = backup_store.undo_last()
+
+        assert result["success"] is False
+        assert len(backup_store.index) == 1
+        assert len(FileBackupStore(str(backup_store.backup_dir)).index) == 1
+
     def test_get_history_returns_recent_first(self, backup_store, sample_file):
         backup_store.backup_file(str(sample_file), operation="modify")
         backup_store.backup_file(str(sample_file), operation="delete")
@@ -89,7 +105,8 @@ class TestFileBackupStore:
 
 class TestUndoTool:
     @pytest.fixture(autouse=True)
-    def setup(self, tmp_path):
+    def setup(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("CODERAI_ALLOW_OUTSIDE_PROJECT", "1")
         self.store = FileBackupStore(backup_dir=str(tmp_path / "backups"))
         self.tool = UndoTool()
         with services_scope(backup_store=self.store):

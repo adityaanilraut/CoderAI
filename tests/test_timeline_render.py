@@ -94,9 +94,9 @@ def test_calculate_item_lines_wraps_text_bodies_at_width():
 
 def test_calculate_item_lines_welcome_matches_render():
     item = {"kind": "welcome", "model": "m1", "provider": "P", "cwd": "/proj"}
-    assert calculate_item_lines(item, verbose=False) == 7
+    assert calculate_item_lines(item, verbose=False) == 5
 
-    # Parity guard: the writer must emit exactly 6 rail lines (+ the trailing
+    # Parity guard: the writer must emit exactly 4 rail lines (+ the trailing
     # blank write) so the fixed height above stays in sync with the render.
     from rich.console import Console
 
@@ -114,4 +114,4 @@ def test_calculate_item_lines_welcome_matches_render():
     assert len(log.writes) == 2  # rail block + trailing blank
     console = Console(width=100)
     rail_lines = console.render_lines(log.writes[0], console.options, pad=False)
-    assert len(rail_lines) == 6
+    assert len(rail_lines) == 4

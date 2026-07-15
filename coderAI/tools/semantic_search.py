@@ -64,7 +64,7 @@ class SemanticSearchTool(Tool):
         try:
             from coderAI.context.code_indexer import CodeIndexer
             from coderAI.core.services import get_services
-            from ..embeddings.openai import create_embedding_provider
+            from coderAI.embeddings import create_embedding_provider
 
             config = get_services().config
             project_root = str(Path(config.project_root).resolve())
@@ -74,9 +74,8 @@ class SemanticSearchTool(Tool):
                 return {
                     "success": False,
                     "error": (
-                        "No embedding provider available. Set an OpenAI API key "
-                        "via `coderAI config set openai_api_key <key>` or the "
-                        "OPENAI_API_KEY environment variable."
+                        "No embedding provider is available: the OpenAI backend needs "
+                        "an API key. Set openai_api_key or select embedding_backend=local."
                     ),
                 }
 

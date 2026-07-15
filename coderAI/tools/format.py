@@ -8,11 +8,11 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 from coderAI.core.tool_error_codes import ToolErrorCode
-from coderAI.system.config import config_manager
 from coderAI.system.proc import run_scrubbed, subprocess_timeout
 from coderAI.system.safeguards import truncate_output
 from coderAI.tools._detect import walk_up_detect
 from coderAI.tools.base import Tool
+from coderAI.tools.filesystem import ProjectPathError, resolve_under_project
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +124,13 @@ class FormatTool(Tool):
     ) -> Dict[str, Any]:
         """Run formatter on the given path."""
         try:
-            formatter_name = formatter or detect_formatter(path)
+            target = resolve_under_project(
+                path,
+                operation="format",
+                check_protected=True,
+                reject_symlink=True,
+            )
+            formatter_name = formatter or detect_formatter(str(target))
             if not formatter_name:
                 return {
                     "success": False,
@@ -156,12 +162,10 @@ class FormatTool(Tool):
             # formatter finds project config (e.g. prettier's .prettierrc), and
             # run_scrubbed scrubs secrets from the child env with a bounded
             # timeout + process-group kill — the raw exec did neither (finding 3).
-            cfg = config_manager.load_project_config(".")
-            project_root = Path(getattr(cfg, "project_root", ".") or ".").resolve()
-            target = str((project_root / path).resolve())
+            project_root = resolve_under_project(".", operation="format")
 
             # Same shape for every formatter, incl. prettier: <binary> <args> <path>
-            cmd: List[str] = [cmd_binary] + extra + [target]
+            cmd: List[str] = [cmd_binary] + extra + [str(target)]
 
             fmt_timeout = subprocess_timeout()
             returncode, stdout, stderr, timed_out = await run_scrubbed(
@@ -210,5 +214,7 @@ class FormatTool(Tool):
                 ),
             }
 
+        except ProjectPathError as e:
+            return e.as_result()
         except Exception as e:
             return {"success": False, "error": str(e), "error_code": ToolErrorCode.TOOL_ERROR}

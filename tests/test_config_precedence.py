@@ -86,6 +86,23 @@ class TestDefaultWins:
         assert cfg.temperature == 0.3
 
 
+class TestEmbeddingConfig:
+    def test_embedding_environment_mappings(self, manager, monkeypatch):
+        monkeypatch.setenv("CODERAI_EMBEDDING_BACKEND", "local")
+        monkeypatch.setenv("CODERAI_EMBEDDING_MODEL", "offline-model")
+        monkeypatch.setenv("CODERAI_EMBEDDING_DEVICE", "cpu")
+
+        cfg = manager.load()
+
+        assert cfg.embedding_backend == "local"
+        assert cfg.embedding_model == "offline-model"
+        assert cfg.embedding_device == "cpu"
+
+    def test_invalid_embedding_backend_is_rejected(self):
+        with pytest.raises(ValueError):
+            Config(embedding_backend="remote")
+
+
 class TestExecutionConfigKeys:
     """Env coercion / persistence / project overlay for the timeout, retry,
     and background-job keys added by the execution-hardening work."""
@@ -97,16 +114,29 @@ class TestExecutionConfigKeys:
         monkeypatch.setenv("CODERAI_TOOL_RETRY_BASE_DELAY", "0.5")
         monkeypatch.setenv("CODERAI_MAX_BACKGROUND_JOBS", "5")
         monkeypatch.setenv("CODERAI_MAX_BACKGROUND_PROCESSES", "12")
+        monkeypatch.setenv("CODERAI_SANDBOX_MODE", "required")
+        monkeypatch.setenv("CODERAI_SANDBOX_ALLOW_NETWORK", "true")
         cfg = manager.load()
         assert cfg.tool_timeout_seconds == 45.5
         assert cfg.subprocess_timeout_seconds == 90.0
         assert cfg.tool_retry_max_attempts == 3
         assert cfg.tool_retry_base_delay == 0.5
         assert cfg.max_background_processes == 12
+        assert cfg.sandbox_mode == "required"
+        assert cfg.sandbox_allow_network is True
+
+    def test_invalid_sandbox_mode_is_rejected(self):
+        with pytest.raises(ValueError):
+            Config(sandbox_mode="optional")
+
+    def test_sandbox_compatibility_default_is_off(self):
+        cfg = Config()
+        assert cfg.sandbox_mode == "off"
+        assert cfg.sandbox_allow_network is False
 
     def test_garbage_env_value_ignored(self, manager, monkeypatch):
         monkeypatch.setenv("CODERAI_MAX_BACKGROUND_JOBS", "lots")
-        cfg = manager.load()
+        manager.load()
 
     def test_env_derived_keys_never_persisted(self, manager, monkeypatch):
         monkeypatch.setenv("CODERAI_TOOL_TIMEOUT_SECONDS", "45.5")
@@ -134,9 +164,7 @@ class TestExecutionConfigKeys:
     def test_project_overlay_cannot_raise_host_resource_caps(self, manager, tmp_path):
         proj = tmp_path / "proj"
         (proj / ".coderAI").mkdir(parents=True)
-        (proj / ".coderAI" / "config.json").write_text(
-            json.dumps({"max_background_processes": 64})
-        )
+        (proj / ".coderAI" / "config.json").write_text(json.dumps({"max_background_processes": 64}))
         cfg = manager.load_project_config(str(proj))
         assert cfg.max_background_processes == Config().max_background_processes
 

@@ -218,6 +218,15 @@ class _FakeReadTool(Tool):
         return {"success": True, "result": "read"}
 
 
+class _FakeSafeMutationTool(Tool):
+    name = "fake_safe_mutation"
+    description = "test-only mutation normally exempt from confirmation"
+    safe = True
+
+    async def execute(self, **kwargs: Any) -> Dict[str, Any]:  # type: ignore[override]
+        return {"success": True, "result": "mutated"}
+
+
 def _make_agent(session: Session, registry: ToolRegistry, *, auto_approve: bool) -> Any:
     return SimpleNamespace(
         auto_approve=auto_approve,
@@ -298,6 +307,98 @@ async def test_mcp_taint_does_not_gate_readonly_tool() -> None:
     executor._confirmation_callback.assert_not_awaited()
 
 
+async def test_mcp_taint_gates_safe_local_mutation() -> None:
+    registry = ToolRegistry()
+    registry.register(_FakeSafeMutationTool())
+    session = Session(session_id="s_safe_mutation")
+    agent = _make_agent(session, registry, auto_approve=True)
+    executor = ToolExecutor(agent)
+    executor._turn.ingested_untrusted_mcp = True
+    executor._confirmation_callback = AsyncMock(return_value=False)
+
+    await _orchestrate(executor, session, _tool_call("fake_safe_mutation", {}))
+
+    executor._confirmation_callback.assert_awaited_once()
+    assert ToolErrorCode.DENIED in (session.messages[-1].content or "")
+
+
+async def test_permission_hook_allow_cannot_satisfy_forced_confirmation() -> None:
+    registry = ToolRegistry()
+    registry.register(_FakeMutatingTool())
+    session = Session(session_id="s_hook_allow")
+    agent = _make_agent(session, registry, auto_approve=True)
+    executor = ToolExecutor(agent)
+    executor._turn.ingested_untrusted_mcp = True
+    executor._confirmation_callback = AsyncMock(return_value=False)
+    hooks = SimpleNamespace(
+        run_permission_hooks=AsyncMock(return_value="allow"),
+        run_hooks=AsyncMock(return_value=[]),
+    )
+
+    result = await executor.execute_single_tool(
+        {
+            "tool_id": "hook-allow",
+            "tool_name": "fake_write",
+            "arguments": {"path": "x"},
+            "parse_error": None,
+        },
+        {"permission": {}},
+        hooks,
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == ToolErrorCode.DENIED
+    executor._confirmation_callback.assert_awaited_once()
+
+
+async def test_permission_hook_deny_remains_terminal() -> None:
+    registry = ToolRegistry()
+    registry.register(_FakeMutatingTool())
+    session = Session(session_id="s_hook_deny")
+    agent = _make_agent(session, registry, auto_approve=True)
+    executor = ToolExecutor(agent)
+    executor._turn.ingested_untrusted_mcp = True
+    executor._confirmation_callback = AsyncMock(return_value=True)
+    hooks = SimpleNamespace(
+        run_permission_hooks=AsyncMock(return_value="deny"),
+        run_hooks=AsyncMock(return_value=[]),
+    )
+
+    result = await executor.execute_single_tool(
+        {
+            "tool_id": "hook-deny",
+            "tool_name": "fake_write",
+            "arguments": {"path": "x"},
+            "parse_error": None,
+        },
+        {"permission": {}},
+        hooks,
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == ToolErrorCode.DENIED_BY_HOOK
+    executor._confirmation_callback.assert_not_awaited()
+
+
+async def test_confirmation_override_allow_cannot_replace_human_in_headless(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = ToolRegistry()
+    registry.register(_FakeMutatingTool())
+    session = Session(session_id="s_override_allow")
+    agent = _make_agent(session, registry, auto_approve=True)
+    agent.confirmation_override = AsyncMock(return_value=True)
+    executor = ToolExecutor(agent)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+
+    approved = await executor._confirmation_callback(
+        "fake_write", {"path": "x"}, force_confirm=True
+    )
+
+    assert approved is False
+    agent.confirmation_override.assert_awaited_once()
+
+
 async def test_mcp_proxy_call_sets_the_mcp_taint(monkeypatch: pytest.MonkeyPatch) -> None:
     # End-to-end: an mcp__server__tool result taints the turn for the mcp gate.
     import coderAI.core.tool_executor as te
@@ -316,7 +417,6 @@ async def test_mcp_proxy_call_sets_the_mcp_taint(monkeypatch: pytest.MonkeyPatch
 
     assert executor._turn.ingested_untrusted is True
     assert executor._turn.ingested_untrusted_mcp is True
-
 
 
 class TestAuthServerOriginWarning:

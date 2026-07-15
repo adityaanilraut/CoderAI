@@ -13,7 +13,7 @@ import re
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import yaml
 
@@ -222,11 +222,13 @@ class SkillManager:
         threshold: float = 0.7,
         top_n: int = 3,
         provider: Any = None,
+        usage_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     ) -> None:
         self._sources = list(sources)
         self.threshold = threshold
         self.top_n = top_n
         self._provider = provider
+        self._usage_callback = usage_callback
         self.registry = SkillRegistry()
         self._discovery_complete = False
         self._discovery_lock = asyncio.Lock()
@@ -299,6 +301,9 @@ class SkillManager:
         except Exception as e:
             logger.warning("%s LLM matching call failed: %s", SKILL_MGR_PREFIX, e)
             return []
+        if self._usage_callback is not None:
+            raw_usage = response.get("usage") if isinstance(response, dict) else None
+            await self._usage_callback(raw_usage if isinstance(raw_usage, dict) else {})
         content = self._extract_response_content(response)
         if not content:
             return []
@@ -359,20 +364,27 @@ class SkillManager:
     def _keyword_score(
         self, task_description: str, skills: List[Skill], threshold: float, top_n: int
     ) -> List[Tuple[Skill, float]]:
-        query_lower = task_description.lower()
-        query_words = set(query_lower.split())
+        query_words = set(re.findall(r"[a-z0-9]+", task_description.casefold()))
+        query_phrase = f" {' '.join(re.findall(r'[a-z0-9]+', task_description.casefold()))} "
         scored: List[Tuple[Skill, float]] = []
         for skill in skills:
-            searchable = f"{skill.name} {skill.description} {' '.join(skill.tags)} {skill.category or ''}".lower()
-            text_words = set(searchable.split())
+            name_words = re.findall(r"[a-z0-9]+", skill.name.casefold())
+            name_phrase = " ".join(name_words)
+            searchable = (
+                f"{skill.name} {skill.description} {' '.join(skill.tags)} {skill.category or ''}"
+            )
+            text_words = set(re.findall(r"[a-z0-9]+", searchable.casefold()))
             overlap = query_words & text_words
             if not overlap:
                 continue
-            score = len(overlap) / max(len(query_words), 1)
-            score = min(score * 1.2, 1.0)
+            if name_phrase and f" {name_phrase} " in query_phrase:
+                score = 1.0
+            else:
+                denominator = max(min(len(query_words), len(text_words)), 1)
+                score = min((len(overlap) / denominator) * 1.2, 1.0)
             if score >= threshold:
                 scored.append((skill, score))
-        scored.sort(key=lambda x: x[1], reverse=True)
+        scored.sort(key=lambda x: (-x[1], x[0].name.casefold()))
         return scored[:top_n]
 
     async def get_top_skills(
@@ -393,30 +405,28 @@ class SkillManager:
                 return [s for s, _ in self._match_cache[cache_key]]
             logger.info("%s Searching skills for: %s...", SKILL_MGR_PREFIX, task_description[:80])
             local_skills = self.registry.find_by_source("local")
-            llm_matches: List[Tuple[Skill, float]] = []
+            matches: List[Tuple[Skill, float]] = []
             if local_skills:
+                matches = self._keyword_score(
+                    task_description, local_skills, effective_threshold, effective_top_n
+                )
+            if not matches and local_skills:
                 logger.debug(
-                    "%s Evaluating %d local skill(s) via LLM...",
+                    "%s Deterministic matching found no result; evaluating %d local skill(s) via LLM...",
                     SKILL_MGR_PREFIX,
                     len(local_skills),
                 )
-                llm_matches = await self._match_via_llm(
-                    task_description, local_skills, effective_threshold, effective_top_n
-                )
-            if not llm_matches and local_skills:
-                logger.debug(
-                    "%s LLM matching returned no results — trying keyword fallback",
-                    SKILL_MGR_PREFIX,
-                )
-                llm_matches = self._keyword_score(
+                matches = await self._match_via_llm(
                     task_description, local_skills, effective_threshold, effective_top_n
                 )
             merged: Dict[str, Tuple[Skill, float]] = {}
-            for skill, conf in llm_matches:
+            for skill, conf in matches:
                 existing = merged.get(skill.name)
                 if existing is None or conf > existing[1]:
                     merged[skill.name] = (skill, conf)
-            final = sorted(merged.values(), key=lambda x: x[1], reverse=True)[:effective_top_n]
+            final = sorted(merged.values(), key=lambda x: (-x[1], x[0].name.casefold()))[
+                :effective_top_n
+            ]
             self._match_cache[cache_key] = final
             while len(self._match_cache) > _MATCH_CACHE_MAX_ENTRIES:
                 self._match_cache.popitem(last=False)

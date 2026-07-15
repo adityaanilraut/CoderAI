@@ -1,6 +1,7 @@
 """Tests for new configuration, session-scoped backup, and MCP auto-connect features."""
 
 import json
+import sys
 import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -63,6 +64,13 @@ def test_web_search_backend_fallbacks(monkeypatch):
     backend = _select_search_backend()
     assert isinstance(backend, _DDGBackend)
 
+    # Test SearXNG explicit backend
+    from coderAI.tools.web import _SearXNGBackend
+
+    config_manager.set("search_backend", "searxng")
+    backend = _select_search_backend()
+    assert isinstance(backend, _SearXNGBackend)
+
     # Reset config settings
     config_manager.set("search_backend", None)
     config_manager.set("tavily_api_key", None)
@@ -103,8 +111,12 @@ async def test_mcp_autoconnect(monkeypatch, tmp_path):
 
     await loop._autoconnect_mcp_servers()
 
-    # Verify that connect_stdio and connect_sse were called correctly
-    mock_mcp_client.connect_stdio.assert_called_once_with("mock_stdio", "npx", ["mock-server-args"])
+    # Verify configured servers and the bundled git server were connected.
+    mock_mcp_client.connect_stdio.assert_any_await("mock_stdio", "npx", ["mock-server-args"])
+    mock_mcp_client.connect_stdio.assert_any_await(
+        "git_extended", sys.executable, ["-m", "coderAI.mcp_servers.git_extended"]
+    )
+    assert mock_mcp_client.connect_stdio.await_count == 2
     mock_mcp_client.connect_sse.assert_called_once_with("mock_sse", "http://localhost:8080/sse")
 
 
@@ -133,4 +145,8 @@ async def test_mcp_autoconnect_skips_disabled(monkeypatch, tmp_path):
     loop = ExecutionLoop(agent=MagicMock())
     await loop._autoconnect_mcp_servers()
 
-    mock_mcp_client.connect_stdio.assert_called_once_with("enabled_srv", "npx", ["a"])
+    mock_mcp_client.connect_stdio.assert_any_await("enabled_srv", "npx", ["a"])
+    mock_mcp_client.connect_stdio.assert_any_await(
+        "git_extended", sys.executable, ["-m", "coderAI.mcp_servers.git_extended"]
+    )
+    assert mock_mcp_client.connect_stdio.await_count == 2

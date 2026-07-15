@@ -56,11 +56,22 @@ def discover_tools(registry: ToolRegistry, package_name: str = "coderAI.tools") 
                         registry.register(tool_instance)
                         registered_classes.add(obj)
                         logger.debug(f"Registered tool: {tool_instance.name} from {module_name}")
-                    except TypeError:
-                        # Log that we skipped it because it needs args.
-                        # These must be handled manually in Agent._create_tool_registry.
+                    except TypeError as e:
+                        # Constructor argument errors are expected for tools
+                        # registered manually; other TypeErrors are still
+                        # isolated to this class rather than aborting the module.
                         logger.warning(
-                            f"Skipping auto-registration for {module_name}.{name} (requires arguments)"
+                            "Skipping auto-registration for %s.%s: %s",
+                            module_name,
+                            name,
+                            e,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to register tool class %s.%s: %s",
+                            module_name,
+                            name,
+                            e,
                         )
         except (ImportError, TypeError, ValueError, AttributeError) as e:
             # Don't let one bad module kill the whole discovery.

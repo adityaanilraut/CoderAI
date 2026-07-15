@@ -11,20 +11,20 @@
 
 ---
 
-CoderAI is a Python CLI tool that pairs an LLM with a focused set of coding tools to read, write, search, debug, test, and ship code from your terminal. It supports **7 LLM providers**, **6 specialist agent personas**, multi-agent delegation, optional semantic search and browser automation, and a persistent task checklist for multi-step work.
+CoderAI is a Python CLI tool that pairs an LLM with a focused set of coding tools to read, write, search, debug, test, and ship code from your terminal. It supports **8 LLM providers**, **6 specialist agent personas**, multi-agent delegation, optional semantic search and browser automation, and a persistent task checklist for multi-step work.
 
 ## ✨ Key Features
 
 | Feature | Description |
 |---|---|
-| **Multi-Provider LLM** | OpenAI, Anthropic Claude, Groq, DeepSeek, Gemini, LM Studio, Ollama |
-| **~68 Native Tools** | File I/O, core Git, terminal, web, browser automation, HTTP, memory, process management, semantic search; rare git via bundled MCP |
+| **Multi-Provider LLM** | OpenAI, Anthropic Claude, Groq, DeepSeek, Gemini, Meta, LM Studio, Ollama |
+| **Coding Tools** | File I/O, core Git, terminal, web, browser automation, HTTP, memory, process management, semantic search; rare git via bundled MCP |
 | **Browser Automation** | Cross-platform browser control via Playwright — form filling, shopping, data entry, web scraping |
 | **Multi-Agent System** | Spawn isolated sub-agents for code review, security audit, research, etc. |
 | **Task Tracking** | Persistent TODO checklist via `manage_tasks` (also `/tasks` / `/plan`) |
 | **Textual interactive UI** | `coderAI chat` uses a pure-Python [Textual](https://textual.textualize.io/) TUI ([`docs/CHAT_EVENTS.md`](docs/CHAT_EVENTS.md)) |
 | **Rich CLI output** | Non-interactive commands (`status`, `config`, `history`, …) use [Rich](https://github.com/Textualize/rich) for tables and formatting |
-| **Semantic Search** | Natural-language code search via embeddings (OpenAI + ChromaDB) |
+| **Semantic Search** | Natural-language code search via OpenAI or fully local embeddings + ChromaDB |
 | **Context Management** | Pin files, auto-detect project type, smart context compaction |
 | **Persistent Memory** | Key-value store that survives across sessions |
 | **Undo / Rollback** | Revert any file modification instantly |
@@ -47,8 +47,9 @@ cd CoderAI
 # 2a. Install (core)
 pip3 install -e .
 
-# 2b. Optional extras (combine as needed, e.g. ".[semantic,browser]"):
+# 2b. Optional extras (combine as needed, e.g. ".[semantic,local-embeddings]"):
 #   semantic  → ChromaDB-backed `coderAI index` / `search` + semantic_search tool
+#   local-embeddings → private, on-device embeddings via sentence-transformers
 #   web       → PDF extraction in read_url (pypdf)
 #   browser   → Playwright browser automation
 pip3 install -e ".[semantic]"
@@ -94,10 +95,10 @@ Type a slash inside `coderAI chat`:
 | `/clear` | Wipe conversation & context |
 | `/reasoning <high\|medium\|low\|none>` | Thinking budget for reasoning models |
 | `/yolo` | Toggle auto-approve for high-risk tools |
-| `/show <topic>` | Reference info (`models`, `cost`, `config`, `tasks`, `plan`, …) |
+| `/show <topic>` | Reference info (`models`, `cost`, `config`, `tasks`, …) |
 | `/code-search <query>` | Semantic codebase search inline |
 | `/export` | Save the session timeline as markdown |
-| `/verbose` | Toggle verbose tool output |
+| `/verbose` | Toggle reasoning, longer diff previews, and success notices |
 | `/exit` | Shut down the agent |
 
 See [COMMANDS.md](docs/COMMANDS.md) for the full CLI reference.
@@ -131,7 +132,7 @@ See [COMMANDS.md](docs/COMMANDS.md) for the full CLI reference.
    ┌────┴────┐   ┌─────┴──────┐   ┌──────┴──────┐
    │   LLM   │   │   Tools    │   │  Sub-Agent  │
    │Providers│   │  Registry  │   │  Delegation │
-   │ (7)     │   │  (96)      │   │  (Isolated) │
+   │   (8)   │   │ (Runtime)  │   │  (Isolated) │
    └─────────┘   └────────────┘   └─────────────┘
 ```
 
@@ -190,7 +191,8 @@ CoderAI/
 │   │   ├── history.py          #   Session persistence (JSON files in ~/.coderAI/history/)
 │   │   ├── hooks_manager.py    #   Execution hooks manager
 │   │   ├── locks.py            #   Async resource locks for parallel agent safety
-│   │   ├── proc.py             #   Scrubbed subprocess / exec sandbox
+│   │   ├── proc.py             #   Scrubbed subprocess runner
+│   │   ├── sandbox.py          #   Bubblewrap / sandbox-exec confinement
 │   │   ├── retry.py            #   Canonical backoff+jitter / async retry helpers
 │   │   ├── trust.py            #   Workspace trust gate
 │   │   ├── project_layout.py   #   Project folder detection helpers
@@ -204,7 +206,8 @@ CoderAI/
 │   │   └── context_selector.py #   Relevance-based snippet selection
 │   │
 │   ├── embeddings/             # ─── Embedding providers for semantic search ───
-│   │   └── openai.py           #   OpenAI embeddings (text-embedding-3-small)
+│   │   ├── openai.py           #   OpenAI embeddings (text-embedding-3-small)
+│   │   └── local.py            #   Optional local sentence-transformers backend
 │   │
 │   ├── tui/                    # ─── Textual interactive chat UI ───
 │   │   ├── app.py              #   CoderAIApp (Textual screens, key bindings)
@@ -227,10 +230,11 @@ CoderAI/
 │   │   ├── groq.py             #   Groq (Llama 3, GPT-OSS models)
 │   │   ├── deepseek.py         #   DeepSeek (V3.2, R1)
 │   │   ├── gemini.py           #   Google Gemini (OpenAI-compatible API)
+│   │   ├── meta.py             #   Meta Model API
 │   │   ├── lmstudio.py         #   LM Studio (local OpenAI-compatible)
 │   │   └── ollama.py           #   Ollama (local models)
 │   │
-│   └── tools/                  # ─── Agent Tool Implementations (~68 native) ───
+│   └── tools/                  # ─── Agent Tool Implementations ───
 │       ├── base.py             #   Tool ABC + ToolRegistry
 │       ├── discovery.py        #   Auto-discovery of no-arg Tool subclasses
 │       ├── _detect.py          #   Shared walk-up project-tool detection
@@ -256,7 +260,6 @@ CoderAI/
 │       ├── vision.py           #   read_image
 │       ├── skills.py           #   use_skill
 │       ├── repl.py             #   python_repl
-│       ├── planning.py         #   plan
 │
 ├── docs/
 │   ├── ARCHITECTURE.md         # Detailed architecture documentation
@@ -276,7 +279,7 @@ CoderAI/
 └── tests/                      # ─── Test Suite (100+ modules) ───
     ├── test_coderAI.py         #   Comprehensive tool tests
     ├── test_agent.py           #   Agent orchestration tests
-    ├── test_tool_registry_snapshot.py  # Pins the 94 auto-discovered tools
+    ├── test_tool_registry_snapshot.py  # Pins the discovered tool set
     ├── security/               #   Red-team / security regression suite
     └── …
 ```
@@ -324,9 +327,9 @@ The heart of CoderAI is the **agentic loop** in `coderAI/core/agent.py → proce
 
 ## 🛠️ Tools Reference
 
-CoderAI registers **~68 native tools** that the LLM can call (67 auto-discovered plus `manage_context`, registered manually), plus rare git ops on the bundled `git_extended` MCP server. Each tool follows the `Tool` abstract base class. Browser, desktop, and some web tools are removed at runtime when optional dependencies or the host OS are unavailable — see notes below. Batch edits use `search_replace` with an `edits` list (there is no separate `multi_edit` tool).
+CoderAI discovers native tools at runtime and registers `manage_context` manually, plus rare git ops on the bundled `git_extended` MCP server. Each tool follows the `Tool` abstract base class. Browser, desktop, and some web tools are removed when optional dependencies, configuration, or the host OS make them unavailable. Batch edits use `search_replace` with an `edits` list (there is no separate `multi_edit` tool).
 
-### Filesystem (13 tools)
+### Filesystem
 
 | Tool | Description |
 |---|---|
@@ -344,7 +347,7 @@ CoderAI registers **~68 native tools** that the LLM can call (67 auto-discovered
 | `file_chmod` | Change file permissions |
 | `file_readlink` | Read symlink targets | |
 
-### Terminal (5 tools)
+### Terminal
 
 | Tool | Description |
 |---|---|
@@ -354,7 +357,7 @@ CoderAI registers **~68 native tools** that the LLM can call (67 auto-discovered
 | `kill_process` | Terminate a background process by PID |
 | `read_bg_output` | Read buffered output from a `run_background` process |
 
-### Git (6 native + extended via MCP)
+### Git
 
 Everyday git stays native. Rare ops auto-connect on the bundled `git_extended` MCP server as `mcp__git_extended__git_*` (disable with `coderAI mcp` / `disabled: true` in `mcp_servers.json`).
 
@@ -369,17 +372,18 @@ Everyday git stays native. Rare ops auto-connect on the bundled `git_extended` M
 
 **Via MCP (`mcp__git_extended__…`):** `git_checkout`, `git_stash`, `git_push`, `git_pull`, `git_fetch`, `git_merge`, `git_rebase`, `git_revert`, `git_reset`, `git_show`, `git_remote`, `git_blame`, `git_cherry_pick`, `git_tag`.
 
-### Search & Analysis (4 tools)
+### Search & Analysis
 
-*`semantic_search` requires optional `chromadb` — install with `pip install coderAI[semantic]` (plus an OpenAI key for embeddings).*
+*`semantic_search` requires `coderAI[semantic]`. It uses OpenAI when a key is
+configured, or install `coderAI[local-embeddings]` for private local embeddings.*
 
 | Tool | Description |
 |---|---|
 | `grep` | Regex pattern matching with context lines |
 | `symbol_search` | Find function/class/variable definitions by name |
-| `semantic_search` | Natural-language code search via embeddings (requires OpenAI key + `coderAI[semantic]`) |
+| `semantic_search` | Natural-language code search via OpenAI or local embeddings |
 
-### Web & HTTP (7 tools)
+### Web & HTTP
 
 *PDF extraction in `read_url` requires optional `pypdf` — install with `pip install coderAI[web]`.*
 
@@ -390,7 +394,7 @@ Everyday git stays native. Rare ops auto-connect on the bundled `git_extended` M
 | `download_file` | Download files (ZIP, images, etc.) from URLs |
 | `http_request` | Generic HTTP client — any method, headers, JSON body (SSRF-protected) |
 
-### Memory (3 tools)
+### Memory
 
 | Tool | Description |
 |---|---|
@@ -398,27 +402,26 @@ Everyday git stays native. Rare ops auto-connect on the bundled `git_extended` M
 | `recall_memory` | Retrieve or search saved memories |
 | `delete_memory` | Remove a memory entry by key |
 
-### Project & Context (2 tools)
+### Project & Context
 
 | Tool | Description |
 |---|---|
 | `manage_context` | Pin/unpin files to the LLM context window |
 
-### Planning & Tasks (2 tools)
+### Tasks
 
 | Tool | Description |
 |---|---|
-| `plan` | Create/show/advance/update/clear structured execution plans |
 | `manage_tasks` | Persistent TODO list with priorities |
 
-### Multi-Agent (2 tools)
+### Multi-Agent
 
 | Tool | Description |
 |---|---|
 | `delegate_task` | Spawn an isolated sub-agent for complex tasks |
 
 
-### Code Quality (3 tools)
+### Code Quality
 
 | Tool | Description |
 |---|---|
@@ -426,37 +429,37 @@ Everyday git stays native. Rare ops auto-connect on the bundled `git_extended` M
 | `format` | Auto-detect and run code formatter (ruff format, black, prettier, gofmt) |
 | `run_tests` | Auto-detect and run the project test runner (pytest, jest, cargo test, etc.) |
 
-### Refactoring (1 tool)
+### Refactoring
 
 | Tool | Description |
 |---|---|
 | `refactor` | Cross-file `rename_symbol` and `find_references` (Python AST-aware; JS/TS regex-based). Writes go through the full `write_file` pipeline (locks, guards, backup, atomic write); partial failures report `files_skipped`. Use `dry_run=true` first. |
 
-### Package Management (1 tool)
+### Package Management
 
 | Tool | Description |
 |---|---|
 | `package_manager` | Install, remove, or list packages (pip, npm, cargo, etc.) |
 
-### Code Execution (1 tool)
+### Code Execution
 
 | Tool | Description |
 |---|---|
 | `python_repl` | Execute Python code in an isolated subprocess |
 
-### Vision (1 tool)
+### Vision
 
 | Tool | Description |
 |---|---|
 | `read_image` | Read and base64-encode images for multimodal analysis |
 
-### Skills (1 tool)
+### Skills
 
 | Tool | Description |
 |---|---|
 | `use_skill` | Load predefined skill workflows from `.coderAI/skills/` |
 
-### Browser Automation (10 tools)
+### Browser Automation
 
 *Requires `playwright` — install with `pip install coderAI[browser] && playwright install chromium`.*
 
@@ -486,7 +489,7 @@ Browser tools provide full control over a headless Chromium browser for form fil
 7. browser_close()
 ```
 
-### Desktop Automation (macOS only, 4 tools)
+### Desktop Automation (macOS only)
 
 | Tool | Description |
 |---|---|
@@ -495,7 +498,7 @@ Browser tools provide full control over a headless Chromium browser for form fil
 | `click_ui_element` | Click a UI element via AppleScript System Events |
 | `type_keystrokes` | Simulate typing or key presses on macOS |
 
-### MCP Integration (8 tools)
+### MCP Integration
 
 | Tool | Description |
 |---|---|
@@ -507,7 +510,7 @@ Browser tools provide full control over a headless Chromium browser for form fil
 | `mcp_list_prompts` | List prompt templates exposed by a connected MCP server |
 | `mcp_get_prompt` | Fetch a prompt template (with arguments) from a server |
 
-### Undo / Rollback (2 tools)
+### Undo / Rollback
 
 | Tool | Description |
 |---|---|
@@ -603,22 +606,10 @@ Use them via the `use_skill` tool:
 > Use the security-audit skill to review the auth module
 ```
 
-### Planning Tool
+### Task Tracking
 
-The `plan` tool provides structured multi-step execution:
-
-```
-> Create a plan to add user authentication
-
-Plan "Add User Authentication" created with 5 steps:
-  [0] ✅ Set up database schema       — done
-  [1] 🔄 Create auth middleware       — in progress
-  [2] ⬜ Build login/register routes  — pending
-  [3] ⬜ Add session management       — pending
-  [4] ⬜ Write tests                  — pending
-
-Progress: 1/5 steps completed
-```
+Use `manage_tasks` for a persistent checklist during multi-step work. In chat,
+`/tasks` refreshes the checklist panel and `/plan` remains an alias for `/tasks`.
 
 ### Project Rules
 
@@ -654,6 +645,7 @@ Define pre/post tool execution hooks in `.coderAI/hooks.json`:
 | **Groq** | `openai/gpt-oss-120b`, `openai/gpt-oss-20b`, `llama3-70b-8192`, `llama3-8b-8192` | `GROQ_API_KEY` |
 | **DeepSeek** | `deepseek-v4-flash`, `deepseek-v4-pro`, `deepseek-v3.2`, `deepseek-r1` | `DEEPSEEK_API_KEY` |
 | **Gemini** | `gemini-3.5-flash`, `gemini-3.1-pro`, `gemini-2.5-flash`, `gemini-2.5-pro`, … | `GEMINI_API_KEY` |
+| **Meta** | `muse-spark-1.1`, `muse-spark`, `muse` | `MODEL_API_KEY` or `META_API_KEY` |
 | **LM Studio** | Any local model | LM Studio running locally |
 | **Ollama** | Any local model | Ollama running locally |
 
@@ -763,6 +755,7 @@ make typecheck
 | `coderAI chat -p <persona>` | Start chat with a persona (e.g. `code-reviewer`) |
 | `coderAI run "<prompt>"` | Headless one-shot: run a prompt and exit, no TUI (deny-on-mutate; `--yolo` to allow) |
 | `coderAI run --json "<prompt>"` | Headless run emitting a structured JSON result to stdout |
+| `coderAI run --output ndjson "<prompt>"` | Headless run emitting schema-versioned lifecycle/tool/assistant events and one terminal envelope |
 | `coderAI mcp list` / `add` / `remove` | Manage MCP servers (also `login` / `logout` / `resources` / `prompts`) |
 | `coderAI setup` | Interactive setup wizard |
 | `coderAI doctor` | Diagnose install (config, keys, dependencies) |
@@ -772,6 +765,9 @@ make typecheck
 | `coderAI config set <k> <v>` | Set a configuration value |
 | `coderAI config reset` | Reset to defaults |
 | `coderAI history list` | List all sessions |
+| `coderAI history rename <id> <name>` | Name a saved session |
+| `coderAI history tag <id> <tag>...` | Add tags to a saved session |
+| `coderAI history export <id> --format markdown\|json` | Export the complete persisted transcript |
 | `coderAI history clear` | Clear all history |
 | `coderAI history delete <id>` | Delete a session |
 | `coderAI info` | Show agent and model info |

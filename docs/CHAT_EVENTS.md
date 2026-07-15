@@ -27,7 +27,7 @@ consumers because unknown phases are ignored.
 | `turn`          | `{phase: "start" \| "reasoning" \| "text" \| "end", delta?, elapsedMs?, reasoningActive?}`     | One streamed assistant turn. `delta` carries incremental tokens for `reasoning`/`text`. `reasoningActive` hints whether extended thinking is in flight. |
 | `tool`          | `{id, phase: "queued" \| "awaiting_approval" \| "running" \| "ok" \| "err" \| "cancelled", payload}` | Lifecycle of a single tool call. `payload` shape depends on phase (see below). `queued` is reserved for future use — Python currently emits `running` first. |
 | `file_diff`     | `{path, diff}`                                                                                | Unified diff string                                                                  |
-| `status`        | `{ctxUsed, ctxLimit, workspaceTrusted, costUsd, budgetUsd, promptTokens, completionTokens, totalTokens, iteration, maxIterations, elapsedSeconds}` | Emitted after every turn. `iteration` is the current agent-loop pass (1-based after the first user message). `maxIterations` mirrors `config.max_iterations` (default 50). `elapsedSeconds` is wall time since session bootstrap. `workspaceTrusted` is `false` only when the project root carries untrusted `.coderAI` automation (Phase 2); `true` otherwise. |
+| `status`        | `{ctxUsed, ctxLimit, workspaceTrusted, costUsd, budgetUsd, promptTokens, completionTokens, totalTokens, iteration, maxIterations, elapsedSeconds}` | Emitted after bootstrap and every turn. `iteration` is the current agent-loop pass (1-based after the first user message). `maxIterations` mirrors `config.max_iterations` (default 50). `elapsedSeconds` is wall time since session bootstrap. `workspaceTrusted` is `true`/`false` when the project has a workspace-trust surface, otherwise `null`. |
 | `skill_card`    | `{id?, name, description, steps: [{index, label}]}`                                           | Parsed skill workflow card emitted after a successful `use_skill` call               |
 | `tasks_card`    | `{tasks: {summary, inProgress, pending, completed, total}}`                                   | Task-list snapshot. `inProgress`/`pending`/`completed` are arrays of `{id, title, priority, status}` sorted by priority; `completed` holds only the last 5. `summary` is a human-readable count string. Updates the session task panel (chrome), not a timeline row. |
 | `agent`         | `{phase: "update" \| "started" \| "finished", info: AgentInfo, parentId}`                     | Per-agent snapshot; `started`/`finished` are lifecycle edges, `update` is throttled live sync |
@@ -37,7 +37,7 @@ consumers because unknown phases are ignored.
 | `available_skills`| `{skills: {name: string, description: string}[]}`                                             | Emitted for the skill picker                                                         |
 | `available_mcp_servers`| `{servers: {name, connected, disabled, degraded, tools: number, transport}[]}`           | Emitted for the `/mcp` picker (connected + configured servers)                       |
 | `context_state` | `{files: {path: string, size: number}[]}`                                                     | Emitted during get_state to show pinned context files                                |
-| `info`          | `{message}`                                                                                   | Long-form reference output (`/show <topic>`, `/plan`) and short notices             |
+| `info`          | `{message}`                                                                                   | Long-form reference output (`/show <topic>`) and short notices                      |
 | `warning`       | `{message}`                                                                                   | Non-fatal user-facing problem (unknown command, bad input)                           |
 | `success`       | `{message}`                                                                                   | Positive confirmation toast (state change, async ack)                                |
 | `error`         | `{category: "provider" \| "tool" \| "internal" \| "protocol", message, hint?, details?}`         | Renders in the timeline as a styled error row, not a traceback dump                  |
@@ -49,7 +49,7 @@ consumers because unknown phases are ignored.
 | phase                | payload keys                                                  |
 | -------------------- | ------------------------------------------------------------- |
 | `queued` / `running` | `{name, category, args, risk}`                                |
-| `awaiting_approval`  | `{name, args, risk, diff?, requestedBy, parentId?, iteration, maxIterations, priorApproved}` | Extended modal context: who requested approval, sub-agent parent, loop iteration counters, and how many tools were already approved this turn. |
+| `awaiting_approval`  | `{name, args, risk, diff?, requestedBy, parentId?, iteration, maxIterations, priorApproved, timeoutSeconds, expiresAt?, rememberMode?, rememberScope?, rememberLabel?}` | Extended modal context: request origin, loop counters, prior approvals, expiry, and an optional reviewed session scope the UI may remember. |
 | `ok`                 | `{preview, fullAvailable}`                                    |
 | `err`                | `{error, preview?}`                                           |
 | `cancelled`          | `{reason?, timeoutSeconds?}`                                  |
@@ -108,7 +108,7 @@ turns can't interleave.
 | cmd                    | fields                                                 | notes                                                                  |
 | ---------------------- | ------------------------------------------------------ | ---------------------------------------------------------------------- |
 | `send_message`         | `{text}`                                               | User input (raw or slash-prefixed)                                     |
-| `trust`                | `{action?: "grant" \| "revoke" \| "status"}`            | Workspace-trust for the project root (Phase 2). `grant` (default) enables `.coderAI` hooks + `config.json` overlay; emits `success`/`info` + `status` (carries `workspaceTrusted`). |
+| `trust`                | `{action?: "grant" \| "revoke" \| "status"}`            | Workspace trust for the project root. `grant` (default) enables `.coderAI` hooks + `config.json` overlay; emits `success`/`info` + `status` (carries `workspaceTrusted`). |
 | `cancel`               | `{agentId?}`                                           | Cancel one agent or all if omitted (Esc key)                           |
 | `cancel_agent`         | `{payload: {agentId}}`                                 | Cancel a specific sub-agent by tracker id                              |
 | `tool_approval_resp`   | `{toolId, approve}`                                    | Responds to a `tool` `awaiting_approval` (id matches the tool id)      |
@@ -118,7 +118,8 @@ turns can't interleave.
 | `set_default_model`    | `{model}`                                              | Persists default model for new sessions                                |
 | `set_verbosity`        | `{level: "quiet" \| "normal" \| "verbose"}`             | Server-side filter (see below)                                         |
 | `toggle_auto_approve`  | `{}`                                                   | Flip YOLO mode                                                         |
-| `allow_tool`           | `{tool, scope?}`                                       | Add a session approval rule. A bare name is refused for high-risk tools (run_command/write_file/…); those need a `scope` (command-prefix or path). Confirms/rejects via `info`/`warning` |
+| `set_auto_approve`     | `{enabled: bool}`                                      | Idempotently enable/disable the explicit unsafe auto-approve mode       |
+| `allow_tool`           | `{tool, scope?}`                                       | Add a session approval rule. The approval modal uses this for its optional remembered action. A bare name is refused for high-risk tools (run_command/write_file/…); those need a reviewed command-prefix or path scope. Confirms/rejects via `info`/`warning` |
 | `disallow_tool`        | `{tool}`                                               | Remove a tool from the session approval allowlist; confirms via `info` |
 | `list_allowed_tools`   | `{}`                                                   | Emits `info` listing the session's always-allowed tools                |
 | `compact_context`      | `{}`                                                   | Triggers summarization                                                 |
@@ -126,7 +127,6 @@ turns can't interleave.
 | `rewind`               | `{turn: int, files?: bool}`                            | Rewind conversation to before user `turn`; truncates `session.messages` and (if `files`) reverts file edits since that checkpoint. Emits `success`/`warning` + `status`. UI truncates its own timeline. |
 | `manage_context`       | `{action: "add" \| "remove", path}`                     | Pin/unpin a file in the pinned-context manager; emits `success`/`warning`, then `context_state` + `status` |
 | `get_state`            | `{}`                                                   | Re-emit `status` + `agent` updates                                     |
-| `get_plan`             | `{}`                                                   | Emits `info` with `.coderAI/current_plan.json` or a short notice       |
 | `get_tasks`            | `{}`                                                   | Re-emits `tasks_card` from the on-disk task list                       |
 | `init_project`         | `{}`                                                   | Scaffolds `.coderAI/{agents,skills,rules}` and starter files (`CODERAI.md`, …) in the project root; emits `success` or `error` |
 | `list_models`          | `{}`                                                   | Emits `available_models` for the model picker                          |

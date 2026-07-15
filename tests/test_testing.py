@@ -5,6 +5,7 @@ import shutil
 from types import SimpleNamespace
 import pytest
 
+from coderAI.core.services import services_scope
 from coderAI.tools.testing import RunTestsTool, detect_test_framework, TEST_FRAMEWORKS
 from conftest import require_external
 
@@ -136,12 +137,11 @@ class TestRunTestsTool:
         tests_dir = tmp_path / "tests"
         tests_dir.mkdir()
         (tests_dir / "test_example.py").write_text("def test_pass():\n    assert True\n")
-        monkeypatch.setattr(
-            "coderAI.tools.testing.config_manager.load_project_config",
-            lambda _root: SimpleNamespace(project_root=tmp_path),
-        )
-
-        result = asyncio.run(self.tool.execute(path="tests/test_example.py", framework="pytest"))
+        config = SimpleNamespace(project_root=tmp_path, allow_outside_project=False)
+        with services_scope(config=config):
+            result = asyncio.run(
+                self.tool.execute(path="tests/test_example.py", framework="pytest")
+            )
 
         assert result["success"]
         assert result["results"]["passed"] >= 1

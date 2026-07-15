@@ -6,6 +6,7 @@ import logging
 import os
 import shutil
 import stat
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Protocol, cast, runtime_checkable
@@ -39,6 +40,47 @@ def _reapply_saved_mode(filepath: Path, entry: Dict[str, Any]) -> None:
         os.chmod(filepath, mode)
     except OSError:
         pass
+
+
+def _guard_restore_path(filepath: Path, operation: str) -> Optional[Dict[str, Any]]:
+    """Apply the same scope, protected-path, and symlink guards as file tools."""
+    # Imported lazily because coderAI.tools.filesystem re-exports backup_store
+    # from this module during package initialization.
+    from coderAI.tools.filesystem._guards import (
+        _enforce_project_scope,
+        _is_path_protected,
+        _reject_symlink_leaf,
+    )
+
+    if _is_path_protected(filepath):
+        return {"success": False, "error": f"Cannot undo into protected path: {filepath}"}
+    scope_error = _enforce_project_scope(filepath, operation)
+    if scope_error:
+        return scope_error
+    if filepath.exists() or filepath.is_symlink():
+        return _reject_symlink_leaf(filepath, operation)
+    return None
+
+
+def _atomic_restore_file(backup_path: Path, filepath: Path, entry: Dict[str, Any]) -> None:
+    """Copy a backup beside its target and atomically replace the target."""
+    fd, temporary = tempfile.mkstemp(
+        dir=str(filepath.parent), prefix=f".{filepath.name}.", suffix=".undo"
+    )
+    os.close(fd)
+    temporary_path = Path(temporary)
+    try:
+        shutil.copy2(backup_path, temporary_path)
+        _reapply_saved_mode(temporary_path, entry)
+        with open(temporary_path, "rb") as restored:
+            os.fsync(restored.fileno())
+        os.replace(temporary_path, filepath)
+    except Exception:
+        try:
+            temporary_path.unlink()
+        except OSError:
+            pass
+        raise
 
 
 @runtime_checkable
@@ -185,9 +227,12 @@ class FileBackupStore:
         ``{"success": False, "error"}``. Removing the consumed entry from the
         index is the caller's job.
         """
-        filepath = Path(entry["filepath"])
+        filepath = Path(entry["filepath"]).expanduser()
         operation = entry.get("operation")
         try:
+            guard_error = _guard_restore_path(filepath, "undo")
+            if guard_error:
+                return guard_error
             if operation == "create":
                 # File was created — undo by deleting it
                 if filepath.exists():
@@ -199,10 +244,15 @@ class FileBackupStore:
                     return {"success": False, "error": f"backup missing: {backup_path}"}
                 # Ensure parent directory exists (for deleted files)
                 filepath.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(backup_path, filepath)
-                _reapply_saved_mode(filepath, entry)
+                guard_error = _guard_restore_path(filepath, "undo")
+                if guard_error:
+                    return guard_error
+                _atomic_restore_file(Path(backup_path), filepath, entry)
                 # Clean up the backup file
-                Path(backup_path).unlink()
+                try:
+                    Path(backup_path).unlink()
+                except OSError:
+                    logger.warning("Could not remove consumed undo backup %s", backup_path)
                 return {"success": True, "action": "restored", "filepath": str(filepath)}
             else:
                 return {"success": False, "error": f"Unknown operation type: {operation}"}
@@ -218,11 +268,11 @@ class FileBackupStore:
         if not self.index:
             return {"success": False, "error": "No operations to undo"}
 
-        entry = self.index.pop()
-        self._save_index()
-
+        entry = self.index[-1]
         result = self._restore_entry(entry)
         if result.get("success"):
+            self.index.pop()
+            self._save_index()
             name = Path(entry["filepath"]).name
             result["message"] = (
                 f"Removed newly created file: {name}"
@@ -251,11 +301,11 @@ class FileBackupStore:
 
         # Convert 0=most-recent to actual list index
         actual_idx = len(self.index) - 1 - index
-        entry = self.index.pop(actual_idx)
-        self._save_index()
-
+        entry = self.index[actual_idx]
         result = self._restore_entry(entry)
         if result.get("success"):
+            self.index.pop(actual_idx)
+            self._save_index()
             name = Path(entry["filepath"]).name
             result["message"] = (
                 f"Removed newly created file: {name}"
@@ -296,6 +346,7 @@ class FileBackupStore:
         restored: List[str] = []
         deleted: List[str] = []
         errors: List[str] = []
+        consumed: set[int] = set()
 
         # Newest first so layered edits to a single file unwind in order.
         for entry in sorted(to_undo, key=_epoch, reverse=True):
@@ -303,16 +354,16 @@ class FileBackupStore:
             if result.get("success"):
                 target = deleted if result["action"] == "deleted" else restored
                 target.append(result["filepath"])
+                consumed.add(id(entry))
             else:
                 errors.append(f"{Path(entry['filepath']).name}: {result['error']}")
 
-        # Drop the consumed entries (by identity) and persist the index.
-        consumed = {id(e) for e in to_undo}
+        # Failed restores remain retryable and visible in undo history.
         self.index = [e for e in self.index if id(e) not in consumed]
         self._save_index()
 
         return {
-            "success": True,
+            "success": not errors,
             "restored": restored,
             "deleted": deleted,
             "errors": errors,

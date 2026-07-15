@@ -4,7 +4,7 @@ import asyncio
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from coderAI.tools.mcp import MCPClient, MCPListTool, MCPConnectTool
+from coderAI.tools.mcp import MCPClient, MCPConnectTool, MCPDisconnectTool, MCPListTool
 
 
 class TestMCPClient:
@@ -77,13 +77,13 @@ class TestMCPClient:
             },
         }
 
-        async def fake_read_response(stdout, expected_id, timeout=10):
+        async def fake_exchange(entry, request, timeout=10):
             return error_response
 
         client.servers["srv"] = {"process": fake_process, "tools": []}
         client._next_id = 1
 
-        with patch.object(client, "_read_response", side_effect=fake_read_response):
+        with patch.object(client, "_stdio_exchange", side_effect=fake_exchange):
             result = asyncio.run(client.call_tool("srv", "bad_tool", {}))
 
         assert result["success"] is False
@@ -107,13 +107,13 @@ class TestMCPClient:
             },
         }
 
-        async def fake_read_response(stdout, expected_id, timeout=10):
+        async def fake_exchange(entry, request, timeout=10):
             return ok_response
 
         client.servers["srv"] = {"process": fake_process, "tools": []}
         client._next_id = 1
 
-        with patch.object(client, "_read_response", side_effect=fake_read_response):
+        with patch.object(client, "_stdio_exchange", side_effect=fake_exchange):
             result = asyncio.run(client.call_tool("srv", "ok_tool", {}))
 
         assert result["success"] is True
@@ -181,7 +181,7 @@ class TestMCPClient:
             fake_proc.stdin = MagicMock()
             fake_proc.stdin.write = MagicMock()
             fake_proc.stdin.drain = AsyncMock()
-            fake_proc.stdout = MagicMock()
+            fake_proc.stdout = asyncio.StreamReader()
             fake_proc.stderr = stderr_reader
 
             responses = {
@@ -193,15 +193,15 @@ class TestMCPClient:
                 },
             }
 
-            async def fake_read_response(stdout, expected_id, timeout=10):
-                return responses[expected_id]
+            async def fake_exchange(entry, request, timeout=10):
+                return responses[request["id"]]
 
             async def fake_create(*a, **k):
                 return fake_proc
 
             with (
                 patch("asyncio.create_subprocess_exec", side_effect=fake_create),
-                patch.object(client, "_read_response", side_effect=fake_read_response),
+                patch.object(client, "_stdio_exchange", side_effect=fake_exchange),
             ):
                 result = await client.connect_stdio("srv", "npx", ["foo"])
 
@@ -211,6 +211,7 @@ class TestMCPClient:
             # Drain finishes on its own once stderr hits EOF — proves it is reading.
             await asyncio.wait_for(task, timeout=1.0)
             assert task.done()
+            await client.disconnect("srv")
 
         asyncio.run(run())
 
@@ -286,7 +287,6 @@ class TestMCPListTool:
             mcp_mod.mcp_client = original
 
 
-
 class TestMCPConnectTool:
     @pytest.fixture(autouse=True)
     def setup(self):
@@ -353,11 +353,11 @@ class TestMCPResourcesAndPrompts:
     def test_list_resources_success(self):
         client = self._connected_client({"resources": {}})
 
-        async def fake_request(server, method, params=None, timeout=30):
+        async def fake_request(server, entry, method, params=None, timeout=30):
             assert method == "resources/list"
             return {"success": True, "result": {"resources": [{"uri": "file:///a", "name": "a"}]}}
 
-        with patch.object(client, "_request", side_effect=fake_request):
+        with patch.object(client, "_request_entry", side_effect=fake_request):
             result = asyncio.run(client.list_resources("srv"))
         assert result["success"]
         assert result["count"] == 1
@@ -398,10 +398,10 @@ class TestMCPResourcesAndPrompts:
         client = self._connected_client({"resources": {}})
         err = {"jsonrpc": "2.0", "id": 1, "error": {"code": -32601, "message": "method not found"}}
 
-        async def fake_read_response(stdout, expected_id, timeout=10):
+        async def fake_exchange(entry, request, timeout=10):
             return err
 
-        with patch.object(client, "_read_response", side_effect=fake_read_response):
+        with patch.object(client, "_stdio_exchange", side_effect=fake_exchange):
             result = asyncio.run(client._request("srv", "resources/list"))
         assert not result["success"]
         assert "method not found" in result["error"]
@@ -410,10 +410,10 @@ class TestMCPResourcesAndPrompts:
         client = self._connected_client({"resources": {}})
         resp = {"jsonrpc": "2.0", "id": 1, "result": {"resources": []}}
 
-        async def fake_read_response(stdout, expected_id, timeout=10):
+        async def fake_exchange(entry, request, timeout=10):
             return resp
 
-        with patch.object(client, "_read_response", side_effect=fake_read_response):
+        with patch.object(client, "_stdio_exchange", side_effect=fake_exchange):
             result = asyncio.run(client._request("srv", "resources/list"))
         assert result["success"]
         assert result["result"] == {"resources": []}
@@ -422,7 +422,7 @@ class TestMCPResourcesAndPrompts:
     def test_discover_extras_populates_stores(self):
         client = self._connected_client({"resources": {}, "prompts": {}})
 
-        async def fake_request(server, method, params=None, timeout=30):
+        async def fake_request(server, entry, method, params=None, timeout=30):
             if method == "resources/list":
                 return {
                     "success": True,
@@ -432,7 +432,7 @@ class TestMCPResourcesAndPrompts:
                 return {"success": True, "result": {"prompts": [{"name": "p", "arguments": []}]}}
             return {"success": True, "result": {}}
 
-        with patch.object(client, "_request", side_effect=fake_request):
+        with patch.object(client, "_request_entry", side_effect=fake_request):
             counts = asyncio.run(client._discover_extras("srv"))
         assert counts == {"resources": 1, "prompts": 1}
         assert client.discovered_resources[0]["uri"] == "u"
@@ -441,10 +441,10 @@ class TestMCPResourcesAndPrompts:
     def test_discover_extras_is_non_fatal(self):
         client = self._connected_client({"resources": {}})
 
-        async def boom(server, method, params=None, timeout=30):
+        async def boom(server, entry, method, params=None, timeout=30):
             raise RuntimeError("server hates us")
 
-        with patch.object(client, "_request", side_effect=boom):
+        with patch.object(client, "_request_entry", side_effect=boom):
             counts = asyncio.run(client._discover_extras("srv"))
         assert counts == {"resources": 0, "prompts": 0}
         assert client.discovered_resources == []
@@ -762,12 +762,54 @@ class _FakeHttpSession:
         self.closed = False
         self.posts = []
 
-    def post(self, url, json=None, headers=None, timeout=None):
+    def post(self, url, json=None, headers=None, timeout=None, allow_redirects=True):
         self.posts.append({"url": url, "json": json, "headers": headers or {}})
         return self._responses.pop(0)
 
     async def close(self):
         self.closed = True
+
+
+class _FakeLegacySseResponse:
+    def __init__(self, endpoint="/messages"):
+        self.status = 200
+        self.content = asyncio.StreamReader()
+        self.content.feed_data(f"event: endpoint\ndata: {endpoint}\n\n".encode())
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
+class _FakeLegacySseSession:
+    def __init__(self, endpoint="/messages"):
+        self.stream = _FakeLegacySseResponse(endpoint)
+        self.closed = False
+        self.posts = []
+
+    async def get(self, url, **kwargs):
+        return self.stream
+
+    def post(self, url, json=None, **kwargs):
+        self.posts.append({"url": url, "json": json})
+        request_id = (json or {}).get("id")
+        method = (json or {}).get("method")
+        if request_id is not None:
+            if method == "initialize":
+                result = {"serverInfo": {"name": "legacy"}}
+            elif method == "tools/list":
+                result = {"tools": [{"name": "legacy_tool", "description": "d"}]}
+            else:
+                result = {"content": [{"type": "text", "text": "legacy result"}]}
+            event = {"jsonrpc": "2.0", "id": request_id, "result": result}
+            self.stream.content.feed_data(
+                f"event: message\ndata: {__import__('json').dumps(event)}\n\n".encode()
+            )
+        return _FakeHttpResponse(status=202, headers={})
+
+    async def close(self):
+        self.closed = True
+        self.stream.content.feed_eof()
 
 
 class TestMCPHttpTransport:
@@ -953,3 +995,223 @@ class TestMCPHttpTransport:
         assert result["needs_auth"] is True
         assert "mcp login strava" in result["error"]
         assert session.closed
+
+
+class TestMCPTransportHardening:
+    def test_stdio_dispatches_concurrent_out_of_order_responses(self):
+        async def run():
+            client = MCPClient()
+            stdout = asyncio.StreamReader()
+            process = MagicMock()
+            process.returncode = None
+            process.stdin = MagicMock()
+            process.stdin.drain = AsyncMock()
+            entry = {
+                "transport": "stdio",
+                "process": process,
+                "pending": {},
+                "write_lock": asyncio.Lock(),
+            }
+            reader = asyncio.create_task(client._stdio_reader("srv", entry, stdout))
+            first = asyncio.create_task(
+                client._stdio_exchange(
+                    entry, {"jsonrpc": "2.0", "id": 1, "method": "one"}, timeout=1
+                )
+            )
+            second = asyncio.create_task(
+                client._stdio_exchange(
+                    entry, {"jsonrpc": "2.0", "id": 2, "method": "two"}, timeout=1
+                )
+            )
+            await asyncio.sleep(0)
+            stdout.feed_data(b'{"jsonrpc":"2.0","id":2,"result":{"order":2}}\n')
+            stdout.feed_data(b'{"jsonrpc":"2.0","id":1,"result":{"order":1}}\n')
+            one, two = await asyncio.gather(first, second)
+            stdout.feed_eof()
+            await reader
+            assert one["result"]["order"] == 1
+            assert two["result"]["order"] == 2
+            assert entry["pending"] == {}
+
+        asyncio.run(run())
+
+    def test_stdio_eof_fails_pending_request(self):
+        async def run():
+            client = MCPClient()
+            stdout = asyncio.StreamReader()
+            process = MagicMock(returncode=None)
+            process.stdin = MagicMock()
+            process.stdin.drain = AsyncMock()
+            entry = {
+                "transport": "stdio",
+                "process": process,
+                "pending": {},
+                "write_lock": asyncio.Lock(),
+            }
+            reader = asyncio.create_task(client._stdio_reader("srv", entry, stdout))
+            request = asyncio.create_task(
+                client._stdio_exchange(
+                    entry, {"jsonrpc": "2.0", "id": 9, "method": "hang"}, timeout=1
+                )
+            )
+            await asyncio.sleep(0)
+            stdout.feed_eof()
+            with pytest.raises(RuntimeError, match="closed stdout"):
+                await request
+            await reader
+
+        asyncio.run(run())
+
+    def test_resource_pagination_collects_pages_and_rejects_cursor_loop(self):
+        client = MCPClient()
+        client.servers["srv"] = {"server_info": {"capabilities": {"resources": {}}}}
+        calls = []
+
+        async def pages(server, entry, method, params=None, timeout=30):
+            calls.append(params)
+            if params is None:
+                return {
+                    "success": True,
+                    "result": {"resources": [{"uri": "one"}], "nextCursor": "c1"},
+                }
+            return {"success": True, "result": {"resources": [{"uri": "two"}]}}
+
+        with patch.object(client, "_request_entry", side_effect=pages):
+            result = asyncio.run(client.list_resources("srv"))
+        assert [item["uri"] for item in result["resources"]] == ["one", "two"]
+        assert calls == [None, {"cursor": "c1"}]
+
+        async def loop(server, entry, method, params=None, timeout=30):
+            return {"success": True, "result": {"resources": [], "nextCursor": "same"}}
+
+        with patch.object(client, "_request_entry", side_effect=loop):
+            result = asyncio.run(client.list_resources("srv"))
+        assert result["success"] is False
+        assert "repeated pagination cursor" in result["error"]
+
+    def test_duplicate_or_invalid_discovered_tool_rejected_before_commit(self):
+        client = MCPClient()
+        old = {"transport": "http", "session": _FakeHttpSession([])}
+        client.servers["srv"] = old
+        client.discovered_tools = [{"server": "srv", "name": "old"}]
+        candidate = {"transport": "http", "session": _FakeHttpSession([])}
+        init = {"jsonrpc": "2.0", "id": 1, "result": {}}
+        duplicate = {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": {"tools": [{"name": "same"}, {"name": "same"}]},
+        }
+        with pytest.raises(ValueError, match="duplicate"):
+            asyncio.run(client._finish_connect("srv", candidate, init, duplicate))
+        assert client.servers["srv"] is old
+        assert client.discovered_tools == [{"server": "srv", "name": "old"}]
+
+        invalid = {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": {"tools": [{"name": "not valid"}]},
+        }
+        with pytest.raises(ValueError, match="only letters"):
+            asyncio.run(client._finish_connect("srv", candidate, init, invalid))
+        assert client.servers["srv"] is old
+
+    def test_successful_replacement_purges_stale_state_and_sanitizes_metadata(self):
+        client = MCPClient()
+        old_session = _FakeHttpSession([])
+        client.servers["srv"] = {"transport": "http", "session": old_session}
+        client.discovered_tools = [{"server": "srv", "name": "old"}]
+        client.discovered_resources = [{"server": "srv", "uri": "old"}]
+        client.discovered_prompts = [{"server": "srv", "name": "old"}]
+        candidate = {"transport": "http", "session": _FakeHttpSession([])}
+        init = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {"serverInfo": {"description": "line one\nline two"}},
+        }
+        tools = {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": {
+                "tools": [
+                    {
+                        "name": "fresh",
+                        "description": "x\n" * 2_000,
+                        "inputSchema": {
+                            "type": "object",
+                            "description": "schema\x00 instructions",
+                        },
+                    }
+                ]
+            },
+        }
+        result = asyncio.run(client._finish_connect("srv", candidate, init, tools))
+        assert result["success"]
+        assert old_session.closed
+        assert [item["name"] for item in client.discovered_tools] == ["fresh"]
+        assert client.discovered_resources == []
+        assert client.discovered_prompts == []
+        schema = client.get_tools_as_openai_format()[0]["function"]
+        assert "\n" not in schema["description"]
+        assert len(schema["description"]) <= 1024
+        assert "\x00" not in schema["parameters"]["description"]
+        assert result["server_info"]["description"] == "line one line two"
+
+    def test_disconnect_tool_returns_client_failure(self):
+        import coderAI.tools.mcp as mcp_mod
+
+        original = mcp_mod.mcp_client
+        fake = MagicMock()
+        fake.disconnect = AsyncMock(return_value={"success": False, "error": "close failed"})
+        mcp_mod.mcp_client = fake
+        try:
+            result = asyncio.run(MCPDisconnectTool().execute("srv"))
+        finally:
+            mcp_mod.mcp_client = original
+        assert result == {"success": False, "error": "close failed"}
+
+    def test_legacy_sse_stream_stays_open_and_dispatches_calls(self):
+        async def run():
+            client = MCPClient()
+            session = _FakeLegacySseSession()
+            with patch("aiohttp.ClientSession", return_value=session):
+                connected = await client.connect_sse("legacy", "https://mcp.example/sse")
+            assert connected["success"], connected
+            assert not client.servers["legacy"]["reader_task"].done()
+            called = await client.call_tool("legacy", "legacy_tool", {})
+            assert called["success"]
+            assert called["content"] == "legacy result"
+            await client.disconnect("legacy")
+            assert session.closed
+
+        asyncio.run(run())
+
+    def test_legacy_sse_rejects_cross_origin_message_endpoint(self):
+        async def run():
+            client = MCPClient()
+            session = _FakeLegacySseSession("https://evil.example/messages")
+            with patch("aiohttp.ClientSession", return_value=session):
+                result = await client.connect_sse("legacy", "https://mcp.example/sse")
+            assert result["success"] is False
+            assert "cross-origin" in result["error"]
+            assert session.closed
+
+        asyncio.run(run())
+
+    def test_http_timeout_schedules_protocol_cancellation(self):
+        async def run():
+            client = MCPClient()
+            entry = {"transport": "http", "session": object(), "url": "https://h/mcp"}
+
+            async def timeout(*args, **kwargs):
+                raise asyncio.TimeoutError
+
+            with (
+                patch.object(client, "_http_send", side_effect=timeout),
+                patch.object(client, "_send_request_cancellation", new=AsyncMock()) as cancellation,
+            ):
+                result = await client._request_entry("srv", entry, "slow", timeout=0.01)
+                await asyncio.sleep(0)
+            assert result["success"] is False
+            cancellation.assert_awaited_once_with(entry, 1)
+
+        asyncio.run(run())

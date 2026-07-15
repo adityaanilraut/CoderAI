@@ -14,6 +14,7 @@ from coderAI.tools.filesystem._guards import (
     DEFAULT_MAX_GLOB_RESULTS,
     PROTECTED_HOME_PATHS,
     PROTECTED_SYSTEM_PATHS,
+    ProjectPathError,
     _allows_outside_project,
     _atomic_write_file,
     _emit_diff,
@@ -25,6 +26,7 @@ from coderAI.tools.filesystem._guards import (
     _O_NOFOLLOW,
     _reject_symlink_leaf,
     _safe_open_no_symlink,
+    resolve_under_project,
 )
 from coderAI.tools.filesystem.read_write import (
     ReadFileParams,

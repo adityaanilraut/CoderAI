@@ -23,7 +23,6 @@ from coderAI.tui.project import async_scan_project_files
 from coderAI.tui.rendering import (
     composer_footer_markup,
     render_agent_tree,
-    render_plan,
     render_session_header,
     render_tasks,
 )
@@ -53,7 +52,7 @@ from coderAI.tui.timeline_render import (
 STREAM_TICK_S = 0.12
 
 # Responsive breakpoints (terminal columns). Below PANE_RIGHT_MIN_COLS the
-# right (plan/tasks) pane auto-hides; below PANE_LEFT_MIN_COLS the left
+# right (tasks) pane auto-hides; below PANE_LEFT_MIN_COLS the left
 # (agents) pane hides too, leaving the full width to the conversation.
 # Ctrl+B / Ctrl+G override a pane until toggled back to its auto state.
 PANE_LEFT_MIN_COLS = 100
@@ -80,8 +79,8 @@ Screen {{
 }}
 #session-header {{
     height: auto;
-    min-height: 2;
-    padding: 1 2;
+    min-height: 1;
+    padding: 0 2;
     background: {Tokens.BG};
     border-bottom: solid {Tokens.LINE};
     color: {Tokens.TEXT_DIM};
@@ -105,26 +104,26 @@ Screen {{
 #composer-box {{
     height: auto;
     margin: 1 2;
-    background: {Tokens.BG_RAISED};
-    border: round {Tokens.LINE};
+    background: {Tokens.COMPOSER_BG};
+    border: round {Tokens.COMPOSER_LINE};
     padding: 1 2;
 }}
 #prompt-row {{
     height: auto;
-    background: {Tokens.BG_RAISED};
+    background: {Tokens.COMPOSER_BG};
 }}
 #prompt-caret {{
     width: 2;
     height: auto;
     color: {Tokens.ACCENT};
-    background: {Tokens.BG_RAISED};
+    background: {Tokens.COMPOSER_BG};
 }}
 #prompt-area {{
     width: 1fr;
     height: auto;
     min-height: 2;
     max-height: 8;
-    background: {Tokens.BG_RAISED};
+    background: {Tokens.COMPOSER_BG};
     color: {Tokens.TEXT};
     border: none;
 }}
@@ -132,7 +131,7 @@ Screen {{
     height: 1;
     padding: 1 0 0 0;
     color: {Tokens.TEXT_MUTED};
-    background: {Tokens.BG_RAISED};
+    background: {Tokens.COMPOSER_BG};
     border-top: none;
 }}
 #left-pane {{
@@ -156,14 +155,6 @@ Screen {{
     border-left: solid {Tokens.LINE_SOFT};
     layout: vertical;
 }}
-#plan-scroll {{
-    height: 1fr;
-    padding: 1 2;
-    background: {Tokens.BG_SUNK};
-    border-bottom: solid {Tokens.LINE_SOFT};
-    scrollbar-background: {Tokens.BG_SUNK};
-    scrollbar-color: {Tokens.LINE};
-}}
 #tasks-scroll {{
     height: 1fr;
     padding: 1 2;
@@ -171,16 +162,12 @@ Screen {{
     scrollbar-background: {Tokens.BG_SUNK};
     scrollbar-color: {Tokens.LINE};
 }}
-#plan-pane {{
-    height: auto;
-    color: {Tokens.TEXT_DIM};
-}}
 #tasks-pane {{
     height: auto;
     color: {Tokens.TEXT_DIM};
 }}
 Footer {{
-    background: {Tokens.BG_RAISED};
+    background: {Tokens.COMPOSER_BG};
     color: {Tokens.TEXT_DIM};
 }}
 """
@@ -196,11 +183,11 @@ class CoderAIApp(App[None]):
         Binding("escape", "cancel_turn", "Cancel", show=True, priority=False),
         Binding("ctrl+c", "ctrl_c", "Exit", show=False),
         Binding("ctrl+shift+c, super+c", "copy_selection", "Copy", show=False),
-        Binding("ctrl+k", "command_palette", "Commands", show=True),
+        Binding("ctrl+k,super+k", "command_palette", "Commands", show=True),
         Binding("ctrl+t", "toggle_collapse", "Collapse", show=True),
         Binding("ctrl+o", "expand_full", "Expand", show=True),
         Binding("ctrl+b", "toggle_left_pane", "Agents pane", show=False),
-        Binding("ctrl+g", "toggle_right_pane", "Plan pane", show=False),
+        Binding("ctrl+g", "toggle_right_pane", "Tasks pane", show=False),
         Binding("pageup", "timeline_page_up", "Scroll up", show=False),
         Binding("pagedown", "timeline_page_down", "Scroll down", show=False),
         Binding("ctrl+home", "timeline_scroll_top", "Top", show=False),
@@ -271,8 +258,6 @@ class CoderAIApp(App[None]):
                 )
                 yield Static("", id="stream-tail", markup=True)
             with Vertical(id="right-pane"):
-                with VerticalScroll(id="plan-scroll"):
-                    yield Static("", id="plan-pane", markup=True)
                 with VerticalScroll(id="tasks-scroll"):
                     yield Static("", id="tasks-pane", markup=True)
         with Vertical(id="composer-box"):
@@ -288,7 +273,8 @@ class CoderAIApp(App[None]):
         prompt.show_line_numbers = False
         prompt.placeholder = composer_placeholder()
         prompt.focus()
-        self.run_worker(self._scan_project_files())
+        # Pass the callable so a fast shutdown cannot strand an already-created coroutine.
+        self.run_worker(self._scan_project_files)  # type: ignore[arg-type]
         footer = self.query_one("#composer-footer", Static)
         footer.update(composer_footer_markup(self.reducer.session))
         self._apply_responsive_layout()
@@ -331,6 +317,11 @@ class CoderAIApp(App[None]):
             payload = msg.data.get("payload") or {}
             self._notify_attention(f"CoderAI: approval needed — {payload.get('name') or 'tool'}")
             self.run_worker(self._maybe_show_approval())
+        elif msg.event == "tool" and msg.data.get("phase") == "cancelled":
+            payload = msg.data.get("payload") or {}
+            self._dismiss_cancelled_approval(
+                str(msg.data.get("id") or ""), str(payload.get("reason") or "cancelled")
+            )
         elif msg.event == "ready" and self._awaiting_response:
             self._awaiting_response = False
             self._notify_attention("CoderAI: finished — ready for your next message")
@@ -424,7 +415,7 @@ class CoderAIApp(App[None]):
 
     def action_toggle_right_pane(self) -> None:
         _, auto_right = self._auto_pane_visibility()
-        self._right_pane_pref = self._toggle_pane("#right-pane", auto_right, "Plan")
+        self._right_pane_pref = self._toggle_pane("#right-pane", auto_right, "Tasks")
 
     # ── Desktop notifications ────────────────────────────────────────
 
@@ -566,14 +557,13 @@ class CoderAIApp(App[None]):
     # ── Chrome (delegates to rendering.py) ───────────────────────────
 
     def _render_chrome(self, s: SessionState) -> None:
-        # The four chrome panes always co-exist in the DOM (breakpoints toggle
+        # The three chrome panes always co-exist in the DOM (breakpoints toggle
         # `display`; they are never unmounted), so one guard covering the
         # transient teardown window is enough.
         try:
             for selector, render in (
                 ("#session-header", render_session_header),
                 ("#agent-tree-content", render_agent_tree),
-                ("#plan-pane", render_plan),
                 ("#tasks-pane", render_tasks),
             ):
                 self.query_one(selector, Static).update(render(s))
@@ -605,17 +595,33 @@ class CoderAIApp(App[None]):
         result = await self.push_screen_wait(ApprovalScreen(pending))
         if result is None:
             return
-        approve, always = result
+        approve, remember = result
         if self.controller:
-            if approve and always and not self.reducer.session.auto_approve:
-                self.controller.enqueue_command("toggle_auto_approve")
-            self.controller.enqueue_command(
+            # Remember only the reviewed tool/path/command scope advertised by
+            # the backend. Session-wide unsafe auto-approve remains an explicit
+            # /yolo action and is never enabled from a routine approval prompt.
+            if approve and remember and pending.get("rememberMode"):
+                await self.controller.submit_command(
+                    "allow_tool",
+                    tool=str(pending.get("tool") or ""),
+                    scope=str(pending.get("rememberScope") or ""),
+                )
+            await self.controller.submit_command(
                 "tool_approval_resp",
                 toolId=pending["id"],
                 approve=approve,
             )
         pending["decided"] = "approved" if approve else "denied"
         self._refresh_ui("full")
+
+    def _dismiss_cancelled_approval(self, tool_id: str, reason: str) -> None:
+        """Close a modal whose backend waiter has timed out or been cancelled."""
+        active = self.screen
+        if not isinstance(active, ApprovalScreen) or active.approval_id != tool_id:
+            return
+        active.dismiss(None)
+        if reason == "timeout":
+            self.notify("Approval timed out and was denied", severity="warning")
 
     # ── Keybindings ──────────────────────────────────────────────────
 
@@ -655,11 +661,32 @@ class CoderAIApp(App[None]):
         self._scroll_timeline(lambda log: log.scroll_end(animate=False))
 
     def action_copy_selection(self) -> None:
-        log = self.query_one("#timeline", SelectableRichLog)
-        selection = log.text_selection
-        if selection:
-            self.copy_to_clipboard(str(selection))
-            self.notify("Copied to clipboard")
+        from coderAI.tui.clipboard import copy_text
+
+        text = self.screen.get_selected_text()
+        if not text:
+            self.notify("Nothing selected", severity="warning")
+            return
+        copy_text(
+            text,
+            write_osc52=self._osc52_writer(),
+            notify_fn=self.notify,
+        )
+
+    def _osc52_writer(self):
+        """Return a writer that sends OSC-52 through Textual's terminal driver."""
+        driver = self._driver
+
+        def write(sequence: str) -> None:
+            if driver is not None:
+                driver.write(sequence)
+            else:
+                import sys
+
+                sys.stdout.write(sequence)
+                sys.stdout.flush()
+
+        return write
 
     def _find_last_content_item(self) -> Optional[tuple[int, Dict[str, Any]]]:
         for i in range(len(self.reducer.timeline) - 1, -1, -1):
@@ -763,14 +790,14 @@ class CoderAIApp(App[None]):
         if self.project_files:
             # Serve the cached scan immediately; refresh it in the background
             # for the next invocation (_scan_in_progress guards concurrency).
-            self.run_worker(self._scan_project_files())
+            self.run_worker(self._scan_project_files)  # type: ignore[arg-type]
         else:
             await self._scan_project_files()
         result = await self.push_screen_wait(
             FilePickerScreen(
                 self.project_files,
-                placeholder="🔍 Type to search files to mention…",
-                footer_help=(f"[{Tokens.TEXT_MUTED}]↑↓ navigate  ↵ insert @path  ⎋ close[/]"),
+                placeholder="🔍 Type to search files to mention and pin…",
+                footer_help=(f"[{Tokens.TEXT_MUTED}]↑↓ navigate  ↵ mention + pin  ⎋ close[/]"),
             )
         )
         prompt = self.query_one("#prompt-area", PromptArea)
@@ -828,6 +855,7 @@ class CoderAIApp(App[None]):
                 retry_agent=self._retry_agent,
                 rewind_timeline=self._rewind_timeline,
                 resume_session=self._resume_session,
+                copy_to_clipboard=self._osc52_writer(),
             )
             if handled:
                 return

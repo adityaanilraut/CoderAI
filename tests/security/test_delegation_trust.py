@@ -22,9 +22,21 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
+from coderAI.core.agent_loop import ExecutionLoop
+from coderAI.core.tool_error_codes import ToolErrorCode
+from coderAI.core.tool_executor import ToolExecutor
 from coderAI.core.agents import AgentPersona, persona_allowed_in_context
 from coderAI.system.history import Session
-from coderAI.tools.subagent import DelegateTaskTool, SubagentContext
+from coderAI.tools.subagent import (
+    BROWSER_NATIVE_CAPABILITIES,
+    DESKTOP_NATIVE_CAPABILITIES,
+    READ_ONLY_NATIVE_CAPABILITIES,
+    WORKSPACE_NATIVE_CAPABILITIES,
+    DelegateTaskTool,
+    SubagentContext,
+)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Harnesses
@@ -180,7 +192,7 @@ class TestCapabilitySubsetOfParent:
         assert set(child.tools.tools.keys()) == {"read_file"}
 
     def test_missing_ceiling_leaves_tools_untouched(self):
-        """A never-wired parent context (None ceiling) applies no intersection."""
+        """A missing parent ceiling still applies the workspace domain boundary."""
         tool = DelegateTaskTool()
         tool.context = SubagentContext(parent_tool_names=None)
         child = _mock_child(["read_file", "write_file"])
@@ -189,6 +201,146 @@ class TestCapabilitySubsetOfParent:
 
         assert result["success"] is True
         assert set(child.tools.tools.keys()) == {"read_file", "write_file"}
+
+    @pytest.mark.parametrize(
+        "domain,expected",
+        [
+            ("read_only", READ_ONLY_NATIVE_CAPABILITIES),
+            ("browser", BROWSER_NATIVE_CAPABILITIES),
+            ("desktop", DESKTOP_NATIVE_CAPABILITIES),
+            ("workspace", WORKSPACE_NATIVE_CAPABILITIES),
+        ],
+    )
+    def test_isolation_domain_applies_exact_native_capability_set(self, domain, expected):
+        tool = DelegateTaskTool()
+        candidates = {
+            "read_file",
+            "write_file",
+            "browser_navigate",
+            "run_applescript",
+            "delegate_task",
+            "mcp_list",
+        }
+        child = _mock_child(
+            candidates,
+            read_only_map={
+                "read_file": True,
+                "write_file": False,
+                "browser_navigate": False,
+                "run_applescript": False,
+                "delegate_task": False,
+                "mcp_list": True,
+            },
+        )
+
+        result = _run(tool, child, isolation_domain=domain)
+
+        assert result["success"] is True
+        assert set(child.tools.tools) == candidates & expected
+        assert child._capability_domain == domain
+        assert child._allowed_native_tool_names == frozenset(candidates & expected)
+        assert child._allow_dynamic_mcp is False
+
+    def test_read_only_flag_overrides_requested_workspace_domain(self):
+        tool = DelegateTaskTool()
+        child = _mock_child(
+            ["read_file", "write_file"],
+            read_only_map={"read_file": True, "write_file": False},
+        )
+
+        _run(tool, child, read_only_task=True, isolation_domain="workspace")
+
+        assert set(child.tools.tools) == {"read_file"}
+        assert child._capability_domain == "read_only"
+
+
+class TestCapabilityRuntimeEnforcement:
+    @staticmethod
+    def _executor() -> tuple[ToolExecutor, MagicMock]:
+        read_tool = MagicMock(is_read_only=True)
+        hidden_tool = MagicMock(is_read_only=False, requires_confirmation=True)
+        registry = MagicMock()
+        registry.get.side_effect = lambda name: {
+            "read_file": read_tool,
+            "write_file": hidden_tool,
+        }.get(name)
+        registry.execute = AsyncMock(return_value={"success": True})
+        agent = SimpleNamespace(
+            auto_approve=True,
+            tools=registry,
+            tracker_info=None,
+            _allowed_native_tool_names=frozenset({"read_file"}),
+            _capability_domain="read_only",
+        )
+        return ToolExecutor(agent), registry
+
+    @pytest.mark.asyncio
+    async def test_hidden_native_call_is_rejected_before_dispatch(self):
+        executor, registry = self._executor()
+        result = await executor.execute_single_tool(
+            {
+                "tool_id": "hidden",
+                "tool_name": "write_file",
+                "arguments": {"path": "x", "content": "bad"},
+                "parse_error": None,
+            },
+            None,
+            SimpleNamespace(run_hooks=AsyncMock(return_value=[])),
+        )
+
+        assert result["success"] is False
+        assert result["error_code"] == ToolErrorCode.PERMISSION_DENIED
+        registry.execute.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_hidden_mcp_call_is_rejected_before_routing(self, monkeypatch):
+        import coderAI.core.tool_executor as executor_module
+
+        executor, _registry = self._executor()
+        routed = AsyncMock(return_value={"success": True})
+        monkeypatch.setattr(executor_module, "call_mcp_tool_by_function_name", routed)
+
+        result = await executor.execute_single_tool(
+            {
+                "tool_id": "hidden-mcp",
+                "tool_name": "mcp__server__tool",
+                "arguments": {},
+                "parse_error": None,
+            },
+            None,
+            SimpleNamespace(run_hooks=AsyncMock(return_value=[])),
+        )
+
+        assert result["success"] is False
+        assert result["error_code"] == ToolErrorCode.PERMISSION_DENIED
+        routed.assert_not_awaited()
+
+    def test_restricted_agent_schemas_exclude_dynamic_mcp(self):
+        native_schema = {
+            "type": "function",
+            "function": {"name": "read_file", "parameters": {}},
+        }
+        mcp_schema = {
+            "type": "function",
+            "function": {"name": "mcp__server__tool", "parameters": {}},
+        }
+        agent = SimpleNamespace(
+            hooks_manager=None,
+            provider=SimpleNamespace(supports_tools=lambda: True),
+            tools=SimpleNamespace(get_schemas=lambda: [native_schema]),
+            _allow_dynamic_mcp=False,
+        )
+        services = SimpleNamespace(
+            mcp_client=SimpleNamespace(
+                get_tools_as_openai_format=lambda: [mcp_schema],
+                servers={},
+            )
+        )
+
+        with patch("coderAI.core.agent_loop.get_services", return_value=services):
+            schemas = ExecutionLoop(agent)._get_tool_schemas()
+
+        assert schemas == [native_schema]
 
 
 # ═══════════════════════════════════════════════════════════════════════════

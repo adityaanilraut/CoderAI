@@ -4,11 +4,12 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from coderAI.system.fsperms import OWNER_RWX, atomic_write_json, restrict_path
+from coderAI.system.redaction import redact_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,7 @@ _INT_KEYS = frozenset(
         "max_concurrent_mutating_subagents",
         "tool_retry_max_attempts",
         "max_background_processes",
+        "session_retention_days",
     }
 )
 _BOOL_KEYS = frozenset(
@@ -55,6 +57,7 @@ _BOOL_KEYS = frozenset(
         "auto_detect_skills",
         "tui_notifications",
         "browser_headless",
+        "sandbox_allow_network",
     }
 )
 
@@ -92,9 +95,17 @@ class Config(BaseModel):
     groq_api_key: Optional[str] = Field(default=None)
     deepseek_api_key: Optional[str] = Field(default=None)
     gemini_api_key: Optional[str] = Field(default=None)
+    meta_api_key: Optional[str] = Field(default=None)
     tavily_api_key: Optional[str] = Field(default=None)
     exa_api_key: Optional[str] = Field(default=None)
     search_backend: Optional[str] = Field(default=None)
+    # Optional self-hosted SearXNG base URL (e.g. https://searx.example.com).
+    # When set, SearXNG-only and concurrent free search use this instance instead
+    # of the public instance list.
+    searxng_url: Optional[str] = Field(default=None)
+    embedding_backend: Literal["auto", "openai", "local"] = Field(default="auto")
+    embedding_model: Optional[str] = Field(default=None)
+    embedding_device: Optional[str] = Field(default=None)
     default_model: str = Field(default="claude-4-sonnet")
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: Optional[int] = Field(default=8192)
@@ -106,6 +117,8 @@ class Config(BaseModel):
     reasoning_effort: str = Field(default="medium")  # high, medium, low, none
     budget_limit: float = Field(default=0.0)  # max USD per session, 0 = unlimited
     save_history: bool = Field(default=True)
+    # Set to 0 to retain sessions indefinitely.
+    session_retention_days: int = Field(default=30, ge=0)
     # Record a per-turn rewind point so /rewind can step the conversation back.
     enable_checkpoints: bool = Field(default=True)
     context_window: int = Field(default=128000)
@@ -152,6 +165,10 @@ class Config(BaseModel):
     # Default timeout for one-shot tool subprocesses (format/lint/grep/git…)
     # that previously hardcoded 60s.
     subprocess_timeout_seconds: float = Field(default=60.0, gt=0.0)
+    # Compatibility default: no OS confinement until explicitly enabled.
+    # best_effort warns and falls back; required fails closed.
+    sandbox_mode: Literal["off", "best_effort", "required"] = Field(default="off")
+    sandbox_allow_network: bool = Field(default=False)
     # Transient-failure retries for tools that opt in with ``retryable = True``
     # (0 disables). Delays follow exponential backoff from tool_retry_base_delay.
     tool_retry_max_attempts: int = Field(default=2, ge=0, le=5)
@@ -161,7 +178,7 @@ class Config(BaseModel):
     max_background_processes: int = Field(default=10, ge=1, le=64)
 
     # --- Skill auto-detection ---
-    auto_detect_skills: bool = Field(default=True)
+    auto_detect_skills: bool = Field(default=False)
     skill_confidence_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
     skill_top_n: int = Field(default=3, ge=1, le=10)
 
@@ -237,9 +254,15 @@ class ConfigManager:
             "GROQ_API_KEY": "groq_api_key",
             "DEEPSEEK_API_KEY": "deepseek_api_key",
             "GEMINI_API_KEY": "gemini_api_key",
+            "META_API_KEY": "meta_api_key",
+            "MODEL_API_KEY": "meta_api_key",
             "TAVILY_API_KEY": "tavily_api_key",
             "EXA_API_KEY": "exa_api_key",
             "CODERAI_SEARCH_BACKEND": "search_backend",
+            "CODERAI_SEARXNG_URL": "searxng_url",
+            "CODERAI_EMBEDDING_BACKEND": "embedding_backend",
+            "CODERAI_EMBEDDING_MODEL": "embedding_model",
+            "CODERAI_EMBEDDING_DEVICE": "embedding_device",
             "CODERAI_DEFAULT_MODEL": "default_model",
             "CODERAI_TEMPERATURE": "temperature",
             "CODERAI_MAX_TOKENS": "max_tokens",
@@ -251,6 +274,7 @@ class ConfigManager:
             "CODERAI_CONTEXT_WINDOW": "context_window",
             "CODERAI_LOG_LEVEL": "log_level",
             "CODERAI_BUDGET_LIMIT": "budget_limit",
+            "CODERAI_SESSION_RETENTION_DAYS": "session_retention_days",
             "CODERAI_REASONING_EFFORT": "reasoning_effort",
             "CODERAI_MAX_ITERATIONS": "max_iterations",
             "CODERAI_MAX_TOOL_OUTPUT": "max_tool_output",
@@ -265,6 +289,8 @@ class ConfigManager:
             "CODERAI_MAX_CONCURRENT_MUTATING_SUBAGENTS": "max_concurrent_mutating_subagents",
             "CODERAI_TOOL_TIMEOUT_SECONDS": "tool_timeout_seconds",
             "CODERAI_SUBPROCESS_TIMEOUT_SECONDS": "subprocess_timeout_seconds",
+            "CODERAI_SANDBOX_MODE": "sandbox_mode",
+            "CODERAI_SANDBOX_ALLOW_NETWORK": "sandbox_allow_network",
             "CODERAI_TOOL_RETRY_MAX_ATTEMPTS": "tool_retry_max_attempts",
             "CODERAI_TOOL_RETRY_BASE_DELAY": "tool_retry_base_delay",
             "CODERAI_MAX_BACKGROUND_PROCESSES": "max_background_processes",
@@ -354,26 +380,12 @@ class ConfigManager:
         return getattr(config, key, default)
 
     def show(self) -> Dict[str, Any]:
-        """Get all configuration as a dictionary."""
+        """Get all configuration with credentials fully redacted."""
         config = self.load()
         data = config.model_dump(exclude_none=True)
-        # Mask sensitive data — never reveal short keys
-        for key in [
-            "openai_api_key",
-            "anthropic_api_key",
-            "groq_api_key",
-            "deepseek_api_key",
-            "gemini_api_key",
-            "tavily_api_key",
-            "exa_api_key",
-        ]:
-            if key in data and data[key]:
-                val = data[key]
-                if len(val) > 16:
-                    data[key] = f"{val[:7]}***"
-                else:
-                    data[key] = "***"
-        return data
+        redacted = redact_secrets(data)
+        assert isinstance(redacted, dict)
+        return redacted
 
     def reset(self) -> None:
         """Reset configuration to defaults."""
@@ -444,10 +456,14 @@ class ConfigManager:
             # max_background_processes intentionally
             # excluded: global host resource caps stay global-config only.
             "search_backend",
+            "searxng_url",
+            "embedding_backend",
+            "embedding_model",
+            "embedding_device",
             "auto_detect_skills",
             "skill_confidence_threshold",
             "skill_top_n",
-            }
+        }
 
         try:
             with open(project_config_path, "r") as f:

@@ -83,12 +83,30 @@ scoped to a reviewed command prefix / path subtree. Static MCP relay tools
 `mcp_source = True` so they share the same confused-deputy mutation gate as
 dynamic `mcp__<server>__<tool>` proxies.
 
-### Execution hard-stops (`coderAI/system/proc.py`)
+### Execution hard-stops and OS sandbox (`coderAI/system/proc.py`, `sandbox.py`)
 
 An argv-level command blocklist and interactive-command detector run before any
-process spawn; `python_repl` has its environment scrubbed of secrets and runs in
-an isolated process group; the package-manager tool constrains sources/flags; git
-argument injection (`--upload-pack`, `-o`) is neutralised with `--`.
+process spawn. Terminal, REPL, build/test/lint/format/package, and git commands
+have credential-like environment variables scrubbed and run in isolated process
+groups; project hooks receive a stricter allowlisted environment. The
+package-manager tool constrains sources/flags, and git argument injection
+(`--upload-pack`, `-o`) is neutralised with `--`.
+
+An optional OS sandbox applies at the shared subprocess boundary and to the
+Python REPL, background commands, trusted workspace hooks, and MCP stdio
+servers. Linux uses Bubblewrap when its capability probe succeeds; macOS uses
+`sandbox-exec` when available. When active, the host filesystem is readable,
+the project workspace and system temporary directories are writable, other
+writes are denied, and network access is denied unless explicitly enabled.
+Wrappers are argv lists, not nested shell strings.
+
+`sandbox_mode` defaults to `off` for compatibility. `best_effort` warns with
+the words `running unconfined` when no backend is usable and then falls back;
+`required` fails closed before launching. Set these with
+`CODERAI_SANDBOX_MODE=off|best_effort|required`. Network can be restored for
+sandboxed package downloads or networked MCP servers with
+`CODERAI_SANDBOX_ALLOW_NETWORK=1`. Neither `off` nor a best-effort fallback is
+confinement.
 
 ### MCP / OAuth trust (Phase 7)
 
@@ -130,10 +148,20 @@ argument injection (`--upload-pack`, `-o`) is neutralised with `--`.
 We prefer to document these honestly rather than imply a stronger guarantee than
 the code provides:
 
-- **`python_repl` is not a full sandbox.** Its environment is scrubbed and it
-  runs in an isolated process group, but it is not jailed from the filesystem or
-  network. Treat approving a `python_repl` call as approving arbitrary local
-  code. (A tier-3 OS-level sandbox is a planned follow-up.)
+- **The OS sandbox is opt-in and not a confidentiality boundary.** The default
+  `off` mode and an unavailable `best_effort` backend run unconfined. Even when
+  active, host files remain readable so language runtimes and toolchains work;
+  temporary directories are writable. The control is intended to stop
+  outside-workspace mutation and network access, not to hide readable host data.
+- **Sandbox availability is platform-dependent.** Linux needs a working
+  Bubblewrap installation and user-namespace support. macOS needs the deprecated
+  but still shipped `sandbox-exec` facility. Windows has no backend and therefore
+  needs `off` or `best_effort`; `required` fails closed.
+- **MCP stdio preserves its launcher environment.** Some MCP servers obtain
+  credentials from environment variables, so stdio launch keeps the pre-existing
+  behavior instead of applying the model-command scrubber. Treat configured MCP
+  launchers as trusted code; enable the OS sandbox to restrict their writes and
+  network access when compatible with the server.
 - **Some read tools are deliberately `TRUSTED`.** `read_file`, `grep`,
   `semantic_search`, and terminal *stdout* are not provenance-tainted, on the
   assumption that project source is content you chose to open. A repository whose

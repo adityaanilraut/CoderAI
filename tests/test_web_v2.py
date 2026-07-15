@@ -101,6 +101,13 @@ class TestBackendSelection:
         backend = _select_search_backend()
         assert backend.name == "ddg"
 
+    def test_explicit_searxng(self, monkeypatch):
+        monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+        monkeypatch.delenv("EXA_API_KEY", raising=False)
+        monkeypatch.setenv("CODERAI_SEARCH_BACKEND", "searxng")
+        backend = _select_search_backend()
+        assert backend.name == "searxng"
+
 
 # ---------------------------------------------------------------------------
 # Tavily backend
@@ -334,6 +341,8 @@ class TestOversize:
         # _safe_request_cf passes through when the response is 200 (no CF check
         # for non-block statuses), so monkeypatching _safe_request is enough.
         monkeypatch.setattr(web_mod, "_safe_request", fake)
+        monkeypatch.setattr(web_mod, "_get_cached", lambda key: None)
+        monkeypatch.setattr(web_mod, "_set_cached", lambda *a, **k: None)
         tool = ReadURLTool()
         result = asyncio.run(tool.execute(url="https://example.com"))
         assert result["success"] is True
@@ -358,6 +367,8 @@ class TestReadURLFormat:
             }
 
         monkeypatch.setattr(web_mod, "_safe_request", fake)
+        monkeypatch.setattr(web_mod, "_get_cached", lambda key: None)
+        monkeypatch.setattr(web_mod, "_set_cached", lambda *a, **k: None)
 
     def test_html_format_returns_raw(self, monkeypatch):
         self._stub(monkeypatch, "<h1>Hi</h1>")

@@ -14,12 +14,21 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
+from coderAI.core.provenance import Provenance
 from coderAI.core.tool_error_codes import ToolErrorCode
+from coderAI.system.fsperms import atomic_write_bytes
 from coderAI.tools.base import Tool
+from coderAI.tools.filesystem._guards import (
+    ProjectPathError,
+    _reject_symlink_leaf,
+    resolve_under_project,
+)
 from coderAI.tools.web import _is_ip_public
 
 logger = logging.getLogger(__name__)
@@ -83,8 +92,6 @@ async def _validate_navigation_url(url: str) -> Optional[Dict[str, Any]]:
     record) would sail past the literal-IP check. The post-navigation ``page.url``
     re-check in :meth:`BrowserSession.navigate` closes the redirect path.
     """
-    from urllib.parse import urlparse
-
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
         return {"success": False, "error": f"Unsupported URL scheme: {parsed.scheme}"}
@@ -138,8 +145,6 @@ def _check_domain_allowlist(url: str) -> Optional[Dict[str, Any]]:
     allowed = _get_allowed_domains()
     if not allowed:
         return None
-    from urllib.parse import urlparse
-
     hostname = (urlparse(url).hostname or "").lower()
     for domain in allowed:
         domain = domain.lstrip(".")
@@ -151,9 +156,75 @@ def _check_domain_allowlist(url: str) -> Optional[Dict[str, Any]]:
     }
 
 
+async def _validate_browser_request(url: str) -> Optional[Dict[str, Any]]:
+    """Validate one Playwright request against browser network policy."""
+    try:
+        if err := await _validate_navigation_url(url):
+            return err
+        return _check_domain_allowlist(url)
+    except Exception as exc:
+        logger.warning("Browser request validation failed closed for %s: %s", url, exc)
+        return {
+            "success": False,
+            "error": f"Browser request blocked: policy validation failed for {url}: {exc}",
+        }
+
+
+def _active_project_root() -> Path:
+    try:
+        from coderAI.core.services import get_services
+
+        return Path(getattr(get_services().config, "project_root", ".") or ".").resolve()
+    except Exception:
+        logger.debug("project_root config unavailable, using cwd", exc_info=True)
+        return Path.cwd().resolve()
+
+
+def _guard_screenshot_path(path: str) -> Tuple[Optional[Path], Optional[Dict[str, Any]]]:
+    """Resolve and validate a screenshot destination using filesystem guards."""
+    try:
+        target = resolve_under_project(
+            path,
+            operation="save screenshot",
+            check_protected=True,
+            reject_symlink=True,
+        )
+    except ProjectPathError as exc:
+        return None, exc.as_result()
+
+    # Screenshot output is always project-scoped. Unlike general filesystem
+    # tools, CODERAI_ALLOW_OUTSIDE_PROJECT must not widen this browser boundary.
+    try:
+        target.relative_to(_active_project_root())
+    except ValueError:
+        return None, {
+            "success": False,
+            "error": f"Refusing to save screenshot outside project root: {target}",
+            "error_code": ToolErrorCode.SCOPE,
+        }
+    if not target.parent.exists() or not target.parent.is_dir():
+        return None, {
+            "success": False,
+            "error": f"Screenshot destination directory does not exist: {target.parent}",
+        }
+    if target.exists() and not target.is_file():
+        return None, {
+            "success": False,
+            "error": f"Screenshot destination is not a regular file: {target}",
+        }
+    return target, None
+
+
 # ---------------------------------------------------------------------------
 # BrowserSession — per-agent Playwright life-cycle
 # ---------------------------------------------------------------------------
+
+
+def _playwright_manager() -> Any:
+    """Load the optional Playwright dependency only when browser use starts."""
+    from playwright.async_api import async_playwright
+
+    return async_playwright()
 
 
 class BrowserSession:
@@ -166,6 +237,7 @@ class BrowserSession:
         self._context: Any = None
         self._page: Any = None
         self._ref_map: Dict[str, Dict[str, str]] = {}
+        self._blocked_request_reason: Optional[str] = None
         self._initialized = False
         self._lock = asyncio.Lock()
 
@@ -182,9 +254,7 @@ class BrowserSession:
             if self._initialized:
                 return
 
-            from playwright.async_api import async_playwright
-
-            self._playwright = await async_playwright().start()
+            self._playwright = await _playwright_manager().start()
 
             headless = True
             try:
@@ -198,6 +268,32 @@ class BrowserSession:
             self._browser = await self._playwright.chromium.launch(headless=headless)
             self._context = await self._browser.new_context(
                 viewport={"width": 1280, "height": 720},
+                service_workers="block",
+            )
+
+            # Context routes cover every page and popup. Install them before the
+            # first page exists so no navigation or subresource can race policy.
+            await self._context.route("**/*", self._intercept_request)
+
+            # Playwright only gained route_web_socket in newer releases. Use it
+            # when present and also inject a constructor block for older versions.
+            route_web_socket = getattr(self._context, "route_web_socket", None)
+            if route_web_socket is not None:
+                await route_web_socket("**/*", self._block_websocket)
+            await self._context.add_init_script(
+                script="""
+                    Object.defineProperty(globalThis, 'WebSocket', {
+                      configurable: false,
+                      value: class BlockedWebSocket {
+                        constructor() {
+                          throw new DOMException(
+                            'WebSockets are disabled by CoderAI browser policy',
+                            'SecurityError'
+                          );
+                        }
+                      }
+                    });
+                """
             )
             self._page = await self._context.new_page()
             self._initialized = True
@@ -206,6 +302,49 @@ class BrowserSession:
                 self.agent_id,
                 headless,
             )
+
+    def _record_blocked_request(self, reason: str) -> None:
+        if self._blocked_request_reason is None:
+            self._blocked_request_reason = reason
+        logger.warning("BrowserSession[%s]: %s", self.agent_id, reason)
+
+    async def _intercept_request(self, route: Any, request: Any) -> None:
+        """Fail closed before Playwright dispatches any network request."""
+        url = str(request.url)
+        scheme = urlparse(url).scheme.lower()
+        if scheme in ("http", "https"):
+            err = await _validate_browser_request(url)
+        elif scheme in ("about", "blob", "data"):
+            err = None
+        else:
+            err = {
+                "success": False,
+                "error": f"Browser request blocked: unsupported URL scheme '{scheme}' for {url}",
+            }
+
+        if err is not None:
+            self._record_blocked_request(str(err["error"]))
+            await route.abort("blockedbyclient")
+            return
+        await route.continue_()
+
+    async def _block_websocket(self, websocket: Any) -> None:
+        url = str(getattr(websocket, "url", "unknown WebSocket"))
+        reason = f"Browser request blocked: WebSockets are disabled ({url})"
+        self._record_blocked_request(reason)
+        await websocket.close(code=1008, reason="Blocked by CoderAI browser policy")
+
+    def _begin_network_action(self) -> None:
+        self._blocked_request_reason = None
+
+    def _blocked_request_result(self) -> Optional[Dict[str, Any]]:
+        if self._blocked_request_reason is None:
+            return None
+        return {
+            "success": False,
+            "error": self._blocked_request_reason,
+            "error_code": ToolErrorCode.TOOL_ERROR,
+        }
 
     def _get_timeout(self) -> float:
         try:
@@ -219,6 +358,7 @@ class BrowserSession:
 
     async def navigate(self, url: str) -> Dict[str, Any]:
         await self._ensure_browser()
+        self._begin_network_action()
         try:
             await self._page.goto(
                 url, wait_until="domcontentloaded", timeout=self._get_timeout() * 1000
@@ -236,6 +376,8 @@ class BrowserSession:
                 except Exception:
                     logger.debug("failed to blank page after blocked redirect", exc_info=True)
                 return err
+            if blocked := self._blocked_request_result():
+                return blocked
             title = await self._page.title()
             return {
                 "success": True,
@@ -244,6 +386,8 @@ class BrowserSession:
                 "message": f"Navigated to {current_url}",
             }
         except Exception as e:
+            if blocked := self._blocked_request_result():
+                return blocked
             return {
                 "success": False,
                 "error": f"Navigation failed: {e}",
@@ -268,6 +412,7 @@ class BrowserSession:
         info = self._ref_map[ref]
         role = info["role"]
         name = info.get("name", "")
+        self._begin_network_action()
         try:
             locator = self._page.get_by_role(role, name=name, exact=False)  # type: ignore[arg-type]
             count = await locator.count()
@@ -288,8 +433,12 @@ class BrowserSession:
                     name,
                 )
             await locator.first.click(timeout=self._get_timeout() * 1000)
+            if blocked := self._blocked_request_result():
+                return blocked
             return {"success": True, "message": f"Clicked [{ref}] {role} '{name}'"}
         except Exception as e:
+            if blocked := self._blocked_request_result():
+                return blocked
             return {
                 "success": False,
                 "error": f"Click failed: {e}",
@@ -307,6 +456,7 @@ class BrowserSession:
         info = self._ref_map[ref]
         role = info["role"]
         name = info.get("name", "")
+        self._begin_network_action()
         try:
             locator = self._page.get_by_role(role, name=name, exact=False)  # type: ignore[arg-type]
             count = await locator.count()
@@ -323,8 +473,12 @@ class BrowserSession:
             if clear:
                 await target.clear()
             await target.fill(text, timeout=self._get_timeout() * 1000)
+            if blocked := self._blocked_request_result():
+                return blocked
             return {"success": True, "message": f"Typed '{text}' into [{ref}] {role} '{name}'"}
         except Exception as e:
+            if blocked := self._blocked_request_result():
+                return blocked
             return {
                 "success": False,
                 "error": f"Type failed: {e}",
@@ -341,6 +495,7 @@ class BrowserSession:
         info = self._ref_map[ref]
         role = info["role"]
         name = info.get("name", "")
+        self._begin_network_action()
         try:
             locator = self._page.get_by_role(role, name=name, exact=False)  # type: ignore[arg-type]
             count = await locator.count()
@@ -350,8 +505,12 @@ class BrowserSession:
             if count == 0:
                 return {"success": False, "error": f"No select element found for [{ref}]."}
             await locator.first.select_option(value, timeout=self._get_timeout() * 1000)
+            if blocked := self._blocked_request_result():
+                return blocked
             return {"success": True, "message": f"Selected '{value}' in [{ref}] {role} '{name}'"}
         except Exception as e:
+            if blocked := self._blocked_request_result():
+                return blocked
             return {
                 "success": False,
                 "error": f"Select failed: {e}",
@@ -374,9 +533,20 @@ class BrowserSession:
 
     async def screenshot(self, path: str) -> Dict[str, Any]:
         await self._ensure_browser()
+        target, guard_err = _guard_screenshot_path(path)
+        if guard_err is not None:
+            return guard_err
+        assert target is not None
         try:
-            await self._page.screenshot(path=path, full_page=False)
-            return {"success": True, "path": path, "message": f"Screenshot saved to {path}"}
+            screenshot_bytes = await self._page.screenshot(full_page=False)
+            if symlink_err := _reject_symlink_leaf(target, "save screenshot to"):
+                return symlink_err
+            atomic_write_bytes(target, bytes(screenshot_bytes), mode=None)
+            return {
+                "success": True,
+                "path": str(target),
+                "message": f"Screenshot saved to {target}",
+            }
         except Exception as e:
             return {
                 "success": False,
@@ -386,10 +556,15 @@ class BrowserSession:
 
     async def evaluate(self, js: str) -> Dict[str, Any]:
         await self._ensure_browser()
+        self._begin_network_action()
         try:
             result = await self._page.evaluate(js)
+            if blocked := self._blocked_request_result():
+                return blocked
             return {"success": True, "result": result}
         except Exception as e:
+            if blocked := self._blocked_request_result():
+                return blocked
             return {
                 "success": False,
                 "error": f"JavaScript evaluation failed: {e}",
@@ -403,13 +578,20 @@ class BrowserSession:
     ) -> Dict[str, Any]:
         await self._ensure_browser()
         timeout = (timeout_ms or self._get_timeout() * 1000) / 1000.0
+        self._begin_network_action()
         try:
             if text:
                 await self._page.wait_for_selector(f"text={text}", timeout=timeout * 1000)
+                if blocked := self._blocked_request_result():
+                    return blocked
                 return {"success": True, "message": f"Text '{text}' appeared on page."}
             await asyncio.sleep(timeout)
+            if blocked := self._blocked_request_result():
+                return blocked
             return {"success": True, "message": f"Waited {timeout:.1f}s."}
         except Exception as e:
+            if blocked := self._blocked_request_result():
+                return blocked
             return {
                 "success": False,
                 "error": f"Wait failed: {e}",
@@ -428,6 +610,7 @@ class BrowserSession:
             self._playwright = None
         self._page = None
         self._ref_map.clear()
+        self._blocked_request_reason = None
         self._initialized = False
         return {"success": True, "message": "Browser closed."}
 
@@ -600,11 +783,9 @@ class BrowserNavigateTool(Tool):
     requires_package = "playwright"
     parameters_model = BrowserNavigateParams
     timeout = 45.0
-    # Mutates browser page state rather than the local machine; navigation is
-    # already URL-validated below. Classified ``safe`` to preserve the current
-    # no-confirmation UX. NOTE: full egress + resolve-and-pin SSRF hardening for
-    # the browser layer is Phase 6.2 — this is not an egress classification.
     safe = True
+    is_egress = True
+    result_provenance = Provenance.UNTRUSTED_EXTERNAL
 
     async def execute(self, url: str) -> Dict[str, Any]:  # type: ignore[override]
         if err := _check_playwright():
@@ -643,6 +824,7 @@ class BrowserSnapshotTool(Tool):
     requires_package = "playwright"
     parameters_model = BrowserSnapshotParams
     is_read_only = True
+    result_provenance = Provenance.UNTRUSTED_EXTERNAL
     timeout = 15.0
 
     async def execute(self) -> Dict[str, Any]:  # type: ignore[override]
@@ -681,6 +863,8 @@ class BrowserClickTool(Tool):
     requires_package = "playwright"
     parameters_model = BrowserClickParams
     requires_confirmation = True
+    is_egress = True
+    result_provenance = Provenance.UNTRUSTED_EXTERNAL
     timeout = 20.0
 
     async def execute(self, ref: str) -> Dict[str, Any]:  # type: ignore[override]
@@ -719,6 +903,8 @@ class BrowserTypeTool(Tool):
     requires_package = "playwright"
     parameters_model = BrowserTypeParams
     requires_confirmation = True
+    is_egress = True
+    result_provenance = Provenance.UNTRUSTED_EXTERNAL
     timeout = 20.0
 
     async def execute(self, ref: str, text: str, clear: bool = False) -> Dict[str, Any]:  # type: ignore[override]
@@ -756,6 +942,8 @@ class BrowserSelectOptionTool(Tool):
     requires_package = "playwright"
     parameters_model = BrowserSelectOptionParams
     requires_confirmation = True
+    is_egress = True
+    result_provenance = Provenance.UNTRUSTED_EXTERNAL
     timeout = 20.0
 
     async def execute(self, ref: str, value: str) -> Dict[str, Any]:  # type: ignore[override]
@@ -791,6 +979,7 @@ class BrowserGetContentTool(Tool):
     requires_package = "playwright"
     parameters_model = BrowserGetContentParams
     is_read_only = True
+    result_provenance = Provenance.UNTRUSTED_EXTERNAL
     timeout = 15.0
 
     async def execute(self, fmt: str = "markdown") -> Dict[str, Any]:  # type: ignore[override]
@@ -816,7 +1005,7 @@ class BrowserGetContentTool(Tool):
 class BrowserScreenshotParams(BaseModel):
     path: str = Field(
         ...,
-        description="File path to save the screenshot (e.g. '/tmp/screenshot.png').",
+        description="Project-scoped file path to save the screenshot (e.g. 'artifacts/page.png').",
     )
 
 
@@ -833,7 +1022,8 @@ class BrowserScreenshotTool(Tool):
     category = "browser"
     requires_package = "playwright"
     parameters_model = BrowserScreenshotParams
-    is_read_only = True
+    requires_confirmation = True
+    result_provenance = Provenance.UNTRUSTED_EXTERNAL
     timeout = 20.0
 
     async def execute(self, path: str) -> Dict[str, Any]:  # type: ignore[override]
@@ -876,6 +1066,8 @@ class BrowserEvaluateTool(Tool):
     # requires confirmation and is excluded from any read-only tool set (6.3).
     is_read_only = False
     requires_confirmation = True
+    is_egress = True
+    result_provenance = Provenance.UNTRUSTED_EXTERNAL
     timeout = 15.0
 
     async def execute(self, js: str) -> Dict[str, Any]:  # type: ignore[override]
@@ -917,6 +1109,7 @@ class BrowserWaitTool(Tool):
     requires_package = "playwright"
     parameters_model = BrowserWaitParams
     is_read_only = True
+    result_provenance = Provenance.UNTRUSTED_EXTERNAL
     timeout = 60.0
 
     async def execute(self, **kwargs: Any) -> Dict[str, Any]:  # type: ignore[override]

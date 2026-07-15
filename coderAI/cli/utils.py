@@ -91,6 +91,7 @@ def missing_api_key_message() -> Optional[str]:
             getattr(cfg, "groq_api_key", None),
             getattr(cfg, "deepseek_api_key", None),
             getattr(cfg, "gemini_api_key", None),
+            getattr(cfg, "meta_api_key", None),
         ]
     )
     local_default = (cfg.default_model or "").lower() in ("lmstudio", "ollama")

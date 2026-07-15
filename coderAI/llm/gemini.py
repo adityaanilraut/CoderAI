@@ -8,7 +8,7 @@ from openai import AsyncOpenAI
 from coderAI.llm.base import HTTP_TOTAL_TIMEOUT
 from coderAI.llm.cloud_base import OpenAICompatibleCloudProvider
 from coderAI.system.error_policy import _try_extract_response_body
-from coderAI.system.redaction import sanitize_dict as _sanitize_dict
+from coderAI.system.redaction import redact_secrets, redact_text
 
 logger = logging.getLogger(__name__)
 
@@ -44,10 +44,10 @@ class GeminiProvider(OpenAICompatibleCloudProvider):
 
     def _handle_api_error(self, exc: Exception, *, streaming: bool) -> None:
         verb = "streaming error" if streaming else "error"
-        logger.error("Gemini API %s: %s", verb, exc)
+        logger.error("Gemini API %s: %s", verb, redact_text(str(exc)))
         body = _try_extract_response_body(exc)
         if body is not None:
-            logger.error("Gemini API %s body: %s", verb, _sanitize_dict(body))
+            logger.error("Gemini API %s body: %s", verb, redact_secrets(body))
         super()._handle_api_error(exc, streaming=streaming)
 
     async def stream(

@@ -113,7 +113,9 @@ class TestLLMMatching:
 
         await manager._ensure_discovered()
         local_skills = manager.registry.find_by_source("local")
-        matches = await manager._match_via_llm("analyze this CSV file", local_skills, manager.threshold, manager.top_n)
+        matches = await manager._match_via_llm(
+            "analyze this CSV file", local_skills, manager.threshold, manager.top_n
+        )
 
         assert len(matches) == 1
         assert matches[0][0].name == "csv-analyzer"
@@ -133,7 +135,9 @@ class TestLLMMatching:
 
         await manager._ensure_discovered()
         local = manager.registry.find_by_source("local")
-        matches = await manager._match_via_llm("unrelated task", local, manager.threshold, manager.top_n)
+        matches = await manager._match_via_llm(
+            "unrelated task", local, manager.threshold, manager.top_n
+        )
         assert matches == []
 
     @pytest.mark.asyncio
@@ -186,7 +190,9 @@ class TestKeywordScoring:
         manager = SkillManager(sources=[source], threshold=0.3)
         manager.registry.register_all(source._skills)
 
-        scored = manager._keyword_score("analyze CSV data", manager.registry.list_all(), manager.threshold, manager.top_n)
+        scored = manager._keyword_score(
+            "analyze CSV data", manager.registry.list_all(), manager.threshold, manager.top_n
+        )
         assert len(scored) == 1
         assert scored[0][0].name == "csv-tool"
 
@@ -195,11 +201,44 @@ class TestKeywordScoring:
         manager = SkillManager(sources=[source], threshold=0.3)
         manager.registry.register_all(source._skills)
 
-        scored = manager._keyword_score("unrelated topic query", manager.registry.list_all(), manager.threshold, manager.top_n)
+        scored = manager._keyword_score(
+            "unrelated topic query", manager.registry.list_all(), manager.threshold, manager.top_n
+        )
         assert scored == []
 
 
 class TestGetTopSkills:
+    @pytest.mark.asyncio
+    async def test_deterministic_match_runs_before_llm(self):
+        source = FakeSkillSource(
+            skills=[Skill(name="security-audit", description="Security audit workflow")]
+        )
+        provider = make_mock_provider('{"matches": []}')
+        manager = SkillManager(sources=[source], provider=provider)
+
+        skills = await manager.get_top_skills("run a security audit")
+
+        assert [skill.name for skill in skills] == ["security-audit"]
+        provider.chat.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_llm_fallback_reports_usage(self):
+        source = FakeSkillSource(skills=[Skill(name="special", description="Unrelated words")])
+        provider = make_mock_provider('{"matches": [{"skill_name": "special", "confidence": 0.9}]}')
+        provider.chat.return_value["usage"] = {"input_tokens": 9, "output_tokens": 2}
+        usage_callback = AsyncMock()
+        manager = SkillManager(
+            sources=[source],
+            threshold=0.5,
+            provider=provider,
+            usage_callback=usage_callback,
+        )
+
+        skills = await manager.get_top_skills("opaque task")
+
+        assert [skill.name for skill in skills] == ["special"]
+        usage_callback.assert_awaited_once_with({"input_tokens": 9, "output_tokens": 2})
+
     @pytest.mark.asyncio
     async def test_returns_ranked_skills(self):
         source = FakeSkillSource(

@@ -8,6 +8,7 @@ from pydantic import BaseModel, ValidationError
 
 from coderAI.core.provenance import Provenance
 from coderAI.core.tool_error_codes import ToolErrorCode  # noqa: F401 — re-export
+from coderAI.core.tool_results import normalize_tool_result
 
 __all__ = [
     "SUBPROCESS_TIMEOUT_MARGIN_SECONDS",
@@ -105,6 +106,13 @@ class Tool(ABC):
     # imply idempotent/cheap, so the default is fail-closed. Reserved for
     # read-only network fetch tools whose errors are HTTP-shaped.
     retryable: bool = False
+
+    # Repeat semantics. ``None`` means infer the conservative default from
+    # ``is_read_only``: reads are assumed idempotent/dedupe-safe, mutations are
+    # never suppressed. Mutating tools may opt in only when both their effect
+    # and returned value are safe to reuse for an identical call.
+    idempotent: Optional[bool] = None
+    dedupe_safe: Optional[bool] = None
 
     # Background-job opt-in: ``start_job`` may run this tool detached from the
     # turn (JobManager). Reserved for long-running tools whose effects don't
@@ -253,6 +261,8 @@ class ToolRegistry:
         Args:
             tool: Tool instance to register
         """
+        if tool.name in self.tools:
+            raise ValueError(f"Tool already registered: {tool.name}")
         self.tools[tool.name] = tool
 
     def get(self, name: str) -> Optional[Tool]:
@@ -329,13 +339,18 @@ class ToolRegistry:
             try:
                 # Validate and parse arguments using Pydantic
                 parsed_args = tool.parameters_model(**kwargs)
-                return await tool.execute(**parsed_args.model_dump())
             except ValidationError as e:
                 # Return validation errors as friendly tool response
-                return {
-                    "success": False,
-                    "error": f"Validation error for tool '{name}':\n{str(e)}",
-                    "error_code": ToolErrorCode.VALIDATION,
-                }
+                return normalize_tool_result(
+                    {
+                        "success": False,
+                        "error": f"Validation error for tool '{name}':\n{str(e)}",
+                        "error_code": ToolErrorCode.VALIDATION,
+                    },
+                    tool_name=name,
+                )
+            result = await tool.execute(**parsed_args.model_dump())
+            return normalize_tool_result(result, tool_name=name)
 
-        return await tool.execute(**kwargs)
+        result = await tool.execute(**kwargs)
+        return normalize_tool_result(result, tool_name=name)

@@ -4,8 +4,6 @@ Emits a single phased ``turn`` event (``phase`` of ``start`` /
 ``reasoning`` / ``text`` / ``end``) so the Textual UI can render streaming
 output incrementally. Set as ``agent.streaming_handler`` in
 ``coderAI/tui/session_setup.py``.
-
-Moved here from ``coderAI/bridge/streaming.py`` (Phase 3 bridge demolition).
 """
 
 from __future__ import annotations

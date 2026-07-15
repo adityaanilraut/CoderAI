@@ -1,11 +1,9 @@
 """Pure serialization helpers for the UI bridge.
 
-Shapes ``AgentInfo``, plan, and task data into the payloads documented in
+Shapes ``AgentInfo`` and task data into the payloads documented in
 ``docs/CHAT_EVENTS.md``. No event names or payload keys may change here
 without updating the doc and ``tests/test_event_contract.py`` in the same
 commit.
-
-Moved here from ``coderAI/bridge/serializers.py`` (Phase 3 bridge demolition).
 """
 
 from __future__ import annotations

@@ -12,6 +12,7 @@ from coderAI import __version__
 from coderAI.system.config import config_manager
 from coderAI.system.history import history_manager
 from coderAI.system.logging_setup import setup_logging
+from coderAI.system.redaction import redact_text
 
 from .config_cmd import config
 from .history_cmd import history
@@ -319,18 +320,24 @@ def doctor() -> None:
     def check_ok(label: str, detail: str = "") -> None:
         nonlocal ok_count
         ok_count += 1
+        label = redact_text(label)
+        detail = redact_text(detail)
         suffix = f"  [dim]{detail}[/dim]" if detail else ""
         display.print(f"  [green]✓[/green] {label}{suffix}")
 
     def check_warn(label: str, detail: str = "") -> None:
         nonlocal warn_count
         warn_count += 1
+        label = redact_text(label)
+        detail = redact_text(detail)
         suffix = f"  [dim]{detail}[/dim]" if detail else ""
         display.print(f"  [yellow]⚠[/yellow] {label}{suffix}")
 
     def check_fail(label: str, detail: str = "") -> None:
         nonlocal fail_count
         fail_count += 1
+        label = redact_text(label)
+        detail = redact_text(detail)
         suffix = f"  [dim]{detail}[/dim]" if detail else ""
         display.print(f"  [red]✗[/red] {label}{suffix}")
 
@@ -386,12 +393,15 @@ def doctor() -> None:
         ("Groq", cfg.groq_api_key),
         ("DeepSeek", cfg.deepseek_api_key),
         ("Gemini", cfg.gemini_api_key),
+        ("Meta", cfg.meta_api_key),
+        ("Tavily", cfg.tavily_api_key),
+        ("Exa", cfg.exa_api_key),
     ]
-    any_cloud = any(v for _, v in keys)
+    # Tavily and Exa power search but cannot satisfy an LLM provider key check.
+    any_cloud = any(v for _, v in keys[:6])
     for name, val in keys:
         if val:
-            masked = f"{val[:4]}…{val[-4:]}" if len(val) > 8 else "set"
-            check_ok(f"{name}: {masked}")
+            check_ok(f"{name}: configured")
         else:
             check_warn(f"{name}: not configured")
     if not any_cloud and (cfg.default_model or "").lower() not in ("lmstudio", "ollama"):

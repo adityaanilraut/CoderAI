@@ -3,7 +3,9 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
 
+from coderAI.core.tool_results import normalize_tool_result
 from coderAI.tools.base import Tool, ToolRegistry
 from coderAI.tools.discovery import discover_tools
 
@@ -18,6 +20,30 @@ class _DummyTool(Tool):
 
 
 class TestDiscoverTools:
+    @pytest.mark.asyncio
+    async def test_registry_uses_idempotent_shared_result_normalization(self):
+        class StringResultTool(Tool):
+            name = "string_result"
+
+            async def execute(self, **kwargs):
+                return "boom"
+
+        registry = ToolRegistry()
+        registry.register(StringResultTool())
+
+        result = await registry.execute("string_result")
+
+        assert result == normalize_tool_result(result, tool_name="string_result")
+        assert result["success"] is False
+        assert result["error_code"] == "tool_error"
+
+    def test_registry_rejects_duplicate_names(self):
+        registry = ToolRegistry()
+        registry.register(_DummyTool())
+
+        with pytest.raises(ValueError, match="already registered"):
+            registry.register(_DummyTool())
+
     def test_registry_populated_from_real_tools_package(self):
         registry = ToolRegistry()
         discover_tools(registry, package_name="coderAI.tools")
@@ -228,3 +254,33 @@ class TestDiscoverTools:
                     registry = ToolRegistry()
                     discover_tools(registry, package_name="coderAI.tests.fake_tools")
                     assert "dummy" in registry.tools
+
+    def test_bad_class_does_not_skip_later_class_in_same_module(self):
+        class BrokenTool(Tool):
+            name = "broken"
+
+            def __init__(self):
+                raise RuntimeError("broken constructor")
+
+            async def execute(self, **kwargs):
+                return {"success": True}
+
+        fake_pkg = SimpleNamespace(__path__=["/fake/path"], __name__="fake_tools")
+        module = MagicMock()
+        with (
+            patch(
+                "coderAI.tools.discovery.inspect.getmembers",
+                return_value=[("BrokenTool", BrokenTool), ("DummyTool", _DummyTool)],
+            ),
+            patch(
+                "coderAI.tools.discovery.pkgutil.walk_packages",
+                return_value=[(None, "fake_tools.module", False)],
+            ),
+            patch("coderAI.tools.discovery.importlib.import_module") as mock_import,
+        ):
+            mock_import.side_effect = lambda name, **_: fake_pkg if name == "fake_tools" else module
+            registry = ToolRegistry()
+            discover_tools(registry, package_name="fake_tools")
+
+        assert "broken" not in registry.tools
+        assert "dummy" in registry.tools

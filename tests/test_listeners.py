@@ -139,6 +139,47 @@ def test_skill_card_appends_structured_timeline_item() -> None:
     assert item["steps"][0]["label"] == "Scan dependencies"
 
 
+def test_session_replay_restores_searchable_timeline_rows() -> None:
+    reducer = EventReducer()
+    reducer.handle(
+        "session_replay",
+        {
+            "messages": [
+                {"role": "user", "content": "inspect auth", "timestamp": 1.0},
+                {
+                    "role": "assistant",
+                    "content": "I will inspect it.",
+                    "reasoning_content": "Need the file.",
+                    "timestamp": 2.0,
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "function": {
+                                "name": "read_file",
+                                "arguments": '{"path": "auth.py"}',
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "name": "read_file",
+                    "tool_call_id": "call_1",
+                    "content": '{"success": true, "content": "secret"}',
+                    "timestamp": 3.0,
+                },
+            ]
+        },
+    )
+
+    assert [item["kind"] for item in reducer.timeline] == ["user", "assistant", "tool"]
+    assert reducer.timeline[0]["text"] == "inspect auth"
+    assert reducer.timeline[1]["reasoning"] == "Need the file."
+    assert reducer.timeline[2]["id"] == "call_1"
+    assert reducer.timeline[2]["ok"] is True
+    assert "secret" in reducer.timeline[2]["preview"]
+
+
 def test_status_throttling_applies_latest_within_window() -> None:
     reducer = EventReducer()
     t0 = 5000.0
@@ -195,6 +236,11 @@ def test_awaiting_approval_extended_payload_on_timeline() -> None:
                 "iteration": 2,
                 "maxIterations": 50,
                 "priorApproved": 1,
+                "timeoutSeconds": 300,
+                "expiresAt": 9999.0,
+                "rememberMode": "scope",
+                "rememberScope": "a.py",
+                "rememberLabel": "Always allow this path",
             },
         },
     )
@@ -207,6 +253,18 @@ def test_awaiting_approval_extended_payload_on_timeline() -> None:
     assert item["requestedBy"] == "main"
     assert item["iteration"] == 2
     assert item["priorApproved"] == 1
+    assert item["timeoutSeconds"] == 300
+    assert item["rememberScope"] == "a.py"
+
+
+def test_status_tracks_workspace_trust_state() -> None:
+    reducer = EventReducer()
+    reducer.handle("status", {"workspaceTrusted": False})
+    assert reducer.session.workspace_trusted is False
+
+    # A neutral workspace with no project execution surface removes the chip.
+    reducer._apply_status({"workspaceTrusted": None})
+    assert reducer.session.workspace_trusted is None
 
 
 def test_agent_info_from_payload() -> None:

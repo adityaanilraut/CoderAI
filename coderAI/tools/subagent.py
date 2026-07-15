@@ -13,6 +13,7 @@ from coderAI.core.tool_error_codes import ToolErrorCode
 from coderAI.tools.base import Tool
 from coderAI.core.agent_loop import RECOVERABLE_ERROR_MARKER
 from coderAI.core.agent_tracker import AgentStatus
+from coderAI.core.execution_context import resolve_delegation_isolation_domain
 from coderAI.system.error_policy import BudgetExceededError, is_transient_error
 from coderAI.system.events import event_emitter
 from coderAI.system.retry import backoff_delay
@@ -31,6 +32,116 @@ DELEGATION_RETRY_DELAY_CAP_SECONDS = 30.0
 # How many recent recoverable-error notes from the parent session to surface
 # to the sub-agent. Keeps the preamble focused on the latest failures.
 RECENT_RECOVERABLE_ERRORS_LIMIT = 3
+
+# Sub-agent domains are capability boundaries, not scheduling hints. These are
+# exact native-tool allowlists so a newly registered tool fails closed until it
+# is deliberately assigned to a domain.
+READ_ONLY_NATIVE_CAPABILITIES = frozenset(
+    {
+        "file_readlink",
+        "file_stat",
+        "git_diff",
+        "git_log",
+        "git_status",
+        "glob_search",
+        "grep",
+        "list_directory",
+        "list_processes",
+        "read_bg_output",
+        "read_file",
+        "read_image",
+        "read_url",
+        "recall_memory",
+        "semantic_search",
+        "symbol_search",
+        "undo_history",
+        "use_skill",
+        "web_search",
+    }
+)
+
+BROWSER_NATIVE_CAPABILITIES = READ_ONLY_NATIVE_CAPABILITIES | frozenset(
+    {
+        "browser_click",
+        "browser_close",
+        "browser_evaluate",
+        "browser_get_content",
+        "browser_navigate",
+        "browser_screenshot",
+        "browser_select_option",
+        "browser_snapshot",
+        "browser_type",
+        "browser_wait",
+    }
+)
+
+DESKTOP_NATIVE_CAPABILITIES = READ_ONLY_NATIVE_CAPABILITIES | frozenset(
+    {
+        "click_ui_element",
+        "get_accessibility_tree",
+        "run_applescript",
+        "type_keystrokes",
+    }
+)
+
+WORKSPACE_NATIVE_CAPABILITIES = frozenset(
+    {
+        "apply_diff",
+        "copy_file",
+        "create_directory",
+        "delegate_task",
+        "delete_file",
+        "delete_memory",
+        "download_file",
+        "file_chmod",
+        "file_readlink",
+        "file_stat",
+        "format",
+        "git_add",
+        "git_branch",
+        "git_commit",
+        "git_diff",
+        "git_log",
+        "git_status",
+        "glob_search",
+        "grep",
+        "http_request",
+        "kill_process",
+        "lint",
+        "list_directory",
+        "list_processes",
+        "manage_context",
+        "manage_tasks",
+        "move_file",
+        "package_manager",
+        "python_repl",
+        "read_bg_output",
+        "read_file",
+        "read_image",
+        "read_url",
+        "recall_memory",
+        "refactor",
+        "run_background",
+        "run_command",
+        "run_tests",
+        "save_memory",
+        "search_replace",
+        "semantic_search",
+        "symbol_search",
+        "undo",
+        "undo_history",
+        "use_skill",
+        "web_search",
+        "write_file",
+    }
+)
+
+NATIVE_CAPABILITY_SETS = {
+    "read_only": READ_ONLY_NATIVE_CAPABILITIES,
+    "browser": BROWSER_NATIVE_CAPABILITIES,
+    "desktop": DESKTOP_NATIVE_CAPABILITIES,
+    "workspace": WORKSPACE_NATIVE_CAPABILITIES,
+}
 
 
 @dataclass
@@ -360,6 +471,7 @@ class DelegateTaskTool(Tool):
             model,
             inherit_project_context,
             read_only_task,
+            isolation_domain,
             task_id,
         )
 
@@ -371,6 +483,7 @@ class DelegateTaskTool(Tool):
         model: Optional[str],
         inherit_project_context: bool,
         read_only_task: bool = False,
+        isolation_domain: str = "auto",
         task_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Core sub-agent spawning and execution logic."""
@@ -382,6 +495,12 @@ class DelegateTaskTool(Tool):
             cwd = os.getcwd()
             ctx = self.context
             child_depth = ctx.delegation_depth + 1
+            effective_domain = resolve_delegation_isolation_domain(
+                {
+                    "read_only_task": read_only_task,
+                    "isolation_domain": isolation_domain,
+                }
+            )
 
             if child_depth > MAX_DELEGATION_DEPTH:
                 return {
@@ -481,13 +600,12 @@ class DelegateTaskTool(Tool):
                     sub_agent.context_controller.project_instructions = None
                     sub_agent.context_controller._instructions_loaded = True
 
-                if read_only_task:
-                    mutating = [
-                        name
-                        for name, t in sub_agent.tools.tools.items()
-                        if not getattr(t, "is_read_only", False)
-                    ]
-                    for name in mutating:
+                domain_capabilities = NATIVE_CAPABILITY_SETS[effective_domain]
+                for name, child_tool in list(sub_agent.tools.tools.items()):
+                    allowed = name in domain_capabilities
+                    if effective_domain == "read_only":
+                        allowed = allowed and bool(getattr(child_tool, "is_read_only", False))
+                    if not allowed:
                         del sub_agent.tools.tools[name]
 
                 # Phase 5.1: enforce child capability ⊆ parent. After persona
@@ -499,6 +617,15 @@ class DelegateTaskTool(Tool):
                     for name in list(sub_agent.tools.tools.keys()):
                         if name not in ctx.parent_tool_names:
                             del sub_agent.tools.tools[name]
+
+                # The executor re-checks this exact set before dispatch, so a
+                # hidden/invented call cannot bypass schema filtering. Dynamic
+                # MCP is disabled for every domain-scoped sub-agent: MCP server
+                # annotations are untrusted and there is currently no local,
+                # exact server/tool read-only trust store.
+                sub_agent._capability_domain = effective_domain
+                sub_agent._allowed_native_tool_names = frozenset(sub_agent.tools.tools.keys())
+                sub_agent._allow_dynamic_mcp = False
 
                 # Configure the child's own delegation context AFTER all tool
                 # filtering so any grandchild inherits the correct (narrowed)
@@ -527,6 +654,7 @@ class DelegateTaskTool(Tool):
                                 ),
                                 "delegation_depth": child_depth,
                                 "agent_role": agent_role,
+                                "isolation_domain": effective_domain,
                             }
                         )
 

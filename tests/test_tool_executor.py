@@ -1,5 +1,6 @@
 import asyncio
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -234,17 +235,17 @@ async def test_orchestrate_signals_doom_loop_after_hard_threshold() -> None:
     """Same (tool, args) called >= DOOM_LOOP_HARD_THRESHOLD times must
     surface a BatchStatus.DOOM_LOOP outcome so the agent loop can terminate.
 
-    Real-world repro: gpt-5.4-mini called `plan action=show` 14+ times in
-    one turn. The plan tool isn't is_read_only, so the cached short-circuit
-    never fired — only this hard cap stops it.
+    Real-world repro: a model called the same state-management tool 14+ times
+    in one turn. The tool was not read-only, so the cached short-circuit never
+    fired; only this hard cap stops it.
     """
     registry = SimpleNamespace(
         get=MagicMock(
             return_value=SimpleNamespace(
                 requires_confirmation=False,
                 # Mark non-read-only on purpose: the hard cap MUST apply
-                # even to mutating tools, otherwise tools like `plan` (which
-                # has is_read_only=False) escape the existing cache check.
+                # even to mutating tools, which otherwise escape the existing
+                # cache check.
                 is_read_only=False,
                 max_parallel_invocations=0,
             )
@@ -509,7 +510,7 @@ async def test_denied_calls_do_not_count_toward_doom_loop_hard_threshold() -> No
 
 
 @pytest.mark.asyncio
-async def test_in_batch_duplicate_calls_do_not_count_toward_doom_loop() -> None:
+async def test_identical_mutating_calls_are_not_deduplicated() -> None:
     registry = SimpleNamespace(
         get=MagicMock(
             return_value=SimpleNamespace(
@@ -541,7 +542,7 @@ async def test_in_batch_duplicate_calls_do_not_count_toward_doom_loop() -> None:
             "type": "function",
             "function": {"name": "manage_tasks", "arguments": '{"action":"show"}'},
         }
-        for i in range(DOOM_LOOP_HARD_THRESHOLD)
+        for i in range(2)
     ]
     session.add_message("assistant", None, tool_calls=tool_calls)
 
@@ -554,7 +555,75 @@ async def test_in_batch_duplicate_calls_do_not_count_toward_doom_loop() -> None:
     )
 
     assert outcome.status is BatchStatus.OK
-    assert registry.execute.await_count == 1
+    assert registry.execute.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_identical_reads_are_not_reused_across_mutation_barrier() -> None:
+    read_tool = SimpleNamespace(
+        requires_confirmation=False,
+        is_read_only=True,
+        max_parallel_invocations=0,
+    )
+    write_tool = SimpleNamespace(
+        requires_confirmation=False,
+        is_read_only=False,
+        max_parallel_invocations=0,
+        batch_serialize_by_path=True,
+    )
+    events = []
+
+    async def _execute(name, **kwargs):
+        events.append(name)
+        return {"success": True, "result": len(events)}
+
+    registry = SimpleNamespace(
+        get=MagicMock(side_effect=lambda name: read_tool if name == "read_file" else write_tool),
+        execute=AsyncMock(side_effect=_execute),
+    )
+    session = Session(session_id="session_1234567890_barrier")
+    tool_calls = [
+        {
+            "id": "r1",
+            "type": "function",
+            "function": {"name": "read_file", "arguments": '{"path":"x.py"}'},
+        },
+        {
+            "id": "w",
+            "type": "function",
+            "function": {
+                "name": "write_file",
+                "arguments": '{"path":"x.py","content":"new"}',
+            },
+        },
+        {
+            "id": "r2",
+            "type": "function",
+            "function": {"name": "read_file", "arguments": '{"path":"x.py"}'},
+        },
+    ]
+    session.add_message("assistant", None, tool_calls=tool_calls)
+    agent = SimpleNamespace(
+        auto_approve=True,
+        ipc_server=None,
+        tools=registry,
+        tracker_info=None,
+        session=session,
+        context_controller=SimpleNamespace(summarize_tool_result=lambda result: result),
+        _sync_tracker=MagicMock(),
+    )
+    hooks_manager = SimpleNamespace(run_hooks=AsyncMock(return_value=[]))
+
+    outcome = await ToolExecutor(agent).orchestrate_tool_calls(
+        tool_calls=tool_calls,
+        messages=session.get_messages_for_api(),
+        user_message="read, write, then read",
+        hooks_data=None,
+        hooks_manager=hooks_manager,
+    )
+
+    assert outcome.status is BatchStatus.OK
+    assert events == ["read_file", "write_file", "read_file"]
 
 
 def test_failed_tool_iterations_accumulate_in_execution_loop() -> None:
@@ -671,9 +740,7 @@ def test_in_batch_and_cross_iteration_doom_share_message_format() -> None:
         }
         for i in range(3)
     ]
-    loop_a._call_llm_with_retry = AsyncMock(
-        return_value={"content": None, "tool_calls": dup_calls}
-    )
+    loop_a._call_llm_with_retry = AsyncMock(return_value={"content": None, "tool_calls": dup_calls})
     in_batch_content = asyncio.run(loop_a.run("go"))["content"]
 
     # Cross-iteration: the executor reports a DOOM_LOOP outcome for one call.

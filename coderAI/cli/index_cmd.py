@@ -18,7 +18,7 @@ import click
 def index_cmd(force: bool, paths: tuple[str, ...]) -> None:
     """Build or update the semantic code search index."""
     from coderAI.system.config import config_manager
-    from coderAI.embeddings.openai import create_embedding_provider
+    from coderAI.embeddings import create_embedding_provider
     from coderAI.context.code_indexer import CodeIndexer
     from coderAI.cli.utils import display
 
@@ -26,8 +26,8 @@ def index_cmd(force: bool, paths: tuple[str, ...]) -> None:
     provider = create_embedding_provider(config)
     if provider is None:
         display.print_error(
-            "No embedding provider available. Set openai_api_key via "
-            "`coderAI config set openai_api_key <key>` or OPENAI_API_KEY env var."
+            "No embedding provider is available: the OpenAI backend needs an API key. "
+            "Set openai_api_key or select embedding_backend=local."
         )
         sys.exit(1)
 
@@ -63,14 +63,17 @@ def index_cmd(force: bool, paths: tuple[str, ...]) -> None:
 def search_cmd(query: str, top_k: int, file_filter: str | None) -> None:
     """Search the codebase with a natural-language query."""
     from coderAI.system.config import config_manager
-    from coderAI.embeddings.openai import create_embedding_provider
+    from coderAI.embeddings import create_embedding_provider
     from coderAI.context.code_indexer import CodeIndexer
     from coderAI.cli.utils import display
 
     config = config_manager.load()
     provider = create_embedding_provider(config)
     if provider is None:
-        display.print_error("No embedding provider available. Set openai_api_key.")
+        display.print_error(
+            "No embedding provider is available: the OpenAI backend needs an API key. "
+            "Set openai_api_key or select embedding_backend=local."
+        )
         sys.exit(1)
 
     project_root = str(Path(config.project_root).resolve())

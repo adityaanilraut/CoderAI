@@ -13,14 +13,20 @@ import asyncio
 import logging
 import time as _time
 from concurrent.futures import Future, ThreadPoolExecutor
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 
 from coderAI.context.context_controller import RESPONSE_TOKEN_RESERVE, TOOL_OVERHEAD_TOKENS
 from coderAI.core.agent_tracker import AgentStatus, AgentInfo
 from coderAI.core.services import get_services
+from coderAI.llm.base import normalize_usage
+from coderAI.system.error_policy import check_budget_limit
 from coderAI.system.read_cache import FileReadCache
-from coderAI.system.history import Message, Session, checkpoint_label
+from coderAI.system.history import (
+    SESSION_SCHEMA_VERSION,
+    Message,
+    Session,
+    checkpoint_label,
+)
 
 if TYPE_CHECKING:
     from coderAI.context.context_controller import ContextController
@@ -102,11 +108,35 @@ class AgentSessionMixin:
         self.session.add_message("system", self._get_system_prompt())
         return self.session
 
+    def _restore_session_accounting(self, session: Session) -> None:
+        """Restore persisted spend so resume cannot reset the session budget."""
+        self.total_prompt_tokens = session.prompt_tokens
+        self.total_completion_tokens = session.completion_tokens
+        self.total_tokens = session.total_tokens or (
+            session.prompt_tokens + session.completion_tokens
+        )
+        self.total_cache_creation_tokens = session.cache_creation_tokens
+        self.total_cache_read_tokens = session.cache_read_tokens
+        self.cost_tracker.total_cost_usd = session.total_cost_usd
+
+    def _sync_session_accounting(self) -> None:
+        """Copy live accounting into the persisted session snapshot."""
+        if self.session is None:
+            return
+        self.session.schema_version = SESSION_SCHEMA_VERSION
+        self.session.prompt_tokens = self.total_prompt_tokens
+        self.session.completion_tokens = self.total_completion_tokens
+        self.session.total_tokens = self.total_tokens
+        self.session.cache_creation_tokens = self.total_cache_creation_tokens
+        self.session.cache_read_tokens = self.total_cache_read_tokens
+        self.session.total_cost_usd = self.cost_tracker.get_total_cost()
+
     def load_session(self, session_id: str) -> Optional[Session]:
         """Load an existing session."""
         self._reset_session_accounting()
         self.session = get_services().history.load_session(session_id)
         if self.session:
+            self._restore_session_accounting(self.session)
             self._refresh_session_system_prompt()
         return self.session
 
@@ -120,6 +150,7 @@ class AgentSessionMixin:
         """
         if not (self.session and self.config.save_history):
             return
+        self._sync_session_accounting()
         try:
             snapshot = self.session.model_dump()
         except Exception:
@@ -169,6 +200,21 @@ class AgentSessionMixin:
         self.total_prompt_tokens += input_delta
         self.total_completion_tokens += output_delta
         self.total_tokens += input_delta + output_delta
+
+    async def _record_auxiliary_usage(self, raw_usage: Dict[str, Any]) -> None:
+        """Meter a provider call made outside the main execution loop."""
+        usage = normalize_usage(raw_usage)
+        input_tokens = usage["input_tokens"]
+        output_tokens = usage["output_tokens"]
+        self.total_prompt_tokens += input_tokens
+        self.total_completion_tokens += output_tokens
+        self.total_tokens += input_tokens + output_tokens
+        self.total_cache_creation_tokens += usage["cache_creation_tokens"]
+        self.total_cache_read_tokens += usage["cache_read_tokens"]
+        if input_tokens or output_tokens:
+            model = getattr(self.provider, "actual_model", self.model)
+            await self.cost_tracker.add_cost(model, input_tokens, output_tokens)
+            check_budget_limit(self.config.budget_limit, self.cost_tracker, emit_warning=True)
 
     async def compact_context(self) -> bool:
         """Force the context to be compacted by summarizing history."""

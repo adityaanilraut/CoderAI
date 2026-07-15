@@ -29,6 +29,7 @@ def setup() -> None:
         ),
         (4, "DeepSeek", "Required for using DeepSeek models", "deepseek_api_key"),
         (5, "Gemini", "Required for using Gemini models", "gemini_api_key"),
+        (6, "Meta", "Required for using Meta Muse Spark models", "meta_api_key"),
     ]
     for num, label, desc, config_key in api_key_providers:
         display.print(f"[bold]{num}. {label} API Key[/bold]")
@@ -58,11 +59,12 @@ def setup() -> None:
         display.print()
 
     valid = valid_models()
-    display.print("[bold]6. Default Model[/bold]")
+    display.print("[bold]7. Default Model[/bold]")
     display.print("   Run `coderAI models` after setup for the full list.")
     display.print(
         "   Common: claude-sonnet-4-6, opus, haiku, gpt-5.4-mini, "
-        "gpt-5.4, deepseek-v4-flash, gemini-3.5-flash, lmstudio, ollama"
+        "gpt-5.4, deepseek-v4-flash, gemini-3.5-flash, muse-spark-1.1, "
+        "lmstudio, ollama"
     )
     while True:
         model = click.prompt("   Enter default model", default="claude-4-sonnet").strip()
@@ -73,10 +75,10 @@ def setup() -> None:
         display.print_error(f"   Unknown model: {model}. Run `coderAI models` for the full list.")
     display.print()
 
-    display.print("[bold]7. Reasoning Effort[/bold]")
+    display.print("[bold]8. Reasoning Effort[/bold]")
     display.print(
         "   Thinking budget for reasoning-capable models (o1, o3-mini, "
-        "gpt-5.4, claude-sonnet-4-6, …)."
+        "gpt-5.4, claude-sonnet-4-6, muse-spark-1.1, …)."
     )
     effort = click.prompt(
         "   Enter reasoning effort",
@@ -88,7 +90,7 @@ def setup() -> None:
     display.print_success(f"   Reasoning effort set to {effort}")
     display.print()
 
-    display.print("[bold]8. LM Studio Configuration (Optional)[/bold]")
+    display.print("[bold]9. LM Studio Configuration (Optional)[/bold]")
     display.print("   For using local models with LM Studio")
     use_lmstudio = click.confirm("   Configure LM Studio?", default=False)
     if use_lmstudio:
@@ -109,7 +111,7 @@ def setup() -> None:
         display.print_success("   LM Studio configuration saved")
     display.print()
 
-    display.print("[bold]9. Ollama Configuration (Optional)[/bold]")
+    display.print("[bold]10. Ollama Configuration (Optional)[/bold]")
     display.print("   For using local models with Ollama")
     use_ollama = click.confirm("   Configure Ollama?", default=False)
     if use_ollama:
@@ -126,7 +128,7 @@ def setup() -> None:
         display.print_success("   Ollama configuration saved")
     display.print()
 
-    display.print("[bold]10. Web Search Configuration (Optional)[/bold]")
+    display.print("[bold]11. Web Search Configuration (Optional)[/bold]")
     display.print("   For querying the web during execution.")
     use_web = click.confirm("   Configure Web Search?", default=False)
     if use_web:
@@ -157,6 +159,14 @@ def setup() -> None:
                 if exa_key:
                     config_manager.set("exa_api_key", exa_key)
                     captured_any_key = True
+            elif backend == "searxng":
+                searxng_url = click.prompt(
+                    "   Custom SearXNG URL (leave blank for public instances)",
+                    default="",
+                    show_default=False,
+                ).strip()
+                if searxng_url:
+                    config_manager.set("searxng_url", searxng_url)
 
             rate_limit = click.prompt(
                 "   Enter domain rate limit delay in seconds",

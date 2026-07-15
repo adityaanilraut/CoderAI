@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import abstractmethod
+import time
 from typing import Any, Dict, List, Optional
 
 from rich.markup import escape
@@ -136,7 +137,7 @@ class PromptArea(TextArea):
         self.move_cursor(self.document.end)
 
 
-class ApprovalScreen(ModalScreen[tuple[bool, bool]]):
+class ApprovalScreen(ModalScreen[Optional[tuple[bool, bool]]]):
     """Enhanced tool approval dialog with risk breakdown."""
 
     DEFAULT_CSS = f"""
@@ -177,6 +178,10 @@ class ApprovalScreen(ModalScreen[tuple[bool, bool]]):
     ApprovalScreen #approval-risk {{
         margin: 1 0;
     }}
+    ApprovalScreen #approval-timeout {{
+        color: {Tokens.TEXT_DIM};
+        margin-top: 1;
+    }}
     ApprovalScreen Label {{
         color: {Tokens.TEXT_DIM};
     }}
@@ -198,6 +203,26 @@ class ApprovalScreen(ModalScreen[tuple[bool, bool]]):
         self.query_one("#approve-y", Button).focus()
         if str(self.approval.get("risk", "low")) == "high":
             self.query_one("#approval-box").styles.border = ("panel", Tokens.DANGER)
+        self._update_timeout()
+        if self.approval.get("expiresAt"):
+            self.set_interval(1.0, self._update_timeout)
+
+    @property
+    def approval_id(self) -> str:
+        return str(self.approval.get("id") or "")
+
+    def _update_timeout(self) -> None:
+        try:
+            label = self.query_one("#approval-timeout", Static)
+        except NoMatches:
+            return
+        expires_at = self.approval.get("expiresAt")
+        if not expires_at:
+            label.update(f"[{Tokens.TEXT_DIM}]Waiting for your decision[/]")
+            return
+        remaining = max(0, int(float(expires_at) - time.time()))
+        color = Tokens.DANGER if remaining <= 15 else Tokens.TEXT_DIM
+        label.update(f"[{color}]Auto-denies in {remaining}s[/]")
 
     def compose(self) -> ComposeResult:
         a = self.approval
@@ -210,9 +235,27 @@ class ApprovalScreen(ModalScreen[tuple[bool, bool]]):
         iteration = int(a.get("iteration") or 0)
 
         risk_color = Tokens.DANGER if risk == "high" else Tokens.WARN
+        remember_label = str(a.get("rememberLabel") or "")
+        if tool_name in ("run_command", "run_background", "python_repl"):
+            approve_label = "Run once (y)"
+        elif tool_name == "workspace_trust":
+            approve_label = "Trust workspace (y)"
+        elif tool_name == "project_hooks":
+            approve_label = "Enable hooks (y)"
+        elif diff or tool_name in {
+            "write_file",
+            "search_replace",
+            "apply_diff",
+            "delete_file",
+            "move_file",
+        }:
+            approve_label = "Apply once (y)"
+        else:
+            approve_label = "Allow once (y)"
         with Container(id="approval-box"):
             yield Label(
-                f"[bold {risk_color}]▲[/] Approve [bold {Tokens.TEXT}]{escape(tool_name)}[/]"
+                f"[bold {risk_color}]▲[/] Approval required · "
+                f"[bold {Tokens.TEXT}]{escape(tool_name)}[/]"
                 f" · [{risk_color}]▲ {risk.upper()}[/] risk",
                 id="approval-header",
             )
@@ -224,6 +267,12 @@ class ApprovalScreen(ModalScreen[tuple[bool, bool]]):
                 meta_parts.append(f"sub-agent of [{Tokens.TEXT_MUTED}]{parent_id[-8:]}[/]")
             if iteration:
                 meta_parts.append(f"iteration [{Tokens.TEXT_DIM}]{iteration}[/]")
+            prior_approved = int(a.get("priorApproved") or 0)
+            if prior_approved:
+                plural = "s" if prior_approved != 1 else ""
+                meta_parts.append(
+                    f"[{Tokens.WARN}]{prior_approved} prior approval{plural} this turn[/]"
+                )
             if meta_parts:
                 yield Label(" · ".join(meta_parts), id="approval-meta")
 
@@ -245,6 +294,7 @@ class ApprovalScreen(ModalScreen[tuple[bool, bool]]):
                 arg_lines = [
                     f"[{Tokens.TEXT_MUTED}]{escape(str(k))}:[/] [{Tokens.TEXT}]{escape(str(v)[:120])}[/]"
                     for k, v in list(args.items())[:6]
+                    if not (tool_name == "run_command" and k in ("command", "cmd"))
                 ]
                 if len(args) > 6:
                     arg_lines.append(f"[{Tokens.TEXT_MUTED}]… {len(args) - 6} more[/]")
@@ -264,10 +314,13 @@ class ApprovalScreen(ModalScreen[tuple[bool, bool]]):
                     id="approval-risk",
                 )
 
+            yield Static("", id="approval-timeout")
+
             with Horizontal():
-                yield Button("Apply (y)", id="approve-y", variant="success")
-                yield Button("Reject (n)", id="approve-n", variant="error")
-                yield Button("Always (a)", id="approve-a", variant="warning")
+                yield Button(approve_label, id="approve-y", variant="success")
+                yield Button("Deny (n)", id="approve-n", variant="error")
+                if remember_label:
+                    yield Button(f"{remember_label} (a)", id="approve-a", variant="warning")
 
     @on(Button.Pressed, "#approve-y")
     def _yes(self) -> None:
@@ -279,7 +332,8 @@ class ApprovalScreen(ModalScreen[tuple[bool, bool]]):
 
     @on(Button.Pressed, "#approve-a")
     def _always(self) -> None:
-        self.dismiss((True, True))
+        if self.approval.get("rememberLabel"):
+            self.dismiss((True, True))
 
     @on(events.Key)
     def _on_approval_key(self, event: events.Key) -> None:
@@ -300,6 +354,8 @@ class ApprovalScreen(ModalScreen[tuple[bool, bool]]):
             self.dismiss((False, False))
             return
         if key == "a":
+            if not self.approval.get("rememberLabel"):
+                return
             event.stop()
             event.prevent_default()
             self.dismiss((True, True))
@@ -539,7 +595,7 @@ class FuzzyPickerScreen(ModalScreen[Optional[str]]):
 
 
 class FilePickerScreen(FuzzyPickerScreen):
-    """Fuzzy-searchable project file picker for pinning context."""
+    """Fuzzy-searchable project file picker for mentions that also pin context."""
 
     def __init__(
         self,
@@ -890,9 +946,18 @@ class FullContentScreen(ModalScreen[None]):
 
     @on(Button.Pressed, "#full-copy")
     def _copy(self) -> None:
-        from coderAI.tui.clipboard import copy_to_clipboard_osc52
+        from coderAI.tui.clipboard import copy_text
 
-        copy_to_clipboard_osc52(self._content, self.notify)
+        write_osc52 = None
+        app = self.app
+        if hasattr(app, "_osc52_writer"):
+            write_osc52 = app._osc52_writer()
+        copy_text(
+            self._content,
+            write_osc52=write_osc52,
+            notify_fn=self.notify,
+            fallback_file=True,
+        )
 
     @on(events.Key)
     async def _on_key(self, event: events.Key) -> None:

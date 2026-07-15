@@ -5,7 +5,9 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -13,7 +15,9 @@ from pydantic import BaseModel, Field
 
 from coderAI.core.provenance import Provenance
 from coderAI.core.tool_error_codes import ToolErrorCode
+from coderAI.core.tool_routing import build_mcp_function_name
 from coderAI.system.fsperms import atomic_write_json
+from coderAI.system.sandbox import prepare_sandbox_launch
 from coderAI.tools.base import Tool
 
 logger = logging.getLogger(__name__)
@@ -21,6 +25,11 @@ logger = logging.getLogger(__name__)
 # Launchers permitted for stdio MCP servers. Shared by the ``mcp_connect`` tool
 # and the ``coderAI mcp`` CLI so both validate against the same allow-list.
 ALLOWED_MCP_LAUNCHERS = {"npx", "node", "python", "python3", "uvx", "bun", "deno"}
+MCP_MAX_PAGES = 100
+MCP_MAX_LIST_ITEMS = 10_000
+MCP_MAX_DESCRIPTION_LENGTH = 1_024
+MCP_MAX_METADATA_DEPTH = 12
+MCP_MAX_METADATA_ITEMS = 1_000
 
 # Per-launcher tokens that evaluate inline code, turning an *allowed* launcher
 # into an arbitrary-code sink (``python -c "…"``, ``node -e "…"``, ``deno eval
@@ -38,6 +47,100 @@ _INLINE_EXEC_TOKENS = {
 }
 
 
+def _launcher_kind(command: str) -> Optional[str]:
+    """Return the allow-listed launcher kind, including versioned Python executables."""
+    basename = command.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if basename.endswith(".exe"):
+        basename = basename[:-4]
+    if basename in ALLOWED_MCP_LAUNCHERS:
+        return basename
+    # Virtual environments commonly expose python3.10/python3.12 rather than
+    # exactly python3. This remains Python-only and does not broaden the launcher set.
+    if re.fullmatch(r"python3\.\d+", basename):
+        return "python3"
+    return None
+
+
+def _sanitize_metadata_text(value: Any, limit: int = MCP_MAX_DESCRIPTION_LENGTH) -> str:
+    """Collapse control/formatting characters and clamp untrusted model metadata."""
+    if not isinstance(value, str):
+        return ""
+    cleaned = "".join(" " if ord(ch) < 32 or ord(ch) == 127 else ch for ch in value)
+    cleaned = " ".join(cleaned.split())
+    if len(cleaned) > limit:
+        return cleaned[: limit - 3] + "..."
+    return cleaned
+
+
+def _sanitize_model_metadata(value: Any, *, depth: int = 0) -> Any:
+    """Bound server-controlled structures returned to the model or used as schemas."""
+    if depth >= MCP_MAX_METADATA_DEPTH:
+        return None
+    if isinstance(value, dict):
+        out: Dict[str, Any] = {}
+        for index, (key, item) in enumerate(value.items()):
+            if index >= MCP_MAX_METADATA_ITEMS:
+                break
+            safe_key = _sanitize_metadata_text(str(key), 128)
+            if not safe_key:
+                continue
+            if safe_key.lower() in {"description", "title", "$comment"}:
+                out[safe_key] = _sanitize_metadata_text(item)
+            else:
+                out[safe_key] = _sanitize_model_metadata(item, depth=depth + 1)
+        return out
+    if isinstance(value, list):
+        return [
+            _sanitize_model_metadata(item, depth=depth + 1)
+            for item in value[:MCP_MAX_METADATA_ITEMS]
+        ]
+    if isinstance(value, str):
+        return _sanitize_metadata_text(value, 4_096)
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return None
+
+
+def _validate_discovered_tools(
+    server_name: str,
+    tools: Any,
+    existing_tools: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Validate exact names and reject duplicate/colliding provider function IDs."""
+    if not isinstance(tools, list):
+        raise ValueError("MCP tools/list result must contain a tools array")
+    if len(tools) > MCP_MAX_LIST_ITEMS:
+        raise ValueError(f"MCP server returned more than {MCP_MAX_LIST_ITEMS} tools")
+
+    occupied = {
+        build_mcp_function_name(str(item.get("server", "")), str(item.get("name", "")))
+        for item in existing_tools
+        if item.get("server") != server_name
+    }
+    seen = set()
+    validated: List[Dict[str, Any]] = []
+    for raw in tools:
+        if not isinstance(raw, dict):
+            raise ValueError("MCP tools/list entries must be objects")
+        name = raw.get("name")
+        if not isinstance(name, str):
+            raise ValueError("MCP tool name must be a string")
+        function_name = build_mcp_function_name(server_name, name)
+        if function_name in seen:
+            raise ValueError(f"MCP server returned duplicate tool name {name!r}")
+        if function_name in occupied:
+            raise ValueError(f"MCP tool function name collision: {function_name!r}")
+        seen.add(function_name)
+        validated.append(
+            {
+                "name": name,
+                "description": _sanitize_metadata_text(raw.get("description", "")),
+                "inputSchema": _sanitize_model_metadata(raw.get("inputSchema", {})),
+            }
+        )
+    return validated
+
+
 def validate_stdio_launch(command: str, args: Optional[List[str]]) -> Optional[str]:
     """Validate a stdio MCP launcher + argv; return an error string or ``None``.
 
@@ -51,20 +154,15 @@ def validate_stdio_launch(command: str, args: Optional[List[str]]) -> Optional[s
     if not command:
         return "Command is required for stdio transport"
 
-    cmd_lower = command.lower()
-    allowed = any(
-        cmd_lower == launcher or cmd_lower.endswith("/" + launcher)
-        for launcher in ALLOWED_MCP_LAUNCHERS
-    )
-    if not allowed:
+    launcher_kind = _launcher_kind(command)
+    if launcher_kind is None:
         return (
             f"MCP server launcher '{command}' is not in the allowed set: "
             f"{', '.join(sorted(ALLOWED_MCP_LAUNCHERS))}"
         )
 
     arg_list = list(args or [])
-    base = cmd_lower.rsplit("/", 1)[-1]
-    blocked_tokens = _INLINE_EXEC_TOKENS.get(base, set())
+    blocked_tokens = _INLINE_EXEC_TOKENS.get(launcher_kind, set())
     for token in arg_list:
         if token in blocked_tokens:
             return (
@@ -118,6 +216,10 @@ def validate_remote_mcp_url(url: str) -> Optional[str]:
         parsed = urlparse(raw)
     except ValueError:
         return f"Invalid MCP endpoint URL: {url!r}"
+    if not parsed.hostname:
+        return f"MCP endpoint URL must include a host: {url!r}"
+    if parsed.username is not None or parsed.password is not None:
+        return "MCP endpoint URLs must not contain embedded credentials"
     scheme = (parsed.scheme or "").lower()
     if scheme == "https":
         return None
@@ -133,6 +235,30 @@ def validate_remote_mcp_url(url: str) -> Optional[str]:
         f"Unsupported URL scheme {scheme or '(none)'!r} for a remote MCP endpoint "
         f"(use https://): {url!r}"
     )
+
+
+def _validated_same_origin_url(base_url: str, endpoint: str) -> str:
+    """Resolve an advertised endpoint and require the exact origin of ``base_url``."""
+    from urllib.parse import urljoin, urlparse
+
+    resolved = urljoin(base_url, endpoint.strip())
+    error = validate_remote_mcp_url(resolved)
+    if error:
+        raise ValueError(error)
+    base = urlparse(base_url)
+    target = urlparse(resolved)
+
+    def origin(parsed: Any) -> tuple[str, str, int]:
+        default_port = 443 if parsed.scheme.lower() == "https" else 80
+        return parsed.scheme.lower(), (parsed.hostname or "").lower(), parsed.port or default_port
+
+    if origin(base) != origin(target):
+        raise ValueError(
+            f"Refusing cross-origin MCP endpoint {resolved!r} advertised by {base_url!r}"
+        )
+    if target.username is not None or target.password is not None:
+        raise ValueError("MCP endpoints must not contain URL credentials")
+    return resolved
 
 
 def _shape_tool_result(result: Dict[str, Any]) -> Dict[str, Any]:
@@ -153,15 +279,13 @@ def _shape_tool_result(result: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _reject_reserved_server_name(server_name: str) -> Optional[Dict[str, Any]]:
-    """``mcp__<server>__<tool>`` routing uses the first ``__`` after the prefix;
-    disallow ``__`` in the server segment so names stay unambiguous."""
-    if "__" in server_name:
+    """Reject server names that cannot form an exact provider-safe function ID."""
+    try:
+        build_mcp_function_name(server_name, "t")
+    except ValueError as exc:
         return {
             "success": False,
-            "error": (
-                "server_name must not contain '__' — it is reserved for MCP tool "
-                f"id encoding (got {server_name!r}). Use a name like 'my_server'."
-            ),
+            "error": f"Invalid server_name {server_name!r}: {exc}",
         }
     return None
 
@@ -347,44 +471,89 @@ class MCPClient:
         self._next_id += 1
         return current
 
-    async def _read_response(
-        self,
-        stdout: asyncio.StreamReader,
-        expected_id: int,
-        timeout: float = 10,
-    ) -> Dict[str, Any]:
-        """Read lines from stdout until a JSON-RPC response with the expected id arrives.
+    @staticmethod
+    def _fail_pending(entry: Dict[str, Any], error: BaseException) -> None:
+        """Fail all requests waiting on a transport that reached EOF or closed."""
+        pending = entry.get("pending", {})
+        for future in list(pending.values()):
+            if not future.done():
+                future.set_exception(error)
+        pending.clear()
 
-        Skips any notifications (messages without an 'id' field) that servers
-        may send between requests.
-        """
-        import time
+    @staticmethod
+    def _dispatch_response(entry: Dict[str, Any], response: Dict[str, Any]) -> None:
+        """Resolve the future for a JSON-RPC response without consuming notifications."""
+        response_id = response.get("id")
+        if response_id is None:
+            return
+        future = entry.get("pending", {}).get(response_id)
+        if future is None:
+            logger.debug("Ignoring late or unknown MCP response id %r", response_id)
+            return
+        if not future.done():
+            future.set_result(response)
 
-        deadline = time.monotonic() + timeout
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise asyncio.TimeoutError()
-            line = await asyncio.wait_for(stdout.readline(), timeout=remaining)
-            if not line:
-                raise RuntimeError("Server closed stdout unexpectedly")
-            try:
-                decoded_line = line.decode("utf-8", errors="replace")
-                parsed = json.loads(decoded_line)
-                if not isinstance(parsed, dict):
-                    logger.warning(f"Parsed line is not a dictionary: {decoded_line}")
+    async def _stdio_reader(
+        self, server_name: str, entry: Dict[str, Any], stdout: asyncio.StreamReader
+    ) -> None:
+        """Sole stdout reader for a stdio connection; dispatch replies by JSON-RPC ID."""
+        error: BaseException = RuntimeError(f"MCP server '{server_name}' closed stdout")
+        try:
+            while True:
+                line = await stdout.readline()
+                if not line:
+                    break
+                try:
+                    parsed = json.loads(line.decode("utf-8", errors="replace"))
+                except (UnicodeError, json.JSONDecodeError):
+                    logger.warning("Ignoring malformed JSON from MCP server '%s'", server_name)
                     continue
-            except Exception as e:
-                logger.warning(f"Failed to decode or parse line: {line!r}. Error: {e}")
-                continue
+                if not isinstance(parsed, dict):
+                    logger.warning("Ignoring non-object JSON from MCP server '%s'", server_name)
+                    continue
+                self._dispatch_response(entry, parsed)
+        except asyncio.CancelledError:
+            error = RuntimeError(f"MCP server '{server_name}' reader was cancelled")
+            raise
+        except Exception as exc:
+            error = RuntimeError(f"MCP server '{server_name}' stdout reader failed: {exc}")
+            logger.debug("MCP stdio reader failed", exc_info=True)
+        finally:
+            self._fail_pending(entry, error)
+            if self.servers.get(server_name) is entry:
+                entry["degraded"] = True
 
-            # Skip notifications (no 'id' field)
-            if "id" not in parsed:
-                continue
-            if parsed["id"] == expected_id:
-                return parsed
-            # Unexpected id — log and keep reading
-            logger.warning(f"Unexpected JSON-RPC id {parsed.get('id')}, expected {expected_id}")
+    async def _stdio_send(self, entry: Dict[str, Any], payload: Dict[str, Any]) -> None:
+        process = entry.get("process")
+        if process is None or process.returncode is not None or process.stdin is None:
+            raise RuntimeError("MCP stdio process is not running")
+        async with entry["write_lock"]:
+            process.stdin.write((json.dumps(payload) + "\n").encode())
+            await process.stdin.drain()
+
+    async def _stdio_exchange(
+        self, entry: Dict[str, Any], request: Dict[str, Any], timeout: float
+    ) -> Dict[str, Any]:
+        """Register a request future before writing, then await dispatcher delivery."""
+        request_id = request.get("id")
+        if request_id is None:
+            await self._stdio_send(entry, request)
+            return {}
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        pending = entry["pending"]
+        if request_id in pending:
+            raise RuntimeError(f"Duplicate in-flight MCP request id {request_id!r}")
+        pending[request_id] = future
+        try:
+            await self._stdio_send(entry, request)
+            return await asyncio.wait_for(asyncio.shield(future), timeout=timeout)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            future.cancel()
+            self._schedule_request_cancellation(entry, request_id)
+            raise
+        finally:
+            pending.pop(request_id, None)
 
     async def _drain_stderr(self, server_name: str, stream: asyncio.StreamReader) -> None:
         """Continuously read a stdio server's stderr so its pipe never fills.
@@ -424,6 +593,60 @@ class MCPClient:
             },
         }
 
+    @staticmethod
+    def _response_result(response: Any, method: str) -> Dict[str, Any]:
+        if not isinstance(response, dict):
+            raise RuntimeError(f"MCP {method} returned a non-object response")
+        error = response.get("error")
+        if error:
+            message = error.get("message", str(error)) if isinstance(error, dict) else str(error)
+            raise RuntimeError(f"MCP {method} failed: {message}")
+        result = response.get("result", {})
+        if not isinstance(result, dict):
+            raise RuntimeError(f"MCP {method} returned a non-object result")
+        return result
+
+    async def _paginate_entry(
+        self,
+        server_name: str,
+        entry: Dict[str, Any],
+        method: str,
+        item_key: str,
+        first_response: Optional[Dict[str, Any]] = None,
+    ) -> List[Any]:
+        """Collect a cursor-based MCP list with hard page and item limits."""
+        items: List[Any] = []
+        cursor: Optional[str] = None
+        seen_cursors = set()
+        for page in range(MCP_MAX_PAGES):
+            if page == 0 and first_response is not None:
+                result = self._response_result(first_response, method)
+            else:
+                params = {"cursor": cursor} if cursor is not None else None
+                response = await self._request_entry(server_name, entry, method, params)
+                if not response.get("success"):
+                    raise RuntimeError(str(response.get("error", f"MCP {method} failed")))
+                result = response.get("result", {})
+
+            page_items = result.get(item_key, [])
+            if not isinstance(page_items, list):
+                raise RuntimeError(f"MCP {method} result field {item_key!r} must be an array")
+            if len(items) + len(page_items) > MCP_MAX_LIST_ITEMS:
+                raise RuntimeError(
+                    f"MCP {method} exceeded the {MCP_MAX_LIST_ITEMS}-item discovery limit"
+                )
+            items.extend(page_items)
+            next_cursor = result.get("nextCursor")
+            if next_cursor is None:
+                return items
+            if not isinstance(next_cursor, str) or not next_cursor:
+                raise RuntimeError(f"MCP {method} returned an invalid nextCursor")
+            if next_cursor in seen_cursors:
+                raise RuntimeError(f"MCP {method} repeated pagination cursor {next_cursor!r}")
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
+        raise RuntimeError(f"MCP {method} exceeded the {MCP_MAX_PAGES}-page discovery limit")
+
     async def _finish_connect(
         self,
         server_name: str,
@@ -431,37 +654,55 @@ class MCPClient:
         init_response: Dict[str, Any],
         tools_response: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """Shared tail of the ``connect_*`` methods.
+        """Validate and stage discovery, then atomically replace same-name state."""
+        init_result = _sanitize_model_metadata(self._response_result(init_response, "initialize"))
+        raw_tools = await self._paginate_entry(
+            server_name, entry, "tools/list", "tools", first_response=tools_response
+        )
+        server_tools = _validate_discovered_tools(server_name, raw_tools, self.discovered_tools)
+        staged_tools = [
+            {
+                "server": server_name,
+                "name": tool["name"],
+                "description": tool["description"],
+                "input_schema": tool["inputSchema"],
+            }
+            for tool in server_tools
+        ]
+        entry["tools"] = server_tools
+        entry["server_info"] = init_result
+        staged_resources, staged_prompts = await self._discover_extras_for_entry(server_name, entry)
 
-        Registers the server entry (adding its tools and initialize result),
-        records the discovered tools, probes resources/prompts, and shapes the
-        connection summary.
-        """
-        server_info = tools_response.get("result", {}).get("tools", [])
-        entry["tools"] = server_info
-        entry["server_info"] = init_response.get("result", {})
+        old_entry = self.servers.get(server_name)
         self.servers[server_name] = entry
+        self.discovered_tools = [
+            tool for tool in self.discovered_tools if tool.get("server") != server_name
+        ] + staged_tools
+        self.discovered_resources = [
+            resource
+            for resource in self.discovered_resources
+            if resource.get("server") != server_name
+        ] + staged_resources
+        self.discovered_prompts = [
+            prompt for prompt in self.discovered_prompts if prompt.get("server") != server_name
+        ] + staged_prompts
 
-        for tool in server_info:
-            self.discovered_tools.append(
-                {
-                    "server": server_name,
-                    "name": tool.get("name", ""),
-                    "description": tool.get("description", ""),
-                    "input_schema": tool.get("inputSchema", {}),
-                }
-            )
-
-        extras = await self._discover_extras(server_name)
+        if old_entry is not None and old_entry is not entry:
+            try:
+                await self._close_server_entry(old_entry)
+            except Exception:
+                logger.warning(
+                    "Failed to close replaced MCP server '%s'", server_name, exc_info=True
+                )
 
         out: Dict[str, Any] = {
             "success": True,
             "server": server_name,
-            "tools_discovered": len(server_info),
-            "resources_discovered": extras["resources"],
-            "prompts_discovered": extras["prompts"],
-            "tools": [t.get("name") for t in server_info],
-            "server_info": init_response.get("result", {}).get("serverInfo", {}),
+            "tools_discovered": len(server_tools),
+            "resources_discovered": len(staged_resources),
+            "prompts_discovered": len(staged_prompts),
+            "tools": [tool["name"] for tool in server_tools],
+            "server_info": init_result.get("serverInfo", {}),
         }
         if entry["transport"] != "stdio":
             out["transport"] = entry["transport"]
@@ -491,7 +732,7 @@ class MCPClient:
             return {"success": False, "error": launch_err}
 
         process = None
-        stderr_task: Optional["asyncio.Task[None]"] = None
+        candidate_entry: Optional[Dict[str, Any]] = None
         connection_failed = True
         try:
             # On Windows ``create_subprocess_exec`` does not consult PATHEXT, so
@@ -504,8 +745,9 @@ class MCPClient:
                 if resolved:
                     launch_command = resolved
             full_args = [launch_command] + (args or [])
+            launch = prepare_sandbox_launch(full_args, cwd=Path.cwd())
             process = await asyncio.create_subprocess_exec(
-                *full_args,
+                *launch.argv,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -513,47 +755,44 @@ class MCPClient:
             assert process.stdin is not None
             assert process.stdout is not None
 
-            # Drain stderr in the background so the server can never block on a
-            # full stderr pipe (see ``_drain_stderr``).
+            stderr_task: Optional["asyncio.Task[None]"] = None
             if process.stderr is not None:
                 stderr_task = asyncio.create_task(self._drain_stderr(server_name, process.stderr))
+            candidate_entry = {
+                "transport": "stdio",
+                "process": process,
+                "stderr_task": stderr_task,
+                "pending": {},
+                "write_lock": asyncio.Lock(),
+                "_conn_params": {"command": command, "args": args},
+            }
+            candidate_entry["reader_task"] = asyncio.create_task(
+                self._stdio_reader(server_name, candidate_entry, process.stdout)
+            )
 
-            # Send MCP initialize request (JSON-RPC 2.0)
             init_id = self._get_next_id()
-            process.stdin.write((json.dumps(self._init_request(init_id)) + "\n").encode())
-            await process.stdin.drain()
-
-            # Read response with timeout (skips any interleaved notifications)
             try:
-                init_response = await self._read_response(process.stdout, init_id, timeout=10)
+                init_response = await self._stdio_exchange(
+                    candidate_entry, self._init_request(init_id), timeout=10
+                )
             except asyncio.TimeoutError:
                 return {
                     "success": False,
                     "error": f"Server '{server_name}' did not respond to initialize within 10s",
                 }
 
-            # Send initialized notification
-            initialized_notif = {
-                "jsonrpc": "2.0",
-                "method": "notifications/initialized",
-            }
-            assert process.stdin is not None
-            process.stdin.write((json.dumps(initialized_notif) + "\n").encode())
-            await process.stdin.drain()
+            await self._stdio_send(
+                candidate_entry,
+                {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            )
 
-            # Request tool list
             tools_id = self._get_next_id()
-            tools_request = {
-                "jsonrpc": "2.0",
-                "id": tools_id,
-                "method": "tools/list",
-            }
-            assert process.stdin is not None
-            process.stdin.write((json.dumps(tools_request) + "\n").encode())
-            await process.stdin.drain()
-
             try:
-                tools_response = await self._read_response(process.stdout, tools_id, timeout=10)
+                tools_response = await self._stdio_exchange(
+                    candidate_entry,
+                    {"jsonrpc": "2.0", "id": tools_id, "method": "tools/list"},
+                    timeout=10,
+                )
             except asyncio.TimeoutError:
                 return {
                     "success": False,
@@ -562,12 +801,7 @@ class MCPClient:
 
             result = await self._finish_connect(
                 server_name,
-                {
-                    "transport": "stdio",
-                    "process": process,
-                    "stderr_task": stderr_task,
-                    "_conn_params": {"command": command, "args": args},
-                },
+                candidate_entry,
                 init_response,
                 tools_response,
             )
@@ -586,20 +820,12 @@ class MCPClient:
                 "error_code": ToolErrorCode.TOOL_ERROR,
             }
         finally:
-            # Kill the process if the connection attempt failed.
-            # connection_failed starts True and is only cleared after
-            # successful server registration. This avoids leaking a zombie
-            # process when tools/list times out but server_name was
-            # previously connected.
-            if process is not None and connection_failed:
-                if stderr_task is not None:
-                    stderr_task.cancel()
+            if candidate_entry is not None and connection_failed:
                 try:
-                    process.kill()
-                    await process.wait()
+                    await self._close_server_entry(candidate_entry, force=True)
                 except Exception:
                     logger.debug(
-                        "Failed to kill MCP process in connect_stdio finally", exc_info=True
+                        "Failed to close MCP candidate in connect_stdio finally", exc_info=True
                     )
 
     async def call_tool(
@@ -633,8 +859,117 @@ class MCPClient:
         """
         if server_name not in self.servers:
             return {"success": False, "error": f"Server not connected: {server_name}"}
+        return await self._request_entry(
+            server_name, self.servers[server_name], method, params, timeout
+        )
 
-        server = self.servers[server_name]
+    def _schedule_request_cancellation(self, entry: Dict[str, Any], request_id: Any) -> None:
+        """Best-effort MCP cancellation without delaying local timeout/cancellation."""
+        try:
+            task = asyncio.create_task(self._send_request_cancellation(entry, request_id))
+        except RuntimeError:
+            return
+
+        def _consume_result(done: "asyncio.Task[None]") -> None:
+            with suppress(asyncio.CancelledError, Exception):
+                done.result()
+
+        task.add_done_callback(_consume_result)
+
+    async def _send_request_cancellation(self, entry: Dict[str, Any], request_id: Any) -> None:
+        payload = {
+            "jsonrpc": "2.0",
+            "method": "notifications/cancelled",
+            "params": {"requestId": request_id, "reason": "client request cancelled"},
+        }
+        transport = entry.get("transport", "stdio")
+        if transport == "stdio":
+            await self._stdio_send(entry, payload)
+            return
+        if transport == "sse":
+            import aiohttp
+
+            session = entry.get("session")
+            message_url = entry.get("message_url")
+            if session and message_url:
+                async with session.post(
+                    message_url,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=5),
+                    allow_redirects=False,
+                ) as response:
+                    if response.status >= 400:
+                        logger.debug("MCP cancellation returned HTTP %s", response.status)
+            return
+        session = entry.get("session")
+        url = entry.get("url")
+        if session and url:
+            await self._http_send(
+                session,
+                url,
+                payload,
+                expected_id=None,
+                session_id=entry.get("session_id"),
+                timeout=5,
+            )
+
+    async def _sse_exchange(
+        self, entry: Dict[str, Any], request: Dict[str, Any], timeout: float
+    ) -> Dict[str, Any]:
+        """POST to a legacy SSE endpoint and await the long-lived stream dispatcher."""
+        import aiohttp
+
+        session = entry.get("session")
+        message_url = entry.get("message_url")
+        if not session or not message_url:
+            raise RuntimeError("SSE connection state is invalid")
+        request_id = request.get("id")
+        future = None
+        if request_id is not None:
+            future = asyncio.get_running_loop().create_future()
+            if request_id in entry["pending"]:
+                raise RuntimeError(f"Duplicate in-flight MCP request id {request_id!r}")
+            entry["pending"][request_id] = future
+        try:
+            async with session.post(
+                message_url,
+                json=request,
+                timeout=aiohttp.ClientTimeout(total=timeout),
+                allow_redirects=False,
+            ) as response:
+                if response.status >= 300:
+                    body = await response.text()
+                    raise RuntimeError(
+                        f"MCP SSE message endpoint returned HTTP {response.status}: {body[:300]}"
+                    )
+                if request_id is None:
+                    return {}
+                if "application/json" in response.headers.get("Content-Type", ""):
+                    parsed = await response.json()
+                    if isinstance(parsed, dict):
+                        self._dispatch_response(entry, parsed)
+            assert future is not None
+            return await asyncio.wait_for(asyncio.shield(future), timeout=timeout)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            if future is not None:
+                future.cancel()
+            if request_id is not None:
+                self._schedule_request_cancellation(entry, request_id)
+            raise
+        finally:
+            if request_id is not None:
+                entry["pending"].pop(request_id, None)
+
+    async def _request_entry(
+        self,
+        server_name: str,
+        server: Dict[str, Any],
+        method: str,
+        params: Optional[Dict[str, Any]] = None,
+        timeout: float = 30,
+    ) -> Dict[str, Any]:
+        """Send one request against an active or not-yet-committed connection entry."""
+
         transport = server.get("transport", "stdio")
         req_id = self._get_next_id()
         request: Dict[str, Any] = {"jsonrpc": "2.0", "id": req_id, "method": method}
@@ -643,19 +978,7 @@ class MCPClient:
 
         try:
             if transport == "sse":
-                import aiohttp as _aiohttp
-
-                session = server.get("session")
-                message_url = server.get("message_url")
-                if not session or not message_url:
-                    return {
-                        "success": False,
-                        "error": f"SSE connection state invalid for '{server_name}'",
-                    }
-                async with session.post(
-                    message_url, json=request, timeout=_aiohttp.ClientTimeout(total=timeout)
-                ) as resp:
-                    response = await resp.json()
+                response = await self._sse_exchange(server, request, timeout)
             elif transport == "http":
                 session = server.get("session")
                 url = server.get("url")
@@ -665,7 +988,7 @@ class MCPClient:
                         "success": False,
                         "error": f"HTTP connection state invalid for '{server_name}'",
                     }
-                response, _ = await self._http_send(
+                response, new_session_id = await self._http_send(
                     session,
                     url,
                     request,
@@ -673,15 +996,10 @@ class MCPClient:
                     session_id=session_id,
                     timeout=timeout,
                 )
+                server["session_id"] = new_session_id
                 response = response or {}
             else:
-                process = server.get("process")
-                if process is None or process.returncode is not None:
-                    return {"success": False, "error": f"Server '{server_name}' process has exited"}
-                assert process.stdin is not None
-                process.stdin.write((json.dumps(request) + "\n").encode())
-                await process.stdin.drain()
-                response = await self._read_response(process.stdout, req_id, timeout=timeout)
+                response = await self._stdio_exchange(server, request, timeout=timeout)
         except MCPAuthRequiredError:
             return {
                 "success": False,
@@ -692,18 +1010,29 @@ class MCPClient:
                 ),
             }
         except asyncio.TimeoutError:
+            if transport == "http":
+                self._schedule_request_cancellation(server, req_id)
             return {
                 "success": False,
                 "error": f"Request '{method}' to '{server_name}' timed out after {timeout}s",
             }
+        except asyncio.CancelledError:
+            if transport == "http":
+                self._schedule_request_cancellation(server, req_id)
+            raise
         except Exception as e:
             return {"success": False, "error": str(e), "error_code": ToolErrorCode.TOOL_ERROR}
 
+        if not isinstance(response, dict):
+            return {"success": False, "error": f"MCP {method} returned a non-object response"}
         error = response.get("error")
         if error:
             message = error.get("message", str(error)) if isinstance(error, dict) else str(error)
             return {"success": False, "error": message}
-        return {"success": True, "result": response.get("result", {})}
+        result = response.get("result", {})
+        if not isinstance(result, dict):
+            return {"success": False, "error": f"MCP {method} returned a non-object result"}
+        return {"success": True, "result": result}
 
     def _capabilities(self, server_name: str) -> Dict[str, Any]:
         """Return the server's advertised capabilities from the initialize reply."""
@@ -720,10 +1049,13 @@ class MCPClient:
                 "success": False,
                 "error": f"Server '{server_name}' does not advertise resource support",
             }
-        resp = await self._request(server_name, "resources/list")
-        if not resp.get("success"):
-            return resp
-        resources = resp["result"].get("resources", [])
+        try:
+            resources = await self._paginate_entry(
+                server_name, self.servers[server_name], "resources/list", "resources"
+            )
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+        resources = _sanitize_model_metadata(resources)
         return {
             "success": True,
             "server": server_name,
@@ -762,10 +1094,13 @@ class MCPClient:
                 "success": False,
                 "error": f"Server '{server_name}' does not advertise prompt support",
             }
-        resp = await self._request(server_name, "prompts/list")
-        if not resp.get("success"):
-            return resp
-        prompts = resp["result"].get("prompts", [])
+        try:
+            prompts = await self._paginate_entry(
+                server_name, self.servers[server_name], "prompts/list", "prompts"
+            )
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+        prompts = _sanitize_model_metadata(prompts)
         return {"success": True, "server": server_name, "count": len(prompts), "prompts": prompts}
 
     async def get_prompt(
@@ -793,50 +1128,108 @@ class MCPClient:
             "messages": result.get("messages", []),
         }
 
-    async def _discover_extras(self, server_name: str) -> Dict[str, int]:
-        """Best-effort discovery of resources & prompts after connect.
-
-        Non-fatal: a server exposing only tools must still connect cleanly, so
-        every failure here is swallowed to the debug log. Returns the counts
-        discovered so callers can surface them in the connection result.
-        """
-        caps = self._capabilities(server_name)
-        n_resources = 0
-        n_prompts = 0
+    async def _discover_extras_for_entry(
+        self, server_name: str, entry: Dict[str, Any]
+    ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Stage bounded resource/prompt metadata without mutating global state."""
+        caps = (entry.get("server_info") or {}).get("capabilities", {})
+        caps = caps if isinstance(caps, dict) else {}
+        resources: List[Dict[str, Any]] = []
+        prompts: List[Dict[str, Any]] = []
         if "resources" in caps:
             try:
-                r = await self.list_resources(server_name)
-                if r.get("success"):
-                    for res in r.get("resources", []):
-                        self.discovered_resources.append(
+                discovered = await self._paginate_entry(
+                    server_name, entry, "resources/list", "resources"
+                )
+                for raw in _sanitize_model_metadata(discovered):
+                    if isinstance(raw, dict):
+                        resources.append(
                             {
                                 "server": server_name,
-                                "uri": res.get("uri", ""),
-                                "name": res.get("name", ""),
-                                "description": res.get("description", ""),
-                                "mimeType": res.get("mimeType", ""),
+                                "uri": raw.get("uri", ""),
+                                "name": raw.get("name", ""),
+                                "description": raw.get("description", ""),
+                                "mimeType": raw.get("mimeType", ""),
                             }
                         )
-                    n_resources = len(r.get("resources", []))
             except Exception:
                 logger.debug("resource discovery failed for '%s'", server_name, exc_info=True)
         if "prompts" in caps:
             try:
-                p = await self.list_prompts(server_name)
-                if p.get("success"):
-                    for pr in p.get("prompts", []):
-                        self.discovered_prompts.append(
+                discovered = await self._paginate_entry(
+                    server_name, entry, "prompts/list", "prompts"
+                )
+                for raw in _sanitize_model_metadata(discovered):
+                    if isinstance(raw, dict):
+                        prompts.append(
                             {
                                 "server": server_name,
-                                "name": pr.get("name", ""),
-                                "description": pr.get("description", ""),
-                                "arguments": pr.get("arguments", []),
+                                "name": raw.get("name", ""),
+                                "description": raw.get("description", ""),
+                                "arguments": raw.get("arguments", []),
                             }
                         )
-                    n_prompts = len(p.get("prompts", []))
             except Exception:
                 logger.debug("prompt discovery failed for '%s'", server_name, exc_info=True)
-        return {"resources": n_resources, "prompts": n_prompts}
+        return resources, prompts
+
+    async def _discover_extras(self, server_name: str) -> Dict[str, int]:
+        """Refresh extra discovery for an already-connected server."""
+        entry = self.servers[server_name]
+        resources, prompts = await self._discover_extras_for_entry(server_name, entry)
+        self.discovered_resources = [
+            item for item in self.discovered_resources if item.get("server") != server_name
+        ] + resources
+        self.discovered_prompts = [
+            item for item in self.discovered_prompts if item.get("server") != server_name
+        ] + prompts
+        return {"resources": len(resources), "prompts": len(prompts)}
+
+    async def _close_server_entry(self, server: Dict[str, Any], *, force: bool = False) -> None:
+        """Close one transport entry and surface cleanup failures to the caller."""
+        errors: List[str] = []
+        self._fail_pending(server, RuntimeError("MCP connection closed"))
+        tasks = [server.get("reader_task"), server.get("stderr_task")]
+        for task in tasks:
+            if task is not None and not task.done():
+                task.cancel()
+
+        transport = server.get("transport", "stdio")
+        if transport in ("sse", "http"):
+            response = server.get("sse_response")
+            if response is not None:
+                with suppress(Exception):
+                    response.close()
+            session = server.get("session")
+            if session:
+                try:
+                    await session.close()
+                except Exception as exc:
+                    errors.append(f"failed to close {transport} session: {exc}")
+        else:
+            process = server.get("process")
+            if process is not None and process.returncode is None:
+                try:
+                    if force:
+                        process.kill()
+                    else:
+                        process.terminate()
+                    await asyncio.wait_for(process.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    try:
+                        process.kill()
+                        await process.wait()
+                    except Exception as exc:
+                        errors.append(f"failed to kill stdio process: {exc}")
+                except Exception as exc:
+                    errors.append(f"failed to stop stdio process: {exc}")
+
+        if tasks:
+            await asyncio.gather(
+                *(task for task in tasks if task is not None), return_exceptions=True
+            )
+        if errors:
+            raise RuntimeError("; ".join(errors))
 
     async def disconnect(self, server_name: str) -> Dict[str, Any]:
         """Disconnect from an MCP server.
@@ -850,30 +1243,7 @@ class MCPClient:
         if server_name not in self.servers:
             return {"success": False, "error": f"Server not connected: {server_name}"}
 
-        server = self.servers[server_name]
-        transport = server.get("transport", "stdio")
-
-        if transport in ("sse", "http"):
-            session = server.get("session")
-            if session:
-                try:
-                    await session.close()
-                except Exception:
-                    logger.debug(
-                        "Failed to close %s session during disconnect", transport, exc_info=True
-                    )
-        else:
-            stderr_task = server.get("stderr_task")
-            if stderr_task is not None:
-                stderr_task.cancel()
-            try:
-                process = server["process"]
-                process.terminate()
-                await asyncio.wait_for(process.wait(), timeout=5)
-            except asyncio.TimeoutError:
-                process.kill()
-
-        del self.servers[server_name]
+        server = self.servers.pop(server_name)
         self.discovered_tools = [t for t in self.discovered_tools if t.get("server") != server_name]
         self.discovered_resources = [
             r for r in self.discovered_resources if r.get("server") != server_name
@@ -882,7 +1252,68 @@ class MCPClient:
             p for p in self.discovered_prompts if p.get("server") != server_name
         ]
 
+        try:
+            await self._close_server_entry(server)
+        except Exception as exc:
+            return {
+                "success": False,
+                "error": f"Disconnected '{server_name}', but cleanup failed: {exc}",
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
         return {"success": True, "message": f"Disconnected from {server_name}"}
+
+    async def _sse_reader(self, server_name: str, entry: Dict[str, Any], response: Any) -> None:
+        """Keep the legacy SSE response open and dispatch complete events."""
+        event_name = "message"
+        data_lines: List[str] = []
+        error: BaseException = RuntimeError(f"MCP SSE server '{server_name}' closed the stream")
+        try:
+            while True:
+                line = await response.content.readline()
+                if not line:
+                    break
+                text = line.decode("utf-8", errors="replace").rstrip("\r\n")
+                if text == "":
+                    if data_lines:
+                        data = "\n".join(data_lines)
+                        if event_name == "endpoint":
+                            future = entry.get("endpoint_future")
+                            if future is not None and not future.done():
+                                future.set_result(data)
+                        else:
+                            try:
+                                parsed = json.loads(data)
+                            except json.JSONDecodeError:
+                                logger.warning(
+                                    "Ignoring malformed SSE event from '%s'", server_name
+                                )
+                            else:
+                                if isinstance(parsed, dict):
+                                    self._dispatch_response(entry, parsed)
+                    event_name = "message"
+                    data_lines = []
+                    continue
+                if text.startswith(":"):
+                    continue
+                field, _, value = text.partition(":")
+                value = value[1:] if value.startswith(" ") else value
+                if field == "event":
+                    event_name = value
+                elif field == "data":
+                    data_lines.append(value)
+        except asyncio.CancelledError:
+            error = RuntimeError(f"MCP SSE reader for '{server_name}' was cancelled")
+            raise
+        except Exception as exc:
+            error = RuntimeError(f"MCP SSE reader for '{server_name}' failed: {exc}")
+            logger.debug("MCP SSE reader failed", exc_info=True)
+        finally:
+            endpoint_future = entry.get("endpoint_future")
+            if endpoint_future is not None and not endpoint_future.done():
+                endpoint_future.set_exception(error)
+            self._fail_pending(entry, error)
+            if self.servers.get(server_name) is entry:
+                entry["degraded"] = True
 
     async def connect_sse(self, server_name: str, url: str) -> Dict[str, Any]:
         """Connect to an MCP server via SSE transport.
@@ -904,103 +1335,73 @@ class MCPClient:
         if scheme_err:
             return {"success": False, "error": scheme_err}
 
-        session = None
+        candidate_entry: Optional[Dict[str, Any]] = None
+        committed = False
         try:
             session = aiohttp.ClientSession()
-            # Connect to SSE endpoint and discover the message endpoint
-            async with session.get(url) as resp:
-                if resp.status != 200:
-                    await session.close()
-                    return {
-                        "success": False,
-                        "error": f"SSE endpoint returned HTTP {resp.status}",
-                    }
-                # Read SSE events to find the endpoint
-                message_url = None
-                while True:
-                    try:
-                        line = await asyncio.wait_for(resp.content.readline(), timeout=10.0)
-                    except asyncio.TimeoutError:
-                        logger.warning(
-                            "Timeout reading SSE stream while discovering message endpoint."
-                        )
-                        break
-                    if not line:
-                        break
-                    line_text = line.decode("utf-8", errors="replace").strip()
-                    if line_text.startswith("event: endpoint"):
-                        # Read next line for data
-                        continue
-                    if line_text.startswith("data: "):
-                        data = line_text[6:]
-                        # The 'endpoint' event carries the message URL
-                        message_url = data
-                        break
-                    if line_text and not line_text.startswith(":"):
-                        # Generic SSE — try parsing as endpoint data
-                        if "http" in line_text and not line_text.startswith("data:"):
-                            message_url = line_text
-                            break
+            response = await session.get(
+                url,
+                timeout=aiohttp.ClientTimeout(total=None, sock_connect=10),
+                allow_redirects=False,
+            )
+            if response.status != 200:
+                raise RuntimeError(f"SSE endpoint returned HTTP {response.status}")
+            endpoint_future = asyncio.get_running_loop().create_future()
+            candidate_entry = {
+                "transport": "sse",
+                "session": session,
+                "sse_response": response,
+                "sse_url": url,
+                "endpoint_future": endpoint_future,
+                "pending": {},
+                "_conn_params": {"url": url},
+            }
+            candidate_entry["reader_task"] = asyncio.create_task(
+                self._sse_reader(server_name, candidate_entry, response)
+            )
+            advertised_endpoint = await asyncio.wait_for(
+                asyncio.shield(endpoint_future), timeout=10
+            )
+            message_url = _validated_same_origin_url(url, advertised_endpoint)
+            candidate_entry["message_url"] = message_url
 
-                if not message_url:
-                    # Fallback: derive message URL from SSE URL
-                    from urllib.parse import urlparse, urlunparse
-
-                    parsed = list(urlparse(url))
-                    parsed[2] = parsed[2].replace("/sse", "/messages") or "/messages"
-                    message_url = urlunparse(parsed)
-
-            # Send initialize request via POST to message endpoint
             init_id = self._get_next_id()
-            async with session.post(message_url, json=self._init_request(init_id)) as resp:
-                init_response = await resp.json()
-
-            # Send initialized notification
-            await session.post(
-                message_url,
-                json={
-                    "jsonrpc": "2.0",
-                    "method": "notifications/initialized",
-                },
+            init_response = await self._sse_exchange(
+                candidate_entry, self._init_request(init_id), timeout=10
+            )
+            await self._sse_exchange(
+                candidate_entry,
+                {"jsonrpc": "2.0", "method": "notifications/initialized"},
+                timeout=10,
             )
 
-            # Request tool list
             tools_id = self._get_next_id()
-            tools_request = {
-                "jsonrpc": "2.0",
-                "id": tools_id,
-                "method": "tools/list",
-            }
-            async with session.post(message_url, json=tools_request) as resp:
-                tools_response = await resp.json()
-
-            return await self._finish_connect(
+            tools_response = await self._sse_exchange(
+                candidate_entry,
+                {"jsonrpc": "2.0", "id": tools_id, "method": "tools/list"},
+                timeout=10,
+            )
+            result = await self._finish_connect(
                 server_name,
-                {
-                    "transport": "sse",
-                    "session": session,
-                    "message_url": message_url,
-                    "sse_url": url,
-                    "_conn_params": {"url": url},
-                },
+                candidate_entry,
                 init_response,
                 tools_response,
             )
+            committed = True
+            return result
 
         except ImportError:
-            if session:
-                await session.close()
             return {"success": False, "error": "aiohttp is required for SSE transport"}
         except Exception as e:
-            if session:
-                await session.close()
-            if server_name in self.servers:
-                del self.servers[server_name]
             return {
                 "success": False,
                 "error": str(e),
                 "error_code": ToolErrorCode.TOOL_ERROR,
             }
+        finally:
+            if candidate_entry is not None and not committed:
+                with suppress(Exception):
+                    await self._close_server_entry(candidate_entry, force=True)
 
     async def connect_http(
         self,
@@ -1035,7 +1436,8 @@ class MCPClient:
         if scheme_err:
             return {"success": False, "error": scheme_err}
 
-        session = None
+        candidate_entry: Optional[Dict[str, Any]] = None
+        committed = False
         try:
             base_headers = {
                 "Accept": "application/json, text/event-stream",
@@ -1054,19 +1456,27 @@ class MCPClient:
                     base_headers["Authorization"] = f"Bearer {token}"
 
             session = aiohttp.ClientSession(headers=base_headers)
+            candidate_entry = {
+                "transport": "http",
+                "session": session,
+                "url": url,
+                "session_id": None,
+                "headers": headers or {},
+                "_conn_params": {"url": url, "headers": headers or {}},
+            }
 
             init_id = self._get_next_id()
             init_response, session_id = await self._http_send(
                 session, url, self._init_request(init_id), expected_id=init_id, session_id=None
             )
             if init_response is None:
-                await session.close()
                 return {
                     "success": False,
                     "error": f"Server '{server_name}' returned no response to initialize",
                 }
 
             # The session id (if any) must accompany every subsequent request.
+            candidate_entry["session_id"] = session_id
             await self._http_send(
                 session,
                 url,
@@ -1085,25 +1495,16 @@ class MCPClient:
             )
             tools_response = tools_response or {}
 
-            return await self._finish_connect(
+            result = await self._finish_connect(
                 server_name,
-                {
-                    "transport": "http",
-                    "session": session,
-                    "url": url,
-                    "session_id": session_id,
-                    "headers": headers or {},
-                    "_conn_params": {"url": url, "headers": headers or {}},
-                },
+                candidate_entry,
                 init_response,
                 tools_response,
             )
+            committed = True
+            return result
 
         except MCPAuthRequiredError as e:
-            if session:
-                await session.close()
-            if server_name in self.servers:
-                del self.servers[server_name]
             return {
                 "success": False,
                 "needs_auth": True,
@@ -1114,19 +1515,17 @@ class MCPClient:
                 ),
             }
         except ImportError:
-            if session:
-                await session.close()
             return {"success": False, "error": "aiohttp is required for HTTP transport"}
         except Exception as e:
-            if session:
-                await session.close()
-            if server_name in self.servers:
-                del self.servers[server_name]
             return {
                 "success": False,
                 "error": str(e),
                 "error_code": ToolErrorCode.TOOL_ERROR,
             }
+        finally:
+            if candidate_entry is not None and not committed:
+                with suppress(Exception):
+                    await self._close_server_entry(candidate_entry, force=True)
 
     async def _http_send(
         self,
@@ -1154,11 +1553,12 @@ class MCPClient:
             json=payload,
             headers=req_headers,
             timeout=aiohttp.ClientTimeout(total=timeout),
+            allow_redirects=False,
         ) as resp:
             new_session_id = resp.headers.get("Mcp-Session-Id") or session_id
             if resp.status == 401:
                 raise MCPAuthRequiredError(resp.headers.get("WWW-Authenticate"))
-            if resp.status >= 400:
+            if resp.status >= 300:
                 body = await resp.text()
                 raise RuntimeError(f"MCP server returned HTTP {resp.status}: {body[:300]}")
             # Notifications expect no response body (202 Accepted is typical).
@@ -1169,6 +1569,11 @@ class MCPClient:
                 parsed = await self._read_http_sse(resp, expected_id, timeout=timeout)
             else:
                 parsed = await resp.json()
+            response_id = parsed.get("id") if isinstance(parsed, dict) else None
+            if not isinstance(parsed, dict) or response_id != expected_id:
+                raise RuntimeError(
+                    f"MCP server returned response id {response_id!r}; expected {expected_id!r}"
+                )
             return parsed, new_session_id
 
     async def _read_http_sse(
@@ -1221,12 +1626,16 @@ class MCPClient:
         for tool in self.discovered_tools:
             params = tool.get("input_schema")
             params = _normalize_parameters_schema(params)
+            function_name = build_mcp_function_name(str(tool["server"]), str(tool["name"]))
+            description = _sanitize_metadata_text(tool.get("description", ""))
             tools.append(
                 {
                     "type": "function",
                     "function": {
-                        "name": f"mcp__{tool['server']}__{tool['name']}",
-                        "description": f"[MCP: {tool['server']}] {tool.get('description', '')}",
+                        "name": function_name,
+                        "description": (
+                            f"[Untrusted MCP metadata: {tool['server']}] {description}"
+                        )[:MCP_MAX_DESCRIPTION_LENGTH],
                         "parameters": params,
                     },
                 }
@@ -1328,13 +1737,6 @@ class MCPClient:
 
             transport = info.get("transport", "stdio")
             conn_params = info.get("_conn_params", {})
-
-            try:
-                await self.disconnect(name)
-            except Exception:
-                # Reconnect path: the old connection is likely already dead;
-                # proceed to establish a fresh one regardless.
-                logger.debug(f"disconnect of '{name}' before reconnect failed", exc_info=True)
 
             result: Dict[str, Any]
             if transport == "sse":
@@ -1443,6 +1845,8 @@ class MCPConnectTool(Tool):
     category = "mcp"
     parameters_model = MCPConnectParams
     requires_confirmation = True
+    result_provenance = Provenance.UNTRUSTED_EXTERNAL
+    mcp_source = True
     # url/headers are an outbound channel (they can carry exfiltrated data to an
     # attacker-chosen endpoint), so this control-plane call performs egress.
     is_egress = True
@@ -1484,7 +1888,6 @@ class MCPConnectTool(Tool):
         return result
 
 
-
 class MCPListParams(BaseModel):
     pass
 
@@ -1497,6 +1900,8 @@ class MCPListTool(Tool):
     category = "mcp"
     parameters_model = MCPListParams
     is_read_only = True
+    result_provenance = Provenance.UNTRUSTED_EXTERNAL
+    mcp_source = True
 
     async def execute(self) -> Dict[str, Any]:  # type: ignore[override]
         """List MCP servers and tools (live connections + effective config)."""
@@ -1562,8 +1967,7 @@ class MCPDisconnectTool(Tool):
 
     async def execute(self, server_name: str) -> Dict[str, Any]:  # type: ignore[override]
         try:
-            await mcp_client.disconnect(server_name)
-            return {"success": True, "message": f"Disconnected from MCP server: {server_name}"}
+            return await mcp_client.disconnect(server_name)
         except Exception as e:
             return {
                 "success": False,

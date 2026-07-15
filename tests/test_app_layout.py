@@ -37,6 +37,8 @@ async def test_panes_visible_on_wide_terminal():
         await pilot.pause()
         assert app.query_one("#left-pane").display
         assert app.query_one("#right-pane").display
+        assert len(app.query("#tasks-pane")) == 1
+        assert len(app.query("#plan-pane")) == 0
 
 
 async def test_right_pane_hides_first_at_medium_width():

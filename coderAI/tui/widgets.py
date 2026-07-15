@@ -1,11 +1,18 @@
 """Selectable RichLog that supports mouse drag text selection."""
 
+from __future__ import annotations
+
 from functools import lru_cache
+from typing import TYPE_CHECKING
+
 from rich.segment import Segment
 from rich.style import Style
 from textual.geometry import Size
 from textual.strip import Strip
 from textual.widgets._rich_log import RichLog
+
+if TYPE_CHECKING:
+    from textual.selection import Selection
 
 
 @lru_cache(maxsize=10000)
@@ -21,6 +28,20 @@ class SelectableRichLog(RichLog):
     to carry ``{"offset": (x, y)}`` metadata. The stock RichLog does not set
     this, so selection silently fails. This widget adds it.
     """
+
+    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
+        """Extract selected text from stored log lines.
+
+        Stock ``RichLog.get_selection`` delegates to ``Widget.get_selection``,
+        which only works for widgets whose ``_render()`` returns ``Text`` /
+        ``Content``. RichLog stores pre-rendered ``Strip`` lines instead, so
+        we rebuild plain text from ``self.lines`` and let ``Selection.extract``
+        slice the range.
+        """
+        if not self.lines:
+            return None
+        text = "\n".join(strip.text for strip in self.lines)
+        return selection.extract(text), "\n"
 
     def render_line(self, y: int) -> Strip:
         scroll_x, scroll_y = self.scroll_offset

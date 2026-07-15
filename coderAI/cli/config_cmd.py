@@ -5,6 +5,7 @@ import sys
 import click
 
 from coderAI.system.config import config_manager
+from coderAI.system.redaction import is_sensitive_key, redact_text
 
 
 @click.group(invoke_without_command=True)
@@ -53,9 +54,13 @@ def config_set(key: str, value: str) -> None:
             parsed = value.lower() in ["true", "1", "yes"]
 
         config_manager.set(key, parsed)
-        display.print_success(f"Set {key} = {parsed}")
+        if is_sensitive_key(key):
+            display.print_success(f"Set {key}")
+        else:
+            display.print_success(f"Set {key} = {redact_text(str(parsed))}")
     except Exception as e:
-        display.print_error(f"Failed to set config: {str(e)}")
+        detail = f"invalid value for {key}" if is_sensitive_key(key) else redact_text(str(e))
+        display.print_error(f"Failed to set config: {detail}")
         if isinstance(e, ValueError):
             sys.exit(2)
         sys.exit(1)

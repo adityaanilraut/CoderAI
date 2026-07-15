@@ -43,10 +43,8 @@ def test_mask_keys_long_short_and_absent():
         "other": "keep",
     }
     out = _mask_keys(data)
-    assert out["openai_api_key"].startswith("sk-12345")
-    assert out["openai_api_key"].endswith("cdef")
-    assert "..." in out["openai_api_key"]
-    assert out["groq_api_key"] == "(set)"
+    assert out["openai_api_key"] == "[REDACTED]"
+    assert out["groq_api_key"] == "[REDACTED]"
     assert out["anthropic_api_key"] is None
     assert out["other"] == "keep"
 
@@ -58,6 +56,8 @@ def test_build_models_text():
     text = _build_models_text()
     assert "Models & providers" in text
     assert "OpenAI" in text
+    assert "Meta" in text
+    assert "muse-spark-1.1" in text
     assert "Saved default model" in text
 
 
@@ -94,8 +94,8 @@ def test_build_config_text_masks_keys():
     text = _build_config_text(agent)
     assert "Effective configuration" in text
     assert "default_model: gpt-5.4" in text
-    assert "sk-abcde...mnop" in text
-    assert "ghijkl" not in text
+    assert "openai_api_key: [REDACTED]" in text
+    assert "sk-" not in text
 
 
 # ── _flatten_model_info ─────────────────────────────────────────────────

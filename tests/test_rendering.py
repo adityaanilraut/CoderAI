@@ -27,25 +27,29 @@ def test_render_session_header_rich_state():
         auto_approve=True,
         reasoning="high",
         active_persona="planner",
+        workspace_trusted=False,
         progress={"label": "Indexing", "current": 2, "total": 10},
     )
     s.agents["a1"] = AgentInfo(id="a1", name="main", status="thinking")
+    s.agents["a2"] = AgentInfo(id="a2", name="worker", status="tool_call")
     out = r.render_session_header(s)
     assert "claude-opus-4-8" in out
-    assert "anthropic" in out
+    assert "provider" not in out
     assert "2m 5s" in out  # elapsed formatting
     assert "agents" in out  # active agent chip
     assert "yolo" in out
     assert "planner" in out
     assert "Indexing 2/10" in out
+    assert "workspace" in out and "untrusted" in out
 
 
 def test_render_session_header_minimal_state():
     s = SessionState()
     out = r.render_session_header(s)
     assert "…" in out  # model placeholder
-    # No budget, no elapsed, no agents, no persona — still renders chips.
-    assert "yolo" in out
+    # Normal inactive state keeps only core model/context/cost chrome.
+    assert "yolo" not in out
+    assert "iter" not in out
 
 
 def test_render_session_header_progress_without_totals():
@@ -75,12 +79,6 @@ def test_render_agent_tree_with_hierarchy_and_statuses():
     assert "root" in text
     assert "child-think" in text
     assert "child-done" in text
-
-
-def test_render_plan_points_to_tasks():
-    text = r.render_plan(SessionState())
-    assert isinstance(text, str)
-    assert "manage_tasks" in text or "/tasks" in text
 
 
 def test_render_tasks_empty_and_populated():

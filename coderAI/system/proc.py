@@ -1,4 +1,4 @@
-"""Subprocess-hardening helpers: env scrubbing + process-group isolation.
+"""Subprocess hardening: env scrubbing, process groups, and OS confinement.
 
 Every subprocess CoderAI spawns on the model's behalf runs through these so
 that:
@@ -10,11 +10,10 @@ that:
   instead of orphaning grandchildren — e.g. ``bash -c 'sleep 1000 & wait'``
   leaves the inner ``sleep`` running if you only signal the direct child.
 
-:func:`run_scrubbed` bundles both concerns for the common
+:func:`run_scrubbed` bundles these concerns for the common
 "spawn → communicate → enforce timeout" shape used by ``run_command``,
-``git``, ``package_manager`` and ``run_tests``. Callers with bespoke lifetimes
-(``python_repl``'s temp-file dance, the terminal's detached ``run_background``)
-compose :func:`scrub_env` and :func:`new_session_kwargs` directly instead.
+``git``, ``package_manager``, ``run_tests``, the REPL, and project hooks.
+Detached background commands compose the same lower-level helpers directly.
 
 Like :mod:`coderAI.system.fsperms`, these helpers degrade gracefully on
 Windows (``start_new_session`` → ``CREATE_NEW_PROCESS_GROUP``; ``killpg`` →
@@ -30,6 +29,8 @@ import re
 import signal
 import subprocess
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple, Union
+
+from coderAI.system.sandbox import prepare_sandbox_launch
 
 logger = logging.getLogger(__name__)
 
@@ -224,6 +225,17 @@ def subprocess_timeout(default: float = 60.0) -> float:
         return default
 
 
+def command_argv(cmd: Union[str, Sequence[str]], *, shell: bool = False) -> list[str]:
+    """Normalize a shell command or exec sequence to one argv without quoting it."""
+    if shell:
+        if not isinstance(cmd, str):
+            raise TypeError("shell=True requires a command string")
+        if os.name == "nt":
+            return [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/s", "/c", cmd]
+        return ["/bin/sh", "-c", cmd]
+    return [cmd] if isinstance(cmd, str) else list(cmd)
+
+
 # ── One-shot scrubbed subprocess runner ──────────────────────────────────────
 
 
@@ -234,55 +246,49 @@ async def run_scrubbed(
     timeout: Optional[float] = None,
     shell: bool = False,
     extra_env: Optional[Mapping[str, str]] = None,
+    base_env: Optional[Mapping[str, str]] = None,
+    sandbox_workspace: Union[str, os.PathLike[str], None] = None,
     stdin: Optional[bytes] = None,
     term_grace: float = 2.0,
 ) -> Tuple[Optional[int], bytes, bytes, bool]:
-    """Spawn a subprocess with a scrubbed env + process-group isolation.
+    """Spawn with a scrubbed env, process-group isolation, and configured sandbox.
 
     Bundles the safety concerns shared by every model-driven subprocess:
 
-    * the child's environment is :func:`scrub_env`-ed (``extra_env`` is layered
-      on top, so a caller can add benign context without re-adding secrets),
+    * the child's environment is :func:`scrub_env`-ed (from ``base_env`` when
+      supplied), then ``extra_env`` is layered on top,
     * the child leads its own session/group (:func:`new_session_kwargs`), and
     * on *timeout* the whole group is signalled — ``SIGTERM`` first, then a
       ``SIGKILL`` escalation after ``term_grace`` seconds — so backgrounded
       grandchildren are reaped rather than orphaned. Any output buffered before
       the kill is still returned.
 
-    ``cmd`` is a shell string when ``shell=True``, otherwise an argv sequence
-    passed straight to ``create_subprocess_exec`` (no shell interpretation).
+    ``cmd`` is a shell string when ``shell=True``, otherwise an argv sequence.
+    Both become argv before the sandbox wrapper is applied, avoiding nested
+    shell quoting.
     Returns ``(returncode, stdout, stderr, timed_out)``. On cancellation the
     group is torn down before the ``CancelledError`` propagates.
     """
-    env = scrub_env()
+    env = scrub_env(base_env)
     if extra_env:
         env.update(extra_env)
 
     stdin_pipe = asyncio.subprocess.PIPE if stdin is not None else None
 
-    if shell:
-        if not isinstance(cmd, str):
-            raise TypeError("run_scrubbed(shell=True) requires a command string")
-        process = await asyncio.create_subprocess_shell(
-            cmd,
-            stdin=stdin_pipe,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=cwd,
-            env=env,
-            **new_session_kwargs(),
-        )
-    else:
-        argv = [cmd] if isinstance(cmd, str) else list(cmd)
-        process = await asyncio.create_subprocess_exec(
-            *argv,
-            stdin=stdin_pipe,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=cwd,
-            env=env,
-            **new_session_kwargs(),
-        )
+    argv = command_argv(cmd, shell=shell)
+
+    # Always spawn an argv. Sandbox backends prepend their executable and
+    # policy arguments without interpolating the original command into a shell.
+    launch = prepare_sandbox_launch(argv, cwd=cwd, workspace=sandbox_workspace)
+    process = await asyncio.create_subprocess_exec(
+        *launch.argv,
+        stdin=stdin_pipe,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=cwd,
+        env=env,
+        **new_session_kwargs(),
+    )
 
     timed_out = False
     try:

@@ -229,7 +229,7 @@ def test_agents_tasks_plan(ctrl, red):
 
 def test_show_topic_routing(ctrl, red):
     _dispatch("/show plan", ctrl, red)
-    assert "get_tasks" in ctrl.names()
+    assert ("reference", {"topic": "plan"}) == ctrl.last()
     # /show tasks routes to the server's reference handler (text listing); the
     # dedicated /tasks command is what refreshes the panel (get_tasks).
     _dispatch("/show tasks", ctrl, red)
@@ -287,15 +287,19 @@ def test_pin_unpin(ctrl, red):
     assert len(ctrl.commands) == before  # missing-arg warnings only
 
 
-def test_copy_with_and_without_assistant(ctrl, red, capsys):
+def test_copy_with_and_without_assistant(ctrl, red, monkeypatch, capsys):
     # No assistant response yet -> warning.
     _dispatch("/copy", ctrl, red)
     assert "warning" in _toast_levels(red)
 
-    # With an assistant message, OSC-52 + fallback file run (covers clipboard).
+    # Force OSC-52 path so the test is terminal-independent.
+    from coderAI.tui import clipboard as clipboard_mod
+
+    monkeypatch.setattr(clipboard_mod, "_copy_native", lambda text: False)
     red.timeline = [{"kind": "assistant", "content": "the answer"}]
     _dispatch("/copy", ctrl, red)
     assert "\033]52;c;" in capsys.readouterr().out
+    assert any(p.get("kind") == "toast" for p in red.pushed)
 
 
 def test_retry(ctrl, red):
@@ -334,6 +338,16 @@ def test_kill_resolves_name_to_id(ctrl, red):
 def test_init(ctrl, red):
     _dispatch("/init", ctrl, red)
     assert "init_project" in ctrl.names()
+
+
+def test_init_rule_uses_manage_tasks_not_removed_plan_tool(tmp_path):
+    from coderAI.tui.commands import _do_init_project
+
+    _dirs, _files, _skipped, error = _do_init_project(tmp_path)
+    assert error is None
+    rule = (tmp_path / ".coderAI" / "rules" / "001-common-principles.md").read_text()
+    assert "manage_tasks" in rule
+    assert "`plan` tool" not in rule
 
 
 def test_undo(ctrl, red):

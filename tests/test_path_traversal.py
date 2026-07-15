@@ -16,13 +16,9 @@ def _scope_strict(monkeypatch):
 
 
 def _set_project_root(monkeypatch, root: Path):
-    monkeypatch.setattr(
-        "coderAI.system.config.config_manager.load_project_config",
-        lambda _r: type("ProjectConfig", (), {"project_root": str(root)})(),
-    )
-    from coderAI.system.config import config_manager
+    from coderAI.system.config import Config, config_manager
 
-    config_manager._config = None
+    config_manager._config = Config(project_root=str(root), allow_outside_project=False)
 
 
 TRAVERSAL_PATHS = [
@@ -167,7 +163,6 @@ class TestRefactorTraversal:
 class TestSearchToolsScope:
     """grep / symbol_search must not read outside the project."""
 
-
     def test_grep_rejects_outside_project(self, tmp_path, monkeypatch):
         _set_project_root(monkeypatch, tmp_path)
         from coderAI.tools.search import GrepTool
@@ -185,7 +180,6 @@ class TestSearchToolsScope:
         result = asyncio.run(SymbolSearchTool().execute(symbol="Agent", path=bad))
         assert result["success"] is False
         assert result.get("error_code") == "scope", result
-
 
 
 class TestMetadataScope:
@@ -208,3 +202,59 @@ class TestMetadataScope:
         result = asyncio.run(FileReadlinkTool().execute(path=bad))
         assert result["success"] is False
         assert result.get("error_code") == "scope", result
+
+
+class TestProjectScopedExecutionTools:
+    def test_lint_rejects_before_detection(self, tmp_path, monkeypatch):
+        _set_project_root(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            "coderAI.tools.lint.detect_linter",
+            lambda _path: pytest.fail("detector must not run"),
+        )
+        from coderAI.tools.lint import LintTool
+
+        result = asyncio.run(LintTool().execute(path=str(tmp_path.parent / "outside")))
+        assert result["success"] is False
+        assert result.get("error_code") == "scope"
+
+    def test_format_rejects_before_detection(self, tmp_path, monkeypatch):
+        _set_project_root(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            "coderAI.tools.format.detect_formatter",
+            lambda _path: pytest.fail("detector must not run"),
+        )
+        from coderAI.tools.format import FormatTool
+
+        result = asyncio.run(FormatTool().execute(path=str(tmp_path.parent / "outside")))
+        assert result["success"] is False
+        assert result.get("error_code") == "scope"
+
+    def test_tests_reject_before_detection(self, tmp_path, monkeypatch):
+        _set_project_root(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            "coderAI.tools.testing.detect_test_framework",
+            lambda _path: pytest.fail("detector must not run"),
+        )
+        from coderAI.tools.testing import RunTestsTool
+
+        result = asyncio.run(RunTestsTool().execute(path=str(tmp_path.parent / "outside")))
+        assert result["success"] is False
+        assert result.get("error_code") == "scope"
+
+    def test_download_rejects_before_network(self, tmp_path, monkeypatch):
+        _set_project_root(monkeypatch, tmp_path)
+        from coderAI.tools import web as web_mod
+        from coderAI.tools.web.tools import DownloadFileTool
+
+        async def unexpected_request(*_args, **_kwargs):
+            pytest.fail("network must not run")
+
+        monkeypatch.setattr(web_mod, "_safe_request_cf", unexpected_request)
+        result = asyncio.run(
+            DownloadFileTool().execute(
+                url="https://example.com/file.bin",
+                destination_path=str(tmp_path.parent / "outside.bin"),
+            )
+        )
+        assert result["success"] is False
+        assert result.get("error_code") == "scope"

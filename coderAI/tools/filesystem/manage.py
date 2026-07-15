@@ -108,7 +108,7 @@ class GlobSearchTool(Tool):
 
             max_glob_results = _get_max_glob_results()
             matches: list[str] = []
-            total_matches = 0
+            was_truncated = False
             for match in base.glob(pattern):
                 try:
                     is_file = match.is_file()
@@ -122,22 +122,24 @@ class GlobSearchTool(Tool):
                     ):
                         continue
 
-                    total_matches += 1
-                    if len(matches) < max_glob_results:
-                        matches.append(
-                            str(match.relative_to(base) if match.is_relative_to(base) else match)
-                        )
+                    if len(matches) >= max_glob_results:
+                        was_truncated = True
+                        break
+                    matches.append(
+                        str(match.relative_to(base) if match.is_relative_to(base) else match)
+                    )
 
             result = {
                 "success": True,
                 "pattern": pattern,
                 "matches": matches,
                 "count": len(matches),
+                "was_truncated": was_truncated,
             }
 
-            if total_matches > max_glob_results:
+            if was_truncated:
                 result["note"] = (
-                    f"Showing {max_glob_results} of {total_matches} total matches. "
+                    f"Results capped at {max_glob_results}; more matches exist. "
                     "Use a more specific pattern to narrow results."
                 )
 

@@ -47,6 +47,9 @@ test and lint targets. `make dev` is a shortcut for the same install.
 # Semantic code search (ChromaDB) — enables `coderAI index` / `search`
 pip install -e ".[semantic]"
 
+# Optional private, on-device embeddings (combine with semantic search)
+pip install -e ".[semantic,local-embeddings]"
+
 # Browser automation (Playwright)
 pip install -e ".[browser]"
 playwright install chromium
@@ -54,6 +57,19 @@ playwright install chromium
 # PDF extraction in read_url
 pip install -e ".[web]"
 ```
+
+Embedding selection defaults to `auto`: OpenAI is used when `OPENAI_API_KEY`
+is set, otherwise the local backend is selected. To require local inference:
+
+```bash
+coderAI config set embedding_backend local
+# Optional model/device overrides:
+coderAI config set embedding_model sentence-transformers/all-MiniLM-L6-v2
+coderAI config set embedding_device cpu
+```
+
+The first local run may download the configured model. Later inference runs on
+the selected device and does not send source chunks to an embeddings API.
 
 ## Verify Installation
 
@@ -75,17 +91,8 @@ Run the setup wizard:
 coderAI setup
 ```
 
-This will guide you through:
-
-1. Setting your OpenAI API key
-2. Setting your Anthropic API key
-3. Setting your Groq API key
-4. Setting your DeepSeek API key
-5. Setting your Gemini API key
-6. Choosing a default model
-7. Setting reasoning effort
-8. Configuring LM Studio (optional)
-9. Configuring Ollama (optional)
+This lets you choose a provider, configure the credentials or local endpoint it
+needs, select a default model, and set reasoning preferences.
 
 ### Manual Setup
 
@@ -177,7 +184,7 @@ coderAI setup
 
 ```bash
 export LMSTUDIO_ENDPOINT="http://localhost:1234/v1"
-coderAI --model lmstudio chat
+coderAI chat --model lmstudio
 ```
 
 ### 3. Verification
@@ -193,7 +200,7 @@ coderAI status
 Start a chat session with the local model:
 
 ```bash
-coderAI --model lmstudio chat
+coderAI chat --model lmstudio
 ```
 
 ## Troubleshooting
@@ -227,7 +234,7 @@ This should display information about CoderAI, the current model, and available 
 ### 2. Test Single-shot Mode
 
 ```bash
-coderAI "What is Python?"
+coderAI run "What is Python?"
 ```
 
 ### 3. Test Interactive Mode
@@ -363,6 +370,8 @@ See [`.env.example`](../.env.example) for the full list of provider keys and
 | `CODERAI_BUDGET_LIMIT` | Max USD per session (`0` = unlimited) |
 | `CODERAI_MAX_ITERATIONS` | Max agentic loop iterations per message |
 | `CODERAI_LOG_LEVEL` | Python log level (default `WARNING`) |
+| `CODERAI_SANDBOX_MODE` | `off` (default), `best_effort`, or fail-closed `required` OS execution sandbox |
+| `CODERAI_SANDBOX_ALLOW_NETWORK` | `1` = permit network from actively sandboxed subprocesses |
 | `LMSTUDIO_ENDPOINT` / `OLLAMA_ENDPOINT` | Local inference endpoints |
 | `CODERAI_TRUST_WORKSPACE` | `1` = trust every workspace (escape hatch) |
 | `CODERAI_ALLOW_OUTSIDE_PROJECT` | `1` = allow FS tools outside project root |
@@ -376,6 +385,12 @@ export OPENAI_API_KEY="sk-..."
 export CODERAI_DEFAULT_MODEL="gpt-5.4-mini"
 coderAI chat
 ```
+
+For OS confinement, install the `bubblewrap` package on Linux and verify that
+unprivileged user namespaces are enabled. macOS normally ships
+`/usr/bin/sandbox-exec`; no extra package is needed. Confirm availability by
+setting `CODERAI_SANDBOX_MODE=required` and running a command. Windows has no OS
+sandbox backend.
 
 **Platforms:** Linux and macOS are fully supported. Windows is best-effort
 (see [SECURITY.md](../SECURITY.md#supported-platforms)).

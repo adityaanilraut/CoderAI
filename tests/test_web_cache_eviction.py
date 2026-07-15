@@ -100,6 +100,19 @@ class TestCachePrune:
         survivors = {p.stem for p in self.cache_dir.glob("*.json")}
         assert survivors == {"e3", "e4"}
 
+    def test_byte_cap_evicts_oldest(self):
+        now = time.time()
+        paths = [
+            _write_entry(self.cache_dir, f"b{i}", expires=now + 1000, mtime=1000 + i)
+            for i in range(3)
+        ]
+        one_entry_size = paths[0].stat().st_size
+
+        removed = cache_mod._prune_cache(max_entries=10, max_bytes=one_entry_size * 2)
+
+        assert removed == 1
+        assert {p.stem for p in self.cache_dir.glob("*.json")} == {"b1", "b2"}
+
     def test_prune_on_missing_dir_is_noop(self, monkeypatch):
         monkeypatch.setattr(cache_mod, "_CACHE_DIR", self.cache_dir / "does-not-exist")
         assert cache_mod._prune_cache() == 0

@@ -34,9 +34,12 @@ import hashlib
 import json
 import logging
 import os
+import stat
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, BinaryIO, Dict, Iterator, List
 
 from coderAI.system.fsperms import atomic_write_json
 
@@ -45,14 +48,27 @@ logger = logging.getLogger(__name__)
 # Name of the trust store inside the CoderAI config dir.
 _STORE_NAME = "trusted_folders.json"
 
-# Files (relative to the project root) whose contents can drive local execution
-# or relax the security posture. The fingerprint hashes exactly these, in order,
-# so trust is pinned to the surface the user actually reviewed. ``hooks.json``
-# already contains the ``permission.ask`` hook definitions, so it covers those.
+# Fixed files (relative to the project root) whose contents can drive local
+# execution or relax the security posture. ``hooks.json`` also contains the
+# ``permission.ask`` hook definitions.
 _FINGERPRINT_FILES = (
     ".coderAI/hooks.json",
     ".coderAI/config.json",
 )
+
+_FINGERPRINT_TREES = (
+    ".coderAI/rules",
+    ".coderAI/skills",
+    ".coderAI/agents",
+)
+
+# Project guidance is deliberately bounded. Refuse to trust a tree that cannot
+# be completely fingerprinted rather than silently omitting attacker-controlled
+# content from the trust decision.
+_MAX_FINGERPRINT_FILES = 1_024
+_MAX_FINGERPRINT_BYTES = 10 * 1024 * 1024
+_MAX_FINGERPRINT_DEPTH = 8
+_READ_CHUNK_BYTES = 64 * 1024
 
 
 def _env_trusts_all() -> bool:
@@ -72,6 +88,9 @@ class WorkspaceTrust:
         # (mtime_ns, parsed folders dict) cache so the hot ``is_trusted`` path
         # (called per turn) doesn't re-read + re-parse the store every time.
         self._cache: tuple[int, Dict[str, Any]] | None = None
+        self._pinned_decision: ContextVar[tuple[str, bool] | None] = ContextVar(
+            f"workspace_trust_decision_{id(self)}", default=None
+        )
 
     # ── paths ────────────────────────────────────────────────────────────────
 
@@ -121,23 +140,150 @@ class WorkspaceTrust:
 
     # ── fingerprint / surface detection ──────────────────────────────────────
 
+    @staticmethod
+    def _open_regular_file(path: Path) -> BinaryIO:
+        """Open *path* without following a final symlink, or fail closed."""
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(path, flags)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise ValueError(f"Trust fingerprint only supports regular files: {path}")
+            return os.fdopen(fd, "rb")
+        except Exception:
+            os.close(fd)
+            raise
+
+    @classmethod
+    def _hash_file(
+        cls,
+        h: Any,
+        path: Path,
+        rel: str,
+        *,
+        total_bytes: int,
+    ) -> int:
+        try:
+            mode = path.lstat().st_mode
+        except FileNotFoundError:
+            h.update(b"absent\0")
+            return total_bytes
+        if stat.S_ISLNK(mode):
+            raise ValueError(f"Symlinks are not allowed in trusted workspace inputs: {rel}")
+        if not stat.S_ISREG(mode):
+            raise ValueError(f"Unsupported trusted workspace input: {rel}")
+
+        h.update(b"file\0")
+        with cls._open_regular_file(path) as file_obj:
+            while chunk := file_obj.read(_READ_CHUNK_BYTES):
+                total_bytes += len(chunk)
+                if total_bytes > _MAX_FINGERPRINT_BYTES:
+                    raise ValueError(
+                        "Trusted workspace inputs exceed the fingerprint byte limit "
+                        f"({_MAX_FINGERPRINT_BYTES} bytes)"
+                    )
+                h.update(chunk)
+        return total_bytes
+
+    @classmethod
+    def _tree_files(cls, root: Path, rel_root: str) -> List[tuple[str, Path]]:
+        """Return every regular tree file in deterministic, symlink-safe order."""
+        try:
+            mode = root.lstat().st_mode
+        except FileNotFoundError:
+            return []
+        if stat.S_ISLNK(mode):
+            raise ValueError(f"Symlinks are not allowed in trusted workspace inputs: {rel_root}")
+        if not stat.S_ISDIR(mode):
+            raise ValueError(f"Trusted workspace input must be a directory: {rel_root}")
+
+        files: List[tuple[str, Path]] = []
+        pending: List[tuple[Path, str, int]] = [(root, rel_root, 0)]
+        while pending:
+            directory, rel_dir, depth = pending.pop()
+            try:
+                with os.scandir(directory) as iterator:
+                    entries = sorted(iterator, key=lambda entry: entry.name)
+            except OSError as e:
+                raise ValueError(f"Cannot scan trusted workspace input {rel_dir}: {e}") from e
+            child_dirs: List[tuple[Path, str, int]] = []
+            for entry in entries:
+                rel = f"{rel_dir}/{entry.name}"
+                try:
+                    if entry.is_symlink():
+                        raise ValueError(
+                            f"Symlinks are not allowed in trusted workspace inputs: {rel}"
+                        )
+                    if entry.is_dir(follow_symlinks=False):
+                        if depth >= _MAX_FINGERPRINT_DEPTH:
+                            raise ValueError(
+                                "Trusted workspace inputs exceed the fingerprint depth limit "
+                                f"({_MAX_FINGERPRINT_DEPTH}): {rel}"
+                            )
+                        child_dirs.append((Path(entry.path), rel, depth + 1))
+                    elif entry.is_file(follow_symlinks=False):
+                        files.append((rel, Path(entry.path)))
+                        if len(files) > _MAX_FINGERPRINT_FILES:
+                            raise ValueError(
+                                "Trusted workspace inputs exceed the fingerprint file limit "
+                                f"({_MAX_FINGERPRINT_FILES})"
+                            )
+                    else:
+                        raise ValueError(f"Unsupported trusted workspace input: {rel}")
+                except OSError as e:
+                    raise ValueError(f"Cannot inspect trusted workspace input {rel}: {e}") from e
+            # Reverse push preserves ascending traversal when using a LIFO stack.
+            pending.extend(reversed(child_dirs))
+        return sorted(files, key=lambda item: item[0])
+
     def fingerprint(self, root: Any) -> str:
         """SHA-256 over the security-relevant repo inputs at *root*.
 
-        Missing files hash as a sentinel, so adding a ``hooks.json`` to a
-        previously-trusted (hook-less) folder changes the fingerprint and forces
-        a re-prompt.
+        Missing files and trees hash as sentinels, so adding any project config,
+        hook, rule, skill, or persona changes the fingerprint and forces a
+        re-prompt. Trees are bounded and never follow symlinks; inputs that
+        cannot be completely fingerprinted are rejected instead of partially
+        trusted.
         """
         resolved = Path(self._resolve(root))
         h = hashlib.sha256()
+        total_bytes = 0
+        total_files = 0
         for rel in _FINGERPRINT_FILES:
             h.update(rel.encode("utf-8"))
             h.update(b"\0")
-            try:
-                h.update((resolved / rel).read_bytes())
-            except (OSError, ValueError):
-                h.update(b"<absent>")
+            total_bytes = self._hash_file(
+                h,
+                resolved / rel,
+                rel,
+                total_bytes=total_bytes,
+            )
             h.update(b"\0")
+        for rel_root in _FINGERPRINT_TREES:
+            h.update(rel_root.encode("utf-8"))
+            h.update(b"\0")
+            tree_root = resolved / rel_root
+            files = self._tree_files(tree_root, rel_root)
+            total_files += len(files)
+            if total_files > _MAX_FINGERPRINT_FILES:
+                raise ValueError(
+                    "Trusted workspace inputs exceed the fingerprint file limit "
+                    f"({_MAX_FINGERPRINT_FILES})"
+                )
+            if not files:
+                h.update(b"absent-or-empty\0")
+                continue
+            for rel, path in files:
+                h.update(rel.encode("utf-8"))
+                h.update(b"\0")
+                total_bytes = self._hash_file(
+                    h,
+                    path,
+                    rel,
+                    total_bytes=total_bytes,
+                )
+                h.update(b"\0")
         return h.hexdigest()
 
     def has_execution_surface(self, root: Any) -> bool:
@@ -165,21 +311,38 @@ class WorkspaceTrust:
 
     # ── public API ───────────────────────────────────────────────────────────
 
+    @contextmanager
+    def pinned_decision(self, root: Any, trusted: bool) -> Iterator[None]:
+        """Temporarily reuse one trust decision for nested synchronous loads."""
+        resolved = self._resolve(root)
+        token = self._pinned_decision.set((resolved, trusted))
+        try:
+            yield
+        finally:
+            self._pinned_decision.reset(token)
+
     def is_trusted(self, root: Any) -> bool:
         """True iff *root* has an explicit, fingerprint-matching trust record.
 
         The ``CODERAI_TRUST_WORKSPACE`` env override short-circuits to trusted.
         """
-        if _env_trusts_all():
-            return True
         try:
             resolved = self._resolve(root)
         except (OSError, ValueError):
             return False
+        pinned = self._pinned_decision.get()
+        if pinned is not None and pinned[0] == resolved:
+            return pinned[1]
+        if _env_trusts_all():
+            return True
         entry = self._load_store().get(resolved)
         if not isinstance(entry, dict):
             return False
-        return entry.get("fingerprint") == self.fingerprint(resolved)
+        try:
+            return entry.get("fingerprint") == self.fingerprint(resolved)
+        except (OSError, ValueError) as e:
+            logger.debug("Workspace trust fingerprint failed for %s: %s", resolved, e)
+            return False
 
     def record_trust(self, root: Any, trusted_by: str = "user") -> None:
         """Persist an explicit trust decision for *root* at its current state."""

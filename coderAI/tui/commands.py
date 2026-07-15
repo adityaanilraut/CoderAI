@@ -4,8 +4,6 @@ Each handler takes ``(server, msg)`` where ``server`` is the
 :class:`~coderAI.tui.controller.UIBridge` and ``msg`` is the raw command
 payload. Command names and their emitted events are pinned by
 ``tests/test_event_contract.py`` and documented in ``docs/CHAT_EVENTS.md``.
-
-Moved here from ``coderAI/bridge/commands.py`` (Phase 3 bridge demolition).
 """
 
 from __future__ import annotations
@@ -18,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, Optional
 from coderAI.core.agent_tracker import AgentStatus
 from coderAI.core.permissions import ApprovalRules
 from coderAI.system.config import config_manager
+from coderAI.system.redaction import redact_secrets
 
 from coderAI.tui.serializers import (
     _agent_info_dict,
@@ -41,20 +40,10 @@ def _truncate(text: str, max_chars: int = _MAX_CHARS) -> str:
 
 
 def _mask_keys(data: Dict[str, Any]) -> Dict[str, Any]:
-    out = dict(data)
-    for key in (
-        "openai_api_key",
-        "anthropic_api_key",
-        "groq_api_key",
-        "deepseek_api_key",
-        "gemini_api_key",
-    ):
-        v = out.get(key)
-        if isinstance(v, str) and len(v) > 12:
-            out[key] = f"{v[:8]}...{v[-4:]}"
-        elif v:
-            out[key] = "(set)"
-    return out
+    """Backward-compatible TUI helper routed through central redaction."""
+    redacted = redact_secrets(data)
+    assert isinstance(redacted, dict)
+    return redacted
 
 
 def _build_models_text() -> str:
@@ -77,6 +66,9 @@ def _build_models_text() -> str:
         "",
         "Gemini — requires GEMINI or config gemini_api_key",
         "  gemini-3.5-flash, gemini-3.1-pro, gemini-3.1-flash-lite, gemini-2.5-flash, …",
+        "",
+        "Meta — requires MODEL_API_KEY / META_API_KEY or config meta_api_key",
+        "  muse-spark-1.1, muse-spark, muse",
         "",
         "Local",
         "  lmstudio — LM Studio at lmstudio_endpoint",
@@ -138,6 +130,7 @@ def _build_system_text() -> str:
         f"  Groq:       {'yes' if cfg.groq_api_key else 'no'}",
         f"  DeepSeek:   {'yes' if cfg.deepseek_api_key else 'no'}",
         f"  Gemini:     {'yes' if cfg.gemini_api_key else 'no'}",
+        f"  Meta:       {'yes' if cfg.meta_api_key else 'no'}",
         "",
         "LM Studio",
         f"  endpoint: {cfg.lmstudio_endpoint}",
@@ -275,8 +268,7 @@ def _resolve_reference_text(topic: str, agent: Any) -> str:
 
 def _tracker() -> "AgentTracker":
     # Resolved through the controller module at call time so tests patching
-    # coderAI.tui.controller.agent_tracker keep working (the handlers
-    # lived in that module before the Phase 2b split).
+    # coderAI.tui.controller.agent_tracker keep working.
     from coderAI.tui import controller
 
     return controller.agent_tracker
@@ -295,7 +287,8 @@ def _handle_persona_slash(server: "UIBridge", arg: str) -> None:
     from coderAI.core.agents import get_available_personas, resolve_persona_name
 
     project_root = getattr(server.agent.config, "project_root", ".")
-    available = get_available_personas(project_root)
+    workspace_trusted = bool(getattr(server.agent, "_workspace_trusted", False))
+    available = get_available_personas(project_root) if workspace_trusted else []
 
     name = (arg or "").strip().lower()
     if not name or name == "list":
@@ -303,8 +296,11 @@ def _handle_persona_slash(server: "UIBridge", arg: str) -> None:
             server.emit(
                 "info",
                 message=(
-                    "No personas found in .coderAI/agents/. "
-                    "Create <stem>.md files with YAML frontmatter to define one."
+                    "Project personas are disabled for this session. Trust the workspace and "
+                    "restart CoderAI."
+                    if not workspace_trusted
+                    else "No personas found in .coderAI/agents/. Create <stem>.md files with "
+                    "YAML frontmatter to define one."
                 ),
             )
             return
@@ -322,9 +318,14 @@ def _handle_persona_slash(server: "UIBridge", arg: str) -> None:
         server.emit("info", message="Persona cleared — back to the default agent.")
         return
 
-    resolved = resolve_persona_name(arg, project_root)
+    resolved = resolve_persona_name(arg, project_root) if workspace_trusted else None
     if not resolved:
-        hint = f"Persona '{arg}' not found. Available: {', '.join(sorted(available)) or '(none)'}"
+        hint = (
+            "Project personas are disabled for this session. Trust the workspace and restart "
+            "CoderAI."
+            if not workspace_trusted
+            else f"Persona '{arg}' not found. Available: {', '.join(sorted(available)) or '(none)'}"
+        )
         server.emit("warning", message=hint)
         return
 
@@ -474,6 +475,25 @@ async def _cmd_toggle_auto_approve(server: UIBridge, msg: Dict[str, Any]) -> Non
             "Auto-approve enabled (YOLO)" if server.agent.auto_approve else "Auto-approve disabled"
         ),
     )
+
+
+async def _cmd_set_auto_approve(server: UIBridge, msg: Dict[str, Any]) -> None:
+    """Idempotently enable or disable YOLO (``auto_approve``).
+
+    Used by the approval modal's Always (a) path so a stale UI flag can never
+    flip YOLO *off*. ``/yolo`` still uses the toggle command.
+    """
+    enabled = bool(msg.get("enabled", True))
+    changed = bool(server.agent.auto_approve) != enabled
+    server.agent.auto_approve = enabled
+    if changed:
+        server.agent._configure_delegate_tool_context()
+    server.emit("session_patch", autoApprove=enabled)
+    if changed:
+        server.emit(
+            "success",
+            message=("Auto-approve enabled (YOLO)" if enabled else "Auto-approve disabled"),
+        )
 
 
 async def _cmd_set_reasoning(server: UIBridge, msg: Dict[str, Any]) -> None:
@@ -655,7 +675,11 @@ async def _cmd_list_personas(server: UIBridge, _msg: Dict[str, Any]) -> None:
     from coderAI.core.agents import get_available_personas
 
     project_root = getattr(server.agent.config, "project_root", ".")
-    available = get_available_personas(project_root)
+    available = (
+        get_available_personas(project_root)
+        if getattr(server.agent, "_workspace_trusted", False)
+        else []
+    )
     current = server.agent.persona.name if server.agent.persona else None
     server.emit("available_personas", current=current, personas=sorted(available))
 
@@ -664,7 +688,11 @@ async def _cmd_list_skills(server: UIBridge, _msg: Dict[str, Any]) -> None:
     from ..tools.skills import get_available_skills
 
     project_root = getattr(server.agent.config, "project_root", ".")
-    skills = get_available_skills(project_root)
+    skills = (
+        get_available_skills(project_root)
+        if getattr(server.agent, "_workspace_trusted", False)
+        else []
+    )
     server.emit("available_skills", skills=skills)
 
 
@@ -759,16 +787,19 @@ async def _cmd_search_codebase(server: UIBridge, msg: Dict[str, Any]) -> None:
     if not query:
         return
     try:
-        from ..embeddings.openai import create_embedding_provider
+        from coderAI.embeddings import create_embedding_provider
         from coderAI.context.code_indexer import CodeIndexer
 
         project_root = getattr(server.agent.config, "project_root", ".")
-        config = config_manager.load()
+        config = server.agent.config
         provider = create_embedding_provider(config)
         if provider is None:
             server.emit(
                 "warning",
-                message="No embedding provider available for code search. Set openai_api_key.",
+                message=(
+                    "No embedding provider is available: the OpenAI backend needs an "
+                    "API key. Set openai_api_key or select embedding_backend=local."
+                ),
             )
             return
         indexer = CodeIndexer(str(Path(project_root).resolve()), provider)
@@ -794,6 +825,7 @@ async def _cmd_list_models(server: UIBridge, _msg: Dict[str, Any]) -> None:
     from ..llm.groq import GroqProvider
     from ..llm.openai import OpenAIProvider
     from ..llm.gemini import GeminiProvider
+    from ..llm.meta import MetaProvider
 
     server.emit(
         "available_models",
@@ -804,6 +836,7 @@ async def _cmd_list_models(server: UIBridge, _msg: Dict[str, Any]) -> None:
             "DeepSeek": sorted(DeepSeekProvider.SUPPORTED_MODELS.keys()),
             "Groq": sorted(GroqProvider.SUPPORTED_MODELS.keys()),
             "Gemini": sorted(GeminiProvider.SUPPORTED_MODELS.keys()),
+            "Meta": sorted(MetaProvider.SUPPORTED_MODELS.keys()),
             "Local": ["lmstudio", "ollama"],
         },
     )
@@ -917,7 +950,7 @@ async def _cmd_init_project(server: UIBridge, _msg: Dict[str, Any]) -> None:
         server._emit_error("tool", error)
         return
 
-    lines = [f"Scaffolded .coderai/ in {project_root.name}:"]
+    lines = [f"Scaffolded .coderAI/ in {project_root.name}:"]
     if created_dirs:
         lines.append(f"  {len(created_dirs)} directories created")
     for f in created_files:
@@ -1040,10 +1073,9 @@ def _do_init_project(
                     "- **Clarity and Precision:** When reporting findings or documenting code, be concise but factually complete.",
                     "- **Cite Sources:** Reference specific file paths and line numbers when discussing code changes.",
                     "",
-                    "## 5. Plan-First Workflow",
-                    "- **Plan before you build:** For any task involving multiple steps, multiple file edits, or non-trivial implementation work, call the `plan` tool with `action='create'` before starting.",
-                    "- **Track granular work:** Use `manage_tasks` (`add` / `start` / `complete`) alongside the plan to maintain a working checklist.",
-                    "- **Skip planning only for trivial asks:** Single-file reads, greetings, one-line answers, and simple lookups do not need a plan.",
+                    "## 5. Task Workflow",
+                    "- **Track multi-step work:** For tasks involving multiple steps, multiple file edits, or non-trivial implementation work, use `manage_tasks` (`add` / `start` / `complete` / `list`) before and during the work.",
+                    "- **Skip task tracking for trivial asks:** Single-file reads, greetings, one-line answers, and simple lookups do not need a checklist.",
                     "",
                 ]
             ),
@@ -1071,9 +1103,6 @@ def _do_init_project(
 
 async def _cmd_cancel_agent(server: UIBridge, msg: Dict[str, Any]) -> None:
     """Cancel a specific sub-agent by ID."""
-    # ``/kill`` (coderAI/tui/slash.py) enqueues ``agentId`` at the top level via
-    # ``enqueue_command("cancel_agent", agentId=...)``; older callers nested it
-    # under ``payload``. Accept both so the TUI command actually reaches a target.
     agent_id = msg.get("agentId") or (msg.get("payload") or {}).get("agentId")
     if not agent_id:
         server.emit("error", category="protocol", message="cancel_agent requires agentId")
@@ -1089,8 +1118,8 @@ async def _cmd_trust(server: UIBridge, msg: Dict[str, Any]) -> None:
     """``/trust`` — manage workspace trust for the current project root.
 
     Payload: ``{"action": "grant"|"revoke"|"status"}`` (default ``grant``).
-    Trusting enables this repo's ``.coderAI`` hooks and ``config.json`` overlay;
-    the ``config.json`` overlay applies on the next launch.
+    Trust changes are persisted for the next Agent launch. They never alter the
+    project-controlled surfaces active in the current session.
     """
     from coderAI.system.trust import workspace_trust
 
@@ -1098,23 +1127,46 @@ async def _cmd_trust(server: UIBridge, msg: Dict[str, Any]) -> None:
     root = getattr(server.agent.config, "project_root", ".") or "."
     if action == "revoke":
         removed = workspace_trust.revoke_trust(root)
+        active = bool(getattr(server.agent, "_workspace_trusted", False))
         server.emit(
             "info",
             message=(
-                f"Workspace trust revoked for {root}."
+                f"Workspace trust revoked for {root}. Restart CoderAI to disable project "
+                "config, hooks, rules, skills, and personas."
+                if removed and active
+                else f"Workspace trust revoked for {root}."
                 if removed
                 else f"Workspace was not trusted: {root}"
             ),
         )
     elif action == "status":
-        state = "trusted" if workspace_trust.is_trusted(root) else "untrusted"
-        server.emit("info", message=f"Workspace {root} is {state}.")
+        recorded = workspace_trust.is_trusted(root)
+        active = bool(getattr(server.agent, "_workspace_trusted", False))
+        if recorded == active:
+            state = "trusted and active" if active else "untrusted"
+            message = f"Workspace {root} is {state} for this session."
+        elif recorded:
+            message = f"Workspace trust is recorded for {root}; restart CoderAI to activate it."
+        else:
+            message = (
+                f"Workspace trust is revoked for {root}; project surfaces remain active "
+                "until CoderAI restarts."
+            )
+        server.emit("info", message=message)
     else:
-        workspace_trust.record_trust(root)
+        try:
+            workspace_trust.record_trust(root)
+        except (OSError, ValueError) as e:
+            server.emit("warning", message=f"Workspace trust was not recorded: {e}")
+            server.emit_status()
+            return
         server.emit(
             "success",
-            message=f"Workspace trusted: {root}. Project hooks are now enabled "
-            "(config.json overlay applies on next launch).",
+            message=(
+                f"Workspace trust recorded: {root}. Restart CoderAI to enable project "
+                "config, hooks, rules, skills, and personas; they remain disabled in "
+                "this session."
+            ),
         )
     server.emit_status()
 
@@ -1131,6 +1183,7 @@ _COMMAND_HANDLERS: Dict[str, Callable[["UIBridge", Dict[str, Any]], Awaitable[No
     "set_reasoning": _cmd_set_reasoning,
     "set_persona": _cmd_set_persona,
     "toggle_auto_approve": _cmd_toggle_auto_approve,
+    "set_auto_approve": _cmd_set_auto_approve,
     "tool_approval_resp": _cmd_tool_approval_resp,
     "clear_context": _cmd_clear_context,
     "rewind": _cmd_rewind,

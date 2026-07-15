@@ -30,7 +30,7 @@ coderAI chat
 Or with a specific model:
 
 ```bash
-coderAI --model gpt-5.4 chat
+coderAI chat --model gpt-5.4
 ```
 
 ### 3. Interactive chat or headless one-shot
@@ -155,6 +155,10 @@ coderAI index                    # Index the whole project
 coderAI search "JWT validation"  # Search from the CLI
 ```
 
+For local embeddings, install `coderAI[semantic,local-embeddings]` and set
+`embedding_backend` to `local`. The index is rebuilt safely when its embedding
+backend, model, or dimension changes.
+
 ### Web Search
 
 **Find documentation:**
@@ -190,7 +194,7 @@ coderAI history list
 
 Resume a specific session:
 ```bash
-coderAI --resume session_1234567890 chat
+coderAI chat --resume session_1234567890
 ```
 
 ### Using Local Models with LM Studio
@@ -200,7 +204,7 @@ coderAI --resume session_1234567890 chat
 3. Run CoderAI:
 
 ```bash
-coderAI --model lmstudio chat
+coderAI chat --model lmstudio
 ```
 
 ### Configuration Management
@@ -339,4 +343,3 @@ Check version:
 ```bash
 coderAI --version
 ```
-

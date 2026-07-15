@@ -97,7 +97,7 @@ class TestSemanticSearchToolExecute:
         mock_indexer.search = AsyncMock(return_value=results)
 
         with patch(
-            "coderAI.embeddings.openai.create_embedding_provider",
+            "coderAI.embeddings.create_embedding_provider",
             return_value=MagicMock(),
         ):
             with patch(
@@ -129,7 +129,7 @@ class TestSemanticSearchToolExecute:
         mock_indexer.search = AsyncMock(return_value=[])
 
         with patch(
-            "coderAI.embeddings.openai.create_embedding_provider",
+            "coderAI.embeddings.create_embedding_provider",
             return_value=MagicMock(),
         ):
             with patch(
@@ -152,7 +152,7 @@ class TestSemanticSearchToolExecute:
         tool = self._make_tool()
 
         with patch(
-            "coderAI.embeddings.openai.create_embedding_provider",
+            "coderAI.embeddings.create_embedding_provider",
             return_value=None,
         ):
             with patch("coderAI.system.config.config_manager") as mock_cm:
@@ -172,7 +172,7 @@ class TestSemanticSearchToolExecute:
         mock_indexer.stats.return_value = {"chunks": 0}
 
         with patch(
-            "coderAI.embeddings.openai.create_embedding_provider",
+            "coderAI.embeddings.create_embedding_provider",
             return_value=MagicMock(),
         ):
             with patch(
@@ -197,7 +197,7 @@ class TestSemanticSearchToolExecute:
         mock_indexer.search = AsyncMock(return_value=[])
 
         with patch(
-            "coderAI.embeddings.openai.create_embedding_provider",
+            "coderAI.embeddings.create_embedding_provider",
             return_value=MagicMock(),
         ):
             with patch(
@@ -223,7 +223,7 @@ class TestSemanticSearchToolExecute:
         tool = self._make_tool()
 
         with patch(
-            "coderAI.embeddings.openai.create_embedding_provider",
+            "coderAI.embeddings.create_embedding_provider",
             side_effect=ImportError("No module named 'chromadb'"),
         ):
             result = await tool.execute(query="test")
@@ -238,7 +238,7 @@ class TestSemanticSearchToolExecute:
         mock_indexer.stats.side_effect = RuntimeError("database corrupted")
 
         with patch(
-            "coderAI.embeddings.openai.create_embedding_provider",
+            "coderAI.embeddings.create_embedding_provider",
             return_value=MagicMock(),
         ):
             with patch(
@@ -267,7 +267,7 @@ class TestSemanticSearchToolExecute:
         )
 
         with patch(
-            "coderAI.embeddings.openai.create_embedding_provider",
+            "coderAI.embeddings.create_embedding_provider",
             return_value=MagicMock(),
         ):
             with patch(

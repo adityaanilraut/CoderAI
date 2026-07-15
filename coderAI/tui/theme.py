@@ -1,9 +1,8 @@
 """Design tokens for the CoderAI Textual UI.
 
-Palette: **Tokyo Night** (https://github.com/folke/tokyonight.nvim) — the
-CoderAI design system's mandated theme. Colors are *earned*: the UI defaults to
-muted/faint tones and promotes to a semantic color only when something genuinely
-needs attention.
+Palette: Tokyo Night-inspired surfaces with a modern **Aurora** accent ramp.
+Colors are *earned*: the UI defaults to muted/faint tones and promotes to a
+semantic color only when something genuinely needs attention.
 
 Hex equivalents are kept in one place so widgets, modal screens, and Rich Text
 styles all agree on the palette and glyph language. The existing token *names*
@@ -19,6 +18,8 @@ class Tokens:
     BG = "#1a1b26"  # app background — deep navy
     BG_RAISED = "#24283b"  # elevated surface — selected rows, dialog headers
     BG_SUNK = "#16161e"  # sunken panes — sidebars, scroll regions
+    COMPOSER_BG = "#242528"  # neutral graphite — message composer
+    COMPOSER_LINE = "#45474b"  # neutral composer outline
     LINE = "#414868"  # borders, dividers, scrollbars (faint)
     LINE_SOFT = "#2f334d"  # quiet inner borders / rails at rest
 
@@ -27,13 +28,15 @@ class Tokens:
     TEXT_DIM = "#a9b1d6"  # body copy / dimmed primary (textSoft)
     TEXT_MUTED = "#565f89"  # secondary & metadata text (muted)
 
-    # --- Semantic accents ---
-    ACCENT = "#7aa2f7"  # primary blue — headers, cursor, active states
-    AGENT = "#9ece6a"  # green — assistant turn, ✓ icons, low-risk
-    WARN = "#e0af68"  # amber — git tools, ⚠ approval, YOLO mode
-    DANGER = "#f7768e"  # pink-red — shell tools, ✗ errors, high-risk
-    INFO = "#7dcfff"  # cyan — fs tools, help menu, waiting state
-    THOUGHT = "#bb9af7"  # purple — reasoning blocks, web tools
+    # --- Semantic accents (Aurora) ---
+    # Bright 400-level hues stay legible on every dark surface while giving
+    # active, success, caution, and reasoning states distinct silhouettes.
+    ACCENT = "#818cf8"  # electric indigo — headers, cursor, active states
+    AGENT = "#34d399"  # emerald — assistant turn, ✓ icons, low-risk
+    WARN = "#fbbf24"  # amber — git tools, ⚠ approval, YOLO mode
+    DANGER = "#fb7185"  # rose — shell tools, ✗ errors, high-risk
+    INFO = "#22d3ee"  # cyan — fs tools, help menu, waiting state
+    THOUGHT = "#c084fc"  # orchid — reasoning blocks, web tools
 
 
 class Categories:
@@ -49,7 +52,7 @@ class Categories:
     WEB = Tokens.THOUGHT  # web — purple
     SEARCH = Tokens.ACCENT  # search — blue/accent
     AGENT = Tokens.AGENT  # agent — green
-    MCP = "#ff9e64"  # mcp — orange (no matching semantic token)
+    MCP = "#fb923c"  # mcp — orange (no matching semantic token)
     OTHER = Tokens.TEXT_DIM  # fallback — blue-gray
 
     _MAP = {
@@ -118,11 +121,11 @@ class Styles:
     # Rich markup (Text.from_markup → RichLog) cannot parse rgba() colors —
     # they drop silently — so translucent backgrounds are pre-blended
     # against Tokens.BG into solid hex.
-    DIFF_ADD_BG = "#272d2d"  # AGENT at 10% over BG
-    DIFF_REMOVE_BG = "#302430"  # DANGER at 10% over BG
+    DIFF_ADD_BG = "#1d2d32"  # AGENT at 10% over BG
+    DIFF_REMOVE_BG = "#31242c"  # DANGER at 10% over BG
     # Intra-line word-diff emphasis: changed words on a paired −/+ line.
-    DIFF_ADD_EMPH = f"bold {Tokens.AGENT} on #42513a"  # AGENT at 30% over BG
-    DIFF_REMOVE_EMPH = f"bold {Tokens.DANGER} on #5c3645"  # DANGER at 30% over BG
+    DIFF_ADD_EMPH = f"bold {Tokens.AGENT} on #225249"  # AGENT at 30% over BG
+    DIFF_REMOVE_EMPH = f"bold {Tokens.DANGER} on #5e3341"  # DANGER at 30% over BG
 
 
 __all__ = ["Tokens", "Categories", "Glyphs", "Styles"]

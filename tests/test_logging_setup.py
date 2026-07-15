@@ -7,7 +7,7 @@ import pytest
 
 from coderAI.system import logging_setup
 from coderAI.system.logging_setup import _MANAGED_ATTR, setup_logging
-from coderAI.system.redaction import RedactingFilter, redact_text, sanitize_dict
+from coderAI.system.redaction import RedactingFilter, RedactingFormatter, redact_text, sanitize_dict
 
 
 @pytest.fixture
@@ -108,6 +108,27 @@ class TestRedaction:
         )
         assert RedactingFilter().filter(record) is True
         assert "sk-ant" not in record.getMessage()
+
+    def test_filter_preserves_percent_formatting_contract(self):
+        canary = "gsk_FormatArgCanary0123456789"
+        record = logging.LogRecord(
+            "test", logging.WARNING, __file__, 1, "api_key=%s", (canary,), None
+        )
+        assert RedactingFilter().filter(record) is True
+        assert record.getMessage() == "api_key=[REDACTED]"
+
+    def test_formatter_redacts_exception_traceback(self):
+        canary = "gsk_TracebackCanary0123456789"
+        try:
+            raise RuntimeError(f"Authorization: Bearer {canary}")
+        except RuntimeError:
+            exc_info = sys.exc_info()
+        record = logging.LogRecord(
+            "test", logging.ERROR, __file__, 1, "provider failed", (), exc_info
+        )
+        output = RedactingFormatter("%(message)s").format(record)
+        assert canary not in output
+        assert "[REDACTED]" in output
 
     def test_error_policy_backcompat_aliases(self):
         from coderAI.system.error_policy import _sanitize_dict

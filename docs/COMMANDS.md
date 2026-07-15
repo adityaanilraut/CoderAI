@@ -62,7 +62,7 @@ Requires the `textual` package (installed with `pip install coderAI`). No separa
 ---
 
 ### `coderAI run`
-Run a single prompt non-interactively and exit — no Textual TUI. For CI, scripting, git hooks, piping, and evals. Drives the same `Agent`/`ExecutionLoop` core as `chat`, but with no UIBridge and no streaming, so stdout receives one clean final answer (or `--json`).
+Run a single prompt non-interactively and exit — no Textual TUI. For CI, scripting, git hooks, piping, and evals. Drives the same `Agent`/`ExecutionLoop` core as `chat`. Stdout contains only the selected output format; diagnostics are written to stderr.
 
 ```bash
 # Prompt as an argument
@@ -74,6 +74,10 @@ coderAI run -
 
 # Structured result (response, success, session_id, model, cost_usd, blocked_tools)
 coderAI run --json "what is 2+2"
+coderAI run --output json "what is 2+2"   # equivalent output; --json remains supported
+
+# Ordered event stream for CI and editor integrations
+coderAI run --output ndjson "inspect the failing tests"
 
 # Resume prior context
 coderAI run --resume <session-id> "continue where we left off"
@@ -91,6 +95,8 @@ coderAI run --trust-workspace "..."     # CI: trust this repo's .coderAI hooks/c
 ```
 
 **Deny-on-mutate (default).** With no TTY to confirm mutations, a run that needs a mutating tool (e.g. `write_file`, `run_command`, `git_push`) is blocked cleanly instead of prompting: the tool call is denied, the run exits non-zero, and stderr prints which tools were blocked (`--json` lists them under `blocked_tools`). Pass `--yolo`/`--auto-approve` to allow mutations.
+
+`--output` accepts `text`, `json`, or `ndjson`. NDJSON writes one JSON object per stdout line with `schema_version: 1`, a monotonic `sequence`, `timestamp`, `type`, `terminal`, and `data`. It forwards actual lifecycle, tool, warning/error, and progress events from the core. Assistant delta events are present only when the configured provider path streams; nonstreaming providers are represented by the terminal result without synthetic deltas. Every run ends with exactly one terminal `result` or `error` envelope.
 
 **Exit codes:**
 
@@ -151,9 +157,20 @@ Manage conversation sessions.
 
 ```bash
 coderAI history list             # List all past sessions
+coderAI history list --tag audit # Filter by tag
+coderAI history list --filter ci # Filter by ID, name, or tag text
+coderAI history rename <id> "Release audit"
+coderAI history rename <id> --clear
+coderAI history tag <id> audit ci
+coderAI history tag --remove <id> audit
+coderAI history tag --clear <id>
+coderAI history export <id> --format markdown
+coderAI history export <id> --format json
 coderAI history delete <id>      # Delete a specific session
 coderAI history clear            # Delete all sessions (asks for confirmation)
 ```
+
+Names and tags are optional session metadata stored with the transcript and cached in the history index. Export reads the complete persisted message list directly, including system, assistant reasoning, tool-call, and tool-result fields; it is not limited by the TUI timeline.
 
 ---
 
@@ -214,7 +231,10 @@ coderAI search "authentication middleware"
 coderAI search "rate limiting" -f "*.py" -n 20
 ```
 
-Requires the index to be built first (`coderAI index`).
+Requires the index to be built first (`coderAI index`). The index stores its
+embedding backend, model, and vector dimension. Changing any of them requires a
+complete rebuild; `coderAI index` does this automatically, while scoped indexing
+asks you to run `coderAI index --force` without `--paths`.
 
 ---
 
@@ -263,10 +283,10 @@ These commands are typed inside an active `coderAI chat` session.
 | `/persona [name\|default\|list]` | List, apply, or clear an agent persona |
 | `/skills` | List available project skill workflows |
 | `/reasoning <high\|medium\|low\|none>` | Set thinking budget for reasoning models |
-| `/yolo` | Toggle auto-approve for high-risk tools |
-| `/verbose` | Toggle verbose mode (show all tool outputs) |
-| `/show <topic>` | Show reference info (e.g. `/show plan`, `/show config`, `/show cost`) |
-| `/copy` | Copy the last assistant response to clipboard (via OSC-52) |
+| `/yolo` | Toggle unsafe auto-approve mode for the session |
+| `/verbose` | Toggle reasoning display, longer diff previews, and success notices |
+| `/show <topic>` | Show reference info (e.g. `/show tasks`, `/show config`, `/show cost`) |
+| `/copy` | Copy the last assistant response to clipboard (native tools, then OSC-52, then temp file) |
 | `/code-search <query>` | Search the codebase semantically and view results inline |
 | `/think` | Toggle thinking/reasoning display |
 | `/clear` | Clear the conversation history and start fresh |
@@ -276,14 +296,18 @@ These commands are typed inside an active `coderAI chat` session.
 | `/undo` | Undo last tool action |
 | `/rewind <n> [--files]` | Rewind conversation to a past turn |
 | `/mcp <name>` | List MCP servers or toggle one on/off |
-| `/plan` | Show current execution plan in the right panel |
+| `/plan` | Alias for `/tasks` |
 | `/export` | Export session to markdown |
-| `/search <query>` | Search conversation transcript |
+| `/search <query>` | Show matching snippets from the conversation transcript |
 | `/retry` | Restart the agent after a crash |
 | `/resume [id]` | Resume a saved session |
 | `/kill <id-or-name>` | Cancel a sub-agent |
-| `/init` | Scaffold `.coderai/` directory in the current project root |
+| `/init` | Scaffold `.coderAI/` directory in the current project root |
 | `/exit` | End the session |
+
+Approval prompts offer a one-time action and, when the backend can derive a
+safe reviewed command-prefix or path scope, an option to remember that scope
+for the session. Remembering a scope does not enable `/yolo`.
 
 **Reference-only slash commands** (output rendered inline, no side effects):
 
@@ -312,14 +336,21 @@ Stored in `~/.coderAI/config.json`. Set via `coderAI config set <key> <value>` o
 | `reasoning_effort` | `medium` | Reasoning depth — `high`, `medium`, `low`, `none` |
 | `streaming` | `true` | Enable streaming token output |
 | `save_history` | `true` | Persist sessions to `~/.coderAI/history/` |
+| `session_retention_days` | `30` | Delete session files older than this many days (`0` disables cleanup) |
 | `tui_notifications` | `true` | Ring terminal bell + emit OSC 9 notification when terminal is unfocused and needs attention |
 | `budget_limit` | `0` | Max USD per session (`0` = unlimited) |
 | `max_file_size` | `1048576` | Max file size readable by `read_file` (bytes) |
 | `max_glob_results` | `200` | Max results returned by `glob_search` |
 | `max_command_output` | `10000` | Max characters captured from `run_command` output |
 | `max_tool_output` | `8000` | Max characters of any tool result kept in context |
+| `sandbox_mode` | `off` | OS subprocess confinement: `off`, `best_effort`, or `required` |
+| `sandbox_allow_network` | `false` | Permit network when OS confinement is active |
 | `web_tools_in_main` | `true` | Allow web tools in the main agent (`web_search`, `read_url`, `http_request`, `download_file`) |
+| `embedding_backend` | `auto` | Embeddings provider: `auto`, `openai`, or `local` |
+| `embedding_model` | backend default | Optional embedding model override |
+| `embedding_device` | backend default | Optional local device, such as `cpu`, `cuda`, or `mps` |
 | `gemini_api_key` | — | Google Gemini API key (or set `GEMINI_API_KEY`) |
+| `meta_api_key` | — | Meta Model API key (or set `MODEL_API_KEY` / `META_API_KEY`) |
 | `browser_headless` | `true` | Run Playwright browser in headless mode |
 | `browser_timeout` | `30.0` | Browser operation timeout (seconds) |
 | `browser_allowed_domains` | — | Comma-separated domain allowlist (blank = all allowed) |
@@ -331,7 +362,9 @@ Stored in `~/.coderAI/config.json`. Set via `coderAI config set <key> <value>` o
 | `ollama_endpoint` | `http://localhost:11434/v1` | Ollama API endpoint |
 | `ollama_model` | `llama3` | Ollama model name |
 
-**Project-level overrides** (`.coderAI/config.json` in the project root) accept a subset of the above keys — everything except API keys.
+**Project-level overrides** (`.coderAI/config.json` in the project root) accept
+a limited subset. API keys, sandbox policy, and host resource caps remain global
+so repository-authored configuration cannot weaken them.
 
 ---
 
@@ -346,36 +379,54 @@ Environment variables take precedence over `~/.coderAI/config.json`.
 | `GROQ_API_KEY` | `groq_api_key` |
 | `DEEPSEEK_API_KEY` | `deepseek_api_key` |
 | `GEMINI_API_KEY` | `gemini_api_key` |
+| `MODEL_API_KEY` / `META_API_KEY` | `meta_api_key` |
 | `CODERAI_DEFAULT_MODEL` | `default_model` |
 | `CODERAI_TEMPERATURE` | `temperature` |
 | `CODERAI_MAX_TOKENS` | `max_tokens` |
+| `CODERAI_EMBEDDING_BACKEND` | `embedding_backend` |
+| `CODERAI_EMBEDDING_MODEL` | `embedding_model` |
+| `CODERAI_EMBEDDING_DEVICE` | `embedding_device` |
 | `CODERAI_REASONING_EFFORT` | `reasoning_effort` |
 | `CODERAI_MAX_ITERATIONS` | `max_iterations` |
 | `CODERAI_MAX_TOOL_OUTPUT` | `max_tool_output` |
 | `CODERAI_BUDGET_LIMIT` | `budget_limit` |
+| `CODERAI_SESSION_RETENTION_DAYS` | `session_retention_days` |
 | `CODERAI_LOG_LEVEL` | `log_level` |
 | `CODERAI_PROJECT_INSTRUCTION_FILE` | `project_instruction_file` |
 | `CODERAI_TOOL_TIMEOUT_SECONDS` | `tool_timeout_seconds` |
 | `CODERAI_SUBPROCESS_TIMEOUT_SECONDS` | `subprocess_timeout_seconds` |
+| `CODERAI_SANDBOX_MODE` | `sandbox_mode`: `off` (default), `best_effort`, or `required` |
+| `CODERAI_SANDBOX_ALLOW_NETWORK` | `sandbox_allow_network`; network remains denied by default when sandboxed |
 | `CODERAI_TOOL_RETRY_MAX_ATTEMPTS` | `tool_retry_max_attempts` |
 | `CODERAI_TOOL_RETRY_BASE_DELAY` | `tool_retry_base_delay` |
-| `CODERAI_MAX_BACKGROUND_JOBS` | `max_background_jobs` |
 | `CODERAI_MAX_BACKGROUND_PROCESSES` | `max_background_processes` |
 | `LMSTUDIO_ENDPOINT` | `lmstudio_endpoint` |
 | `OLLAMA_ENDPOINT` | `ollama_endpoint` |
 | `CODERAI_TUI_NOTIFICATIONS` | `tui_notifications` |
-| `CODERAI_THEME` | `dark` or `light` for the Textual chat UI |
-| `CODERAI_MODEL` | Model override for the IPC entry point |
-| `CODERAI_RESUME` | Session ID to resume (IPC entry point) |
-| `CODERAI_AUTO_APPROVE` | `"1"` to skip all tool confirmations |
 | `CODERAI_ALLOW_LOCAL_URLS` | `"1"` to allow SSRF-protected web tools to reach localhost |
 | `CODERAI_ALLOW_OUTSIDE_PROJECT` | `"1"` to allow file/terminal/refactor tools outside the project root |
+
+### Execution Sandbox
+
+`CODERAI_SANDBOX_MODE=required` confines model-authored commands, REPL code,
+tests/lint/format/package/git subprocesses, background commands, trusted project
+hooks, and MCP stdio servers with Bubblewrap on Linux or `sandbox-exec` on macOS.
+The project and temporary directories are writable; other host paths are
+read-only and network is denied. Set `CODERAI_SANDBOX_ALLOW_NETWORK=1` only when
+sandboxed commands must download packages, use remote git, or run a networked
+MCP server.
+
+The compatibility default is `off`. `best_effort` uses a backend when its
+feature probe succeeds, otherwise logs an explicit `running unconfined` warning.
+`required` refuses to launch if no backend is usable. `off` and best-effort
+fallbacks must not be treated as confinement. Host files remain readable even
+in an active sandbox.
 
 ---
 
 ## Tool Quick Reference
 
-All **~68 native tools** available to the agent when optional dependencies are installed (67 auto-discovered plus `manage_context`), plus rare git ops on the bundled `git_extended` MCP server. Browser tools require `pip install coderAI[browser]`; PDF extraction in `read_url` requires `pip install coderAI[web]`; desktop tools are macOS-only. Batch edits use `search_replace` with an `edits` list. Confirmation required (`✓`) means the agent asks before running.
+Native tools are discovered at runtime, with `manage_context` registered manually and rare git ops supplied by the bundled `git_extended` MCP server. Browser tools require `pip install coderAI[browser]`; PDF extraction in `read_url` requires `pip install coderAI[web]`; desktop tools are macOS-only. Batch edits use `search_replace` with an `edits` list. Confirmation required (`✓`) means the agent asks before running.
 
 ### Filesystem
 
@@ -478,11 +529,6 @@ Rare git ops auto-connect via the bundled `git_extended` MCP server as
 | Tool | Confirm | Description |
 |---|---|---|
 | `delegate_task` | ✓ | Spawn an isolated sub-agent |
-
-### Background Jobs
-
-| Tool | Confirm | Description |
-|---|---|---|
 
 ### Execution & Planning
 

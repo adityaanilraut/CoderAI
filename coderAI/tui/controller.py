@@ -10,13 +10,11 @@ Subscribes to ``event_emitter`` and dispatches UI commands to the agent.
 See ``docs/CHAT_EVENTS.md`` for the event catalog.
 
 The command handlers live in ``coderAI/tui/commands.py`` and the payload
-serializers in ``coderAI/tui/serializers.py`` (Phase 2b split); both are
+serializers in ``coderAI/tui/serializers.py``; both are
 re-exported here because tests and callers historically import them from
 this module — and because tests patch module attributes such as
 ``coderAI.tui.controller.agent_tracker`` that the handlers resolve
 through this namespace at call time.
-
-Moved here from ``coderAI/bridge/controller.py`` (Phase 3 bridge demolition).
 """
 
 from __future__ import annotations
@@ -59,6 +57,7 @@ from coderAI.tui.commands import (  # noqa: F401
     _cmd_set_persona,
     _cmd_set_reasoning,
     _cmd_set_verbosity,
+    _cmd_set_auto_approve,
     _cmd_toggle_auto_approve,
     _cmd_tool_approval_resp,
     _COMMAND_HANDLERS,
@@ -170,7 +169,7 @@ class UIBridge:
         if event in ("info", "warning"):
             msg = str(data.get("message", ""))
             # Long-form payloads (multi-line) are reference output from
-            # `/show`, `/tasks`, `/plan` — keep them at every level.
+            # `/show` and `/tasks` — keep them at every level.
             if "\n" in msg:
                 return True
             return v != "quiet"
@@ -222,6 +221,8 @@ class UIBridge:
         iteration = self._iteration
         prior_approved = self._count_prior_approved_this_turn()
 
+        timeout_s = int(getattr(self.agent.config, "approval_timeout_seconds", 300) or 0)
+        remember = self._approval_memory_option(tool_name, arguments)
         payload = {
             "name": tool_name,
             "args": preview_args_for_approval(arguments),
@@ -232,12 +233,14 @@ class UIBridge:
             "iteration": iteration,
             "maxIterations": getattr(self.agent.config, "max_iterations", 50),
             "priorApproved": prior_approved,
+            "timeoutSeconds": timeout_s,
+            "expiresAt": (_time.time() + timeout_s) if timeout_s > 0 else None,
+            **remember,
         }
         if diff is not None:
             payload["diff"] = diff
 
         self.emit("tool", id=tool_id, phase="awaiting_approval", payload=payload)
-        timeout_s = int(getattr(self.agent.config, "approval_timeout_seconds", 300) or 0)
         try:
             if timeout_s > 0:
                 return bool(await asyncio.wait_for(fut, timeout=timeout_s))
@@ -258,6 +261,41 @@ class UIBridge:
         finally:
             # Drop any leftover waiter (handler normally pops on approve/deny).
             self._approval_waiters.pop(tool_id, None)
+
+    def _approval_memory_option(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Describe the narrowest safe session approval the modal may remember.
+
+        The enforcement source remains :class:`ApprovalRules`; this method only
+        exposes a candidate scope already visible in the approval request. Unknown
+        and non-tool prompts deliberately receive no remember action.
+        """
+        registry = getattr(self.agent, "tools", None)
+        tool = registry.get(tool_name) if registry is not None else None
+        if tool is None:
+            return {}
+
+        scope_kind = getattr(tool, "approval_scope", None)
+        scope = ""
+        if scope_kind == "command":
+            scope = str(arguments.get("command") or "").strip()
+        elif scope_kind == "path":
+            scope = str(arguments.get("path") or arguments.get("file_path") or "").strip()
+
+        if scope:
+            noun = "command prefix" if scope_kind == "command" else "path"
+            return {
+                "rememberMode": "scope",
+                "rememberScope": scope,
+                "rememberLabel": f"Allow this {noun}",
+            }
+
+        if not bool(getattr(tool, "high_risk_no_blanket", False)):
+            return {
+                "rememberMode": "tool",
+                "rememberScope": "",
+                "rememberLabel": f"Allow {tool_name} this session",
+            }
+        return {}
 
     def _count_prior_approved_this_turn(self) -> int:
         """Count how many tools were already approved in the current turn."""
@@ -293,6 +331,29 @@ class UIBridge:
 
     def emit_ready(self) -> None:
         self.emit("ready")
+
+    def emit_session_replay(self) -> None:
+        """Replay persisted transcript messages into the TUI timeline."""
+        session = getattr(self.agent, "session", None)
+        if session is None:
+            return
+        messages = []
+        for message in session.messages:
+            if message.role == "system":
+                continue
+            messages.append(
+                {
+                    "role": message.role,
+                    "content": message.content,
+                    "timestamp": message.timestamp,
+                    "tool_calls": message.tool_calls,
+                    "tool_call_id": message.tool_call_id,
+                    "name": message.name,
+                    "reasoning_content": message.reasoning_content,
+                }
+            )
+        if messages:
+            self.emit("session_replay", messages=messages)
 
     def emit_status(self) -> None:
         try:
@@ -574,6 +635,8 @@ class UIBridge:
         """Emit hello/ready and seed the agent tree."""
         self._session_start_ts = _time.time()
         self.emit_hello()
+        self.emit_session_replay()
+        self.emit_status()
         self.emit_ready()
         for info in agent_tracker.get_all():
             self.emit(

@@ -33,6 +33,8 @@ class SlashContext:
     retry_agent: Callable[[], None]
     rewind_timeline: Callable[[int], None]
     resume_session: Callable[[Optional[str]], None]
+    # Optional OSC-52 / driver writer supplied by the Textual app.
+    copy_to_clipboard: Optional[Callable[[str], None]] = None
 
     def toast(self, level: str, message: str) -> None:
         self.reducer.toast(level, message)
@@ -69,10 +71,8 @@ def _cmd_model(ctx: SlashContext, arg: str, head: str) -> bool:
             ctx.toast("warning", "Usage: /model default <name>")
             return True
         ctx.controller.enqueue_command("set_default_model", model=target)
-        ctx.toast("success", f"Default model set to {target}")
         return True
     ctx.controller.enqueue_command("set_model", model=arg)
-    ctx.toast("success", f"Model set to {arg}")
     return True
 
 
@@ -85,7 +85,6 @@ def _cmd_reasoning(ctx: SlashContext, arg: str, head: str) -> bool:
         ctx.toast("warning", "Usage: /reasoning <high|medium|low|none>")
         return True
     ctx.controller.enqueue_command("set_reasoning", effort=norm)
-    ctx.toast("success", f"Reasoning set to {norm}")
     return True
 
 
@@ -256,18 +255,12 @@ def _cmd_show(ctx: SlashContext, arg: str, head: str) -> bool:
         ctx.toast("warning", "Usage: /show <version|models|cost|info|config|system|tasks>")
         return True
     topic = "models" if topic in ("providers", "models") else topic
-    # `/show plan` aliases to the tasks panel. `/show tasks` keeps the text
-    # listing via the reference handler; dedicated `/tasks` refreshes the panel.
-    if topic == "plan":
-        ctx.controller.enqueue_command("get_tasks")
-    else:
-        ctx.controller.enqueue_command("reference", topic=topic)
+    ctx.controller.enqueue_command("reference", topic=topic)
     return True
 
 
 def _cmd_plan(ctx: SlashContext, arg: str, head: str) -> bool:
-    ctx.controller.enqueue_command("get_tasks")
-    return True
+    return _cmd_tasks(ctx, arg, head)
 
 
 def _cmd_exit(ctx: SlashContext, arg: str, head: str) -> bool:
@@ -314,15 +307,19 @@ def _cmd_unpin(ctx: SlashContext, arg: str, head: str) -> bool:
 
 
 def _cmd_copy(ctx: SlashContext, arg: str, head: str) -> bool:
-    from coderAI.tui.clipboard import copy_to_clipboard_osc52, copy_fallback_file
+    from coderAI.tui.clipboard import copy_text
 
     last = _find_last_assistant(ctx.reducer.timeline)
     if not last:
         ctx.toast("warning", "No assistant response to copy")
-    else:
-        copy_to_clipboard_osc52(last)
-        copy_fallback_file(last, ctx.toast)
-        ctx.toast("info", f"Sent {len(last):,} chars via OSC-52 + temp file")
+        return True
+
+    copy_text(
+        last,
+        write_osc52=ctx.copy_to_clipboard,
+        notify_fn=ctx.toast,
+        fallback_file=True,
+    )
     return True
 
 
@@ -353,7 +350,7 @@ def _cmd_kill(ctx: SlashContext, arg: str, head: str) -> bool:
 
 
 def _cmd_init(ctx: SlashContext, arg: str, head: str) -> bool:
-    ctx.toast("info", "Scaffolding .coderai/ project directory…")
+    ctx.toast("info", "Scaffolding .coderAI/ project directory…")
     ctx.controller.enqueue_command("init_project")
     return True
 
@@ -469,7 +466,7 @@ _register(
 _register(_cmd_plan, "plan", desc="Show task checklist (same as /tasks)")
 _register(_cmd_exit, "exit", "quit", desc="Shut down the agent")
 _register(_cmd_export, "export", "save", desc="Export session to markdown")
-_register(_cmd_search, "search", "find", desc="Search conversation transcript")
+_register(_cmd_search, "search", "find", desc="Show matching transcript snippets")
 _register(_cmd_pin, "pin", desc="Pin a file to context · /pin <path>")
 _register(_cmd_unpin, "unpin", desc="Unpin a file from context · /unpin <path>")
 _register(_cmd_copy, "copy", desc="Copy last assistant response (OSC-52)")
@@ -481,7 +478,7 @@ _register(
     desc="Resume a saved session · /resume [id]",
 )
 _register(_cmd_kill, "kill", "cancel-agent", desc="Cancel a sub-agent · /kill <id-or-name>")
-_register(_cmd_init, "init", desc="Scaffold .coderai/ directory for the current project")
+_register(_cmd_init, "init", desc="Scaffold .coderAI/ directory for the current project")
 _register(
     _cmd_trust,
     "trust",
@@ -508,6 +505,7 @@ def handle_slash_command(
     retry_agent: Callable[[], None],
     rewind_timeline: Callable[[int], None],
     resume_session: Callable[[Optional[str]], None],
+    copy_to_clipboard: Optional[Callable[[str], None]] = None,
 ) -> bool:
     """Dispatch a slash command. Returns True if handled."""
 
@@ -529,6 +527,7 @@ def handle_slash_command(
         retry_agent=retry_agent,
         rewind_timeline=rewind_timeline,
         resume_session=resume_session,
+        copy_to_clipboard=copy_to_clipboard,
     )
 
     entry = _SLASH_REGISTRY.get(head)

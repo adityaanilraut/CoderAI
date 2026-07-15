@@ -1,5 +1,6 @@
 """Tests for concurrent tool execution in ToolExecutor.run_tool_batch()."""
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -140,6 +141,91 @@ class TestBatchReadOnlyParallelism:
 
 class TestBatchMutationSerialization:
     @pytest.mark.asyncio
+    async def test_started_mutation_finishes_before_cancellation_is_reported(self):
+        started = asyncio.Event()
+        completed = False
+
+        async def _mutate(**kwargs):
+            nonlocal completed
+            started.set()
+            await asyncio.sleep(0.02)
+            completed = True
+            return {"success": True}
+
+        tool = SimpleNamespace(
+            name="mutate",
+            is_read_only=False,
+            requires_confirmation=False,
+            max_parallel_invocations=0,
+            execute=AsyncMock(side_effect=_mutate),
+        )
+        agent = _make_agent(_make_registry({"mutate": tool}))
+        cancel_event = asyncio.Event()
+        agent.tracker_info = SimpleNamespace(_cancel_event=cancel_event, agent_id="main")
+        executor = ToolExecutor(agent)
+        hooks_manager = AsyncMock()
+        hooks_manager.run_hooks.return_value = None
+
+        run = asyncio.create_task(
+            executor.run_tool_batch(
+                [{"tool_id": "m", "tool_name": "mutate", "arguments": {}}],
+                hooks_data=None,
+                hooks_manager=hooks_manager,
+            )
+        )
+        await started.wait()
+        cancel_event.set()
+        results = await run
+
+        assert completed is True
+        assert results[0]["success"] is True
+        assert results[0]["_cancellation_requested"] is True
+
+    @pytest.mark.asyncio
+    async def test_write_then_read_preserves_model_order(self):
+        events = []
+
+        async def _write(**kwargs):
+            events.append("write")
+            return {"success": True}
+
+        async def _read(**kwargs):
+            events.append("read")
+            return {"success": True}
+
+        write = SimpleNamespace(
+            name="write_file",
+            is_read_only=False,
+            requires_confirmation=False,
+            max_parallel_invocations=0,
+            batch_serialize_by_path=True,
+            execute=AsyncMock(side_effect=_write),
+        )
+        read = SimpleNamespace(
+            name="read_file",
+            is_read_only=True,
+            requires_confirmation=False,
+            max_parallel_invocations=0,
+            execute=AsyncMock(side_effect=_read),
+        )
+        executor = ToolExecutor(
+            _make_agent(_make_registry({"write_file": write, "read_file": read}))
+        )
+        hooks_manager = AsyncMock()
+        hooks_manager.run_hooks.return_value = None
+
+        await executor.run_tool_batch(
+            [
+                {"tool_id": "w", "tool_name": "write_file", "arguments": {"path": "x.py"}},
+                {"tool_id": "r", "tool_name": "read_file", "arguments": {"path": "x.py"}},
+            ],
+            hooks_data=None,
+            hooks_manager=hooks_manager,
+        )
+
+        assert events == ["write", "read"]
+
+    @pytest.mark.asyncio
     async def test_same_path_writes_are_serialized(self):
         t_write = SimpleNamespace(
             name="write_file",
@@ -198,6 +284,48 @@ class TestBatchMutationSerialization:
 
         assert len(results) == 2
         assert all(r["success"] for r in results)
+
+    @pytest.mark.asyncio
+    async def test_path_aliases_share_one_serial_queue(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        active = 0
+        peak = 0
+
+        async def _write(**kwargs):
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            await asyncio.sleep(0.02)
+            active -= 1
+            return {"success": True}
+
+        tool = SimpleNamespace(
+            name="write_file",
+            is_read_only=False,
+            requires_confirmation=False,
+            max_parallel_invocations=0,
+            batch_serialize_by_path=True,
+            execute=AsyncMock(side_effect=_write),
+        )
+        executor = ToolExecutor(_make_agent(_make_registry({"write_file": tool})))
+        hooks_manager = AsyncMock()
+        hooks_manager.run_hooks.return_value = None
+
+        await executor.run_tool_batch(
+            [
+                {"tool_id": "a", "tool_name": "write_file", "arguments": {"path": "x.py"}},
+                {"tool_id": "b", "tool_name": "write_file", "arguments": {"path": "./x.py"}},
+                {
+                    "tool_id": "c",
+                    "tool_name": "write_file",
+                    "arguments": {"path": str(tmp_path / "x.py")},
+                },
+            ],
+            hooks_data=None,
+            hooks_manager=hooks_manager,
+        )
+
+        assert peak == 1
 
 
 class TestBatchDedup:

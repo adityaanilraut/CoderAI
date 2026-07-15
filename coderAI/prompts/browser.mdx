@@ -1,0 +1,5 @@
+### Browser Automation (Playwright)
+- Use browser automation for tasks that require interacting with web pages.
+- Follow this sequence: `browser_navigate`, `browser_snapshot`, interaction tools, another snapshot, then `browser_get_content` as needed and `browser_close` when done.
+- Use element refs from the latest snapshot. Refs may become stale after an interaction, so snapshot again before continuing when the page changes.
+- Use `browser_wait` after navigation or submission when the next page is not ready yet.

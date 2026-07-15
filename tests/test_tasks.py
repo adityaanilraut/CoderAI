@@ -1,8 +1,11 @@
 """Tests for ManageTasksTool."""
 
 import asyncio
+from types import SimpleNamespace
+
 import pytest
 
+from coderAI.core.services import services_scope
 from coderAI.tools.tasks import ManageTasksTool
 
 
@@ -19,8 +22,13 @@ class TestManageTasksTool:
         self.root = str(tmp_path)
 
     def _run(self, **kwargs):
-        kwargs.setdefault("project_root", self.root)
-        return asyncio.run(self.tool.execute(**kwargs))
+        config = SimpleNamespace(project_root=self.root, allow_outside_project=False)
+        with services_scope(config=config):
+            return asyncio.run(self.tool.execute(**kwargs))
+
+    def test_schema_does_not_expose_project_root(self):
+        properties = self.tool.parameters_model.model_json_schema()["properties"]
+        assert "project_root" not in properties
 
     # ── list ──────────────────────────────────────────────────────────────────
 

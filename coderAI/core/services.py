@@ -70,6 +70,7 @@ class ToolServices:
         # Guards lazy builds; tool batches may resolve services from worker
         # threads (e.g. asyncio.to_thread bodies).
         self._build_lock = threading.Lock()
+
     def _resolve(self, field: str, build: Callable[[], T]) -> T:
         attr = f"_{field}"
         val = getattr(self, attr)

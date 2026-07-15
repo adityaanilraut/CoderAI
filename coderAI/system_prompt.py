@@ -17,7 +17,7 @@ from __future__ import annotations
 import importlib.resources
 import logging
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 from .tools.base import ToolRegistry
 
@@ -50,6 +50,8 @@ SYSTEM_PROMPT_INTRO = _load_prompt("intro.mdx")
 SYSTEM_PROMPT_RUNTIME = _load_prompt("runtime.mdx")
 SYSTEM_PROMPT_INTERACTION = _load_prompt("interaction.mdx")
 SYSTEM_PROMPT_OUTPUT_STYLE = _load_prompt("output_style.mdx")
+SYSTEM_PROMPT_DESKTOP = _load_prompt("desktop.mdx")
+SYSTEM_PROMPT_BROWSER = _load_prompt("browser.mdx")
 
 
 def build_environment_section(
@@ -97,6 +99,35 @@ def build_environment_section(
 
 
 SYSTEM_PROMPT_TAIL = _load_prompt("tail.mdx")
+
+
+def format_capability_guidance(registry: ToolRegistry) -> str:
+    """Return strategy sections only for capabilities present in *registry*."""
+    sections: List[str] = []
+    desktop_tools = (
+        "run_applescript",
+        "get_accessibility_tree",
+        "click_ui_element",
+        "type_keystrokes",
+    )
+    browser_tools = (
+        "browser_navigate",
+        "browser_snapshot",
+        "browser_click",
+        "browser_type",
+        "browser_select_option",
+        "browser_get_content",
+        "browser_screenshot",
+        "browser_evaluate",
+        "browser_wait",
+        "browser_close",
+    )
+    if all(registry.get(name) is not None for name in desktop_tools):
+        sections.append(SYSTEM_PROMPT_DESKTOP)
+    if all(registry.get(name) is not None for name in browser_tools):
+        sections.append(SYSTEM_PROMPT_BROWSER)
+    return "\n\n".join(sections)
+
 
 # Ordered sections: (heading, tool names in preferred display order).
 _TOOL_SECTIONS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
@@ -286,7 +317,10 @@ def compose_default_system_prompt(
             format_tools_markdown(registry),
             SYSTEM_PROMPT_INTERACTION,
             SYSTEM_PROMPT_OUTPUT_STYLE,
-            SYSTEM_PROMPT_TAIL,
         ]
     )
+    guidance = format_capability_guidance(registry)
+    if guidance:
+        parts.append(guidance)
+    parts.append(SYSTEM_PROMPT_TAIL)
     return "\n\n".join(parts)

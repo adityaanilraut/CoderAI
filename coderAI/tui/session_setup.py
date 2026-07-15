@@ -25,9 +25,15 @@ def _activate_resumed_session_model(agent: Agent, requested_model: Optional[str]
         return
     effective_model = requested_model or session.model or agent.model
     if agent.model != effective_model:
+        old_provider = agent.provider
         agent.model = effective_model
-        agent.provider = agent._create_provider()
-        agent.context_controller.provider = agent.provider
+        new_provider = agent._create_provider()
+        agent.provider = new_provider
+        agent.context_controller.provider = new_provider
+        skill_manager = getattr(agent, "skill_manager", None)
+        if skill_manager is not None:
+            skill_manager.provider = new_provider
+        agent._close_replaced_provider(old_provider)
     session.model = effective_model
     agent._configure_delegate_tool_context()
 

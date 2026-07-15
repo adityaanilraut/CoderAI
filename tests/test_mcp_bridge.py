@@ -60,19 +60,29 @@ def test_list_merges_connected_and_configured(cfg, monkeypatch):
     assert rows["live_srv"]["tools"] == 1
     assert rows["off_srv"]["connected"] is False
     assert rows["off_srv"]["disabled"] is True
-    # Sorted by name.
-    assert [r["name"] for r in payload["servers"]] == ["live_srv", "off_srv"]
+    # Sorted by name, including the bundled git server.
+    assert [r["name"] for r in payload["servers"]] == ["git_extended", "live_srv", "off_srv"]
 
 
-def test_list_empty_also_emits_info(cfg, monkeypatch):
+def test_list_includes_bundled_server(cfg, monkeypatch):
     cfg({})
     monkeypatch.setattr(mcp_mod, "mcp_client", _fake_client({}))
 
     bridge = FakeBridge()
     asyncio.run(_cmd_list_mcp_servers(bridge, {}))
 
-    assert bridge.last("available_mcp_servers")["servers"] == []
-    assert "info" in bridge.names()
+    rows = bridge.last("available_mcp_servers")["servers"]
+    assert rows == [
+        {
+            "name": "git_extended",
+            "connected": False,
+            "disabled": False,
+            "degraded": False,
+            "tools": 0,
+            "transport": "stdio",
+        }
+    ]
+    assert "info" not in bridge.names()
 
 
 def test_toggle_disconnects_connected_and_disables(cfg, monkeypatch):

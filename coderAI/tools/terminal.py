@@ -15,7 +15,14 @@ from pydantic import BaseModel, Field
 
 from coderAI.core.services import get_services
 from coderAI.core.tool_error_codes import ToolErrorCode
-from coderAI.system.proc import kill_process_group, new_session_kwargs, run_scrubbed, scrub_env
+from coderAI.system.proc import (
+    command_argv,
+    kill_process_group,
+    new_session_kwargs,
+    run_scrubbed,
+    scrub_env,
+)
+from coderAI.system.sandbox import prepare_sandbox_launch
 from coderAI.system.safeguards import is_interactive_command, truncate_output
 from coderAI.tools.base import SUBPROCESS_TIMEOUT_MARGIN_SECONDS, Tool
 
@@ -555,8 +562,8 @@ class RunCommandTool(Tool):
     ) -> Dict[str, Any]:
         """Execute shell command with safety checks.
 
-        Uses shlex.split + create_subprocess_exec for simple commands,
-        falls back to create_subprocess_shell for complex shell syntax.
+        Uses direct argv for simple commands and an explicit shell argv for
+        complex syntax; both pass through the shared OS sandbox boundary.
         """
         try:
             timeout = max(1, min(timeout, 3600))
@@ -680,9 +687,8 @@ class RunBackgroundTool(Tool):
     ) -> Dict[str, Any]:
         """Start background process with tracking.
 
-        Uses the same exec-vs-shell heuristic as ``run_command`` — plain
-        commands go through ``create_subprocess_exec`` (no shell interpretation),
-        only commands with shell metacharacters fall back to the shell.
+        Uses the same exec-vs-shell heuristic as ``run_command``. Both forms are
+        normalized to argv before the configured OS sandbox wrapper is applied.
         """
         try:
             # Reap finished entries, then enforce the global cap — the tracked
@@ -716,26 +722,18 @@ class RunBackgroundTool(Tool):
             )
 
             # Detached lifetime (we track it rather than await it), so we can't
-            # use run_scrubbed — but the child still gets a scrubbed env so a
-            # backgrounded command can't read secrets out of the environment.
-            if isinstance(prep.spawn_cmd, str):
-                process = await asyncio.create_subprocess_shell(
-                    prep.spawn_cmd,
-                    stdout=stdout_target,
-                    stderr=stderr_target,
-                    cwd=prep.working_dir,
-                    env=scrub_env(),
-                    **new_session_kwargs(),
-                )
-            else:
-                process = await asyncio.create_subprocess_exec(
-                    *prep.spawn_cmd,
-                    stdout=stdout_target,
-                    stderr=stderr_target,
-                    cwd=prep.working_dir,
-                    env=scrub_env(),
-                    **new_session_kwargs(),
-                )
+            # use run_scrubbed. Apply its env, process-group, and sandbox pieces
+            # directly instead.
+            argv = command_argv(prep.spawn_cmd, shell=isinstance(prep.spawn_cmd, str))
+            launch = prepare_sandbox_launch(argv, cwd=prep.working_dir)
+            process = await asyncio.create_subprocess_exec(
+                *launch.argv,
+                stdout=stdout_target,
+                stderr=stderr_target,
+                cwd=prep.working_dir,
+                env=scrub_env(),
+                **new_session_kwargs(),
+            )
 
             # Track the process
             _ensure_atexit_cleanup()

@@ -19,7 +19,7 @@ import logging
 import os
 import socket
 import ssl
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urljoin, urlparse
 
 import aiohttp
@@ -124,13 +124,69 @@ def _literal_ip_blocked(hostname: Optional[str], allow_local: bool) -> bool:
     return not (allow_local or _is_ip_public(str(ip)))
 
 
-def _strip_sensitive_headers(
-    headers: Optional[Dict[str, str]],
-) -> Optional[Dict[str, str]]:
-    """Drop credential-bearing headers (case-insensitive) for a cross-origin hop."""
+_BODY_HEADERS = frozenset(
+    {"content-length", "content-type", "content-encoding", "content-language", "content-location"}
+)
+
+
+def _normalized_origin(url: str) -> Optional[Tuple[str, str, int]]:
+    """Return a scheme/host/effective-port origin tuple for an HTTP URL."""
+    try:
+        parsed = urlparse(url)
+        scheme = parsed.scheme.lower()
+        if scheme not in ("http", "https") or not parsed.hostname:
+            return None
+        host = parsed.hostname.rstrip(".").encode("idna").decode("ascii").lower()
+        port = parsed.port or (443 if scheme == "https" else 80)
+        return scheme, host, port
+    except (UnicodeError, ValueError):
+        return None
+
+
+def _has_sensitive_headers(headers: Optional[Dict[str, str]]) -> bool:
+    if not headers:
+        return False
+    return any(k.lower() in _SENSITIVE_REDIRECT_HEADERS for k in headers)
+
+
+def _without_body_headers(headers: Optional[Dict[str, str]]) -> Optional[Dict[str, str]]:
     if not headers:
         return headers
-    return {k: v for k, v in headers.items() if k.lower() not in _SENSITIVE_REDIRECT_HEADERS}
+    return {k: v for k, v in headers.items() if k.lower() not in _BODY_HEADERS}
+
+
+def _redirect_request_state(
+    status: int,
+    method: str,
+    headers: Optional[Dict[str, str]],
+    json_body: Any,
+    body: Any,
+) -> tuple[str, Optional[Dict[str, str]], Any, Any]:
+    """Apply RFC redirect method/body semantics for the next request."""
+    next_method = method
+    if status == 303 and method != "HEAD":
+        next_method = "GET"
+    elif status in (301, 302) and method == "POST":
+        next_method = "GET"
+    if next_method != method:
+        return next_method, _without_body_headers(headers), None, None
+    return next_method, headers, json_body, body
+
+
+async def _read_bounded(resp: aiohttp.ClientResponse, max_bytes: int) -> tuple[bytes, bool]:
+    """Stream at most ``max_bytes + 1`` bytes from a response."""
+    max_bytes = max(0, max_bytes)
+    limit = max_bytes + 1
+    chunks = bytearray()
+    while len(chunks) < limit:
+        chunk = await resp.content.read(min(64 * 1024, limit - len(chunks)))
+        if not chunk:
+            break
+        chunks.extend(chunk)
+    oversize = len(chunks) > max_bytes
+    if oversize:
+        del chunks[max_bytes:]
+    return bytes(chunks), oversize
 
 
 def _allow_local(allow_local: bool) -> bool:
@@ -276,18 +332,22 @@ class HttpClient:
         allow_local = _allow_local(allow_local)
         session = await self.get_session(allow_local)
         current = url
-        seen_urls: set = set()
+        seen_urls = {current}
 
         parsed = urlparse(current)
+        current_origin = _normalized_origin(current)
+        if current_origin is None:
+            logger.warning("SSRF guard: invalid HTTP URL %s", _redact_url(current))
+            return None
         await _rate_limit_async(parsed.hostname)
 
         # Per-hop SSRF/redirect state. ``current_headers`` starts as the caller's
-        # headers and is stripped of credentials the moment a redirect crosses
-        # origins; ``current_host``/``current_scheme`` track the last hop so a
-        # host change or an https→http downgrade can be detected (6.4).
-        current_headers = headers
-        current_host = parsed.hostname
-        current_scheme = (parsed.scheme or "").lower()
+        # headers/body and is rejected if a redirect would replay either to a
+        # different normalized origin.
+        current_headers = dict(headers) if headers else None
+        current_method = method.upper()
+        current_json_body = json_body
+        current_body = body
 
         # Literal-IP pre-validation: the aiohttp resolver only fires for
         # hostname lookups, so a literal IP address must be checked explicitly.
@@ -298,13 +358,13 @@ class HttpClient:
         for _ in range(_MAX_REDIRECTS + 1):
             try:
                 async with session.request(
-                    method,
+                    current_method,
                     current,
                     headers=current_headers or _HEADERS_CHROME,
                     timeout=aiohttp.ClientTimeout(total=timeout_s, connect=10),
                     allow_redirects=False,
-                    json=json_body,
-                    data=body,
+                    json=current_json_body,
+                    data=current_body,
                 ) as resp:
                     if resp.status in (301, 302, 303, 307, 308):
                         loc = resp.headers.get("Location")
@@ -315,9 +375,10 @@ class HttpClient:
                             logger.warning(f"SSRF guard: redirect loop at {_redact_url(next_url)}")
                             return None
                         seen_urls.add(next_url)
-                        if not next_url.startswith(("http://", "https://")):
+                        next_origin = _normalized_origin(next_url)
+                        if next_origin is None:
                             logger.warning(
-                                f"SSRF guard: non-http redirect to {_redact_url(next_url)}"
+                                "SSRF guard: invalid redirect URL %s", _redact_url(next_url)
                             )
                             return None
 
@@ -332,20 +393,46 @@ class HttpClient:
                             )
                             return None
 
-                        # Strip credential-bearing headers when the redirect
-                        # leaves the current origin or downgrades https→http, so
-                        # a public→attacker redirect can't replay the caller's
-                        # secrets to a host they were never issued for (6.4).
-                        next_host = next_parsed.hostname
-                        next_scheme = (next_parsed.scheme or "").lower()
-                        if next_host != current_host or (
-                            current_scheme == "https" and next_scheme != "https"
-                        ):
-                            current_headers = _strip_sensitive_headers(current_headers)
-                        current_host = next_host
-                        current_scheme = next_scheme
+                        (
+                            next_method,
+                            next_headers,
+                            next_json_body,
+                            next_body,
+                        ) = _redirect_request_state(
+                            resp.status,
+                            current_method,
+                            current_headers,
+                            current_json_body,
+                            current_body,
+                        )
+                        if next_origin != current_origin:
+                            has_url_credentials = bool(
+                                parsed.username
+                                or parsed.password
+                                or next_parsed.username
+                                or next_parsed.password
+                            )
+                            carries_body = next_json_body is not None or next_body is not None
+                            if (
+                                has_url_credentials
+                                or _has_sensitive_headers(next_headers)
+                                or carries_body
+                            ):
+                                logger.warning(
+                                    "SSRF guard: blocked credential/body-bearing cross-origin "
+                                    "redirect to %s",
+                                    _redact_url(next_url),
+                                )
+                                return None
 
                         current = next_url
+                        parsed = next_parsed
+                        current_origin = next_origin
+                        current_method = next_method
+                        current_headers = next_headers
+                        current_json_body = next_json_body
+                        current_body = next_body
+                        await _rate_limit_async(next_parsed.hostname)
                         continue
 
                     content_type = resp.headers.get("Content-Type", "")
@@ -366,10 +453,7 @@ class HttpClient:
                         except ValueError:
                             pass
 
-                    raw_bytes = await resp.read()
-                    oversize = len(raw_bytes) > max_bytes
-                    if oversize:
-                        raw_bytes = raw_bytes[:max_bytes]
+                    raw_bytes, oversize = await _read_bounded(resp, max_bytes)
                     try:
                         text = raw_bytes.decode("utf-8", errors="replace")
                     except Exception:

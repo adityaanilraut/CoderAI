@@ -380,10 +380,7 @@ class TestConfig:
         manager = ConfigManager()
         manager._config = Config(openai_api_key="sk-1234567890abcdef1234567890abcdef")
         shown = manager.show()
-        # Should be partially masked (first 7 chars + ***)
-        assert "***" in shown["openai_api_key"]
-        # Should NOT show the full key
-        assert shown["openai_api_key"] != "sk-1234567890abcdef1234567890abcdef"
+        assert shown["openai_api_key"] == "[REDACTED]"
 
 
 # ============================================================================
@@ -958,12 +955,17 @@ class TestMCPTools:
         assert "command" in params["properties"]
 
     def test_mcp_list(self):
-        from coderAI.tools.mcp import MCPListTool
+        import coderAI.tools.mcp as mcp_mod
+        from coderAI.tools.mcp import MCPClient, MCPListTool
 
-        tool = MCPListTool()
-        result = asyncio.run(tool.execute())
-        assert result["success"] is True
-        assert result["connected_servers"] == 0
+        original = mcp_mod.mcp_client
+        mcp_mod.mcp_client = MCPClient()
+        try:
+            result = asyncio.run(MCPListTool().execute())
+            assert result["success"] is True
+            assert result["connected_servers"] == 0
+        finally:
+            mcp_mod.mcp_client = original
 
 
 class TestUpdatedSystemPrompt:
@@ -997,8 +999,7 @@ class TestConfigAnthropicKey:
         manager = ConfigManager()
         manager._config = Config(anthropic_api_key="sk-ant-test1234567890abcdef1234567890")
         shown = manager.show()
-        assert "***" in shown["anthropic_api_key"]
-        assert shown["anthropic_api_key"] != "sk-ant-test1234567890abcdef1234567890"
+        assert shown["anthropic_api_key"] == "[REDACTED]"
 
 
 # ============================================================================
@@ -1299,8 +1300,7 @@ class TestGeminiProvider:
         manager = ConfigManager()
         manager._config = Config(gemini_api_key="gemini-test-key-123456789-extra-long")
         shown = manager.show()
-        assert "***" in shown["gemini_api_key"]
-        assert shown["gemini_api_key"] != "gemini-test-key-123456789-extra-long"
+        assert shown["gemini_api_key"] == "[REDACTED]"
 
     @pytest.mark.asyncio
     async def test_chat_success(self):

@@ -41,11 +41,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Semantic code search (`coderAI index` / `search`, semantic_search tool). Pulls
-# in ChromaDB — a heavy dependency, so it is opt-in to keep `pip install coderAI`
-# light. Without it, only these features are unavailable; everything else works.
+# Semantic code search (`coderAI index` / `search`, semantic_search tool). ChromaDB
+# and local model inference are separate opt-ins to keep the default install light.
 semantic = [
     "chromadb>=0.4.22",
+]
+local-embeddings = [
+    "sentence-transformers>=3.0.0",
 ]
 web = [
     "pypdf>=3.0.0",
@@ -157,4 +159,3 @@ markers = [
     "slow: long-running benchmark; excluded from the default run (use -m slow to include)",
     "security: red-team / security regression test. Auto-applied to everything under tests/security/; run the suite in isolation with `pytest -m security`.",
 ]
-

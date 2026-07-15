@@ -9,7 +9,7 @@ the redirect handed it. The browser layer must resolve-and-validate hostnames
 
 * 6.1 literal-IP redirect re-validation — every hop's host is re-checked, and a
       redirect to an internal literal IP is blocked *before* it is fetched.
-* 6.4 credential headers are stripped on a cross-origin / https→http redirect.
+* 6.4 credentialed cross-origin / https→http redirects are rejected.
 * 6.2 browser navigation resolves the hostname and rejects internal-resolving
       hosts; the final ``page.url`` is re-validated after redirects.
 * 6.3 ``browser_evaluate`` is reclassified (not read-only, requires confirmation).
@@ -27,7 +27,7 @@ from .conftest import INTERNAL_IP_TARGETS
 # ═══════════════════════════════════════════════════════════════════════════
 # Fake aiohttp session — drives HttpClient.safe_request's manual redirect loop
 # deterministically and records every hop (method, url, headers) so a test can
-# prove a blocked target was never requested and that credentials were dropped.
+# prove a blocked target was never requested and that credentials were not replayed.
 # ═══════════════════════════════════════════════════════════════════════════
 
 
@@ -36,10 +36,16 @@ class _FakeResp:
         self.status = status
         self.headers = headers
         self._body = body
+        self._offset = 0
+        self.content = self
         self.url = "http://fake.invalid/"
 
-    async def read(self) -> bytes:
-        return self._body
+    async def read(self, size: int = -1) -> bytes:
+        if size < 0:
+            size = len(self._body) - self._offset
+        chunk = self._body[self._offset : self._offset + size]
+        self._offset += len(chunk)
+        return chunk
 
     async def __aenter__(self) -> "_FakeResp":
         return self
@@ -166,7 +172,7 @@ class TestRedirectLiteralIPRevalidation:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 6.4 — strip credential headers on cross-origin / downgrade redirect
+# 6.4 — reject credentialed cross-origin / downgrade redirects
 # ═══════════════════════════════════════════════════════════════════════════
 
 _CREDS = {
@@ -177,25 +183,17 @@ _CREDS = {
 }
 
 
-class TestCredentialHeaderStripping:
+class TestCredentialRedirectRejection:
     @pytest.mark.asyncio
-    async def test_cross_host_redirect_strips_credentials(self) -> None:
+    async def test_cross_host_redirect_with_credentials_is_rejected(self) -> None:
         result, fake = await _run_safe_request(
             [_redirect("https://attacker.example/collect"), _ok()],
             "https://api.trusted.example/start",
             headers=dict(_CREDS),
         )
 
-        assert result is not None and result["status"] == 200
-        _m, second_url, second_headers = fake.requests[1]
-        assert second_url == "https://attacker.example/collect"
-        # Credential-bearing headers are gone…
-        assert "Authorization" not in second_headers
-        assert "Cookie" not in second_headers
-        assert "X-Api-Key" not in second_headers
-        # …but non-secret headers survive.
-        assert second_headers.get("User-Agent") == "coderAI-test"
-        # First hop (same origin) still carried them.
+        assert result is None
+        assert len(fake.requests) == 1
         assert fake.requests[0][2].get("Authorization") == "Bearer secret-token"
 
     @pytest.mark.asyncio
@@ -211,17 +209,15 @@ class TestCredentialHeaderStripping:
         assert fake.requests[1][2].get("Cookie") == "session=abc"
 
     @pytest.mark.asyncio
-    async def test_https_to_http_downgrade_strips_credentials(self) -> None:
+    async def test_https_to_http_downgrade_with_credentials_is_rejected(self) -> None:
         result, fake = await _run_safe_request(
             [_redirect("http://api.trusted.example/insecure"), _ok()],
             "https://api.trusted.example/secure",
             headers=dict(_CREDS),
         )
 
-        assert result is not None
-        # Same host but a protocol downgrade → credentials dropped.
-        assert "Authorization" not in fake.requests[1][2]
-        assert "Cookie" not in fake.requests[1][2]
+        assert result is None
+        assert len(fake.requests) == 1
 
 
 # ═══════════════════════════════════════════════════════════════════════════

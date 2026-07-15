@@ -134,13 +134,14 @@ def _cfg(**kw):
         tavily_api_key=None,
         exa_api_key=None,
         concurrent_search=True,
+        searxng_url=None,
     )
     base.update(kw)
     return SimpleNamespace(**base)
 
 
 def _clear_env(monkeypatch):
-    for var in ("CODERAI_SEARCH_BACKEND", "TAVILY_API_KEY", "EXA_API_KEY"):
+    for var in ("CODERAI_SEARCH_BACKEND", "TAVILY_API_KEY", "EXA_API_KEY", "CODERAI_SEARXNG_URL"):
         monkeypatch.delenv(var, raising=False)
 
 
@@ -183,6 +184,31 @@ def test_select_backend_explicit_exa_and_ddg(monkeypatch):
     monkeypatch.setenv("CODERAI_SEARCH_BACKEND", "ddg")
     with services_scope(config=_cfg()):
         assert isinstance(s._select_search_backend(), s._DDGBackend)
+
+
+def test_select_backend_explicit_searxng(monkeypatch):
+    _clear_env(monkeypatch)
+    monkeypatch.setenv("CODERAI_SEARCH_BACKEND", "searxng")
+    with services_scope(config=_cfg()):
+        backend = s._select_search_backend()
+        assert isinstance(backend, s._SearXNGBackend)
+        assert backend.name == "searxng"
+
+
+def test_select_backend_explicit_searxng_custom_url(monkeypatch):
+    _clear_env(monkeypatch)
+    monkeypatch.setenv("CODERAI_SEARCH_BACKEND", "searxng")
+    monkeypatch.setenv("CODERAI_SEARXNG_URL", "https://searx.local")
+    with services_scope(config=_cfg()):
+        backend = s._select_search_backend()
+        assert isinstance(backend, s._SearXNGBackend)
+        assert backend.instances == ["https://searx.local"]
+
+
+def test_searxng_instances_from_config(monkeypatch):
+    _clear_env(monkeypatch)
+    with services_scope(config=_cfg(searxng_url="http://127.0.0.1:8080/")):
+        assert s._searxng_instances() == ["http://127.0.0.1:8080"]
 
 
 def test_select_backend_config_value_used(monkeypatch):

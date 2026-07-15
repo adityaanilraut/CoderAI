@@ -1,12 +1,11 @@
 """The web Tool classes: search, read_url, download, and HTTP."""
 
 import asyncio
-import json
 import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import quote_plus, urlparse
+from urllib.parse import quote_plus
 
 from pydantic import BaseModel, Field
 
@@ -18,9 +17,10 @@ from pydantic import BaseModel, Field
 import coderAI.tools.web as _web
 from coderAI.core.provenance import Provenance
 from coderAI.core.tool_error_codes import ToolErrorCode
+from coderAI.system.fsperms import atomic_write_bytes
 from coderAI.tools.base import Tool
-from coderAI.tools.filesystem import _enforce_project_scope, _is_path_protected
-from coderAI.tools.web._cache import _cache_key, _DEFAULT_SEARCH_TTL
+from coderAI.tools.filesystem import ProjectPathError, resolve_under_project
+from coderAI.tools.web._cache import _cache_key, _DEFAULT_PAGE_TTL, _DEFAULT_SEARCH_TTL
 from coderAI.tools.web._constants import _HEADERS_CHROME, _VALID_FORMATS
 from coderAI.tools.web._html import (
     _extract_main_content,
@@ -175,7 +175,7 @@ class WebSearchTool(Tool):
 
         backend = _web._select_search_backend()
         try:
-            results = await self._search(
+            results, used_backend = await self._search(
                 query,
                 num_results,
                 allowed_domains=allowed_domains,
@@ -188,7 +188,7 @@ class WebSearchTool(Tool):
                     "success": True,
                     "results": [],
                     "query": query,
-                    "backend": backend.name,
+                    "backend": used_backend,
                     "note": "No results found. Try rephrasing the query.",
                     "search_url": f"https://duckduckgo.com/?q={quote_plus(query)}",
                 }
@@ -200,22 +200,26 @@ class WebSearchTool(Tool):
                     max_content_length,
                     extract_main=extract_main_content,
                 )
+            else:
+                # Only cache snippet-only results. Content-enriched hits must not
+                # pollute the non-fetch cache key (same query, no fetch_content).
+                try:
+                    from coderAI.core.services import get_services
 
-            try:
-                from coderAI.core.services import get_services
-
-                ttl = get_services().config.search_cache_ttl_seconds
-            except Exception:
-                # Config unavailable → default TTL; caching must not break search.
-                logger.debug("search_cache_ttl config unavailable, using default", exc_info=True)
-                ttl = _DEFAULT_SEARCH_TTL
-            _web._set_cached(cache_key, results, ttl)
+                    ttl = get_services().config.search_cache_ttl_seconds
+                except Exception:
+                    # Config unavailable → default TTL; caching must not break search.
+                    logger.debug(
+                        "search_cache_ttl config unavailable, using default", exc_info=True
+                    )
+                    ttl = _DEFAULT_SEARCH_TTL
+                _web._set_cached(cache_key, results, ttl)
 
             return {
                 "success": True,
                 "results": results,
                 "query": query,
-                "backend": backend.name,
+                "backend": used_backend,
                 "result_count": len(results),
             }
 
@@ -261,7 +265,7 @@ class WebSearchTool(Tool):
         allowed_domains: Optional[List[str]] = None,
         blocked_domains: Optional[List[str]] = None,
         backend: Optional[_SearchBackend] = None,
-    ) -> List[Dict[str, str]]:
+    ) -> tuple[List[Dict[str, str]], str]:
         backend = backend or _web._select_search_backend()
         from coderAI.core.services import get_services
 
@@ -271,19 +275,22 @@ class WebSearchTool(Tool):
         explicit = os.getenv("CODERAI_SEARCH_BACKEND") or cfg.search_backend or "auto"
         explicit = explicit.lower().strip()
 
+        # Concurrent free search only in auto mode — an explicit backend
+        # override (ddg / searxng / …) must stay single-backend.
         if (
             not tavily_key
             and not exa_key
-            and explicit not in ("tavily", "exa")
+            and explicit in ("auto", "")
             and _web._concurrent_search_enabled()
         ):
-            return await self._search_concurrent(
+            results = await self._search_concurrent(
                 query, num_results, allowed_domains, blocked_domains
             )
+            return results, "ddg+searxng"
 
         raw = await backend.search(query, num_results, allowed_domains, blocked_domains)
         filtered = _filter_by_domain(raw, allowed_domains, blocked_domains)
-        return [r.to_dict() for r in filtered[:num_results]]
+        return [r.to_dict() for r in filtered[:num_results]], backend.name
 
     async def _search_concurrent(
         self,
@@ -388,6 +395,29 @@ class ReadURLTool(Tool):
                 "error": f"Invalid format {format!r}. Must be one of: {sorted(_VALID_FORMATS)}",
             }
 
+        cache_key = _cache_key("read_url", url, fmt, str(extract_main), str(extract_metadata))
+        cached = _web._get_cached(cache_key)
+        if isinstance(cached, dict) and cached.get("content") is not None:
+            text = str(cached["content"])
+            truncated = False
+            if len(text) > max_length:
+                text = text[:max_length]
+                truncated = True
+            result: Dict[str, Any] = {
+                "success": True,
+                "url": cached.get("url", url),
+                "format": fmt,
+                "content": text,
+                "length": len(text),
+                "truncated": truncated,
+                "oversize": cached.get("oversize", False),
+                "content_type": cached.get("content_type", ""),
+                "from_cache": True,
+            }
+            if extract_metadata and "metadata" in cached:
+                result["metadata"] = cached["metadata"]
+            return result
+
         try:
             resp = await _web._safe_request_cf("GET", url, timeout_s=25.0)
         except asyncio.TimeoutError:
@@ -438,12 +468,35 @@ class ReadURLTool(Tool):
         else:
             text = _html_to_text(raw, fmt)
 
+        metadata = None
+        if extract_metadata and _looks_like_html(content_type, resp["text"]):
+            metadata = _extract_metadata(resp["text"])
+
+        # Cache the full processed text (before caller max_length truncation).
+        if text:
+            try:
+                from coderAI.core.services import get_services
+
+                ttl = get_services().config.page_cache_ttl_seconds
+            except Exception:
+                logger.debug("page_cache_ttl config unavailable, using default", exc_info=True)
+                ttl = _DEFAULT_PAGE_TTL
+            cache_payload: Dict[str, Any] = {
+                "url": resp["url"],
+                "content": text,
+                "content_type": content_type,
+                "oversize": resp.get("oversize", False),
+            }
+            if metadata is not None:
+                cache_payload["metadata"] = metadata
+            _web._set_cached(cache_key, cache_payload, ttl)
+
         truncated = False
         if len(text) > max_length:
             text = text[:max_length]
             truncated = True
 
-        result: Dict[str, Any] = {
+        result = {
             "success": True,
             "url": resp["url"],
             "format": fmt,
@@ -454,8 +507,8 @@ class ReadURLTool(Tool):
             "content_type": content_type,
         }
 
-        if extract_metadata and _looks_like_html(content_type, resp["text"]):
-            result["metadata"] = _extract_metadata(resp["text"])
+        if metadata is not None:
+            result["metadata"] = metadata
 
         return result
 
@@ -493,6 +546,24 @@ class DownloadFileTool(Tool):
             url = "https://" + url
 
         try:
+            dest = resolve_under_project(
+                destination_path,
+                operation="download",
+                check_protected=True,
+                reject_symlink=True,
+            )
+        except ProjectPathError as e:
+            return e.as_result()
+
+        type_err = _download_type_blocked(dest, "")
+        if type_err is not None:
+            return {
+                "success": False,
+                "error": type_err,
+                "error_code": ToolErrorCode.PERMISSION_DENIED,
+            }
+
+        try:
             resp = await _web._safe_request_cf(
                 "GET", url, timeout_s=60.0, max_bytes=50 * 1024 * 1024
             )
@@ -513,18 +584,15 @@ class DownloadFileTool(Tool):
             return {"success": False, "error": f"SSRF Protection blocked {url}."}
         if resp["status"] != 200:
             return {"success": False, "error": f"HTTP {resp['status']} for {url}"}
+        if resp.get("oversize", False):
+            return {
+                "success": False,
+                "error": "Download exceeds the 50 MiB size limit; destination was not changed.",
+                "error_code": ToolErrorCode.TOO_LARGE,
+            }
         content = resp["content"]
 
         try:
-            dest = Path(destination_path).expanduser().resolve()
-            if _is_path_protected(dest):
-                return {
-                    "success": False,
-                    "error": f"Refusing to download to protected path: {dest}",
-                }
-            scope_err = _enforce_project_scope(dest, "download_file")
-            if scope_err is not None:
-                return scope_err
             # Refuse executable/script destinations and payloads (the path, size
             # and SSRF guards don't cover "download runnable code and execute it").
             type_err = _download_type_blocked(dest, resp.get("content_type", ""))
@@ -536,12 +604,7 @@ class DownloadFileTool(Tool):
                 }
 
             dest.parent.mkdir(parents=True, exist_ok=True)
-
-            def _write_file():
-                with open(dest, "wb") as f:
-                    f.write(content)
-
-            await asyncio.to_thread(_write_file)
+            await asyncio.to_thread(atomic_write_bytes, dest, content, mode=None)
 
             return {
                 "success": True,

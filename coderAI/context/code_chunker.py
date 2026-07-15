@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict
 
+from coderAI.system.constants import SKIP_DIRS
+
 logger = logging.getLogger(__name__)
 
 # Files whose content is mostly structure, not meaning — skip them.
@@ -59,8 +61,6 @@ _SKIP_SUFFIXES: set[str] = {
     ".sqlite",
     ".sqlite3",
 }
-
-from coderAI.system.constants import SKIP_DIRS
 
 _SKIP_DIRS: set[str] = set(SKIP_DIRS)
 

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 
 from coderAI.system_prompt import (
+    SYSTEM_PROMPT_BROWSER,
+    SYSTEM_PROMPT_DESKTOP,
     SYSTEM_PROMPT_INTRO,
     SYSTEM_PROMPT_RUNTIME,
     SYSTEM_PROMPT_TAIL,
     compose_default_system_prompt,
 )
-from coderAI.tools.base import ToolRegistry
+from coderAI.tools.base import Tool, ToolRegistry
 from coderAI.tools.tasks import ManageTasksTool
 
 
@@ -29,11 +31,57 @@ def test_tail_carries_task_workflow_section() -> None:
     assert "action=" in tail
 
 
-def test_tail_carries_desktop_automation_section() -> None:
-    tail = _normalize(SYSTEM_PROMPT_TAIL)
-    assert "desktop automation" in tail
-    assert "chrome" in tail
-    assert "run_applescript" in tail
+class _NamedTool(Tool):
+    description = "test capability"
+    is_read_only = True
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    async def execute(self, **kwargs):
+        return {"success": True}
+
+
+def test_optional_capability_guidance_follows_registered_tools() -> None:
+    empty = _normalize(compose_default_system_prompt(ToolRegistry()))
+    assert "desktop automation" not in empty
+    assert "browser automation" not in empty
+
+    partial_desktop = ToolRegistry()
+    partial_desktop.register(_NamedTool("run_applescript"))
+    assert "automate and control macos applications" not in _normalize(
+        compose_default_system_prompt(partial_desktop)
+    )
+
+    desktop = ToolRegistry()
+    for name in (
+        "run_applescript",
+        "get_accessibility_tree",
+        "click_ui_element",
+        "type_keystrokes",
+    ):
+        desktop.register(_NamedTool(name))
+    desktop_prompt = _normalize(compose_default_system_prompt(desktop))
+    assert "automate and control macos applications" in desktop_prompt
+    assert "follow this sequence" not in desktop_prompt
+
+    browser = ToolRegistry()
+    for name in (
+        "browser_navigate",
+        "browser_snapshot",
+        "browser_click",
+        "browser_type",
+        "browser_select_option",
+        "browser_get_content",
+        "browser_screenshot",
+        "browser_evaluate",
+        "browser_wait",
+        "browser_close",
+    ):
+        browser.register(_NamedTool(name))
+    browser_prompt = _normalize(compose_default_system_prompt(browser))
+    assert "follow this sequence" in browser_prompt
+    assert "automate and control macos applications" not in browser_prompt
 
 
 def test_runtime_carries_execution_loop_section() -> None:
@@ -64,11 +112,14 @@ def test_system_prompt_loaded_from_files() -> None:
         SYSTEM_PROMPT_RUNTIME,
         SYSTEM_PROMPT_TAIL,
     )
+
     assert len(SYSTEM_PROMPT_INTRO) > 0
     assert len(SYSTEM_PROMPT_RUNTIME) > 0
     assert len(SYSTEM_PROMPT_INTERACTION) > 0
     assert len(SYSTEM_PROMPT_OUTPUT_STYLE) > 0
     assert len(SYSTEM_PROMPT_TAIL) > 0
+    assert len(SYSTEM_PROMPT_DESKTOP) > 0
+    assert len(SYSTEM_PROMPT_BROWSER) > 0
     assert "You are CoderAI" in SYSTEM_PROMPT_INTRO
     assert "Untrusted Content" in SYSTEM_PROMPT_INTERACTION
     assert "Output & Communication Style" in SYSTEM_PROMPT_OUTPUT_STYLE

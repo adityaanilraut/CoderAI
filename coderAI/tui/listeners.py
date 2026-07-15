@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from typing import Any, Callable, Dict, List, Optional
@@ -137,7 +138,104 @@ class EventReducer:
             if it.get("kind") == "assistant" and it.get("streaming"):
                 it["streaming"] = False
 
+    @staticmethod
+    def _stored_tool_result(content: Any) -> tuple[bool, str, Optional[str]]:
+        raw = str(content or "")
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            parsed = None
+        if isinstance(parsed, dict):
+            ok = bool(parsed.get("success", True))
+            error = str(parsed.get("error") or "") or None
+        else:
+            ok = True
+            error = None
+        return ok, raw[:400], error
+
+    def _replay_session_messages(self, messages: List[Dict[str, Any]]) -> None:
+        """Reduce stored API messages into the existing timeline item shapes."""
+        for message in messages:
+            role = message.get("role")
+            timestamp = message.get("timestamp")
+            if role == "user":
+                self._push(
+                    {
+                        "kind": "user",
+                        "id": self.next_id(),
+                        "text": str(message.get("content") or ""),
+                        "ts": timestamp,
+                    }
+                )
+                continue
+            if role == "assistant":
+                content = str(message.get("content") or "")
+                reasoning = str(message.get("reasoning_content") or "")
+                if content or reasoning:
+                    self._push(
+                        {
+                            "kind": "assistant",
+                            "id": self.next_id(),
+                            "content": content,
+                            "reasoning": reasoning,
+                            "streaming": False,
+                            "ts": timestamp,
+                        }
+                    )
+                for tool_call in message.get("tool_calls") or []:
+                    function = tool_call.get("function") or {}
+                    raw_args = function.get("arguments") or "{}"
+                    try:
+                        args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                    except json.JSONDecodeError:
+                        args = {}
+                    if not isinstance(args, dict):
+                        args = {}
+                    self._push(
+                        {
+                            "kind": "tool",
+                            "id": str(tool_call.get("id") or self.next_id()),
+                            "name": str(function.get("name") or "tool"),
+                            "category": "other",
+                            "args": args,
+                            "risk": "low",
+                            "ok": None,
+                            "preview": None,
+                            "error": None,
+                            "full_available": False,
+                            "ts": timestamp,
+                        }
+                    )
+                continue
+            if role == "tool":
+                tool_id = str(message.get("tool_call_id") or self.next_id())
+                ok, preview, error = self._stored_tool_result(message.get("content"))
+                existing = next(
+                    (
+                        item
+                        for item in reversed(self.timeline)
+                        if item.get("kind") == "tool" and item.get("id") == tool_id
+                    ),
+                    None,
+                )
+                if existing is None:
+                    existing = {
+                        "kind": "tool",
+                        "id": tool_id,
+                        "name": str(message.get("name") or "tool"),
+                        "category": "other",
+                        "args": {},
+                        "risk": "low",
+                        "full_available": False,
+                        "ts": timestamp,
+                    }
+                    self._push(existing)
+                existing.update({"ok": ok, "preview": preview, "error": error})
+
     def _apply_status(self, data: Dict[str, Any]) -> None:
+        if "workspaceTrusted" in data:
+            trusted = data.get("workspaceTrusted")
+            self.session.workspace_trusted = None if trusted is None else bool(trusted)
         self.session.ctx_used = int(data.get("ctxUsed") or 0)
         self.session.ctx_limit = int(data.get("ctxLimit") or 0)
         self.session.cost_usd = float(data.get("costUsd") or 0)
@@ -217,6 +315,10 @@ class EventReducer:
         elif event == "ready":
             self.session.ready = True
             self._recover_incomplete_turn()
+            dirty = True
+            self._bump_refresh("full")
+        elif event == "session_replay":
+            self._replay_session_messages(data.get("messages") or [])
             dirty = True
             self._bump_refresh("full")
         elif event == "turn":
@@ -330,6 +432,11 @@ class EventReducer:
                         "iteration": payload.get("iteration", 0),
                         "maxIterations": payload.get("maxIterations", 50),
                         "priorApproved": payload.get("priorApproved", 0),
+                        "timeoutSeconds": payload.get("timeoutSeconds", 0),
+                        "expiresAt": payload.get("expiresAt"),
+                        "rememberMode": payload.get("rememberMode"),
+                        "rememberScope": payload.get("rememberScope"),
+                        "rememberLabel": payload.get("rememberLabel"),
                     }
                 )
             elif phase == "cancelled":

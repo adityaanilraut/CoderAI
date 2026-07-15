@@ -37,8 +37,10 @@ from coderAI.core.permissions import (
 )
 from coderAI.core.provenance import Provenance, wrap_untrusted_output
 from coderAI.core.tool_error_codes import ToolErrorCode
+from coderAI.core.tool_results import normalize_tool_result
 from coderAI.core.turn import TurnContext
 from coderAI.system.error_policy import is_transient_error, is_transient_message
+from coderAI.system.locks import canonical_path_key
 from coderAI.system.retry import backoff_delay
 
 logger = logging.getLogger(__name__)
@@ -207,6 +209,9 @@ class ToolExecutor:
         self._subagent_mut_semaphore = asyncio.Semaphore(mut_cap)
         self._confirm_lock = asyncio.Lock()
         self._preview_file_cache: "OrderedDict[str, Tuple[float, str]]" = OrderedDict()
+        # Once a mutation has run in this turn, earlier cached reads may be
+        # stale. Consecutive reads can still dedupe within their current phase.
+        self._mutation_seen = False
 
     def _mutating_subagent_cap(self) -> int:
         cfg = getattr(self.agent, "config", None)
@@ -300,40 +305,25 @@ class ToolExecutor:
             return f"{name}:{target}"
         return str(name)
 
-    def _normalize_tool_result(
-        self,
-        result: Any,
-        *,
-        tool_name: str,
-        default_error_code: str = ToolErrorCode.TOOL_ERROR,
-    ) -> Dict[str, Any]:
-        if isinstance(result, dict):
-            normalized = dict(result)
-            if "success" not in normalized:
-                has_useful_output = bool(
-                    normalized.get("result") or normalized.get("output") or normalized.get("data")
-                )
-                normalized["success"] = "error" not in normalized and has_useful_output
-            if normalized.get("success") is False:
-                normalized["error"] = str(normalized.get("error") or f"Tool '{tool_name}' failed.")
-                normalized.setdefault("error_code", default_error_code)
-            return normalized
+    @staticmethod
+    def _dedupe_safe(tool: Any) -> bool:
+        """Whether an identical call may reuse a prior result."""
+        if tool is None:
+            return False
+        declared = getattr(tool, "dedupe_safe", None)
+        if declared is not None:
+            return bool(declared)
+        return bool(getattr(tool, "is_read_only", False))
 
-        if isinstance(result, str):
-            return {
-                "success": False,
-                "error": result,
-                "error_code": default_error_code,
-            }
-
-        if result is None:
-            return {
-                "success": False,
-                "error": f"Tool '{tool_name}' returned no result.",
-                "error_code": default_error_code,
-            }
-
-        return {"success": True, "result": result}
+    @staticmethod
+    def _idempotent(tool: Any) -> bool:
+        """Whether retrying an identical call is safe."""
+        if tool is None:
+            return False
+        declared = getattr(tool, "idempotent", None)
+        if declared is not None:
+            return bool(declared)
+        return bool(getattr(tool, "is_read_only", False))
 
     def _enter_waiting_for_user(
         self, tool_name: str
@@ -475,17 +465,35 @@ class ToolExecutor:
         arguments: Dict[str, Any],
         tool_id: Optional[str] = None,
         precomputed_diff: Optional[str] = None,
+        *,
+        force_confirm: bool = False,
     ) -> bool:
         # Headless / non-interactive override (e.g. `coderAI run`): when set,
-        # decide here instead of prompting. Used to deny-on-mutate without a
-        # TTY. Only reached when auto_approve is off, so it never blocks --yolo.
+        # decide here instead of prompting. A forced MCP-tainted mutation may
+        # be denied by an override, but an override allow is not a human
+        # confirmation and therefore falls through to the real approval path.
+        if bool(getattr(self.agent, "auto_approve", False)) and not force_confirm:
+            return True
+
         override = getattr(self.agent, "confirmation_override", None)
         if override is not None:
-            return bool(await override(tool_name, arguments))
+            override_allowed = bool(await override(tool_name, arguments))
+            if not override_allowed or not force_confirm:
+                return override_allowed
 
         # getattr avoids a hard import on ipc_server; the agent may run
         # without IPC (e.g. one-shot CLI) where ipc_server is never set.
         ipc_server = getattr(self.agent, "ipc_server", None)
+
+        if force_confirm and ipc_server is None:
+            import sys
+
+            if not sys.stdin.isatty():
+                logger.warning(
+                    "Forced human approval unavailable for MCP-tainted mutation '%s'; denying.",
+                    tool_name,
+                )
+                return False
 
         diff = (
             precomputed_diff
@@ -494,6 +502,10 @@ class ToolExecutor:
         )
 
         async with self._confirm_lock:
+            # Always (a) may have enabled YOLO while this call was queued
+            # behind another approval — honour it without a second prompt.
+            if bool(getattr(self.agent, "auto_approve", False)) and not force_confirm:
+                return True
             if ipc_server is None:
                 args_preview = json.dumps(arguments, indent=2)
                 if len(args_preview) > 300:
@@ -562,7 +574,7 @@ class ToolExecutor:
         precomputed_diff: Optional[str] = None,
     ) -> Dict[str, Any]:
         if pc.get("parse_error"):
-            return self._normalize_tool_result(
+            return normalize_tool_result(
                 {
                     "success": False,
                     "error": pc["parse_error"],
@@ -593,7 +605,7 @@ class ToolExecutor:
                     arguments=arguments,
                 )
         except Exception as e:
-            return self._normalize_tool_result(
+            return normalize_tool_result(
                 {
                     "success": False,
                     "error": str(e),
@@ -614,13 +626,23 @@ class ToolExecutor:
         arguments: Any = None,
     ) -> Dict[str, Any]:
         try:
-
-            async def _confirm(name: str, args: Dict[str, Any]) -> bool:
-                return await self._confirmation_callback(
-                    name, args, tool_id=pc["tool_id"], precomputed_diff=precomputed_diff
-                )
-
             is_mcp_proxy = is_mcp_function_name(tool_name) and tool is None
+            allowed_native = vars(self.agent).get("_allowed_native_tool_names")
+            if allowed_native is not None and (
+                is_mcp_proxy or tool_name not in allowed_native or tool is None
+            ):
+                return normalize_tool_result(
+                    {
+                        "success": False,
+                        "error": (
+                            f"Tool '{tool_name}' is outside this sub-agent's "
+                            f"{vars(self.agent).get('_capability_domain', 'restricted')} "
+                            "capability boundary."
+                        ),
+                        "error_code": ToolErrorCode.PERMISSION_DENIED,
+                    },
+                    tool_name=tool_name,
+                )
             # Confirmation-by-default (Phase 4.1): mutating tools require
             # confirmation unless they opt out with ``safe = True``; a tool that
             # declares nothing is treated as requiring confirmation. MCP proxy
@@ -654,10 +676,20 @@ class ToolExecutor:
                 tool is not None
                 and not is_mcp_proxy
                 and self._turn_has_untrusted_mcp()
-                and tool_requires_confirmation(tool)
+                and not bool(getattr(tool, "is_read_only", False))
             )
             if mcp_mutation_gated:
                 needs_confirmation = True
+
+            async def _confirm(name: str, args: Dict[str, Any]) -> bool:
+                return await self._confirmation_callback(
+                    name,
+                    args,
+                    tool_id=pc["tool_id"],
+                    precomputed_diff=precomputed_diff,
+                    force_confirm=mcp_mutation_gated,
+                )
+
             if needs_confirmation:
                 # Check permission hooks first (can auto-allow or auto-deny)
                 if hooks_manager is not None and hooks_data:
@@ -667,7 +699,7 @@ class ToolExecutor:
 
                     func = getattr(hooks_manager, "run_permission_hooks", fallback_hook)
                     permission_status = await func(tool_name, arguments, hooks_data)
-                    if permission_status == "allow":
+                    if permission_status == "allow" and not mcp_mutation_gated:
                         pass  # Skip user prompt, proceed
                     elif permission_status == "deny":
                         return {
@@ -725,6 +757,7 @@ class ToolExecutor:
             if (
                 tool is not None
                 and getattr(tool, "retryable", False)
+                and self._idempotent(tool)
                 and not needs_confirmation
                 and not is_mcp_proxy
             ):
@@ -795,15 +828,13 @@ class ToolExecutor:
                 await hooks_manager.run_hooks(tool_name, "PostToolUse", post_hook_args, hooks_data)
                 or []
             )
-            normalized_res: Dict[str, Any] = self._normalize_tool_result(
-                result, tool_name=tool_name
-            )
+            normalized_res: Dict[str, Any] = normalize_tool_result(result, tool_name=tool_name)
 
             if pre_hooks or post_hooks:
                 normalized_res["_hooks"] = {"pre": pre_hooks, "post": post_hooks}
             return normalized_res
         except Exception as e:
-            return self._normalize_tool_result(
+            return normalize_tool_result(
                 {
                     "success": False,
                     "error": str(e),
@@ -825,6 +856,8 @@ class ToolExecutor:
         # taint and reply state live in one object. A direct/test call without a
         # turn keeps the executor's own default ``TurnContext``.
         if turn is not None:
+            if turn is not self._turn:
+                self._mutation_seen = False
             self._turn = turn
         # Bind the owning agent's effective config (project overrides included)
         # for the duration of the batch. Stores still resolve to the shared
@@ -910,14 +943,21 @@ class ToolExecutor:
         dup_results: Dict[int, Dict[str, Any]] = {}
         batch_seen: Dict[str, int] = {}
         to_run_indices: List[int] = []
+        mutation_before = self._mutation_seen
         for idx, pc in enumerate(parsed_calls):
             if pc["parse_error"] is not None or pc["arguments"] is None:
                 to_run_indices.append(idx)
                 continue
             fp = self.loop_guard.fingerprint(pc["tool_name"], pc["arguments"])
             pc["_fp"] = fp
+            tool = self.agent.tools.get(pc["tool_name"])
+            dedupe_safe = self._dedupe_safe(tool)
+            is_read_only = bool(tool and getattr(tool, "is_read_only", False))
+            if not is_read_only:
+                # A read result cannot be reused across a mutation barrier.
+                batch_seen.clear()
 
-            if fp in batch_seen:
+            if dedupe_safe and fp in batch_seen:
                 dup_results[idx] = {
                     "_dup_of_batch_index": batch_seen[fp],
                     "_warning": (
@@ -929,9 +969,9 @@ class ToolExecutor:
                 continue
 
             prior_count = self.loop_guard.prior_count(fp)
-            tool = self.agent.tools.get(pc["tool_name"])
-            is_read_only = bool(tool and getattr(tool, "is_read_only", False))
-            repeat = self.loop_guard.cached_repeat(pc["tool_name"], is_read_only, fp)
+            repeat = self.loop_guard.cached_repeat(
+                pc["tool_name"], dedupe_safe and not mutation_before, fp
+            )
             if repeat is not None:
                 cached, repeated_count = repeat
                 pc["_cached_repeat_count"] = repeated_count
@@ -957,8 +997,12 @@ class ToolExecutor:
                 )
                 continue
 
-            batch_seen[fp] = idx
+            if dedupe_safe:
+                batch_seen[fp] = idx
             to_run_indices.append(idx)
+            if not is_read_only:
+                mutation_before = True
+                self._mutation_seen = True
 
         calls_to_run = [parsed_calls[i] for i in to_run_indices]
         run_results = await self.run_tool_batch(calls_to_run, hooks_data, hooks_manager)
@@ -1091,36 +1135,6 @@ class ToolExecutor:
     async def run_tool_batch(
         self, parsed_calls: list, hooks_data: Optional[Dict[str, Any]], hooks_manager: Any
     ) -> list:
-        ro_indices: list = []
-        capped_groups: Dict[str, list] = {}
-        sub_ro_indices: list = []
-        sub_mut_parallel_indices: list = []
-        sub_mut_workspace_indices: list = []
-        mut_indices: list = []
-        for i, pc in enumerate(parsed_calls):
-            tool_name = pc["tool_name"]
-            tool = self.agent.tools.get(tool_name)
-            if not tool:
-                mut_indices.append(i)
-                continue
-            if tool_name == "delegate_task" and isinstance(pc.get("arguments"), dict):
-                domain = resolve_delegation_isolation_domain(pc["arguments"])
-                if domain == "read_only":
-                    sub_ro_indices.append(i)
-                    continue
-                if domain == "browser":
-                    sub_mut_parallel_indices.append(i)
-                    continue
-                sub_mut_workspace_indices.append(i)
-                continue
-            max_par = getattr(tool, "max_parallel_invocations", 0)
-            if max_par > 0:
-                capped_groups.setdefault(tool_name, []).append(i)
-            elif getattr(tool, "is_read_only", False):
-                ro_indices.append(i)
-            else:
-                mut_indices.append(i)
-
         results: List[Any] = [None] * len(parsed_calls)
         total, done = len(parsed_calls), 0
         # _cancel_event is an asyncio.Event on AgentTrackerInfo used to
@@ -1129,26 +1143,59 @@ class ToolExecutor:
 
         precomputed_diffs = await self._precompute_diffs(parsed_calls)
 
-        async def _run(pc: Dict[str, Any], diff: Optional[str] = None) -> Dict[str, Any]:
-            coro = self.execute_single_tool(pc, hooks_data, hooks_manager, precomputed_diff=diff)
-            if not cancel_event:
-                return await coro
-            t = asyncio.ensure_future(coro)
-            w = asyncio.ensure_future(cancel_event.wait())
-            done_set, _pending = await asyncio.wait({t, w}, return_when=asyncio.FIRST_COMPLETED)
-            if t in done_set:
-                w.cancel()
-                return t.result()
-            t.cancel()
-            try:
-                await asyncio.wait_for(t, timeout=2.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
-                pass
+        def _is_read_call(pc: Dict[str, Any]) -> bool:
+            if pc.get("tool_name") == "delegate_task" and isinstance(pc.get("arguments"), dict):
+                return resolve_delegation_isolation_domain(pc["arguments"]) == "read_only"
+            tool = self.agent.tools.get(pc.get("tool_name", ""))
+            return bool(tool and getattr(tool, "is_read_only", False))
+
+        def _cancelled_result() -> Dict[str, Any]:
             return {
                 "success": False,
                 "error": "Cancelled by user.",
                 "error_code": ToolErrorCode.CANCELLED,
             }
+
+        async def _run(pc: Dict[str, Any], diff: Optional[str] = None) -> Dict[str, Any]:
+            if not cancel_event:
+                return await self.execute_single_tool(
+                    pc, hooks_data, hooks_manager, precomputed_diff=diff
+                )
+            if cancel_event.is_set():
+                return _cancelled_result()
+
+            t = asyncio.create_task(
+                self.execute_single_tool(pc, hooks_data, hooks_manager, precomputed_diff=diff)
+            )
+            w = asyncio.create_task(cancel_event.wait())
+            done_set, _pending = await asyncio.wait({t, w}, return_when=asyncio.FIRST_COMPLETED)
+            if t in done_set:
+                w.cancel()
+                await asyncio.gather(w, return_exceptions=True)
+                return t.result()
+
+            if not _is_read_call(pc):
+                # asyncio cancellation cannot stop a mutation already running
+                # in a worker thread. Let it settle rather than reporting a
+                # cancellation while an untracked side effect continues.
+                result = dict(await t)
+                result["_cancellation_requested"] = True
+                result["_warning"] = (
+                    "Cancellation was requested after this mutating tool started; "
+                    "the tool was allowed to finish to avoid an unreported background mutation."
+                )
+                get_services().events.emit(
+                    "agent_warning",
+                    message=f"Cancellation waited for mutating tool '{pc.get('tool_name', 'unknown')}'.",
+                )
+                return result
+
+            t.cancel()
+            try:
+                await asyncio.wait_for(t, timeout=2.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+            return _cancelled_result()
 
         def _emit_progress(i: int, elapsed: Optional[float] = None) -> None:
             nonlocal done
@@ -1173,117 +1220,105 @@ class ToolExecutor:
                 return raw
             return {"success": True, "result": raw}
 
-        if ro_indices:
-
-            async def _run_ro(idx: int) -> Dict[str, Any]:
-                async with self._read_only_semaphore:
-                    return await _run(parsed_calls[idx], diff=precomputed_diffs.get(idx))
-
-            res = await asyncio.gather(*(_run_ro(i) for i in ro_indices), return_exceptions=True)
-            for i, r in zip(ro_indices, res):
-                results[i] = _coerce_gather_result(i, r)
-                _emit_progress(i)
-
-        if sub_ro_indices:
-
-            async def _run_sub_ro(idx: int) -> Dict[str, Any]:
-                async with self._read_only_subagent_semaphore:
-                    return await _run(parsed_calls[idx], diff=precomputed_diffs.get(idx))
-
-            res = await asyncio.gather(
-                *(_run_sub_ro(i) for i in sub_ro_indices), return_exceptions=True
-            )
-            for i, r in zip(sub_ro_indices, res):
-                results[i] = _coerce_gather_result(i, r)
-                _emit_progress(i)
-
-        if sub_mut_parallel_indices:
-
-            async def _run_sub_mut(idx: int) -> Dict[str, Any]:
-                async with self._subagent_mut_semaphore:
-                    return await _run(parsed_calls[idx], diff=precomputed_diffs.get(idx))
-
-            res = await asyncio.gather(
-                *(_run_sub_mut(i) for i in sub_mut_parallel_indices),
-                return_exceptions=True,
-            )
-            for i, r in zip(sub_mut_parallel_indices, res):
-                results[i] = _coerce_gather_result(i, r)
-                _emit_progress(i)
-
-        for idx in sub_mut_workspace_indices:
-            t0 = _time.time()
-            results[idx] = await _run(parsed_calls[idx], diff=precomputed_diffs.get(idx))
-            _emit_progress(idx, elapsed=round(_time.time() - t0, 2))
-
-        for tool_name, indices in capped_groups.items():
-            cap_tool = self.agent.tools.get(tool_name)
-            size = max(1, int(getattr(cap_tool, "max_parallel_invocations", 1)))
-            for start in range(0, len(indices), size):
-                chunk = indices[start : start + size]
-                res = await asyncio.gather(
-                    *(_run(parsed_calls[i], diff=precomputed_diffs.get(i)) for i in chunk),
-                    return_exceptions=True,
-                )
-                for i, r in zip(chunk, res):
-                    results[i] = _coerce_gather_result(i, r)
-                    _emit_progress(i)
-
         def _serializes_by_path(tool_name: str) -> bool:
             tool = self.agent.tools.get(tool_name)
             return bool(tool and getattr(tool, "batch_serialize_by_path", False))
 
-        i_idx = 0
-        while i_idx < len(mut_indices):
-            pc = parsed_calls[mut_indices[i_idx]]
-            tool_name = pc["tool_name"]
+        def _path_for(pc: Dict[str, Any]) -> Optional[str]:
             args = pc.get("arguments") or {}
             path = args.get("path") or args.get("file_path")
+            return path if isinstance(path, str) and path else None
 
-            if _serializes_by_path(tool_name) and isinstance(path, str):
-                contiguous_safe = []
-                while i_idx < len(mut_indices):
-                    c_pc = parsed_calls[mut_indices[i_idx]]
-                    c_tool = c_pc["tool_name"]
-                    c_args = c_pc.get("arguments") or {}
-                    c_path = c_args.get("path") or c_args.get("file_path")
-                    if _serializes_by_path(c_tool) and isinstance(c_path, str):
-                        contiguous_safe.append(mut_indices[i_idx])
-                        i_idx += 1
-                    else:
-                        break
+        def _phase_kind(pc: Dict[str, Any]) -> str:
+            if _is_read_call(pc):
+                return "read"
+            if pc.get("tool_name") == "delegate_task" and isinstance(pc.get("arguments"), dict):
+                if resolve_delegation_isolation_domain(pc["arguments"]) == "browser":
+                    return "browser"
+            if _serializes_by_path(pc.get("tool_name", "")) and _path_for(pc) is not None:
+                return "path"
+            return "mutation"
+
+        async def _run_read(idx: int, caps: Dict[str, asyncio.Semaphore]) -> Dict[str, Any]:
+            pc = parsed_calls[idx]
+            tool_name = pc.get("tool_name", "")
+            tool = self.agent.tools.get(tool_name)
+            semaphore = self._read_only_semaphore
+            if tool_name == "delegate_task":
+                semaphore = self._read_only_subagent_semaphore
+            async with semaphore:
+                max_parallel = int(getattr(tool, "max_parallel_invocations", 0) or 0)
+                if max_parallel > 0:
+                    cap = caps.setdefault(tool_name, asyncio.Semaphore(max_parallel))
+                    async with cap:
+                        return await _run(pc, diff=precomputed_diffs.get(idx))
+                return await _run(pc, diff=precomputed_diffs.get(idx))
+
+        async def _run_browser(idx: int) -> Dict[str, Any]:
+            async with self._subagent_mut_semaphore:
+                return await _run(parsed_calls[idx], diff=None)
+
+        mutation_completed = False
+        cursor = 0
+        while cursor < len(parsed_calls):
+            kind = _phase_kind(parsed_calls[cursor])
+            if kind in {"read", "browser", "path"}:
+                phase_indices: List[int] = []
+                while cursor < len(parsed_calls) and _phase_kind(parsed_calls[cursor]) == kind:
+                    phase_indices.append(cursor)
+                    cursor += 1
+
+                if kind == "read":
+                    caps: Dict[str, asyncio.Semaphore] = {}
+                    raw_results = await asyncio.gather(
+                        *(_run_read(idx, caps) for idx in phase_indices),
+                        return_exceptions=True,
+                    )
+                    for idx, raw in zip(phase_indices, raw_results):
+                        results[idx] = _coerce_gather_result(idx, raw)
+                        _emit_progress(idx)
+                    continue
+
+                if kind == "browser":
+                    raw_results = await asyncio.gather(
+                        *(_run_browser(idx) for idx in phase_indices),
+                        return_exceptions=True,
+                    )
+                    for idx, raw in zip(phase_indices, raw_results):
+                        results[idx] = _coerce_gather_result(idx, raw)
+                        _emit_progress(idx)
+                    mutation_completed = True
+                    continue
 
                 path_queues: Dict[str, List[int]] = {}
-                for idx in contiguous_safe:
-                    c_pc = parsed_calls[idx]
-                    c_path = str(
-                        (c_pc.get("arguments") or {}).get("path")
-                        or (c_pc.get("arguments") or {}).get("file_path")
-                        or ""
-                    )
-                    path_queues.setdefault(c_path, []).append(idx)
+                for idx in phase_indices:
+                    path = _path_for(parsed_calls[idx])
+                    assert path is not None
+                    path_queues.setdefault(canonical_path_key(path), []).append(idx)
 
                 async def _run_path_queue(path_indices: List[int]) -> None:
-                    # Same-file writes run sequentially; a batch-start diff for
-                    # the 2nd+ write to a path is stale (TOCTOU, Phase 4.4). Only
-                    # the first write to each path uses the precomputed diff — the
-                    # rest recompute against live disk at confirmation time (pass
-                    # diff=None so ``_confirmation_callback`` computes fresh).
                     for pos, idx in enumerate(path_indices):
                         t0 = _time.time()
-                        diff = precomputed_diffs.get(idx) if pos == 0 else None
+                        diff = (
+                            precomputed_diffs.get(idx)
+                            if not mutation_completed and pos == 0
+                            else None
+                        )
                         results[idx] = await _run(parsed_calls[idx], diff=diff)
                         _emit_progress(idx, elapsed=round(_time.time() - t0, 2))
 
                 await asyncio.gather(
-                    *(_run_path_queue(indices) for indices in path_queues.values()),
-                    return_exceptions=True,
+                    *(_run_path_queue(indices) for indices in path_queues.values())
                 )
-            else:
-                idx = mut_indices[i_idx]
-                t0 = _time.time()
-                results[idx] = await _run(parsed_calls[idx], diff=precomputed_diffs.get(idx))
-                _emit_progress(idx, elapsed=round(_time.time() - t0, 2))
-                i_idx += 1
+                mutation_completed = True
+                continue
+
+            idx = cursor
+            cursor += 1
+            t0 = _time.time()
+            diff = precomputed_diffs.get(idx) if not mutation_completed else None
+            results[idx] = await _run(parsed_calls[idx], diff=diff)
+            _emit_progress(idx, elapsed=round(_time.time() - t0, 2))
+            mutation_completed = True
 
         return results

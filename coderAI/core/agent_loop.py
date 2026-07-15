@@ -28,7 +28,7 @@ from coderAI.system.error_policy import (
     MAX_CONSECUTIVE_ERRORS,
     MAX_CONSECUTIVE_PAUSES,
 )
-from coderAI.system.safeguards import sanitize_for_log
+from coderAI.system.redaction import redact_text
 
 logger = logging.getLogger(__name__)
 
@@ -208,8 +208,8 @@ class ExecutionLoop:
         Runs once per agent. If the project root carries a ``.coderAI``
         execution surface and is not yet trusted, prompt the user. Fail-closed:
         no interactive path (headless / piped) or a decline leaves the
-        workspace untrusted, so hooks stay off and the ``config.json`` overlay
-        stays skipped. Any error is treated as untrusted.
+        workspace untrusted for this Agent. Approval records trust for the next
+        launch; no project-controlled surface activates mid-session.
         """
         if self.agent._workspace_trust_checked:
             return
@@ -218,22 +218,34 @@ class ExecutionLoop:
             from coderAI.system.trust import workspace_trust
 
             root = getattr(self.agent.config, "project_root", ".") or "."
-            if workspace_trust.is_trusted(root):
+            if self.agent._workspace_trusted:
                 return
             if not workspace_trust.has_execution_surface(root):
                 return
             if await self._prompt_workspace_trust(root):
-                workspace_trust.record_trust(root)
+                try:
+                    workspace_trust.record_trust(root)
+                except (OSError, ValueError) as e:
+                    get_services().events.emit(
+                        "agent_warning",
+                        message=f"Workspace trust was not recorded: {e}",
+                    )
+                    return
                 get_services().events.emit(
                     "agent_status",
-                    message="Workspace trusted — project hooks/config enabled.",
+                    message=(
+                        "Workspace trust recorded. Restart CoderAI to enable project "
+                        "config, hooks, rules, skills, and personas; they remain disabled "
+                        "for this session."
+                    ),
                 )
             else:
                 get_services().events.emit(
                     "agent_warning",
                     message=(
-                        "Workspace left untrusted — project hooks and .coderAI/config.json "
-                        "overlay are disabled. Use /trust to enable them."
+                        "Workspace left untrusted — project config, hooks, rules, skills, "
+                        "and personas are disabled. Use /trust, then restart CoderAI, to "
+                        "enable them."
                     ),
                 )
         except Exception:
@@ -270,7 +282,7 @@ class ExecutionLoop:
             "agent_status",
             message=(f"\n⚠ Untrusted workspace\n{root}\nContains: {', '.join(surface)}"),
         )
-        prompt = "Trust this workspace's project automation? (y/n) > "
+        prompt = "Trust this workspace's project automation on next launch? (y/n) > "
         try:
             from prompt_toolkit import PromptSession
 
@@ -296,6 +308,8 @@ class ExecutionLoop:
                 items.append("rules/")
             if (dot / "skills").is_dir():
                 items.append("skills/")
+            if (dot / "agents").is_dir():
+                items.append("agents/")
         except OSError:
             pass
         return items or ["project automation"]
@@ -846,6 +860,11 @@ class ExecutionLoop:
             mcp_client = get_services().mcp_client
 
             mcp_schemas = mcp_client.get_tools_as_openai_format()
+            # Domain-scoped sub-agents fail closed on dynamic MCP. Server-side
+            # annotations are untrusted, and no local exact-tool trust metadata
+            # mechanism exists yet.
+            if vars(self.agent).get("_allow_dynamic_mcp", True) is False:
+                mcp_schemas = []
             if mcp_schemas:
                 degraded_servers = {
                     name for name, info in mcp_client.servers.items() if info.get("degraded")
@@ -983,7 +1002,7 @@ class ExecutionLoop:
         # Truncate long error messages
         if len(error_str) > 200:
             error_str = error_str[:200] + "..."
-        error_str = sanitize_for_log(error_str)
+        error_str = redact_text(error_str)
 
         get_services().events.emit(
             "agent_error", message=f"Error (attempt {count}/{MAX_CONSECUTIVE_ERRORS}): {error_str}"

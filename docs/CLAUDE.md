@@ -94,8 +94,8 @@ Per-turn flow (`Agent.process_message()` → `agent_loop`):
 - `coderAI/tui/controller.py` — In-process controller (`UIBridge`): subscribes to `event_emitter`, forwards events to the UI via `on_event`, and dispatches slash commands back into the agent. See [`CHAT_EVENTS.md`](CHAT_EVENTS.md).
 - `coderAI/tui/streaming.py` — `BridgeStreamingHandler`: emits one phased `turn` event per assistant turn so the Textual timeline streams incrementally.
 - `coderAI/tui/tool_metadata.py` — Tool category, risk level, and approval-preview helpers for the controller and modals.
-- `coderAI/llm/` — LLM providers (openai, anthropic, groq, deepseek, gemini, lmstudio, ollama), all extending `base.LLMProvider`. Instantiation goes through `llm/factory.py::create_provider(model, config)` — do not construct providers directly from `agent.py`.
-- `coderAI/tools/` — ~68 native tools (67 auto-discovered + `manage_context`) extending `tools/base.Tool`. Registration is automatic via `tools/discovery.py::discover_tools()`, which walks the `coderAI.tools` package (including `filesystem/` and `web/` subpackages) and instantiates every `Tool` subclass whose `__init__` takes no required args. `git_extended` is skipped (served only via the bundled MCP server). Tools requiring constructor args (e.g. `ManageContextTool`) are registered manually in `AgentCapabilitiesMixin._create_tool_registry()`. Snapshot: `tests/test_tool_registry_snapshot.py`.
+- `coderAI/llm/` — LLM providers (openai, anthropic, groq, deepseek, gemini, meta, lmstudio, ollama), all extending `base.LLMProvider`. Instantiation goes through `llm/factory.py::create_provider(model, config)` — do not construct providers directly from `agent.py`.
+- `coderAI/tools/` — Native tools extending `tools/base.Tool`. Registration is automatic via `tools/discovery.py::discover_tools()`, which walks the `coderAI.tools` package (including `filesystem/` and `web/` subpackages) and instantiates every `Tool` subclass whose `__init__` takes no required args. `git_extended` is skipped (served only via the bundled MCP server). Tools requiring constructor args (e.g. `ManageContextTool`) are registered manually in `AgentCapabilitiesMixin._create_tool_registry()`. Snapshot: `tests/test_tool_registry_snapshot.py`.
 - `coderAI/system/safeguards.py` — reusable validators that run before dangerous actions: interactive-command detection (blocks REPLs invoked via non-interactive pipes), project-directory validation, git-scope guards (prevent operations leaking to a parent repo), staging blocklist for junk files (`.DS_Store`, `__pycache__`, `.coderAI/`, …).
 - `coderAI/system/proc.py` — scrubbed subprocess runner used by lint/format/terminal (env scrub, timeout, process-group kill).
 - `coderAI/system/trust.py` — workspace trust gate for repo-supplied overlays/hooks.
@@ -114,12 +114,12 @@ Per-turn flow (`Agent.process_message()` → `agent_loop`):
 - `coderAI/system_prompt.py` — Builds the agent system prompt (loads static MDX prompt templates from `coderAI/prompts/`, formats dynamic tool docs, and appends project-level rules from `.coderAI/rules/*.md`).
 - `coderAI/context/code_chunker.py` — Splits source files into semantic chunks (AST-aware for Python, regex for JS/TS, sliding window fallback).
 - `coderAI/context/code_indexer.py` — ChromaDB-backed semantic code index with incremental updates via file-hash manifests.
-- `coderAI/embeddings/openai.py` — OpenAI `text-embedding-3-small` embeddings (default; no local provider yet).
+- `coderAI/embeddings/` — common embedding factory with OpenAI and optional local sentence-transformers backends. Index fingerprints prevent backend/model/dimension mixing.
 - `.github/workflows/ci.yml` — On push/PR: matrix of (ubuntu-latest, macos-latest) × (Python 3.10, 3.12). Installs `pip install -e ".[dev]"`, then runs `ruff format --check coderAI/`, `ruff check coderAI/`, `mypy coderAI/`, `pytest -q --cov-fail-under=…`, and a `coderAI --version` smoke test. `make test` mirrors the pytest + smoke portion; `make check` runs the full sequence. Security suite: `make test-security`.
 - `.github/workflows/release.yml` — On tagged releases (`v*`), builds the Python wheel + sdist with `python -m build`, attaches them to the GitHub Release, and publishes the wheel to PyPI via trusted publishing.
 
 **Tool categories** (`coderAI/tools/`):
-- `filesystem/` — package (`read_write.py`, `edit.py`, `manage.py`, `metadata.py`, `_guards.py`): read_file, write_file, search_replace (batch via `edits`), apply_diff, list_directory, glob_search, **move_file, copy_file, delete_file, create_directory**, file_stat/chmod/chown/readlink
+- `filesystem/` — package (`read_write.py`, `edit.py`, `manage.py`, `metadata.py`, `_guards.py`): read_file, write_file, search_replace (batch via `edits`), apply_diff, list_directory, glob_search, **move_file, copy_file, delete_file, create_directory**, file_stat/chmod/readlink
 - `terminal.py` — run_command (safety blocklist), run_background, **list_processes, kill_process, read_bg_output**
 - `git.py` — native: git_add, git_status, git_diff, git_commit, git_log, git_branch
 - `git_extended.py` + `mcp_servers/git_extended.py` — rare git ops via bundled MCP (`mcp__git_extended__git_*`)
@@ -133,9 +133,9 @@ Per-turn flow (`Agent.process_message()` → `agent_loop`):
 - `mcp.py` — mcp_connect, mcp_disconnect, mcp_list, mcp_list_resources, mcp_read_resource, mcp_list_prompts, mcp_get_prompt (connected servers expose functions as `mcp__<server>__<tool>`; static MCP relays set `mcp_source=True`)
 - `undo.py` — undo, undo_history
 - `context_manage.py` — pin/unpin files into the pinned-context manager (takes `Agent` at construction → registered manually)
-- `planning.py`, `tasks.py` — in-session plan + task list management
+- `tasks.py` — persistent task-list management
 - `skills.py` — `use_skill` loads a workflow from `.coderAI/skills/<name>/SKILLS.md`
-- `project.py`, `format.py`, `lint.py`, `repl.py`, `vision.py` — project-info, code formatting, linting, Python REPL, image/vision helpers (`lint`/`format` use `run_scrubbed()` from project root)
+- `format.py`, `lint.py`, `repl.py`, `vision.py` — code formatting, linting, Python REPL, and image/vision helpers (`lint`/`format` use `run_scrubbed()` from project root)
 - `_detect.py` — shared `walk_up_detect()` used by lint/format/testing/package_manager
 - `package_manager.py`, `refactor.py`, `testing.py` — package install/remove, rename_symbol/find_references refactor (writes via `WriteFileTool`), test runner dispatch
 
@@ -148,7 +148,7 @@ Per-turn flow (`Agent.process_message()` → `agent_loop`):
 - `hooks.json` — pre/post tool hooks (shell commands run around tool execution)
 - `config.json` — project-scoped config overrides
 
-**Configuration** is read from `~/.coderAI/config.json` then overridden by environment variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GROQ_API_KEY`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `CODERAI_DEFAULT_MODEL`, `CODERAI_TEMPERATURE`, `CODERAI_ALLOW_LOCAL_URLS=1` for SSRF bypass, etc.). Per-project instructions go in `CODERAI.md` at project root.
+**Configuration** is read from `~/.coderAI/config.json` then overridden by environment variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GROQ_API_KEY`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `MODEL_API_KEY` / `META_API_KEY`, `CODERAI_DEFAULT_MODEL`, `CODERAI_TEMPERATURE`, `CODERAI_ALLOW_LOCAL_URLS=1` for SSRF bypass, etc.). Per-project instructions go in `CODERAI.md` at project root.
 
 ## Interactive chat commands
 

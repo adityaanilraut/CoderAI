@@ -10,17 +10,11 @@ def palette_shortcut() -> str:
 
 
 def composer_placeholder() -> str:
-    return f"Message CoderAI…   / commands   @ mention   ↑ history   {palette_shortcut()} palette"
-
-
-def header_palette_hint() -> str:
-    return f"{palette_shortcut()} palette • ⎋ cancel • @ mention • / slash"
+    return "Message CoderAI…"
 
 
 def composer_footer_hints() -> str:
-    return (
-        f"↵ send · ⇧↵ newline · ↑↓ history · @ mention · / commands · {palette_shortcut()} palette"
-    )
+    return f"↵ send · ⇧↵ newline · ↑↓ history · @ mention + pin · / commands · {palette_shortcut()} palette"
 
 
 def palette_input_placeholder() -> str:
@@ -30,7 +24,6 @@ def palette_input_placeholder() -> str:
 __all__ = [
     "composer_footer_hints",
     "composer_placeholder",
-    "header_palette_hint",
     "is_macos",
     "palette_input_placeholder",
     "palette_shortcut",

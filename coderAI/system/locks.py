@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 import threading
 from collections import OrderedDict
 from pathlib import Path
@@ -13,6 +14,19 @@ logger = logging.getLogger(__name__)
 # every file ever touched. When exceeded we evict the least-recently-used
 # entries that are not currently held.
 _MAX_FILE_LOCKS = 1024
+
+
+def canonical_path_key(filepath: str) -> str:
+    """Canonical key shared by executor queues and runtime file locks."""
+    try:
+        resolved = Path(filepath).expanduser().resolve(strict=False)
+        return os.path.normcase(str(resolved))
+    except (OSError, RuntimeError):
+        logger.warning(
+            "Could not resolve path %r for lock normalization; using an absolute fallback",
+            filepath,
+        )
+        return os.path.normcase(os.path.abspath(os.path.expanduser(filepath)))
 
 
 class ResourceManager:
@@ -50,15 +64,7 @@ class ResourceManager:
     async def get_file_lock(self, filepath: str) -> asyncio.Lock:
         """Get or create an asyncio Lock for a specific absolute or relative filepath."""
         self._ensure_locks()
-        try:
-            normalized_path = str(Path(filepath).resolve())
-        except (OSError, RuntimeError):
-            logger.warning(
-                "Could not resolve path %r for file lock normalization; "
-                "using raw path — this may cause lock misses",
-                filepath,
-            )
-            normalized_path = str(filepath)
+        normalized_path = canonical_path_key(filepath)
 
         assert self._file_locks_lock is not None
         async with self._file_locks_lock:

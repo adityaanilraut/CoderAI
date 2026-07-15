@@ -11,14 +11,22 @@ from coderAI.core.tool_error_codes import ToolErrorCode
 from coderAI.system.events import event_emitter
 from coderAI.system.fsperms import atomic_write_json
 from coderAI.tools.base import Tool
+from coderAI.tools.filesystem import ProjectPathError, resolve_under_project
 
 
-def get_tasks_file(project_root: str = ".") -> Path:
-    """Get the path to the tasks file for the current project or fallback to global."""
-    project_dir = Path(project_root).resolve() / ".coderAI"
+def get_tasks_file(project_root: Optional[str] = None) -> Path:
+    """Get the guarded tasks path for the active project."""
+    requested = Path(project_root or ".") / ".coderAI" / "tasks.json"
+    tasks_file = resolve_under_project(
+        requested,
+        operation="manage tasks",
+        check_protected=True,
+        reject_symlink=True,
+    )
+    project_dir = tasks_file.parent
     if not project_dir.exists():
         project_dir.mkdir(exist_ok=True, parents=True)
-    return project_dir / "tasks.json"
+    return tasks_file
 
 
 class ManageTasksParams(BaseModel):
@@ -38,9 +46,6 @@ class ManageTasksParams(BaseModel):
     priority: Optional[str] = Field(
         None,
         description="Task priority: 'high', 'medium', or 'low' (default: medium)",
-    )
-    project_root: str = Field(
-        ".", description="Project root directory (default: current directory)"
     )
 
 
@@ -76,11 +81,14 @@ class ManageTasksTool(Tool):
         title: Optional[str] = None,
         description: Optional[str] = None,
         priority: Optional[str] = None,
-        project_root: str = ".",
+        project_root: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Execute task management action."""
         try:
-            tasks_file = get_tasks_file(project_root)
+            # Kept only for typed internal callers predating the model schema.
+            # The value is intentionally ignored; task storage is always active-project scoped.
+            _ = project_root
+            tasks_file = get_tasks_file()
             tasks = self._load_tasks(tasks_file)
 
             if action == "list":
@@ -188,6 +196,8 @@ class ManageTasksTool(Tool):
             else:
                 return {"success": False, "error": f"Unknown action: {action}"}
 
+        except ProjectPathError as e:
+            return e.as_result()
         except Exception as e:
             return {"success": False, "error": str(e), "error_code": ToolErrorCode.TOOL_ERROR}
 

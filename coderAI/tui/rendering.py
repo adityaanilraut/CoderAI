@@ -13,7 +13,7 @@ from rich.console import RenderableType
 from rich.markup import escape
 from rich.tree import Tree
 
-from coderAI.tui.platform import composer_footer_hints, header_palette_hint
+from coderAI.tui.platform import composer_footer_hints
 from coderAI.tui.state import SessionState
 from coderAI.tui.theme import Glyphs, Styles, Tokens
 
@@ -36,7 +36,6 @@ def render_session_header(s: SessionState) -> str:
     ctx_used = f"{s.ctx_used:,}" if s.ctx_used else "0"
     ctx_lim = f"{s.ctx_limit // 1000}k" if s.ctx_limit else "?"
     model_label = s.model or "…"
-    provider = s.provider or ""
 
     def chip(label: str, value: str, color: str = Tokens.TEXT, bar: float = -1) -> str:
         inner = f"[{Tokens.TEXT_MUTED}]{label}[/] [{color}]{value}[/]"
@@ -65,21 +64,29 @@ def render_session_header(s: SessionState) -> str:
 
     chips = [
         f"[{status_color}]{Glyphs.BRAND}[/] [{Tokens.TEXT}]{model_label}[/]",
-        chip("provider", provider, Tokens.TEXT_MUTED),
         chip("ctx", f"{ctx_used} / {ctx_lim}", ctx_color, bar=ctx_ratio),
         chip("$", cost_val, Tokens.TEXT_DIM, bar=budget_ratio),
-        chip("iter", f"{s.iteration}/{s.max_iterations}", Tokens.TEXT_DIM),
     ]
-    if s.elapsed_s > 0:
+    working = s.streaming or s.thinking
+    if working and s.iteration > 0:
+        chips.append(chip("iter", f"{s.iteration}/{s.max_iterations}", Tokens.TEXT_DIM))
+    if working and s.elapsed_s > 0:
         m, sec = divmod(int(s.elapsed_s), 60)
         ts = f"{m}m {sec}s" if m > 0 else f"{sec}s"
         chips.append(chip("t", ts, Tokens.TEXT_MUTED))
     active = sum(1 for a in s.agents.values() if a.status not in ("done", "error", "cancelled"))
-    if active:
+    if active > 1:
         chips.append(chip("agents", f"{active} active", Tokens.AGENT))
-    yolo_c = Tokens.WARN if s.auto_approve else Tokens.TEXT_MUTED
-    yolo_v = "on" if s.auto_approve else "off"
-    chips.append(chip("yolo", yolo_v, yolo_c))
+    if s.workspace_trusted is False:
+        chips.append(
+            chip(
+                "workspace",
+                "untrusted",
+                Tokens.DANGER,
+            )
+        )
+    if s.auto_approve:
+        chips.append(chip("yolo", "on", Tokens.WARN))
     if s.reasoning and s.reasoning != "none":
         chips.append(chip("reason", s.reasoning, Tokens.THOUGHT))
     if s.active_persona:
@@ -95,8 +102,7 @@ def render_session_header(s: SessionState) -> str:
             chips.append(chip("progress", label, Tokens.AGENT))
 
     left = f" [{Tokens.TEXT_MUTED}]•[/] ".join(chips)
-    hints = f"[{Tokens.TEXT_MUTED}]{header_palette_hint()}[/]"
-    return f"{left}\n{hints}"
+    return left
 
 
 def render_agent_tree(s: SessionState) -> RenderableType:
@@ -155,14 +161,6 @@ def render_agent_tree(s: SessionState) -> RenderableType:
         add_node(tree, rid)
 
     return tree
-
-
-def render_plan(s: SessionState) -> RenderableType:
-    """Plan pane retired — tasks are the single checklist surface."""
-    return (
-        f"[{Styles.SECTION}]CURRENT PLAN[/]\n\n"
-        f"[{Tokens.TEXT_MUTED}](use /tasks — planning lives in manage_tasks)[/]"
-    )
 
 
 def _task_row(icon: str, color: str, task_id: int, title: str, priority: str) -> str:

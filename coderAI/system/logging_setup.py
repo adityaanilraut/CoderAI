@@ -13,7 +13,7 @@ import stat
 from pathlib import Path
 from typing import Optional
 
-from coderAI.system.redaction import RedactingFilter
+from coderAI.system.redaction import RedactingFilter, RedactingFormatter
 
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 LOG_DIR = Path.home() / ".coderAI" / "logs"
@@ -70,7 +70,7 @@ def setup_logging(level: Optional[int] = None, *, tui_mode: bool = False) -> Non
     else:
         handlers.append(logging.StreamHandler())
 
-    formatter = logging.Formatter(LOG_FORMAT)
+    formatter = RedactingFormatter(LOG_FORMAT)
     redacting = RedactingFilter()
     for handler in handlers:
         handler.setFormatter(formatter)

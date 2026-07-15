@@ -11,7 +11,9 @@ import asyncio
 from types import SimpleNamespace
 
 from coderAI.core.services import services_scope
+from coderAI.core.tool_error_codes import ToolErrorCode
 from coderAI.tools import web as web_mod
+from coderAI.tools.filesystem import ProjectPathError
 from coderAI.tools.web import tools as tools_mod
 from coderAI.tools.web.tools import (
     DownloadFileTool,
@@ -83,6 +85,8 @@ VALID_SITEMAP = (
 
 class TestReadURL:
     def test_prepends_scheme_and_returns_content(self, monkeypatch):
+        monkeypatch.setattr(web_mod, "_get_cached", lambda key: None)
+        monkeypatch.setattr(web_mod, "_set_cached", lambda *a, **k: None)
         _patch_cf(monkeypatch, lambda m, u, k: _resp(text="<h1>Hi</h1>", url=u))
         result = asyncio.run(ReadURLTool().execute(url="example.com"))
         assert result["success"] is True
@@ -90,24 +94,28 @@ class TestReadURL:
         assert result["url"].startswith("https://")
 
     def test_timeout(self, monkeypatch):
+        monkeypatch.setattr(web_mod, "_get_cached", lambda key: None)
         _patch_cf_raises(monkeypatch, asyncio.TimeoutError())
         result = asyncio.run(ReadURLTool().execute(url="https://example.com"))
         assert result["success"] is False
         assert "Timeout" in result["error"]
 
     def test_request_exception(self, monkeypatch):
+        monkeypatch.setattr(web_mod, "_get_cached", lambda key: None)
         _patch_cf_raises(monkeypatch, RuntimeError("boom"))
         result = asyncio.run(ReadURLTool().execute(url="https://example.com"))
         assert result["success"] is False
         assert "Failed to fetch" in result["error"]
 
     def test_ssrf_none(self, monkeypatch):
+        monkeypatch.setattr(web_mod, "_get_cached", lambda key: None)
         _patch_cf(monkeypatch, lambda m, u, k: None)
         result = asyncio.run(ReadURLTool().execute(url="https://example.com"))
         assert result["success"] is False
         assert "SSRF" in result["error"]
 
     def test_non_200(self, monkeypatch):
+        monkeypatch.setattr(web_mod, "_get_cached", lambda key: None)
         _patch_cf(monkeypatch, lambda m, u, k: _resp(status=404, oversize=True))
         result = asyncio.run(ReadURLTool().execute(url="https://example.com"))
         assert result["success"] is False
@@ -115,6 +123,8 @@ class TestReadURL:
         assert result["oversize"] is True
 
     def test_pdf_extraction_success(self, monkeypatch):
+        monkeypatch.setattr(web_mod, "_get_cached", lambda key: None)
+        monkeypatch.setattr(web_mod, "_set_cached", lambda *a, **k: None)
         _patch_cf(
             monkeypatch,
             lambda m, u, k: _resp(content_type="application/pdf", content=b"%PDF-1.4"),
@@ -126,6 +136,7 @@ class TestReadURL:
         assert result["content_type"] == "text/plain"
 
     def test_pdf_extraction_failure(self, monkeypatch):
+        monkeypatch.setattr(web_mod, "_get_cached", lambda key: None)
         _patch_cf(
             monkeypatch,
             lambda m, u, k: _resp(content_type="application/pdf", content=b"%PDF-1.4"),
@@ -136,6 +147,8 @@ class TestReadURL:
         assert "pypdf" in result["error"]
 
     def test_extract_main_content(self, monkeypatch):
+        monkeypatch.setattr(web_mod, "_get_cached", lambda key: None)
+        monkeypatch.setattr(web_mod, "_set_cached", lambda *a, **k: None)
         html = "<html><body><article><p>main body</p></article></body></html>"
         _patch_cf(monkeypatch, lambda m, u, k: _resp(text=html))
         result = asyncio.run(ReadURLTool().execute(url="https://example.com", extract_main=True))
@@ -143,6 +156,8 @@ class TestReadURL:
         assert "main body" in result["content"]
 
     def test_truncation(self, monkeypatch):
+        monkeypatch.setattr(web_mod, "_get_cached", lambda key: None)
+        monkeypatch.setattr(web_mod, "_set_cached", lambda *a, **k: None)
         _patch_cf(
             monkeypatch, lambda m, u, k: _resp(text="abcdefghijklmnop", content_type="text/plain")
         )
@@ -152,6 +167,8 @@ class TestReadURL:
         assert result["length"] == 5
 
     def test_extract_metadata(self, monkeypatch):
+        monkeypatch.setattr(web_mod, "_get_cached", lambda key: None)
+        monkeypatch.setattr(web_mod, "_set_cached", lambda *a, **k: None)
         html = (
             '<html><head><meta property="og:title" content="OG Title">'
             "<title>Doc</title></head><body>hi</body></html>"
@@ -195,8 +212,15 @@ class TestDownloadFile:
         assert "SSRF" in result["error"]
 
     def test_protected_path(self, monkeypatch, tmp_path):
-        _patch_cf(monkeypatch, lambda m, u, k: _resp(content=b"data"))
-        monkeypatch.setattr(tools_mod, "_is_path_protected", lambda p: True)
+        calls = []
+        _patch_cf(monkeypatch, lambda m, u, k: calls.append(1))
+        monkeypatch.setattr(
+            tools_mod,
+            "resolve_under_project",
+            lambda *a, **k: (_ for _ in ()).throw(
+                ProjectPathError("protected path", ToolErrorCode.PERMISSION_DENIED)
+            ),
+        )
         result = asyncio.run(
             DownloadFileTool().execute(
                 url="https://example.com/f", destination_path=str(tmp_path / "f.bin")
@@ -204,13 +228,17 @@ class TestDownloadFile:
         )
         assert result["success"] is False
         assert "protected path" in result["error"]
+        assert calls == []
 
     def test_scope_error(self, monkeypatch, tmp_path):
-        _patch_cf(monkeypatch, lambda m, u, k: _resp(content=b"data"))
+        calls = []
+        _patch_cf(monkeypatch, lambda m, u, k: calls.append(1))
         monkeypatch.setattr(
             tools_mod,
-            "_enforce_project_scope",
-            lambda dest, name: {"success": False, "error": "out of scope"},
+            "resolve_under_project",
+            lambda *a, **k: (_ for _ in ()).throw(
+                ProjectPathError("out of scope", ToolErrorCode.SCOPE)
+            ),
         )
         result = asyncio.run(
             DownloadFileTool().execute(
@@ -219,6 +247,26 @@ class TestDownloadFile:
         )
         assert result["success"] is False
         assert result["error"] == "out of scope"
+        assert calls == []
+
+    def test_oversize_preserves_existing_destination(self, monkeypatch, tmp_path):
+        destination = tmp_path / "existing.bin"
+        destination.write_bytes(b"original")
+        _patch_cf(
+            monkeypatch,
+            lambda m, u, k: _resp(content=b"partial", oversize=True),
+        )
+
+        result = asyncio.run(
+            DownloadFileTool().execute(
+                url="https://example.com/large.bin",
+                destination_path=str(destination),
+            )
+        )
+
+        assert result["success"] is False
+        assert result["error_code"] == "too_large"
+        assert destination.read_bytes() == b"original"
 
     def test_write_failure(self, monkeypatch, tmp_path):
         # destination is an existing directory → open(..., "wb") raises.
@@ -305,7 +353,7 @@ class TestWebSearchGaps:
         monkeypatch.setattr(web_mod, "_select_search_backend", lambda: SimpleNamespace(name="ddg"))
 
         async def empty_search(self, *a, **k):
-            return []
+            return [], "ddg"
 
         monkeypatch.setattr(WebSearchTool, "_search", empty_search)
         result = asyncio.run(WebSearchTool().execute(query="q"))
@@ -318,7 +366,7 @@ class TestWebSearchGaps:
         monkeypatch.setattr(web_mod, "_set_cached", lambda *a, **k: None)
 
         async def fake_search(self, *a, **k):
-            return [{"title": "T", "url": "https://x.com", "snippet": "s"}]
+            return [{"title": "T", "url": "https://x.com", "snippet": "s"}], "ddg"
 
         async def fake_text(url, max_len, extract_main=False):
             return "fetched page body"
@@ -339,7 +387,7 @@ class TestWebSearchGaps:
         monkeypatch.setattr(web_mod, "_get_cached", lambda key: None)
 
         async def fake_search(self, *a, **k):
-            return [{"title": "T", "url": "https://x.com", "snippet": "s"}]
+            return [{"title": "T", "url": "https://x.com", "snippet": "s"}], "ddg"
 
         async def boom(url, max_len, extract_main=False):
             raise RuntimeError("page fetch failed")
@@ -349,6 +397,25 @@ class TestWebSearchGaps:
         result = asyncio.run(WebSearchTool().execute(query="q", fetch_content=True))
         assert result["success"] is True
         assert result["results"][0]["page_content_error"] == "page fetch failed"
+
+    def test_fetch_content_does_not_pollute_snippet_cache(self, monkeypatch):
+        """Content-enriched results must not be written under the snippet cache key."""
+        written = []
+        monkeypatch.setattr(web_mod, "_get_cached", lambda key: None)
+        monkeypatch.setattr(web_mod, "_set_cached", lambda key, val, ttl: written.append(val))
+        monkeypatch.setattr(web_mod, "_select_search_backend", lambda: SimpleNamespace(name="ddg"))
+
+        async def fake_search(self, *a, **k):
+            return [{"title": "T", "url": "https://x.com", "snippet": "s"}], "ddg"
+
+        async def fake_text(url, max_len, extract_main=False):
+            return "page body"
+
+        monkeypatch.setattr(WebSearchTool, "_search", fake_search)
+        monkeypatch.setattr(web_mod, "_fetch_page_text", fake_text)
+        with services_scope(config=SimpleNamespace(search_cache_ttl_seconds=300)):
+            asyncio.run(WebSearchTool().execute(query="q", fetch_content=True))
+        assert written == []
 
     def test_concurrent_search_merges_and_dedups(self, monkeypatch):
         from coderAI.tools.web._search import _SearchResult
@@ -387,6 +454,36 @@ class TestWebSearchGaps:
         with services_scope(config=cfg):
             result = asyncio.run(WebSearchTool().execute(query="q"))
         assert result["success"] is True
+        assert result["backend"] == "ddg+searxng"
         urls = [r["url"] for r in result["results"]]
         assert len(urls) == 2  # the two dup.com URLs collapsed to one
         assert "https://b.com" in urls
+
+    def test_read_url_uses_page_cache(self, monkeypatch):
+        calls = {"n": 0}
+
+        def fake_cf(method, url, kwargs):
+            calls["n"] += 1
+            return _resp(text="<p>hello cache</p>", url=url)
+
+        _patch_cf(monkeypatch, fake_cf)
+        monkeypatch.setattr(web_mod, "_get_cached", lambda key: None)
+        stored = {}
+
+        def set_cached(key, val, ttl):
+            stored["key"] = key
+            stored["val"] = val
+
+        monkeypatch.setattr(web_mod, "_set_cached", set_cached)
+        with services_scope(config=SimpleNamespace(page_cache_ttl_seconds=3600)):
+            first = asyncio.run(ReadURLTool().execute(url="https://example.com"))
+        assert first["success"] is True
+        assert calls["n"] == 1
+        assert "content" in stored["val"]
+
+        monkeypatch.setattr(web_mod, "_get_cached", lambda key: stored["val"])
+        second = asyncio.run(ReadURLTool().execute(url="https://example.com"))
+        assert second["success"] is True
+        assert second.get("from_cache") is True
+        assert calls["n"] == 1  # no second network fetch
+        assert "hello" in second["content"].lower() or "cache" in second["content"].lower()

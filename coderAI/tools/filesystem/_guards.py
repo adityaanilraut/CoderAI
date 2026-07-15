@@ -11,7 +11,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import IO, Any, Optional
+from typing import IO, Any, Optional, Union
 
 from coderAI.core.services import get_services
 from coderAI.core.tool_error_codes import ToolErrorCode
@@ -52,6 +52,21 @@ def _emit_diff(path_obj: Path, before: str, after: str) -> None:
 # Defaults (overridden by config if set)
 DEFAULT_MAX_FILE_SIZE = 1_048_576
 DEFAULT_MAX_GLOB_RESULTS = 200
+
+
+class ProjectPathError(ValueError):
+    """A path failed a project filesystem security policy."""
+
+    def __init__(self, message: str, error_code: ToolErrorCode) -> None:
+        super().__init__(message)
+        self.error_code = error_code
+
+    def as_result(self) -> dict[str, Any]:
+        return {
+            "success": False,
+            "error": str(self),
+            "error_code": self.error_code,
+        }
 
 
 def _get_max_file_size() -> int:
@@ -181,6 +196,75 @@ def _allows_outside_project() -> bool:
         # Fail closed: if config can't be read, keep project-scope enforcement on.
         logger.debug("allow_outside_project config unavailable, failing closed", exc_info=True)
         return False
+
+
+def resolve_under_project(
+    path: Union[str, os.PathLike[str]],
+    *,
+    operation: str = "access",
+    enforce_scope: bool = True,
+    check_protected: bool = False,
+    reject_symlink: bool = False,
+) -> Path:
+    """Return a canonical path resolved against the active project root.
+
+    Relative paths are interpreted relative to ``get_services().config.project_root``,
+    not the process working directory. Scope enforcement follows the existing
+    ``allow_outside_project`` escape hatch. Optional protected-path and symlink-leaf
+    checks let non-filesystem tools share the same mutation policy.
+    """
+    try:
+        cfg = get_services().config
+        project_root = Path(getattr(cfg, "project_root", ".") or ".").expanduser().resolve()
+    except Exception:
+        logger.debug("project_root config unavailable, using cwd", exc_info=True)
+        project_root = Path.cwd().resolve()
+
+    requested = Path(path).expanduser()
+    candidate = requested if requested.is_absolute() else project_root / requested
+
+    if reject_symlink:
+        try:
+            if candidate.is_symlink():
+                raise ProjectPathError(
+                    f"Refusing to {operation} a symlink leaf: {candidate}",
+                    ToolErrorCode.SYMLINK,
+                )
+        except OSError as exc:
+            raise ProjectPathError(
+                f"Unable to validate path for {operation}: {candidate}: {exc}",
+                ToolErrorCode.IO,
+            ) from exc
+
+    try:
+        resolved = candidate.resolve()
+    except OSError as exc:
+        raise ProjectPathError(
+            f"Unable to resolve path for {operation}: {candidate}: {exc}",
+            ToolErrorCode.IO,
+        ) from exc
+
+    if check_protected and _is_path_protected(resolved):
+        raise ProjectPathError(
+            f"Refusing to {operation} protected path: {resolved}",
+            ToolErrorCode.PERMISSION_DENIED,
+        )
+
+    if enforce_scope:
+        try:
+            resolved.relative_to(project_root)
+        except ValueError:
+            if not _allows_outside_project():
+                raise ProjectPathError(
+                    (
+                        f"Refusing to {operation} outside project root: {resolved}. "
+                        "Set CODERAI_ALLOW_OUTSIDE_PROJECT=1 to allow."
+                    ),
+                    ToolErrorCode.SCOPE,
+                ) from None
+            logger.warning("%s outside project root: %s (allowed by opt-out)", operation, resolved)
+
+    return resolved
 
 
 def _enforce_project_scope(path: Path, op: str) -> Optional[dict[str, Any]]:

@@ -16,6 +16,8 @@ from coderAI.system.fsperms import OWNER_RWX, atomic_write_json, restrict_path
 
 logger = logging.getLogger(__name__)
 
+SESSION_SCHEMA_VERSION = 3
+
 
 def _atomic_write_json(target: Path, obj: Any) -> None:
     """Atomically write *obj* as compact, owner-only (0600) JSON to *target*.
@@ -95,13 +97,22 @@ class Checkpoint(BaseModel):
 class Session(BaseModel):
     """A conversation session."""
 
+    schema_version: int = Field(default=SESSION_SCHEMA_VERSION)
     session_id: str
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
+    name: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
     messages: List[Message] = Field(default_factory=list)
     model: str = Field(default_factory=_default_session_model)
     metadata: Dict[str, Any] = Field(default_factory=dict)
     checkpoints: List[Checkpoint] = Field(default_factory=list)
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    cache_creation_tokens: int = 0
+    cache_read_tokens: int = 0
+    total_cost_usd: float = 0.0
 
     def add_message(self, role: str, content: str, **kwargs: Any) -> None:
         """Add a message to the session."""
@@ -157,7 +168,7 @@ class Session(BaseModel):
 
 # Valid session ID pattern: session_<timestamp>_<hex8>
 _SESSION_ID_PATTERN = re.compile(r"^session_\d+_[a-f0-9]{8}$")
-_SESSION_RETENTION_SECONDS = 30 * 24 * 60 * 60
+_DEFAULT_SESSION_RETENTION_DAYS = 30
 
 
 _VALID_ROLES = {"system", "user", "assistant", "tool"}
@@ -261,8 +272,63 @@ def _sanitize_session_data(data: Dict[str, Any]) -> Dict[str, Any]:
         sanitized_messages.append(msg)
 
     data = dict(data)
+    # Schema v1 had no explicit version or accounting fields. Pydantic's field
+    # defaults migrate those sessions to zero usage without changing messages.
+    data.setdefault("schema_version", SESSION_SCHEMA_VERSION)
+    name = data.get("name")
+    data["name"] = name.strip() if isinstance(name, str) and name.strip() else None
+    raw_tags = data.get("tags", [])
+    data["tags"] = _normalize_tags(raw_tags if isinstance(raw_tags, list) else [])
     data["messages"] = sanitized_messages
     return data
+
+
+def _normalize_tags(tags: List[Any]) -> List[str]:
+    """Trim and de-duplicate tags while preserving their display spelling."""
+    normalized: List[str] = []
+    seen = set()
+    for raw in tags:
+        if not isinstance(raw, str):
+            continue
+        tag = raw.strip()
+        key = tag.casefold()
+        if tag and key not in seen:
+            seen.add(key)
+            normalized.append(tag)
+    return normalized
+
+
+def _index_entry(data: Dict[str, Any], fallback_id: Optional[str] = None) -> Dict[str, Any]:
+    """Build the cached list representation for one persisted session."""
+    session_id = data.get("session_id") or fallback_id
+    name = data.get("name")
+    return {
+        "session_id": session_id,
+        "name": name.strip() if isinstance(name, str) and name.strip() else None,
+        "tags": _normalize_tags(data.get("tags", []) if isinstance(data.get("tags"), list) else []),
+        "created_at": datetime.fromtimestamp(data.get("created_at", time.time())).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        ),
+        "updated_at": datetime.fromtimestamp(data.get("updated_at", time.time())).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        ),
+        "messages": len(data.get("messages", [])),
+        "model": data.get("model", "unknown"),
+    }
+
+
+def _session_retention_seconds() -> Optional[float]:
+    """Return the configured retention window, or ``None`` when disabled."""
+    try:
+        from coderAI.system.config import config_manager
+
+        days = int(config_manager.load().session_retention_days)
+    except Exception:
+        logger.debug("session retention config unavailable; using default", exc_info=True)
+        days = _DEFAULT_SESSION_RETENTION_DAYS
+    if days <= 0:
+        return None
+    return float(days * 24 * 60 * 60)
 
 
 class HistoryManager:
@@ -344,6 +410,8 @@ class HistoryManager:
         """
         if run_cleanup:
             self._cleanup_expired_sessions()
+        data = dict(data)
+        data["schema_version"] = SESSION_SCHEMA_VERSION
         session_id = data.get("session_id")
         if not session_id:
             return
@@ -373,24 +441,16 @@ class HistoryManager:
                 except OSError as e:
                     logger.warning("Could not read session index %s: %s", index_file, e)
 
-            index[session_id] = {
-                "session_id": session_id,
-                "created_at": datetime.fromtimestamp(data.get("created_at", time.time())).strftime(
-                    "%Y-%m-%d %H:%M:%S"
-                ),
-                "updated_at": datetime.fromtimestamp(data.get("updated_at", time.time())).strftime(
-                    "%Y-%m-%d %H:%M:%S"
-                ),
-                "messages": len(data.get("messages", [])),
-                "model": data.get("model", "unknown"),
-            }
+            index[session_id] = _index_entry(data)
             try:
                 _atomic_write_json(index_file, index)
             except Exception as e:
                 logger.warning(f"Failed to update session index: {e}")
 
-    def list_sessions(self) -> List[Dict[str, Any]]:
-        """List all available sessions using index.json cache."""
+    def list_sessions(
+        self, *, tag: Optional[str] = None, query: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """List sessions, optionally filtering by tag or name/id text."""
         self._cleanup_expired_sessions()
         index_file = self.history_dir / "index.json"
         index = {}
@@ -412,24 +472,15 @@ class HistoryManager:
                 del index[sid]
                 needs_save = True
 
-        # Rebuild missing
+        # Rebuild missing entries and enrich indexes written before names/tags.
         for session_file in session_files:
             sid = session_file.stem
-            if sid not in index:
+            entry = index.get(sid)
+            if not isinstance(entry, dict) or "name" not in entry or "tags" not in entry:
                 try:
                     with open(session_file, "r") as f:
                         data = json.load(f)
-                        index[sid] = {
-                            "session_id": data.get("session_id", sid),
-                            "created_at": datetime.fromtimestamp(
-                                data.get("created_at", time.time())
-                            ).strftime("%Y-%m-%d %H:%M:%S"),
-                            "updated_at": datetime.fromtimestamp(
-                                data.get("updated_at", time.time())
-                            ).strftime("%Y-%m-%d %H:%M:%S"),
-                            "messages": len(data.get("messages", [])),
-                            "model": data.get("model", "unknown"),
-                        }
+                        index[sid] = _index_entry(data, sid)
                         needs_save = True
                 except Exception:
                     # A corrupt session file shouldn't break listing the rest;
@@ -446,9 +497,70 @@ class HistoryManager:
                 logger.warning(f"Failed to save rebuilt session index: {e}")
 
         sessions = list(index.values())
+        if tag:
+            wanted_tag = tag.strip().casefold()
+            sessions = [
+                session
+                for session in sessions
+                if wanted_tag
+                in {
+                    str(item).casefold()
+                    for item in session.get("tags", [])
+                    if isinstance(item, str)
+                }
+            ]
+        if query:
+            needle = query.strip().casefold()
+            sessions = [
+                session
+                for session in sessions
+                if needle
+                in " ".join(
+                    [
+                        str(session.get("session_id", "")),
+                        str(session.get("name") or ""),
+                        *[str(item) for item in session.get("tags", [])],
+                    ]
+                ).casefold()
+            ]
         # updated_at is formatted YYYY-MM-DD HH:MM:SS which sorts lexicographically in chronological order
         sessions.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
         return sessions
+
+    def rename_session(self, session_id: str, name: Optional[str]) -> bool:
+        """Set or clear a session's display name and persist its index entry."""
+        session = self.load_session(session_id)
+        if session is None:
+            return False
+        session.name = name.strip() if isinstance(name, str) and name.strip() else None
+        session.updated_at = time.time()
+        self.save_session(session)
+        return True
+
+    def set_session_tags(self, session_id: str, tags: List[str]) -> bool:
+        """Replace a session's tags with a normalized list."""
+        session = self.load_session(session_id)
+        if session is None:
+            return False
+        session.tags = _normalize_tags(list(tags))
+        session.updated_at = time.time()
+        self.save_session(session)
+        return True
+
+    def tag_session(self, session_id: str, tags: List[str], *, remove: bool = False) -> bool:
+        """Add tags to a session, or remove them when ``remove`` is true."""
+        session = self.load_session(session_id)
+        if session is None:
+            return False
+        requested = _normalize_tags(list(tags))
+        if remove:
+            removed = {tag.casefold() for tag in requested}
+            session.tags = [tag for tag in session.tags if tag.casefold() not in removed]
+        else:
+            session.tags = _normalize_tags([*session.tags, *requested])
+        session.updated_at = time.time()
+        self.save_session(session)
+        return True
 
     def get_latest_session_id(self) -> Optional[str]:
         """Return the most recently updated session id, or None."""
@@ -516,7 +628,10 @@ class HistoryManager:
             with self._cleanup_lock:
                 self._last_cleanup_ts = now
 
-        cutoff = now - _SESSION_RETENTION_SECONDS
+        retention_seconds = _session_retention_seconds()
+        if retention_seconds is None:
+            return
+        cutoff = now - retention_seconds
         removed_ids = []
         for session_file in self.history_dir.glob("session_*.json"):
             try:

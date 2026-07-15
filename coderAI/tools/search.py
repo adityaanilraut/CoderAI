@@ -22,7 +22,9 @@ class GrepParams(BaseModel):
     path: str = Field(..., description="Path to search in (file or directory)")
     case_insensitive: bool = Field(False, description="Case insensitive search (default: false)")
     recursive: bool = Field(True, description="Search recursively in directories (default: true)")
-    max_results: int = Field(50, description="Maximum number of matches to return (default: 50)")
+    max_results: int = Field(
+        50, ge=1, description="Maximum number of matches to return (default: 50)"
+    )
 
 
 class GrepTool(Tool):
@@ -53,6 +55,12 @@ class GrepTool(Tool):
         same result shape.
         """
         try:
+            if max_results < 1:
+                return {
+                    "success": False,
+                    "error": "max_results must be at least 1.",
+                    "error_code": ToolErrorCode.VALIDATION,
+                }
             scope_err = _enforce_project_scope(Path(path).expanduser(), "search")
             if scope_err:
                 return scope_err
@@ -66,7 +74,7 @@ class GrepTool(Tool):
                     max_results,
                 )
 
-            cmd = ["grep", "-n"]
+            cmd = ["grep", "-H", "-n", "-m", str(max_results + 1)]
             if case_insensitive:
                 cmd.append("-i")
             if recursive:
@@ -92,7 +100,7 @@ class GrepTool(Tool):
             output = stdout.decode("utf-8", errors="replace")
             matches = []
 
-            for line in output.strip().split("\n"):
+            for line in output.splitlines():
                 if line:
                     parts = line.split(":", 2)
                     if len(parts) >= 3:
@@ -103,10 +111,11 @@ class GrepTool(Tool):
                                 "content": parts[2].strip(),
                             }
                         )
-                        if len(matches) >= max_results:
+                        if len(matches) > max_results:
                             break
 
-            truncated = len(output.strip().split("\n")) > len(matches)
+            truncated = len(matches) > max_results
+            matches = matches[:max_results]
             result = {
                 "success": True,
                 "pattern": pattern,
@@ -178,7 +187,7 @@ class GrepTool(Tool):
                                         "content": line.strip(),
                                     }
                                 )
-                                if len(matches) >= max_results:
+                                if len(matches) > max_results:
                                     truncated = True
                                     break
                 except OSError:
@@ -189,10 +198,10 @@ class GrepTool(Tool):
             result: Dict[str, Any] = {
                 "success": True,
                 "pattern": pattern,
-                "matches": matches,
-                "count": len(matches),
+                "matches": matches[:max_results],
+                "count": min(len(matches), max_results),
                 "was_truncated": truncated,
-                "next_offset": len(matches) if truncated else None,
+                "next_offset": min(len(matches), max_results) if truncated else None,
             }
             if truncated:
                 result["note"] = (
@@ -211,7 +220,7 @@ class SymbolSearchParams(BaseModel):
         "any", description="Optional symbol kind filter: any, function, class, method, variable."
     )
     path: str = Field(".", description="File or directory to search.")
-    max_results: int = Field(20, description="Maximum number of results to return.")
+    max_results: int = Field(20, ge=1, description="Maximum number of results to return.")
 
 
 class SymbolSearchTool(Tool):
@@ -235,6 +244,12 @@ class SymbolSearchTool(Tool):
         max_results: int = 20,
     ) -> Dict[str, Any]:
         try:
+            if max_results < 1:
+                return {
+                    "success": False,
+                    "error": "max_results must be at least 1.",
+                    "error_code": ToolErrorCode.VALIDATION,
+                }
             base = Path(path).expanduser()
             scope_err = _enforce_project_scope(base, "search")
             if scope_err:
@@ -263,11 +278,14 @@ class SymbolSearchTool(Tool):
         self, base: Path, symbol: str, kind: str, max_results: int
     ) -> tuple[List[Dict[str, Any]], bool]:
         """Synchronous tree walk + ast/regex parse — runs on a worker thread."""
-        files = [base] if base.is_file() else [p for p in base.rglob("*") if p.is_file()]
+        files = iter([base]) if base.is_file() else (p for p in base.rglob("*") if p.is_file())
         results: List[Dict[str, Any]] = []
-        was_truncated = False
         for file_path in files:
-            if any(part in file_path.parts for part in _GREP_SKIP_DIRS):
+            try:
+                rel_parts = file_path.relative_to(base).parts
+            except ValueError:
+                rel_parts = file_path.parts
+            if any(part in _GREP_SKIP_DIRS for part in rel_parts):
                 continue
             suffix = file_path.suffix.lower()
             if suffix == ".py":
@@ -278,12 +296,11 @@ class SymbolSearchTool(Tool):
                 continue
             for match in matches:
                 results.append(match)
-                if len(results) >= max_results:
-                    was_truncated = True
+                if len(results) > max_results:
                     break
-            if len(results) >= max_results:
+            if len(results) > max_results:
                 break
-        return results, was_truncated
+        return results[:max_results], len(results) > max_results
 
     def _search_python(self, file_path: Path, symbol: str, kind: str) -> List[Dict[str, Any]]:
         try:

@@ -8,11 +8,11 @@ from typing import Any, Dict, Optional
 from pydantic import BaseModel, Field
 
 from coderAI.core.tool_error_codes import ToolErrorCode
-from coderAI.system.config import config_manager
 from coderAI.system.proc import run_scrubbed, subprocess_timeout
 from coderAI.system.safeguards import truncate_output
 from coderAI.tools._detect import walk_up_detect
 from coderAI.tools.base import Tool
+from coderAI.tools.filesystem import ProjectPathError, resolve_under_project
 
 logger = logging.getLogger(__name__)
 
@@ -98,8 +98,15 @@ class LintTool(Tool):
     ) -> Dict[str, Any]:
         """Run linter on the given path."""
         try:
+            target = resolve_under_project(
+                path,
+                operation="lint",
+                check_protected=True,
+                reject_symlink=True,
+            )
+
             # Detect linter
-            linter_name = linter or detect_linter(path)
+            linter_name = linter or detect_linter(str(target))
             if not linter_name:
                 return {
                     "success": False,
@@ -127,13 +134,12 @@ class LintTool(Tool):
             # Resolve the target against the project root and run under it, so the
             # linter finds project config and the child env is scrubbed of secrets
             # with a bounded timeout + process-group kill (finding 3).
-            cfg = config_manager.load_project_config(".")
-            project_root = Path(getattr(cfg, "project_root", ".") or ".").resolve()
+            project_root = resolve_under_project(".", operation="lint")
 
             # For file-level linters, append the resolved path; project-level
             # linters (clippy, golangci-lint) operate on the cwd instead.
             if linter_name in ("ruff", "eslint"):
-                cmd.append(str((project_root / path).resolve()))
+                cmd.append(str(target))
 
             lint_timeout = subprocess_timeout()
             returncode, stdout, stderr, timed_out = await run_scrubbed(
@@ -181,5 +187,7 @@ class LintTool(Tool):
 
             return result
 
+        except ProjectPathError as e:
+            return e.as_result()
         except Exception as e:
             return {"success": False, "error": str(e), "error_code": ToolErrorCode.TOOL_ERROR}

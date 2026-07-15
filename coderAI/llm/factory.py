@@ -12,6 +12,7 @@ from coderAI.llm.ollama import OllamaProvider
 from coderAI.llm.groq import GroqProvider
 from coderAI.llm.deepseek import DeepSeekProvider
 from coderAI.llm.gemini import GeminiProvider
+from coderAI.llm.meta import MetaProvider
 
 # Aggregated friendly-name → canonical-model-ID map, collected from the provider
 # modules that expose one (only Anthropic today). Adding a provider with its own
@@ -38,6 +39,7 @@ def get_all_model_ids() -> Set[str]:
         | set(GroqProvider.SUPPORTED_MODELS.keys())
         | set(DeepSeekProvider.SUPPORTED_MODELS.keys())
         | set(GeminiProvider.SUPPORTED_MODELS.keys())
+        | set(MetaProvider.SUPPORTED_MODELS.keys())
         | {"lmstudio", "ollama"}
     )
 
@@ -54,6 +56,7 @@ def get_models_by_provider() -> List[Tuple[str, List[str], str]]:
         ("Groq Provider", list(GroqProvider.SUPPORTED_MODELS.keys()), "Groq API key"),
         ("DeepSeek Provider", list(DeepSeekProvider.SUPPORTED_MODELS.keys()), "DeepSeek API key"),
         ("Gemini Provider", list(GeminiProvider.SUPPORTED_MODELS.keys()), "Gemini API key"),
+        ("Meta Provider", list(MetaProvider.SUPPORTED_MODELS.keys()), "Meta Model API key"),
         ("LM Studio Provider", ["lmstudio"], "LM Studio running locally"),
         ("Ollama Provider", ["ollama"], "Ollama running locally"),
     ]
@@ -138,6 +141,19 @@ def create_provider(model: str, config: Any) -> Any:
             temperature=config.temperature,
             max_tokens=config.max_tokens,
         )
+    if model_lower in MetaProvider.SUPPORTED_MODELS or model_lower.startswith(
+        ("meta/", "muse-spark", "muse")
+    ):
+        actual_model = (
+            model_lower.split("meta/", 1)[1] if model_lower.startswith("meta/") else model
+        )
+        return MetaProvider(
+            model=actual_model,
+            api_key=config.meta_api_key,
+            temperature=config.temperature,
+            max_tokens=config.max_tokens,
+            reasoning_effort=config.reasoning_effort,
+        )
     if model_lower in OpenAIProvider.SUPPORTED_MODELS or model_lower.startswith(
         ("o1-", "o3", "gpt-", "openai/")
     ):
@@ -156,6 +172,6 @@ def create_provider(model: str, config: Any) -> Any:
         f"Unknown model: {model!r}. "
         "Use one of the listed aliases (sonnet/opus/haiku), a full provider "
         "model ID (e.g. claude-opus-4-7, gpt-5.4, deepseek-v3), or a prefixed "
-        "form like groq/<name>, deepseek/<name>, openai/<name>. "
+        "form like groq/<name>, deepseek/<name>, openai/<name>, meta/<name>. "
         "Run `coderAI models` to see the full list."
     )

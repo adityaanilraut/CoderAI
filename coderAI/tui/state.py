@@ -34,6 +34,9 @@ class SessionState:
     model: str = ""
     provider: str = ""
     cwd: str = ""
+    # None means the workspace has no project execution surface to trust.
+    # True/False are shown explicitly when .coderAI hooks/config are present.
+    workspace_trusted: Optional[bool] = None
     auto_approve: bool = False
     reasoning: ReasoningEffort = "none"
     verbose: bool = False
@@ -54,6 +57,5 @@ class SessionState:
     agents: Dict[str, AgentInfo] = field(default_factory=dict)
     progress: Optional[Dict[str, Any]] = None
     ready: bool = False
-    current_plan: Optional[Dict[str, Any]] = None
     current_tasks: Optional[Dict[str, Any]] = None
     active_persona: Optional[str] = None

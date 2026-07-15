@@ -103,6 +103,38 @@ def atomic_write_text(
             pass
 
 
+def atomic_write_bytes(
+    path: "os.PathLike[str] | str",
+    data: bytes,
+    *,
+    mode: Optional[int] = OWNER_RW,
+    fsync: bool = False,
+) -> None:
+    """Atomically write binary *data* via a same-directory temporary file."""
+    p = Path(path)
+    fd, tmp = tempfile.mkstemp(dir=str(p.parent), prefix=f".{p.name}.", suffix=".tmp")
+    try:
+        if mode is not None:
+            restrict_fd(fd, mode)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            if fsync:
+                f.flush()
+                os.fsync(f.fileno())
+        os.replace(tmp, str(p))
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
 def atomic_write_json(
     path: "os.PathLike[str] | str",
     obj: Any,

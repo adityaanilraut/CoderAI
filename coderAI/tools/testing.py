@@ -8,11 +8,11 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
-from coderAI.system.config import config_manager
 from coderAI.system.proc import run_scrubbed
 from coderAI.system.safeguards import truncate_output
 from coderAI.tools._detect import walk_up_detect
 from coderAI.tools.base import SUBPROCESS_TIMEOUT_MARGIN_SECONDS, Tool
+from coderAI.tools.filesystem import ProjectPathError, resolve_under_project
 
 logger = logging.getLogger(__name__)
 
@@ -313,12 +313,13 @@ class RunTestsTool(Tool):
         timeout: Optional[int] = None,
     ) -> Dict[str, Any]:
         try:
-            cfg = config_manager.load_project_config(".")
-            project_root = Path(getattr(cfg, "project_root", ".") or ".").resolve()
-            requested_path = Path(path).expanduser()
-            if not requested_path.is_absolute():
-                requested_path = project_root / requested_path
-            requested_path = requested_path.resolve()
+            requested_path = resolve_under_project(
+                path,
+                operation="run tests",
+                check_protected=True,
+                reject_symlink=True,
+            )
+            project_root = resolve_under_project(".", operation="run tests")
 
             framework_name = framework or detect_test_framework(str(requested_path))
             if not framework_name:
@@ -444,6 +445,8 @@ class RunTestsTool(Tool):
                 ),
             }
 
+        except ProjectPathError as e:
+            return e.as_result()
         except Exception as e:
             logger.exception("run_tests failed")
             return {"success": False, "error": str(e)}

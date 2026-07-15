@@ -57,6 +57,10 @@ MODEL_PRICING: Dict[str, Dict[str, float]] = {
     "deepseek-v3": {"input": 0.27, "output": 1.10},
     "deepseek-v3.2": {"input": 0.27, "output": 1.10},
     "deepseek-r1": {"input": 0.55, "output": 2.19},
+    # Meta Model API
+    "muse-spark-1.1": {"input": 1.25, "output": 4.25},
+    "muse-spark": {"input": 1.25, "output": 4.25},
+    "muse": {"input": 1.25, "output": 4.25},
     # Gemini
     "gemini-3.5-flash": {"input": 1.50, "output": 9.00},
     "gemini-3.1-pro": {"input": 2.00, "output": 12.00},

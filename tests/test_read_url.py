@@ -41,6 +41,7 @@ class TestReadURLToolSSRF:
             return None  # pretend the request was blocked downstream
 
         monkeypatch.setattr(web_mod, "_safe_request", capturing_safe_request)
+        monkeypatch.setattr(web_mod, "_get_cached", lambda key: None)
         asyncio.run(self.tool.execute(url="example.com/page"))
         assert calls and calls[0].startswith("https://")
 
@@ -82,6 +83,8 @@ class TestReadURLToolExecution:
             }
 
         monkeypatch.setattr(web_mod, "_safe_request", fake)
+        monkeypatch.setattr(web_mod, "_get_cached", lambda key: None)
+        monkeypatch.setattr(web_mod, "_set_cached", lambda *a, **k: None)
 
     def test_success_returns_content(self, monkeypatch):
         self._stub_safe_request(monkeypatch)

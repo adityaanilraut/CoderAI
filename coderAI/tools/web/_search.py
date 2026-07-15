@@ -375,6 +375,9 @@ def _parse_ddg_results_v2(html_text: str, max_results: int) -> List[_SearchResul
 class _SearXNGBackend(_SearchBackend):
     name = "searxng"
 
+    def __init__(self, instances: Optional[List[str]] = None):
+        self.instances = list(instances) if instances else list(_SEARXNG_INSTANCES)
+
     async def search(
         self,
         query: str,
@@ -410,7 +413,7 @@ class _SearXNGBackend(_SearchBackend):
                 return None
 
         # Try all instances concurrently
-        gathered = await asyncio.gather(*[_try_instance(inst) for inst in _SEARXNG_INSTANCES])
+        gathered = await asyncio.gather(*[_try_instance(inst) for inst in self.instances])
         for batch in gathered:
             if batch is not None and len(batch) > 0:
                 return batch
@@ -468,6 +471,27 @@ def _concurrent_search_enabled() -> bool:
         )
 
 
+def _searxng_instances() -> List[str]:
+    """Return SearXNG base URLs: custom config/env if set, else public defaults."""
+    custom = os.getenv("CODERAI_SEARXNG_URL")
+    if not custom:
+        try:
+            from coderAI.core.services import get_services
+
+            custom = get_services().config.searxng_url
+        except Exception:
+            # Config unavailable → public instance list.
+            logger.debug("searxng_url config unavailable, using defaults", exc_info=True)
+            custom = None
+    if custom:
+        url = str(custom).strip().rstrip("/")
+        if url:
+            if not url.startswith(("http://", "https://")):
+                url = "https://" + url
+            return [url]
+    return list(_SEARXNG_INSTANCES)
+
+
 def _select_search_backend() -> _SearchBackend:
     from coderAI.core.services import get_services
 
@@ -497,6 +521,8 @@ def _select_search_backend() -> _SearchBackend:
         return _DDGBackend()
     if explicit == "ddg":
         return _DDGBackend()
+    if explicit == "searxng":
+        return _SearXNGBackend(_searxng_instances())
 
     # auto
     if tavily_key:
@@ -507,7 +533,7 @@ def _select_search_backend() -> _SearchBackend:
 
 
 def _select_free_backends() -> List[_SearchBackend]:
-    return [_DDGBackend(), _SearXNGBackend()]
+    return [_DDGBackend(), _SearXNGBackend(_searxng_instances())]
 
 
 # ═══════════════════════════════════════════════════════════════════════════

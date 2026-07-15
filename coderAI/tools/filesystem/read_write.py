@@ -1,6 +1,7 @@
 """File read and write tools."""
 
 import asyncio
+import itertools
 import logging
 from pathlib import Path
 from typing import Any, Optional
@@ -27,8 +28,12 @@ logger = logging.getLogger(__name__)
 
 class ReadFileParams(BaseModel):
     path: str = Field(..., description="Path to the file to read")
-    start_line: Optional[int] = Field(None, description="Optional starting line number (1-indexed)")
-    end_line: Optional[int] = Field(None, description="Optional ending line number (1-indexed)")
+    start_line: Optional[int] = Field(
+        None, ge=1, description="Optional starting line number (1-indexed)"
+    )
+    end_line: Optional[int] = Field(
+        None, ge=1, description="Optional ending line number (1-indexed)"
+    )
 
 
 class ReadFileTool(Tool):
@@ -48,6 +53,25 @@ class ReadFileTool(Tool):
     ) -> dict[str, Any]:
         """Read file contents with size limit."""
         try:
+            if start_line is not None and start_line < 1:
+                return {
+                    "success": False,
+                    "error": "start_line must be at least 1.",
+                    "error_code": ToolErrorCode.VALIDATION,
+                }
+            if end_line is not None and end_line < 1:
+                return {
+                    "success": False,
+                    "error": "end_line must be at least 1.",
+                    "error_code": ToolErrorCode.VALIDATION,
+                }
+            if start_line is not None and end_line is not None and end_line < start_line:
+                return {
+                    "success": False,
+                    "error": "end_line must be greater than or equal to start_line.",
+                    "error_code": ToolErrorCode.VALIDATION,
+                }
+
             path_obj = Path(path).expanduser()
             scope_err = _enforce_project_scope(path_obj, "read")
             if scope_err:
@@ -80,15 +104,14 @@ class ReadFileTool(Tool):
             file_size = stat.st_size
             mtime = stat.st_mtime
             max_file_size = _get_max_file_size()
-            if file_size > max_file_size:
+            is_partial_read = start_line is not None or end_line is not None
+            if file_size > max_file_size and (not is_partial_read or end_line is None):
                 return {
                     "success": False,
                     "error": f"File too large: {file_size:,} bytes (limit: {max_file_size:,} bytes).",
                     "error_code": ToolErrorCode.TOO_LARGE,
-                    "hint": "Use start_line and end_line to read a specific range, or use grep to search.",
+                    "hint": "Use a bounded line range with end_line, or use grep to search.",
                 }
-
-            is_partial_read = start_line is not None or end_line is not None
 
             # Consult the per-session read cache for repeat reads of unchanged
             # full files. Partial reads bypass — start/end may move turn over
@@ -113,10 +136,8 @@ class ReadFileTool(Tool):
                 # the TOCTOU gap after the _reject_symlink_leaf check above.
                 with _safe_open_no_symlink(path_obj, "r") as f:
                     if is_partial_read:
-                        lines = f.readlines()
-                        start = (start_line - 1) if start_line else 0
-                        end = end_line if end_line else len(lines)
-                        return "".join(lines[start:end])
+                        start = (start_line or 1) - 1
+                        return "".join(itertools.islice(f, start, end_line))
                     return f.read()
 
             content = await asyncio.to_thread(_read)
@@ -224,7 +245,9 @@ class WriteFileTool(Tool):
                 before_content: Optional[str] = None
                 if not append:
                     if path_obj.exists():
-                        await asyncio.to_thread(get_backup_store().backup_file, str(path_obj), "modify")
+                        await asyncio.to_thread(
+                            get_backup_store().backup_file, str(path_obj), "modify"
+                        )
                         try:
                             before_content = await asyncio.to_thread(
                                 path_obj.read_text, encoding="utf-8"
@@ -234,7 +257,9 @@ class WriteFileTool(Tool):
                             # the write itself proceeds (backup already taken).
                             before_content = None
                     else:
-                        await asyncio.to_thread(get_backup_store().backup_file, str(path_obj), "create")
+                        await asyncio.to_thread(
+                            get_backup_store().backup_file, str(path_obj), "create"
+                        )
                         before_content = ""
                 else:
                     op = "modify" if path_obj.exists() else "create"

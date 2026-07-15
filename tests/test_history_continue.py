@@ -1,5 +1,5 @@
 import pytest
-from coderAI.system.history import HistoryManager
+from coderAI.system.history import SESSION_SCHEMA_VERSION, HistoryManager, Session
 import os
 import time
 import json
@@ -145,3 +145,57 @@ def test_cleanup_expired_sessions_removes_full_session_id_from_index(temp_histor
     assert not session_file.exists()
     with open(index_file, "r") as f:
         assert sid not in json.load(f)
+
+
+def test_legacy_session_loads_with_zero_accounting(temp_history):
+    sid = f"session_{int(time.time())}_{uuid.uuid4().hex[:8]}"
+    with open(temp_history.history_dir / f"{sid}.json", "w") as f:
+        json.dump({"session_id": sid, "messages": [], "model": "claude"}, f)
+
+    session = temp_history.load_session(sid)
+
+    assert session is not None
+    assert session.schema_version == SESSION_SCHEMA_VERSION
+    assert session.prompt_tokens == 0
+    assert session.completion_tokens == 0
+    assert session.cache_creation_tokens == 0
+    assert session.cache_read_tokens == 0
+    assert session.total_cost_usd == 0.0
+
+
+def test_save_writes_current_schema_and_accounting(temp_history):
+    sid = f"session_{int(time.time())}_{uuid.uuid4().hex[:8]}"
+    session = Session(
+        session_id=sid,
+        prompt_tokens=12,
+        completion_tokens=5,
+        total_tokens=17,
+        cache_creation_tokens=3,
+        cache_read_tokens=4,
+        total_cost_usd=0.125,
+    )
+
+    temp_history.save_session(session)
+
+    with open(temp_history.history_dir / f"{sid}.json") as f:
+        stored = json.load(f)
+    assert stored["schema_version"] == SESSION_SCHEMA_VERSION
+    assert stored["prompt_tokens"] == 12
+    assert stored["completion_tokens"] == 5
+    assert stored["total_tokens"] == 17
+    assert stored["cache_creation_tokens"] == 3
+    assert stored["cache_read_tokens"] == 4
+    assert stored["total_cost_usd"] == pytest.approx(0.125)
+
+
+def test_zero_retention_keeps_old_sessions(temp_history, monkeypatch):
+    sid = f"session_{int(time.time())}_{uuid.uuid4().hex[:8]}"
+    session_file = temp_history.history_dir / f"{sid}.json"
+    session_file.write_text(json.dumps({"session_id": sid}), encoding="utf-8")
+    old = time.time() - (365 * 24 * 60 * 60)
+    os.utime(session_file, (old, old))
+    monkeypatch.setattr("coderAI.system.history._session_retention_seconds", lambda: None)
+
+    temp_history._cleanup_expired_sessions(force=True)
+
+    assert session_file.exists()

@@ -4,7 +4,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 from coderAI.llm.base import LLMProvider
 from coderAI.llm.base import _retry_async as _retry
-from coderAI.system.safeguards import sanitize_for_log
+from coderAI.system.redaction import redact_text
 
 
 class OpenAICompatibleCloudProvider(LLMProvider):
@@ -74,9 +74,7 @@ class OpenAICompatibleCloudProvider(LLMProvider):
         different error, or return normally to re-raise the original.
         """
         verb = "streaming error" if streaming else "error"
-        raise RuntimeError(
-            f"{self.PROVIDER_LABEL} API {verb}: {sanitize_for_log(str(exc))}"
-        ) from exc
+        raise RuntimeError(f"{self.PROVIDER_LABEL} API {verb}: {redact_text(str(exc))}") from exc
 
     def _extract_stream_usage(self, chunk_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Pull the usage dict out of a stream chunk (provider-specific shape)."""

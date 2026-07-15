@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from coderAI.core.agent_tracker import AgentStatus
 from coderAI.system.events import event_emitter
+from coderAI.system.proc import build_hook_env, run_scrubbed
 
 if TYPE_CHECKING:
     from coderAI.core.agent import Agent
@@ -75,8 +76,6 @@ class HooksManager:
         # Hooks run repo-supplied shell commands, so start from a minimal
         # allowlisted env (Phase 2.4): PATH/HOME/locale/toolchain vars only, no
         # credentials. The CODERAI_* context below is layered on top.
-        from coderAI.system.proc import build_hook_env
-
         env = build_hook_env()
         env["CODERAI_TOOL_NAME"] = tool_name
 
@@ -119,16 +118,13 @@ class HooksManager:
     def load_hooks(self) -> Optional[Dict[str, Any]]:
         """Load project hooks from .coderAI/hooks.json (cached by mtime).
 
-        Fail-closed on workspace trust (Phase 2.2): an untrusted project's
-        hooks are never loaded, so a freshly cloned repo cannot fire hooks on
-        first contact. Trust is granted by the user via the first-run prompt
-        (or the ``CODERAI_TRUST_WORKSPACE`` / ``--trust-workspace`` escape hatch).
+        Fail-closed on the Agent-lifetime workspace trust snapshot: an
+        untrusted project's hooks are never loaded, and granting trust does not
+        activate them until a new Agent is launched.
         """
         try:
             project_root = self.agent.config.project_root
-            from coderAI.system.trust import workspace_trust
-
-            if not workspace_trust.is_trusted(project_root):
+            if getattr(self.agent, "_workspace_trusted", False) is not True:
                 return None
             hfile = Path(project_root) / ".coderAI" / "hooks.json"
             if not hfile.exists():
@@ -207,18 +203,19 @@ class HooksManager:
 
                 async def _exec_hook(cmd: str) -> Optional[str]:
                     event_emitter.emit("agent_status", message=f"Running {hook_type} hook...")
-                    proc = await asyncio.create_subprocess_shell(
+                    returncode, stdout, stderr, timed_out = await run_scrubbed(
                         cmd,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
-                        env=env,
+                        shell=True,
+                        base_env=env,
                         cwd=str(self.agent.config.project_root),
+                        sandbox_workspace=str(self.agent.config.project_root),
                     )
-                    stdout, stderr = await proc.communicate()
                     stdout_text = stdout.decode("utf-8", errors="replace").strip()
                     stderr_text = stderr.decode("utf-8", errors="replace").strip()
-                    if proc.returncode != 0:
-                        detail = stderr_text or stdout_text or f"exit code {proc.returncode}"
+                    if timed_out:
+                        return f"[{hook_type} Hook ERROR]: {cmd} :: timed out"
+                    if returncode != 0:
+                        detail = stderr_text or stdout_text or f"exit code {returncode}"
                         return f"[{hook_type} Hook ERROR]: {cmd} :: {detail}"
                     return stdout_text or None
 
@@ -354,18 +351,19 @@ class HooksManager:
                 cmd: str,
             ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
                 """Run a hook and attempt JSON parsing of stdout."""
-                proc = await asyncio.create_subprocess_shell(
+                returncode, stdout, stderr, timed_out = await run_scrubbed(
                     cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    env=env,
+                    shell=True,
+                    base_env=env,
                     cwd=str(self.agent.config.project_root),
+                    sandbox_workspace=str(self.agent.config.project_root),
                 )
-                stdout, stderr = await proc.communicate()
                 stdout_text = stdout.decode("utf-8", errors="replace").strip()
                 stderr_text = stderr.decode("utf-8", errors="replace").strip()
-                if proc.returncode != 0:
-                    detail = stderr_text or stdout_text or f"exit code {proc.returncode}"
+                if timed_out:
+                    return None, f"[{hook_type} Hook ERROR]: {cmd} :: timed out"
+                if returncode != 0:
+                    detail = stderr_text or stdout_text or f"exit code {returncode}"
                     return None, f"[{hook_type} Hook ERROR]: {cmd} :: {detail}"
                 try:
                     parsed = json.loads(stdout_text)

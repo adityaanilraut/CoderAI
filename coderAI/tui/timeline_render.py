@@ -15,7 +15,6 @@ from rich.markdown import Markdown
 from rich.padding import Padding
 
 from coderAI.tui.diff_render import format_diff_gutter
-from coderAI.tui.platform import palette_shortcut
 from coderAI.tui.theme import Categories, Glyphs, Styles, Tokens
 
 logger = logging.getLogger(__name__)
@@ -89,7 +88,7 @@ class _RailBlock:
     """Render ``renderable`` with a colored ``▎`` left rail on every visual line.
 
     The Rail is the design system's backbone motif: a single colored left-edge
-    pipe that groups a block with minimal visual weight (see the Tokyo Night
+    pipe that groups a block with minimal visual weight (see the CoderAI
     "Rail" redesign). Tool cards/diffs draw a single-line rail inline; this
     wrapper extends the same gutter down a multi-line block (chat bubbles).
     """
@@ -374,7 +373,7 @@ def write_skill_card(log: SupportsWrite, it: Dict[str, Any]) -> None:
 def write_welcome(log: SupportsWrite, it: Dict[str, Any]) -> None:
     """Empty-state block seeded at session start.
 
-    Renders exactly 7 lines (6 rail lines + trailing blank) — keep
+    Renders exactly 5 lines (4 rail lines + trailing blank) — keep
     ``calculate_item_lines`` in sync when adding or removing a line.
     """
     model = escape(str(it.get("model") or "…"))
@@ -386,16 +385,11 @@ def write_welcome(log: SupportsWrite, it: Dict[str, Any]) -> None:
     head.append(f"{Glyphs.BRAND} ", style=f"bold {Tokens.ACCENT}")
     head.append("CoderAI", style=f"bold {Tokens.TEXT}")
     session_line = model + (f" · {provider}" if provider else "")
-    pal = palette_shortcut()
     parts: list[Any] = [
         head,
         Text.from_markup(f"  [{Tokens.TEXT_DIM}]{session_line}[/]"),
         Text.from_markup(f"  [{Tokens.TEXT_MUTED}]{escape(cwd)}[/]"),
         Text(""),
-        Text.from_markup(
-            f"  [{Tokens.TEXT_MUTED}]↵ send · @ mention files · / commands · {pal} palette[/]"
-        ),
-        Text.from_markup(f"  [{Tokens.TEXT_MUTED}]PgUp/PgDn scrollback · ^B agents · ^G plan[/]"),
     ]
     log.write(_RailBlock(Group(*parts), Tokens.ACCENT))
     log.write("")
@@ -492,5 +486,5 @@ def calculate_item_lines(it: Dict[str, Any], verbose: bool, width: Optional[int]
         lines += 1  # empty line
         return lines
     elif kind == "welcome":
-        return 7  # 6 rail lines + trailing blank (see write_welcome)
+        return 5  # 4 rail lines + trailing blank (see write_welcome)
     return 3

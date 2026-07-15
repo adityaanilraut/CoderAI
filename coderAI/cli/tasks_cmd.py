@@ -28,10 +28,15 @@ def tasks_list() -> None:
 
     display.print_header(result.get("summary", "Tasks"))
 
-    for status, color in [("pending", "yellow"), ("completed", "green")]:
+    for status, color in [
+        ("in_progress", "cyan"),
+        ("pending", "yellow"),
+        ("completed", "green"),
+    ]:
         task_list = result.get(status, [])
         if task_list:
-            display.print(f"\n[bold {color}]{status.title()} Tasks:[/bold {color}]")
+            label = status.replace("_", " ").title()
+            display.print(f"\n[bold {color}]{label} Tasks:[/bold {color}]")
             for t in task_list:
                 desc = f" - {t['description']}" if t.get("description") else ""
                 display.print(f"  [{t['id']}] {t['title']}{desc}")

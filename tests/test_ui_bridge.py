@@ -1,5 +1,4 @@
 import asyncio
-import json
 from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
@@ -15,6 +14,7 @@ from coderAI.tui.controller import (
     _cmd_manage_context,
     _cmd_reference,
     _cmd_send_message,
+    _cmd_set_auto_approve,
     _cmd_set_model,
     _cmd_set_reasoning,
     _cmd_set_verbosity,
@@ -319,6 +319,30 @@ async def test_tool_approval_resp_late_response_emits_warning() -> None:
     )
 
 
+def test_approval_memory_option_prefers_reviewed_scope() -> None:
+    tool = SimpleNamespace(approval_scope="command", high_risk_no_blanket=True)
+    server = _make_ipc_server(tools=SimpleNamespace(get=lambda _name: tool))
+
+    option = UIBridge._approval_memory_option(
+        server, "run_command", {"command": "pytest tests/auth -q"}
+    )
+
+    assert option == {
+        "rememberMode": "scope",
+        "rememberScope": "pytest tests/auth -q",
+        "rememberLabel": "Allow this command prefix",
+    }
+
+
+def test_approval_memory_option_omits_unknown_or_unscoped_high_risk_tool() -> None:
+    unknown = _make_ipc_server(tools=SimpleNamespace(get=lambda _name: None))
+    assert UIBridge._approval_memory_option(unknown, "workspace_trust", {}) == {}
+
+    high_risk = SimpleNamespace(approval_scope=None, high_risk_no_blanket=True)
+    server = _make_ipc_server(tools=SimpleNamespace(get=lambda _name: high_risk))
+    assert UIBridge._approval_memory_option(server, "python_repl", {"code": "x"}) == {}
+
+
 @pytest.mark.asyncio
 async def test_get_state_re_emits_status_agents_and_context() -> None:
     from coderAI.core.agent_tracker import AgentInfo, agent_tracker
@@ -411,6 +435,35 @@ async def test_toggle_auto_approve_flips_flag_and_patches_session() -> None:
 
     assert server.agent.auto_approve is True
     server.emit.assert_any_call("session_patch", autoApprove=True)
+    server.agent._configure_delegate_tool_context.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_set_auto_approve_enables_yolo_idempotently() -> None:
+    server = _make_ipc_server(auto_approve=False)
+    server.agent._configure_delegate_tool_context = MagicMock()
+
+    await _cmd_set_auto_approve(server, {"enabled": True})
+    assert server.agent.auto_approve is True
+    server.emit.assert_any_call("session_patch", autoApprove=True)
+    server.agent._configure_delegate_tool_context.assert_called_once()
+
+    server.emit.reset_mock()
+    server.agent._configure_delegate_tool_context.reset_mock()
+    await _cmd_set_auto_approve(server, {"enabled": True})
+    assert server.agent.auto_approve is True
+    server.emit.assert_called_once_with("session_patch", autoApprove=True)
+    server.agent._configure_delegate_tool_context.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_set_auto_approve_can_disable() -> None:
+    server = _make_ipc_server(auto_approve=True)
+    server.agent._configure_delegate_tool_context = MagicMock()
+
+    await _cmd_set_auto_approve(server, {"enabled": False})
+    assert server.agent.auto_approve is False
+    server.emit.assert_any_call("session_patch", autoApprove=False)
     server.agent._configure_delegate_tool_context.assert_called_once()
 
 

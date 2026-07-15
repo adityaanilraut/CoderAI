@@ -77,6 +77,7 @@ from coderAI.tools.web._search import (
     _SearXNGBackend,
     _select_free_backends,
     _select_search_backend,
+    _searxng_instances,
     _TavilyBackend,
 )
 from coderAI.tools.web.tools import (

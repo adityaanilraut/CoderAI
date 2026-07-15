@@ -3,11 +3,13 @@
 import logging
 import os
 from concurrent.futures import Future, ThreadPoolExecutor
+from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
 
 from coderAI.system.config import config_manager
 from coderAI.system.cost import CostTracker
+from coderAI.system.error_policy import BudgetExceededError
 from coderAI.system.history import Session
 from coderAI.context.context_controller import ContextController
 from coderAI.tools import ToolRegistry
@@ -56,7 +58,19 @@ class Agent(AgentCapabilitiesMixin, AgentSessionMixin):
                 registry's ``delegate_task`` reads this from the agent's
                 ``SubagentContext`` to enforce ``MAX_DELEGATION_DEPTH``.
         """
-        self.config = config_manager.load_project_config(".")
+        project_root = str(Path(".").resolve())
+        from coderAI.system.trust import workspace_trust
+
+        # Pin one trust decision for the full Agent lifetime. A grant made by
+        # the first-turn prompt is persisted for the next Agent launch but must
+        # not partially activate project-controlled surfaces in this instance.
+        self._workspace_trusted: bool = workspace_trust.is_trusted(project_root)
+        if self._workspace_trusted:
+            with workspace_trust.pinned_decision(project_root, self._workspace_trusted):
+                self.config = config_manager.load_project_config(".")
+        else:
+            self.config = config_manager.load().model_copy(deep=True)
+            self.config.project_root = project_root
 
         # Load custom persona if requested
         self.persona: Optional[AgentPersona] = None
@@ -225,6 +239,11 @@ class Agent(AgentCapabilitiesMixin, AgentSessionMixin):
                 skills = await self.skill_manager.get_top_skills(user_message)
                 if skills and self.session:
                     self._inject_skill_context(skills)
+            except BudgetExceededError as e:
+                # The execution loop will return the normal budget-blocked
+                # response; persist the classifier call before that early exit.
+                logger.warning("Skill auto-detection exhausted the session budget: %s", e)
+                self.save_session()
             except Exception as e:
                 logger.warning("Skill auto-detection failed: %s", e)
 

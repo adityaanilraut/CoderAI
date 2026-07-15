@@ -1,6 +1,5 @@
 """Python REPL tool for interactive code execution."""
 
-import asyncio
 import logging
 import tempfile
 from pathlib import Path
@@ -10,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from coderAI.core.services import get_services
 from coderAI.core.tool_error_codes import ToolErrorCode
-from coderAI.system.proc import kill_process_group, new_session_kwargs, scrub_env
+from coderAI.system.proc import run_scrubbed
 from coderAI.system.safeguards import truncate_output
 from coderAI.tools.base import SUBPROCESS_TIMEOUT_MARGIN_SECONDS, Tool
 from coderAI.tools.terminal import _resolve_working_dir
@@ -98,30 +97,15 @@ class PythonREPLTool(Tool):
                     sys.executable or shutil.which("python3") or shutil.which("python") or "python3"
                 )
 
-                # ``python_repl`` runs unsandboxed model-authored code. Scrub
-                # secret-bearing env vars so an injected snippet cannot read
-                # ``$OPENAI_API_KEY`` etc., and isolate the process group so a
-                # timeout can reap any children it spawned.
-                process = await asyncio.create_subprocess_exec(
-                    python_cmd,
-                    script_path,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
+                # The shared runner preserves environment scrubbing and
+                # process-group cleanup while applying the configured OS sandbox.
+                returncode, stdout, stderr, timed_out = await run_scrubbed(
+                    [python_cmd, script_path],
                     cwd=str(resolved_cwd),
-                    env=scrub_env(),
-                    **new_session_kwargs(),
+                    timeout=timeout,
                 )
 
-                try:
-                    stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
-                except asyncio.TimeoutError:
-                    # Kill the whole group and reap it — a bare ``process.kill()``
-                    # without ``wait()`` leaves a zombie and orphans children.
-                    kill_process_group(process)
-                    try:
-                        await asyncio.wait_for(process.wait(), timeout=5)
-                    except (asyncio.TimeoutError, ProcessLookupError):
-                        pass
+                if timed_out:
                     return {
                         "success": False,
                         "error": f"Execution timed out after {timeout} seconds",
@@ -139,8 +123,8 @@ class PythonREPLTool(Tool):
                 stderr_str, _ = truncate_output(stderr_str, max_chars=max_output, mode="head")
 
                 return {
-                    "success": process.returncode == 0,
-                    "returncode": process.returncode,
+                    "success": returncode == 0,
+                    "returncode": returncode,
                     "stdout": stdout_str,
                     "stderr": stderr_str,
                 }

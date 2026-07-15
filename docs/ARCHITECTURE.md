@@ -68,8 +68,11 @@ sequenceDiagram
         Exec->>IPC: request_tool_approval(...)
         IPC->>TUI: emit("tool", phase=awaiting_approval)
         TUI-->>User: Approval modal
-        User->>TUI: Approve / Deny / Always
-        TUI->>IPC: enqueue_command("tool_approval_resp")
+        User->>TUI: Allow once / Deny / Remember reviewed scope
+        opt Remember reviewed scope
+            TUI->>IPC: submit_command("allow_tool", tool, scope)
+        end
+        TUI->>IPC: submit_command("tool_approval_resp")
         IPC->>IPC: approval Future.set_result
         Exec->>Exec: Run tool implementation
     end
@@ -140,7 +143,8 @@ timeline/session state; `timeline_render.py` writes rows to the
 │   │   ├── history.py       # Session persistence
 │   │   ├── hooks_manager.py # .coderAI/hooks.json
 │   │   ├── locks.py         # Async resource locks
-│   │   ├── proc.py          # Scrubbed subprocess / exec sandbox
+│   │   ├── proc.py          # Scrubbed subprocess runner
+│   │   ├── sandbox.py       # Bubblewrap / sandbox-exec confinement
 │   │   ├── trust.py         # Workspace trust gate
 │   │   ├── project_layout.py
 │   │   ├── read_cache.py
@@ -150,10 +154,10 @@ timeline/session state; `timeline_render.py` writes rows to the
 │   │   ├── context_selector.py
 │   │   ├── code_chunker.py
 │   │   └── code_indexer.py  # ChromaDB semantic index
-│   ├── embeddings/          # OpenAI embeddings (default; no local provider yet)
-│   ├── llm/                 # OpenAI, Anthropic, Groq, DeepSeek, Gemini, LM Studio, Ollama
+│   ├── embeddings/          # OpenAI + optional local sentence-transformers
+│   ├── llm/                 # OpenAI, Anthropic, Groq, DeepSeek, Gemini, Meta, LM Studio, Ollama
 │   ├── skills/              # Skill discovery + optional hosted sources
-│   ├── tools/               # ~68 native tools (+ git_extended via bundled MCP)
+│   ├── tools/               # Native tools (+ git_extended via bundled MCP)
 │   │   ├── discovery.py
 │   │   ├── _detect.py       # Shared walk-up project-tool detection
 │   │   ├── filesystem/      # Package: read_write, edit, manage, metadata, _guards
@@ -161,7 +165,7 @@ timeline/session state; `timeline_render.py` writes rows to the
 │   │   ├── terminal.py, git.py, search.py, semantic_search.py
 │   │   ├── browser.py, desktop.py, memory.py, mcp.py, undo.py
 │   │   ├── subagent.py, tasks.py, lint.py, format.py, testing.py
-│   │   ├── package_manager.py, refactor.py, project.py
+│   │   ├── package_manager.py, refactor.py
 │   │   ├── context_manage.py
 │   │   ├── repl.py, vision.py, skills.py
 │   │   └── …
@@ -216,7 +220,7 @@ entry point resolves to `main()` in `coderAI/cli/__init__.py` → `cli/main.py`.
 **Responsibility:** Abstract different LLM backends behind `LLMProvider`.
 
 **Implementations:** `OpenAIProvider`, `AnthropicProvider`,
-`DeepSeekProvider`, `GroqProvider`, `GeminiProvider`, `LMStudioProvider`,
+`DeepSeekProvider`, `GroqProvider`, `GeminiProvider`, `MetaProvider`, `LMStudioProvider`,
 `OllamaProvider`. Instantiation goes through `llm/factory.py::create_provider(model, config)`
 — do not construct providers directly from `agent.py`.
 
