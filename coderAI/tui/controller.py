@@ -20,6 +20,7 @@ through this namespace at call time.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 import os
 import time as _time
@@ -615,14 +616,54 @@ class UIBridge:
     async def submit_command(
         self, cmd: str, *, cmd_id: Optional[str] = None, **fields: Any
     ) -> None:
-        """Dispatch one command and await completion."""
+        """Dispatch one command and await completion.
+
+        Safe to call from the Textual UI thread. Approval replies must run on
+        the agent loop that owns the waiter Future; dispatching on the UI loop
+        leaves the turn asleep until a later ``enqueue_command`` wakes it.
+        """
         msg: Dict[str, Any] = {
             "kind": "cmd",
             "cmd": cmd,
             "id": cmd_id or str(uuid.uuid4()),
         }
         msg.update(fields)
-        await self._dispatch(msg)
+
+        loop = self._loop
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+
+        if loop is None or not loop.is_running() or running is loop:
+            await self._dispatch(msg)
+            return
+
+        done: concurrent.futures.Future[None] = concurrent.futures.Future()
+
+        def _schedule() -> None:
+            async def _run() -> None:
+                try:
+                    await self._dispatch(msg)
+                except Exception as exc:
+                    if not done.done():
+                        done.set_exception(exc)
+                else:
+                    if not done.done():
+                        done.set_result(None)
+
+            task = asyncio.create_task(_run())
+            self._pending_tasks.add(task)
+
+            def _cleanup(t: asyncio.Task) -> None:
+                self._pending_tasks.discard(t)
+                if t.cancelled() and not done.done():
+                    done.cancel()
+
+            task.add_done_callback(_cleanup)
+
+        loop.call_soon_threadsafe(_schedule)
+        await asyncio.wrap_future(done)
 
     def request_shutdown(self, *, reason: str = "user") -> None:
         """Signal the UI to exit."""

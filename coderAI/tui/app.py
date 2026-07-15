@@ -600,13 +600,17 @@ class CoderAIApp(App[None]):
             # Remember only the reviewed tool/path/command scope advertised by
             # the backend. Session-wide unsafe auto-approve remains an explicit
             # /yolo action and is never enabled from a routine approval prompt.
+            #
+            # Prefer enqueue_command: the agent loop owns the approval Future on
+            # a worker thread, and UI-thread submit_command historically stalled
+            # the turn until the next user message woke the loop.
             if approve and remember and pending.get("rememberMode"):
-                await self.controller.submit_command(
+                self.controller.enqueue_command(
                     "allow_tool",
                     tool=str(pending.get("tool") or ""),
                     scope=str(pending.get("rememberScope") or ""),
                 )
-            await self.controller.submit_command(
+            self.controller.enqueue_command(
                 "tool_approval_resp",
                 toolId=pending["id"],
                 approve=approve,

@@ -132,6 +132,8 @@ async def test_remember_action_records_scope_without_enabling_yolo():
         await pilot.press("a")
         await pilot.pause()
 
+        # Approval replies must go through enqueue_command so they run on the
+        # agent worker loop (submit_command from the UI thread used to stall).
         assert controller.commands == [
             (
                 "allow_tool",
