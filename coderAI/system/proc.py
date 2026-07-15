@@ -34,6 +34,8 @@ from coderAI.system.sandbox import prepare_sandbox_launch
 
 logger = logging.getLogger(__name__)
 
+FORCE_KILL_SIGNAL = getattr(signal, "SIGKILL", signal.SIGTERM)
+
 # ── Environment scrubbing ────────────────────────────────────────────────────
 
 # Names/patterns of environment variables that carry credentials and must
@@ -166,7 +168,7 @@ def new_session_kwargs() -> Dict[str, Any]:
     return {"start_new_session": True}
 
 
-def kill_process_group(process: Any, sig: int = signal.SIGKILL) -> None:
+def kill_process_group(process: Any, sig: int = FORCE_KILL_SIGNAL) -> None:
     """Best-effort kill of the entire process group led by *process*.
 
     Falls back to killing only the direct child when the group cannot be
@@ -191,9 +193,15 @@ def kill_process_group(process: Any, sig: int = signal.SIGKILL) -> None:
             _kill_direct(process)
         return
 
+    getpgid = getattr(os, "getpgid", None)
+    killpg = getattr(os, "killpg", None)
+    if getpgid is None or killpg is None:
+        _kill_direct(process)
+        return
+
     try:
-        pgid = os.getpgid(pid)
-        os.killpg(pgid, sig)
+        pgid = getpgid(pid)
+        killpg(pgid, sig)
     except (ProcessLookupError, PermissionError, OSError):
         # Group already gone or not a group leader — fall back to the child.
         _kill_direct(process)

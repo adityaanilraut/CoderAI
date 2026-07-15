@@ -220,7 +220,7 @@ class _SSRFResolver(aiohttp.abc.AbstractResolver):
         for fam, _type, _proto, _canon, sockaddr in infos:
             if fam not in (socket.AF_INET, socket.AF_INET6):
                 continue
-            ip = sockaddr[0]
+            ip = str(sockaddr[0])
             if self._allow_local or _is_ip_public(ip):
                 results.append(
                     {

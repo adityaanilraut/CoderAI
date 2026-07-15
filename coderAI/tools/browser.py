@@ -79,7 +79,7 @@ async def _resolve_host_addrs(host: str) -> List[str]:
         infos = await loop.getaddrinfo(host, None, type=socket.SOCK_STREAM)
     except OSError:
         return []
-    return [info[4][0] for info in infos if info[0] in (socket.AF_INET, socket.AF_INET6)]
+    return [str(info[4][0]) for info in infos if info[0] in (socket.AF_INET, socket.AF_INET6)]
 
 
 async def _validate_navigation_url(url: str) -> Optional[Dict[str, Any]]:

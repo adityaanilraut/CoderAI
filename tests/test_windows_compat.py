@@ -20,6 +20,7 @@ import time
 import pytest
 
 from coderAI.system import fsperms
+from coderAI.system.proc import FORCE_KILL_SIGNAL
 from coderAI.tools.search import GrepTool
 from coderAI.tools.terminal import (
     BgProcessInfo,
@@ -144,7 +145,7 @@ def _capture_group_kill(monkeypatch):
     """Record the signal KillProcessTool passes to ``kill_process_group``."""
     calls = []
 
-    def _spy(process, sig=signal.SIGKILL):
+    def _spy(process, sig=FORCE_KILL_SIGNAL):
         calls.append(sig)
         # Simulate the group dying so ``process.wait()`` resolves promptly.
         process.returncode = -int(sig)
@@ -162,7 +163,7 @@ def test_kill_process_force_signals_group_with_sigkill(monkeypatch):
         result = asyncio.run(KillProcessTool().execute(pid=proc.pid, force=True))
         assert result["success"]
         # The whole group is signalled (via the helper), with SIGKILL for force.
-        assert calls == [signal.SIGKILL]
+        assert calls == [FORCE_KILL_SIGNAL]
     finally:
         _tracked_bg_processes.pop(proc.pid, None)
 

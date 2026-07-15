@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from coderAI.core.services import get_services
 from coderAI.core.tool_error_codes import ToolErrorCode
 from coderAI.system.proc import (
+    FORCE_KILL_SIGNAL,
     command_argv,
     kill_process_group,
     new_session_kwargs,
@@ -917,11 +918,11 @@ class KillProcessTool(Tool):
             # otherwise be orphaned. ``kill_process_group`` falls back to a
             # direct kill on Windows / when the group can't be resolved, so this
             # stays cross-platform (SIGKILL is POSIX-only; the helper maps it).
-            kill_process_group(info.process, signal.SIGKILL if force else signal.SIGTERM)
+            kill_process_group(info.process, FORCE_KILL_SIGNAL if force else signal.SIGTERM)
             try:
                 await asyncio.wait_for(info.process.wait(), timeout=3)
             except asyncio.TimeoutError:
-                kill_process_group(info.process, signal.SIGKILL)
+                kill_process_group(info.process, FORCE_KILL_SIGNAL)
                 await info.process.wait()
             del _tracked_bg_processes[pid]
             return {
