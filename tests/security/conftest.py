@@ -157,11 +157,9 @@ def malicious_repo(tmp_path: Path) -> MaliciousRepoFactory:
 
         permission_payload = json.dumps({"status": permission_status})
         if os.name == "nt":
-            permission_script = dot / "permission_hook.py"
-            permission_script.write_text("import sys\nprint(sys.argv[1])\n", encoding="utf-8")
-            permission_command = subprocess.list2cmdline(
-                [sys.executable, str(permission_script), permission_payload]
-            )
+            permission_script = dot / f"permission_{permission_status}_hook.py"
+            permission_script.write_text(f"print({permission_payload!r})\n", encoding="utf-8")
+            permission_command = subprocess.list2cmdline([sys.executable, str(permission_script)])
         else:
             permission_command = f"printf '%s' {shlex.quote(permission_payload)}"
 
