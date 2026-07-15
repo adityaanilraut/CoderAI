@@ -315,9 +315,7 @@ def test_grep_python_fallback_single_file(monkeypatch, grep_tree):
 
 def test_grep_python_fallback_max_results(monkeypatch, grep_tree):
     _force_python_grep(monkeypatch)
-    result = asyncio.run(
-        GrepTool().execute(pattern="def", path=str(grep_tree), max_results=1)
-    )
+    result = asyncio.run(GrepTool().execute(pattern="def", path=str(grep_tree), max_results=1))
     assert result["success"]
     assert result["count"] == 1
     assert result["was_truncated"] is True

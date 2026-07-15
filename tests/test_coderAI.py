@@ -1,7 +1,6 @@
 """Tests for CoderAI tools."""
 
 import asyncio
-import json
 import os
 import tempfile
 from pathlib import Path
@@ -317,7 +316,6 @@ class TestGitTools:
 # ============================================================================
 
 
-
 class TestGrepTool:
     """Tests for GrepTool."""
 
@@ -517,7 +515,11 @@ class TestSystemPrompt:
 
         reg = ToolRegistry()
         discover_tools(reg)
-        reg.register(ManageContextTool(ContextController(config=Config(project_root="."), provider=MagicMock())))
+        reg.register(
+            ManageContextTool(
+                ContextController(config=Config(project_root="."), provider=MagicMock())
+            )
+        )
         return reg
 
     def test_system_prompt_exists(self):
@@ -886,7 +888,6 @@ class TestUndoTools:
 # ============================================================================
 # Project Context
 # ============================================================================
-
 
 
 class TestAnthropicProvider:

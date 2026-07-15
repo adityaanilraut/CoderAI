@@ -129,7 +129,9 @@ def test_copy_native_darwin(monkeypatch):
         return None
 
     monkeypatch.setattr(clipboard.platform, "system", lambda: "Darwin")
-    monkeypatch.setattr(clipboard.shutil, "which", lambda name: "/usr/bin/pbcopy" if name == "pbcopy" else None)
+    monkeypatch.setattr(
+        clipboard.shutil, "which", lambda name: "/usr/bin/pbcopy" if name == "pbcopy" else None
+    )
     monkeypatch.setattr(clipboard.subprocess, "run", fake_run)
     assert clipboard._copy_native("hi") is True
     assert calls == [["pbcopy"]]

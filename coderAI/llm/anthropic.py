@@ -620,7 +620,7 @@ class AnthropicProvider(LLMProvider):
                                                         "id": block_info.get("id", ""),
                                                         "type": "function",
                                                         "function": {
-                                                            "name": block_info.get("name", ""),
+                                                            "name": "",
                                                             "arguments": partial_json,
                                                         },
                                                     }
@@ -640,6 +640,8 @@ class AnthropicProvider(LLMProvider):
                                 final_reason = "refusal"
                             elif final_stop_reason == "pause_turn":
                                 final_reason = "pause_turn"
+                            elif final_stop_reason == "max_tokens":
+                                final_reason = "length"
                             else:
                                 final_reason = "stop"
                             yield {

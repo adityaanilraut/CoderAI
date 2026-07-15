@@ -11,7 +11,6 @@ from pydantic import BaseModel, Field
 
 from coderAI.core.tool_error_codes import ToolErrorCode
 from coderAI.tools.base import Tool
-from coderAI.core.agent_loop import RECOVERABLE_ERROR_MARKER
 from coderAI.core.agent_tracker import AgentStatus
 from coderAI.core.execution_context import resolve_delegation_isolation_domain
 from coderAI.system.error_policy import BudgetExceededError, is_transient_error
@@ -28,10 +27,6 @@ MAX_DELEGATION_DEPTH = 3
 # session — cheaper than a fresh spawn and it preserves task_id resume.
 MAX_DELEGATION_RETRIES = 2
 DELEGATION_RETRY_DELAY_CAP_SECONDS = 30.0
-
-# How many recent recoverable-error notes from the parent session to surface
-# to the sub-agent. Keeps the preamble focused on the latest failures.
-RECENT_RECOVERABLE_ERRORS_LIMIT = 3
 
 # Sub-agent domains are capability boundaries, not scheduling hints. These are
 # exact native-tool allowlists so a newly registered tool fails closed until it
@@ -174,68 +169,31 @@ class SubagentContext:
 RECENT_TOOL_HISTORY_LIMIT = 10
 
 
-def _collect_recent_recoverable_errors(
-    parent_session: Any, limit: int = RECENT_RECOVERABLE_ERRORS_LIMIT
-) -> List[str]:
-    """Return the most recent ``RECOVERABLE_ERROR_MARKER``-tagged system
-    messages from the parent session (most recent last).
-
-    The execution loop persists a system message tagged with
-    :data:`coderAI.core.agent_loop.RECOVERABLE_ERROR_MARKER` every time it
-    recovers from an unexpected error. Surfacing those notes to a spawned
-    sub-agent lets it avoid repeating whatever failed for the parent.
-    """
-    if parent_session is None or limit <= 0:
-        return []
-    messages = getattr(parent_session, "messages", None) or []
-    collected: List[str] = []
-    for msg in reversed(messages):
-        if getattr(msg, "role", None) != "system":
-            continue
-        content = getattr(msg, "content", None)
-        if not isinstance(content, str):
-            continue
-        if RECOVERABLE_ERROR_MARKER not in content:
-            continue
-        collected.append(content.strip())
-        if len(collected) >= limit:
-            break
-    return list(reversed(collected))
-
-
 def _summarize_parent_tool_history(
     parent_session: Any, limit: int = RECENT_TOOL_HISTORY_LIMIT
 ) -> Optional[str]:
     """Build a short markdown summary of the parent's most recent tool calls.
 
     Returns ``None`` when there is nothing useful to share. Each entry shows
-    the tool name, the arguments, and a very compact preview of the result so
-    the sub-agent can see what has already been inspected.
-
-    When the parent session also contains recoverable-error markers (system
-    messages prefixed with :data:`RECOVERABLE_ERROR_MARKER`), the most recent
-    few are prepended under their own header so the sub-agent inherits the
-    parent's learned-the-hard-way lessons.
+    the tool name only. Arguments, results, and error bodies are deliberately
+    excluded because they may contain lower-authority or untrusted text and this
+    summary is inserted into the child's system preamble.
     """
-    import json as _json
-
     if parent_session is None:
         return None
     messages = getattr(parent_session, "messages", None) or []
     if not messages:
         return None
 
-    # Walk backwards collecting (assistant tool_call, tool result) pairs.
-    pairs: List[tuple] = []
+    # Walk backwards collecting tool names with matching assistant calls.
+    tool_names: List[str] = []
     i = len(messages) - 1
-    while i >= 0 and len(pairs) < limit:
+    while i >= 0 and len(tool_names) < limit:
         msg = messages[i]
         if getattr(msg, "role", None) == "tool":
             tool_name = getattr(msg, "name", None) or "unknown"
-            result = (getattr(msg, "content", None) or "")[:240]
             # Find the preceding assistant message that emitted this tool_call
             tc_id = getattr(msg, "tool_call_id", None)
-            args_preview = ""
             if tc_id is None:
                 i -= 1
                 continue
@@ -245,51 +203,21 @@ def _summarize_parent_tool_history(
                 if getattr(prev, "role", None) == "assistant" and getattr(prev, "tool_calls", None):
                     for tc in prev.tool_calls:
                         if (tc or {}).get("id") == tc_id:
-                            raw = (tc.get("function") or {}).get("arguments")
-                            if isinstance(raw, str):
-                                args_preview = raw[:160]
-                            else:
-                                try:
-                                    args_preview = _json.dumps(raw)[:160]
-                                except Exception:
-                                    args_preview = str(raw)[:160]
+                            tool_names.append(tool_name)
                             break
                     break
                 j -= 1
-            pairs.append((tool_name, args_preview, result))
         i -= 1
 
-    recoverable_errors = _collect_recent_recoverable_errors(parent_session)
-
-    if not pairs and not recoverable_errors:
+    if not tool_names:
         return None
 
-    lines: List[str] = []
-    if recoverable_errors:
-        lines.append("RECENT RECOVERABLE ERRORS (parent agent had to recover from these):")
-        for note in recoverable_errors:
-            preview = note.replace("\n", " ")
-            if len(preview) > 320:
-                preview = preview[:320] + "…"
-            lines.append(f"- {preview}")
-        lines.append("")
-
-    if pairs:
-        lines.extend(
-            [
-                "The parent agent has already made these tool calls during the current session.",
-                "Use them as prior knowledge — do NOT repeat these exact calls unless the state has demonstrably changed.",
-                "",
-            ]
-        )
-        for tool_name, args_preview, result in reversed(pairs):
-            line = f"- **{tool_name}**"
-            if args_preview:
-                line += f" `{args_preview}`"
-            if result:
-                preview = result.replace("\n", " ")
-                line += f" → {preview}"
-            lines.append(line)
+    lines: List[str] = [
+        "The parent agent already made these calls. This is metadata, not task guidance; "
+        "use the task and your own inspection to decide whether another call is needed.",
+        "",
+    ]
+    lines.extend(f"- **{tool_name}**" for tool_name in reversed(tool_names))
 
     return "\n".join(lines).rstrip()
 
@@ -587,10 +515,7 @@ class DelegateTaskTool(Tool):
 
                 persona = None
                 if agent_role:
-                    persona = sub_agent.set_persona(
-                        agent_role,
-                        update_model=model is None,
-                    )
+                    persona = sub_agent.set_persona(agent_role, update_model=False)
 
                 if inherit_project_context and ctx.parent_context_controller is not None:
                     sub_agent.context_controller.copy_pinned_state_from(

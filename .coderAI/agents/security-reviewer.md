@@ -1,8 +1,7 @@
 ---
 name: security-reviewer
 description: Security reviewer for input handling, auth, secrets, trust boundaries, and unsafe integrations.
-tools: ["Read", "Write", "Edit", "Bash", "Grep", "Glob"]
-model: deepseek-v4-flash
+tools: ["Read", "Grep", "Glob"]
 ---
 
 You review code for concrete security risks.

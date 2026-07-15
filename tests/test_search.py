@@ -19,7 +19,6 @@ def search_tree(tmp_path):
     return tmp_path
 
 
-
 class TestGrepTool:
     @pytest.fixture(autouse=True)
     def setup(self):

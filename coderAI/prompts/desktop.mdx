@@ -3,3 +3,4 @@
 - Use `run_applescript` only when it is listed as an available tool.
 - Before interacting with native application UI elements, call `get_accessibility_tree` to identify elements and paths.
 - For browser tasks, prefer registered web or browser tools. Use AppleScript browser control only when desktop automation is the appropriate registered capability.
+- Desktop actions may complete asynchronously. If a tool result does not confirm the requested outcome, wait briefly and verify the resulting application state before replying; do not wait for the user to say continue.

@@ -5,6 +5,9 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
+from unittest.mock import MagicMock
+
+import tiktoken
 
 from coderAI.system.config import config_manager
 
@@ -27,12 +30,12 @@ for env_key in [
         os.environ[env_key] = "mock-key-for-testing"
 
 # Mock tiktoken to prevent network requests for vocabulary files in tests under pytest-socket
-import tiktoken
-from unittest.mock import MagicMock
+
 
 class MockEncoding:
     def encode(self, text: str, *args, **kwargs) -> list[int]:
         return [1] * len(text)
+
 
 mock_encoding = MockEncoding()
 tiktoken.get_encoding = MagicMock(return_value=mock_encoding)

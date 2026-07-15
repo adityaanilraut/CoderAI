@@ -3,7 +3,7 @@
 This rule specifies the language guidelines for Python development within this project.
 
 ## 1. Type Hinting
-- **Strict Typing:** All new functions, methods, and class definitions MUST include full type hints using the `typing` module.
+- **Typing:** Add type hints to new or changed public interfaces and follow the module's existing typing level.
 - **Return Types:** Always specify the return type, even if it is `None`.
 
 ## 2. Testing Framework
@@ -12,7 +12,7 @@ This rule specifies the language guidelines for Python development within this p
 
 ## 3. Formatting and Linting
 - **PEP 8:** Follow PEP 8 style guidelines.
-- **Docstrings:** Use Google-style docstrings for all public modules, classes, and functions.
+- **Docstrings:** Document public APIs when their purpose or contract is not already obvious.
 
 ## 4. Error Handling
 - **Specific Exceptions:** Catch specific exceptions rather than using broad `except Exception:` blocks unless at the top level of a process.

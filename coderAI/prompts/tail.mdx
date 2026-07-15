@@ -5,13 +5,6 @@
 - Batch discovery calls when it saves round-trips.
 - Read the smallest useful set of files before proposing changes.
 
-### Task Workflow
-
-1. For multi-step work (3+ ordered steps), call `manage_tasks` with `action='add'` for each step before editing.
-2. Between steps, call `manage_tasks` with `action='list'` to check progress.
-3. Call `manage_tasks` with `action='start'` / `action='complete'` as each task progresses.
-4. Skip task tracking entirely for trivial work (single-tool reads, greetings, one-line answers).
-
 ### Editing Code
 - Read the target file first.
 - Prefer atomic edits when they help.
@@ -23,11 +16,8 @@
 - Trace definitions and usages before deciding on a fix.
 - Verify the fix and call out any remaining uncertainty.
 
-### Research and Delegation
+### Research
 - If web tools are listed, use them directly for current information or specific URLs.
-- Use `delegate_task` for isolated review or research work. Prefer `read_only_task=True` when no mutations are needed.
-- For parallel mixed tasks (e.g. browser + desktop + news), emit multiple `delegate_task` calls in one turn with matching `isolation_domain` values (`browser`, `desktop`, or `read_only_task=True`). Do not claim tasks ran in parallel unless domains are non-conflicting.
-- Do not override the sub-agent model unless the user asks.
 
 ## Safety & Communication
 

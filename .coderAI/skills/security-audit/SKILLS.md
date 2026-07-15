@@ -1,11 +1,11 @@
 ---
 name: security-audit
-description: Security audit workflow
+description: Evidence-driven security review for code that handles trust boundaries, secrets, authentication, external input, or privileged operations.
 ---
 
 # Security Audit Workflow
 
-This skill defines the steps for performing a rigorous security review on code changes. It should be used before finalizing new features or reviewing pull requests.
+Use this workflow when the task involves a security-sensitive boundary or explicitly requests a security review. Do not apply it automatically to unrelated changes.
 
 ## Step 1: Core Vulnerability Check
 - **Credentials:** Scan the code for hardcoded passwords, tokens, API keys, or standard cryptographic material. Ensure these are loaded from environment variables or secure vaults.
@@ -25,5 +25,6 @@ This skill defines the steps for performing a rigorous security review on code c
 - CRITICAL: Verify that sensitive information (e.g., passwords, credit card numbers, PII) is NOT included in log messages or stack traces.
 
 ## Step 5: Report Findings
-- Document any identified issues categorized by severity (Critical, High, Medium, Low).
-- Provide actionable recommendations and preferred code patterns to remediate the vulnerabilties.
+- Report only findings supported by the code, ordered by severity, with file and line references.
+- Explain impact, a plausible attack path, and the smallest effective remediation.
+- If no concrete issue is found, say so and note the untested boundaries.

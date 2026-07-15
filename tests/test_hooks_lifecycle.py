@@ -157,9 +157,7 @@ async def test_on_stop_fires_on_budget_stop(tmp_path, mock_hooks_file):
     loop = ExecutionLoop(agent)
 
     # A budget breach surfaced from the LLM call is a hard terminal stop.
-    loop._call_llm_with_retry = AsyncMock(
-        side_effect=BudgetExceededError("budget exhausted")
-    )
+    loop._call_llm_with_retry = AsyncMock(side_effect=BudgetExceededError("budget exhausted"))
 
     result = await loop.run("keep spending")
 

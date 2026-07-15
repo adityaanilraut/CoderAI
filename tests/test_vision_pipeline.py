@@ -66,13 +66,25 @@ class TestToolImagesCarrier:
 class TestProviderCleaning:
     def test_anthropic_keeps_tool_images(self):
         provider = AnthropicProvider("claude-sonnet-4-6", api_key="test")
-        msgs = [{"role": "tool", "content": "{}", "tool_call_id": "c1",
-                 "tool_images": [{"mime_type": "image/png", "data": _B64}]}]
+        msgs = [
+            {
+                "role": "tool",
+                "content": "{}",
+                "tool_call_id": "c1",
+                "tool_images": [{"mime_type": "image/png", "data": _B64}],
+            }
+        ]
         assert provider.clean_messages(msgs)[0].get("tool_images")
 
     def test_base_strip_removes_tool_images(self):
-        msgs = [{"role": "tool", "content": "{}", "tool_call_id": "c1",
-                 "tool_images": [{"mime_type": "image/png", "data": _B64}]}]
+        msgs = [
+            {
+                "role": "tool",
+                "content": "{}",
+                "tool_call_id": "c1",
+                "tool_images": [{"mime_type": "image/png", "data": _B64}],
+            }
+        ]
         cleaned = LLMProvider._strip_tool_images(msgs)
         assert "tool_images" not in cleaned[0]
         # Original list is not mutated.
@@ -86,9 +98,7 @@ class TestAnthropicVisionRendering:
             {
                 "role": "assistant",
                 "content": "",
-                "tool_calls": [
-                    {"id": "c1", "function": {"name": "read_image", "arguments": "{}"}}
-                ],
+                "tool_calls": [{"id": "c1", "function": {"name": "read_image", "arguments": "{}"}}],
             },
             {
                 "role": "tool",

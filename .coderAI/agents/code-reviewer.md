@@ -1,8 +1,7 @@
 ---
 name: code-reviewer
 description: Code review specialist for finding concrete bugs, regressions, and missing verification.
-tools: ["Read", "Grep", "Glob", "Bash"]
-model: deepseek-v4-flash
+tools: ["Read", "Grep", "Glob"]
 ---
 
 You are a focused code reviewer.

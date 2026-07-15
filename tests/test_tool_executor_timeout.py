@@ -145,9 +145,7 @@ class BareTool(Tool):
 
 class TestResolveToolTimeoutPrecedence:
     def test_level1_resolve_timeout_wins_over_everything(self):
-        cfg = Config(
-            tool_timeout_overrides={"arg_derived": 20.0}, tool_timeout_seconds=30.0
-        )
+        cfg = Config(tool_timeout_overrides={"arg_derived": 20.0}, tool_timeout_seconds=30.0)
         with services_scope(config=cfg):
             assert resolve_tool_timeout(ArgDerivedTool(), "arg_derived", {}) == 42.0
 

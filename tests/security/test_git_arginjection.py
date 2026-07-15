@@ -61,9 +61,7 @@ def test_git_diff_output_injection_creates_no_file(tmp_path: Path, git_repo: Pat
 
 def test_git_show_output_injection_creates_no_file(tmp_path: Path, git_repo: Path) -> None:
     target = tmp_path / "pwned_show"
-    result = asyncio.run(
-        GitShowTool().execute(repo_path=str(git_repo), ref=f"--output={target}")
-    )
+    result = asyncio.run(GitShowTool().execute(repo_path=str(git_repo), ref=f"--output={target}"))
     assert result["success"] is False
     assert not target.exists(), "git show --output= clobbered a file"
 

@@ -202,8 +202,7 @@ async def test_goodbye_suppressed_exactly_once():
         app.post_message(AgentEventMsg("goodbye", {}))
         await pilot.pause()
         assert not any(
-            "session ended" in str(it.get("message", "")).lower()
-            for it in app.reducer.timeline
+            "session ended" in str(it.get("message", "")).lower() for it in app.reducer.timeline
         )
         assert not app._suppress_goodbye
 
@@ -211,6 +210,5 @@ async def test_goodbye_suppressed_exactly_once():
         app.post_message(AgentEventMsg("goodbye", {}))
         await pilot.pause()
         assert any(
-            "session ended" in str(it.get("message", "")).lower()
-            for it in app.reducer.timeline
+            "session ended" in str(it.get("message", "")).lower() for it in app.reducer.timeline
         )

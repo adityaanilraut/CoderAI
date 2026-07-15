@@ -537,7 +537,41 @@ class ExecutionLoop:
         tool_calls = response_data.get("tool_calls")
 
         if not tool_calls:
-            if state.tools_were_used and not (content or "").strip() and not state.reply_parts:
+            if (
+                state.tools_were_used
+                and not (content or "").strip()
+                and state.empty_post_tool_retries == 0
+                and state.iteration < state.max_iterations
+            ):
+                state.empty_post_tool_retries += 1
+                msgs = self.agent.session.messages
+                if (
+                    msgs
+                    and msgs[-1].role == "assistant"
+                    and not (msgs[-1].content or "").strip()
+                    and not msgs[-1].tool_calls
+                ):
+                    msgs.pop()
+                self._refresh_messages_from_session(state.messages)
+                state.messages.append(
+                    {
+                        "role": "system",
+                        "content": (
+                            "Your response after tool execution was empty. Continue the task "
+                            "autonomously without waiting for another user message. If the tool "
+                            "started an asynchronous action or did not confirm the requested "
+                            "outcome, use the available tools to wait for and verify it. Otherwise, "
+                            "provide a concise final response now."
+                        ),
+                    }
+                )
+                get_services().events.emit(
+                    "agent_status",
+                    message="Tool finished without a final response; continuing automatically.",
+                )
+                return None
+
+            if state.tools_were_used and not (content or "").strip():
                 try:
                     summary = await self._post_tool_closing_message(state.user_message)
                 except BudgetExceededError:
@@ -557,7 +591,14 @@ class ExecutionLoop:
                     state.reply_parts.append(summary.strip())
 
             return await self._finalize_turn(
-                fallback=content or "",
+                fallback=(
+                    content
+                    or (
+                        "The requested tool action completed, but no final details were returned."
+                        if state.tools_were_used
+                        else ""
+                    )
+                ),
                 stop_reason="stop",
                 iterations=state.iteration,
                 hooks_data=state.hooks_data,
@@ -583,6 +624,19 @@ class ExecutionLoop:
             self.hooks_manager,
             turn=state,
         )
+
+        called_tool_names = {
+            (call.get("function") or {}).get("name")
+            for call in tool_calls
+            if isinstance(call, dict)
+        }
+        if called_tool_names & {"mcp_connect", "mcp_disconnect"}:
+            # MCP topology changes alter both function schemas and the dynamic
+            # prompt appendix. Refresh both before the next model iteration.
+            self._tool_schemas_dirty = True
+            self.agent._cached_system_prompt = None
+            self.agent._refresh_session_system_prompt()
+            self._refresh_messages_from_session(state.messages)
 
         # Emit progress after tool execution for sub-agent streaming
         if self.progress_callback:
@@ -625,10 +679,14 @@ class ExecutionLoop:
             # continue_loop_on_deny=True: reset the counter so repeated denials
             # don't look like fatal errors. The executor already updated the
             # transcript so the loop feeds the denial back to the LLM.
+            state.tools_were_used = True
             state.consecutive_tool_errors = 0
         elif outcome.status is BatchStatus.RETRY:
             # All tool calls failed (or were unparsable); the executor updated
             # the transcript with error feedback for the next LLM round.
+            # Still count as tool use so an empty follow-up can auto-continue
+            # instead of silently ending the turn.
+            state.tools_were_used = True
             state.consecutive_tool_errors += 1
             if state.consecutive_tool_errors >= MAX_CONSECUTIVE_ERRORS:
                 return await self._handle_fatal_error(
@@ -637,6 +695,9 @@ class ExecutionLoop:
                 )
         else:  # BatchStatus.OK
             state.tools_were_used = True
+            # A successful tool batch opens a new post-tool reply window, so
+            # allow another one-shot empty-response recovery if needed.
+            state.empty_post_tool_retries = 0
             state.consecutive_tool_errors = 0
 
         # Check budget after expensive tool operations (MCP, sub-agents,

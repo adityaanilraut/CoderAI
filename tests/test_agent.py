@@ -158,7 +158,8 @@ class TestTruncateMessages:
 
         asyncio.run(ctrl.manage_context_window(messages))
 
-        prompt = ctrl.provider.chat.await_args.args[0][0]["content"]
+        summary_messages = ctrl.provider.chat.await_args.args[0]
+        prompt = next(msg["content"] for msg in summary_messages if msg["role"] == "user")
         assert "ASSISTANT TOOL_CALLS" in prompt
         assert "read_file" in prompt
         assert "README.md" in prompt
@@ -777,7 +778,9 @@ class TestRepositoryPromptHygiene:
         agents_dir = root / ".coderAI" / "agents"
         skills_dir = root / ".coderAI" / "skills"
         available_skills = {
-            path.name for path in skills_dir.iterdir() if path.is_dir() and (path / "SKILLS.md").is_file()
+            path.name
+            for path in skills_dir.iterdir()
+            if path.is_dir() and (path / "SKILLS.md").is_file()
         }
 
         pattern = r"skill:\s*`([^`]+)`"
@@ -802,6 +805,16 @@ class TestRepositoryPromptHygiene:
             )
             assert "automatically activated" not in frontmatter, (
                 f"{path.name} description overpromises routing"
+            )
+
+    def test_repository_personas_are_provider_neutral(self):
+        root = Path(__file__).resolve().parents[1]
+        agents_dir = root / ".coderAI" / "agents"
+
+        for path in agents_dir.glob("*.md"):
+            frontmatter = path.read_text(encoding="utf-8").split("---", 2)[1]
+            assert "model:" not in frontmatter.lower(), (
+                f"{path.name} should inherit the user's configured model"
             )
 
 

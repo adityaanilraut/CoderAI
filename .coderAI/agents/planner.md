@@ -1,8 +1,7 @@
 ---
 name: planner
 description: Planning specialist for complex features, refactors, and implementation sequencing.
-tools: ["Read", "Grep", "Glob", "Bash", "Edit", "Write"]
-model: deepseek-v4-flash
+tools: ["Read", "Grep", "Glob"]
 ---
 
 You create implementation plans that are specific, incremental, and testable.

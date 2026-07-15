@@ -48,6 +48,7 @@ class TurnContext:
     consecutive_llm_errors: int = 0
     consecutive_tool_errors: int = 0
     consecutive_pauses: int = 0
+    empty_post_tool_retries: int = 0
     tools_were_used: bool = False
     ingested_untrusted: bool = False
     ingested_untrusted_mcp: bool = False

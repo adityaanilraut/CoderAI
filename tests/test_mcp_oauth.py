@@ -96,9 +96,7 @@ def test_discover_metadata_requires_auth_servers(creds_dir):
 
 
 def test_get_valid_token_returns_unexpired(creds_dir):
-    oauth.set_credentials(
-        "srv", {"access_token": "live", "expires_at": time.time() + 600}
-    )
+    oauth.set_credentials("srv", {"access_token": "live", "expires_at": time.time() + 600})
     assert oauth.get_valid_token_sync("srv") == "live"
 
 
@@ -167,17 +165,17 @@ def test_login_happy_path_persists_tokens(creds_dir):
         "registration_endpoint": "https://h/register",
         "revocation_endpoint": "https://h/revoke",
     }
-    with patch.object(oauth, "probe_www_authenticate", return_value=None), patch.object(
-        oauth, "discover_metadata", return_value=(rm, as_meta)
-    ), patch.object(
-        oauth, "register_client", return_value={"client_id": "cid"}
-    ), patch.object(
-        oauth, "_capture_authorization_code", return_value="code123"
-    ), patch.object(
-        oauth,
-        "exchange_code",
-        return_value={"access_token": "AT", "refresh_token": "RT", "expires_in": 3600},
-    ) as exch:
+    with (
+        patch.object(oauth, "probe_www_authenticate", return_value=None),
+        patch.object(oauth, "discover_metadata", return_value=(rm, as_meta)),
+        patch.object(oauth, "register_client", return_value={"client_id": "cid"}),
+        patch.object(oauth, "_capture_authorization_code", return_value="code123"),
+        patch.object(
+            oauth,
+            "exchange_code",
+            return_value={"access_token": "AT", "refresh_token": "RT", "expires_in": 3600},
+        ) as exch,
+    ):
         record = oauth.login("strava", "https://mcp.h/mcp")
 
     assert record["access_token"] == "AT"
@@ -197,9 +195,11 @@ def test_login_happy_path_persists_tokens(creds_dir):
 def test_login_errors_without_registration_or_client_id(creds_dir):
     rm = {"resource": "u", "authorization_servers": ["https://h/iss"]}
     as_meta = {"authorization_endpoint": "https://h/a", "token_endpoint": "https://h/t"}
-    with patch.object(oauth, "probe_www_authenticate", return_value=None), patch.object(
-        oauth, "discover_metadata", return_value=(rm, as_meta)
-    ), patch.object(oauth, "register_client", return_value=None):
+    with (
+        patch.object(oauth, "probe_www_authenticate", return_value=None),
+        patch.object(oauth, "discover_metadata", return_value=(rm, as_meta)),
+        patch.object(oauth, "register_client", return_value=None),
+    ):
         with pytest.raises(oauth.OAuthError):
             oauth.login("srv", "https://h/mcp")
 

@@ -47,9 +47,7 @@ class TestRetryAsync:
                 raise RuntimeError("connection reset")
             return "ok"
 
-        result = await retry_async(
-            fn, max_retries=2, is_retryable=lambda e: True, base_delay=0.0
-        )
+        result = await retry_async(fn, max_retries=2, is_retryable=lambda e: True, base_delay=0.0)
         assert result == "ok"
         assert len(calls) == 2
 

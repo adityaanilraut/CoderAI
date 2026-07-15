@@ -7,7 +7,6 @@ readlink fix.
 """
 
 import asyncio
-import os
 import sys
 from pathlib import Path
 
@@ -114,4 +113,3 @@ class TestFileChmod:
         result = _run(FileChmodTool().execute(path=str(key), mode="600"))
         assert result["success"] is False
         assert "protected" in result["error"].lower()
-
