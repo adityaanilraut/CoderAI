@@ -72,7 +72,7 @@ def _atomic_restore_file(backup_path: Path, filepath: Path, entry: Dict[str, Any
     try:
         shutil.copy2(backup_path, temporary_path)
         _reapply_saved_mode(temporary_path, entry)
-        with open(temporary_path, "rb") as restored:
+        with open(temporary_path, "r+b") as restored:
             os.fsync(restored.fileno())
         os.replace(temporary_path, filepath)
     except Exception:

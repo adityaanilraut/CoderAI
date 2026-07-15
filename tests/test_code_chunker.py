@@ -425,7 +425,7 @@ class TestChunkFile:
         project_root = tmp_path.parent
         result = chunk_file(filepath, project_root)
         for chunk in result.chunks:
-            assert chunk.file_path == str(filepath.relative_to(project_root))
+            assert chunk.file_path == filepath.relative_to(project_root).as_posix()
 
 
 # ---------------------------------------------------------------------------

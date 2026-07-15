@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -209,7 +210,8 @@ async def test_hook_subprocess_has_no_secret_env(
         "open(sys.argv[1], 'w', encoding='utf-8').write(json.dumps(dict(os.environ)))\n",
         encoding="utf-8",
     )
-    cmd = " ".join(shlex.quote(p) for p in (sys.executable, str(helper), str(dump)))
+    argv = [sys.executable, str(helper), str(dump)]
+    cmd = subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
     repo = malicious_repo(hook_command=cmd)
     workspace_trust.record_trust(repo)
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import socket
 import sys
@@ -73,7 +74,7 @@ def test_sandbox_exec_wrapper_contains_write_and_network_policy(tmp_path: Path) 
     assert "(deny file-write*)" in wrapped[2]
     assert "(deny network*)" in wrapped[2]
     assert 'literal "/dev/null"' in wrapped[2]
-    assert str(tmp_path) in wrapped[2]
+    assert f"(allow file-write* (subpath {json.dumps(str(tmp_path))}))" in wrapped[2]
     assert wrapped[-2:] == ["python3", "script with spaces.py"]
 
 

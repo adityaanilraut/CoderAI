@@ -138,9 +138,9 @@ class CodeIndexer:
 
         ids, docs, metadatas, embeddings, file_entries = await self._chunk_and_embed(to_index)
         changed_rels = [
-            str(fp.relative_to(self._root))
+            fp.relative_to(self._root).as_posix()
             for fp in to_index
-            if str(fp.relative_to(self._root)) in self._manifest
+            if fp.relative_to(self._root).as_posix() in self._manifest
         ]
         self._delete_vectors(changed_rels)
         await self._upsert_batch(ids, docs, metadatas, embeddings)
@@ -244,7 +244,7 @@ class CodeIndexer:
         added = 0
         updated = 0
         for fp in files:
-            rel = str(fp.relative_to(self._root))
+            rel = fp.relative_to(self._root).as_posix()
             try:
                 st = fp.stat()
             except OSError:
@@ -299,7 +299,7 @@ class CodeIndexer:
 
         Returns count of removed entries.
         """
-        known = {str(f.relative_to(self._root)) for f in files}
+        known = {f.relative_to(self._root).as_posix() for f in files}
         candidates = list(self._manifest)
         if paths:
             scope_rels = [scope.relative_to(self._root) for scope in self._resolve_scopes(paths)]
@@ -334,7 +334,7 @@ class CodeIndexer:
         all_chunks: list = []
         file_entries: Dict[str, dict] = {}
         for fp in to_index:
-            rel = str(fp.relative_to(self._root))
+            rel = fp.relative_to(self._root).as_posix()
             result = await asyncio.to_thread(chunk_file, fp, self._root)
             if result.chunks:
                 all_chunks.extend(result.chunks)

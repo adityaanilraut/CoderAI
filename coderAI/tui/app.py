@@ -503,7 +503,7 @@ class CoderAIApp(App[None]):
                 idx += 1
             self._log_rendered_idx = idx
             if idx > 0 and was_at_end:
-                log.scroll_end(animate=False)
+                log.scroll_end(animate=False, force=True)
             if idx >= len(timeline):
                 if not self.reducer.session.streaming and not any(
                     it.get("kind") == "assistant" and it.get("streaming") for it in timeline

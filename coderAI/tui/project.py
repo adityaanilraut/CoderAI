@@ -53,7 +53,7 @@ def scan_project_files(root: str) -> List[str]:
                 continue
             try:
                 rel_path = file_path.relative_to(root_path)
-                files_list.append(str(rel_path))
+                files_list.append(rel_path.as_posix())
             except ValueError:
                 pass
     files_list.sort()

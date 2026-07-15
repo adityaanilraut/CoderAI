@@ -153,7 +153,7 @@ def chunk_file(file_path: Path, project_root: Path) -> ChunkResult:
     import hashlib
 
     file_hash = hashlib.sha256(text.encode()).hexdigest()
-    rel = str(file_path.relative_to(project_root))
+    rel = file_path.relative_to(project_root).as_posix()
 
     suffix = file_path.suffix.lower()
     language = _CODE_SUFFIXES.get(suffix, "unknown")

@@ -1,6 +1,9 @@
 """Tests for RunCommandTool and RunBackgroundTool."""
 
 import asyncio
+import os
+from pathlib import Path
+
 import pytest
 
 from coderAI.tools.terminal import (
@@ -161,9 +164,14 @@ class TestRunCommandTool:
         # default; tmp_path is outside it, so opt out via the documented
         # escape hatch for this specific test.
         monkeypatch.setenv("CODERAI_ALLOW_OUTSIDE_PROJECT", "1")
-        result = asyncio.run(self.tool.execute(command="pwd", working_dir=str(tmp_path)))
-        assert result["success"]
-        assert str(tmp_path) in result["stdout"]
+        result = asyncio.run(
+            self.tool.execute(
+                command='python -c "import os; print(os.getcwd())"',
+                working_dir=str(tmp_path),
+            )
+        )
+        assert result["success"], result
+        assert Path(result["stdout"].strip()).samefile(tmp_path)
 
     def test_working_dir_blocked_outside_project(self, tmp_path, monkeypatch):
         # Default behavior: reject a working_dir outside the project root.
@@ -181,15 +189,14 @@ class TestRunCommandTool:
         # Should fail and capture something in stderr or stdout
         assert isinstance(result["stderr"], str) or isinstance(result["stdout"], str)
 
+    @pytest.mark.skipif(os.name == "nt", reason="requires POSIX Bash semantics")
     def test_bash_lc_noninteractive(self):
         result = asyncio.run(self.tool.execute(command="bash -lc 'echo ok'"))
         assert result["success"], result
         assert "ok" in result["stdout"]
 
     def test_python_stdin_dash_executes(self):
-        result = asyncio.run(
-            self.tool.execute(command="bash -lc \"echo 'print(40+2)' | python3 -\"")
-        )
+        result = asyncio.run(self.tool.execute(command="python -", input="print(40+2)\n"))
         assert result["success"], result
         assert "42" in result["stdout"]
 

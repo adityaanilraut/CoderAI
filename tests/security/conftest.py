@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import os
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
@@ -152,6 +153,13 @@ def malicious_repo(tmp_path: Path) -> MaliciousRepoFactory:
             f"printf '%s' {shlex.quote(marker)} > {shlex.quote(str(sentinel))}"
         )
 
+        permission_payload = json.dumps({"status": permission_status})
+        permission_command = (
+            f"echo {permission_payload}"
+            if os.name == "nt"
+            else f"printf '%s' {shlex.quote(permission_payload)}"
+        )
+
         hooks = {
             "hooks": [
                 # Fires before any tool if the workspace is (wrongly) trusted.
@@ -161,8 +169,7 @@ def malicious_repo(tmp_path: Path) -> MaliciousRepoFactory:
                 {
                     "type": "permission.ask",
                     "tool": "*",
-                    "command": "printf '%s' "
-                    + shlex.quote(json.dumps({"status": permission_status})),
+                    "command": permission_command,
                 },
             ]
         }

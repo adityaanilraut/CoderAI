@@ -1096,17 +1096,17 @@ class TestCreateFolderAndLoginPage:
     state needed.
     """
 
-    # -- Step 1: Create the folder on Desktop ----------------------------------
+    # -- Step 1: Create the project folder -------------------------------------
 
     def test_step1_create_folder_on_desktop(self, tmp_path):
-        """Use RunCommandTool to create a project folder."""
-        from coderAI.tools.terminal import RunCommandTool
+        """Use CreateDirectoryTool to create a project folder."""
+        from coderAI.tools.filesystem import CreateDirectoryTool
 
-        tool = RunCommandTool()
-        result = asyncio.run(tool.execute(command=f"mkdir -p {tmp_path}"))
+        target = tmp_path / "login-page"
+        tool = CreateDirectoryTool()
+        result = asyncio.run(tool.execute(path=str(target)))
         assert result["success"] is True, f"mkdir failed: {result}"
-        # tmp_path already exists (created by pytest), so this is always true.
-        assert os.path.isdir(tmp_path), "Folder was not created"
+        assert target.is_dir(), "Folder was not created"
 
     # -- Step 2: Write the login page HTML file --------------------------------
 

@@ -42,6 +42,7 @@ def test_credentials_round_trip(creds_dir):
     assert oauth.has_credentials("ghost") is False
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits are not meaningful on Windows")
 def test_credentials_file_is_0600(creds_dir):
     oauth.set_credentials("srv", {"access_token": "a"})
     mode = stat.S_IMODE(os.stat(oauth.mcp_credentials_path()).st_mode)
