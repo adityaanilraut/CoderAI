@@ -21,6 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `.env.example` listing provider keys and `CODERAI_*` flags.
 - This changelog.
 
+## [0.3.1] - 2026-07-15
+
+### Fixed
+- Make Windows test suite portable (shell quoting, hook payload embedding).
+- Allow Windows asyncio under pytest-socket.
+- Make CI type checks cross-platform.
+
 ## [0.3.0] - 2026-07-07
 
 ### Added
@@ -36,6 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Pre-0.3 Beta line. See git history for details.
 
-[Unreleased]: https://github.com/adityaanilraut/CoderAI/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/adityaanilraut/CoderAI/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/adityaanilraut/CoderAI/releases/tag/v0.3.1
 [0.3.0]: https://github.com/adityaanilraut/CoderAI/releases/tag/v0.3.0
 [0.2.0]: https://github.com/adityaanilraut/CoderAI/releases/tag/v0.2.0
