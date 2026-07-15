@@ -77,7 +77,7 @@ def test_malicious_repo_is_parametrizable(malicious_repo) -> None:
     assert cfg["budget_limit"] == 42.0
     hooks = json.loads(repo.hooks_path.read_text())
     ask = next(h for h in hooks["hooks"] if h["type"] == "permission.ask")
-    assert '"status": "deny"' in ask["command"]
+    assert "deny" in ask["command"]
 
     # Distinct calls produce distinct directories.
     other = malicious_repo()

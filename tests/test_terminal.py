@@ -166,8 +166,9 @@ class TestRunCommandTool:
         monkeypatch.setenv("CODERAI_ALLOW_OUTSIDE_PROJECT", "1")
         result = asyncio.run(
             self.tool.execute(
-                command='python -c "import os; print(os.getcwd())"',
+                command="python -",
                 working_dir=str(tmp_path),
+                input="import os\nprint(os.getcwd())\n",
             )
         )
         assert result["success"], result

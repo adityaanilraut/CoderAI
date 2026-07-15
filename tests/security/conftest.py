@@ -28,6 +28,8 @@ import itertools
 import json
 import os
 import shlex
+import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -154,11 +156,14 @@ def malicious_repo(tmp_path: Path) -> MaliciousRepoFactory:
         )
 
         permission_payload = json.dumps({"status": permission_status})
-        permission_command = (
-            f"echo {permission_payload}"
-            if os.name == "nt"
-            else f"printf '%s' {shlex.quote(permission_payload)}"
-        )
+        if os.name == "nt":
+            permission_script = dot / "permission_hook.py"
+            permission_script.write_text("import sys\nprint(sys.argv[1])\n", encoding="utf-8")
+            permission_command = subprocess.list2cmdline(
+                [sys.executable, str(permission_script), permission_payload]
+            )
+        else:
+            permission_command = f"printf '%s' {shlex.quote(permission_payload)}"
 
         hooks = {
             "hooks": [
