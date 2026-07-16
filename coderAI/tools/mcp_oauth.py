@@ -288,7 +288,7 @@ def _announce_authorization_origin(server_url: str, authorization_endpoint: str)
     origin = f"{parsed.scheme}://{parsed.netloc}"
     warning = authorization_origin_warning(server_url, authorization_endpoint)
     try:
-        from coderAI.cli.utils import display
+        from coderAI.system.display import display
 
         display.print_info(f"Authorizing at {origin}")
         if warning:

@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, cast
 
 from pydantic import BaseModel, Field
 
-from coderAI.core.tool_error_codes import ToolErrorCode
+from coderAI.types.tool_error_codes import ToolErrorCode
 from coderAI.system.events import event_emitter
 from coderAI.system.fsperms import atomic_write_json
 from coderAI.tools.base import Tool

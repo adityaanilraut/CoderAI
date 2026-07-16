@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from coderAI.core.tool_results import normalize_tool_result
+from coderAI.types.tool_results import normalize_tool_result
 from coderAI.tools.base import Tool, ToolRegistry
 from coderAI.tools.discovery import discover_tools
 

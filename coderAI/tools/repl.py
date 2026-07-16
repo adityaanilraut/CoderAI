@@ -8,7 +8,7 @@ from typing import Any, Dict, Optional
 from pydantic import BaseModel, Field
 
 from coderAI.core.services import get_services
-from coderAI.core.tool_error_codes import ToolErrorCode
+from coderAI.types.tool_error_codes import ToolErrorCode
 from coderAI.system.proc import run_scrubbed
 from coderAI.system.safeguards import truncate_output
 from coderAI.tools.base import SUBPROCESS_TIMEOUT_MARGIN_SECONDS, Tool

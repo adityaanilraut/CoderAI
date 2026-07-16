@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from coderAI.core.provenance import Provenance
+from coderAI.types.provenance import Provenance
 from coderAI.core.services import ToolServices, services_scope
 from coderAI.system.config import Config
 from coderAI.system import fsperms

@@ -417,3 +417,15 @@ For issues or questions:
 - Check the troubleshooting section above
 - Review the examples in EXAMPLES.md
 - Check system info: `coderAI info`
+
+
+## Shipped defaults vs user runtime
+
+The repo tracks a `.coderAI/` directory with **shipped defaults** (built-in
+personas, sample skills, project rules). At runtime the agent also reads:
+
+- Project `.coderAI/` overlays (trusted when workspace trust allows)
+- User home `~/.coderAI/` for config, history, and caches
+
+Content skill files use `SKILLS.md` (plural) by design — not the ecosystem's
+common `SKILL.md` name.

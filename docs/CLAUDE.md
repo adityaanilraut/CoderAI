@@ -43,8 +43,8 @@ lists modules held to **strict** typing (`disallow_untyped_defs`,
 **The strict-module list only grows — never remove a module from it.** When a
 module becomes clean under strict checking, add it; once added it must stay
 green. New code in strict modules must be fully annotated. The remaining
-untyped surface (rest of `core/`, `tools/*`, `tui/*`) is migrated incrementally
-in that order; do not regress an already-strict module to land a change
+untyped surface (rest of `core/`, most of `tools/*`, rest of `tui/*`) is migrated
+incrementally; `coderAI.types.*` and `coderAI.prompts.compose` are on the strict list; do not regress an already-strict module to land a change
 elsewhere.
 
 `requests`/`yaml` are the only deps without bundled stubs — covered by
@@ -62,6 +62,10 @@ elsewhere.
 | Package / CLI | `coderAI` |
 | Config dir | `.coderAI/` |
 | Env / root doc | `CODERAI_*`, `CODERAI.md` |
+
+Shared leaf types live in `coderAI/types/`. Persona loader is `core/personas.py`
+(orchestrator remains `core/agent.py`). Skill *framework* is `coderAI/skills/`;
+the tool is `tools/use_skill.py`; content is `.coderAI/skills/`.
 
 CoderAI is a pure-Python AI coding agent CLI. The Click entry point
 (`coderAI.cli:main` → `coderAI/cli/__init__.py` → `cli/main.py`) dispatches
@@ -113,7 +117,7 @@ Per-turn flow (`Agent.process_message()` → `agent_loop`):
 - `coderAI/tui/commands.py` — `UIBridge` command handlers, plus plain-text reference output for `/show <topic>` slash commands (`/show models`, `/show cost`, `/show status`, `/show config`, `/show info`, `/show tasks`).
 - `coderAI/cli/utils.py` — Rich display helpers for one-shot CLI subcommands. Not used by the Textual chat UI.
 - `coderAI/system/config.py` — Pydantic-based `ConfigManager` reading from `~/.coderAI/config.json` then env vars.
-- `coderAI/core/agents.py` — `AgentPersona` loader for `.coderAI/agents/*.md` files with YAML frontmatter.
+- `coderAI/core/personas.py` — `AgentPersona` loader for `.coderAI/agents/*.md` files with YAML frontmatter.
 - `coderAI/core/agent_tracker.py` — Singleton `AgentTracker` for observability (status, tokens, cost, cancellation).
 - `coderAI/context/context_controller.py` — pinned-file context + token budget / summarization.
 - `coderAI/system/cost.py` — Per-model token cost tracking; enforces `budget_limit` from config.
@@ -121,7 +125,7 @@ Per-turn flow (`Agent.process_message()` → `agent_loop`):
 - `coderAI/system/error_policy.py` — Central home for retry/error constants and the transient-error regex (`is_transient_error` for exceptions, `is_transient_message` for tool error dicts); modules import from here instead of redefining.
 - `coderAI/system/retry.py` — Canonical exponential-backoff-with-jitter (`backoff_delay`) and generic `retry_async`; used by LLM providers, the tool executor's opt-in transient retries (`Tool.retryable`), and sub-agent delegation.
 - `coderAI/system/hooks_manager.py` — Loads `.coderAI/hooks.json` and runs pre/post-tool shell hooks around tool execution.
-- `coderAI/system_prompt.py` — Builds the agent system prompt (loads static MDX prompt templates from `coderAI/prompts/`, formats dynamic tool docs, and appends project-level rules from `.coderAI/rules/*.md`).
+- `coderAI/prompts/compose.py` — Builds the agent system prompt (loads static MDX prompt templates from `coderAI/prompts/`, formats dynamic tool docs, and appends project-level rules from `.coderAI/rules/*.md`).
 - `coderAI/context/code_chunker.py` — Splits source files into semantic chunks (AST-aware for Python, regex for JS/TS, sliding window fallback).
 - `coderAI/context/code_indexer.py` — ChromaDB-backed semantic code index with incremental updates via file-hash manifests.
 - `coderAI/embeddings/` — common embedding factory with OpenAI and optional local sentence-transformers backends. Index fingerprints prevent backend/model/dimension mixing.
@@ -144,7 +148,7 @@ Per-turn flow (`Agent.process_message()` → `agent_loop`):
 - `undo.py` — undo, undo_history
 - `context_manage.py` — pin/unpin files into the pinned-context manager (takes `Agent` at construction → registered manually)
 - `tasks.py` — persistent task-list management
-- `skills.py` — `use_skill` loads a workflow from `.coderAI/skills/<name>/SKILLS.md`
+- `use_skill.py` — `use_skill` loads a workflow from `.coderAI/skills/<name>/SKILLS.md`
 - `format.py`, `lint.py`, `repl.py`, `vision.py` — code formatting, linting, Python REPL, and image/vision helpers (`lint`/`format` use `run_scrubbed()` from project root)
 - `_detect.py` — shared `walk_up_detect()` used by lint/format/testing/package_manager
 - `package_manager.py`, `refactor.py`, `testing.py` — package install/remove, rename_symbol/find_references refactor (writes via `WriteFileTool`), test runner dispatch

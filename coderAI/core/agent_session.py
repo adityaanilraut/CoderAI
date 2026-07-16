@@ -30,7 +30,7 @@ from coderAI.system.history import (
 
 if TYPE_CHECKING:
     from coderAI.context.context_controller import ContextController
-    from coderAI.core.agents import AgentPersona
+    from coderAI.core.personas import AgentPersona
     from coderAI.system.config import Config
     from coderAI.system.cost import CostTracker
     from coderAI.system.hooks_manager import HooksManager

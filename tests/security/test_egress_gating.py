@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from coderAI.core.tool_executor import ToolExecutor
-from coderAI.core.tool_error_codes import ToolErrorCode
+from coderAI.types.tool_error_codes import ToolErrorCode
 from coderAI.system.history import Session
 from coderAI.tools.base import ToolRegistry
 from coderAI.tools.web.tools import ReadURLTool

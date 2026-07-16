@@ -9,7 +9,7 @@ import logging
 from collections import Counter
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from coderAI.core.provenance import fence_project_context
+from coderAI.types.provenance import fence_project_context
 
 logger = logging.getLogger(__name__)
 

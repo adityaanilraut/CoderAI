@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
-from coderAI.core.tool_error_codes import ToolErrorCode
+from coderAI.types.tool_error_codes import ToolErrorCode
 from coderAI.tools.base import Tool
 from coderAI.tools.filesystem import WriteFileTool, _enforce_project_scope
 

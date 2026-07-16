@@ -24,7 +24,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from coderAI.core.tool_error_codes import ToolErrorCode
+from coderAI.types.tool_error_codes import ToolErrorCode
 from coderAI.core.tool_executor import ToolExecutor
 from coderAI.system.history import Session
 from coderAI.tools import mcp as mcp_mod

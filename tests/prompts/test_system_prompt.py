@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-from coderAI.system_prompt import (
+from coderAI.prompts.compose import (
     SYSTEM_PROMPT_BROWSER,
     SYSTEM_PROMPT_DESKTOP,
     SYSTEM_PROMPT_INTRO,
@@ -146,7 +146,7 @@ def test_compose_default_system_prompt_includes_directives() -> None:
 
 
 def test_system_prompt_loaded_from_files() -> None:
-    from coderAI.system_prompt import (
+    from coderAI.prompts.compose import (
         SYSTEM_PROMPT_INTRO,
         SYSTEM_PROMPT_INTERACTION,
         SYSTEM_PROMPT_OUTPUT_STYLE,

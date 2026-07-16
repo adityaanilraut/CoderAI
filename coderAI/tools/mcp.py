@@ -13,8 +13,8 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
-from coderAI.core.provenance import Provenance
-from coderAI.core.tool_error_codes import ToolErrorCode
+from coderAI.types.provenance import Provenance
+from coderAI.types.tool_error_codes import ToolErrorCode
 from coderAI.core.tool_routing import build_mcp_function_name
 from coderAI.system.fsperms import atomic_write_json
 from coderAI.system.sandbox import prepare_sandbox_launch

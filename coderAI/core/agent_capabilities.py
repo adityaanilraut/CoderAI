@@ -23,16 +23,16 @@ from coderAI.system.history import Message, Session
 from coderAI.tools import ToolRegistry
 from coderAI.tools.discovery import discover_tools
 from coderAI.tools.context_manage import ManageContextTool
-from coderAI.core.agents import (
+from coderAI.core.personas import (
     load_agent_persona,
     AgentPersona,
     expand_persona_tools,
     persona_allowed_in_context,
 )
 from coderAI.core.services import get_services
-from coderAI.core.provenance import fence_project_context
+from coderAI.types.provenance import fence_project_context
 from coderAI.skills import SkillManager, LocalSkillSource
-from coderAI.system_prompt import (
+from coderAI.prompts.compose import (
     SYSTEM_PROMPT_INTERACTION,
     SYSTEM_PROMPT_INTRO,
     SYSTEM_PROMPT_RUNTIME,

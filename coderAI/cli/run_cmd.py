@@ -191,7 +191,7 @@ def _build_agent(
     A one-shot run has no TTY to recover from a bad resume, so a resume that
     can't be loaded is a hard error (``resume_fresh_on_failure=False``).
     """
-    from coderAI.cli.bootstrap import BootstrapError, bootstrap_agent
+    from coderAI.core.session_bootstrap import BootstrapError, bootstrap_agent
 
     try:
         agent = bootstrap_agent(

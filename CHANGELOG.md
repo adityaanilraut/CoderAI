@@ -7,19 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-- Release notes now advertise the correct PyPI version (`0.3.0`, not `v0.3.0`).
-- Documentation drift: README project tree, INSTALL dependency guidance, env docs.
-
-### Changed
-- CI coverage floor raised from 65% → 70% (suite currently ~74%).
-- CI `pip-audit` uses `--strict` (still non-blocking; Dependabot drives remediation).
-- Bundled demo skills (`spotify-control`, `test-skill`) removed; keep `security-audit` and `tdd-workflow`.
-- Documented POSIX-first / Windows best-effort platform support.
+## [0.3.3] - 2026-07-15
 
 ### Added
-- `.env.example` listing provider keys and `CODERAI_*` flags.
-- This changelog.
+- Shared `coderAI.types` package for provenance, tool results, and error codes.
+- `session_bootstrap` for unified TUI/headless session create/resume wiring.
+- Modular system-prompt composition (`prompts/compose.py`) and persona loading (`core/personas.py`).
+- Dedicated `use_skill` tool and shared `command_safety` / `display` helpers.
+
+### Changed
+- Architecture cleanup: thinner CLI/bootstrap, agents, terminal tools, and system prompt.
+- Tests reorganized under domain folders (`cli/`, `core/`, `tools/`, `tui/`, etc.).
 
 ## [0.3.2] - 2026-07-15
 
@@ -49,7 +47,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Pre-0.3 Beta line. See git history for details.
 
-[Unreleased]: https://github.com/adityaanilraut/CoderAI/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/adityaanilraut/CoderAI/compare/v0.3.3...HEAD
+[0.3.3]: https://github.com/adityaanilraut/CoderAI/releases/tag/v0.3.3
 [0.3.2]: https://github.com/adityaanilraut/CoderAI/releases/tag/v0.3.2
 [0.3.1]: https://github.com/adityaanilraut/CoderAI/releases/tag/v0.3.1
 [0.3.0]: https://github.com/adityaanilraut/CoderAI/releases/tag/v0.3.0

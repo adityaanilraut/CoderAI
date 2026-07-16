@@ -25,9 +25,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from coderAI.core.agent_loop import ExecutionLoop
-from coderAI.core.tool_error_codes import ToolErrorCode
+from coderAI.types.tool_error_codes import ToolErrorCode
 from coderAI.core.tool_executor import ToolExecutor
-from coderAI.core.agents import AgentPersona, persona_allowed_in_context
+from coderAI.core.personas import AgentPersona, persona_allowed_in_context
 from coderAI.system.history import Session
 from coderAI.tools.subagent import (
     BROWSER_NATIVE_CAPABILITIES,

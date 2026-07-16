@@ -329,14 +329,14 @@ class TestAgentsPersonas:
     """Tests for the Agents module personas."""
 
     def test_load_agent_persona_no_dir(self):
-        from coderAI.core.agents import load_agent_persona
+        from coderAI.core.personas import load_agent_persona
 
         with patch("pathlib.Path.exists", return_value=False):
             persona = load_agent_persona("planner")
             assert persona is None
 
     def test_load_agent_persona_success(self):
-        from coderAI.core.agents import load_agent_persona
+        from coderAI.core.personas import load_agent_persona
         from coderAI.system.config import Config
 
         mock_md = """---
@@ -357,17 +357,17 @@ You are a planner."""
                     assert "You are a planner." in persona.instructions
 
     def test_resolve_persona_name_alias(self):
-        from coderAI.core.agents import resolve_persona_name
+        from coderAI.core.personas import resolve_persona_name
 
-        with patch("coderAI.core.agents._find_agents_dir", return_value=Path("/tmp")):
+        with patch("coderAI.core.personas._find_agents_dir", return_value=Path("/tmp")):
             with patch(
-                "coderAI.core.agents.get_available_personas",
+                "coderAI.core.personas.get_available_personas",
                 return_value=["code-reviewer", "planner"],
             ):
                 assert resolve_persona_name("Code Reviewer") == "code-reviewer"
 
     def test_expand_persona_tools_aliases(self):
-        from coderAI.core.agents import expand_persona_tools
+        from coderAI.core.personas import expand_persona_tools
 
         expanded = expand_persona_tools(["Read", "Edit", "Bash"])
 
@@ -394,7 +394,7 @@ class TestAgentPersonaSwitching:
                 return Agent(model="gpt-5.4-mini", streaming=False)
 
     def test_set_persona_updates_live_prompt_and_tools(self):
-        from coderAI.core.agents import AgentPersona
+        from coderAI.core.personas import AgentPersona
 
         agent = self._make_agent()
         agent.create_session()
@@ -419,7 +419,7 @@ class TestAgentPersonaSwitching:
         assert "write_file" not in agent.tools.tools
 
     def test_persona_model_switch_updates_context_controller_provider(self):
-        from coderAI.core.agents import AgentPersona
+        from coderAI.core.personas import AgentPersona
 
         agent = self._make_agent()
         new_provider = MagicMock()
@@ -648,7 +648,7 @@ class TestAgentProjectRules:
         mock_rules_dir.is_dir.return_value = True
         mock_rules_dir.glob.return_value = [mock_rule_file]
 
-        from coderAI.system_prompt import SYSTEM_PROMPT_INTRO
+        from coderAI.prompts.compose import SYSTEM_PROMPT_INTRO
 
         with patch(
             "coderAI.core.agent_capabilities.Path",
@@ -749,7 +749,7 @@ class TestRepositoryPromptHygiene:
     """Regression checks for repo-local personas and prompt content."""
 
     def test_persona_files_do_not_reference_stale_product_specific_commands(self):
-        root = Path(__file__).resolve().parents[1]
+        root = Path(__file__).resolve().parents[2]
         agents_dir = root / ".coderAI" / "agents"
 
         banned_markers = [
@@ -774,7 +774,7 @@ class TestRepositoryPromptHygiene:
                 assert marker not in text, f"{path.name} still references '{marker}'"
 
     def test_persona_skill_references_resolve_to_real_project_skills(self):
-        root = Path(__file__).resolve().parents[1]
+        root = Path(__file__).resolve().parents[2]
         agents_dir = root / ".coderAI" / "agents"
         skills_dir = root / ".coderAI" / "skills"
         available_skills = {
@@ -792,7 +792,7 @@ class TestRepositoryPromptHygiene:
             assert not missing, f"{path.name} references missing skills: {missing}"
 
     def test_persona_descriptions_do_not_claim_automatic_activation(self):
-        root = Path(__file__).resolve().parents[1]
+        root = Path(__file__).resolve().parents[2]
         agents_dir = root / ".coderAI" / "agents"
 
         for path in agents_dir.glob("*.md"):
@@ -808,7 +808,7 @@ class TestRepositoryPromptHygiene:
             )
 
     def test_repository_personas_are_provider_neutral(self):
-        root = Path(__file__).resolve().parents[1]
+        root = Path(__file__).resolve().parents[2]
         agents_dir = root / ".coderAI" / "agents"
 
         for path in agents_dir.glob("*.md"):

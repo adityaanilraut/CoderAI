@@ -284,7 +284,7 @@ def _handle_persona_slash(server: "UIBridge", arg: str) -> None:
     - ``/persona default``   — clear the active persona (also: ``none``, ``off``)
     - ``/persona <name>``    — switch to the named persona (filename stem)
     """
-    from coderAI.core.agents import get_available_personas, resolve_persona_name
+    from coderAI.core.personas import get_available_personas, resolve_persona_name
 
     project_root = getattr(server.agent.config, "project_root", ".")
     workspace_trusted = bool(getattr(server.agent, "_workspace_trusted", False))
@@ -672,7 +672,7 @@ async def _cmd_get_tasks(server: UIBridge, _msg: Dict[str, Any]) -> None:
 
 
 async def _cmd_list_personas(server: UIBridge, _msg: Dict[str, Any]) -> None:
-    from coderAI.core.agents import get_available_personas
+    from coderAI.core.personas import get_available_personas
 
     project_root = getattr(server.agent.config, "project_root", ".")
     available = (
@@ -685,7 +685,7 @@ async def _cmd_list_personas(server: UIBridge, _msg: Dict[str, Any]) -> None:
 
 
 async def _cmd_list_skills(server: UIBridge, _msg: Dict[str, Any]) -> None:
-    from ..tools.skills import get_available_skills
+    from coderAI.tools.use_skill import get_available_skills
 
     project_root = getattr(server.agent.config, "project_root", ".")
     skills = (

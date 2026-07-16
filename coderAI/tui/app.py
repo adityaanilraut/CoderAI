@@ -89,8 +89,14 @@ Screen {{
     height: 1fr;
     padding: 1 2;
     background: {Tokens.BG};
+    /* RichLog defaults to background-tint on focus, which makes crop_extend
+       padding a different shade than Tokens.BG and reads as message bars. */
+    background-tint: 0%;
     scrollbar-background: {Tokens.BG};
     scrollbar-color: {Tokens.LINE};
+}}
+#timeline:focus {{
+    background-tint: 0%;
 }}
 #stream-tail {{
     layer: tail;

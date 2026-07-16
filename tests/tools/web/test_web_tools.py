@@ -11,7 +11,7 @@ import asyncio
 from types import SimpleNamespace
 
 from coderAI.core.services import services_scope
-from coderAI.core.tool_error_codes import ToolErrorCode
+from coderAI.types.tool_error_codes import ToolErrorCode
 from coderAI.tools import web as web_mod
 from coderAI.tools.filesystem import ProjectPathError
 from coderAI.tools.web import tools as tools_mod

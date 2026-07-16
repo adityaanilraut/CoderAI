@@ -20,8 +20,8 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
-from coderAI.core.provenance import Provenance
-from coderAI.core.tool_error_codes import ToolErrorCode
+from coderAI.types.provenance import Provenance
+from coderAI.types.tool_error_codes import ToolErrorCode
 from coderAI.system.fsperms import atomic_write_bytes
 from coderAI.tools.base import Tool
 from coderAI.tools.filesystem._guards import (

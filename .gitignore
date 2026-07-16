@@ -47,12 +47,7 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# UI build artifacts
-# Legacy UI build artifacts (no ui/ package in this repo)
-# ui/dist/
-# ui/build/
-# ui/.next/
-# ui/out/
+# (legacy ui/ package removed — Textual TUI lives in coderAI/tui/)
 
 # Misc
 *.log

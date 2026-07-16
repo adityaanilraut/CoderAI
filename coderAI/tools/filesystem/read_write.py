@@ -8,7 +8,7 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
-from coderAI.core.tool_error_codes import ToolErrorCode
+from coderAI.types.tool_error_codes import ToolErrorCode
 from coderAI.system.locks import get_lock_manager
 from coderAI.tools.base import Tool, ToolPreview
 from coderAI.tools.undo import get_backup_store

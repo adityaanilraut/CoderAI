@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "coderai-agent"
-version = "0.3.2"
+version = "0.3.3"
 description = "Intelligent coding agent CLI with a Textual terminal UI and MCP tools"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -119,6 +119,7 @@ ignore_errors = true
 [[tool.mypy.overrides]]
 module = [
   "coderAI.system.*",
+  "coderAI.types.*",
   "coderAI.llm.*",
   "coderAI.context.*",
   "coderAI.core.execution_context",
@@ -132,7 +133,10 @@ module = [
   "coderAI.core.turn",
   "coderAI.core.tool_routing",
   "coderAI.core.agents",
+  "coderAI.core.personas",
+  "coderAI.core.session_bootstrap",
   "coderAI.cli.*",
+  "coderAI.prompts.compose",
   "coderAI.tui.commands",
   "coderAI.tui.controller",
   "coderAI.tui.streaming",

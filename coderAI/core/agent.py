@@ -13,7 +13,7 @@ from coderAI.system.error_policy import BudgetExceededError
 from coderAI.system.history import Session
 from coderAI.context.context_controller import ContextController
 from coderAI.tools import ToolRegistry
-from coderAI.core.agents import AgentPersona
+from coderAI.core.personas import AgentPersona
 from coderAI.core.agent_tracker import AgentInfo
 from coderAI.core.permissions import ApprovalRules
 from coderAI.core.services import get_services

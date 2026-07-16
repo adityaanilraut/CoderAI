@@ -1,8 +1,8 @@
 """Bootstrap Agent + UIBridge for the Textual UI.
 
 The Agent/session construction (flag resolution, load-vs-create, delegate
-wiring) lives in :mod:`coderAI.cli.bootstrap`; this module only layers the
-TUI-specific bridge, streaming handler, and tracker registration on top.
+wiring) lives in :mod:`coderAI.core.session_bootstrap`; this module only layers
+the TUI-specific bridge, streaming handler, and tracker registration on top.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 from coderAI.core.agent import Agent
 from coderAI.core.agent_tracker import AgentStatus, agent_tracker
-from coderAI.cli.bootstrap import bootstrap_agent
+from coderAI.core.session_bootstrap import bootstrap_agent
 from .controller import UIBridge
 from .streaming import BridgeStreamingHandler
 

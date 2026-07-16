@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import IO, Any, Optional, Union
 
 from coderAI.core.services import get_services
-from coderAI.core.tool_error_codes import ToolErrorCode
+from coderAI.types.tool_error_codes import ToolErrorCode
 from coderAI.system.events import event_emitter
 from coderAI.system.fsperms import atomic_write_text
 

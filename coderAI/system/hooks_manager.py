@@ -26,7 +26,6 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
-from coderAI.core.agent_tracker import AgentStatus
 from coderAI.system.events import event_emitter
 from coderAI.system.proc import build_hook_env, run_scrubbed
 
@@ -151,7 +150,7 @@ class HooksManager:
             return hooks_results
 
         try:
-            from coderAI.tools.terminal import is_command_blocked
+            from coderAI.system.command_safety import is_command_blocked
 
             matching_hooks = [
                 h
@@ -257,6 +256,8 @@ class HooksManager:
         info = getattr(self.agent, "tracker_info", None)
         previous = None
         if info is not None:
+            from coderAI.core.agent_tracker import AgentStatus
+
             previous = (info.status, info.current_tool)
             info.status = AgentStatus.WAITING_FOR_USER
             info.current_tool = "project_hooks"
@@ -286,6 +287,8 @@ class HooksManager:
             return answer.strip().lower() in ("y", "yes")
         finally:
             if info is not None and previous is not None:
+                from coderAI.core.agent_tracker import AgentStatus
+
                 if info.status != AgentStatus.CANCELLED:
                     info.status, info.current_tool = previous
                 self.agent._sync_tracker()
@@ -313,7 +316,7 @@ class HooksManager:
             return hooks_results
 
         try:
-            from coderAI.tools.terminal import is_command_blocked
+            from coderAI.system.command_safety import is_command_blocked
 
             matching_hooks = [
                 h

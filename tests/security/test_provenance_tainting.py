@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from coderAI.core.provenance import (
+from coderAI.types.provenance import (
     Provenance,
     fence_project_context,
     wrap_untrusted_output,

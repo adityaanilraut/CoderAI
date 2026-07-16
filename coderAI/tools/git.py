@@ -14,7 +14,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, TypeVar, cast
 from pydantic import BaseModel, Field
 
 from coderAI.tools.base import Tool
-from coderAI.core.tool_error_codes import ToolErrorCode
+from coderAI.types.tool_error_codes import ToolErrorCode
 from coderAI.system.locks import get_lock_manager
 from coderAI.system.proc import run_scrubbed, subprocess_timeout
 from coderAI.system.safeguards import truncate_output

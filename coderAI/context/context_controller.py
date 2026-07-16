@@ -7,7 +7,7 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
-from coderAI.core.provenance import UNTRUSTED_OPEN_TAG, fence_project_context
+from coderAI.types.provenance import UNTRUSTED_OPEN_TAG, fence_project_context
 from coderAI.context.context_selector import build_focused_context, summarize_conversation_focus
 from coderAI.system.error_policy import check_budget_limit
 from coderAI.system.events import event_emitter

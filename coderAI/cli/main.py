@@ -16,7 +16,7 @@ from coderAI.system.redaction import redact_text
 
 from .config_cmd import config
 from .history_cmd import history
-from .setup import setup
+from .setup_cmd import setup
 from .index_cmd import index_cmd, search_cmd
 from .mcp_cmd import mcp as mcp_cmd
 from .run_cmd import run as run_cmd

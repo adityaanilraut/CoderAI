@@ -48,6 +48,10 @@ class SelectableRichLog(RichLog):
         content_y = scroll_y + y
 
         line = self._render_line(content_y, scroll_x, self.scrollable_content_region.width)
+        # Match stock RichLog: apply the widget style so crop_extend padding and
+        # content share one background. Skipping this left short lines with a
+        # tinted rich_style pad → full-width "horizontal bar" behind every message.
+        line = line.apply_style(self.rich_style)
 
         new_segments: list = []
         offset_x = scroll_x

@@ -3,7 +3,7 @@
 import asyncio
 import pytest
 
-from coderAI.tools.skills import UseSkillTool, load_skill, get_available_skills
+from coderAI.tools.use_skill import UseSkillTool, load_skill, get_available_skills
 from coderAI.skills.skill_manager import SKILLS_FILE_NAME
 
 

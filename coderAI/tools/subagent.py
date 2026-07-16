@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-from coderAI.core.tool_error_codes import ToolErrorCode
+from coderAI.types.tool_error_codes import ToolErrorCode
 from coderAI.tools.base import Tool
 from coderAI.core.agent_tracker import AgentStatus
 from coderAI.core.execution_context import resolve_delegation_isolation_domain

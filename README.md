@@ -158,17 +158,19 @@ CoderAI/
 ├── README.md                   # ← You are here
 ├── SECURITY.md                 # Threat model, controls, residual risks
 │
-├── coderAI/                    # ─── Main Python Package ───
-│   ├── __init__.py             # Package version
+├── coderAI/                    # ─── Main Python Package (import name) ───
+│   ├── __init__.py             # Version via importlib.metadata
+│   ├── types/                  # Shared leaf types (Provenance, ToolErrorCode, …)
 │   ├── cli/                    # Click CLI (entry: coderAI.cli:main)
 │   │   ├── main.py             #   Root group; chat, info, doctor, status, …
 │   │   ├── run_cmd.py          #   `coderAI run` (headless one-shot)
+│   │   ├── setup_cmd.py        #   Interactive setup wizard
 │   │   ├── mcp_cmd.py          #   `coderAI mcp` server management
-│   │   ├── bootstrap.py        #   Shared session bootstrap (TUI + headless)
 │   │   └── utils.py            #   Rich helpers for one-shot CLI output
-│   ├── system_prompt.py        # Default system prompt with tool docs & strategies
-│   ├── prompts/                # MDX system-prompt templates
-│   ├── skills/                 # Skill discovery and hosted-skill sources
+│   ├── system_prompt.py        # Compat shim → prompts.compose
+│   ├── prompts/                # MDX templates + compose.py (system prompt)
+│   ├── skills/                 # Skill discovery framework (not the use_skill tool)
+│   ├── mcp_servers/            # Bundled stdio MCP servers (e.g. git_extended)
 │   ├── py.typed                # Mypy marker file
 │   │
 │   ├── core/                   # ─── Core Orchestration Layer ───
@@ -177,112 +179,48 @@ CoderAI/
 │   │   ├── agent_capabilities.py # Tool registry, personas, approvals, hooks
 │   │   ├── agent_session.py    #   Session lifecycle, checkpoints, rewind
 │   │   ├── agent_tracker.py    #   Real-time agent registry & cooperative cancellation
-│   │   ├── agents.py           #   AgentPersona loader from .coderAI/agents/*.md
+│   │   ├── personas.py         #   AgentPersona loader from .coderAI/agents/*.md
+│   │   ├── session_bootstrap.py # Shared session bootstrap (TUI + headless)
 │   │   ├── permissions.py      #   Approval / high-risk policy
-│   │   ├── provenance.py       #   Untrusted-ingest tainting
+│   │   ├── services.py         #   ContextVar service container
 │   │   ├── tool_executor.py    #   Tool execution runner & confirmation gates
 │   │   └── tool_routing.py     #   ToolRegistry + MCP wire-format dispatch
 │   │
 │   ├── system/                 # ─── System & Persistence ───
-│   │   ├── config.py           #   Pydantic config with JSON persistence (~/.coderAI/config.json)
-│   │   ├── cost.py             #   Token cost tracking with per-model pricing
-│   │   ├── error_policy.py     #   Budget limits & retry delay policy
-│   │   ├── events.py           #   Event emitter for UI notifications
-│   │   ├── history.py          #   Session persistence (JSON files in ~/.coderAI/history/)
-│   │   ├── hooks_manager.py    #   Execution hooks manager
-│   │   ├── locks.py            #   Async resource locks for parallel agent safety
-│   │   ├── proc.py             #   Scrubbed subprocess runner
-│   │   ├── sandbox.py          #   Bubblewrap / sandbox-exec confinement
-│   │   ├── retry.py            #   Canonical backoff+jitter / async retry helpers
-│   │   ├── trust.py            #   Workspace trust gate
-│   │   ├── project_layout.py   #   Project folder detection helpers
-│   │   ├── read_cache.py       #   Caching layer for repeated file reads
-│   │   └── safeguards.py       #   Safety guards for commands & staging files
+│   │   ├── config.py / display.py / command_safety.py / cost.py / …
+│   │   ├── hooks_manager.py / history.py / trust.py / sandbox.py / …
+│   │   └── safeguards.py / proc.py / events.py / retry.py / …
 │   │
-│   ├── context/                # ─── Context Window Management ───
-│   │   ├── code_chunker.py     #   AST/regex/sliding-window code chunker for embedding
-│   │   ├── code_indexer.py     #   ChromaDB-backed semantic code index
-│   │   ├── context_controller.py # Token estimation, truncation, summarization, pins
-│   │   └── context_selector.py #   Relevance-based snippet selection
-│   │
-│   ├── embeddings/             # ─── Embedding providers for semantic search ───
-│   │   ├── openai.py           #   OpenAI embeddings (text-embedding-3-small)
-│   │   └── local.py            #   Optional local sentence-transformers backend
-│   │
-│   ├── tui/                    # ─── Textual interactive chat UI ───
-│   │   ├── app.py              #   CoderAIApp (Textual screens, key bindings)
-│   │   ├── controller.py       #   UIBridge: event_emitter ↔ UI on_event ↔ slash commands
-│   │   ├── commands.py         #   UIBridge command handlers + /show reference text
-│   │   ├── streaming.py        #   BridgeStreamingHandler → phased turn events
-│   │   ├── tool_metadata.py    #   Tool category/risk/preview helpers
-│   │   ├── listeners.py        #   EventReducer (agent events → timeline state)
-│   │   ├── slash.py            #   Slash-command routing
-│   │   ├── state.py            #   SessionState + AgentInfo dataclasses
-│   │   ├── session_setup.py    #   Agent + UIBridge bootstrap
-│   │   ├── help_menu.py        #   /help command catalog
-│   │   └── diff_render.py      #   Compact diff rendering
-│   │
-│   ├── llm/                    # ─── LLM Provider Backends ───
-│   │   ├── base.py             #   Abstract LLMProvider interface
-│   │   ├── factory.py          #   create_provider(model, config)
-│   │   ├── openai.py           #   OpenAI (gpt-5.4, o1, o3-mini)
-│   │   ├── anthropic.py        #   Anthropic (Claude 4 Sonnet, 3.5 Sonnet, etc.)
-│   │   ├── groq.py             #   Groq (Llama 3, GPT-OSS models)
-│   │   ├── deepseek.py         #   DeepSeek (V3.2, R1)
-│   │   ├── gemini.py           #   Google Gemini (OpenAI-compatible API)
-│   │   ├── meta.py             #   Meta Model API
-│   │   ├── lmstudio.py         #   LM Studio (local OpenAI-compatible)
-│   │   └── ollama.py           #   Ollama (local models)
-│   │
-│   └── tools/                  # ─── Agent Tool Implementations ───
-│       ├── base.py             #   Tool ABC + ToolRegistry
-│       ├── discovery.py        #   Auto-discovery of no-arg Tool subclasses
-│       ├── _detect.py          #   Shared walk-up project-tool detection
-│       ├── filesystem/         #   read/write/edit/manage/metadata (+ _guards)
-│       ├── terminal.py         #   run_command, run_background, list/kill_processes, read_bg_output
-│       ├── git.py              #   git_add/status/diff/commit/log/branch (core)
-│       ├── git_extended.py     #   rare git ops → bundled git_extended MCP
-│       ├── search.py           #   grep, symbol_search
-│       ├── semantic_search.py  #   semantic_search (natural-language code search)
-│       ├── web/                #   web_search, read_url, download_file, http_request, …
-│       ├── browser.py          #   browser_navigate … browser_close (Playwright; optional)
-│       ├── desktop.py          #   run_applescript, get_accessibility_tree, click/type (macOS only)
-│       ├── memory.py           #   save_memory, recall_memory, delete_memory
-│       ├── mcp.py              #   mcp_connect/disconnect/call_tool/list (+resources, prompts)
-│       ├── undo.py             #   undo, undo_history
-│       ├── context_manage.py   #   manage_context (pin/unpin; manual registration)
-│       ├── tasks.py            #   manage_tasks
-│       ├── subagent.py         #   delegate_task
-│       ├── lint.py / format.py #   lint, format (scrubbed subprocess from project root)
-│       ├── testing.py          #   run_tests
-│       ├── package_manager.py  #   package_manager (pip, npm, …)
-│       ├── refactor.py         #   refactor (rename_symbol, find_references)
-│       ├── vision.py           #   read_image
-│       ├── skills.py           #   use_skill
-│       ├── repl.py             #   python_repl
+│   ├── context/                # Context window + semantic index
+│   ├── embeddings/             # OpenAI + optional local embeddings
+│   ├── tui/                    # Textual interactive chat UI
+│   ├── llm/                    # Provider backends + factory
+│   └── tools/                  # Native tools (+ filesystem/, web/)
+│       ├── use_skill.py        # use_skill tool (content in .coderAI/skills/)
+│       ├── git.py              # Native core git
+│       └── git_extended.py     # Rare git → bundled MCP (not auto-registered)
 │
-├── docs/
-│   ├── ARCHITECTURE.md         # Detailed architecture documentation
-│   ├── CHAT_EVENTS.md          # Textual UI event catalog (UIBridge ↔ TUI)
-│   ├── CLAUDE.md               # Contributor / LLM-oriented guide
-│   ├── COMMANDS.md             # CLI command reference
-│   ├── EXAMPLES.md             # Usage examples
-│   └── INSTALL.md              # Installation guide
-│
-├── .coderAI/                   # ─── Project Configuration ───
-│   ├── agents/                 #   6 agent personas (YAML frontmatter + markdown)
-│   ├── skills/                 #   Reusable skill workflows (each dir has SKILLS.md)
-│   │   ├── security-audit/     #     Step-by-step security audit
-│   │   └── tdd-workflow/       #     TDD workflow guide
-│   └── rules/                  #   Per-project coding rules (auto-injected into prompts)
-│
-└── tests/                      # ─── Test Suite (100+ modules) ───
-    ├── test_coderAI.py         #   Comprehensive tool tests
-    ├── test_agent.py           #   Agent orchestration tests
-    ├── test_tool_registry_snapshot.py  # Pins the discovered tool set
-    ├── security/               #   Red-team / security regression suite
-    └── …
+├── .coderAI/                   # Shipped overlays (agents/, rules/, skills/)
+├── tests/                      # Mirrors package layout (core/, tools/, tui/, …)
+│   └── security/               # Security regression suite
+└── docs/                       # ARCHITECTURE, COMMANDS, INSTALL, …
 ```
+
+### Naming conventions
+
+| Surface | Form | Example |
+|---|---|---|
+| Product / repo | `CoderAI` | GitHub repo title |
+| PyPI distribution | `coderai-agent` | `pip install coderai-agent` |
+| Python package / CLI | `coderAI` | `import coderAI`, `coderAI chat` |
+| Config / project dir | `.coderAI` | `~/.coderAI/`, project overlays |
+| Env vars / root doc | `CODERAI_*` / `CODERAI.md` | `CODERAI_DEFAULT_MODEL` |
+
+The PyPI project is `coderai-agent` because `coderai` / `coder-ai` are already taken. Do not use `CoderAI` as an import path.
+
+**Skills triad:** `coderAI/skills/` (framework) · `coderAI/tools/use_skill.py` (tool) · `.coderAI/skills/` (content).
+
+**Agents triad:** `coderAI/core/agent.py` (orchestrator) · `coderAI/core/personas.py` (persona loader) · `.coderAI/agents/` (persona markdown).
 
 ---
 

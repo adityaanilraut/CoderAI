@@ -523,7 +523,7 @@ class TestSystemPrompt:
         return reg
 
     def test_system_prompt_exists(self):
-        from coderAI.system_prompt import compose_default_system_prompt
+        from coderAI.prompts.compose import compose_default_system_prompt
         from coderAI.tools import ToolRegistry
         from coderAI.tools.discovery import discover_tools
 
@@ -535,7 +535,7 @@ class TestSystemPrompt:
         assert len(text) > 100
 
     def test_system_prompt_mentions_tools(self):
-        from coderAI.system_prompt import compose_default_system_prompt
+        from coderAI.prompts.compose import compose_default_system_prompt
 
         text = compose_default_system_prompt(self._full_tool_registry())
         # Check for core tool categories via patterns, not exact strings
@@ -550,7 +550,7 @@ class TestSystemPrompt:
         assert "manage_tasks" in text or "task" in text.lower()
 
     def test_system_prompt_has_agentic_guidance(self):
-        from coderAI.system_prompt import compose_default_system_prompt
+        from coderAI.prompts.compose import compose_default_system_prompt
 
         text = compose_default_system_prompt(self._full_tool_registry()).lower()
 
@@ -973,7 +973,7 @@ class TestUpdatedSystemPrompt:
     """Tests that composed prompt mentions tools registered in the full registry."""
 
     def test_system_prompt_mentions_new_tools(self):
-        from coderAI.system_prompt import compose_default_system_prompt
+        from coderAI.prompts.compose import compose_default_system_prompt
 
         text = compose_default_system_prompt(TestSystemPrompt._full_tool_registry())
         assert "mcp_connect" in text

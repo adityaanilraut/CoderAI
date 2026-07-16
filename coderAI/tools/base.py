@@ -6,9 +6,9 @@ from typing import Any, Dict, List, Literal, Optional, Type
 
 from pydantic import BaseModel, ValidationError
 
-from coderAI.core.provenance import Provenance
-from coderAI.core.tool_error_codes import ToolErrorCode  # noqa: F401 — re-export
-from coderAI.core.tool_results import normalize_tool_result
+from coderAI.types.provenance import Provenance
+from coderAI.types.tool_error_codes import ToolErrorCode  # noqa: F401 — re-export
+from coderAI.types.tool_results import normalize_tool_result
 
 __all__ = [
     "SUBPROCESS_TIMEOUT_MARGIN_SECONDS",

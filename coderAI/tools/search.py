@@ -9,7 +9,7 @@ from typing import Any, Dict, List
 
 from pydantic import BaseModel, Field
 
-from coderAI.core.tool_error_codes import ToolErrorCode
+from coderAI.types.tool_error_codes import ToolErrorCode
 from coderAI.system.proc import run_scrubbed, subprocess_timeout
 from coderAI.tools.base import Tool
 from coderAI.tools.filesystem._guards import _enforce_project_scope

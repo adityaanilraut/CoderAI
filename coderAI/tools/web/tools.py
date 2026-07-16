@@ -15,8 +15,8 @@ from pydantic import BaseModel, Field
 # coderAI.tools.web.<name> as a single point, exactly as they could when
 # everything lived in one module.
 import coderAI.tools.web as _web
-from coderAI.core.provenance import Provenance
-from coderAI.core.tool_error_codes import ToolErrorCode
+from coderAI.types.provenance import Provenance
+from coderAI.types.tool_error_codes import ToolErrorCode
 from coderAI.system.fsperms import atomic_write_bytes
 from coderAI.tools.base import Tool
 from coderAI.tools.filesystem import ProjectPathError, resolve_under_project
