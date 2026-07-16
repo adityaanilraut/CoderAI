@@ -71,7 +71,7 @@ def test_missing_local_dependency_has_install_hint(monkeypatch):
     monkeypatch.setattr(local.importlib, "import_module", missing_package)
     provider = SentenceTransformerEmbeddingProvider()
 
-    with pytest.raises(ImportError, match=r"coderAI\[local-embeddings\]"):
+    with pytest.raises(ImportError, match=r"coderai-agent\[local-embeddings\]"):
         provider.dimension()
 
 
