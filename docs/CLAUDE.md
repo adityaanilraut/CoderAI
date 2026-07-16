@@ -53,6 +53,16 @@ elsewhere.
 
 ## Architecture
 
+### Naming conventions
+
+| Surface | Form |
+|---|---|
+| Product / repo | `CoderAI` |
+| PyPI distribution | `coderai-agent` (`pip install coderai-agent`) |
+| Package / CLI | `coderAI` |
+| Config dir | `.coderAI/` |
+| Env / root doc | `CODERAI_*`, `CODERAI.md` |
+
 CoderAI is a pure-Python AI coding agent CLI. The Click entry point
 (`coderAI.cli:main` → `coderAI/cli/__init__.py` → `cli/main.py`) dispatches
 one-shot subcommands (config, history, models, status, doctor, `run`, …)

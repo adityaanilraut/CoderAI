@@ -3,8 +3,8 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "coderAI"
-version = "0.3.1"
+name = "coderai-agent"
+version = "0.3.2"
 description = "Intelligent coding agent CLI with a Textual terminal UI and MCP tools"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -66,7 +66,7 @@ dev = [
     "types-requests>=2.31.0.0",
     "pre-commit>=3.5.0",
     # The test suite exercises the semantic indexer, so dev installs need ChromaDB.
-    "coderAI[semantic]",
+    "coderai-agent[semantic]",
 ]
 
 [project.urls]

@@ -14,14 +14,14 @@ CoderAI ships as a single pure-Python wheel on PyPI. The agent, tools,
 one-shot CLI commands (`status`, `setup`, `history`, `models`, `config`,
 `info`, `cost`, `doctor`, `index`, `search`, `run`, `mcp`, `tasks`), and
 the interactive Textual TUI all live inside the wheel. There are no native
-binaries or extra download steps — `pip install coderAI` is the whole story.
+binaries or extra download steps — `pip install coderai-agent` is the whole story.
 
 ## Installation Methods
 
 ### Method 1: Install from PyPI (recommended for most users)
 
 ```bash
-pip install coderAI
+pip install coderai-agent
 coderAI chat
 ```
 
@@ -346,7 +346,7 @@ pip install -e . --upgrade
 To uninstall CoderAI:
 
 ```bash
-pip uninstall coderAI
+pip uninstall coderai-agent
 ```
 
 To remove configuration and history:

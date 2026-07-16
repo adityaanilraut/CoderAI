@@ -415,7 +415,7 @@ def doctor() -> None:
     if importlib.util.find_spec("textual") is not None:
         check_ok("textual installed (coderAI chat)")
     else:
-        check_fail("textual not installed", "pip install 'coderAI' or textual>=0.80")
+        check_fail("textual not installed", "pip install 'coderai-agent' or textual>=0.80")
 
     # 5. History
     display.print("\n[bold cyan]History[/bold cyan]")

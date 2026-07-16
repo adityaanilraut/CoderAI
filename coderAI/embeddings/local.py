@@ -10,7 +10,7 @@ DEFAULT_LOCAL_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 _INSTALL_HINT = (
     "Local embeddings require the optional sentence-transformers dependency. "
-    "Install it with: pip install 'coderAI[local-embeddings]'"
+    "Install it with: pip install 'coderai-agent[local-embeddings]'"
 )
 
 

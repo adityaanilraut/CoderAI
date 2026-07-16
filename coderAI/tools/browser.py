@@ -5,7 +5,7 @@ snapshot, click/type by element reference, extract page content, take
 screenshots, evaluate JavaScript, and close the browser.
 
 Requires ``playwright`` (install with ``playwright install chromium`` after
-``pip install coderAI[browser]``). Tools gracefully degrade with a clear
+``pip install 'coderai-agent[browser]'``). Tools gracefully degrade with a clear
 error message when the dependency is missing.
 """
 
@@ -58,7 +58,7 @@ def _check_playwright() -> Optional[Dict[str, Any]]:
             "success": False,
             "error": (
                 "Playwright is not installed. Install with: "
-                "pip install coderAI[browser] && playwright install chromium"
+                "pip install 'coderai-agent[browser]' && playwright install chromium"
             ),
         }
     return None

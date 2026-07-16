@@ -209,7 +209,7 @@ class AgentCapabilitiesMixin:
         if removed_package:
             logger.info(
                 "Optional dependency missing — removed tools requiring it: %s. "
-                "Browser tools need: pip install coderAI[browser] && playwright install chromium",
+                "Browser tools need: pip install 'coderai-agent[browser]' && playwright install chromium",
                 ", ".join(sorted(removed_package)),
             )
 

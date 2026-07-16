@@ -374,8 +374,8 @@ Everyday git stays native. Rare ops auto-connect on the bundled `git_extended` M
 
 ### Search & Analysis
 
-*`semantic_search` requires `coderAI[semantic]`. It uses OpenAI when a key is
-configured, or install `coderAI[local-embeddings]` for private local embeddings.*
+*`semantic_search` requires `coderai-agent[semantic]`. It uses OpenAI when a key is
+configured, or install `coderai-agent[local-embeddings]` for private local embeddings.*
 
 | Tool | Description |
 |---|---|
@@ -385,7 +385,7 @@ configured, or install `coderAI[local-embeddings]` for private local embeddings.
 
 ### Web & HTTP
 
-*PDF extraction in `read_url` requires optional `pypdf` — install with `pip install coderAI[web]`.*
+*PDF extraction in `read_url` requires optional `pypdf` — install with `pip install 'coderai-agent[web]'`.*
 
 | Tool | Description |
 |---|---|
@@ -461,7 +461,7 @@ configured, or install `coderAI[local-embeddings]` for private local embeddings.
 
 ### Browser Automation
 
-*Requires `playwright` — install with `pip install coderAI[browser] && playwright install chromium`.*
+*Requires `playwright` — install with `pip install 'coderai-agent[browser]' && playwright install chromium`.*
 
 Browser tools provide full control over a headless Chromium browser for form filling, shopping, data entry, and web scraping. They use an **accessibility snapshot** pattern: navigate → snapshot (get element refs like `[e12]`) → click/type by ref → repeat.
 

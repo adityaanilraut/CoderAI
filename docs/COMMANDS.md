@@ -57,7 +57,7 @@ coderAI chat --auto-approve
 coderAI chat --yolo   # alias
 ```
 
-Requires the `textual` package (installed with `pip install coderAI`). No separate UI binary download.
+Requires the `textual` package (installed with `pip install coderai-agent`). No separate UI binary download.
 
 ---
 
@@ -426,7 +426,7 @@ in an active sandbox.
 
 ## Tool Quick Reference
 
-Native tools are discovered at runtime, with `manage_context` registered manually and rare git ops supplied by the bundled `git_extended` MCP server. Browser tools require `pip install coderAI[browser]`; PDF extraction in `read_url` requires `pip install coderAI[web]`; desktop tools are macOS-only. Batch edits use `search_replace` with an `edits` list. Confirmation required (`✓`) means the agent asks before running.
+Native tools are discovered at runtime, with `manage_context` registered manually and rare git ops supplied by the bundled `git_extended` MCP server. Browser tools require `pip install 'coderai-agent[browser]'`; PDF extraction in `read_url` requires `pip install 'coderai-agent[web]'`; desktop tools are macOS-only. Batch edits use `search_replace` with an `edits` list. Confirmation required (`✓`) means the agent asks before running.
 
 ### Filesystem
 
@@ -557,7 +557,7 @@ Rare git ops auto-connect via the bundled `git_extended` MCP server as
 
 ### Browser Automation
 
-*Requires `pip install coderAI[browser]` and `playwright install chromium`.*
+*Requires `pip install 'coderai-agent[browser]'` and `playwright install chromium`.*
 
 | Tool | Confirm | Description |
 |---|---|---|

@@ -59,7 +59,7 @@ jobs:
           body: |
             Python wheel and sdist. Install with:
             ```bash
-            pip install coderAI==${{ steps.tag.outputs.version }}
+            pip install coderai-agent==${{ steps.tag.outputs.version }}
             ```
             Run interactive chat:
             ```bash

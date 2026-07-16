@@ -36,7 +36,7 @@ _COLLECTION_NAME = "codebase"
 
 _CHROMADB_INSTALL_HINT = (
     "Semantic code search needs ChromaDB, an optional dependency. "
-    "Install it with: pip install 'coderAI[semantic]'"
+    "Install it with: pip install 'coderai-agent[semantic]'"
 )
 
 

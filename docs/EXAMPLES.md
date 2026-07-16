@@ -155,7 +155,7 @@ coderAI index                    # Index the whole project
 coderAI search "JWT validation"  # Search from the CLI
 ```
 
-For local embeddings, install `coderAI[semantic,local-embeddings]` and set
+For local embeddings, install `coderai-agent[semantic,local-embeddings]` and set
 `embedding_backend` to `local`. The index is rebuilt safely when its embedding
 backend, model, or dimension changes.
 
