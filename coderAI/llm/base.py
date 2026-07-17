@@ -18,6 +18,7 @@ REASONING_BUDGET_MAP = {"high": 16384, "medium": 8192, "low": 2048}
 HTTP_CONNECT_TIMEOUT = 10
 HTTP_SOCK_READ_TIMEOUT = 120
 HTTP_TOTAL_TIMEOUT = 180
+DEFAULT_CONTEXT_WINDOW = 128000
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +148,7 @@ class LLMProvider(ABC):
     # Anthropic does (it expects the paused tool_use blocks replayed); OpenAI-
     # compatible providers do not, so the loop strips them before resuming.
     preserves_tool_calls_on_pause: bool = False
+    MODEL_CONTEXT_WINDOWS: Dict[str, int] = {}
 
     def __init__(self, model: str, api_key: Optional[str] = None, **kwargs: Any):
         """Initialize the LLM provider.
@@ -181,6 +183,15 @@ class LLMProvider(ABC):
     @actual_model.setter
     def actual_model(self, value: str) -> None:
         self._actual_model = value
+
+    @property
+    def model_context_window(self) -> Optional[int]:
+        """Return the provider's known model limit, or ``None`` when unknown."""
+        return self.MODEL_CONTEXT_WINDOWS.get(self.actual_model)
+
+    def get_effective_context_window(self, fallback: int = DEFAULT_CONTEXT_WINDOW) -> int:
+        """Return a known model limit, safely falling back for unknown models."""
+        return self.model_context_window or (fallback if fallback > 0 else DEFAULT_CONTEXT_WINDOW)
 
     @abstractmethod
     async def chat(
@@ -335,7 +346,7 @@ class LLMProvider(ABC):
 
     @staticmethod
     def _strip_tool_images(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Drop the ``tool_images`` vision carrier from tool messages.
+        """Drop Anthropic-only state from messages sent to other providers.
 
         Only the Anthropic provider renders base64 images inside a tool result;
         every other provider would reject the unknown key (or has no way to use
@@ -346,6 +357,11 @@ class LLMProvider(ABC):
         for m in messages:
             if "tool_images" in m:
                 m = {k: v for k, v in m.items() if k != "tool_images"}
+            if m.get("tool_calls") and any("provider_state" in tc for tc in m["tool_calls"]):
+                m = dict(m)
+                m["tool_calls"] = [
+                    {k: v for k, v in tc.items() if k != "provider_state"} for tc in m["tool_calls"]
+                ]
             cleaned.append(m)
         return cleaned
 
@@ -354,7 +370,8 @@ class LLMProvider(ABC):
 
         By default, strips reasoning_content from assistant messages for compatibility
         with providers that reject this field. Providers that support round-tripping
-        reasoning_content (DeepSeek, Gemini, Anthropic) MUST override this method.
+        reasoning_content (DeepSeek, Gemini) MUST override this method. Anthropic
+        replays signed thinking blocks through opaque provider state instead.
         The ``tool_images`` vision carrier is always stripped here (Anthropic
         overrides to keep it).
         """

@@ -7,6 +7,8 @@ import pytest
 
 from coderAI.skills.skill_manager import Skill, SkillManager
 from coderAI.skills.sources.base import SkillSource
+from coderAI.core.agent_capabilities import AgentCapabilitiesMixin
+from coderAI.system.history import Session
 
 
 class FakeSkillSource(SkillSource):
@@ -34,6 +36,20 @@ class FakeSkillSource(SkillSource):
             if s.name == name:
                 return s
         return None
+
+
+def test_auto_selected_skills_are_ephemeral_and_deduplicated():
+    agent = object.__new__(AgentCapabilitiesMixin)
+    agent._workspace_trusted = True
+    agent._active_skill_context = []
+    agent.session = Session(session_id="session_1_abcdef12")
+    skill = Skill(name="review", instructions="Inspect the real diff.")
+
+    agent._inject_skill_context([skill, skill])
+
+    assert len(agent._active_skill_context) == 1
+    assert "Inspect the real diff" in agent._active_skill_context[0]
+    assert agent.session.messages == []
 
 
 def make_mock_provider(response_text):

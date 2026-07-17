@@ -6,11 +6,14 @@ from typing import Dict
 
 logger = logging.getLogger(__name__)
 
-# Prices per 1,000,000 tokens (USD)
-# Updated: April 2026 (canonical API model IDs)
+# Standard short-context prices per 1,000,000 tokens (USD).
+# Provider-specific long-context tiers are not represented by this flat table.
+# Updated: July 2026 (canonical API model IDs)
 
 MODEL_PRICING: Dict[str, Dict[str, float]] = {
     # OpenAI
+    "gpt-5.6": {"input": 5.00, "output": 30.00},
+    "gpt-5.6-sol": {"input": 5.00, "output": 30.00},
     "gpt-5.4": {"input": 2.50, "output": 15.00},
     "gpt-5.4-mini": {"input": 0.75, "output": 4.50},
     "gpt-5.4-nano": {"input": 0.20, "output": 1.25},
@@ -18,11 +21,17 @@ MODEL_PRICING: Dict[str, Dict[str, float]] = {
     "o1-pro": {"input": 150.00, "output": 600.00},
     "o3": {"input": 2.00, "output": 8.00},
     "o3-mini": {"input": 1.10, "output": 4.40},
-    # Anthropic — Claude 4.X API model IDs
+    # Anthropic current API model IDs
+    "claude-fable-5": {"input": 10.00, "output": 50.00},
+    "claude-opus-4-8": {"input": 5.00, "output": 25.00},
+    "claude-sonnet-5": {"input": 3.00, "output": 15.00},
     "claude-opus-4-7": {"input": 5.00, "output": 25.00},
     "claude-sonnet-4-6": {"input": 3.00, "output": 15.00},
     "claude-haiku-4-5": {"input": 1.00, "output": 5.00},
-    # Anthropic — Claude 4.X friendly aliases
+    # Anthropic friendly aliases
+    "claude-5-fable": {"input": 10.00, "output": 50.00},
+    "claude-5-sonnet": {"input": 3.00, "output": 15.00},
+    "claude-4.8-opus": {"input": 5.00, "output": 25.00},
     "claude-4.7-opus": {"input": 5.00, "output": 25.00},
     "claude-4.6-sonnet": {"input": 3.00, "output": 15.00},
     "claude-4.5-haiku": {"input": 1.00, "output": 5.00},
@@ -37,6 +46,7 @@ MODEL_PRICING: Dict[str, Dict[str, float]] = {
     "claude-3.5-sonnet": {"input": 3.00, "output": 15.00},
     "claude-3.5-haiku": {"input": 0.80, "output": 4.00},
     # Anthropic — short aliases
+    "fable": {"input": 10.00, "output": 50.00},
     "sonnet": {"input": 3.00, "output": 15.00},
     "haiku": {"input": 1.00, "output": 5.00},
     "opus": {"input": 5.00, "output": 25.00},
@@ -143,7 +153,7 @@ class CostTracker:
         """Calculate cost for a single interaction and add to total.
 
         Args:
-            model: The model name (e.g., 'gpt-5.4-mini')
+            model: The model name (e.g., 'gpt-5.6')
             input_tokens: Number of prompt tokens
             output_tokens: Number of completion tokens
 

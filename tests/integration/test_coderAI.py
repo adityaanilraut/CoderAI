@@ -534,30 +534,26 @@ class TestSystemPrompt:
         assert isinstance(text, str)
         assert len(text) > 100
 
-    def test_system_prompt_mentions_tools(self):
+    def test_system_prompt_leaves_tool_catalog_to_schemas(self):
         from coderAI.prompts.compose import compose_default_system_prompt
 
-        text = compose_default_system_prompt(self._full_tool_registry())
-        # Check for core tool categories via patterns, not exact strings
-        assert "read_file" in text or "read " in text.lower()
-        assert "write_file" in text or "write " in text.lower()
-        assert "run_command" in text or "command" in text.lower()
-        assert "git" in text.lower()
-        assert "search" in text.lower()
-        assert "delegate_task" in text or "delegate" in text.lower()
-        assert "lint" in text.lower()
-        assert "read_image" in text or "image" in text.lower()
-        assert "manage_tasks" in text or "task" in text.lower()
+        registry = self._full_tool_registry()
+        text = compose_default_system_prompt(registry)
+
+        assert registry.get("read_file") is not None
+        assert registry.get("undo") is not None
+        assert "read_file" not in text
+        assert "undo" not in text
+        assert "authoritative tool catalog" in text
 
     def test_system_prompt_has_agentic_guidance(self):
         from coderAI.prompts.compose import compose_default_system_prompt
 
         text = compose_default_system_prompt(self._full_tool_registry()).lower()
 
-        # Agentic reasoning / planning keywords (static narrative tail)
-        assert "step-by-step" in text
-        assert "search before" in text
-        assert "verify after" in text
+        assert "inspect, act, verify, and finish" in text
+        assert "trace the real flow" in text
+        assert "run the narrowest relevant check" in text
         assert "delegate" in text
 
 
@@ -914,7 +910,7 @@ class TestAnthropicProvider:
         assert count > 0
         assert isinstance(count, int)
 
-    def test_thinking_payload_uses_budget_tokens_format(self):
+    def test_thinking_payload_uses_adaptive_effort_format(self):
         from coderAI.llm.anthropic import AnthropicProvider
 
         provider = AnthropicProvider(
@@ -922,11 +918,8 @@ class TestAnthropicProvider:
         )
         payload = provider._build_payload(messages=[{"role": "user", "content": "hi"}], tools=None)
         thinking = payload["thinking"]
-        assert thinking["type"] == "enabled"
-        assert isinstance(thinking["budget_tokens"], int)
-        assert thinking["budget_tokens"] > 0
-        assert thinking["budget_tokens"] < payload["max_tokens"]
-        assert "output_config" not in payload
+        assert thinking == {"type": "adaptive"}
+        assert payload["output_config"] == {"effort": "medium"}
 
     def test_thinking_payload_disabled_when_effort_none(self):
         from coderAI.llm.anthropic import AnthropicProvider
@@ -970,14 +963,14 @@ class TestMCPTools:
 
 
 class TestUpdatedSystemPrompt:
-    """Tests that composed prompt mentions tools registered in the full registry."""
+    """Tests conditional capability guidance in the composed prompt."""
 
-    def test_system_prompt_mentions_new_tools(self):
+    def test_system_prompt_mentions_mcp_workflow_without_generic_tool_names(self):
         from coderAI.prompts.compose import compose_default_system_prompt
 
         text = compose_default_system_prompt(TestSystemPrompt._full_tool_registry())
         assert "mcp_connect" in text
-        assert "undo" in text
+        assert "undo" not in text
 
 
 # ============================================================================

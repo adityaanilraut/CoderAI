@@ -301,6 +301,7 @@ class SkillManager:
                 tools=None,
                 max_tokens=1024,
                 temperature=0.0,
+                reasoning_effort="none",
             )
         except Exception as e:
             logger.warning("%s LLM matching call failed: %s", SKILL_MGR_PREFIX, e)

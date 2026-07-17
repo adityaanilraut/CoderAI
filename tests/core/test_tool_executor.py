@@ -443,6 +443,8 @@ def test_doom_loop_terminates_execution_loop_with_explanatory_message() -> None:
     )
     assert "manage_tasks" in result["content"]
     assert "looping" in result["content"].lower() or "loop" in result["content"].lower()
+    assert result["success"] is False
+    assert result["stop_reason"] == "doom_loop"
     # Critically: did NOT run to max_iterations.
     assert "maximum number of iterations" not in result["content"]
 

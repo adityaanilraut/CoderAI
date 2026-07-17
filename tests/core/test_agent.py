@@ -413,7 +413,7 @@ class TestAgentPersonaSwitching:
         assert applied is persona
         content = agent.session.messages[0].content
         assert "You are a reviewer." in content
-        assert "## Available Tools" in content
+        assert "authoritative tool catalog" in content
         assert "## Strategy for Common Tasks" in content
         assert "read_file" in agent.tools.tools
         assert "write_file" not in agent.tools.tools
@@ -440,46 +440,6 @@ class TestAgentPersonaSwitching:
 class TestSessionResumeAndCompaction:
     """Tests for resumed-session model activation and durable compaction."""
 
-    def test_activate_resumed_session_model_restores_saved_model(self):
-        from coderAI.tui.session_setup import _activate_resumed_session_model
-
-        restored_provider = MagicMock()
-        session = MagicMock(model="claude-sonnet-4-6")
-        agent = MagicMock()
-        agent.session = session
-        agent.model = "gpt-5.4-mini"
-        agent.provider = MagicMock()
-        agent.context_controller = MagicMock()
-        agent._create_provider.return_value = restored_provider
-
-        _activate_resumed_session_model(agent, requested_model=None)
-
-        assert agent.model == "claude-sonnet-4-6"
-        assert agent.provider is restored_provider
-        assert agent.context_controller.provider is restored_provider
-        assert session.model == "claude-sonnet-4-6"
-        agent._configure_delegate_tool_context.assert_called_once()
-
-    def test_activate_resumed_session_model_honors_explicit_override(self):
-        from coderAI.tui.session_setup import _activate_resumed_session_model
-
-        override_provider = MagicMock()
-        session = MagicMock(model="claude-sonnet-4-6")
-        agent = MagicMock()
-        agent.session = session
-        agent.model = "claude-sonnet-4-6"
-        agent.provider = MagicMock()
-        agent.context_controller = MagicMock()
-        agent._create_provider.return_value = override_provider
-
-        _activate_resumed_session_model(agent, requested_model="gpt-5.4-mini")
-
-        assert agent.model == "gpt-5.4-mini"
-        assert agent.provider is override_provider
-        assert agent.context_controller.provider is override_provider
-        assert session.model == "gpt-5.4-mini"
-        agent._configure_delegate_tool_context.assert_called_once()
-
     def test_compact_context_persists_successful_compaction(self):
         with patch("coderAI.core.agent.config_manager") as cm:
             from coderAI.system.config import Config
@@ -502,8 +462,9 @@ class TestSessionResumeAndCompaction:
         agent.context_controller.manage_context_window = AsyncMock(
             return_value=[
                 {
-                    "role": "system",
-                    "content": "[Prior Conversation Summary]: condensed history",
+                    "role": "user",
+                    "content": "[Prior conversation summary; historical context]: condensed history",
+                    "_truncation_notice": True,
                 },
                 {"role": "user", "content": "recent question"},
             ]
@@ -513,6 +474,31 @@ class TestSessionResumeAndCompaction:
 
         assert success is True
         agent.save_session.assert_called_once()
+
+    def test_compact_context_ignores_user_text_that_looks_like_legacy_notice(self):
+        from types import SimpleNamespace
+
+        from coderAI.core.agent_session import AgentSessionMixin
+        from coderAI.system.history import Session
+
+        agent = object.__new__(AgentSessionMixin)
+        agent.config = SimpleNamespace(max_tokens=8192)
+        agent.session = Session(session_id="session_1_abcdef12")
+        agent.session.add_message("user", "12 messages were removed to fit my report")
+        agent._context_controller = SimpleNamespace(
+            manage_context_window=AsyncMock(
+                return_value=[
+                    {"role": "user", "content": "12 messages were removed to fit my report"}
+                ]
+            )
+        )
+        agent.hooks_manager = MagicMock()
+        agent.save_session = MagicMock()
+
+        success = asyncio.run(agent.compact_context())
+
+        assert success is False
+        agent.save_session.assert_not_called()
 
 
 class TestPerCallUsageAccounting:
@@ -656,20 +642,13 @@ class TestAgentProjectRules:
         ):
             prompt = agent._get_system_prompt()
             assert SYSTEM_PROMPT_INTRO in prompt
-            assert "## Available Tools" in prompt
-            # Phase 3.3: rules are defused into fenced, advisory project guidance
-            # (no "MUST be followed" / authoritative framing).
+            assert "authoritative tool catalog" in prompt
             assert "## Project Guidance (user-provided)" in prompt
             assert "[BEGIN PROJECT RULE" in prompt
             assert "Rule: testing.md" in prompt
             assert "Always write pytest tests." in prompt
 
-    def test_system_prompt_rebuilds_when_mcp_servers_change(self):
-        """Toggling an MCP server (changing discovered_tools) must refresh the prompt.
-
-        The connected-MCP appendix mirrors mcp_client.discovered_tools, so the
-        cache key has to track it — otherwise /mcp toggles leave a stale prompt.
-        """
+    def test_system_prompt_leaves_connected_mcp_names_to_schemas(self):
         import coderAI.tools.mcp as mcp_mod
 
         agent = self._make_agent()
@@ -688,9 +667,9 @@ class TestAgentProjectRules:
         finally:
             mcp_mod.mcp_client = original
 
-        assert key_empty != key_connected
+        assert key_empty == key_connected
         assert "mcp__fetch__get" not in prompt_empty
-        assert "mcp__fetch__get" in prompt_connected
+        assert "mcp__fetch__get" not in prompt_connected
 
     def test_get_system_prompt_omits_web_tools_when_disabled(self):
         with patch("coderAI.core.agent.config_manager") as cm:
@@ -706,9 +685,7 @@ class TestAgentProjectRules:
                 prompt = agent._get_system_prompt()
         assert "web_search" not in prompt
         assert "read_url" not in prompt
-        assert "## Available Tools" in prompt
-        assert "available to you right now" not in prompt
-        assert "If web tools are listed under **Available Tools**" in prompt
+        assert "web_search" not in agent.tools.tools
 
     def test_get_system_prompt_includes_web_tools_when_enabled(self):
         with patch("coderAI.core.agent.config_manager") as cm:
@@ -722,8 +699,9 @@ class TestAgentProjectRules:
             with patch.object(Agent, "_create_provider", return_value=MagicMock()):
                 agent = Agent(model="gpt-5.4-mini", streaming=False)
                 prompt = agent._get_system_prompt()
-        assert "web_search" in prompt
-        assert "read_url" in prompt
+        assert "web_search" in agent.tools.tools
+        assert "web_search" not in prompt
+        assert "read_url" not in prompt
 
     def test_get_system_prompt_omits_web_tools_for_subagent_when_main_config_off(self):
         # Phase 5.1: disabling web tools is transitive — a sub-agent must NOT

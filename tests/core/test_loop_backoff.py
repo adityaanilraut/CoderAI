@@ -84,3 +84,33 @@ async def test_cancellation_during_backoff_exits(mock_agent):
 
     assert "stopped by user" in result["content"].lower()
     assert call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_cancellation_interrupts_stalled_provider_request(mock_agent):
+    info = AgentInfo(
+        agent_id="agent_request_cancel",
+        name="main",
+        status=AgentStatus.THINKING,
+    )
+    mock_agent.tracker_info = info
+    mock_agent.streaming = False
+    mock_agent.context_controller.request_tool_schemas = None
+    mock_agent.context_controller._SUMMARY_MARKER_KEY = "_context_summary"
+    mock_agent.context_controller.strip_internal_markers = lambda messages: messages
+    mock_agent.provider.clean_messages = lambda messages: messages
+    started = asyncio.Event()
+
+    async def stalled_request(*_args, **_kwargs):
+        started.set()
+        await asyncio.Event().wait()
+
+    mock_agent.provider.chat = stalled_request
+    loop = ExecutionLoop(mock_agent)
+    request = asyncio.create_task(loop._call_llm_with_retry([], []))
+    await started.wait()
+    info.request_cancel()
+
+    result = await asyncio.wait_for(request, timeout=1)
+
+    assert result["finish_reason"] == "cancelled"

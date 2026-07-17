@@ -24,6 +24,7 @@ async def test_explicit_yolo_can_be_enabled_before_approval_resp() -> None:
     agent = SimpleNamespace(
         auto_approve=False,
         _configure_delegate_tool_context=MagicMock(),
+        _refresh_session_system_prompt=MagicMock(),
     )
     server = SimpleNamespace(agent=agent, emit=MagicMock(), _approval_waiters={})
     loop = asyncio.get_running_loop()

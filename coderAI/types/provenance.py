@@ -93,13 +93,13 @@ def wrap_untrusted_output(serialized: str, source: str) -> str:
 
 
 def fence_project_context(title: str, body: str, *, origin: str) -> str:
-    """Render repo-supplied guidance as fenced, non-authoritative project context.
+    """Render repo-supplied guidance below live user and safety instructions.
 
     Used for project rules, auto-loaded skills, and ``AGENTS.md``/``CLAUDE.md``
     (Phase 3.3). These come from files in the repo, not from the user's typed
     input, so they are framed as *guidance the user has provided for this
-    project* — advisory, not a system directive — and never granted "MUST be
-    followed" authority.
+    project*. It applies when relevant but never outranks live user or safety
+    instructions.
 
     Args:
         title: Human-readable heading (e.g. the rule/skill/file name).
@@ -109,7 +109,7 @@ def fence_project_context(title: str, body: str, *, origin: str) -> str:
     """
     tag = _sanitize_source(origin) or "project-context"
     return (
-        f"[BEGIN PROJECT {tag.upper()} — user-provided, advisory only]\n"
+        f"[BEGIN PROJECT {tag.upper()} - follow when applicable; below live user and safety]\n"
         f"{title}\n\n"
         f"{body}\n"
         f"[END PROJECT {tag.upper()}]"

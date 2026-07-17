@@ -578,8 +578,8 @@ Define pre/post tool execution hooks in `.coderAI/hooks.json`:
 
 | Provider | Models | Requirements |
 |---|---|---|
-| **OpenAI** | `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `o1`, `o1-mini`, `o3-mini` | `OPENAI_API_KEY` |
-| **Anthropic** | `claude-4-sonnet`, `claude-3.5-sonnet`, `claude-3.5-haiku`, `claude-3-opus` | `ANTHROPIC_API_KEY` |
+| **OpenAI** | `gpt-5.6` (`gpt-5.6-sol`), `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `o1`, `o1-mini`, `o3-mini` | `OPENAI_API_KEY` |
+| **Anthropic** | `claude-fable-5`, `claude-sonnet-5`, `claude-opus-4-8`, `fable`, `sonnet`, `opus`, `haiku` | `ANTHROPIC_API_KEY` |
 | **Groq** | `openai/gpt-oss-120b`, `openai/gpt-oss-20b`, `llama3-70b-8192`, `llama3-8b-8192` | `GROQ_API_KEY` |
 | **DeepSeek** | `deepseek-v4-flash`, `deepseek-v4-pro`, `deepseek-v3.2`, `deepseek-r1` | `DEEPSEEK_API_KEY` |
 | **Gemini** | `gemini-3.5-flash`, `gemini-3.1-pro`, `gemini-2.5-flash`, `gemini-2.5-pro`, … | `GEMINI_API_KEY` |

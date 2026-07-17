@@ -54,7 +54,7 @@ def test_bundled_git_extended_in_effective_mcp_servers(
     assert BUNDLED_GIT_EXTENDED_SERVER in data["mcpServers"]
     entry = data["mcpServers"][BUNDLED_GIT_EXTENDED_SERVER]
     assert entry["command"] == sys.executable
-    assert entry["args"] == ["-m", "coderAI.mcp_servers.git_extended"]
+    assert entry["args"] == ["-I", "-m", "coderAI.mcp_servers.git_extended"]
 
 
 def test_user_override_disables_bundled_server(
@@ -140,4 +140,31 @@ async def test_git_extended_mcp_stdio_lists_and_calls_tools(tmp_path: Path) -> N
     assert payload.get("success") is True
     assert "init" in payload.get("output", "") or payload.get("output")
 
+    await client.disconnect(BUNDLED_GIT_EXTENDED_SERVER)
+
+
+@pytest.mark.asyncio
+async def test_bundled_server_ignores_workspace_package_shadow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shadow = tmp_path / "coderAI" / "mcp_servers"
+    shadow.mkdir(parents=True)
+    (shadow.parent / "__init__.py").write_text("")
+    (shadow / "__init__.py").write_text("")
+    marker = tmp_path / "shadow-executed"
+    (shadow / "git_extended.py").write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('owned')\n"
+    )
+    monkeypatch.chdir(tmp_path)
+
+    client = MCPClient()
+    bundled = bundled_mcp_servers()[BUNDLED_GIT_EXTENDED_SERVER]
+    result = await client.connect_stdio(
+        BUNDLED_GIT_EXTENDED_SERVER,
+        bundled["command"],
+        bundled["args"],
+    )
+
+    assert result.get("success"), result
+    assert not marker.exists()
     await client.disconnect(BUNDLED_GIT_EXTENDED_SERVER)

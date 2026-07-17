@@ -16,6 +16,7 @@ import pytest
 from coderAI.tui.controller import _cmd_rewind
 from coderAI.core.agent import Agent
 from coderAI.system.history import Checkpoint, Session
+from coderAI.context.context_controller import ContextController
 from coderAI.tools.undo import FileBackupStore
 
 
@@ -85,6 +86,48 @@ def test_legacy_session_without_checkpoints_defaults_empty() -> None:
     # A session JSON written before this feature has no "checkpoints" key.
     s = Session(session_id="session_1_abcd1234", messages=[{"role": "system", "content": "x"}])
     assert s.checkpoints == []
+
+
+def test_compact_request_view_survives_append_and_round_trip_without_losing_transcript() -> None:
+    session = _two_turn_session()
+    transcript_size = len(session.messages)
+    summary = {
+        "role": "user",
+        "content": "[Prior conversation summary]: durable facts",
+        ContextController._TRUNCATION_MARKER_KEY: True,
+        ContextController._SUMMARY_MARKER_KEY: True,
+    }
+    session.set_context_messages(
+        [session.get_messages_for_api()[0], summary, session.get_messages_for_api()[-1]]
+    )
+    session.add_message("user", "later turn")
+
+    restored = Session(**session.model_dump())
+    request = restored.get_messages_for_api()
+
+    assert len(session.messages) == transcript_size + 1
+    assert any("durable facts" in str(message.get("content")) for message in request)
+    assert request[-1]["content"] == "later turn"
+
+
+def test_rewind_clears_compact_request_view() -> None:
+    session = _two_turn_session()
+    session.set_context_messages([{"role": "user", "content": "summary"}])
+
+    session.truncate_to_checkpoint(2)
+
+    assert session.context_messages is None
+    assert session.context_message_count == 0
+
+
+def test_replacing_transcript_for_manual_compaction_clears_compact_view() -> None:
+    session = _two_turn_session()
+    session.set_context_messages([{"role": "user", "content": "automatic summary"}])
+
+    session.messages = [session.messages[0], session.messages[-1]]
+
+    assert session.context_messages is None
+    assert session.context_message_count == 0
 
 
 # ── FileBackupStore.restore_after ──────────────────────────────────────

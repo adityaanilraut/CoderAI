@@ -260,14 +260,25 @@ class TestBatchMutationSerialization:
         assert all(r["success"] for r in results)
 
     @pytest.mark.asyncio
-    async def test_different_path_writes_are_parallel(self):
+    async def test_different_path_writes_are_serial(self):
+        active = 0
+        peak = 0
+
+        async def _write(**kwargs):
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            await asyncio.sleep(0.02)
+            active -= 1
+            return {"success": True}
+
         t = SimpleNamespace(
             name="write_file",
             is_read_only=False,
             requires_confirmation=False,
             max_parallel_invocations=0,
             batch_serialize_by_path=True,
-            execute=AsyncMock(return_value={"success": True}),
+            execute=AsyncMock(side_effect=_write),
         )
         registry = _make_registry({"write_file": t})
         agent = _make_agent(registry)
@@ -284,6 +295,7 @@ class TestBatchMutationSerialization:
 
         assert len(results) == 2
         assert all(r["success"] for r in results)
+        assert peak == 1
 
     @pytest.mark.asyncio
     async def test_path_aliases_share_one_serial_queue(self, tmp_path, monkeypatch):

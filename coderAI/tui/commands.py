@@ -53,10 +53,10 @@ def _build_models_text() -> str:
         "Models & providers (see also: /default <name> for saved default)",
         "",
         "OpenAI — requires OPENAI or config openai_api_key",
-        "  gpt-5.4, gpt-5.4-mini, gpt-5.4-nano, o1, o1-mini, o3-mini",
+        "  gpt-5.6, gpt-5.4, gpt-5.4-mini, gpt-5.4-nano, o1, o1-mini, o3-mini",
         "",
         "Anthropic — requires ANTHROPIC or config anthropic_api_key",
-        "  claude-4-sonnet, claude-4.7-opus, claude-4.5-haiku, claude-3.5-sonnet, …",
+        "  claude-fable-5, claude-sonnet-5, claude-opus-4-8, fable, sonnet, opus, haiku",
         "",
         "Groq — requires GROQ or config groq_api_key",
         "  openai/gpt-oss-120b, openai/gpt-oss-20b, llama3-70b-8192, …",
@@ -352,7 +352,13 @@ async def _cmd_send_message(server: UIBridge, msg: Dict[str, Any]) -> None:
     async with server._turn_lock:
         server.tick_iteration()
         try:
-            await server.agent.process_message(text)
+            result = await server.agent.process_message(text)
+            if not getattr(server.agent, "streaming", True):
+                content = str((result or {}).get("content", "") or "")
+                server.emit("turn", phase="start", reasoningActive=False)
+                if content:
+                    server.emit("turn", phase="text", delta=content, reasoningActive=False)
+                server.emit("turn", phase="end", reasoningActive=False)
         except Exception as e:
             logger.exception("process_message failed")
             server._emit_error(
@@ -412,6 +418,7 @@ async def _cmd_set_model(server: UIBridge, msg: Dict[str, Any]) -> None:
     # each turn from this point forward.
     if server.agent.session is not None:
         server.agent.session.model = model
+    server.agent._refresh_session_system_prompt()
     server.emit("session_patch", model=model, provider=server.agent.provider.__class__.__name__)
     # Verbose-only confirmation; the status bar carries the change in normal mode.
     server.emit("success", message=f"Switched model → {model}")
@@ -466,6 +473,7 @@ async def _cmd_set_persona(server: UIBridge, msg: Dict[str, Any]) -> None:
 async def _cmd_toggle_auto_approve(server: UIBridge, msg: Dict[str, Any]) -> None:
     server.agent.auto_approve = not server.agent.auto_approve
     server.agent._configure_delegate_tool_context()
+    server.agent._refresh_session_system_prompt()
     # Status bar's safe/YOLO pill is the indicator in normal mode; the
     # success toast surfaces only in verbose.
     server.emit("session_patch", autoApprove=bool(server.agent.auto_approve))
@@ -488,6 +496,7 @@ async def _cmd_set_auto_approve(server: UIBridge, msg: Dict[str, Any]) -> None:
     server.agent.auto_approve = enabled
     if changed:
         server.agent._configure_delegate_tool_context()
+        server.agent._refresh_session_system_prompt()
     server.emit("session_patch", autoApprove=enabled)
     if changed:
         server.emit(

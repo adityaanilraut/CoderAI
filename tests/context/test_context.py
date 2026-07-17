@@ -2,6 +2,7 @@
 
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -11,10 +12,14 @@ from coderAI.tools.context_manage import ManageContextTool
 from coderAI.system.config import Config, config_manager
 
 
-def _make_controller(config=None):
+def _make_controller(config=None, *, allow_project_instructions=True):
     """Create a ContextController with a mock provider."""
     cfg = config or Config(project_root=".")
-    return ContextController(config=cfg, provider=MagicMock())
+    return ContextController(
+        config=cfg,
+        provider=MagicMock(),
+        allow_project_instructions=allow_project_instructions,
+    )
 
 
 class TestContextController:
@@ -49,9 +54,9 @@ class TestContextController:
 
             msg = cm.get_system_message()
 
-            assert cm.project_instructions == "Unique instruction content"
+            assert "Unique instruction content" in cm.project_instructions
             assert "[BEGIN PROJECT INSTRUCTIONS" in msg
-            assert "advisory only" in msg
+            assert "below live user and safety" in msg
             assert "Unique instruction content" in msg
 
         finally:
@@ -71,7 +76,7 @@ class TestContextController:
 
         msg = cm.get_system_message()
 
-        assert cm.project_instructions == "Project-scoped instructions"
+        assert "Project-scoped instructions" in cm.project_instructions
         assert "Project-scoped instructions" in msg
 
     def test_load_instructions_lowercase_fallback(self):
@@ -79,16 +84,16 @@ class TestContextController:
         cm = _make_controller(config=Config(project_root=str(self.test_dir)))
 
         cm.get_system_message()
-        assert cm.project_instructions == "lower-case instructions"
+        assert "lower-case instructions" in cm.project_instructions
 
     def test_load_instructions_agents_md_interop(self):
         (self.test_dir / "AGENTS.md").write_text("agents file", encoding="utf-8")
         cm = _make_controller(config=Config(project_root=str(self.test_dir)))
 
         cm.get_system_message()
-        assert cm.project_instructions == "agents file"
+        assert "agents file" in cm.project_instructions
 
-    def test_configured_file_takes_precedence_over_fallbacks(self):
+    def test_configured_and_fallback_files_compose_in_order(self):
         (self.test_dir / "CUSTOM.md").write_text("custom wins", encoding="utf-8")
         (self.test_dir / "CLAUDE.md").write_text("claude fallback", encoding="utf-8")
         cm = _make_controller(
@@ -99,7 +104,37 @@ class TestContextController:
         )
 
         cm.get_system_message()
-        assert cm.project_instructions == "custom wins"
+        assert "custom wins" in cm.project_instructions
+        assert "claude fallback" in cm.project_instructions
+        assert cm.project_instructions.index("custom wins") < cm.project_instructions.index(
+            "claude fallback"
+        )
+
+    def test_untrusted_controller_does_not_load_project_instructions(self):
+        (self.test_dir / "AGENTS.md").write_text("do not load", encoding="utf-8")
+        cm = _make_controller(
+            config=Config(project_root=str(self.test_dir)),
+            allow_project_instructions=False,
+        )
+
+        assert cm.get_system_message() is None
+        assert cm.project_instructions is None
+
+    def test_nested_agents_files_compose_and_refresh(self, monkeypatch):
+        nested = self.test_dir / "src" / "feature"
+        nested.mkdir(parents=True)
+        root_agents = self.test_dir / "AGENTS.md"
+        nested_agents = nested / "AGENTS.md"
+        root_agents.write_text("root guidance", encoding="utf-8")
+        nested_agents.write_text("nested guidance", encoding="utf-8")
+        monkeypatch.chdir(nested)
+        cm = _make_controller(config=Config(project_root=str(self.test_dir)))
+
+        first = cm.get_system_message()
+        assert first.index("root guidance") < first.index("nested guidance")
+
+        nested_agents.write_text("updated nested guidance", encoding="utf-8")
+        assert "updated nested guidance" in cm.get_system_message()
 
     def test_pin_file(self):
         dummy_file = self.test_dir / "dummy.py"
@@ -133,6 +168,36 @@ class TestContextController:
 
         cm.clear()
         assert len(cm.pinned_files) == 0
+
+    def test_request_budget_counts_model_override_output_tools_reasoning_and_images(self):
+        provider = SimpleNamespace(
+            count_tokens=lambda text: len(text) // 4,
+            model_context_window=32_000,
+            max_tokens=4_096,
+        )
+        controller = ContextController(
+            config=Config(context_window=128_000, max_tokens=8_192),
+            provider=provider,  # type: ignore[arg-type]
+        )
+        controller.request_tool_schemas = [
+            {"type": "function", "function": {"name": "read", "description": "x" * 80}}
+        ]
+
+        message_tokens = controller.estimate_tokens(
+            [
+                {
+                    "role": "assistant",
+                    "content": "abcdefgh",
+                    "reasoning_content": "abcdefghijkl",
+                    "tool_images": [{"data": "a"}, {"data": "b"}],
+                }
+            ]
+        )
+
+        assert controller._effective_context_limit(None) == 32_000
+        assert controller._output_token_reserve() == 4_096
+        assert controller.estimate_tool_tokens() > 0
+        assert message_tokens >= 3_000 + 2 + 3
 
 
 class TestManageContextTool:

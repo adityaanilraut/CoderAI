@@ -18,6 +18,8 @@ class OpenAIProvider(OpenAICompatibleCloudProvider):
 
     # Supported models with their actual API names
     SUPPORTED_MODELS = {
+        "gpt-5.6": "gpt-5.6-sol",
+        "gpt-5.6-sol": "gpt-5.6-sol",
         "gpt-5.4": "gpt-5.4",
         "gpt-5.4-mini": "gpt-5.4-mini",
         "gpt-5.4-nano": "gpt-5.4-nano",
@@ -26,6 +28,7 @@ class OpenAIProvider(OpenAICompatibleCloudProvider):
         "o1-pro": "o1-pro",
         "o3-mini": "o3-mini",
     }
+    MODEL_CONTEXT_WINDOWS = {"gpt-5.6-sol": 1_050_000}
 
     def __init__(self, model: str, api_key: Optional[str] = None, **kwargs: Any):
         super().__init__(model, api_key, **kwargs)
@@ -48,7 +51,7 @@ class OpenAIProvider(OpenAICompatibleCloudProvider):
         if "not a chat model" in msg and "v1/chat/completions" in msg:
             raise RuntimeError(
                 f"Model '{self.actual_model}' is not compatible with chat.completions "
-                "in this environment. Switch to gpt-5.4, gpt-5.4-mini, gpt-5.4-nano, "
+                "in this environment. Switch to gpt-5.6, gpt-5.4, gpt-5.4-mini, gpt-5.4-nano, "
                 "o1, o1-mini, or o3-mini."
             ) from exc
 
@@ -97,12 +100,9 @@ class OpenAIProvider(OpenAICompatibleCloudProvider):
         params["max_completion_tokens"] = params.pop("max_tokens")
         del params["temperature"]
         if self._rejects_temperature:
-            if (
-                self._supports_reasoning_effort
-                and self.reasoning_effort
-                and self.reasoning_effort != "none"
-            ):
-                params["reasoning_effort"] = self.reasoning_effort
+            effort = kwargs.get("reasoning_effort", self.reasoning_effort)
+            if self._supports_reasoning_effort and effort and effort != "none":
+                params["reasoning_effort"] = effort
         else:
             params["temperature"] = kwargs.get("temperature", self.temperature)
 

@@ -61,8 +61,9 @@ class DeepSeekProvider(OpenAICompatibleCloudProvider):
         # across tool turns via session persistence and clean_messages,
         # so we enable thinking by default for V4-compatible models.
         if self._uses_v4_family:
-            if self.reasoning_effort and self.reasoning_effort != "none":
-                budget = REASONING_BUDGET_MAP.get(self.reasoning_effort, 8192)
+            effort = kwargs.get("reasoning_effort", self.reasoning_effort)
+            if effort and effort != "none":
+                budget = REASONING_BUDGET_MAP.get(effort, 8192)
                 params["extra_body"] = {"thinking": {"type": "enabled", "budget_tokens": budget}}
             else:
                 params["extra_body"] = {"thinking": {"type": "disabled"}}

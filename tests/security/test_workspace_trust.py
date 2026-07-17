@@ -28,6 +28,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from coderAI.system.config import config_manager
+from coderAI.core.agent_loop import ExecutionLoop
 from coderAI.system.hooks_manager import HooksManager
 from coderAI.system.proc import build_hook_env
 from coderAI.system.trust import WorkspaceTrust, workspace_trust
@@ -50,6 +51,36 @@ def _fake_agent(project_root, *, ipc_server=None, workspace_trusted=False):
         ipc_server=ipc_server,
         _workspace_trusted=workspace_trusted,
     )
+
+
+@pytest.mark.asyncio
+async def test_mcp_autoconnect_runs_after_workspace_trust(monkeypatch: pytest.MonkeyPatch) -> None:
+    order: list[str] = []
+    agent = SimpleNamespace(
+        config=SimpleNamespace(max_iterations=1, max_iterations_hard_cap=200),
+        hooks_manager=SimpleNamespace(load_hooks=lambda: None),
+        _mcp_initialized=False,
+        read_cache=None,
+        session=MagicMock(),
+    )
+    loop = ExecutionLoop(agent)
+    monkeypatch.setattr(loop, "_prepare_session", lambda _message: None)
+    monkeypatch.setattr(
+        loop,
+        "_ensure_workspace_trust",
+        AsyncMock(side_effect=lambda: order.append("trust")),
+    )
+    monkeypatch.setattr(
+        loop,
+        "_autoconnect_mcp_servers",
+        AsyncMock(side_effect=lambda: order.append("mcp")),
+    )
+    monkeypatch.setattr(loop, "_prepare_messages", AsyncMock(return_value=[]))
+    monkeypatch.setattr(loop, "_get_tool_schemas", lambda: [])
+    monkeypatch.setattr(loop, "_run_iteration", AsyncMock(return_value={"content": "ok"}))
+
+    assert await loop.run("hello") == {"content": "ok"}
+    assert order == ["trust", "mcp"]
 
 
 # ── 2.1 trust store ───────────────────────────────────────────────────────────

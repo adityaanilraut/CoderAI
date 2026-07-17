@@ -44,7 +44,7 @@ class MetaProvider(OpenAICompatibleCloudProvider):
 
         # Muse Spark always reasons; sending reasoning_effort="none" returns HTTP 400.
         # Omit the param when effort is none/empty so the API uses its default.
-        effort = self.reasoning_effort
+        effort = kwargs.get("reasoning_effort", self.reasoning_effort)
         if effort and effort != "none":
             params["reasoning_effort"] = effort
 

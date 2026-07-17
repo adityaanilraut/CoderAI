@@ -40,7 +40,6 @@ from coderAI.types.tool_error_codes import ToolErrorCode
 from coderAI.types.tool_results import normalize_tool_result
 from coderAI.core.turn import TurnContext
 from coderAI.system.error_policy import is_transient_error, is_transient_message
-from coderAI.system.locks import canonical_path_key
 from coderAI.system.retry import backoff_delay
 
 logger = logging.getLogger(__name__)
@@ -778,7 +777,7 @@ class ToolExecutor:
                 except Exception:
                     return False
 
-            async def _retry_pause(attempt: int, why: str) -> None:
+            async def _retry_pause(attempt: int, why: str) -> bool:
                 delay = backoff_delay(
                     attempt, base=retry_base_delay, cap=TOOL_RETRY_DELAY_CAP_SECONDS
                 )
@@ -788,7 +787,14 @@ class ToolExecutor:
                 )
                 logger.warning(message)
                 get_services().events.emit("agent_warning", message=message)
-                await asyncio.sleep(delay)
+                if cancel_event is None:
+                    await asyncio.sleep(delay)
+                    return True
+                try:
+                    await asyncio.wait_for(cancel_event.wait(), timeout=delay)
+                    return False
+                except asyncio.TimeoutError:
+                    return True
 
             tool_timed_out = False
             result: Any = None
@@ -807,8 +813,14 @@ class ToolExecutor:
                     break
                 except Exception as e:
                     if attempt < attempts_allowed and not _cancelled() and is_transient_error(e):
-                        await _retry_pause(attempt, str(e))
-                        continue
+                        if await _retry_pause(attempt, str(e)):
+                            continue
+                        result = {
+                            "success": False,
+                            "error": f"Tool '{tool_name}' cancelled during retry backoff",
+                            "error_code": ToolErrorCode.CANCELLED,
+                        }
+                        break
                     raise
                 if (
                     attempt < attempts_allowed
@@ -817,8 +829,14 @@ class ToolExecutor:
                     and not _cancelled()
                     and is_transient_message(str(result.get("error") or ""))
                 ):
-                    await _retry_pause(attempt, str(result.get("error") or ""))
-                    continue
+                    if await _retry_pause(attempt, str(result.get("error") or "")):
+                        continue
+                    result = {
+                        "success": False,
+                        "error": f"Tool '{tool_name}' cancelled during retry backoff",
+                        "error_code": ToolErrorCode.CANCELLED,
+                    }
+                    break
                 break
 
             post_hook_args = dict(arguments or {})
@@ -1220,23 +1238,12 @@ class ToolExecutor:
                 return raw
             return {"success": True, "result": raw}
 
-        def _serializes_by_path(tool_name: str) -> bool:
-            tool = self.agent.tools.get(tool_name)
-            return bool(tool and getattr(tool, "batch_serialize_by_path", False))
-
-        def _path_for(pc: Dict[str, Any]) -> Optional[str]:
-            args = pc.get("arguments") or {}
-            path = args.get("path") or args.get("file_path")
-            return path if isinstance(path, str) and path else None
-
         def _phase_kind(pc: Dict[str, Any]) -> str:
             if _is_read_call(pc):
                 return "read"
             if pc.get("tool_name") == "delegate_task" and isinstance(pc.get("arguments"), dict):
                 if resolve_delegation_isolation_domain(pc["arguments"]) == "browser":
                     return "browser"
-            if _serializes_by_path(pc.get("tool_name", "")) and _path_for(pc) is not None:
-                return "path"
             return "mutation"
 
         async def _run_read(idx: int, caps: Dict[str, asyncio.Semaphore]) -> Dict[str, Any]:
@@ -1262,7 +1269,7 @@ class ToolExecutor:
         cursor = 0
         while cursor < len(parsed_calls):
             kind = _phase_kind(parsed_calls[cursor])
-            if kind in {"read", "browser", "path"}:
+            if kind in {"read", "browser"}:
                 phase_indices: List[int] = []
                 while cursor < len(parsed_calls) and _phase_kind(parsed_calls[cursor]) == kind:
                     phase_indices.append(cursor)
@@ -1289,29 +1296,6 @@ class ToolExecutor:
                         _emit_progress(idx)
                     mutation_completed = True
                     continue
-
-                path_queues: Dict[str, List[int]] = {}
-                for idx in phase_indices:
-                    path = _path_for(parsed_calls[idx])
-                    assert path is not None
-                    path_queues.setdefault(canonical_path_key(path), []).append(idx)
-
-                async def _run_path_queue(path_indices: List[int]) -> None:
-                    for pos, idx in enumerate(path_indices):
-                        t0 = _time.time()
-                        diff = (
-                            precomputed_diffs.get(idx)
-                            if not mutation_completed and pos == 0
-                            else None
-                        )
-                        results[idx] = await _run(parsed_calls[idx], diff=diff)
-                        _emit_progress(idx, elapsed=round(_time.time() - t0, 2))
-
-                await asyncio.gather(
-                    *(_run_path_queue(indices) for indices in path_queues.values())
-                )
-                mutation_completed = True
-                continue
 
             idx = cursor
             cursor += 1

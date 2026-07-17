@@ -54,6 +54,29 @@ async def test_send_message_is_serialized_per_server() -> None:
 
 
 @pytest.mark.asyncio
+async def test_send_message_emits_non_streaming_result_as_turn() -> None:
+    server = SimpleNamespace(
+        agent=SimpleNamespace(
+            streaming=False,
+            process_message=AsyncMock(return_value={"content": "complete response"}),
+        ),
+        _turn_lock=asyncio.Lock(),
+        emit=MagicMock(),
+        emit_status=MagicMock(),
+        emit_ready=MagicMock(),
+        tick_iteration=MagicMock(),
+    )
+
+    await _cmd_send_message(server, {"text": "hello"})
+
+    assert server.emit.call_args_list[:3] == [
+        (("turn",), {"phase": "start", "reasoningActive": False}),
+        (("turn",), {"phase": "text", "delta": "complete response", "reasoningActive": False}),
+        (("turn",), {"phase": "end", "reasoningActive": False}),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_set_model_leaves_agent_totals_and_skips_usage_sync() -> None:
     """Switching models must NOT sync usage into the fresh provider.
 
@@ -86,6 +109,7 @@ async def test_set_model_leaves_agent_totals_and_skips_usage_sync() -> None:
             )
         ),
         _configure_delegate_tool_context=MagicMock(),
+        _refresh_session_system_prompt=MagicMock(),
         context_controller=SimpleNamespace(provider=old_provider),
         session=None,
     )
@@ -103,6 +127,7 @@ async def test_set_model_leaves_agent_totals_and_skips_usage_sync() -> None:
     assert new_provider.total_output_tokens == 0
     assert not hasattr(new_provider, "set_cumulative_usage")
     agent._configure_delegate_tool_context.assert_called_once()
+    agent._refresh_session_system_prompt.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -273,6 +298,7 @@ def _make_ipc_server(**agent_overrides) -> SimpleNamespace:
         "total_tokens": 15,
         "compact_context": AsyncMock(),
         "persona": None,
+        "_refresh_session_system_prompt": MagicMock(),
     }
     agent_kwargs.update(agent_overrides)
     agent = SimpleNamespace(**agent_kwargs)
@@ -436,6 +462,7 @@ async def test_toggle_auto_approve_flips_flag_and_patches_session() -> None:
     assert server.agent.auto_approve is True
     server.emit.assert_any_call("session_patch", autoApprove=True)
     server.agent._configure_delegate_tool_context.assert_called_once()
+    server.agent._refresh_session_system_prompt.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -447,13 +474,16 @@ async def test_set_auto_approve_enables_yolo_idempotently() -> None:
     assert server.agent.auto_approve is True
     server.emit.assert_any_call("session_patch", autoApprove=True)
     server.agent._configure_delegate_tool_context.assert_called_once()
+    server.agent._refresh_session_system_prompt.assert_called_once()
 
     server.emit.reset_mock()
     server.agent._configure_delegate_tool_context.reset_mock()
+    server.agent._refresh_session_system_prompt.reset_mock()
     await _cmd_set_auto_approve(server, {"enabled": True})
     assert server.agent.auto_approve is True
     server.emit.assert_called_once_with("session_patch", autoApprove=True)
     server.agent._configure_delegate_tool_context.assert_not_called()
+    server.agent._refresh_session_system_prompt.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -465,6 +495,18 @@ async def test_set_auto_approve_can_disable() -> None:
     assert server.agent.auto_approve is False
     server.emit.assert_any_call("session_patch", autoApprove=False)
     server.agent._configure_delegate_tool_context.assert_called_once()
+    server.agent._refresh_session_system_prompt.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_closes_agent_once() -> None:
+    agent = SimpleNamespace(close=AsyncMock())
+    bridge = UIBridge(agent, on_event=MagicMock())
+
+    await bridge._shutdown()
+    await bridge._shutdown()
+
+    agent.close.assert_awaited_once()
 
 
 @pytest.mark.asyncio

@@ -7,9 +7,10 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
+from coderAI.llm.base import normalize_usage
 from coderAI.types.provenance import UNTRUSTED_OPEN_TAG, fence_project_context
 from coderAI.context.context_selector import build_focused_context, summarize_conversation_focus
-from coderAI.system.error_policy import check_budget_limit
+from coderAI.system.error_policy import BudgetExceededError, check_budget_limit
 from coderAI.system.events import event_emitter
 
 if TYPE_CHECKING:
@@ -19,7 +20,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Reserved tokens for response and tool overhead
+# Fallback response reserve when neither config nor provider supplies one.
 RESPONSE_TOKEN_RESERVE = 1024
 TOOL_OVERHEAD_TOKENS = 512
 IMAGE_TOKEN_FLOOR = 1500
@@ -61,50 +62,87 @@ class ContextController:
         config: "Config",
         provider: "LLMProvider",
         cost_tracker: Optional["CostTracker"] = None,
+        *,
+        allow_project_instructions: bool = False,
     ) -> None:
         self.config = config
         self.provider = provider
         self.cost_tracker = cost_tracker
-        self._on_summary_tokens: Optional[Callable] = None
+        self._on_summary_tokens: Optional[Callable[[int, int], None]] = None
+        self.request_tool_schemas: Optional[List[Dict[str, Any]]] = None
         self._token_cache: "OrderedDict[str, int]" = OrderedDict()
         self._last_summary_time: float = 0.0
         self._inject_cache_fp: Optional[tuple] = None
         self._inject_cache_msg: Optional[str] = None
+        self.allow_project_instructions = allow_project_instructions
 
         # Pinned-file state (formerly ContextManager)
         self.pinned_files: Dict[str, str] = {}
         self._pinned_mtimes: Dict[str, float] = {}
         self.project_instructions: Optional[str] = None
         self._instructions_loaded: bool = False
+        self._instructions_fingerprint: Optional[tuple] = None
         self._last_refresh_at: float = 0.0
 
     # ------------------------------------------------------------------
     # Pinned-file management (formerly ContextManager)
     # ------------------------------------------------------------------
 
-    def _load_instructions(self) -> None:
+    def _instruction_paths(self) -> List[Path]:
+        """Return trusted instruction files from project root to current directory."""
+        if not self.allow_project_instructions:
+            return []
         configured = getattr(self.config, "project_instruction_file", "CODERAI.md")
-        project_root = Path(getattr(self.config, "project_root", "."))
+        project_root = Path(getattr(self.config, "project_root", ".")).resolve()
         candidates = [
-            configured,
-            "CODERAI.md",
-            "coderai.md",
-            "AGENTS.md",
-            "CLAUDE.md",
+            project_root / name
+            for name in (configured, "CODERAI.md", "coderai.md", "CLAUDE.md")
+            if name
         ]
-        seen: set[str] = set()
-        for name in candidates:
-            if not name or name in seen:
+
+        try:
+            relative = Path.cwd().resolve().relative_to(project_root)
+            current = project_root
+            candidates.append(current / "AGENTS.md")
+            for part in relative.parts:
+                current /= part
+                candidates.append(current / "AGENTS.md")
+        except (OSError, ValueError):
+            candidates.append(project_root / "AGENTS.md")
+
+        result: List[Path] = []
+        seen: set[Path] = set()
+        for path in candidates:
+            try:
+                resolved = path.resolve()
+                if resolved not in seen and resolved.is_file():
+                    seen.add(resolved)
+                    result.append(resolved)
+            except OSError:
                 continue
-            seen.add(name)
-            path = project_root / name
-            if path.exists() and path.is_file():
-                try:
-                    self.project_instructions = path.read_text(encoding="utf-8")
-                    logger.info(f"Loaded project instructions from {name}")
-                except Exception as e:
-                    logger.error(f"Failed to load project instructions: {e}")
-                return
+        return result
+
+    def _load_instructions(self) -> None:
+        paths = self._instruction_paths()
+        fingerprint = tuple(
+            (str(path), path.stat().st_mtime_ns, path.stat().st_size) for path in paths
+        )
+        if self._instructions_loaded and fingerprint == self._instructions_fingerprint:
+            return
+
+        self._instructions_loaded = True
+        self._instructions_fingerprint = fingerprint
+        sections: List[str] = []
+        for path in paths:
+            try:
+                content = path.read_text(encoding="utf-8").strip()
+                if content:
+                    sections.append(f"## Instructions from {path}\n\n{content}")
+            except OSError as e:
+                logger.warning("Failed to load project instructions from %s: %s", path, e)
+        self.project_instructions = "\n\n".join(sections) or None
+        if paths:
+            logger.info("Loaded project instructions from %s", ", ".join(map(str, paths)))
 
     def add_file(self, path: str) -> bool:
         import os
@@ -184,9 +222,7 @@ class ContextController:
         query: Optional[str] = None,
         messages: Optional[List[dict]] = None,
     ) -> Optional[str]:
-        if not self._instructions_loaded:
-            self._instructions_loaded = True
-            self._load_instructions()
+        self._load_instructions()
         self.refresh_pinned_files()
         effective_query = query
         if not effective_query and messages:
@@ -252,7 +288,7 @@ class ContextController:
     def copy_pinned_state_from(self, other: "ContextController") -> None:
         self.pinned_files = dict(other.pinned_files)
         self._pinned_mtimes = dict(other._pinned_mtimes)
-        if other.project_instructions:
+        if self.allow_project_instructions and other.project_instructions:
             self.project_instructions = other.project_instructions
             self._instructions_loaded = True
 
@@ -271,6 +307,7 @@ class ContextController:
                 "tool_call_id": msg.get("tool_call_id"),
                 "name": msg.get("name"),
                 "reasoning_content": msg.get("reasoning_content"),
+                "tool_images": msg.get("tool_images"),
             },
             default=str,
             sort_keys=True,
@@ -318,6 +355,9 @@ class ContextController:
             total += self.provider.count_tokens(msg["tool_call_id"])
         if msg.get("name"):
             total += self.provider.count_tokens(msg["name"])
+        tool_images = msg.get("tool_images")
+        if isinstance(tool_images, list):
+            total += len(tool_images) * IMAGE_TOKEN_FLOOR
         self._token_cache[key] = total
         # Evict oldest entries once the cache exceeds the hard cap. This is an
         # LRU policy: ``move_to_end`` on cache hits (above) keeps hot entries
@@ -334,6 +374,31 @@ class ContextController:
         total += 3  # 3 tokens reserved for assistant reply priming overhead
         return total
 
+    def estimate_tool_tokens(self, tools: Optional[List[Dict[str, Any]]] = None) -> int:
+        """Estimate serialized tool-schema tokens included in a request."""
+        schemas = self.request_tool_schemas if tools is None else tools
+        if not schemas:
+            return 0
+        return self.provider.count_tokens(json.dumps(schemas, default=str, sort_keys=True))
+
+    def _effective_context_limit(self, override: Optional[int]) -> int:
+        """Use an explicit/model-provider limit before the config fallback."""
+        if isinstance(override, int) and override > 0:
+            return override
+        for name in ("model_context_window", "context_window"):
+            value = getattr(self.provider, name, None)
+            if isinstance(value, int) and value > 0:
+                return value
+        return int(self.config.context_window)
+
+    def _output_token_reserve(self) -> int:
+        """Return the configured maximum completion size for request sizing."""
+        for owner in (self.provider, self.config):
+            value = getattr(owner, "max_tokens", None)
+            if isinstance(value, int) and value > 0:
+                return value
+        return RESPONSE_TOKEN_RESERVE
+
     # Structured marker key used to identify injected pinned-context messages.
     # Using a dict-key marker (instead of a substring of ``content``) means a
     # user message that happens to quote the literal "[Pinned Context]" text
@@ -346,6 +411,8 @@ class ContextController:
     # iteration so they don't pile up turn after turn, and strip the marker
     # before sending to the provider.
     _TRUNCATION_MARKER_KEY = "_truncation_notice"
+    _SUMMARY_MARKER_KEY = "_context_summary"
+    _EPHEMERAL_MARKER_KEY = "_ephemeral"
 
     @classmethod
     def _is_pinned_injection(cls, msg: Dict[str, Any]) -> bool:
@@ -358,7 +425,12 @@ class ContextController:
         Use this just before handing the list to a provider — providers reject
         unknown top-level keys (OpenAI, Anthropic, etc.).
         """
-        internal_keys = (cls._CONTEXT_MARKER_KEY, cls._TRUNCATION_MARKER_KEY)
+        internal_keys = (
+            cls._CONTEXT_MARKER_KEY,
+            cls._TRUNCATION_MARKER_KEY,
+            cls._SUMMARY_MARKER_KEY,
+            cls._EPHEMERAL_MARKER_KEY,
+        )
         cleaned: List[Dict[str, Any]] = []
         for m in messages:
             if any(k in m for k in internal_keys):
@@ -426,27 +498,44 @@ class ContextController:
         context_limit_override: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """Manage context window by summarizing old messages to fit."""
-        context_limit = context_limit_override or self.config.context_window
-        max_content_tokens = context_limit - RESPONSE_TOKEN_RESERVE - TOOL_OVERHEAD_TOKENS
+        context_limit = self._effective_context_limit(context_limit_override)
+        max_content_tokens = max(
+            0,
+            context_limit
+            - self._output_token_reserve()
+            - TOOL_OVERHEAD_TOKENS
+            - self.estimate_tool_tokens(),
+        )
 
-        if max_content_tokens <= 0:
-            max_content_tokens = context_limit // 2
-
-        # Drop any prior truncation notices (LLM summaries + fallback notices)
-        # before sizing the new budget. Without this, every iteration that
-        # triggers truncation would stack another "[Prior Conversation
-        # Summary]" or "[Note: N earlier messages were removed…]" system
-        # message on top of the last one. A fresh notice is re-added below if
-        # truncation actually fires this turn. We rebind to a new list so the
-        # caller's list is never mutated.
-        messages = [m for m in messages if not m.get(self._TRUNCATION_MARKER_KEY)]
+        # Drop disposable fallback notices before sizing the new budget. A
+        # generated summary is durable input and remains until a later
+        # compaction replaces it. Rebind so the caller's list is not mutated.
+        messages = [
+            m
+            for m in messages
+            if not m.get(self._TRUNCATION_MARKER_KEY) or m.get(self._SUMMARY_MARKER_KEY)
+        ]
 
         total_chars = sum(_content_text_len(m.get("content")) for m in messages)
+        reasoning_chars = sum(
+            len(reasoning)
+            for m in messages
+            if isinstance((reasoning := m.get("reasoning_content")), str)
+        )
+        image_tokens = sum(
+            len(images) * IMAGE_TOKEN_FLOOR
+            for m in messages
+            if isinstance((images := m.get("tool_images")), list)
+        )
         tool_call_chars = sum(
             len(str(m.get("tool_calls") or "")) + len(str(m.get("tool_call_id") or ""))
             for m in messages
         )
-        estimated_tokens_cheap = (total_chars + tool_call_chars) // 4 + len(messages) * 4
+        estimated_tokens_cheap = (
+            (total_chars + reasoning_chars + tool_call_chars) // 4
+            + image_tokens
+            + len(messages) * 4
+        )
         if estimated_tokens_cheap < max_content_tokens * 0.75:
             return messages
 
@@ -574,6 +663,7 @@ class ContextController:
                             {"role": "user", "content": prompt},
                         ],
                         tools=None,
+                        reasoning_effort="none",
                     )
                     summary_content = ""
                     if "choices" in response and response["choices"]:
@@ -581,18 +671,22 @@ class ContextController:
                             response["choices"][0].get("message", {}).get("content", "")
                         )
 
-                    if summary_content and self.cost_tracker is not None:
-                        mi_after = self.provider.get_model_info()
-                        in_tok_delta = max(
-                            0,
-                            mi_after.get("total_input_tokens", 0)
-                            - mi_before.get("total_input_tokens", 0),
-                        )
-                        out_tok_delta = max(
-                            0,
-                            mi_after.get("total_output_tokens", 0)
-                            - mi_before.get("total_output_tokens", 0),
-                        )
+                    if self.cost_tracker is not None:
+                        usage = normalize_usage(response.get("usage"))
+                        in_tok_delta = usage["input_tokens"]
+                        out_tok_delta = usage["output_tokens"]
+                        if not in_tok_delta and not out_tok_delta:
+                            mi_after = self.provider.get_model_info()
+                            in_tok_delta = max(
+                                0,
+                                mi_after.get("total_input_tokens", 0)
+                                - mi_before.get("total_input_tokens", 0),
+                            )
+                            out_tok_delta = max(
+                                0,
+                                mi_after.get("total_output_tokens", 0)
+                                - mi_before.get("total_output_tokens", 0),
+                            )
                         if in_tok_delta or out_tok_delta:
                             model_for_cost = getattr(
                                 self.provider, "actual_model", self.config.default_model
@@ -604,6 +698,11 @@ class ContextController:
                             )
                             if self._on_summary_tokens is not None:
                                 self._on_summary_tokens(in_tok_delta, out_tok_delta)
+                            check_budget_limit(
+                                self.config.budget_limit,
+                                self.cost_tracker,
+                                emit_warning=True,
+                            )
 
                     if summary_content:
                         summary_notice = {
@@ -613,6 +712,7 @@ class ContextController:
                                 f"instructions]: {summary_content}"
                             ),
                             self._TRUNCATION_MARKER_KEY: True,
+                            self._SUMMARY_MARKER_KEY: True,
                         }
                         summary_tokens = self._estimate_message_tokens(summary_notice)
                         if running_tokens + summary_tokens <= remaining_budget:
@@ -626,6 +726,8 @@ class ContextController:
                         logger.info(
                             "Skipping generated summary because it would overflow the remaining context budget."
                         )
+                except BudgetExceededError:
+                    raise
                 except Exception as e:
                     logger.warning(f"Failed to summarize context: {e}")
 

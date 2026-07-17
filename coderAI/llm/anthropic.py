@@ -38,6 +38,9 @@ def _create_ssl_context() -> ssl.SSLContext:
 # Models that support prompt caching (cache_control on system/tools/messages).
 CACHING_SUPPORTED_MODELS = frozenset(
     {
+        "claude-fable-5",
+        "claude-opus-4-8",
+        "claude-sonnet-5",
         "claude-opus-4-7",
         "claude-sonnet-4-6",
         "claude-haiku-4-5-20251001",
@@ -51,14 +54,17 @@ CACHING_SUPPORTED_MODELS = frozenset(
 # Friendly-name → API model ID.
 # Update the right-hand side when the API retires a dated snapshot.
 MODEL_ALIASES = {
-    # Claude 4.X (current)
+    # Current Claude models
+    "claude-5-fable": "claude-fable-5",
+    "claude-5-sonnet": "claude-sonnet-5",
+    "claude-4.8-opus": "claude-opus-4-8",
     "claude-4.7-opus": "claude-opus-4-7",
     "claude-4.6-sonnet": "claude-sonnet-4-6",
     "claude-4.5-haiku": "claude-haiku-4-5-20251001",
     # Kept for back-compat with existing configs (default_model was
     # "claude-4-sonnet"). Point at the current 4.6 sonnet.
     "claude-4-sonnet": "claude-sonnet-4-6",
-    "claude-4-opus": "claude-opus-4-7",
+    "claude-4-opus": "claude-opus-4-8",
     "claude-4-haiku": "claude-haiku-4-5-20251001",
     # Legacy 3.X snapshots (retained so existing sessions still resolve).
     "claude-3.7-sonnet": "claude-3-7-sonnet-20250219",
@@ -66,16 +72,24 @@ MODEL_ALIASES = {
     "claude-3.5-haiku": "claude-3-5-haiku-20241022",
     "claude-3-opus": "claude-3-opus-20240229",
     # Short aliases: always resolve to the newest of each tier.
-    "opus": "claude-opus-4-7",
-    "sonnet": "claude-sonnet-4-6",
+    "fable": "claude-fable-5",
+    "opus": "claude-opus-4-8",
+    "sonnet": "claude-sonnet-5",
     "haiku": "claude-haiku-4-5-20251001",
 }
 
-# Models that support extended thinking with a token budget.
-_THINKING_SUPPORTED_MODELS = frozenset(
+# Models that support adaptive or manual extended thinking.
+_ADAPTIVE_THINKING_MODELS = frozenset(
     {
+        "claude-fable-5",
+        "claude-opus-4-8",
+        "claude-sonnet-5",
         "claude-opus-4-7",
         "claude-sonnet-4-6",
+    }
+)
+_MANUAL_THINKING_MODELS = frozenset(
+    {
         "claude-3-7-sonnet-20250219",
     }
 )
@@ -110,6 +124,14 @@ class AnthropicProvider(LLMProvider):
     # Anthropic replays the paused assistant tool_use blocks on the resumed
     # request, so the loop must keep them (see ExecutionLoop pause_turn path).
     preserves_tool_calls_on_pause = True
+    MODEL_CONTEXT_WINDOWS = {
+        "claude-fable-5": 1_000_000,
+        "claude-opus-4-8": 1_000_000,
+        "claude-sonnet-5": 1_000_000,
+        "claude-opus-4-7": 1_000_000,
+        "claude-sonnet-4-6": 1_000_000,
+        "claude-haiku-4-5-20251001": 200_000,
+    }
 
     def __init__(self, model: str, api_key: Optional[str] = None, **kwargs: Any):
         """Initialize Anthropic provider.
@@ -173,9 +195,22 @@ class AnthropicProvider(LLMProvider):
                 # Handle tool_calls — convert to Anthropic tool_use format
                 if msg.get("tool_calls"):
                     content_blocks = []
-                    if content:
+                    has_thinking = any(
+                        (tc.get("provider_state") or {}).get("provider") == "anthropic"
+                        and (tc.get("provider_state") or {}).get("thinking_blocks")
+                        for tc in msg["tool_calls"]
+                    )
+                    if content and not has_thinking:
                         content_blocks.append({"type": "text", "text": content})
                     for tc in msg["tool_calls"]:
+                        state = tc.get("provider_state") or {}
+                        if state.get("provider") == "anthropic":
+                            thinking_blocks = state.get("thinking_blocks")
+                            if isinstance(thinking_blocks, list):
+                                content_blocks.extend(dict(block) for block in thinking_blocks)
+                                if content:
+                                    content_blocks.append({"type": "text", "text": content})
+                                    content = ""
                         func = tc.get("function", {})
                         raw_args = func.get("arguments", "{}")
                         try:
@@ -218,14 +253,14 @@ class AnthropicProvider(LLMProvider):
                 tool_images = msg.get("tool_images")
                 result_content: Any = content
                 if tool_images:
-                    blocks: List[Dict[str, Any]] = []
+                    image_blocks: List[Dict[str, Any]] = []
                     if content:
-                        blocks.append({"type": "text", "text": content})
+                        image_blocks.append({"type": "text", "text": content})
                     for img in tool_images:
                         data = img.get("data")
                         mime = img.get("mime_type")
                         if data and mime:
-                            blocks.append(
+                            image_blocks.append(
                                 {
                                     "type": "image",
                                     "source": {
@@ -235,8 +270,8 @@ class AnthropicProvider(LLMProvider):
                                     },
                                 }
                             )
-                    if blocks:
-                        result_content = blocks
+                    if image_blocks:
+                        result_content = image_blocks
                 tool_result_block = {
                     "type": "tool_result",
                     "tool_use_id": msg.get("tool_call_id", ""),
@@ -299,21 +334,29 @@ class AnthropicProvider(LLMProvider):
         content_blocks = response.get("content", [])
         text_content = ""
         tool_calls = []
+        pending_thinking = []
 
         for block in content_blocks:
-            if block.get("type") == "text":
+            if block.get("type") in {"thinking", "redacted_thinking"}:
+                pending_thinking.append(dict(block))
+            elif block.get("type") == "text":
                 text_content += block.get("text", "")
             elif block.get("type") == "tool_use":
-                tool_calls.append(
-                    {
-                        "id": block.get("id", ""),
-                        "type": "function",
-                        "function": {
-                            "name": block.get("name", ""),
-                            "arguments": json.dumps(block.get("input", {})),
-                        },
+                tool_call = {
+                    "id": block.get("id", ""),
+                    "type": "function",
+                    "function": {
+                        "name": block.get("name", ""),
+                        "arguments": json.dumps(block.get("input", {})),
+                    },
+                }
+                if pending_thinking:
+                    tool_call["provider_state"] = {
+                        "provider": "anthropic",
+                        "thinking_blocks": pending_thinking,
                     }
-                )
+                    pending_thinking = []
+                tool_calls.append(tool_call)
 
         message: Dict[str, Any] = {"content": text_content or None, "role": "assistant"}
         if tool_calls:
@@ -410,16 +453,20 @@ class AnthropicProvider(LLMProvider):
         if stream:
             payload["stream"] = True
 
-        if self._supports_thinking() and self.reasoning_effort and self.reasoning_effort != "none":
-            # Per Anthropic's extended-thinking API:
-            # {"type": "enabled", "budget_tokens": N} where N < max_tokens.
-            budget = REASONING_BUDGET_MAP.get(self.reasoning_effort, 8192)
-            request_max = max_tokens if max_tokens is not None else self.max_tokens
-            if budget >= request_max:
-                budget = max(1024, request_max - 1024)
+        effort = kwargs.get("reasoning_effort", self.reasoning_effort)
+        if self._supports_thinking() and effort and effort != "none":
+            if self.actual_model in _ADAPTIVE_THINKING_MODELS:
+                payload["thinking"] = {"type": "adaptive"}
+                payload["output_config"] = {"effort": effort}
+            else:
+                # Manual thinking requires a budget smaller than max_tokens.
+                budget = REASONING_BUDGET_MAP.get(effort, 8192)
+                request_max = max_tokens if max_tokens is not None else self.max_tokens
                 if budget >= request_max:
-                    budget = request_max - 1
-            payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
+                    budget = max(1024, request_max - 1024)
+                    if budget >= request_max:
+                        budget = request_max - 1
+                payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
 
         if self._supports_caching():
             sys_p, msg_p, tool_p = self._apply_cache_control(
@@ -473,7 +520,7 @@ class AnthropicProvider(LLMProvider):
         **kwargs: Any,
     ) -> Dict[str, Any]:
         """Send a chat request to Anthropic."""
-        payload = self._build_payload(messages, tools, max_tokens=kwargs.get("max_tokens"))
+        payload = self._build_payload(messages, tools, **kwargs)
         response = await self._post_to_anthropic(payload)
         async with response:
             if response.status != 200:
@@ -496,9 +543,7 @@ class AnthropicProvider(LLMProvider):
         **kwargs: Any,
     ) -> AsyncIterator[Dict[str, Any]]:
         """Stream response from Anthropic (SSE-based)."""
-        payload = self._build_payload(
-            messages, tools, max_tokens=kwargs.get("max_tokens"), stream=True
-        )
+        payload = self._build_payload(messages, tools, stream=True, **kwargs)
         response = await self._post_to_anthropic(payload)
         async with response:
             if response.status != 200:
@@ -517,6 +562,8 @@ class AnthropicProvider(LLMProvider):
             call_cache_read = 0
             # State for reconstructing tool calls from streaming events
             tool_call_blocks: Dict[int, Dict[str, Any]] = {}  # index -> {id, name, arguments}
+            thinking_blocks: Dict[int, Dict[str, Any]] = {}
+            pending_thinking: List[Dict[str, Any]] = []
             async for raw_chunk in response.content:
                 buffer += raw_chunk.decode("utf-8")
                 while "\n" in buffer:
@@ -554,11 +601,15 @@ class AnthropicProvider(LLMProvider):
                         elif current_event == "content_block_start":
                             block = parsed.get("content_block", {})
                             index = parsed.get("index", 0)
-                            if block.get("type") == "tool_use":
+                            if block.get("type") in {"thinking", "redacted_thinking"}:
+                                thinking_blocks[index] = dict(block)
+                            elif block.get("type") == "tool_use":
+                                tool_index = len(tool_call_blocks)
                                 tool_call_blocks[index] = {
                                     "id": block.get("id", ""),
                                     "name": block.get("name", ""),
                                     "arguments": "",
+                                    "tool_index": tool_index,
                                 }
                                 # Emit the tool call start in OpenAI format
                                 yield {
@@ -567,13 +618,23 @@ class AnthropicProvider(LLMProvider):
                                             "delta": {
                                                 "tool_calls": [
                                                     {
-                                                        "index": index,
+                                                        "index": tool_index,
                                                         "id": block.get("id", ""),
                                                         "type": "function",
                                                         "function": {
                                                             "name": block.get("name", ""),
                                                             "arguments": "",
                                                         },
+                                                        **(
+                                                            {
+                                                                "provider_state": {
+                                                                    "provider": "anthropic",
+                                                                    "thinking_blocks": pending_thinking,
+                                                                }
+                                                            }
+                                                            if pending_thinking
+                                                            else {}
+                                                        ),
                                                     }
                                                 ]
                                             },
@@ -581,6 +642,7 @@ class AnthropicProvider(LLMProvider):
                                         }
                                     ]
                                 }
+                                pending_thinking = []
                         elif current_event == "content_block_delta":
                             delta = parsed.get("delta", {})
                             index = parsed.get("index", 0)
@@ -594,6 +656,11 @@ class AnthropicProvider(LLMProvider):
                                     ]
                                 }
                             elif delta.get("type") == "thinking_delta":
+                                block = thinking_blocks.get(index)
+                                if block is not None:
+                                    block["thinking"] = block.get("thinking", "") + delta.get(
+                                        "thinking", ""
+                                    )
                                 yield {
                                     "choices": [
                                         {
@@ -604,6 +671,12 @@ class AnthropicProvider(LLMProvider):
                                         }
                                     ]
                                 }
+                            elif delta.get("type") == "signature_delta":
+                                block = thinking_blocks.get(index)
+                                if block is not None:
+                                    block["signature"] = block.get("signature", "") + delta.get(
+                                        "signature", ""
+                                    )
                             elif delta.get("type") == "input_json_delta":
                                 partial_json = delta.get("partial_json", "")
                                 if index in tool_call_blocks:
@@ -616,7 +689,7 @@ class AnthropicProvider(LLMProvider):
                                             "delta": {
                                                 "tool_calls": [
                                                     {
-                                                        "index": index,
+                                                        "index": block_info.get("tool_index", 0),
                                                         "id": block_info.get("id", ""),
                                                         "type": "function",
                                                         "function": {
@@ -630,6 +703,11 @@ class AnthropicProvider(LLMProvider):
                                         }
                                     ]
                                 }
+                        elif current_event == "content_block_stop":
+                            index = parsed.get("index", 0)
+                            block = thinking_blocks.pop(index, None)
+                            if block is not None:
+                                pending_thinking.append(block)
                         elif current_event == "message_stop":
                             saw_message_stop = True
                             # Use 'tool_calls' if any tool_use blocks were seen,
@@ -665,7 +743,7 @@ class AnthropicProvider(LLMProvider):
                 )
 
     def _supports_thinking(self) -> bool:
-        return self.actual_model in _THINKING_SUPPORTED_MODELS
+        return self.actual_model in _ADAPTIVE_THINKING_MODELS | _MANUAL_THINKING_MODELS
 
     def count_tokens(self, text: str) -> int:
         """Approximate token count for Claude models.
@@ -717,7 +795,7 @@ class AnthropicProvider(LLMProvider):
         }
 
     def clean_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Anthropic supports passing reasoning_content back in the assistant role."""
+        """Keep Anthropic's opaque tool-call state for message conversion."""
         return messages
 
     def get_model_info(self) -> Dict[str, Any]:

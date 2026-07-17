@@ -89,7 +89,11 @@ class Agent(AgentCapabilitiesMixin, AgentSessionMixin):
 
         # Initialize context controller
         # (via private attribute to support lazy property)
-        self._context_controller = ContextController(config=self.config, provider=self.provider)
+        self._context_controller = ContextController(
+            config=self.config,
+            provider=self.provider,
+            allow_project_instructions=self._workspace_trusted,
+        )
 
         # Per-session file-read dedup cache (created before tool registry
         # build so the read_file tool picks it up via _wire_read_cache below).
@@ -133,6 +137,7 @@ class Agent(AgentCapabilitiesMixin, AgentSessionMixin):
         # GC'd and can be drained on ``close()``. Created lazily on first save.
         self._save_executor: Optional[ThreadPoolExecutor] = None
         self._pending_saves: Set["Future[Any]"] = set()
+        self._closed = False
 
         # Cumulative token usage tracking (#13). The Agent is the source of
         # truth for session totals; each turn adds the LLM response's per-call
@@ -169,6 +174,7 @@ class Agent(AgentCapabilitiesMixin, AgentSessionMixin):
 
         # Skill auto-detection manager
         self.init_skills(self.config.project_root)
+        self._active_skill_context: list[str] = []
 
         # Memoization for _get_system_prompt() — only rebuild when rules,
         # tools, or persona change.
@@ -230,6 +236,9 @@ class Agent(AgentCapabilitiesMixin, AgentSessionMixin):
         """
         from coderAI.core.agent_loop import ExecutionLoop
 
+        self._refresh_session_system_prompt()
+        self._active_skill_context = []
+
         # Capture a rewind point *before* skill injection / the user message
         # are appended, so the stored index is the clean pre-turn boundary.
         self._record_checkpoint(user_message)
@@ -256,11 +265,13 @@ class Agent(AgentCapabilitiesMixin, AgentSessionMixin):
 
     async def close(self) -> None:
         """Clean up resources (HTTP sessions, background processes, etc.)."""
+        if self._closed:
+            return
+        self._closed = True
+        self.save_session()
         await super().close()
         if hasattr(self, "streaming_handler") and self.streaming_handler is not None:
             if hasattr(self.streaming_handler, "close"):
                 await self.streaming_handler.close()
         if hasattr(self.provider, "close"):
             await self.provider.close()
-        if self.tracker_info:
-            self._finish_tracker()

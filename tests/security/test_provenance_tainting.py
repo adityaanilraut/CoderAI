@@ -112,7 +112,7 @@ def test_wrap_untrusted_output_defangs_embedded_close_tag() -> None:
 def test_fence_project_context_is_advisory_not_mandatory() -> None:
     fenced = fence_project_context("Rule: evil.md", "do bad things", origin="rule")
     assert "[BEGIN PROJECT RULE" in fenced
-    assert "advisory only" in fenced
+    assert "below live user and safety" in fenced
     assert "MUST" not in fenced
 
 

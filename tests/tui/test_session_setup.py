@@ -6,10 +6,7 @@ from unittest.mock import MagicMock, patch
 from coderAI.core.agent import Agent
 from coderAI.core.agent_tracker import AgentStatus
 from coderAI.system.config import Config
-from coderAI.tui.session_setup import (
-    _activate_resumed_session_model,
-    create_agent_session,
-)
+from coderAI.tui.session_setup import create_agent_session
 
 
 def _provider():
@@ -27,17 +24,6 @@ def _agent_env():
         cm.load_project_config.return_value = cfg
         with patch.object(Agent, "_create_provider", return_value=_provider()):
             yield
-
-
-# ── _activate_resumed_session_model early return ────────────────────────
-
-
-def test_activate_resumed_session_model_no_session():
-    agent = MagicMock()
-    agent.session = None
-    _activate_resumed_session_model(agent, None)
-    # Early return: no provider rebuild attempted.
-    agent._create_provider.assert_not_called()
 
 
 # ── create_agent_session ────────────────────────────────────────────────

@@ -372,7 +372,11 @@ def run(
 
     response = str(result.get("content", "") or "")
     blocked = bool(blocked_tools)
-    success = not blocked
+    stop_reason = result.get("stop_reason")
+    result_success = (
+        bool(result["success"]) if "success" in result else stop_reason in (None, "stop")
+    )
+    success = result_success and not blocked
     payload = {
         "response": response,
         "success": success,

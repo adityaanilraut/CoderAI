@@ -2,7 +2,7 @@
 
 import json
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from click.testing import CliRunner
@@ -254,6 +254,22 @@ def test_run_yolo_allows_mutation(runner):
     assert result.exit_code == 0
     assert agent.confirmation_override is None
     assert "deleted" in result.output
+
+
+@pytest.mark.parametrize(
+    "loop_result",
+    [
+        {"content": "failed", "success": False, "stop_reason": "error"},
+        {"content": "cancelled", "stop_reason": "cancelled"},
+    ],
+)
+def test_run_uses_loop_result_for_exit_status(runner, loop_result):
+    agent = FakeAgent()
+    agent.process_message = AsyncMock(return_value=loop_result)
+
+    result = _invoke(runner, ["hi"], agent)
+
+    assert result.exit_code == 1
 
 
 # ── runtime errors ──────────────────────────────────────────────────────

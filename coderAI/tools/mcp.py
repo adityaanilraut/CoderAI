@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import signal
 import shutil
 from contextlib import suppress
 from pathlib import Path
@@ -17,6 +18,7 @@ from coderAI.types.provenance import Provenance
 from coderAI.types.tool_error_codes import ToolErrorCode
 from coderAI.core.tool_routing import build_mcp_function_name
 from coderAI.system.fsperms import atomic_write_json
+from coderAI.system.proc import kill_process_group, new_session_kwargs, scrub_env
 from coderAI.system.sandbox import prepare_sandbox_launch
 from coderAI.tools.base import Tool
 
@@ -326,7 +328,7 @@ def bundled_mcp_servers() -> Dict[str, Dict[str, Any]]:
         BUNDLED_GIT_EXTENDED_SERVER: {
             "transport": "stdio",
             "command": sys.executable,
-            "args": ["-m", "coderAI.mcp_servers.git_extended"],
+            "args": ["-I", "-m", "coderAI.mcp_servers.git_extended"],
             "bundled": True,
         }
     }
@@ -751,6 +753,9 @@ class MCPClient:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                cwd=Path.cwd(),
+                env=scrub_env(),
+                **new_session_kwargs(),
             )
             assert process.stdin is not None
             assert process.stdout is not None
@@ -1211,13 +1216,13 @@ class MCPClient:
             if process is not None and process.returncode is None:
                 try:
                     if force:
-                        process.kill()
+                        kill_process_group(process)
                     else:
-                        process.terminate()
+                        kill_process_group(process, signal.SIGTERM)
                     await asyncio.wait_for(process.wait(), timeout=5)
                 except asyncio.TimeoutError:
                     try:
-                        process.kill()
+                        kill_process_group(process)
                         await process.wait()
                     except Exception as exc:
                         errors.append(f"failed to kill stdio process: {exc}")
@@ -1795,7 +1800,7 @@ def _cleanup_mcp_servers():
             continue
         try:
             if proc.returncode is None:
-                proc.kill()
+                kill_process_group(proc)
         except Exception:
             logger.debug("Failed to kill MCP server process during atexit cleanup", exc_info=True)
     mcp_client.servers.clear()

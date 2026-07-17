@@ -114,7 +114,9 @@ async def test_mcp_autoconnect(monkeypatch, tmp_path):
     # Verify configured servers and the bundled git server were connected.
     mock_mcp_client.connect_stdio.assert_any_await("mock_stdio", "npx", ["mock-server-args"])
     mock_mcp_client.connect_stdio.assert_any_await(
-        "git_extended", sys.executable, ["-m", "coderAI.mcp_servers.git_extended"]
+        "git_extended",
+        sys.executable,
+        ["-I", "-m", "coderAI.mcp_servers.git_extended"],
     )
     assert mock_mcp_client.connect_stdio.await_count == 2
     mock_mcp_client.connect_sse.assert_called_once_with("mock_sse", "http://localhost:8080/sse")
@@ -147,6 +149,8 @@ async def test_mcp_autoconnect_skips_disabled(monkeypatch, tmp_path):
 
     mock_mcp_client.connect_stdio.assert_any_await("enabled_srv", "npx", ["a"])
     mock_mcp_client.connect_stdio.assert_any_await(
-        "git_extended", sys.executable, ["-m", "coderAI.mcp_servers.git_extended"]
+        "git_extended",
+        sys.executable,
+        ["-I", "-m", "coderAI.mcp_servers.git_extended"],
     )
     assert mock_mcp_client.connect_stdio.await_count == 2

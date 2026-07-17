@@ -95,7 +95,7 @@ def create_provider(model: str, config: Any) -> Any:
         model_lower.startswith("claude")
         or model_lower.startswith("anthropic/")
         or model_lower in ANTHROPIC_MODEL_ALIASES
-        or model_lower in ("sonnet", "opus", "haiku")
+        or model_lower in ("fable", "sonnet", "opus", "haiku")
     ):
         actual_model = (
             model.split("anthropic/", 1)[1] if model_lower.startswith("anthropic/") else model
@@ -170,8 +170,8 @@ def create_provider(model: str, config: Any) -> Any:
 
     raise ValueError(
         f"Unknown model: {model!r}. "
-        "Use one of the listed aliases (sonnet/opus/haiku), a full provider "
-        "model ID (e.g. claude-opus-4-7, gpt-5.4, deepseek-v3), or a prefixed "
+        "Use one of the listed aliases (fable/sonnet/opus/haiku), a full provider "
+        "model ID (e.g. claude-fable-5, gpt-5.6, deepseek-v4-pro), or a prefixed "
         "form like groq/<name>, deepseek/<name>, openai/<name>, meta/<name>. "
         "Run `coderAI models` to see the full list."
     )

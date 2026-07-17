@@ -85,6 +85,12 @@ class TestReasoningEffort:
         assert mock_create.await_args.kwargs["reasoning_effort"] == "high"
 
     @pytest.mark.asyncio
+    async def test_per_call_reasoning_override_wins(self):
+        provider, mock_create = self._chat_kwargs(reasoning_effort="high")
+        await provider.chat([{"role": "user", "content": "hi"}], reasoning_effort="none")
+        assert "reasoning_effort" not in mock_create.await_args.kwargs
+
+    @pytest.mark.asyncio
     async def test_chat_sends_correct_model(self):
         provider, mock_create = self._chat_kwargs(reasoning_effort="medium")
         await provider.chat([{"role": "user", "content": "hi"}])

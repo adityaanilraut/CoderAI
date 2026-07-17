@@ -16,7 +16,7 @@ from coderAI.system.fsperms import OWNER_RWX, atomic_write_json, restrict_path
 
 logger = logging.getLogger(__name__)
 
-SESSION_SCHEMA_VERSION = 3
+SESSION_SCHEMA_VERSION = 4
 
 
 def _atomic_write_json(target: Path, obj: Any) -> None:
@@ -107,12 +107,24 @@ class Session(BaseModel):
     model: str = Field(default_factory=_default_session_model)
     metadata: Dict[str, Any] = Field(default_factory=dict)
     checkpoints: List[Checkpoint] = Field(default_factory=list)
+    # Compact provider-facing view. ``messages`` remains the complete transcript
+    # used by the UI and rewind; new transcript entries are appended on read.
+    context_messages: Optional[List[Dict[str, Any]]] = None
+    context_message_count: int = Field(default=0, ge=0)
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
     cache_creation_tokens: int = 0
     cache_read_tokens: int = 0
     total_cost_usd: float = 0.0
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        # Replacing the transcript (manual compaction/rewind) invalidates any
+        # compact view derived from the previous list. Appending does not.
+        if name == "messages" and "messages" in self.__dict__:
+            super().__setattr__("context_messages", None)
+            super().__setattr__("context_message_count", 0)
+        super().__setattr__(name, value)
 
     def add_message(self, role: str, content: str, **kwargs: Any) -> None:
         """Add a message to the session."""
@@ -147,23 +159,46 @@ class Session(BaseModel):
         self.updated_at = time.time()
         return target
 
+    def set_context_messages(self, messages: List[Dict[str, Any]]) -> None:
+        """Persist a compact API view without changing the full transcript."""
+        self.context_messages = [
+            dict(message) for message in messages if not message.get("_ephemeral")
+        ]
+        self.context_message_count = len(self.messages)
+
+    def clear_context_messages(self) -> None:
+        """Discard a compact API view derived from the transcript."""
+        self.context_messages = None
+        self.context_message_count = 0
+
+    @staticmethod
+    def _message_for_api(msg: Message) -> Dict[str, Any]:
+        msg_dict: Dict[str, Any] = {"role": msg.role, "content": msg.content}
+        if msg.tool_calls:
+            msg_dict["tool_calls"] = msg.tool_calls
+        if msg.tool_call_id:
+            msg_dict["tool_call_id"] = msg.tool_call_id
+        if msg.name:
+            msg_dict["name"] = msg.name
+        if msg.reasoning_content:
+            msg_dict["reasoning_content"] = msg.reasoning_content
+        if msg.tool_images:
+            msg_dict["tool_images"] = msg.tool_images
+        return msg_dict
+
     def get_messages_for_api(self) -> List[Dict[str, Any]]:
         """Get messages in OpenAI API format."""
-        api_messages = []
-        for msg in self.messages:
-            msg_dict: Dict[str, Any] = {"role": msg.role, "content": msg.content}
-            if msg.tool_calls:
-                msg_dict["tool_calls"] = msg.tool_calls
-            if msg.tool_call_id:
-                msg_dict["tool_call_id"] = msg.tool_call_id
-            if msg.name:
-                msg_dict["name"] = msg.name
-            if msg.reasoning_content:
-                msg_dict["reasoning_content"] = msg.reasoning_content
-            if msg.tool_images:
-                msg_dict["tool_images"] = msg.tool_images
-            api_messages.append(msg_dict)
-        return api_messages
+        if self.context_messages is not None:
+            if 0 < self.context_message_count <= len(self.messages):
+                return [
+                    *[dict(message) for message in self.context_messages],
+                    *[
+                        self._message_for_api(message)
+                        for message in self.messages[self.context_message_count :]
+                    ],
+                ]
+            self.clear_context_messages()
+        return [self._message_for_api(message) for message in self.messages]
 
 
 # Valid session ID pattern: session_<timestamp>_<hex8>

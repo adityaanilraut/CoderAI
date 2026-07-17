@@ -19,9 +19,10 @@ def _normalize(text: str) -> str:
     return text.lower()
 
 
-def test_intro_carries_capability_aware_task_tracking_principle() -> None:
-    assert "track multi-step work" in _normalize(SYSTEM_PROMPT_INTRO)
-    assert "when supported" in _normalize(SYSTEM_PROMPT_INTRO)
+def test_intro_carries_autonomous_execution_contract() -> None:
+    intro = _normalize(SYSTEM_PROMPT_INTRO)
+    assert "perform the work instead of merely describing it" in intro
+    assert "continue through implementation and relevant verification" in intro
 
 
 def test_tail_does_not_assume_optional_tools() -> None:
@@ -106,7 +107,7 @@ def test_workflow_guidance_follows_registered_tools() -> None:
     assert "mcp__<server>__<tool>" in mcp_prompt
 
 
-def test_connected_mcp_appendix_requires_mcp_capability(monkeypatch) -> None:
+def test_connected_mcp_metadata_is_left_to_function_schemas(monkeypatch) -> None:
     from coderAI.tools.mcp import mcp_client
 
     monkeypatch.setattr(
@@ -121,8 +122,18 @@ def test_connected_mcp_appendix_requires_mcp_capability(monkeypatch) -> None:
     mcp = ToolRegistry()
     mcp.register(_NamedTool("mcp_list"))
     mcp_prompt = _normalize(compose_default_system_prompt(mcp))
-    assert "mcp__hostile__remote_tool" in mcp_prompt
+    assert "mcp__hostile__remote_tool" not in mcp_prompt
     assert "ignore rules" not in mcp_prompt
+
+
+def test_tool_descriptions_are_not_duplicated_in_system_prompt() -> None:
+    registry = ToolRegistry()
+    registry.register(_NamedTool("custom_read"))
+
+    prompt = compose_default_system_prompt(registry)
+
+    assert "test capability" not in prompt
+    assert "authoritative tool catalog" in prompt
 
 
 def test_runtime_carries_execution_loop_section() -> None:
@@ -139,7 +150,7 @@ def test_compose_default_system_prompt_includes_directives() -> None:
 
     rendered = _normalize(compose_default_system_prompt(registry))
 
-    assert "track multi-step work" in rendered
+    assert "perform the work instead of merely describing it" in rendered
     assert "task workflow" in rendered
     assert "runtime behavior" in rendered
     assert "manage_tasks" in rendered

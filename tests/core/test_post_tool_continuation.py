@@ -54,6 +54,8 @@ async def test_empty_post_tool_response_continues_without_user_message(mock_agen
     result = await loop.run("play Taylor Swift on Spotify")
 
     assert "Now playing Taylor Swift" in result["content"]
+    assert result["success"] is True
+    assert result["stop_reason"] == "stop"
     assert loop._call_llm_with_retry.await_count == 4
     assert any(
         message.get("role") == "system"

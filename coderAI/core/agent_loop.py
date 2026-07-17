@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import time as _time
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, cast, Dict, List, Optional, Set
 
 from coderAI.core.agent_tracker import AgentStatus
 from coderAI.llm.base import normalize_usage
@@ -52,6 +52,7 @@ RECOVERABLE_ERROR_MARKER = "[Recoverable Error]:"
 # consuming an iteration (pause_turn).
 _PROCEED_TO_TOOLS = object()
 _RESTART_ITERATION = object()
+_CANCELLED_REQUEST = object()
 
 
 class ExecutionLoop:
@@ -108,7 +109,13 @@ class ExecutionLoop:
 
         if parts:
             combined = "<system-reminder>\n" + "\n\n".join(parts) + "\n</system-reminder>"
-            result.append({"role": "system", "content": combined})
+            result.append(
+                {
+                    "role": "system",
+                    "content": combined,
+                    self.agent.context_controller._EPHEMERAL_MARKER_KEY: True,
+                }
+            )
         return result
 
     def _refresh_messages_from_session(self, messages: List[Dict[str, Any]]) -> None:
@@ -125,11 +132,6 @@ class ExecutionLoop:
         self._length_retry_used = False
         self._hard_cap_warned = False
 
-        # Auto-connect MCP servers on first run
-        if not self.agent._mcp_initialized:
-            self.agent._mcp_initialized = True
-            await self._autoconnect_mcp_servers()
-
         # 1. Prepare session and check budget
         budget_block = self._prepare_session(user_message)
         if budget_block:
@@ -142,6 +144,13 @@ class ExecutionLoop:
         # 1b. First-run workspace-trust gate — decide trust before any hook or
         # project-config surface is honoured this turn.
         await self._ensure_workspace_trust()
+
+        # Auto-connect MCP servers only after the workspace trust decision. A
+        # bundled or user-configured launcher must never run before an untrusted
+        # checkout has been assessed.
+        if not self.agent._mcp_initialized:
+            self.agent._mcp_initialized = True
+            await self._autoconnect_mcp_servers()
 
         # 2. Run on_user_prompt and chat.message hooks
         hooks_data = self.hooks_manager.load_hooks()
@@ -713,7 +722,6 @@ class ExecutionLoop:
         state.messages = self.agent.context_controller.inject_context(
             state.messages, query=state.user_message
         )
-        state.messages = await self.agent.context_controller.manage_context_window(state.messages)
         return None
 
     def _maybe_start_mcp_health_check(self) -> None:
@@ -822,17 +830,28 @@ class ExecutionLoop:
                 "content": f"Blocked: {msg}",
                 "messages": self.agent.session.messages if self.agent.session else [],
                 "model_info": self.agent.provider.get_model_info(),
+                "success": False,
+                "stop_reason": "budget",
+                "error": msg,
             }
         return None
 
     async def _prepare_messages(self, user_message: str) -> List[Dict[str, Any]]:
-        """Retrieve messages from session, inject context, and manage window."""
+        """Retrieve messages from session and inject pinned context."""
         session = self.agent.session
         if session:
             self._repair_unpaired_tool_calls()
         messages = self.agent.session.get_messages_for_api()
+        for content in getattr(self.agent, "_active_skill_context", []):
+            messages.append(
+                {
+                    "role": "system",
+                    "content": content,
+                    self.agent.context_controller._EPHEMERAL_MARKER_KEY: True,
+                }
+            )
         messages = self.agent.context_controller.inject_context(messages, query=user_message)
-        return await self.agent.context_controller.manage_context_window(messages)  # type: ignore[no-any-return]
+        return messages  # type: ignore[no-any-return]
 
     def _repair_unpaired_tool_calls(self) -> None:
         """Ensure assistant tool calls are followed by matching tool results.
@@ -961,7 +980,6 @@ class ExecutionLoop:
 
         messages = self.agent.session.get_messages_for_api()
         messages = self.agent.context_controller.inject_context(messages, query=user_message)
-        messages = await self.agent.context_controller.manage_context_window(messages)
         messages.append({"role": "user", "content": closing_prompt})
         get_services().events.emit(
             "agent_status",
@@ -1028,10 +1046,14 @@ class ExecutionLoop:
                 content = tail if tail is not None else fallback
 
         session = self.agent.session
+        success = not error and stop_reason in {"stop", "refusal"}
         return {
             "content": content,
             "messages": session.messages if session else [],
             "model_info": self.agent.provider.get_model_info(),
+            "success": success,
+            "stop_reason": stop_reason,
+            "error": None if success else stop_reason,
         }
 
     async def _handle_cancellation(self) -> Dict[str, Any]:
@@ -1087,7 +1109,7 @@ class ExecutionLoop:
         else:
             messages = [{"role": "system", "content": feedback}]
         messages = self.agent.context_controller.inject_context(messages, query=user_message)
-        return await self.agent.context_controller.manage_context_window(messages)  # type: ignore[no-any-return]
+        return messages  # type: ignore[no-any-return]
 
     async def _handle_budget_exceeded(self, e: BudgetExceededError) -> Dict[str, Any]:
         """Stop the loop cleanly when the budget has been exhausted."""
@@ -1115,14 +1137,35 @@ class ExecutionLoop:
         tool_schemas: Optional[List[Dict[str, Any]]],
     ) -> Dict[str, Any]:
         """Call the LLM with retry logic for transient errors."""
+        controller = self.agent.context_controller
+        controller.request_tool_schemas = tool_schemas
+        manage_context = getattr(controller, "manage_context_window", None)
+        if manage_context is not None:
+            messages = await manage_context(messages)
+            session = getattr(self.agent, "session", None)
+            has_summary = any(message.get(controller._SUMMARY_MARKER_KEY) for message in messages)
+            if session is not None:
+                if has_summary:
+                    session.set_context_messages(messages)
+                elif session.context_messages is not None:
+                    session.clear_context_messages()
         provider_messages = self.agent.context_controller.strip_internal_markers(messages)
         provider_messages = self.agent.provider.clean_messages(provider_messages)
         for attempt in range(1, MAX_RETRIES_PER_ITERATION + 1):
             try:
                 if self.agent.streaming:
-                    result = await self._stream_response(provider_messages, tool_schemas)
+                    raw_result = await self._await_llm_request(
+                        self._stream_response(provider_messages, tool_schemas)
+                    )
+                    if raw_result is _CANCELLED_REQUEST:
+                        return {"content": None, "tool_calls": None, "finish_reason": "cancelled"}
+                    result = cast(Dict[str, Any], raw_result)
                 else:
-                    raw = await self.agent.provider.chat(provider_messages, tools=tool_schemas)
+                    raw = await self._await_llm_request(
+                        self.agent.provider.chat(provider_messages, tools=tool_schemas)
+                    )
+                    if raw is _CANCELLED_REQUEST:
+                        return {"content": None, "tool_calls": None, "finish_reason": "cancelled"}
                     result = self._extract_response_data(raw)
 
                 # Attribute this call's usage/cost from the response's per-call
@@ -1163,9 +1206,38 @@ class ExecutionLoop:
                     "agent_warning",
                     message=f"Transient error, retrying in {delay:.1f}s… ({attempt}/{MAX_RETRIES_PER_ITERATION})",
                 )
-                await asyncio.sleep(delay)
+                tracker_info = getattr(self.agent, "tracker_info", None)
+                cancel_event = tracker_info._cancel_event if tracker_info else None
+                if cancel_event is None:
+                    await asyncio.sleep(delay)
+                else:
+                    try:
+                        await asyncio.wait_for(cancel_event.wait(), timeout=delay)
+                        return {"content": None, "tool_calls": None, "finish_reason": "cancelled"}
+                    except asyncio.TimeoutError:
+                        pass
 
         raise RuntimeError("_call_llm_with_retry exhausted without returning or raising")
+
+    async def _await_llm_request(self, awaitable: Any) -> Any:
+        """Race one provider request against the active turn's cancellation event."""
+        tracker_info = getattr(self.agent, "tracker_info", None)
+        cancel_event = tracker_info._cancel_event if tracker_info else None
+        if cancel_event is None:
+            return await awaitable
+
+        request_task = asyncio.ensure_future(awaitable)
+        cancel_task = asyncio.create_task(cancel_event.wait())
+        done, _ = await asyncio.wait(
+            {request_task, cancel_task}, return_when=asyncio.FIRST_COMPLETED
+        )
+        if cancel_task in done:
+            request_task.cancel()
+            await asyncio.gather(request_task, return_exceptions=True)
+            return _CANCELLED_REQUEST
+        cancel_task.cancel()
+        await asyncio.gather(cancel_task, return_exceptions=True)
+        return await request_task
 
     async def _stream_response(
         self, messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]] = None

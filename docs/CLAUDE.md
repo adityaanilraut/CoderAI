@@ -180,11 +180,12 @@ as plain text by `coderAI/tui/commands.py`. Full CLI + slash reference:
 ## Model Aliases
 
 Short aliases resolved by `coderAI/llm/anthropic.py` (`MODEL_ALIASES`):
-- `opus` → `claude-opus-4-7`
-- `sonnet` → `claude-sonnet-4-6`
+- `opus` → `claude-opus-4-8`
+- `fable` → `claude-fable-5`
+- `sonnet` → `claude-sonnet-5`
 - `haiku` → `claude-haiku-4-5-20251001`
 
-Friendly versioned aliases also supported: `claude-4.7-opus`, `claude-4.6-sonnet`, `claude-4.5-haiku`, `claude-4-sonnet`, `claude-4-opus`, `claude-4-haiku`, `claude-3.7-sonnet`, `claude-3.5-sonnet`, `claude-3.5-haiku`, `claude-3-opus`.
+Friendly versioned aliases also supported: `claude-4.8-opus`, `claude-4.7-opus`, `claude-4.6-sonnet`, `claude-4.5-haiku`, `claude-4-sonnet`, `claude-4-opus`, `claude-4-haiku`, `claude-3.7-sonnet`, `claude-3.5-sonnet`, `claude-3.5-haiku`, `claude-3-opus`.
 
 ## Adding a New LLM Provider
 

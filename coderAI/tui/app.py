@@ -888,6 +888,13 @@ class CoderAIApp(App[None]):
         )
 
     def _retry_agent(self) -> None:
+        current_id = getattr(getattr(self.agent, "session", None), "session_id", None)
+        if self.controller:
+            self._suppress_goodbye = True
+            self.controller.enqueue_command("exit")
+        if current_id:
+            self._resume = current_id
+            self._continue = False
         self._agent_retry_count = 0
         self.reducer.session.ready = False
         self._toast("info", "Restarting agent…")

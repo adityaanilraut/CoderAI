@@ -110,6 +110,7 @@ class UIBridge:
         self._approval_waiters: Dict[str, asyncio.Future] = {}
         self._pending_tasks: set[asyncio.Task] = set()
         self._said_goodbye = False
+        self._shutdown_started = False
         self._session_start_ts: float = 0.0
         self._iteration: int = 0
         # Captured at start() so command-enqueue calls from other threads
@@ -205,9 +206,8 @@ class UIBridge:
     ) -> bool:
         """Block until the UI sends ``tool_approval_resp`` for this tool call.
 
-        Timed out on ``config.approval_timeout_seconds`` (default 300s, set to
-        0 to wait forever). On timeout the tool is denied and the UI is told
-        so it can clear the pending prompt.
+        The tool executor owns the timeout. This bridge exposes its deadline to
+        the UI and waits until the caller resolves or cancels the request.
         """
         if not tool_id:
             tool_id = str(uuid.uuid4())
@@ -243,21 +243,23 @@ class UIBridge:
 
         self.emit("tool", id=tool_id, phase="awaiting_approval", payload=payload)
         try:
-            if timeout_s > 0:
-                return bool(await asyncio.wait_for(fut, timeout=timeout_s))
             return bool(await fut)
-        except asyncio.TimeoutError:
-            logger.warning("Approval for %s timed out after %ss; denying.", tool_name, timeout_s)
+        except asyncio.CancelledError:
+            if not fut.done():
+                fut.cancel()
+            reason = (
+                "shutdown"
+                if self._shutdown_started
+                else "timeout"
+                if timeout_s > 0
+                else "cancelled"
+            )
             self.emit(
                 "tool",
                 id=tool_id,
                 phase="cancelled",
-                payload={"reason": "timeout", "timeoutSeconds": timeout_s},
+                payload={"reason": reason, "timeoutSeconds": timeout_s},
             )
-            return False
-        except asyncio.CancelledError:
-            if not fut.done():
-                fut.cancel()
             raise
         finally:
             # Drop any leftover waiter (handler normally pops on approve/deny).
@@ -689,15 +691,19 @@ class UIBridge:
         self._emit_tasks_from_disk()
 
     async def _shutdown(self) -> None:
+        if self._shutdown_started:
+            return
+        self._shutdown_started = True
+        self._resolve_approval_waiters_on_shutdown()
         for task in list(self._pending_tasks):
             task.cancel()
         if self._pending_tasks:
             await asyncio.gather(*self._pending_tasks, return_exceptions=True)
-        self._resolve_approval_waiters_on_shutdown()
         if not self._said_goodbye:
             self.emit("goodbye")
             self._said_goodbye = True
         self._unwire_event_listeners()
+        await self.agent.close()
 
     async def start(self) -> None:
         """Bootstrap the session and wait until ``request_shutdown`` is called."""

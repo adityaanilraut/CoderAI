@@ -48,7 +48,7 @@ def resolve_resume_id(resume: Optional[str], continue_latest: bool) -> Optional[
         latest = history_manager.get_latest_session_id()
         if not latest:
             raise BootstrapError("No previous sessions found to continue.", exit_code=1)
-        return latest
+        return str(latest)
     return resume
 
 
@@ -99,6 +99,15 @@ def bootstrap_agent(
             if not resume_fresh_on_failure:
                 raise BootstrapError(f"Could not load session {resume_id}.")
             agent.create_session()
+        else:
+            agent.session = session
+            effective_model = model if model is not None else (session.model or agent.model)
+            if agent.model != effective_model:
+                agent.model = effective_model
+                agent._replace_provider()
+            session.model = effective_model
+            agent._rebuild_tool_registry()
+            agent._refresh_session_system_prompt()
     else:
         agent.create_session()
 

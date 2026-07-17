@@ -1,6 +1,9 @@
 """Tests for MCPClient and MCPListTool."""
 
 import asyncio
+import os
+import signal
+from pathlib import Path
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -165,8 +168,10 @@ class TestMCPClient:
         assert "server warming up" in logged
         assert "ready" in logged
 
-    def test_connect_stdio_starts_and_tracks_stderr_drain(self):
+    def test_connect_stdio_starts_scrubbed_isolated_process(self, monkeypatch):
         """connect_stdio must spawn a stderr drain task so the pipe never fills."""
+
+        monkeypatch.setenv("OPENAI_API_KEY", "must-not-leak")
 
         async def run():
             client = MCPClient()
@@ -199,21 +204,41 @@ class TestMCPClient:
             async def fake_create(*a, **k):
                 return fake_proc
 
+            spawn = AsyncMock(side_effect=fake_create)
             with (
-                patch("asyncio.create_subprocess_exec", side_effect=fake_create),
+                patch("asyncio.create_subprocess_exec", spawn),
                 patch.object(client, "_stdio_exchange", side_effect=fake_exchange),
             ):
                 result = await client.connect_stdio("srv", "npx", ["foo"])
 
             assert result["success"] is True
+            spawn_kwargs = spawn.await_args.kwargs
+            assert spawn_kwargs["cwd"] == Path.cwd()
+            assert "OPENAI_API_KEY" not in spawn_kwargs["env"]
+            if os.name == "nt":
+                assert "creationflags" in spawn_kwargs
+            else:
+                assert spawn_kwargs["start_new_session"] is True
             task = client.servers["srv"]["stderr_task"]
             assert task is not None
             # Drain finishes on its own once stderr hits EOF — proves it is reading.
             await asyncio.wait_for(task, timeout=1.0)
             assert task.done()
+            fake_proc.returncode = 0
             await client.disconnect("srv")
 
         asyncio.run(run())
+
+    def test_atexit_cleanup_kills_stdio_process_groups(self, monkeypatch):
+        import coderAI.tools.mcp as mcp_mod
+
+        process = MagicMock(returncode=None)
+        monkeypatch.setattr(mcp_mod.mcp_client, "servers", {"srv": {"process": process}})
+        with patch("coderAI.tools.mcp.kill_process_group") as kill_group:
+            mcp_mod._cleanup_mcp_servers()
+
+        kill_group.assert_called_once_with(process)
+        assert mcp_mod.mcp_client.servers == {}
 
     def test_disconnect_cancels_stderr_drain(self):
         """Disconnecting a stdio server cancels its stderr drain task."""
@@ -225,6 +250,7 @@ class TestMCPClient:
             await asyncio.sleep(0)  # let the drain start
 
             proc = MagicMock()
+            proc.returncode = None
             proc.terminate = MagicMock()
             proc.wait = AsyncMock(return_value=0)
             client.servers["srv"] = {
@@ -234,7 +260,9 @@ class TestMCPClient:
                 "tools": [],
             }
 
-            await client.disconnect("srv")
+            with patch("coderAI.tools.mcp.kill_process_group") as kill_group:
+                await client.disconnect("srv")
+            kill_group.assert_called_once_with(proc, signal.SIGTERM)
             # cancel() only requests cancellation; let it settle.
             try:
                 await task

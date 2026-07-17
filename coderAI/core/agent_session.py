@@ -221,22 +221,26 @@ class AgentSessionMixin:
         if not self.session:
             return False
         get_services().events.emit("agent_status", message="Force compacting context...")
-        compact_limit = RESPONSE_TOKEN_RESERVE + TOOL_OVERHEAD_TOKENS + 1500
+        output_reserve = int(getattr(self.config, "max_tokens", 0) or RESPONSE_TOKEN_RESERVE)
+        compact_limit = output_reserve + TOOL_OVERHEAD_TOKENS + 1500
         try:
+            self._context_controller.request_tool_schemas = None
             messages = self.session.get_messages_for_api()
             compacted_messages = await self._context_controller.manage_context_window(
                 messages, context_limit_override=compact_limit
             )
             for compacted_msg in compacted_messages:
                 content_val = compacted_msg.get("content")
-                if (
+                structured_notice = bool(compacted_msg.get("_truncation_notice"))
+                legacy_notice = (
                     compacted_msg.get("role") == "system"
                     and isinstance(content_val, str)
                     and (
                         "[Prior Conversation Summary]:" in content_val
                         or "were removed to fit" in content_val
                     )
-                ):
+                )
+                if structured_notice or legacy_notice:
                     now = _time.time()
 
                     def _freeze(value: Any) -> Any:

@@ -168,3 +168,23 @@ async def test_cancel_event_aborts_retries():
         result = await executor.execute_single_tool(_pc(tool.name), None, _hooks())
     assert result["success"] is False
     assert tool.calls == 1
+
+
+async def test_cancel_event_interrupts_retry_backoff():
+    cancel_event = asyncio.Event()
+    tracker_info = SimpleNamespace(agent_id="main", _cancel_event=cancel_event)
+    tool = FlakyRaiseTool(fail_times=99)
+    executor, _ = _executor_for(tool, tracker_info=tracker_info)
+
+    async def cancel_soon():
+        await asyncio.sleep(0.01)
+        cancel_event.set()
+
+    with services_scope(config=Config(tool_retry_base_delay=1.0)):
+        trigger = asyncio.create_task(cancel_soon())
+        result = await executor.execute_single_tool(_pc(tool.name), None, _hooks())
+        await trigger
+
+    assert result["success"] is False
+    assert result["error_code"] == "cancelled"
+    assert tool.calls == 1
