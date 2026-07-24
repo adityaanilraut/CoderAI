@@ -447,6 +447,10 @@ class AgentSessionMixin:
 
     async def close(self) -> None:
         """Flush pending session saves and finish the tracker."""
+        task = getattr(self, "_mcp_health_task", None)
+        if task is not None and not getattr(task, "done", lambda: True)():
+            task.cancel()
+            self._mcp_health_task = None
         if self._pending_saves or self._save_executor is not None:
             self._flush_pending_saves()
         if self.tracker_info:

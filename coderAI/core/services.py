@@ -56,6 +56,7 @@ class ToolServices:
         lock_manager: Optional["ResourceManager"] = None,
         agent_tracker: Optional["AgentTracker"] = None,
         mcp_client: Optional["MCPClient"] = None,
+        workspace_trusted: Optional[bool] = None,
     ) -> None:
         self._parent = parent
         self._config = config
@@ -67,6 +68,9 @@ class ToolServices:
         self._lock_manager = lock_manager
         self._agent_tracker = agent_tracker
         self._mcp_client = mcp_client
+        # Optional Agent-lifetime trust pin. ``False`` is a real value, so this
+        # uses an explicit Optional rather than falling through ``_resolve``.
+        self._workspace_trusted = workspace_trusted
         # Guards lazy builds; tool batches may resolve services from worker
         # threads (e.g. asyncio.to_thread bodies).
         self._build_lock = threading.Lock()
@@ -111,6 +115,20 @@ class ToolServices:
         from coderAI.system.events import event_emitter
 
         return event_emitter
+
+    @property
+    def workspace_trusted(self) -> Optional[bool]:
+        """Agent-lifetime workspace-trust pin, when bound for a tool batch.
+
+        ``None`` means no pin (callers should fall back to the live trust
+        store). ``False`` is intentional — mid-session ``/trust`` must not
+        unlock project skills/hooks until the next Agent launch.
+        """
+        if self._workspace_trusted is not None:
+            return self._workspace_trusted
+        if self._parent is not None:
+            return self._parent.workspace_trusted
+        return None
 
     @property
     def history(self) -> "HistoryManager":

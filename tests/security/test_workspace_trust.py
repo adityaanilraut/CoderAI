@@ -324,7 +324,9 @@ async def test_agent_trust_grant_activates_all_project_surfaces_only_after_resta
     assert agent._workspace_trusted is False
     assert agent.config.max_iterations != 9999
     assert repo.marker not in agent._get_system_prompt()
-    assert "use_skill" not in agent.tools.tools
+    # use_skill stays available for user-scoped ~/.coderAI/skills; project
+    # overlays are omitted from discovery until the workspace is trusted.
+    assert "use_skill" in agent.tools.tools
     assert agent.set_persona("evil") is None
     await agent.skill_manager._ensure_discovered()
     assert agent.skill_manager.registry.list_all() == []
@@ -354,6 +356,17 @@ async def test_agent_trust_grant_activates_all_project_surfaces_only_after_resta
     assert repo.marker not in agent._get_system_prompt()
     assert agent.set_persona("evil") is None
     assert agent.hooks_manager.load_hooks() is None
+
+    # use_skill must honor the Agent pin even though the live store is trusted.
+    from coderAI.core.services import services_scope
+    from coderAI.tools.use_skill import UseSkillTool
+
+    tool = UseSkillTool()
+    with services_scope(inherit=True, workspace_trusted=False):
+        listed = await tool.execute(action="list")
+    assert listed["success"] is True
+    assert listed["skills"] == []
+    assert "project skills require workspace trust" in listed["message"]
 
     restarted = Agent(model="gpt-5.4-mini", streaming=False)
     assert restarted._workspace_trusted is True

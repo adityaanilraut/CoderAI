@@ -75,14 +75,8 @@ class ExecutionLoop:
         # state never leaks across user messages.
         self._length_retry_used: bool = False
         self._hard_cap_warned: bool = False
-        self._health_check_counter: int = 0
-        # Background MCP health check (see ``_maybe_start_mcp_health_check``).
-        # The probes and reconnect back-offs must never run on the LLM loop's
-        # critical path, so they run detached; the task sets
-        # ``_tool_schemas_dirty`` when servers change so the loop rebuilds
-        # schemas on its own thread before the next call.
-        self._mcp_health_task: Optional["asyncio.Task[None]"] = None
-        self._tool_schemas_dirty: bool = False
+        # MCP health-check counter, dirty flag, and background task live on
+        # ``Agent`` so they survive the per-message ``ExecutionLoop`` instance.
 
     def _inject_step_reminders(
         self,
@@ -397,18 +391,34 @@ class ExecutionLoop:
             state.messages, state.iteration, state.max_iterations
         )
 
-        # Periodic MCP server health check (every 10 iterations). Launched in
-        # the background so the SSE probes (5s timeout each) and reconnect
-        # back-off sleeps never stall the agent's reasoning loop.
-        self._health_check_counter += 1
-        if self._health_check_counter >= 10:
-            self._health_check_counter = 0
+        # Periodic MCP server health check (every 10 iterations across the
+        # Agent lifetime — not per turn). Launched in the background so the
+        # SSE probes (5s timeout each) and reconnect back-off sleeps never
+        # stall the agent's reasoning loop.
+        counter = getattr(self.agent, "_mcp_health_check_counter", 0)
+        if not isinstance(counter, int):
+            counter = 0
+        counter += 1
+        if counter >= 10:
+            counter = 0
             self._maybe_start_mcp_health_check()
+        self.agent._mcp_health_check_counter = counter
 
-        # A completed background health check may have reconnected or dropped
-        # servers; rebuild the schemas on this thread before the next LLM call.
-        if self._tool_schemas_dirty:
-            self._tool_schemas_dirty = False
+        # A completed background health check / reconnect, list_changed
+        # notification, or mcp_connect/disconnect may have changed servers;
+        # rebuild schemas on this thread before the next LLM call. Dirty
+        # flags live on Agent + MCPClient so they survive turn boundaries.
+        schemas_dirty = getattr(self.agent, "_tool_schemas_dirty", False) is True
+        client_dirty = False
+        try:
+            mcp_client = get_services().mcp_client
+            client_dirty = getattr(mcp_client, "_schemas_dirty", False) is True
+            if client_dirty:
+                mcp_client._schemas_dirty = False
+        except Exception:
+            pass
+        if schemas_dirty or client_dirty:
+            self.agent._tool_schemas_dirty = False
             state.tool_schemas = self._get_tool_schemas()
 
         response_data = await self._call_llm_with_retry(step_aware_messages, state.tool_schemas)
@@ -506,14 +516,7 @@ class ExecutionLoop:
         elif finish_reason == "pause_turn":
             state.consecutive_pauses += 1
             if state.consecutive_pauses > MAX_CONSECUTIVE_PAUSES:
-                get_services().events.emit(
-                    "agent_warning",
-                    message=(
-                        f"Model returned pause_turn {state.consecutive_pauses} times in a row; "
-                        "aborting to avoid an infinite loop."
-                    ),
-                )
-                return await self._handle_max_iterations()
+                return await self._handle_pause_storm(state.consecutive_pauses, state.iteration)
             preserves_tool_calls = getattr(
                 self.agent.provider, "preserves_tool_calls_on_pause", False
             )
@@ -642,7 +645,7 @@ class ExecutionLoop:
         if called_tool_names & {"mcp_connect", "mcp_disconnect"}:
             # MCP topology changes alter both function schemas and the dynamic
             # prompt appendix. Refresh both before the next model iteration.
-            self._tool_schemas_dirty = True
+            self.agent._tool_schemas_dirty = True
             self.agent._cached_system_prompt = None
             self.agent._refresh_session_system_prompt()
             self._refresh_messages_from_session(state.messages)
@@ -730,13 +733,15 @@ class ExecutionLoop:
         ``check_server_health`` makes per-server network probes (5s timeout
         each) and ``auto_reconnect_degraded`` sleeps through an exponential
         back-off — both would otherwise stall the agent's LLM loop for
-        seconds. We run them as a detached task and only signal the loop to
-        rebuild tool schemas once the work finishes. At most one health task
-        runs at a time.
+        seconds. We run them as a detached task on the ``Agent`` (so the flag
+        survives the per-message ``ExecutionLoop``) and only signal a schema
+        rebuild once the work finishes. At most one health task runs at a time.
         """
-        task = self._mcp_health_task
+        task = getattr(self.agent, "_mcp_health_task", None)
         if task is not None and not task.done():
             return
+
+        agent = self.agent
 
         async def _run_health_check() -> None:
             try:
@@ -745,17 +750,18 @@ class ExecutionLoop:
                 await mcp_client.check_server_health()
                 await mcp_client.auto_reconnect_degraded()
                 # Defer the schema rebuild to the loop thread (it owns
-                # ``state.tool_schemas``); just flag that it's stale.
-                self._tool_schemas_dirty = True
+                # ``state.tool_schemas``); flag on the Agent so the next turn
+                # still sees it if this turn already ended.
+                agent._tool_schemas_dirty = True
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 logger.debug("MCP health check failed: %s", e)
 
-        old = self._mcp_health_task
+        old = getattr(agent, "_mcp_health_task", None)
         if old is not None and not old.done():
             old.cancel()
-        self._mcp_health_task = asyncio.create_task(_run_health_check())
+        agent._mcp_health_task = asyncio.create_task(_run_health_check())
 
     async def _autoconnect_mcp_servers(self):
         """Auto-connect configured + bundled MCP servers (e.g. git_extended)."""
@@ -1007,6 +1013,7 @@ class ExecutionLoop:
         iterations: int = 0,
         run_stop_hooks: bool = True,
         hooks_data: Any = None,
+        repair_unpaired: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """Single terminal-turn path shared by every loop-exit site.
 
@@ -1025,7 +1032,17 @@ class ExecutionLoop:
         False) with a uniform ``{"iterations", "error": stop_reason}`` payload —
         this fixes the prior drift where length/doom/budget exits skipped it.
         ``hooks_data`` is used when supplied, else loaded fresh.
+
+        Unpaired assistant ``tool_calls`` are repaired before persisting on
+        abortive exits (refusal / length / doom / pause-storm / …) so those
+        paths cannot leave a provider-rejecting transcript. A normal
+        ``stop`` skips repair: Anthropic ``pause_turn`` may intentionally leave
+        client ``tool_use`` blocks unpaired until the next model turn.
         """
+        if repair_unpaired is None:
+            repair_unpaired = stop_reason != "stop"
+        if repair_unpaired:
+            self._repair_unpaired_tool_calls()
         self.agent._finish_tracker(error=error)
         self.agent.save_session()
 
@@ -1129,6 +1146,20 @@ class ExecutionLoop:
             error=True,
             stop_reason="max_iterations",
             iterations=self.agent.config.max_iterations,
+        )
+
+    async def _handle_pause_storm(self, pause_count: int, iterations: int) -> Dict[str, Any]:
+        """Abort when the model returns ``pause_turn`` too many times in a row."""
+        msg = (
+            f"Model returned pause_turn {pause_count} times in a row; "
+            "aborting to avoid an infinite loop."
+        )
+        get_services().events.emit("agent_warning", message=msg)
+        return await self._finalize_turn(
+            content_override=msg,
+            error=True,
+            stop_reason="pause_storm",
+            iterations=iterations,
         )
 
     async def _call_llm_with_retry(

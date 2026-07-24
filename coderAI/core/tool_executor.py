@@ -878,10 +878,15 @@ class ToolExecutor:
                 self._mutation_seen = False
             self._turn = turn
         # Bind the owning agent's effective config (project overrides included)
-        # for the duration of the batch. Stores still resolve to the shared
-        # process-wide instances through the parent chain, so cross-agent
-        # sharing (notepad/tracker/undo) is unchanged.
-        with services_scope(inherit=True, config=getattr(self.agent, "config", None)):
+        # and its session-pinned workspace-trust decision for the duration of
+        # the batch. Stores still resolve to the shared process-wide instances
+        # through the parent chain, so cross-agent sharing (notepad/tracker/undo)
+        # is unchanged.
+        with services_scope(
+            inherit=True,
+            config=getattr(self.agent, "config", None),
+            workspace_trusted=bool(getattr(self.agent, "_workspace_trusted", False)),
+        ):
             return await self._orchestrate_tool_calls(
                 tool_calls, messages, user_message, hooks_data, hooks_manager
             )

@@ -131,6 +131,11 @@ def mock_agent():
     agent.hooks_manager = MagicMock()
     agent.hooks_manager.load_hooks.return_value = None
     agent.hooks_manager.run_hooks = AsyncMock(return_value=[])
+    agent._mcp_initialized = True
+    agent._workspace_trust_checked = True
+    agent._mcp_health_check_counter = 0
+    agent._tool_schemas_dirty = False
+    agent._mcp_health_task = None
     return agent
 
 

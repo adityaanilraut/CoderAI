@@ -26,6 +26,7 @@ async def test_mcp_topology_call_refreshes_prompt_and_schemas_before_next_iterat
         context_controller=context_controller,
         tracker_info=None,
         _cached_system_prompt="old prompt",
+        _tool_schemas_dirty=False,
     )
 
     def refresh_prompt() -> None:
@@ -56,7 +57,33 @@ async def test_mcp_topology_call_refreshes_prompt_and_schemas_before_next_iterat
     )
 
     assert result is None
-    assert loop._tool_schemas_dirty is True
+    assert agent._tool_schemas_dirty is True
     assert agent._cached_system_prompt is None
     agent._refresh_session_system_prompt.assert_called_once_with()
     assert state.messages[0]["content"] == "new prompt"
+
+
+@pytest.mark.asyncio
+async def test_schema_dirty_flag_survives_new_execution_loop(mock_agent):
+    """Health/reconnect dirty bit is owned by Agent, not the per-turn loop."""
+    mock_agent._tool_schemas_dirty = True
+    mock_agent._mcp_health_check_counter = 0
+    schemas = [{"type": "function", "function": {"name": "read_file"}}]
+    mock_agent.tools.get_schemas.return_value = schemas
+
+    loop = ExecutionLoop(mock_agent)
+    state = TurnContext(
+        user_message="hi",
+        messages=[{"role": "user", "content": "hi"}],
+        tool_schemas=[],
+    )
+    loop._call_llm_with_retry = AsyncMock(
+        return_value={"content": "ok", "tool_calls": None, "finish_reason": "stop"}
+    )
+    loop._get_tool_schemas = MagicMock(return_value=schemas)
+
+    await loop._handle_llm_phase(state)
+
+    assert mock_agent._tool_schemas_dirty is False
+    assert state.tool_schemas == schemas
+    loop._get_tool_schemas.assert_called_once_with()

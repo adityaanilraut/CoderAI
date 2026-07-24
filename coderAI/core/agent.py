@@ -156,6 +156,12 @@ class Agent(AgentCapabilitiesMixin, AgentSessionMixin):
         # agent via getattr/setattr from the loop.
         self._mcp_initialized: bool = False
         self._workspace_trust_checked: bool = False
+        # MCP health / schema-refresh bookkeeping must outlive the per-message
+        # ExecutionLoop instance, otherwise a reconnect that finishes after the
+        # turn ends never rebuilds tool schemas on the next turn.
+        self._mcp_health_check_counter: int = 0
+        self._tool_schemas_dirty: bool = False
+        self._mcp_health_task: Optional[Any] = None
 
         # Per-command approval cache for project hooks. Keyed by command string
         # so new or changed hooks re-prompt instead of inheriting an approval.
