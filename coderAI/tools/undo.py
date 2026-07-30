@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import stat
 import tempfile
@@ -23,6 +24,8 @@ MAX_BACKUPS_PER_FILE = 10
 
 # Maximum total backups across all files
 MAX_TOTAL_BACKUPS = 50
+
+_SAFE_STORE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 
 def _reapply_saved_mode(filepath: Path, entry: dict[str, Any]) -> None:
@@ -98,28 +101,48 @@ class BackupStoreProtocol(Protocol):
 class FileBackupStore:
     """Stores file backups for undo operations."""
 
-    def __init__(self, backup_dir: Optional[str] = None):
+    def __init__(
+        self,
+        backup_dir: Optional[str] = None,
+        *,
+        session_id: Optional[str] = None,
+        backup_root: Optional[str] = None,
+    ):
         """Initialize backup store.
 
         Args:
-            backup_dir: Directory for storing backups (default: ~/.coderAI/backups)
+            backup_dir: Exact directory for storing backups.
+            session_id: Session owning the store. Used with the default or
+                explicit ``backup_root`` when ``backup_dir`` is omitted.
+            backup_root: Root containing per-session backup directories.
         """
-        self._custom_backup_dir = backup_dir
+        if backup_dir is not None and (session_id is not None or backup_root is not None):
+            raise ValueError("backup_dir cannot be combined with session_id or backup_root")
+        if session_id is not None and not _SAFE_STORE_ID.fullmatch(session_id):
+            raise ValueError("session_id must be a non-empty path-safe identifier")
+        if backup_dir is not None:
+            resolved_dir = Path(backup_dir)
+        else:
+            root = (
+                (
+                    Path(backup_root)
+                    if backup_root is not None
+                    else Path.home() / ".coderAI" / "backups"
+                )
+                .expanduser()
+                .resolve()
+            )
+            resolved_dir = (root / (session_id or "global")).resolve()
+            if not resolved_dir.is_relative_to(root):
+                raise ValueError("session backup directory escapes backup_root")
+        self._backup_dir = resolved_dir.expanduser().resolve()
+        self.session_id = session_id
         self._last_resolved_dir: Optional[Path] = None
         self._cached_index: list[dict[str, Any]] = []
 
     @property
     def backup_dir(self) -> Path:
-        if self._custom_backup_dir:
-            d = Path(self._custom_backup_dir)
-        else:
-            from coderAI.system.history import history_manager
-
-            base_dir = Path.home() / ".coderAI" / "backups"
-            if history_manager.current_session:
-                d = base_dir / history_manager.current_session.session_id
-            else:
-                d = base_dir / "global"
+        d = self._backup_dir
         d.mkdir(parents=True, exist_ok=True)
         # Backups are copies of project files (potentially secret-bearing) that
         # live under ~/.coderAI — keep the directory owner-only (0700).
@@ -418,6 +441,13 @@ def get_backup_store() -> FileBackupStore:
     return get_services().backup_store
 
 
+def get_transaction_store() -> Any:
+    """Return the active session's durable workspace transaction ledger."""
+    from coderAI.core.execution_context import get_execution_context
+
+    return get_execution_context().transaction_store
+
+
 class _LazyBackupStore:
     """Module-level proxy that defers ``FileBackupStore`` creation until first use.
 
@@ -441,6 +471,10 @@ class UndoParams(BaseModel):
         None,
         description="Index of the operation to undo (0 = most recent). Use undo_history to see available indices.",
     )
+    transaction_id: Optional[str] = Field(
+        None,
+        description="Durable workspace transaction ID to roll back. Takes precedence over index.",
+    )
 
 
 class UndoTool(Tool):
@@ -452,8 +486,26 @@ class UndoTool(Tool):
     parameters_model = UndoParams
     requires_confirmation = True
 
-    async def execute(self, index: Optional[int] = None) -> dict[str, Any]:  # type: ignore[override]
+    async def execute(  # type: ignore[override]
+        self,
+        index: Optional[int] = None,
+        transaction_id: Optional[str] = None,
+    ) -> dict[str, Any]:
         """Undo a file operation."""
+        from coderAI.core.execution_context import get_execution_context
+
+        transaction_store = get_transaction_store()
+        if transaction_store is not None:
+            target = transaction_id or transaction_store.latest_rollbackable()
+            if target is not None:
+                return await asyncio.to_thread(
+                    transaction_store.rollback,
+                    target,
+                    run_context=get_execution_context(),
+                )
+            # A non-empty ledger supersedes its duplicate legacy file backups.
+            if transaction_store.has_transactions():
+                return {"success": False, "error": "No workspace transactions to undo"}
         store = get_backup_store()
         if index is not None:
             return await asyncio.to_thread(store.undo_specific, index)
@@ -476,8 +528,16 @@ class UndoHistoryTool(Tool):
     async def execute(self, limit: int = 10) -> dict[str, Any]:  # type: ignore[override]
         """Get undo history."""
         history = get_backup_store().get_history(limit)
+        transaction_store = get_transaction_store()
+        transactions = (
+            transaction_store.list_transactions(limit=limit)
+            if transaction_store is not None
+            else []
+        )
         return {
             "success": True,
             "entries": history,
             "count": len(history),
+            "transactions": transactions,
+            "transaction_count": len(transactions),
         }

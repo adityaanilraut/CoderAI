@@ -71,7 +71,9 @@ the tool is `tools/use_skill.py`; content is `.coderAI/skills/` (and
 CoderAI is a pure-Python AI coding agent CLI. The Click entry point
 (`coderAI.cli:main` → `coderAI/cli/__init__.py` → `cli/main.py`) dispatches
 one-shot subcommands (config, history, models, status, doctor, `run`, …)
-using Rich helpers in `coderAI/cli/utils.py`. `coderAI chat` launches an
+using Rich helpers in `coderAI/cli/utils.py`. `coderAI plan` owns the headless
+create/review/edit/approve/execute planning lifecycle in `cli/plan_cmd.py`.
+`coderAI chat` launches an
 in-process Textual TUI (`coderAI/tui/`) that drives the agent loop and
 renders the streaming timeline. `coderAI run` is the headless one-shot path
 (no TUI; deny-on-mutate by default).
@@ -146,7 +148,7 @@ Per-turn flow (`Agent.process_message()` → `agent_loop`):
 - `memory.py` — save_memory, recall_memory, **delete_memory**
 - `subagent.py` — delegate_task (max depth 3, transient failures retried 2× with backoff on the same sub-agent)
 - `mcp.py` — mcp_connect, mcp_disconnect, mcp_list, mcp_list_resources, mcp_read_resource, mcp_list_prompts, mcp_get_prompt (connected servers expose functions as `mcp__<server>__<tool>`; static MCP relays set `mcp_source=True`)
-- `undo.py` — undo, undo_history
+- `undo.py` — transaction-aware undo/undo_history with legacy file-backup fallback
 - `context_manage.py` — pin/unpin files into the pinned-context manager (takes `Agent` at construction → registered manually)
 - `tasks.py` — persistent task-list management
 - `use_skill.py` — `use_skill` loads a workflow from `.coderAI/skills/<name>/SKILLS.md` (or `SKILL.md` / user scope)
@@ -155,7 +157,15 @@ Per-turn flow (`Agent.process_message()` → `agent_loop`):
 - `_detect.py` — shared `walk_up_detect()` used by lint/format/testing/package_manager
 - `package_manager.py`, `refactor.py`, `testing.py` — package install/remove, rename_symbol/find_references refactor (writes via `WriteFileTool`), test runner dispatch
 
-**Agent personas** are `.md` files in `.coderAI/agents/` with YAML frontmatter (`name`, `description`, `tools`, `model`). Built-in personas: planner, code-reviewer, architect, security-reviewer, tdd-guide, and others. The `delegate_task` tool spawns these as isolated sub-agents.
+**Agent personas** are `.md` files in `.coderAI/agents/` with YAML frontmatter (`name`, `description`, `tools`, `model`). Built-in personas: planner, code-reviewer, architect, security-reviewer, tdd-guide, and others. The `delegate_task` tool spawns capability- and recovery-isolated sub-agents; mutating delegates still share the project worktree until the remaining Milestone 3 integration work lands.
+
+**Workspace transactions** are session-owned records under
+`~/.coderAI/transactions/`. `core/workspace_transactions.py` snapshots before
+an approved synchronous mutation, records native/shell/hook changes after it,
+recovers interrupted state on resume, and performs conflict-safe guarded
+rollback. Do not wrap `delegate_task` in the parent ledger; the child owns its
+transactions. Background mutations, `.git` metadata, snapshot retention, and
+worktree-isolated patch integration remain explicit Milestone 3 gaps.
 
 **Project-level config** lives in `.coderAI/`:
 - `agents/*.md` — persona definitions
@@ -181,9 +191,14 @@ as plain text by `coderAI/tui/commands.py`. Full CLI + slash reference:
 
 `/plan <request>` runs a separate enforced read-only turn. Only read tools,
 read-only delegation, and `submit_plan` are exposed; the executor independently
-denies mutations. Drafts and immutable revisions live under `.coderAI/plans/`.
-`/plan approve` hashes and executes the exact reviewed revision, linking its
-plan ID and revision into the execution turn's `ObjectiveState`.
+denies mutations. Each plan has a mutable validated `draft.json` plus immutable
+revision snapshots under `.coderAI/plans/`. Structured decisions use stable IDs
+and direct answers. Approval hashes the exact reviewed revision and links its
+plan ID/revision into `ObjectiveState` and persisted session metadata. During
+implementation, `request_plan_amendment` records a replacement revision,
+invalidates approval, and restores the read-only boundary before further tools
+can mutate. TUI and `coderAI plan` resume from the same approval/execution
+history rather than reconstructing it from transcript text.
 
 ## Model Aliases
 

@@ -23,18 +23,21 @@ def test_session_scoped_backups(monkeypatch, tmp_path):
     store_global = FileBackupStore()
     assert store_global.backup_dir == tmp_path / ".coderAI" / "backups" / "global"
 
-    # Create a session
+    # A global history cursor cannot redirect a previously constructed store.
     session = Session(session_id="session_12345_test", model="gpt-4")
     history_manager.current_session = session
+    assert store_global.backup_dir == tmp_path / ".coderAI" / "backups" / "global"
 
-    # Now it should resolve to the session subdirectory
-    store_session = FileBackupStore()
+    # Session recovery is selected explicitly at the lifecycle boundary.
+    store_session = FileBackupStore(session_id=session.session_id)
     assert store_session.backup_dir == tmp_path / ".coderAI" / "backups" / "session_12345_test"
 
-    # Switch session mid-run
+    # Switching ambient history cannot redirect that immutable store.
     session2 = Session(session_id="session_67890_test", model="gpt-4")
     history_manager.current_session = session2
-    assert store_session.backup_dir == tmp_path / ".coderAI" / "backups" / "session_67890_test"
+    assert store_session.backup_dir == tmp_path / ".coderAI" / "backups" / "session_12345_test"
+    store_session2 = FileBackupStore(session_id=session2.session_id)
+    assert store_session2.backup_dir == tmp_path / ".coderAI" / "backups" / "session_67890_test"
 
     # Clean up
     history_manager.current_session = None

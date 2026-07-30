@@ -45,6 +45,7 @@ def get_available_skills(
     *,
     include_project: bool = True,
     include_user: bool = True,
+    include_builtin: bool = True,
 ) -> list[dict[str, str]]:
     """Return a list of available skills with name and description.
 
@@ -55,8 +56,9 @@ def get_available_skills(
         project_root,
         include_project=include_project,
         include_user=include_user,
+        include_builtin=include_builtin,
     )
-    return [{"name": s.name, "description": s.description} for s in skills]
+    return [{"name": s.name, "description": s.description, "source": s.source} for s in skills]
 
 
 class UseSkillParams(BaseModel):
@@ -75,8 +77,8 @@ class UseSkillTool(Tool):
 
     name = "use_skill"
     description = (
-        "Load a predefined skill workflow from .coderAI/skills/ (project) or "
-        "~/.coderAI/skills/ (user). Skills provide step-by-step instructions for "
+        "Load a predefined skill workflow from package resources (built-in), "
+        ".coderAI/skills/ (project), or ~/.coderAI/skills/ (user). Skills provide "
         "common workflows. Use action='list' to see available skills, then "
         "action='use' with skill_name to load the full instructions. "
         "Install new skills with `coderAI skills install`."

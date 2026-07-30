@@ -523,7 +523,12 @@ class EventReducer:
                     "revision": data.get("revision"),
                     "status": data.get("status"),
                     "markdown": data.get("markdown") or "",
+                    "questions": data.get("questions") or [],
                     "unansweredQuestions": data.get("unansweredQuestions") or [],
+                    "editablePath": data.get("editablePath") or "",
+                    "approvals": data.get("approvals") or [],
+                    "executions": data.get("executions") or [],
+                    "amendments": data.get("amendments") or [],
                 }
             )
         elif event == "skill_card":

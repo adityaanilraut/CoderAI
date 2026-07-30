@@ -6,12 +6,17 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from coderAI.core.planning import PlanProposal, PlanStepSpec, PlanStore
+from coderAI.core.planning import PlanProposal, PlanQuestionSpec, PlanStepSpec, PlanStore
 from coderAI.core.services import services_scope
 from coderAI.system.config import Config
 from coderAI.tools.base import ToolRegistry
 from coderAI.tools.planning import SubmitPlanTool
-from coderAI.tui.commands import _cmd_approve_plan, _cmd_start_plan
+from coderAI.tui.commands import (
+    _cmd_answer_plan,
+    _cmd_approve_plan,
+    _cmd_resume_plan,
+    _cmd_start_plan,
+)
 
 
 def _proposal() -> PlanProposal:
@@ -29,6 +34,14 @@ def _proposal() -> PlanProposal:
         ],
         tests=["Parser regression tests"],
     )
+
+
+def _question_proposal() -> PlanProposal:
+    proposal = _proposal()
+    proposal.questions = [
+        PlanQuestionSpec(id="storage", prompt="Which storage?", choices=["SQLite", "Postgres"])
+    ]
+    return proposal
 
 
 class FakeServer:
@@ -116,3 +129,77 @@ async def test_approve_plan_links_exact_revision_and_marks_completion(tmp_path):
     assert finished is not None and finished.status == "completed"
     assert agent.active_plan_id is None
     assert agent.active_plan_revision is None
+
+
+@pytest.mark.asyncio
+async def test_answer_plan_edits_structured_question_without_model_turn(tmp_path):
+    process = MagicMock()
+    agent = _agent(tmp_path, process)
+    server = FakeServer(agent)
+    with services_scope(config=agent.config):
+        store = PlanStore(str(tmp_path))
+        first = store.create("Choose storage", _question_proposal(), source_session_id="session-1")
+        await _cmd_answer_plan(
+            server,
+            {"questionId": "storage", "answer": "SQLite"},
+        )
+        revised = store.load(first.plan_id)
+
+    assert revised is not None
+    assert revised.revision == 2
+    assert revised.status == "draft"
+    assert revised.proposal.questions[0].answer == "SQLite"
+    process.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_resume_plan_relinks_exact_approved_revision(tmp_path):
+    seen = {}
+
+    async def process(prompt):
+        seen["plan_id"] = agent.active_plan_id
+        seen["revision"] = agent.active_plan_revision
+        return {"success": True, "content": "Resumed", "stop_reason": "stop"}
+
+    agent = _agent(tmp_path, process)
+    server = FakeServer(agent)
+    with services_scope(config=agent.config):
+        store = PlanStore(str(tmp_path))
+        approved = store.approve(
+            store.create("Fix parser", _proposal(), source_session_id="session-1")
+        )
+        executing = store.mark_executing(approved, execution_session_id="old-session")
+        await _cmd_resume_plan(server, {})
+        finished = store.load(executing.plan_id)
+
+    assert seen == {"plan_id": executing.plan_id, "revision": 1}
+    assert finished is not None and finished.status == "completed"
+    assert [attempt.status for attempt in finished.executions] == ["interrupted", "completed"]
+
+
+@pytest.mark.asyncio
+async def test_execution_amendment_is_not_overwritten_by_old_completion(tmp_path):
+    async def process(_prompt):
+        store = PlanStore(str(tmp_path))
+        executing = store.load_active()
+        replacement = _proposal().model_copy(deep=True)
+        replacement.steps[0].description = "Use the newly discovered boundary."
+        store.request_execution_amendment(executing, replacement, "Approved API is unavailable")
+        return {"success": True, "content": "Stopped for review", "stop_reason": "stop"}
+
+    agent = _agent(tmp_path, process)
+    server = FakeServer(agent)
+    with services_scope(config=agent.config):
+        store = PlanStore(str(tmp_path))
+        first = store.create("Fix parser", _proposal(), source_session_id="session-1")
+        await _cmd_approve_plan(server, {})
+        amended = store.load(first.plan_id)
+
+    assert amended is not None
+    assert amended.revision == 2
+    assert amended.status == "draft"
+    assert amended.executions[0].status == "amendment_requested"
+    assert any(
+        event == "warning" and "review and approve" in data["message"]
+        for event, data in server.events
+    )

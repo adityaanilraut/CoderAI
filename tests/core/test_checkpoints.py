@@ -7,6 +7,7 @@ Covers the three layers added for ``/rewind``:
 """
 
 import asyncio
+from dataclasses import replace
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -211,7 +212,16 @@ def test_restore_after_reports_missing_backup(tmp_path) -> None:
 
 
 def _agent_stub(session):
-    return SimpleNamespace(session=session, save_session=MagicMock())
+    from coderAI.core.execution_context import create_run_context
+    from coderAI.tools.undo import FileBackupStore
+
+    run_context = create_run_context(workspace_root=".")
+    run_context = replace(
+        run_context,
+        session_id=session.session_id,
+        checkpoint_store=FileBackupStore(session_id=session.session_id),
+    )
+    return SimpleNamespace(session=session, save_session=MagicMock(), run_context=run_context)
 
 
 def test_agent_rewind_to_conversation_only() -> None:
@@ -236,7 +246,7 @@ def test_agent_rewind_to_restores_files(monkeypatch) -> None:
             return_value={"restored": ["/x/a.txt"], "deleted": [], "errors": []}
         )
     )
-    monkeypatch.setattr("coderAI.tools.undo.get_backup_store", lambda: fake_store)
+    stub.run_context = replace(stub.run_context, checkpoint_store=fake_store)
 
     # Capture the cutoff before the rewind drops checkpoint 1.
     cutoff = s.checkpoints[0].created_at

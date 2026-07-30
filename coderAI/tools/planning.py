@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from coderAI.core.planning import PlanProposal
+from pydantic import BaseModel, Field
+
+from coderAI.core.planning import PlanProposal, PlanStore, validate_plan_proposal
 from coderAI.tools.base import Tool
 
 
@@ -26,40 +28,72 @@ class SubmitPlanTool(Tool):
 
     async def execute(self, **kwargs: Any) -> dict[str, Any]:
         proposal = PlanProposal.model_validate(kwargs)
-        ids = [step.id for step in proposal.steps]
-        if len(ids) != len(set(ids)):
-            return {"success": False, "error": "Plan step IDs must be unique."}
-        known = set(ids)
-        invalid = {dep for step in proposal.steps for dep in step.depends_on if dep not in known}
-        if invalid:
-            return {
-                "success": False,
-                "error": "Unknown step dependencies: " + ", ".join(sorted(invalid)),
-            }
-        if any(not criterion.strip() for criterion in proposal.success_criteria):
-            return {"success": False, "error": "Success criteria may not be blank."}
-
-        graph = {step.id: step.depends_on for step in proposal.steps}
-        visiting: set[str] = set()
-        visited: set[str] = set()
-
-        def _has_cycle(step_id: str) -> bool:
-            if step_id in visiting:
-                return True
-            if step_id in visited:
-                return False
-            visiting.add(step_id)
-            if any(_has_cycle(dep) for dep in graph[step_id]):
-                return True
-            visiting.remove(step_id)
-            visited.add(step_id)
-            return False
-
-        if any(_has_cycle(step_id) for step_id in ids):
-            return {"success": False, "error": "Plan step dependencies contain a cycle."}
+        try:
+            validate_plan_proposal(proposal)
+        except ValueError as exc:
+            return {"success": False, "error": str(exc)}
         self.last_proposal = proposal
         return {
             "success": True,
             "message": "Structured plan submitted for user review.",
             "plan": proposal.model_dump(),
+        }
+
+
+class ExecutionAmendmentInput(BaseModel):
+    reason: str = Field(..., min_length=1)
+    proposal: PlanProposal
+
+
+class RequestPlanAmendmentTool(Tool):
+    """Persist execution divergence and immediately restore the read-only boundary."""
+
+    name = "request_plan_amendment"
+    description = (
+        "Stop implementation when the approved plan must change. Supply the reason and complete "
+        "replacement plan. This creates an immutable revision, invalidates approval, and switches "
+        "the remainder of the turn to read-only Plan Mode until a user approves the amendment."
+    )
+    parameters_model = ExecutionAmendmentInput
+    category = "tasks"
+    safe = True
+
+    def __init__(self, agent: Any) -> None:
+        self.agent = agent
+
+    async def execute(self, **kwargs: Any) -> dict[str, Any]:
+        request = ExecutionAmendmentInput.model_validate(kwargs)
+        plan_id = getattr(self.agent, "active_plan_id", None)
+        approved_revision = getattr(self.agent, "active_plan_revision", None)
+        if not plan_id or not approved_revision:
+            return {"success": False, "error": "No approved plan execution is active."}
+        store = PlanStore(getattr(self.agent.config, "project_root", ".") or ".")
+        current = store.load(plan_id)
+        if current is None:
+            return {"success": False, "error": "The active plan record could not be loaded."}
+        if current.approved_revision != approved_revision:
+            return {
+                "success": False,
+                "error": "Active execution is not linked to the plan's approved revision.",
+            }
+        try:
+            amended = store.request_execution_amendment(current, request.proposal, request.reason)
+        except ValueError as exc:
+            return {"success": False, "error": str(exc)}
+
+        # Defense in depth: subsequent schemas and invented calls in this same
+        # turn are read-only even before the command/CLI wrapper observes the
+        # newly unapproved revision.
+        self.agent.plan_mode = True
+        self.agent._cached_system_prompt = None
+        self.agent._refresh_session_system_prompt()
+        return {
+            "success": True,
+            "message": (
+                f"Execution stopped for plan amendment r{amended.revision}; "
+                "user review and approval are required before more mutations."
+            ),
+            "plan_id": amended.plan_id,
+            "revision": amended.revision,
+            "status": amended.status,
         }

@@ -30,12 +30,12 @@ consumers because unknown phases are ignored.
 | `status`        | `{ctxUsed, ctxLimit, workspaceTrusted, costUsd, budgetUsd, promptTokens, completionTokens, totalTokens, iteration, maxIterations, elapsedSeconds}` | Emitted after bootstrap and every turn. `iteration` is the current agent-loop pass (1-based after the first user message). `maxIterations` mirrors `config.max_iterations` (default 50). `elapsedSeconds` is wall time since session bootstrap. `workspaceTrusted` is `true`/`false` when the project has a workspace-trust surface, otherwise `null`. |
 | `skill_card`    | `{id?, name, description, steps: [{index, label}]}`                                           | Parsed skill workflow card emitted after a successful `use_skill` call               |
 | `tasks_card`    | `{tasks: {summary, inProgress, pending, completed, total}}`                                   | Task-list snapshot. `inProgress`/`pending`/`completed` are arrays of `{id, title, priority, status}` sorted by priority; `completed` holds only the last 5. `summary` is a human-readable count string. Updates the session task panel (chrome), not a timeline row. |
-| `plan_card`     | `{planId, revision, status, markdown, unansweredQuestions}`                                  | Versioned Plan Mode artifact rendered in the timeline for review, amendment, approval, and execution status. |
+| `plan_card`     | `{planId, revision, status, markdown, questions, unansweredQuestions, editablePath, approvals, executions, amendments}` | Versioned Plan Mode artifact. `questions` contains `{id, prompt, choices, answer}`; the history arrays make approval and execution linkage reviewable after resume. |
 | `agent`         | `{phase: "update" \| "started" \| "finished", info: AgentInfo, parentId}`                     | Per-agent snapshot; `started`/`finished` are lifecycle edges, `update` is throttled live sync |
 | `session_patch` | `{model?, provider?, autoApprove?, reasoning?}`                                               | Partial session-state update — only changed fields are present                       |
 | `available_models`| `{current, models: Record<string, string[]>}`                                                 | Emitted for the model picker                                                         |
-| `available_personas`| `{current, personas: string[]}`                                                             | Emitted for the persona picker                                                       |
-| `available_skills`| `{skills: {name: string, description: string}[]}`                                             | Emitted for the skill picker                                                         |
+| `available_personas`| `{current, personas: string[], personaScopes: Record<string, "project" \| "user" \| "builtin">}`             | Emitted for the persona picker                                                       |
+| `available_skills`| `{skills: {name: string, description: string, source: "project" \| "user" \| "builtin"}[]}`                     | Emitted for the skill picker                                                         |
 | `available_mcp_servers`| `{servers: {name, connected, disabled, degraded, tools: number, transport}[]}`           | Emitted for the `/mcp` picker (connected + configured servers)                       |
 | `context_state` | `{files: {path: string, size: number}[]}`                                                     | Emitted during get_state to show pinned context files                                |
 | `info`          | `{message}`                                                                                   | Long-form reference output (`/show <topic>`) and short notices                      |
@@ -132,9 +132,13 @@ turns can't interleave.
 | `start_plan`           | `{request}`                                            | Runs enforced read-only exploration and emits a versioned `plan_card` |
 | `get_plan`             | `{}`                                                   | Re-emits the active versioned plan                                    |
 | `amend_plan`           | `{instruction}`                                        | Revises the active plan in read-only mode and creates a new revision  |
+| `answer_plan`          | `{questionId, answer}`                                 | Directly edits one stable structured answer and creates a revision    |
+| `edit_plan`            | `{reset?: bool}`                                       | Emits the mutable `draft.json` path; optionally resets unapplied edits |
+| `apply_plan`           | `{path?: string}`                                      | Validates the editable artifact and creates an immutable revision     |
 | `approve_plan`         | `{}`                                                   | Approves and executes the exact current revision                      |
+| `resume_plan`          | `{}`                                                   | Resumes an interrupted executing revision using its approved snapshot |
 | `cancel_plan`          | `{}`                                                   | Marks the active plan cancelled                                       |
-| `init_project`         | `{}`                                                   | Scaffolds `.coderAI/{agents,skills,rules}` and starter files (`CODERAI.md`, …) in the project root; emits `success` or `error` |
+| `init_project`         | `{}`                                                   | Copies packaged starters into `.coderAI/{agents,skills,rules}` and `CODERAI.md` without overwriting existing files; emits `success` or `error` |
 | `list_models`          | `{}`                                                   | Emits `available_models` for the model picker                          |
 | `list_personas`        | `{}`                                                   | Emits `available_personas` for the persona picker                      |
 | `list_skills`          | `{}`                                                   | Emits `available_skills` for the skills picker                         |

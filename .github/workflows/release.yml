@@ -7,17 +7,24 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version tag to release (e.g. v0.2.0)"
+        description: "Package version to validate without publishing (e.g. 0.3.3)"
         required: true
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  publish-github-release:
-    name: Publish GitHub Release
+  build:
+    name: Build and attest once
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -25,71 +32,167 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: "3.12"
+
+      - name: Resolve and verify version
+        id: tag
+        shell: bash
+        run: |
+          PACKAGE_VERSION="$(python -c 'import runpy; print(runpy.run_path("coderAI/_version.py")["__version__"])')"
+          if [[ "${GITHUB_EVENT_NAME}" = "push" ]]; then
+            TAG="${GITHUB_REF_NAME}"
+            test "${TAG}" = "v${PACKAGE_VERSION}" || {
+              echo "Release tag ${TAG} must exactly match v${PACKAGE_VERSION}" >&2
+              exit 1
+            }
+          else
+            VERSION="${{ inputs.version }}"
+            test "${VERSION}" = "${PACKAGE_VERSION}" || {
+              echo "Requested candidate ${VERSION} does not match package version ${PACKAGE_VERSION}" >&2
+              exit 1
+            }
+            TAG="v${VERSION}"
+          fi
+          VERSION="${PACKAGE_VERSION}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Install build tooling
         run: python -m pip install --upgrade build
 
-      - name: Build wheel + sdist
+      - name: Build wheel and sdist
         run: python -m build
 
-      - name: Resolve tag
-        id: tag
-        shell: bash
-        run: |
-          if [[ -n "${{ inputs.version }}" ]]; then
-            TAG="${{ inputs.version }}"
-          else
-            TAG="${GITHUB_REF_NAME}"
-          fi
-          # Git tags are v0.3.0; PyPI versions are 0.3.0 (no leading v).
-          VERSION="${TAG#v}"
-          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+      - name: Check wheel archive contents
+        run: python scripts/verify_wheel.py dist --archive-only --expected-version "${{ steps.tag.outputs.version }}"
 
-      - name: Create / update release
+      - name: Attest release artifacts
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: "dist/*"
+
+      - name: Upload immutable release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-dist
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  smoke-wheel:
+    name: Smoke wheel (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    needs: build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.10", "3.12"]
+    steps:
+      - name: Checkout smoke-test harness
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Download exact release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-dist
+          path: dist
+
+      - name: Install and probe wheel from an empty directory
+        run: python scripts/verify_wheel.py dist --expected-version "${{ needs.build.outputs.version }}"
+
+  smoke-optionals:
+    name: Smoke optional extra (${{ matrix.extra }})
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        extra: [semantic, local-embeddings, web, browser]
+    steps:
+      - name: Checkout smoke-test harness
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download exact release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-dist
+          path: dist
+
+      - name: Install and probe optional capability from the exact wheel
+        if: matrix.extra != 'browser'
+        run: >-
+          python scripts/verify_wheel.py dist
+          --expected-version "${{ needs.build.outputs.version }}"
+          --extra "${{ matrix.extra }}"
+
+      - name: Install Playwright, Chromium, and probe a local browser page
+        if: matrix.extra == 'browser'
+        run: >-
+          python scripts/verify_wheel.py dist
+          --expected-version "${{ needs.build.outputs.version }}"
+          --extra browser
+          --install-browser
+
+  publish-github-release:
+    name: Publish exact artifacts to GitHub
+    if: github.event_name == 'push'
+    needs: [build, smoke-wheel, smoke-optionals]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download exact release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-dist
+          path: dist
+
+      - name: Create or update release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.tag.outputs.tag }}
-          name: ${{ steps.tag.outputs.tag }}
+          tag_name: ${{ needs.build.outputs.tag }}
+          name: ${{ needs.build.outputs.tag }}
           files: dist/*
           draft: false
           prerelease: false
           fail_on_unmatched_files: true
           body: |
-            Python wheel and sdist. Install with:
+            Attested Python wheel and sdist, built once and smoke-tested from the
+            exact uploaded artifact on supported Python and OS combinations.
+
             ```bash
-            pip install coderai-agent==${{ steps.tag.outputs.version }}
-            ```
-            Run interactive chat:
-            ```bash
+            pip install coderai-agent==${{ needs.build.outputs.version }}
             coderAI chat
             ```
 
   publish-pypi:
-    name: Publish to PyPI
-    needs: publish-github-release
+    name: Publish the same artifacts to PyPI
+    if: github.event_name == 'push'
+    needs: [build, smoke-wheel, publish-github-release]
     runs-on: ubuntu-latest
     environment:
       name: pypi
     permissions:
       id-token: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Download exact release artifacts
+        uses: actions/download-artifact@v4
         with:
-          python-version: "3.10"
-
-      - name: Install build tooling
-        run: python -m pip install --upgrade build
-
-      - name: Build wheel + sdist
-        run: python -m build
+          name: release-dist
+          path: dist
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          skip-existing: true
+          packages-dir: dist/

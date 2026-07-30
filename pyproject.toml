@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "coderai-agent"
-version = "0.3.3"
+dynamic = ["version"]
 description = "Intelligent coding agent CLI with a Textual terminal UI and MCP tools"
 readme = "README.md"
 license = "MIT"
@@ -83,7 +83,17 @@ where = ["."]
 include = ["coderAI*"]
 
 [tool.setuptools.package-data]
-coderAI = ["prompts/*.mdx"]
+coderAI = [
+    "py.typed",
+    "prompts/*.mdx",
+    "assets/agents/*.md",
+    "assets/rules/*.md",
+    "assets/skills/*/*.md",
+    "assets/starter/*.md",
+]
+
+[tool.setuptools.dynamic]
+version = {attr = "coderAI._version.__version__"}
 
 [tool.ruff]
 line-length = 100

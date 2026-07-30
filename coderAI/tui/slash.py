@@ -299,7 +299,25 @@ def _cmd_plan(ctx: SlashContext, arg: str, head: str) -> bool:
         ctx.controller.enqueue_command("approve_plan")
     elif command == "cancel" and not remainder.strip():
         ctx.controller.enqueue_command("cancel_plan")
-    elif command in {"amend", "answer"}:
+    elif command == "resume" and not remainder.strip():
+        ctx.controller.enqueue_command("resume_plan")
+    elif command == "edit":
+        reset = remainder.strip().lower() == "reset"
+        if remainder.strip() and not reset:
+            ctx.toast("warning", "Usage: /plan edit [reset]")
+        else:
+            ctx.controller.enqueue_command("edit_plan", reset=reset)
+    elif command == "apply":
+        ctx.controller.enqueue_command("apply_plan", path=remainder.strip() or None)
+    elif command == "answer":
+        question_id, _, answer = remainder.strip().partition(" ")
+        if not question_id or not answer.strip():
+            ctx.toast("warning", "Usage: /plan answer <question-id> <answer>")
+        else:
+            ctx.controller.enqueue_command(
+                "answer_plan", questionId=question_id, answer=answer.strip()
+            )
+    elif command == "amend":
         instruction = remainder.strip()
         if not instruction:
             ctx.toast("warning", f"Usage: /plan {command} <instruction>")
@@ -517,7 +535,7 @@ _register(
 _register(
     _cmd_plan,
     "plan",
-    desc="Plan read-only · /plan <request> · approve · amend · cancel",
+    desc="Plan read-only · review/edit · answer · approve/resume",
 )
 _register(_cmd_exit, "exit", "quit", desc="Shut down the agent")
 _register(_cmd_export, "export", "save", desc="Export session to markdown")

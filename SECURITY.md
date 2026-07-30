@@ -54,10 +54,20 @@ Design principles the codebase holds to:
 
 A freshly cloned or newly opened project is **untrusted** until you say
 otherwise. While untrusted, repo-supplied `.coderAI/hooks.json`, config overlays,
-and `permission: ask` rules are **not** honoured — a malicious repo cannot
-register a hook that runs on your first message. The trust decision is
+personas, skills, and `permission: ask` rules are **not** honoured — a malicious
+repo cannot register a hook or inject agent guidance on your first message.
+User-scoped personas/skills and immutable built-ins installed inside the wheel
+remain available. Their deterministic precedence is project → user → builtin,
+and discovery rejects symlinks that resolve outside the selected scope. The
+trust decision is
 fingerprinted per workspace, stored fail-closed, and made explicitly via the
 `/trust` command or the `--trust-workspace` flag.
+
+Built-in Markdown is part of the signed/attested distribution supply chain, not
+project content: the release pipeline builds once, probes that exact wheel from
+an empty directory, and promotes the same artifact to GitHub and PyPI. A package
+integrity failure is fatal rather than falling back to files from a source
+checkout.
 
 ### Provenance & egress gating (`coderAI/core/provenance.py`)
 
@@ -82,6 +92,29 @@ scoped to a reviewed command prefix / path subtree. Static MCP relay tools
 (`mcp__server__tool` proxies, `mcp_read_resource`, `mcp_get_prompt`, …) declare
 `mcp_source = True` so they share the same confused-deputy mutation gate as
 dynamic `mcp__<server>__<tool>` proxies.
+
+### Plan Mode boundary (`coderAI/core/planning.py`, `tool_executor.py`)
+
+Planning is an enforced capability boundary, not a prompt convention. During a
+planning turn, schema routing exposes only native read tools, explicitly
+read-only delegation, and `submit_plan`; dynamic MCP tools are absent. The
+executor repeats the check for invented tool calls. Project hooks, MCP
+autolaunch, and workspace-trust actions are suppressed for the entire turn.
+
+Plan state is the one intentional internal write: project-scoped artifacts live
+under `.coderAI/plans/`. Immutable revision snapshots cannot be symlink leaves.
+The mutable `draft.json` must remain inside the project even when the general
+outside-project escape hatch is enabled; stale, malformed, wrong-plan, and
+unapplied drafts cannot be approved. Approval hashes one immutable snapshot and
+execution rechecks the hash.
+
+If implementation must diverge, `request_plan_amendment` records a complete new
+revision, invalidates approval, and switches the rest of the turn back to the
+read-only boundary. The executor also reloads the active record before every
+mutating call, so an amendment from another process stops the old execution.
+Restoring session metadata does not itself authorize continuation: mutations
+remain blocked until `/plan resume` or `coderAI plan execute` explicitly
+reactivates the approved execution.
 
 ### Execution hard-stops and OS sandbox (`coderAI/system/proc.py`, `sandbox.py`)
 
@@ -133,7 +166,19 @@ confinement.
   (`file_chmod` / `file_chmod`) use fd-based no-follow on POSIX; `file_stat`
   and `file_readlink` enforce project scope.
 - Secrets at rest are owner-only (0600) in owner-only directories (0700): API
-  keys, OAuth credentials, session history, and undo backups. Session files are
+  keys, OAuth credentials, session history, and undo backups. Undo/rewind
+  backups are selected from the executing agent's immutable, session-bound
+  run context; concurrent or resumed subagents do not select recovery state
+  through the mutable global history cursor.
+- Approved synchronous mutations also receive an owner-only transaction ledger
+  under `~/.coderAI/transactions/<session-id>`. Pre-operation contents and modes
+  are snapshotted before hooks execute; post-hook hashes record native and
+  foreground-shell changes even on tool failure. Rollback checks that the
+  current path still matches the recorded post-state, then reapplies project
+  scope, protected-path, and symlink-leaf guards. Conflicts and incomplete scans
+  fail closed as retryable partial failures. Parent/child session and workspace
+  identities are revalidated before record, recovery, or rollback.
+- Session files are
   written atomically via `mkstemp` so there is never a world-readable window.
 
 ### Supply chain (Phase 9)
@@ -143,6 +188,11 @@ confinement.
   `pip-audit --strict` against it; Dependabot is configured for update PRs.
 - `pre-commit` runs ruff/mypy locally; CI runs format, lint, strict-per-module
   mypy, the coverage-gated test suite, and the blocking security suite.
+- Release versions have one source in `coderAI/_version.py`; publishing requires
+  an exact matching `v<version>` tag. The workflow builds and attests once,
+  probes the downloaded wheel (including every optional extra), and makes any
+  already-published PyPI version a hard failure. Manual candidate runs never
+  publish.
 
 ## Known residual risks
 
@@ -183,6 +233,12 @@ the code provides:
 - **Broad protected paths trade usability for safety.** `~/.config` is protected
   wholesale, so the agent cannot edit application configs living there; do such
   edits yourself or move the file into the project.
+- **Transaction coverage is synchronous and workspace-focused.** A background
+  process may mutate after its launching tool returns, and Git metadata under
+  `.git` is intentionally excluded from snapshots. Mutating delegated agents
+  still share the project worktree until isolated patch integration lands.
+  Transaction snapshots also have no retention/incremental-object policy yet,
+  so long sessions can consume substantial disk space.
 
 ## Supported platforms
 

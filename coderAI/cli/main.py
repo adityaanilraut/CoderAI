@@ -19,6 +19,7 @@ from .history_cmd import history
 from .setup_cmd import setup
 from .index_cmd import index_cmd, search_cmd
 from .mcp_cmd import mcp as mcp_cmd
+from .plan_cmd import plan as plan_cmd
 from .skills_cmd import skills as skills_cmd
 from .run_cmd import run as run_cmd
 from .tasks_cmd import tasks
@@ -446,6 +447,7 @@ cli.add_command(index_cmd)
 cli.add_command(search_cmd)
 cli.add_command(run_cmd)
 cli.add_command(mcp_cmd)
+cli.add_command(plan_cmd)
 cli.add_command(skills_cmd)
 
 

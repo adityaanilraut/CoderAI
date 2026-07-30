@@ -23,6 +23,7 @@ from coderAI.system.history import Message, Session
 from coderAI.tools import ToolRegistry
 from coderAI.tools.discovery import discover_tools
 from coderAI.tools.context_manage import ManageContextTool
+from coderAI.tools.planning import RequestPlanAmendmentTool
 from coderAI.core.personas import (
     load_agent_persona,
     AgentPersona,
@@ -77,6 +78,7 @@ class AgentCapabilitiesMixin:
     if TYPE_CHECKING:
 
         async def _record_auxiliary_usage(self, raw_usage: dict[str, Any]) -> None: ...
+        def _refresh_run_permission_policy(self) -> None: ...
 
     def init_skills(self, project_root: str) -> None:
         config = self.config
@@ -97,8 +99,12 @@ class AgentCapabilitiesMixin:
         )
 
     def init_persona(self, persona_name: Optional[str], is_subagent: bool) -> None:
-        if persona_name and self._workspace_trusted:
-            loaded = load_agent_persona(persona_name, self.config.project_root)
+        if persona_name:
+            loaded = load_agent_persona(
+                persona_name,
+                self.config.project_root,
+                include_project=self._workspace_trusted,
+            )
             if loaded is not None and not persona_allowed_in_context(
                 loaded, is_subagent=is_subagent
             ):
@@ -167,6 +173,7 @@ class AgentCapabilitiesMixin:
         registry = ToolRegistry()
         discover_tools(registry)
         registry.register(ManageContextTool(self._context_controller))
+        registry.register(RequestPlanAmendmentTool(self))
         # use_skill stays registered: LocalSkillSource already omits untrusted
         # project overlays while still exposing ~/.coderAI/skills.
         self._filter_gated_tools(registry)
@@ -251,6 +258,8 @@ class AgentCapabilitiesMixin:
         self._configure_delegate_tool_context()
         self._wire_read_cache()
         self._cached_system_prompt = None
+        if hasattr(self, "run_context"):
+            self._refresh_run_permission_policy()
 
     def _wire_read_cache(self) -> None:
         """Attach the per-session FileReadCache to the read_file tool."""
@@ -317,13 +326,11 @@ class AgentCapabilitiesMixin:
         """
         persona = None
         if persona_name:
-            if not self._workspace_trusted:
-                logger.warning(
-                    "Project personas are disabled for this Agent because the workspace "
-                    "was untrusted at launch. Trust it and restart CoderAI."
-                )
-                return None
-            persona = load_agent_persona(persona_name, self.config.project_root)
+            persona = load_agent_persona(
+                persona_name,
+                self.config.project_root,
+                include_project=self._workspace_trusted,
+            )
             if persona is None:
                 return None
             if not persona_allowed_in_context(persona, is_subagent=self.is_subagent):
@@ -360,9 +367,9 @@ class AgentCapabilitiesMixin:
         allowed_set = expand_persona_tools(allowed_tools)
         if not allowed_set:
             return
-        # submit_plan remains present under specialist personas but is hidden
-        # from normal turns; Plan Mode exposes it as its structured terminal.
-        always_available = {"delegate_task", "submit_plan"}
+        # Planning transitions remain present under specialist personas but
+        # are exposed only in their matching runtime states.
+        always_available = {"delegate_task", "submit_plan", "request_plan_amendment"}
         to_remove = [
             name
             for name, tool in self.tools.tools.items()

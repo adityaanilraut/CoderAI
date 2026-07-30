@@ -13,6 +13,7 @@ import asyncio
 import logging
 import time as _time
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import replace
 from typing import Any, Optional, TYPE_CHECKING
 
 from coderAI.context.context_controller import RESPONSE_TOKEN_RESERVE, TOOL_OVERHEAD_TOKENS
@@ -46,6 +47,8 @@ class AgentSessionMixin:
     # Agent state used by this mixin (assigned in ``Agent.__init__``).
     config: Config
     model: str
+    auto_approve: bool
+    tools: Any
     persona: Optional[AgentPersona]
     provider: Any
     is_subagent: bool
@@ -66,6 +69,10 @@ class AgentSessionMixin:
     _hooks_approved: dict[str, bool]
     _save_executor: Optional[ThreadPoolExecutor]
     _pending_saves: set["Future[Any]"]
+    active_plan_id: Optional[str]
+    active_plan_revision: Optional[int]
+    _plan_execution_ready: bool
+    run_context: Any
 
     if TYPE_CHECKING:
         # Provided by AgentCapabilitiesMixin on the composed Agent class.
@@ -105,6 +112,10 @@ class AgentSessionMixin:
         if reset_accounting:
             self._reset_session_accounting()
         self.session = get_services().history.create_session(model=self.model)
+        self._bind_session_run_context(self.session)
+        self.active_plan_id = None
+        self.active_plan_revision = None
+        self._plan_execution_ready = False
         self.session.add_message("system", self._get_system_prompt())
         return self.session
 
@@ -136,9 +147,100 @@ class AgentSessionMixin:
         self._reset_session_accounting()
         self.session = get_services().history.load_session(session_id)
         if self.session:
+            self._bind_session_run_context(self.session)
             self._restore_session_accounting(self.session)
+            self._restore_plan_execution(self.session)
             self._refresh_session_system_prompt()
+            transaction_meta = self.session.metadata.get("workspace_transactions", {})
+            if isinstance(transaction_meta, dict) and transaction_meta.get(
+                "recovered_transactions"
+            ):
+                self.save_session()
+        else:
+            self.active_plan_id = None
+            self.active_plan_revision = None
+            self._plan_execution_ready = False
+            self.run_context = replace(
+                self.run_context,
+                session_id=None,
+                checkpoint_store=None,
+                transaction_store=None,
+            )
         return self.session
+
+    def _bind_session_run_context(self, session: Session) -> None:
+        """Bind session-owned recovery state without consulting global history."""
+        from coderAI.core.workspace_transactions import WorkspaceTransactionStore
+        from coderAI.tools.undo import FileBackupStore
+
+        self.run_context = replace(
+            self.run_context,
+            session_id=session.session_id,
+            checkpoint_store=FileBackupStore(session_id=session.session_id),
+            transaction_store=WorkspaceTransactionStore(
+                session_id=session.session_id,
+                workspace_root=str(self.run_context.workspace_root or self.config.project_root),
+            ),
+        )
+        recovered = self.run_context.transaction_store.recover_incomplete(
+            run_context=self.run_context
+        )
+        session.metadata["workspace_transactions"] = {
+            "schema_version": 1,
+            "store_id": session.session_id,
+            "workspace_id": self.run_context.workspace_id,
+            "recovered_transactions": recovered,
+        }
+
+    def _refresh_run_permission_policy(self) -> None:
+        """Pin the agent's current, potentially narrowed capability policy."""
+        policy = replace(
+            self.run_context.permission_policy,
+            auto_approve=bool(self.auto_approve),
+            workspace_trusted=bool(getattr(self, "_workspace_trusted", False)),
+            allowed_tools=frozenset(self.tools.tools),
+        )
+        self.run_context = replace(self.run_context, permission_policy=policy)
+
+    def _bind_isolation_domain(self, isolation_domain: Any) -> None:
+        """Pin a delegation domain on the child run context."""
+        self.run_context = replace(self.run_context, isolation_domain=isolation_domain)
+
+    def _restore_plan_execution(self, session: Session) -> None:
+        raw = session.metadata.get("plan_execution")
+        if not isinstance(raw, dict):
+            self.active_plan_id = None
+            self.active_plan_revision = None
+            self._plan_execution_ready = False
+            return
+        plan_id = raw.get("plan_id")
+        revision = raw.get("revision")
+        self.active_plan_id = plan_id if isinstance(plan_id, str) and plan_id else None
+        self.active_plan_revision = revision if isinstance(revision, int) and revision > 0 else None
+        # Persisted linkage does not imply permission to continue mutating.
+        # The explicit TUI/CLI resume transition sets readiness again.
+        self._plan_execution_ready = False
+
+    def set_active_plan_execution(self, plan_id: str, revision: int) -> None:
+        """Persist exact execution linkage before the approved turn starts."""
+        self.active_plan_id = plan_id
+        self.active_plan_revision = revision
+        self._plan_execution_ready = True
+        if self.session is not None:
+            self.session.metadata["plan_execution"] = {
+                "plan_id": plan_id,
+                "revision": revision,
+            }
+            self.save_session()
+
+    def clear_active_plan_execution(self) -> None:
+        """Clear execution linkage only after a terminal or amended attempt."""
+        self.active_plan_id = None
+        self.active_plan_revision = None
+        self._plan_execution_ready = False
+        if self.session is not None:
+            self.session.metadata.pop("plan_execution", None)
+            self.save_session()
 
     def save_session(self) -> None:
         """Persist the current session without blocking the agent loop.
@@ -321,6 +423,8 @@ class AgentSessionMixin:
             parent_id=parent_id,
             context_limit=self.get_context_limit(),
         )
+        self._refresh_run_permission_policy()
+        self.run_context = replace(self.run_context, agent_id=self.tracker_info.agent_id)
         self._tracker_start_completion = self.total_completion_tokens
         self._tracker_start_tokens = self.total_tokens
         self._tracker_start_cost = self.cost_tracker.get_total_cost()
@@ -417,9 +521,20 @@ class AgentSessionMixin:
         restored_files: list[str] = []
         file_errors: list[str] = []
         if restore_files:
-            from coderAI.tools.undo import get_backup_store
-
-            result = get_backup_store().restore_after(cutoff)
+            transaction_store = self.run_context.transaction_store
+            checkpoint_store = self.run_context.checkpoint_store
+            if transaction_store is None and checkpoint_store is None:
+                return {
+                    "ok": False,
+                    "error": "Active session has no bound recovery store.",
+                }
+            if transaction_store is not None and transaction_store.has_transactions():
+                result = transaction_store.rollback_after(
+                    cutoff,
+                    run_context=self.run_context,
+                )
+            else:
+                result = checkpoint_store.restore_after(cutoff)
             restored_files = list(result.get("restored", [])) + list(result.get("deleted", []))
             file_errors = list(result.get("errors", []))
         self.save_session()

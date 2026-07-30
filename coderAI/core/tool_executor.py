@@ -16,7 +16,9 @@ from typing import Any, Optional
 
 from coderAI.core.agent_tracker import AgentStatus
 from coderAI.core.execution_context import (
+    RunContext,
     execution_context_scope,
+    get_execution_context,
     resolve_delegation_isolation_domain,
 )
 from coderAI.core.loop_guard import (
@@ -41,6 +43,7 @@ from coderAI.types.tool_results import normalize_tool_result
 from coderAI.core.turn import TurnContext
 from coderAI.system.error_policy import is_transient_error, is_transient_message
 from coderAI.system.retry import backoff_delay
+from coderAI.core.workspace_transactions import WorkspaceTransactionError
 
 logger = logging.getLogger(__name__)
 
@@ -225,6 +228,107 @@ class ToolExecutor:
             return max(1, min(8, cap))
         except (TypeError, ValueError):
             return DEFAULT_MAX_CONCURRENT_MUTATING_SUBAGENTS
+
+    async def _open_workspace_transaction(
+        self,
+        *,
+        pc: dict[str, Any],
+        tool_name: str,
+        arguments: Any,
+    ) -> tuple[Any, Any, Optional[dict[str, Any]]]:
+        """Open the owning session ledger after every permission gate passes."""
+        run_context = get_execution_context()
+        store = run_context.transaction_store
+        if store is None:
+            # Lightweight executor tests and legacy integrations may execute
+            # without a persisted session. A bound production session must
+            # never mutate without its transaction store.
+            if run_context.session_id is None:
+                return None, None, None
+            return (
+                None,
+                None,
+                normalize_tool_result(
+                    {
+                        "success": False,
+                        "error": "Workspace mutation blocked: session transaction ledger is unavailable.",
+                        "error_code": ToolErrorCode.IO,
+                    },
+                    tool_name=tool_name,
+                ),
+            )
+        objective_state = self._turn.objective_state
+        try:
+            handle = await asyncio.to_thread(
+                store.begin,
+                run_context=run_context,
+                tool_call_id=str(pc.get("tool_id") or "unknown"),
+                tool_name=tool_name,
+                tool_arguments=arguments,
+                objective=objective_state.objective if objective_state is not None else None,
+                plan_id=vars(self.agent).get("active_plan_id"),
+                plan_revision=vars(self.agent).get("active_plan_revision"),
+            )
+            return store, handle, None
+        except (OSError, ValueError, WorkspaceTransactionError) as exc:
+            return (
+                None,
+                None,
+                normalize_tool_result(
+                    {
+                        "success": False,
+                        "error": f"Workspace mutation blocked: {exc}",
+                        "error_code": ToolErrorCode.IO,
+                    },
+                    tool_name=tool_name,
+                ),
+            )
+
+    async def _finalize_workspace_transaction(
+        self,
+        result: dict[str, Any],
+        *,
+        store: Any,
+        handle: Any,
+        tool_name: str,
+    ) -> dict[str, Any]:
+        if store is None or handle is None:
+            return result
+        try:
+            record = await asyncio.to_thread(
+                store.finalize,
+                handle,
+                run_context=get_execution_context(),
+                tool_result=result,
+            )
+        except Exception as exc:
+            failed = dict(result)
+            failed["success"] = False
+            failed["error"] = (
+                f"Tool '{tool_name}' finished, but its workspace transaction could not be "
+                f"finalized: {exc}"
+            )
+            failed["error_code"] = ToolErrorCode.IO
+            failed["_transaction_id"] = getattr(handle, "transaction_id", None)
+            failed["_transaction_state"] = "partially_failed"
+            return failed
+        finalized = dict(result)
+        finalized["_transaction_id"] = record.get("transaction_id")
+        finalized["_transaction_state"] = record.get("state")
+        finalized["_workspace_changes"] = [
+            {"path": item.get("path"), "operation": item.get("operation")}
+            for item in record.get("changes", [])
+        ]
+        if record.get("state") == "partially_failed":
+            original_success = finalized.get("success") is True
+            finalized["_tool_success"] = original_success
+            finalized["success"] = False
+            finalized["error"] = (
+                "Workspace transaction recording was only partially successful; "
+                "review the durable ledger before continuing."
+            )
+            finalized["error_code"] = ToolErrorCode.IO
+        return finalized
 
     def _cache_preview(self, path: str, mtime: float, content: str) -> None:
         self._preview_file_cache[path] = (mtime, content)
@@ -593,7 +697,13 @@ class ToolExecutor:
             if tool_name == "delegate_task" and isinstance(arguments, dict):
                 isolation_domain = resolve_delegation_isolation_domain(arguments)
 
-            with execution_context_scope(agent_id, isolation_domain=isolation_domain):
+            candidate_context = getattr(self.agent, "run_context", None)
+            run_context = candidate_context if isinstance(candidate_context, RunContext) else None
+            with execution_context_scope(
+                agent_id,
+                isolation_domain=isolation_domain,
+                run_context=run_context,
+            ):
                 return await self._execute_single_tool_inner(
                     pc,
                     hooks_data,
@@ -626,6 +736,56 @@ class ToolExecutor:
     ) -> dict[str, Any]:
         try:
             is_mcp_proxy = is_mcp_function_name(tool_name) and tool is None
+            active_plan_id = vars(self.agent).get("active_plan_id")
+            active_plan_revision = vars(self.agent).get("active_plan_revision")
+            is_mutating_call = bool(
+                is_mcp_proxy or tool is None or not getattr(tool, "is_read_only", False)
+            )
+            if (
+                active_plan_id
+                and active_plan_revision
+                and is_mutating_call
+                and tool_name != "request_plan_amendment"
+            ):
+                if vars(self.agent).get("_plan_execution_ready") is not True:
+                    return normalize_tool_result(
+                        {
+                            "success": False,
+                            "error": (
+                                f"Tool '{tool_name}' is blocked because this approved plan "
+                                "execution was restored from session state but has not been "
+                                "explicitly resumed. Use /plan resume or coderAI plan execute."
+                            ),
+                            "error_code": ToolErrorCode.PERMISSION_DENIED,
+                        },
+                        tool_name=tool_name,
+                    )
+                try:
+                    from coderAI.core.planning import PlanStore
+
+                    store = PlanStore(getattr(self.agent.config, "project_root", ".") or ".")
+                    active_record = store.load(str(active_plan_id))
+                    execution_is_current = bool(
+                        active_record is not None
+                        and active_record.status == "executing"
+                        and active_record.approved_revision == active_plan_revision
+                        and active_record.revision == active_plan_revision
+                    )
+                except Exception:
+                    execution_is_current = False
+                if not execution_is_current:
+                    return normalize_tool_result(
+                        {
+                            "success": False,
+                            "error": (
+                                f"Tool '{tool_name}' is blocked because the active approved plan "
+                                "is no longer the executing revision. Review and reapprove the "
+                                "current amendment before further mutations."
+                            ),
+                            "error_code": ToolErrorCode.PERMISSION_DENIED,
+                        },
+                        tool_name=tool_name,
+                    )
             if vars(self.agent).get("plan_mode") is True:
                 read_only_delegation = (
                     tool_name == "delegate_task"
@@ -746,16 +906,43 @@ class ToolExecutor:
                             "error_code": ToolErrorCode.DENIED,
                         }
 
+            transaction_store = None
+            transaction_handle = None
+            # Delegated agents own their own ledgers. Wrapping delegate_task in
+            # the parent ledger would duplicate child mutations and let a
+            # parent rollback target another agent's work indirectly.
+            if is_mutating_call and tool_name != "delegate_task":
+                (
+                    transaction_store,
+                    transaction_handle,
+                    transaction_error,
+                ) = await self._open_workspace_transaction(
+                    pc=pc,
+                    tool_name=tool_name,
+                    arguments=arguments,
+                )
+                if transaction_error is not None:
+                    return transaction_error
+
             pre_hooks = (
                 await hooks_manager.run_hooks(tool_name, "PreToolUse", arguments, hooks_data) or []
             )
             for hook_msg in pre_hooks:
                 if hook_msg.startswith("[PreToolUse Hook ERROR]"):
-                    return {
-                        "success": False,
-                        "error": hook_msg,
-                        "error_code": ToolErrorCode.HOOK_BLOCKED,
-                    }
+                    blocked = normalize_tool_result(
+                        {
+                            "success": False,
+                            "error": hook_msg,
+                            "error_code": ToolErrorCode.HOOK_BLOCKED,
+                        },
+                        tool_name=tool_name,
+                    )
+                    return await self._finalize_workspace_transaction(
+                        blocked,
+                        store=transaction_store,
+                        handle=transaction_handle,
+                        tool_name=tool_name,
+                    )
 
             timeout = resolve_tool_timeout(tool, tool_name, arguments)
 
@@ -873,14 +1060,27 @@ class ToolExecutor:
 
             if pre_hooks or post_hooks:
                 normalized_res["_hooks"] = {"pre": pre_hooks, "post": post_hooks}
-            return normalized_res
+            return await self._finalize_workspace_transaction(
+                normalized_res,
+                store=transaction_store,
+                handle=transaction_handle,
+                tool_name=tool_name,
+            )
         except Exception as e:
-            return normalize_tool_result(
+            failed = normalize_tool_result(
                 {
                     "success": False,
                     "error": str(e),
                     "error_code": ToolErrorCode.TOOL_EXCEPTION,
                 },
+                tool_name=pc.get("tool_name", "unknown"),
+            )
+            transaction_store = locals().get("transaction_store")
+            transaction_handle = locals().get("transaction_handle")
+            return await self._finalize_workspace_transaction(
+                failed,
+                store=transaction_store,
+                handle=transaction_handle,
                 tool_name=pc.get("tool_name", "unknown"),
             )
 
@@ -902,9 +1102,8 @@ class ToolExecutor:
             self._turn = turn
         # Bind the owning agent's effective config (project overrides included)
         # and its session-pinned workspace-trust decision for the duration of
-        # the batch. Stores still resolve to the shared process-wide instances
-        # through the parent chain, so cross-agent sharing (notepad/tracker/undo)
-        # is unchanged.
+        # the batch. Recovery state is selected from each tool call's immutable
+        # RunContext; intentionally shared services (tracker/MCP) still inherit.
         with services_scope(
             inherit=True,
             config=getattr(self.agent, "config", None),

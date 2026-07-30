@@ -1,12 +1,19 @@
-"""Per-agent execution context for tool isolation during parallel delegation."""
+"""Immutable run context for session-scoped execution and delegation."""
 
 from __future__ import annotations
 
+import hashlib
+import uuid
+from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
-from dataclasses import dataclass
-from typing import Any, Literal, Optional, cast
-from collections.abc import Iterator
+from dataclasses import dataclass, replace
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Literal, Optional, cast
+
+if TYPE_CHECKING:
+    from coderAI.core.workspace_transactions import WorkspaceTransactionStore
+    from coderAI.tools.undo import FileBackupStore
 
 IsolationDomain = Literal["auto", "read_only", "browser", "desktop", "workspace"]
 
@@ -15,24 +22,69 @@ PARALLEL_MUTATING_DOMAINS = frozenset({"browser"})
 
 
 @dataclass(frozen=True)
-class AgentExecutionContext:
-    """Snapshot of the agent currently executing a tool call."""
+class PermissionPolicySnapshot:
+    """Permission inputs pinned to an agent run.
 
+    The effective tool set may be narrowed further by personas or delegation,
+    but a child must never widen these pinned capabilities.
+    """
+
+    auto_approve: bool = False
+    workspace_trusted: bool = False
+    allowed_tools: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True)
+class RunContext:
+    """Identity and session-scoped stores for one agent run.
+
+    A context is replaced, never mutated, when an explicit lifecycle event
+    supplies a session or tracker identity. Recovery and transaction stores are
+    therefore selected by the owning session rather than ambient global state.
+    """
+
+    run_id: str = "unbound"
+    session_id: Optional[str] = None
     agent_id: str = "main"
+    workspace_id: str = "unbound"
+    workspace_root: Optional[str] = None
+    checkpoint_store: Optional["FileBackupStore"] = None
+    transaction_store: Optional["WorkspaceTransactionStore"] = None
+    permission_policy: PermissionPolicySnapshot = PermissionPolicySnapshot()
     isolation_domain: Optional[IsolationDomain] = None
 
 
-_execution_context: ContextVar[AgentExecutionContext] = ContextVar(
+# Compatibility name for integrations that imported the Milestone 1 type.
+AgentExecutionContext = RunContext
+
+
+def create_run_context(
+    *,
+    workspace_root: str,
+    permission_policy: Optional[PermissionPolicySnapshot] = None,
+) -> RunContext:
+    """Create a fresh immutable context for an Agent lifetime."""
+    resolved = str(Path(workspace_root).expanduser().resolve())
+    workspace_id = hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:16]
+    return RunContext(
+        run_id=f"run_{uuid.uuid4().hex}",
+        workspace_id=workspace_id,
+        workspace_root=resolved,
+        permission_policy=permission_policy or PermissionPolicySnapshot(),
+    )
+
+
+_execution_context: ContextVar[RunContext] = ContextVar(
     "agent_execution_context",
-    default=AgentExecutionContext(),
+    default=RunContext(),
 )
 
 
-def get_execution_context() -> AgentExecutionContext:
+def get_execution_context() -> RunContext:
     return _execution_context.get()
 
 
-def set_execution_context(ctx: AgentExecutionContext) -> Token:
+def set_execution_context(ctx: RunContext) -> Token:
     return _execution_context.set(ctx)
 
 
@@ -42,11 +94,25 @@ def reset_execution_context(token: Token) -> None:
 
 @contextmanager
 def execution_context_scope(
-    agent_id: str,
+    agent_id: Optional[str] = None,
     isolation_domain: Optional[IsolationDomain] = None,
-) -> Iterator[AgentExecutionContext]:
-    """Temporarily bind ``agent_id`` (and optional domain) for tool execution."""
-    ctx = AgentExecutionContext(agent_id=agent_id, isolation_domain=isolation_domain)
+    *,
+    run_context: Optional[RunContext] = None,
+) -> Iterator[RunContext]:
+    """Temporarily bind a run context for tool execution.
+
+    Existing callers may still pass only an agent id.  In that case all other
+    fields are inherited from the current context rather than silently losing
+    the owning session's checkpoint store.
+    """
+    base = run_context or get_execution_context()
+    ctx = replace(
+        base,
+        agent_id=agent_id if agent_id is not None else base.agent_id,
+        isolation_domain=(
+            isolation_domain if isolation_domain is not None else base.isolation_domain
+        ),
+    )
     token = set_execution_context(ctx)
     try:
         yield ctx

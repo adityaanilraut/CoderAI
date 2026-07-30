@@ -27,7 +27,7 @@ CoderAI is a Python CLI tool that pairs an LLM with a focused set of coding tool
 | **Semantic Search** | Natural-language code search via OpenAI or fully local embeddings + ChromaDB |
 | **Context Management** | Pin files, auto-detect project type, smart context compaction |
 | **Persistent Memory** | Key-value store that survives across sessions |
-| **Undo / Rollback** | Revert any file modification instantly |
+| **Undo / Rollback** | Session-owned, conflict-safe workspace transactions |
 | **MCP Integration** | Connect to external Model Context Protocol servers |
 | **Skills & Rules** | Reusable skill workflows and per-project coding rules |
 | **Cost Tracking** | Real-time token and cost accounting with budget limits |
@@ -91,7 +91,7 @@ Type a slash inside `coderAI chat`:
 | `/compact` | Force-compress conversation history |
 | `/agents` | Note about the live agents table |
 | `/persona [name\|default\|list]` | List, apply, or clear an agent persona |
-| `/skills` | List available project skill workflows |
+| `/skills` | List available built-in, user, and trusted-project skill workflows |
 | `/clear` | Wipe conversation & context |
 | `/reasoning <high\|medium\|low\|none>` | Thinking budget for reasoning models |
 | `/yolo` | Toggle auto-approve for high-risk tools |
@@ -169,6 +169,7 @@ CoderAI/
 │   │   └── utils.py            #   Rich helpers for one-shot CLI output
 │   ├── system_prompt.py        # Compat shim → prompts.compose
 │   ├── prompts/                # MDX templates + compose.py (system prompt)
+│   ├── assets/                 # Packaged personas, skills, rules, and /init starters
 │   ├── skills/                 # Skill discovery framework (not the use_skill tool)
 │   ├── mcp_servers/            # Bundled stdio MCP servers (e.g. git_extended)
 │   ├── py.typed                # Mypy marker file
@@ -178,8 +179,9 @@ CoderAI/
 │   │   ├── agent_loop.py       #   ExecutionLoop: LLM-tool iteration loop
 │   │   ├── agent_capabilities.py # Tool registry, personas, approvals, hooks
 │   │   ├── agent_session.py    #   Session lifecycle, checkpoints, rewind
+│   │   ├── execution_context.py # Immutable run/session/workspace identity
 │   │   ├── agent_tracker.py    #   Real-time agent registry & cooperative cancellation
-│   │   ├── personas.py         #   AgentPersona loader from .coderAI/agents/*.md
+│   │   ├── personas.py         #   Scoped persona loader (project → user → builtin)
 │   │   ├── session_bootstrap.py # Shared session bootstrap (TUI + headless)
 │   │   ├── permissions.py      #   Approval / high-risk policy
 │   │   ├── services.py         #   ContextVar service container
@@ -196,11 +198,11 @@ CoderAI/
 │   ├── tui/                    # Textual interactive chat UI
 │   ├── llm/                    # Provider backends + factory
 │   └── tools/                  # Native tools (+ filesystem/, web/)
-│       ├── use_skill.py        # use_skill tool (content in .coderAI/skills/)
+│       ├── use_skill.py        # use_skill tool (project/user/builtin content)
 │       ├── git.py              # Native core git
 │       └── git_extended.py     # Rare git → bundled MCP (not auto-registered)
 │
-├── .coderAI/                   # Shipped overlays (agents/, rules/, skills/)
+├── .coderAI/                   # This repository's project-scoped overlays
 ├── tests/                      # Mirrors package layout (core/, tools/, tui/, …)
 │   └── security/               # Security regression suite
 └── docs/                       # ARCHITECTURE, COMMANDS, INSTALL, …
@@ -218,9 +220,9 @@ CoderAI/
 
 The PyPI project is `coderai-agent` because `coderai` / `coder-ai` are already taken. Do not use `CoderAI` as an import path.
 
-**Skills triad:** `coderAI/skills/` (framework) · `coderAI/tools/use_skill.py` (tool) · `.coderAI/skills/` (content).
+**Skills triad:** `coderAI/skills/` (framework) · `coderAI/tools/use_skill.py` (tool) · `coderAI/assets/skills/`, `~/.coderAI/skills/`, and `.coderAI/skills/` (content scopes).
 
-**Agents triad:** `coderAI/core/agent.py` (orchestrator) · `coderAI/core/personas.py` (persona loader) · `.coderAI/agents/` (persona markdown).
+**Agents triad:** `coderAI/core/agent.py` (orchestrator) · `coderAI/core/personas.py` (persona loader) · `coderAI/assets/agents/`, `~/.coderAI/agents/`, and `.coderAI/agents/` (persona scopes).
 
 ---
 
@@ -456,10 +458,19 @@ Tools appear as `mcp__<server>__<tool>`; prompts as `/mcp__<server>__<prompt>`.
 
 ### Undo / Rollback
 
+Undo and rewind history is bound to the executing agent's persisted session.
+Concurrent delegated agents use distinct recovery ledgers, and resuming a
+session reopens that same ledger. Approved synchronous mutations now receive a
+durable before/after transaction record, including changes observed after
+foreground shell commands and tool hooks. Rollback refuses to overwrite later
+user changes and keeps partial failures retryable. Long-lived background
+processes, Git metadata-only changes, and isolated mutating worktrees remain
+Milestone 3 work.
+
 | Tool | Description |
 |---|---|
-| `undo` | Revert the last file modification |
-| `undo_history` | View recent file change history |
+| `undo` | Roll back the latest workspace transaction, or a named transaction ID |
+| `undo_history` | View durable transaction and legacy file-backup history |
 
 ---
 
@@ -467,7 +478,12 @@ Tools appear as `mcp__<server>__<tool>`; prompts as `/mcp__<server>__<prompt>`.
 
 ### Agent Personas
 
-CoderAI ships **6 specialist agent personas** as Markdown files with YAML frontmatter in `.coderAI/agents/`. Each persona has:
+CoderAI ships **6 specialist agent personas** as package resources, so they work
+from an installed wheel without a source checkout. Persona names resolve with
+explicit precedence: trusted project `.coderAI/agents/`, user
+`~/.coderAI/agents/`, then packaged `coderAI/assets/agents/`. Project personas
+are withheld until the workspace-trust snapshot is active; user and built-in
+personas remain available. Each persona has:
 
 - **`name`** — Identifier used for `/agent` or delegated persona selection
 - **`description`** — What the agent specializes in
@@ -538,9 +554,12 @@ The `ResourceManager` (`locks.py`) prevents race conditions during parallel exec
 
 ### Skills
 
-Skills are predefined step-by-step workflows stored in `.coderAI/skills/<name>/SKILLS.md`
-(or user-wide in `~/.coderAI/skills/`). Ecosystem `SKILL.md` files are accepted and
-normalized on install.
+Skills are predefined step-by-step workflows. CoderAI resolves them in the same
+explicit order: trusted project `.coderAI/skills/<name>/SKILLS.md`, user-wide
+`~/.coderAI/skills/`, then packaged built-ins in `coderAI/assets/skills/`.
+Ecosystem `SKILL.md` files are accepted and normalized on install. `/init`
+copies its starter persona, rule, and `CODERAI.md` from those installed package
+resources without overwriting existing files.
 
 **Install from GitHub or a local path** (Claude Code–style):
 
@@ -569,8 +588,28 @@ Use them via the `use_skill` tool:
 
 Use `manage_tasks` for a persistent execution checklist during multi-step work.
 In chat, `/tasks` refreshes that checklist. `/plan <request>` is a separate,
-enforced read-only workflow that creates a versioned plan for review; use
-`/plan approve`, `/plan amend <instruction>`, or `/plan cancel` to act on it.
+enforced read-only workflow that creates a versioned plan for review. Plan
+cards show stable decisions and the mutable `.coderAI/plans/<id>/draft.json`
+artifact. Use `/plan answer <id> <answer>`, `/plan edit`, and `/plan apply` to
+review or change it without another model rewrite; `/plan approve` executes the
+exact hashed revision, and `/plan resume` continues an interrupted attempt.
+
+The same lifecycle is available without the TUI for scripts and CI:
+
+```bash
+coderAI plan create --json "add parser validation"
+coderAI plan show --json
+coderAI plan edit                         # prints the draft.json path
+coderAI plan apply --json                 # validates edits and creates a revision
+coderAI plan answer storage SQLite --json
+coderAI plan approve --json               # approval only
+coderAI plan execute --auto-approve --json
+```
+
+Headless execution denies mutations unless `--auto-approve`/`--yolo` is
+explicit. If implementation discovers that the approved plan must change, the
+agent records an execution amendment, stops mutation, and requires approval of
+the new revision.
 
 ### Project Rules
 
@@ -698,6 +737,14 @@ pytest tests/test_web.py
 
 # Validate installation (config, keys, dependencies)
 coderAI doctor
+
+# Build and probe the wheel + sdist from outside the checkout
+python -m build --outdir /tmp/coderai-dist
+python scripts/verify_wheel.py /tmp/coderai-dist
+
+# Optional installed-wheel probes (repeat --extra to combine)
+python scripts/verify_wheel.py /tmp/coderai-dist --extra semantic --extra web
+python scripts/verify_wheel.py /tmp/coderai-dist --extra browser --install-browser
 
 # Static typing (CI gate; strict modules listed in pyproject.toml)
 make typecheck

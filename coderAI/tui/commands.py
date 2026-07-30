@@ -285,28 +285,29 @@ def _handle_persona_slash(server: "UIBridge", arg: str) -> None:
     - ``/persona default``   — clear the active persona (also: ``none``, ``off``)
     - ``/persona <name>``    — switch to the named persona (filename stem)
     """
-    from coderAI.core.personas import get_available_personas, resolve_persona_name
+    from coderAI.core.personas import (
+        get_available_persona_descriptors,
+        resolve_persona_name,
+    )
 
     project_root = getattr(server.agent.config, "project_root", ".")
     workspace_trusted = bool(getattr(server.agent, "_workspace_trusted", False))
-    available = get_available_personas(project_root) if workspace_trusted else []
+    descriptors = get_available_persona_descriptors(
+        project_root,
+        include_project=workspace_trusted,
+    )
+    available = [item.name for item in descriptors]
 
     name = (arg or "").strip().lower()
     if not name or name == "list":
         if not available:
-            server.emit(
-                "info",
-                message=(
-                    "Project personas are disabled for this session. Trust the workspace and "
-                    "restart CoderAI."
-                    if not workspace_trusted
-                    else "No personas found in .coderAI/agents/. Create <stem>.md files with "
-                    "YAML frontmatter to define one."
-                ),
-            )
+            server.emit("info", message="No built-in, user, or project personas were found.")
             return
         current = server.agent.persona.name if server.agent.persona else "(default)"
-        listing = "\n".join(f"  • {n}" for n in sorted(available))
+        listing = "\n".join(
+            f"  • {item.name} [{item.scope}]"
+            for item in sorted(descriptors, key=lambda entry: entry.name)
+        )
         server.emit(
             "info",
             message=f"Available personas (current: {current}):\n{listing}\n\nUse /persona <name> to switch · /persona default to clear.",
@@ -319,14 +320,13 @@ def _handle_persona_slash(server: "UIBridge", arg: str) -> None:
         server.emit("info", message="Persona cleared — back to the default agent.")
         return
 
-    resolved = resolve_persona_name(arg, project_root) if workspace_trusted else None
+    resolved = resolve_persona_name(
+        arg,
+        project_root,
+        include_project=workspace_trusted,
+    )
     if not resolved:
-        hint = (
-            "Project personas are disabled for this session. Trust the workspace and restart "
-            "CoderAI."
-            if not workspace_trusted
-            else f"Persona '{arg}' not found. Available: {', '.join(sorted(available)) or '(none)'}"
-        )
+        hint = f"Persona '{arg}' not found. Available: {', '.join(sorted(available)) or '(none)'}"
         server.emit("warning", message=hint)
         return
 
@@ -375,13 +375,19 @@ async def _cmd_send_message(server: UIBridge, msg: dict[str, Any]) -> None:
 def _emit_plan(server: UIBridge, record: Any) -> None:
     from coderAI.core.planning import render_plan_markdown
 
+    store = _plan_store(server)
     server.emit(
         "plan_card",
         planId=record.plan_id,
         revision=record.revision,
         status=record.status,
-        markdown=render_plan_markdown(record),
+        markdown=render_plan_markdown(record, include_questions=False),
+        questions=[question.model_dump() for question in record.proposal.questions],
         unansweredQuestions=list(record.proposal.unanswered_questions),
+        editablePath=str(store.draft_path(record)),
+        approvals=[item.model_dump() for item in record.approvals],
+        executions=[item.model_dump() for item in record.executions],
+        amendments=store.revision_history(record),
     )
 
 
@@ -510,6 +516,63 @@ async def _cmd_amend_plan(server: UIBridge, msg: dict[str, Any]) -> None:
     )
 
 
+async def _cmd_answer_plan(server: UIBridge, msg: dict[str, Any]) -> None:
+    question_id = str(msg.get("questionId") or "").strip()
+    answer = str(msg.get("answer") or "").strip()
+    store = _plan_store(server)
+    current = store.load_active()
+    if current is None:
+        server.emit("warning", message="No active plan to answer.")
+        return
+    try:
+        revised = store.answer_question(current, question_id, answer)
+    except ValueError as exc:
+        server.emit("warning", message=str(exc))
+        _emit_plan(server, current)
+        return
+    _emit_plan(server, revised)
+
+
+async def _cmd_edit_plan(server: UIBridge, msg: dict[str, Any]) -> None:
+    store = _plan_store(server)
+    current = store.load_active()
+    if current is None:
+        server.emit("warning", message="No active plan to edit.")
+        return
+    if bool(msg.get("reset")):
+        try:
+            store.refresh_draft(current)
+        except ValueError as exc:
+            server.emit("warning", message=str(exc))
+            return
+    path = store.draft_path(current)
+    server.emit(
+        "info",
+        message=(
+            f"Editable plan artifact: {path}\n"
+            "Edit proposal fields, set a concise amendment description, then run /plan apply. "
+            "Immutable revision files are never edited in place."
+        ),
+    )
+    _emit_plan(server, current)
+
+
+async def _cmd_apply_plan(server: UIBridge, msg: dict[str, Any]) -> None:
+    store = _plan_store(server)
+    current = store.load_active()
+    if current is None:
+        server.emit("warning", message="No active plan draft to apply.")
+        return
+    path = str(msg.get("path") or "").strip() or None
+    try:
+        revised = store.apply_draft(current, path)
+    except ValueError as exc:
+        server.emit("warning", message=str(exc))
+        _emit_plan(server, current)
+        return
+    _emit_plan(server, revised)
+
+
 async def _cmd_cancel_plan(server: UIBridge, _msg: dict[str, Any]) -> None:
     store = _plan_store(server)
     current = store.load_active()
@@ -525,32 +588,59 @@ async def _cmd_cancel_plan(server: UIBridge, _msg: dict[str, Any]) -> None:
 
 
 async def _cmd_approve_plan(server: UIBridge, _msg: dict[str, Any]) -> None:
+    store = _plan_store(server)
+    current = store.load_active()
+    if current is None:
+        server.emit("warning", message="No active plan to approve.")
+        return
+    try:
+        approved = store.approve(current)
+    except ValueError as exc:
+        server.emit("warning", message=str(exc))
+        _emit_plan(server, current)
+        return
+    await _execute_plan(server, approved, resume=False)
+
+
+async def _cmd_resume_plan(server: UIBridge, _msg: dict[str, Any]) -> None:
+    current = _plan_store(server).load_active()
+    if current is None:
+        server.emit("warning", message="No active plan execution to resume.")
+        return
+    if current.status not in {"executing", "paused"}:
+        server.emit(
+            "warning",
+            message=f"Plan is {current.status}; only paused or executing plans can resume.",
+        )
+        _emit_plan(server, current)
+        return
+    await _execute_plan(server, current, resume=True)
+
+
+async def _execute_plan(server: UIBridge, current: Any, *, resume: bool) -> None:
     from coderAI.core.planning import build_execution_prompt
 
     async with server._turn_lock:
         store = _plan_store(server)
-        current = store.load_active()
-        if current is None:
-            server.emit("warning", message="No active plan to approve.")
-            return
-        if current.status not in {"draft", "needs_input"}:
-            server.emit(
-                "warning", message=f"Plan cannot be approved while status is {current.status}."
-            )
-            return
+        session = getattr(server.agent, "session", None)
+        session_id = getattr(session, "session_id", None)
         try:
-            approved = store.approve(current)
-            proposal = store.load_revision(
-                approved, approved.approved_revision or approved.revision
+            proposal = store.load_revision(current, current.approved_revision or current.revision)
+            executing = store.mark_executing(
+                current, execution_session_id=session_id, resume=resume
             )
-        except ValueError as e:
-            server.emit("warning", message=str(e))
+        except ValueError as exc:
+            server.emit("warning", message=str(exc))
             _emit_plan(server, current)
             return
-        executing = store.mark_executing(approved)
         _emit_plan(server, executing)
-        server.agent.active_plan_id = executing.plan_id
-        server.agent.active_plan_revision = executing.approved_revision
+        set_execution = getattr(server.agent, "set_active_plan_execution", None)
+        if callable(set_execution):
+            set_execution(executing.plan_id, executing.approved_revision or executing.revision)
+        else:
+            server.agent.active_plan_id = executing.plan_id
+            server.agent.active_plan_revision = executing.approved_revision or executing.revision
+            server.agent._plan_execution_ready = True
         server.agent.plan_mode = False
         server.tick_iteration()
         try:
@@ -561,20 +651,52 @@ async def _cmd_approve_plan(server: UIBridge, _msg: dict[str, Any]) -> None:
                 if content:
                     server.emit("turn", phase="text", delta=content, reasoningActive=False)
                 server.emit("turn", phase="end", reasoningActive=False)
-            finished = store.mark_finished(
-                executing,
-                success=bool((result or {}).get("success")),
-                stop_reason=str((result or {}).get("stop_reason") or "unknown"),
-            )
-            _emit_plan(server, finished)
+            latest = store.load(executing.plan_id)
+            if latest is None:
+                raise ValueError("Plan record disappeared during execution.")
+            if latest.revision != executing.revision or latest.status != "executing":
+                _emit_plan(server, latest)
+                server.emit(
+                    "warning",
+                    message=(
+                        f"Execution stopped at amendment r{latest.revision}; "
+                        "review and approve it before continuing."
+                    ),
+                )
+            else:
+                success = bool((result or {}).get("success"))
+                stop_reason = str((result or {}).get("stop_reason") or "unknown")
+                if not success and stop_reason in {"cancelled", "denied"}:
+                    finished = store.mark_paused(latest, stop_reason=stop_reason)
+                else:
+                    finished = store.mark_finished(
+                        latest,
+                        success=success,
+                        stop_reason=stop_reason,
+                    )
+                _emit_plan(server, finished)
         except Exception as e:
             logger.exception("approved plan execution failed")
-            finished = store.mark_finished(executing, success=False, stop_reason="error")
-            _emit_plan(server, finished)
-            server._emit_error("internal", str(e), hint="The approved plan remains resumable.")
+            latest = store.load(executing.plan_id)
+            if (
+                latest is not None
+                and latest.revision == executing.revision
+                and latest.status == "executing"
+            ):
+                latest = store.mark_finished(latest, success=False, stop_reason="error")
+                _emit_plan(server, latest)
+            server._emit_error(
+                "internal", str(e), hint="An executing plan can be resumed with /plan resume."
+            )
         finally:
-            server.agent.active_plan_id = None
-            server.agent.active_plan_revision = None
+            server.agent.plan_mode = False
+            clear_execution = getattr(server.agent, "clear_active_plan_execution", None)
+            if callable(clear_execution):
+                clear_execution()
+            else:
+                server.agent.active_plan_id = None
+                server.agent.active_plan_revision = None
+                server.agent._plan_execution_ready = False
             server.emit_status()
             server.emit_ready()
 
@@ -680,6 +802,9 @@ async def _cmd_set_persona(server: UIBridge, msg: dict[str, Any]) -> None:
 
 async def _cmd_toggle_auto_approve(server: UIBridge, msg: dict[str, Any]) -> None:
     server.agent.auto_approve = not server.agent.auto_approve
+    refresh_policy = getattr(server.agent, "_refresh_run_permission_policy", None)
+    if callable(refresh_policy):
+        refresh_policy()
     server.agent._configure_delegate_tool_context()
     server.agent._refresh_session_system_prompt()
     # Status bar's safe/YOLO pill is the indicator in normal mode; the
@@ -703,6 +828,9 @@ async def _cmd_set_auto_approve(server: UIBridge, msg: dict[str, Any]) -> None:
     changed = bool(server.agent.auto_approve) != enabled
     server.agent.auto_approve = enabled
     if changed:
+        refresh_policy = getattr(server.agent, "_refresh_run_permission_policy", None)
+        if callable(refresh_policy):
+            refresh_policy()
         server.agent._configure_delegate_tool_context()
         server.agent._refresh_session_system_prompt()
     server.emit("session_patch", autoApprove=enabled)
@@ -889,16 +1017,20 @@ async def _cmd_get_tasks(server: UIBridge, _msg: dict[str, Any]) -> None:
 
 
 async def _cmd_list_personas(server: UIBridge, _msg: dict[str, Any]) -> None:
-    from coderAI.core.personas import get_available_personas
+    from coderAI.core.personas import get_available_persona_descriptors
 
     project_root = getattr(server.agent.config, "project_root", ".")
-    available = (
-        get_available_personas(project_root)
-        if getattr(server.agent, "_workspace_trusted", False)
-        else []
+    available = get_available_persona_descriptors(
+        project_root,
+        include_project=bool(getattr(server.agent, "_workspace_trusted", False)),
     )
     current = server.agent.persona.name if server.agent.persona else None
-    server.emit("available_personas", current=current, personas=sorted(available))
+    server.emit(
+        "available_personas",
+        current=current,
+        personas=sorted(item.name for item in available),
+        personaScopes={item.name: item.scope for item in available},
+    )
 
 
 async def _cmd_list_skills(server: UIBridge, _msg: dict[str, Any]) -> None:
@@ -916,7 +1048,7 @@ async def _cmd_list_skills(server: UIBridge, _msg: dict[str, Any]) -> None:
         include_project=trusted,
         include_user=True,
     )
-    skills = [{"name": s.name, "description": s.description} for s in found]
+    skills = [{"name": s.name, "description": s.description, "source": s.source} for s in found]
     server.emit("available_skills", skills=skills)
     if not skills and not trusted:
         server.emit(
@@ -1279,6 +1411,7 @@ def _do_init_project(
     message (the async caller emits it); otherwise ``error`` is ``None``.
     """
     dot_dir = project_root / ".coderAI"
+    from coderAI.assets.manifest import asset_text
 
     created_dirs: list[str] = []
     created_files: list[str] = []
@@ -1297,103 +1430,32 @@ def _do_init_project(
         except OSError as e:
             return created_dirs, created_files, skipped_files, f"Cannot create {d.name}: {e}"
 
-    files_to_create: list[tuple[Path, str]] = [
-        (
-            project_root / "CODERAI.md",
-            "\n".join(
-                [
-                    "# Project Guidance for CoderAI",
-                    "",
-                    "Describe your project here so CoderAI can work effectively:",
-                    "",
-                    "## Project Overview",
-                    "- What does this project do?",
-                    "- What is the tech stack?",
-                    "",
-                    "## Key Conventions",
-                    "- Code style preferences (e.g. tabs vs spaces, naming conventions)",
-                    "- Testing framework and how to run tests",
-                    "- Branch naming and PR workflow",
-                    "",
-                    "## Common Commands",
-                    "- `npm run dev` / `make run` — start development server",
-                    "- `npm test` / `pytest` — run tests",
-                    "- `npm run lint` / `ruff check .` — lint code",
-                    "",
-                    "## Important Notes",
-                    "- Any gotchas or context the AI should always remember",
-                    "- Links to docs, design files, or relevant resources",
-                    "",
-                ]
+    try:
+        files_to_create: list[tuple[Path, str]] = [
+            (
+                project_root / "CODERAI.md",
+                asset_text("starter", "CODERAI.md"),
             ),
-        ),
-        (
-            dot_dir / "agents" / "planner.md",
-            "\n".join(
-                [
-                    "---",
-                    "name: planner",
-                    "description: Planning specialist for complex features, refactors, and implementation sequencing.",
-                    'tools: ["Read", "Grep", "Glob", "Bash", "Edit", "Write"]',
-                    "model: sonnet",
-                    "---",
-                    "",
-                    "You create implementation plans that are specific, incremental, and testable.",
-                    "",
-                    "## Workflow",
-                    "",
-                    "1. Read enough of the codebase to understand the real constraints.",
-                    "2. Break the work into concrete steps with file paths when possible.",
-                    "3. Call out dependencies, risks, and validation points.",
-                    "4. Prefer plans that can be delivered in small, verifiable increments.",
-                    "",
-                    "## Output Expectations",
-                    "",
-                    "- Separate requirements, implementation steps, and risks.",
-                    "- Include verification guidance.",
-                    "- Avoid claiming any persona or workflow is activated automatically.",
-                    "",
-                ]
+            (
+                dot_dir / "agents" / "planner.md",
+                asset_text("agents", "planner.md"),
             ),
-        ),
-        (
-            dot_dir / "rules" / "001-common-principles.md",
-            "\n".join(
-                [
-                    "# 001: Common Principles",
-                    "",
-                    "This rule applies universally to all agents operating within this project. Follow these principles at all times:",
-                    "",
-                    "## 1. Test-Driven Development (TDD)",
-                    "- **Always write tests first:** When implementing new features or fixing bugs, write a failing test before writing the implementation code.",
-                    "- **Verify Coverage:** Ensure that all new core logic is covered by tests.",
-                    "- **Independence:** Tests should not rely on shared state or external systems without proper mocking.",
-                    "",
-                    "## 2. Security First",
-                    "- **No Hardcoded Secrets:** Never hardcode API keys, tokens, passwords, or connection strings in the source code. Use environment variables (e.g., `os.environ.get()`).",
-                    "- **Input Validation:** Always validate and sanitize user input at the boundaries of the application.",
-                    "- **Defense in Depth:** Do not assume that internal components are safe from malicious input.",
-                    "",
-                    "## 3. Tool Usage & Autonomy",
-                    "- **Act Proactively:** Use your available tools (`Read`, `Grep`, `Bash`, etc.) to gather necessary context. Do not guess file paths or function names.",
-                    "- **Verify Assumptions:** If you are unsure about how a component works, read the code or run a test script to understand its behavior before making changes.",
-                    "",
-                    "## 4. Communication",
-                    "- **Clarity and Precision:** When reporting findings or documenting code, be concise but factually complete.",
-                    "- **Cite Sources:** Reference specific file paths and line numbers when discussing code changes.",
-                    "",
-                    "## 5. Task Workflow",
-                    "- **Track multi-step work:** For tasks involving multiple steps, multiple file edits, or non-trivial implementation work, use `manage_tasks` (`add` / `start` / `complete` / `list`) before and during the work.",
-                    "- **Skip task tracking for trivial asks:** Single-file reads, greetings, one-line answers, and simple lookups do not need a checklist.",
-                    "",
-                ]
+            (
+                dot_dir / "rules" / "001-common-principles.md",
+                asset_text("rules", "001-common-principles.md"),
             ),
-        ),
-        (
-            dot_dir / "tasks.json",
-            "[]\n",
-        ),
-    ]
+            (
+                dot_dir / "tasks.json",
+                "[]\n",
+            ),
+        ]
+    except OSError as e:
+        return (
+            created_dirs,
+            created_files,
+            skipped_files,
+            f"Cannot load packaged starter assets: {e}",
+        )
 
     for filepath, content in files_to_create:
         rel = str(filepath.relative_to(project_root))
@@ -1503,7 +1565,11 @@ _COMMAND_HANDLERS: dict[str, Callable[["UIBridge", dict[str, Any]], Awaitable[No
     "start_plan": _cmd_start_plan,
     "get_plan": _cmd_get_plan,
     "amend_plan": _cmd_amend_plan,
+    "answer_plan": _cmd_answer_plan,
+    "edit_plan": _cmd_edit_plan,
+    "apply_plan": _cmd_apply_plan,
     "approve_plan": _cmd_approve_plan,
+    "resume_plan": _cmd_resume_plan,
     "cancel_plan": _cmd_cancel_plan,
     "list_models": _cmd_list_models,
     "list_personas": _cmd_list_personas,

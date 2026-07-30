@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from coderAI.core.agent import Agent
+from coderAI.core.execution_context import create_run_context
 from coderAI.system.config import Config
 from coderAI.system.cost import CostTracker
 from coderAI.system.history import Session
@@ -28,6 +29,7 @@ def _bare_agent(session: Session) -> Agent:
     agent.config = SimpleNamespace(save_history=True)
     agent._save_executor = None
     agent._pending_saves = set()
+    agent.run_context = create_run_context(workspace_root=".")
     return agent
 
 
@@ -70,6 +72,74 @@ def test_load_session_restores_accounting_and_save_snapshots_live_totals() -> No
     assert snapshot["completion_tokens"] == 32
     assert snapshot["total_tokens"] == 157
     assert snapshot["total_cost_usd"] == pytest.approx(2.0)
+
+
+def test_failed_resume_clears_previous_session_recovery_binding() -> None:
+    session = Session(session_id="session_1_abcdef12")
+    agent = _bare_agent(session)
+    agent._bind_session_run_context(session)
+    agent.active_plan_id = "plan-old"
+    agent.active_plan_revision = 3
+    agent._plan_execution_ready = True
+    history = SimpleNamespace(load_session=MagicMock(return_value=None))
+
+    with patch(
+        "coderAI.core.agent_session.get_services",
+        return_value=SimpleNamespace(history=history),
+    ):
+        loaded = agent.load_session("session_2_abcdef12")
+
+    assert loaded is None
+    assert agent.run_context.session_id is None
+    assert agent.run_context.checkpoint_store is None
+    assert agent.run_context.transaction_store is None
+    assert agent.active_plan_id is None
+    assert agent.active_plan_revision is None
+    assert agent._plan_execution_ready is False
+
+
+def test_load_session_recovers_open_workspace_transaction(tmp_path, monkeypatch) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "target.txt"
+    target.write_text("before")
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    session = Session(session_id="session_1_txresume12")
+
+    original = _bare_agent(session)
+    original.config = SimpleNamespace(project_root=str(workspace), save_history=True)
+    original.run_context = create_run_context(workspace_root=str(workspace))
+    original._bind_session_run_context(session)
+    store = original.run_context.transaction_store
+    handle = store.begin(
+        run_context=original.run_context,
+        tool_call_id="call_resume",
+        tool_name="write_file",
+        tool_arguments={"path": "target.txt"},
+        objective="resume recovery",
+        plan_id=None,
+        plan_revision=None,
+    )
+    target.write_text("after crash")
+
+    resumed = _bare_agent(session)
+    resumed.config = SimpleNamespace(project_root=str(workspace), save_history=True)
+    resumed.run_context = create_run_context(workspace_root=str(workspace))
+    history = SimpleNamespace(
+        load_session=MagicMock(return_value=session),
+        save_session_data=MagicMock(),
+    )
+    with patch(
+        "coderAI.core.agent_session.get_services",
+        return_value=SimpleNamespace(history=history),
+    ):
+        loaded = resumed.load_session(session.session_id)
+
+    assert loaded is session
+    meta = session.metadata["workspace_transactions"]
+    assert meta["recovered_transactions"] == [handle.transaction_id]
+    assert resumed.run_context.transaction_store.list_transactions()[0]["state"] == "recovered"
+    history.save_session_data.assert_called_once()
 
 
 @pytest.mark.asyncio

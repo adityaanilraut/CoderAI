@@ -166,7 +166,7 @@ class TestInstallLocal:
         assert (dest / SKILLS_FILE_NAME).is_file()
         assert not (dest / "SKILL.md").exists()
 
-        skills = discover_local_skills(str(tmp_path), include_user=False)
+        skills = discover_local_skills(str(tmp_path), include_user=False, include_builtin=False)
         assert [s.name for s in skills] == ["legacy"]
 
     def test_install_user_scope(self, tmp_path, monkeypatch):
@@ -220,6 +220,16 @@ class TestInstallLocal:
 
 
 class TestSkillsCli:
+    def test_list_all_includes_packaged_builtins(self, runner, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("coderAI.system.config.config_manager.config_dir", tmp_path / "home")
+
+        listed = runner.invoke(skills, ["list", "--scope", "all"])
+
+        assert listed.exit_code == 0, listed.output
+        assert "[builtin] security-audit" in listed.output
+        assert "[builtin] tdd-workflow" in listed.output
+
     def test_install_list_remove(self, runner, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr("coderAI.system.config.config_manager.config_dir", tmp_path / "home")

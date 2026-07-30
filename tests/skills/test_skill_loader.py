@@ -124,7 +124,7 @@ class TestDiscoverLocalSkills:
             "---\nname: skill-b\ndescription: Second skill\n---\n\n## B\n"
         )
 
-        skills = discover_local_skills(str(tmp_path), include_user=False)
+        skills = discover_local_skills(str(tmp_path), include_user=False, include_builtin=False)
         assert len(skills) == 2
         names = {s.name for s in skills}
         assert names == {"skill-a", "skill-b"}
@@ -132,7 +132,7 @@ class TestDiscoverLocalSkills:
     def test_empty_directory(self, tmp_path):
         dot_dir = tmp_path / ".coderAI" / "skills"
         dot_dir.mkdir(parents=True)
-        skills = discover_local_skills(str(tmp_path), include_user=False)
+        skills = discover_local_skills(str(tmp_path), include_user=False, include_builtin=False)
         assert skills == []
 
 

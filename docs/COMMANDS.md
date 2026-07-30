@@ -108,6 +108,48 @@ coderAI run --trust-workspace "..."     # CI: trust this repo's .coderAI hooks/c
 
 ---
 
+### `coderAI plan`
+
+Run the complete Plan Mode lifecycle without Textual. State is project-scoped
+under `.coderAI/plans/`; every command supports deterministic process exit and
+the state-changing/review commands support `--json` where shown.
+
+```bash
+# Enforced read-only exploration; returns the plan ID, revision, questions,
+# editable artifact path, and durable histories.
+coderAI plan create --json "add parser validation"
+
+# Review current state or print the mutable validated artifact path.
+coderAI plan show --json
+coderAI plan edit
+
+# Edit draft.json in any editor, then validate it into a new immutable revision.
+coderAI plan apply --json
+coderAI plan apply --file .coderAI/review/parser-plan.json --json
+
+# Set or replace one stable structured answer without another LLM call.
+coderAI plan answer storage SQLite --json
+
+# Approval and execution are separate for CI review gates.
+coderAI plan approve --json
+coderAI plan execute --auto-approve --json
+
+# Continue a paused or executing record after denial/cancellation/interruption.
+coderAI plan execute --resume <session-id> --auto-approve --json
+```
+
+`create` exposes only read tools, read-only delegation, and `submit_plan`; the
+executor independently rejects invented mutations. `approve` refuses plans
+with unanswered questions, stale/invalid artifacts, or unapplied draft edits.
+`execute` accepts only `approved`, `paused`, or interrupted `executing` records, verifies
+the approved snapshot hash, and defaults to deny-on-mutate. A denied or
+cancelled attempt becomes `paused` without losing approval and requires an
+explicit execute/resume command before mutation can continue. If the agent calls
+`request_plan_amendment`, execution returns non-zero with a new draft revision
+that must be reviewed and approved.
+
+---
+
 ### `coderAI mcp`
 Manage MCP (Model Context Protocol) servers. Config scopes:
 
@@ -153,10 +195,13 @@ Install and manage skill workflows (Claude Code–style). Scopes:
 |-------|------|
 | **project** (default) | `.coderAI/skills/<name>/SKILLS.md` |
 | **user** | `~/.coderAI/skills/<name>/SKILLS.md` |
+| **builtin** (read-only) | Installed `coderAI/assets/skills/<name>/SKILLS.md` |
 
 Sources: local path, `owner/repo`, `owner/repo/path`, or a GitHub URL. Ecosystem
-`SKILL.md` files are accepted and normalized to `SKILLS.md` on install. Project
-skills require workspace trust; user skills are always available.
+`SKILL.md` files are accepted and normalized to `SKILLS.md` on install. Runtime
+resolution is project → user → builtin. Project skills require workspace trust;
+user and packaged built-in skills are always available. Built-ins cannot be
+removed with `coderAI skills remove`.
 
 ```bash
 coderAI skills install ./my-skill
@@ -169,7 +214,8 @@ coderAI skills list [--scope all|project|user]
 coderAI skills remove <name> [--scope project|user] [-y]
 ```
 
-In chat: `/skills` lists installed workflows; the agent loads them via `use_skill`.
+In chat: `/skills` lists each workflow with its source scope; the agent loads it
+via `use_skill`.
 
 ---
 
@@ -329,7 +375,7 @@ These commands are typed inside an active `coderAI chat` session.
 | `/compact` | Force-compress conversation history to reclaim context space |
 | `/agents` | Show all active agents (main + any sub-agents) and their status |
 | `/persona [name\|default\|list]` | List, apply, or clear an agent persona |
-| `/skills` | List available project skill workflows |
+| `/skills` | List built-in, user, and trusted-project skill workflows |
 | `/reasoning <high\|medium\|low\|none>` | Set thinking budget for reasoning models |
 | `/yolo` | Toggle unsafe auto-approve mode for the session |
 | `/verbose` | Toggle reasoning display, longer diff previews, and success notices |
@@ -348,7 +394,11 @@ These commands are typed inside an active `coderAI chat` session.
 | `/plan <request>` | Explore read-only and create a versioned implementation plan |
 | `/plan` | Show the active plan |
 | `/plan approve` | Approve and execute the exact active revision |
-| `/plan amend <instruction>` | Revise the plan; `/plan answer` is an alias for answering open questions |
+| `/plan answer <question-id> <answer>` | Set or replace one structured answer directly |
+| `/plan edit [reset]` | Show the editable `draft.json`; `reset` discards unapplied edits |
+| `/plan apply [path]` | Validate the editable artifact and create an immutable revision |
+| `/plan amend <instruction>` | Ask the planner to revise the whole plan in read-only mode |
+| `/plan resume` | Resume an interrupted executing revision with its exact approval linkage |
 | `/plan cancel` | Cancel the active plan |
 | `/export` | Export session to markdown |
 | `/search <query>` | Show matching snippets from the conversation transcript |
@@ -589,6 +639,8 @@ Rare git ops auto-connect via the bundled `git_extended` MCP server as
 |---|---|---|
 | `python_repl` | ✓ | Run Python code in an isolated subprocess |
 | `use_skill` | — | Load a skill workflow |
+| `submit_plan` | — | Submit the complete structured proposal (Plan Mode only) |
+| `request_plan_amendment` | — | Stop divergent execution and propose a replacement revision for reapproval |
 
 ### Vision
 
@@ -638,5 +690,5 @@ Rare git ops auto-connect via the bundled `git_extended` MCP server as
 
 | Tool | Confirm | Description |
 |---|---|---|
-| `undo` | ✓ | Revert the last file modification |
-| `undo_history` | — | View recent file change history |
+| `undo` | ✓ | Roll back the latest durable workspace transaction; `transaction_id` selects an exact transaction, with legacy file-index fallback for older sessions |
+| `undo_history` | — | View session-owned transaction history and legacy file-backup history |

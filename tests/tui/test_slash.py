@@ -250,8 +250,23 @@ def test_agents_tasks_plan(ctrl, red):
         {"instruction": "keep Python 3.10 support"},
     )
 
-    _dispatch("/plan answer use SQLite", ctrl, red)
-    assert ctrl.last() == ("amend_plan", {"instruction": "use SQLite"})
+    _dispatch("/plan answer storage SQLite", ctrl, red)
+    assert ctrl.last() == (
+        "answer_plan",
+        {"questionId": "storage", "answer": "SQLite"},
+    )
+
+    _dispatch("/plan edit", ctrl, red)
+    assert ctrl.last() == ("edit_plan", {"reset": False})
+
+    _dispatch("/plan edit reset", ctrl, red)
+    assert ctrl.last() == ("edit_plan", {"reset": True})
+
+    _dispatch("/plan apply", ctrl, red)
+    assert ctrl.last() == ("apply_plan", {"path": None})
+
+    _dispatch("/plan resume", ctrl, red)
+    assert ctrl.last() == ("resume_plan", {})
 
     _dispatch("/plan cancel", ctrl, red)
     assert ctrl.last() == ("cancel_plan", {})
@@ -371,13 +386,33 @@ def test_init(ctrl, red):
 
 
 def test_init_rule_uses_manage_tasks_not_removed_plan_tool(tmp_path):
+    from coderAI.assets.manifest import asset_text
     from coderAI.tui.commands import _do_init_project
 
     _dirs, _files, _skipped, error = _do_init_project(tmp_path)
     assert error is None
     rule = (tmp_path / ".coderAI" / "rules" / "001-common-principles.md").read_text()
+    assert (tmp_path / "CODERAI.md").read_text() == asset_text("starter", "CODERAI.md")
+    assert (tmp_path / ".coderAI" / "agents" / "planner.md").read_text() == asset_text(
+        "agents", "planner.md"
+    )
+    assert rule == asset_text("rules", "001-common-principles.md")
     assert "manage_tasks" in rule
     assert "`plan` tool" not in rule
+
+
+def test_init_never_overwrites_existing_files(tmp_path):
+    from coderAI.tui.commands import _do_init_project
+
+    existing = tmp_path / "CODERAI.md"
+    existing.write_text("KEEP ME\n", encoding="utf-8")
+
+    _dirs, files, skipped, error = _do_init_project(tmp_path)
+
+    assert error is None
+    assert "CODERAI.md" not in files
+    assert "CODERAI.md" in skipped
+    assert existing.read_text(encoding="utf-8") == "KEEP ME\n"
 
 
 def test_undo(ctrl, red):

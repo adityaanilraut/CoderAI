@@ -180,6 +180,37 @@ def test_write_plan_card():
     assert len(log.writes) == 3
 
     log = RecordingLog()
+    tr.write_plan_card(
+        log,
+        {
+            "planId": "abcdef123456",
+            "revision": 3,
+            "status": "needs_input",
+            "markdown": "# Plan",
+            "questions": [
+                {
+                    "id": "storage",
+                    "prompt": "Which storage?",
+                    "choices": ["SQLite", "Postgres"],
+                    "answer": None,
+                },
+                {
+                    "id": "runtime",
+                    "prompt": "Which runtime?",
+                    "choices": [],
+                    "answer": "Python 3.10",
+                },
+            ],
+            "editablePath": "/project/.coderAI/plans/id/draft.json",
+        },
+    )
+    rendered = "\n".join(str(item) for item in log.writes)
+    assert "storage" in rendered
+    assert "SQLite" in rendered
+    assert "Python 3.10" in rendered
+    assert "/plan answer" in rendered
+
+    log = RecordingLog()
     tr.write_skill_card(log, {"name": "noop"})
     assert _wrote(log)
 

@@ -399,6 +399,35 @@ def write_plan_card(log: SupportsWrite, it: dict[str, Any]) -> None:
     markdown = str(it.get("markdown") or "")
     if markdown:
         log.write(Padding(Markdown(markdown), (0, 0, 0, 2)))
+    questions = it.get("questions") or []
+    if questions:
+        label = Text("  Decisions", style=f"bold {Tokens.TEXT_MUTED}")
+        log.write(label)
+        for question in questions:
+            question_id = str(question.get("id") or "question")
+            prompt = str(question.get("prompt") or "")
+            answer = str(question.get("answer") or "").strip()
+            choices = [str(choice) for choice in question.get("choices") or []]
+            row = Text("  ")
+            row.append("✓ " if answer else "? ", style=Tokens.AGENT if answer else Tokens.WARN)
+            row.append(f"{question_id}: ", style=f"bold {Tokens.TEXT}")
+            row.append(prompt, style=Tokens.TEXT)
+            if choices:
+                row.append(f" [{', '.join(choices)}]", style=Tokens.TEXT_MUTED)
+            if answer:
+                row.append(f" → {answer}", style=Tokens.AGENT)
+            log.write(row)
+    editable_path = str(it.get("editablePath") or "")
+    if editable_path and status in {"draft", "needs_input"}:
+        path_row = Text("  Draft: ", style=Tokens.TEXT_MUTED)
+        path_row.append(editable_path, style=Tokens.TEXT)
+        log.write(path_row)
+        log.write(
+            Text(
+                "  /plan answer <id> <answer> · /plan edit · /plan apply · /plan approve",
+                style=Tokens.TEXT_MUTED,
+            )
+        )
     log.write("")
 
 
@@ -519,7 +548,16 @@ def calculate_item_lines(it: dict[str, Any], verbose: bool, width: Optional[int]
         return lines
     elif kind == "plan_card":
         markdown = str(it.get("markdown") or "")
-        return 2 + _body_lines(markdown, width)
+        questions = it.get("questions") or []
+        editable_lines = (
+            2 if it.get("editablePath") and it.get("status") in {"draft", "needs_input"} else 0
+        )
+        return (
+            2
+            + _body_lines(markdown, width)
+            + (1 + len(questions) if questions else 0)
+            + editable_lines
+        )
     elif kind == "welcome":
         return 5  # 4 rail lines + trailing blank (see write_welcome)
     return 3

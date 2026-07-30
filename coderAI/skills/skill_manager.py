@@ -19,7 +19,7 @@ from collections.abc import Awaitable, Callable, Iterable, Sequence
 
 import yaml
 
-from coderAI.system.project_layout import find_dot_coderai_subdir
+from coderAI.assets.manifest import asset_directory
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +108,22 @@ class SkillRegistry:
 
 
 def _find_skills_root(project_root: str = ".") -> Optional[Path]:
-    return find_dot_coderai_subdir(SKILLS_DIR_NAME, project_root)
+    root = Path(project_root).expanduser().resolve()
+    path = root / ".coderAI" / SKILLS_DIR_NAME
+    try:
+        resolved = path.resolve()
+        return resolved if resolved.is_dir() and resolved.is_relative_to(root) else None
+    except OSError:
+        return None
+
+
+def builtin_skills_root() -> Optional[Path]:
+    """Return the installed built-in skills package directory."""
+    try:
+        return asset_directory("skills")
+    except FileNotFoundError:
+        logger.error("Built-in skill package resources are unavailable")
+        return None
 
 
 def user_skills_root() -> Optional[Path]:
@@ -207,7 +222,7 @@ def discover_skills_in_directory(
             continue
         if not _is_safe_path(skills_file.resolve(), skills_root):
             continue
-        skill = load_skill_from_path(skills_file, source=source)
+        skill = load_skill_from_path(skills_file.resolve(), source=source)
         if skill:
             skills.append(skill)
     return skills
@@ -218,19 +233,22 @@ def discover_local_skills(
     *,
     include_project: bool = True,
     include_user: bool = True,
+    include_builtin: bool = True,
 ) -> list[Skill]:
     """Discover skills from project and/or user skill directories.
 
-    Project skills win when the same name exists in both places.
+    Precedence is project, user, then built-in.
     """
     skills: list[Skill] = []
     seen_names: set[str] = set()
 
     roots: list[tuple[Optional[Path], str]] = []
     if include_project:
-        roots.append((_find_skills_root(project_root), "local"))
+        roots.append((_find_skills_root(project_root), "project"))
     if include_user:
         roots.append((user_skills_root(), "user"))
+    if include_builtin:
+        roots.append((builtin_skills_root(), "builtin"))
 
     for root, source in roots:
         for skill in discover_skills_in_directory(root, source=source):
@@ -247,6 +265,7 @@ def load_skill_by_name(
     *,
     include_project: bool = True,
     include_user: bool = True,
+    include_builtin: bool = True,
 ) -> Optional[Skill]:
     if ".." in skill_name or "/" in skill_name or "\\" in skill_name:
         logger.warning("Rejected skill_name with path traversal: %s", skill_name)
@@ -254,9 +273,11 @@ def load_skill_by_name(
 
     roots: list[tuple[Optional[Path], str]] = []
     if include_project:
-        roots.append((_find_skills_root(project_root), "local"))
+        roots.append((_find_skills_root(project_root), "project"))
     if include_user:
         roots.append((user_skills_root(), "user"))
+    if include_builtin:
+        roots.append((builtin_skills_root(), "builtin"))
 
     for skills_root, source in roots:
         if skills_root is None:

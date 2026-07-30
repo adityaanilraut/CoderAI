@@ -1,4 +1,4 @@
-"""Local skill source — scans project and/or user skill directories."""
+"""Local skill source — scans project, user, and packaged built-in skills."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 class LocalSkillSource(SkillSource):
-    """Discovers skills from ``.coderAI/skills/`` and optionally ``~/.coderAI/skills/``.
+    """Discovers project, user, and packaged built-in skills.
 
     Accepts both canonical ``SKILLS.md`` and ecosystem ``SKILL.md`` filenames.
     """
@@ -24,10 +24,12 @@ class LocalSkillSource(SkillSource):
         *,
         include_project: bool = True,
         include_user: bool = True,
+        include_builtin: bool = True,
     ) -> None:
         self._project_root = str(Path(project_root).resolve())
         self._include_project = include_project
         self._include_user = include_user
+        self._include_builtin = include_builtin
 
     @property
     def source_name(self) -> str:
@@ -36,6 +38,8 @@ class LocalSkillSource(SkillSource):
             parts.append("project")
         if self._include_user:
             parts.append("user")
+        if self._include_builtin:
+            parts.append("builtin")
         return "local:" + "+".join(parts) if parts else "local"
 
     async def discover(self) -> list[Skill]:
@@ -44,6 +48,7 @@ class LocalSkillSource(SkillSource):
             self._project_root,
             include_project=self._include_project,
             include_user=self._include_user,
+            include_builtin=self._include_builtin,
         )
 
     async def get_skill(self, name: str) -> Optional[Skill]:
@@ -53,4 +58,5 @@ class LocalSkillSource(SkillSource):
             self._project_root,
             include_project=self._include_project,
             include_user=self._include_user,
+            include_builtin=self._include_builtin,
         )

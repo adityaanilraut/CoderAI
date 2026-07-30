@@ -19,6 +19,9 @@ CoderAI is a pure-Python coding agent CLI. The Click entry point in
   runs a single prompt through the same `Agent`/`ExecutionLoop` core and
   exits — no TUI, no UIBridge, no streaming. Defaults to deny-on-mutate
   (see [`COMMANDS.md`](COMMANDS.md#coderai-run)).
+- `coderAI plan`, a headless stateful planning path (`coderAI/cli/plan_cmd.py`)
+  for read-only creation, artifact review/editing, approval, execution, and
+  resume (see [`COMMANDS.md`](COMMANDS.md#coderai-plan)).
 - `coderAI chat`, which launches an in-process **Textual** TUI
   (`coderAI/tui/`) that drives the agent loop and renders the streaming
   timeline.
@@ -30,6 +33,37 @@ through `UIBridge.enqueue_command(...)` and is dispatched on the
 asyncio loop. Despite the legacy name, the IPC layer no longer crosses
 a process boundary — there are no subprocesses, no NDJSON pipes, and no
 native UI binary.
+
+### Run and Session Isolation
+
+Each `Agent` owns a frozen `RunContext` (`core/execution_context.py`). It
+identifies the run, persisted session, tracker agent, and workspace; carries a
+pinned permission-policy snapshot and isolation domain; and points to the
+session-owned checkpoint/undo and workspace-transaction stores. Session creation, resume, tracker
+registration, and permission changes replace this value explicitly rather
+than mutating it in place.
+
+`ToolExecutor` binds the owning context around every tool call. Python context
+propagation preserves it through concurrent asyncio tasks and
+`asyncio.to_thread` filesystem work. `ToolServices.backup_store` resolves the
+store from that context before any shared parent service, so a delegated
+agent cannot redirect its parent's undo or rewind history by changing global
+history state. The legacy `HistoryManager.current_session` property remains
+for compatibility but is not used to select runtime recovery state.
+
+`WorkspaceTransactionStore` (`core/workspace_transactions.py`) brackets each
+approved synchronous mutating call after permission/Plan Mode gates and before
+pre-tool hooks. Its owner-only session directory contains the pre-operation
+snapshot and an atomic state record linked to the run, objective/plan, and tool
+call. A post-hook scan records native and foreground shell changes even when the
+tool fails. Resume recovers interrupted metadata; undo and rewind perform
+conflict-aware rollback through the normal filesystem guards. Delegated agents
+write only their own ledger, and the parent deliberately does not wrap
+`delegate_task` in a duplicate transaction.
+
+Milestone 3 remains open: mutating delegates still need isolated worktrees and
+reviewed patch integration, background-process mutations outlive the current
+transaction bracket, and `.git` metadata is excluded from snapshots.
 
 ### Communication Flow
 
@@ -122,13 +156,15 @@ timeline/session state; `timeline_render.py` writes rows to the
 │   ├── cli/                 # Click entry point + subcommands
 │   │   ├── main.py          # Root group; chat, info, doctor, status, …
 │   │   ├── run_cmd.py       # `coderAI run` (headless one-shot)
+│   │   ├── plan_cmd.py      # `coderAI plan` lifecycle (headless/CI)
 │   │   ├── setup_cmd.py     # Interactive setup wizard
 │   │   └── mcp_cmd.py       # `coderAI mcp` server management
 │   ├── prompts/             # MDX templates + compose.py (system prompt)
+│   ├── assets/              # Wheel-owned personas, skills, rules, /init starters
 │   ├── core/                # Agent orchestration
 │   │   ├── agent.py         # Agent lifecycle, sessions, sub-agents
 │   │   ├── agent_loop.py    # Per-turn LLM ↔ tool loop
-│   │   ├── personas.py      # AgentPersona loader (.coderAI/agents/*.md)
+│   │   ├── personas.py      # Scoped loader (project → user → builtin)
 │   │   ├── session_bootstrap.py  # Shared TUI/headless session bootstrap
 │   │   ├── permissions.py / services.py / tool_executor.py / …
 │   │   └── …                # (compat shims: agents.py, provenance.py, …)
@@ -143,7 +179,7 @@ timeline/session state; `timeline_render.py` writes rows to the
 │   │   ├── use_skill.py     # use_skill tool
 │   │   └── …
 │   └── tui/                 # Textual interactive chat
-├── .coderAI/                # Shipped project overlays
+├── .coderAI/                # This repository's project-scoped overlays
 └── tests/                   # Mirrors package layout; security/ red-team suite
 ```
 
@@ -159,6 +195,28 @@ timeline/session state; `timeline_render.py` writes rows to the
 Shared types live in `coderAI/types/` so tools do not import core orchestration.
 Persona loader is `core/personas.py`; orchestrator is `core/agent.py`.
 
+### Distribution-owned capabilities
+
+First-party persona, skill, rule, and `/init` starter Markdown lives below
+`coderAI/assets/` and is declared as setuptools package data. Runtime discovery
+never falls back to the source repository. It merges three explicit scopes in
+`project → user → builtin` order and de-duplicates by capability name. Project
+content is visible only when the Agent's startup trust snapshot permits it;
+user and immutable installed-package content remain usable in untrusted
+workspaces. Symlink targets that resolve outside their declared scope are
+discarded.
+
+The release workflow builds the wheel and sdist once, records a provenance
+attestation, smoke-installs that exact wheel from an empty directory on the
+supported Linux/macOS and Python matrix, and downloads the same workflow
+artifact for both GitHub Releases and PyPI. A separate Python 3.12 matrix
+installs every advertised optional extra; its browser cell also installs and
+launches Chromium. Manual dispatch runs the same candidate gates without
+publishing, while only an exact `v<package-version>` tag can reach promotion.
+`scripts/verify_wheel.py` is the local and CI clean-wheel/archive probe: it also
+checks all Click command paths, the bundled MCP subprocess, `/init`, prompts,
+metadata, entry points, optional dependency markers, and sdist contents.
+
 ## Component Details
 
 ### 1. CLI Layer (`coderAI/cli/`)
@@ -172,6 +230,9 @@ entry point resolves to `main()` in `coderAI/cli/__init__.py` → `cli/main.py`.
 - `run` (`cli/run_cmd.py`) — headless one-shot: runs a single prompt and
   exits with no TUI (deny-on-mutate by default; `--json` for structured
   output). Shares session bootstrap with `chat` via `core/session_bootstrap.py`.
+- `plan` (`cli/plan_cmd.py`) — project-scoped Plan Mode lifecycle. It shares
+  `Agent`/`ExecutionLoop` for read-only generation and execution while using
+  `core/planning.py` as the durable state machine.
 - `config`, `history`, `info`, `status`, `cost`, `models`, `setup`,
   `doctor`, `index`, `search`, `tasks list` — one-shot subcommands that
   render with Rich.
@@ -201,6 +262,17 @@ entry point resolves to `main()` in `coderAI/cli/__init__.py` → `cli/main.py`.
 - `context/context_controller.py` — Pinned-file state, token estimation,
   truncation, and summarization. Reserves `RESPONSE_TOKEN_RESERVE=1024` and
   `TOOL_OVERHEAD_TOKENS=512` when budgeting.
+
+**Plan Mode state:** `core/planning.py` owns the project-scoped state machine.
+`draft.json` is the only mutable user working copy; applying it validates plan
+identity, base revision, dependencies, questions, choices, and project scope,
+then writes a new immutable `revision-N.json`. `record.json` stores the current
+status plus append-only approval and execution-attempt records. Approval hashes
+the immutable snapshot. The executing session stores `{plan_id, revision}` in
+session metadata, so a restart can restore linkage independently of transcript
+compaction. `request_plan_amendment` is registered with the root agent only;
+after it writes a replacement revision, schema routing and the executor deny
+further mutation until that revision is approved.
 
 ### 3. LLM Providers (`coderAI/llm/`)
 

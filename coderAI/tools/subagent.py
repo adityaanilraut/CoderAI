@@ -551,6 +551,7 @@ class DelegateTaskTool(Tool):
                 sub_agent._capability_domain = effective_domain
                 sub_agent._allowed_native_tool_names = frozenset(sub_agent.tools.tools.keys())
                 sub_agent._allow_dynamic_mcp = False
+                sub_agent._bind_isolation_domain(effective_domain)
 
                 # Configure the child's own delegation context AFTER all tool
                 # filtering so any grandchild inherits the correct (narrowed)
@@ -563,6 +564,7 @@ class DelegateTaskTool(Tool):
                     # stable across repeated resume calls.
                     sub_agent.session = resumed_session
                     if sub_agent.session is not None:
+                        sub_agent._bind_session_run_context(sub_agent.session)
                         if effective_model:
                             sub_agent.session.model = effective_model
                         sub_agent.session.updated_at = _time.time()

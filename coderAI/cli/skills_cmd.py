@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Optional
 
 import click
+from rich.markup import escape
 
 from coderAI.cli.utils import Display
 from coderAI.skills.installer import (
@@ -30,6 +31,7 @@ from coderAI.skills.installer import (
     remove_skill,
     skills_dir_for_scope,
 )
+from coderAI.skills.skill_manager import Skill, builtin_skills_root, discover_skills_in_directory
 
 
 @click.group(invoke_without_command=True)
@@ -225,7 +227,17 @@ def skills_list(scope: str, project_root: Optional[Path]) -> None:
     else:
         scope_filter = "user" if scope == "user" else "project"
 
-    entries = list_installed_skills(scope=scope_filter, project_root=root)
+    entries: list[tuple[str, Skill]] = list(
+        list_installed_skills(scope=scope_filter, project_root=root)
+    )
+    if scope == "all":
+        entries.extend(
+            ("builtin", skill)
+            for skill in discover_skills_in_directory(
+                builtin_skills_root(),
+                source="builtin",
+            )
+        )
     if not entries:
         display.print_warning(
             "No skills installed. Try `coderAI skills install owner/repo` "
@@ -236,7 +248,7 @@ def skills_list(scope: str, project_root: Optional[Path]) -> None:
     display.print(f"{len(entries)} skill(s):")
     for sc, skill in entries:
         desc = f" — {skill.description}" if skill.description else ""
-        display.print(f"  • [{sc}] {skill.name}{desc}")
+        display.print(escape(f"  • [{sc}] {skill.name}{desc}"))
 
 
 @skills.command("remove")

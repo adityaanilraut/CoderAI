@@ -324,12 +324,14 @@ async def test_agent_trust_grant_activates_all_project_surfaces_only_after_resta
     assert agent._workspace_trusted is False
     assert agent.config.max_iterations != 9999
     assert repo.marker not in agent._get_system_prompt()
-    # use_skill stays available for user-scoped ~/.coderAI/skills; project
+    # use_skill stays available for user and packaged built-in skills; project
     # overlays are omitted from discovery until the workspace is trusted.
     assert "use_skill" in agent.tools.tools
     assert agent.set_persona("evil") is None
     await agent.skill_manager._ensure_discovered()
-    assert agent.skill_manager.registry.list_all() == []
+    skills = agent.skill_manager.registry.list_all()
+    assert {skill.name for skill in skills} == {"security-audit", "tdd-workflow"}
+    assert {skill.source for skill in skills} == {"builtin"}
     agent.create_session()
     agent._inject_skill_context(
         [
@@ -365,8 +367,11 @@ async def test_agent_trust_grant_activates_all_project_surfaces_only_after_resta
     with services_scope(inherit=True, workspace_trusted=False):
         listed = await tool.execute(action="list")
     assert listed["success"] is True
-    assert listed["skills"] == []
-    assert "project skills require workspace trust" in listed["message"]
+    assert {item["name"] for item in listed["skills"]} == {
+        "security-audit",
+        "tdd-workflow",
+    }
+    assert {item["source"] for item in listed["skills"]} == {"builtin"}
 
     restarted = Agent(model="gpt-5.4-mini", streaming=False)
     assert restarted._workspace_trusted is True

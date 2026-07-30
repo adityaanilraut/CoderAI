@@ -331,9 +331,13 @@ class TestAgentsPersonas:
     def test_load_agent_persona_no_dir(self):
         from coderAI.core.personas import load_agent_persona
 
-        with patch("pathlib.Path.exists", return_value=False):
-            persona = load_agent_persona("planner")
-            assert persona is None
+        persona = load_agent_persona(
+            "planner",
+            include_project=False,
+            include_user=False,
+            include_builtin=False,
+        )
+        assert persona is None
 
     def test_load_agent_persona_success(self):
         from coderAI.core.personas import load_agent_persona
@@ -357,14 +361,17 @@ You are a planner."""
                     assert "You are a planner." in persona.instructions
 
     def test_resolve_persona_name_alias(self):
-        from coderAI.core.personas import resolve_persona_name
+        from coderAI.core.personas import PersonaDescriptor, resolve_persona_name
 
-        with patch("coderAI.core.personas._find_agents_dir", return_value=Path("/tmp")):
-            with patch(
-                "coderAI.core.personas.get_available_personas",
-                return_value=["code-reviewer", "planner"],
-            ):
-                assert resolve_persona_name("Code Reviewer") == "code-reviewer"
+        descriptors = [
+            PersonaDescriptor("code-reviewer", "builtin", Path("/tmp/code-reviewer.md")),
+            PersonaDescriptor("planner", "builtin", Path("/tmp/planner.md")),
+        ]
+        with patch(
+            "coderAI.core.personas.get_available_persona_descriptors",
+            return_value=descriptors,
+        ):
+            assert resolve_persona_name("Code Reviewer") == "code-reviewer"
 
     def test_expand_persona_tools_aliases(self):
         from coderAI.core.personas import expand_persona_tools

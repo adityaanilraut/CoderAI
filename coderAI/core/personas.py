@@ -1,11 +1,12 @@
 import re
 import yaml
 import logging
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Any
+from typing import Optional, Any, Literal
 
+from coderAI.assets.manifest import asset_directory
 from coderAI.system.config import config_manager
-from coderAI.system.project_layout import find_dot_coderai_subdir
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,17 @@ PERSONA_TOOL_ALIASES: dict[str, set[str]] = {
     "bash": {"run_command", "run_background", "python_repl"},
 }
 
+PersonaScope = Literal["project", "user", "builtin"]
+
+
+@dataclass(frozen=True)
+class PersonaDescriptor:
+    """One discoverable persona and the scope that supplied it."""
+
+    name: str
+    scope: PersonaScope
+    path: Path
+
 
 class AgentPersona:
     """Represents a specialized agent persona loaded from a markdown file."""
@@ -41,6 +53,7 @@ class AgentPersona:
         mode: str = "all",
         hidden: bool = False,
         permission: Optional[dict[str, str]] = None,
+        source: PersonaScope = "builtin",
     ):
         self.name = name
         self.description = description
@@ -53,6 +66,7 @@ class AgentPersona:
         self.hidden = hidden
         # Per-agent permission rules: {"tool_name": "allow"|"deny"}
         self.permission: dict[str, str] = permission or {}
+        self.source = source
 
 
 def persona_allowed_in_context(persona: "AgentPersona", *, is_subagent: bool) -> bool:
@@ -85,34 +99,120 @@ def _normalize_tool_name(name: str) -> str:
 
 
 def _find_agents_dir(project_root: str = ".") -> Optional[Path]:
-    """Search several candidate locations for the .coderAI/agents/ directory."""
-    return find_dot_coderai_subdir("agents", project_root)
+    """Return the exact project persona directory without checkout fallbacks."""
+    root = Path(project_root).expanduser().resolve()
+    path = root / ".coderAI" / "agents"
+    try:
+        resolved = path.resolve()
+        return resolved if resolved.is_dir() and resolved.is_relative_to(root) else None
+    except OSError:
+        return None
+
+
+def _user_agents_dir() -> Optional[Path]:
+    root = Path(config_manager.config_dir).expanduser().resolve()
+    path = root / "agents"
+    try:
+        resolved = path.resolve()
+        return resolved if resolved.is_dir() and resolved.is_relative_to(root) else None
+    except OSError:
+        return None
+
+
+def _persona_roots(
+    project_root: str,
+    *,
+    include_project: bool,
+    include_user: bool,
+    include_builtin: bool,
+) -> list[tuple[PersonaScope, Path]]:
+    roots: list[tuple[PersonaScope, Path]] = []
+    if include_project:
+        project = _find_agents_dir(project_root)
+        if project is not None:
+            roots.append(("project", project))
+    if include_user:
+        user = _user_agents_dir()
+        if user is not None:
+            roots.append(("user", user))
+    if include_builtin:
+        try:
+            roots.append(("builtin", asset_directory("agents")))
+        except FileNotFoundError:
+            logger.error("Built-in persona package resources are unavailable")
+    return roots
+
+
+def get_available_persona_descriptors(
+    project_root: str = ".",
+    *,
+    include_project: bool = True,
+    include_user: bool = True,
+    include_builtin: bool = True,
+) -> list[PersonaDescriptor]:
+    """Return personas in precedence order: project, user, then built-in."""
+    descriptors: list[PersonaDescriptor] = []
+    seen: set[str] = set()
+    for scope, root in _persona_roots(
+        project_root,
+        include_project=include_project,
+        include_user=include_user,
+        include_builtin=include_builtin,
+    ):
+        try:
+            files = sorted(root.glob("*.md"))
+        except OSError:
+            logger.warning("Could not list %s persona directory %s", scope, root)
+            continue
+        for path in files:
+            normalized = _normalize_persona_name(path.stem)
+            if normalized in seen or not path.is_file():
+                continue
+            try:
+                if not path.resolve().is_relative_to(root.resolve()):
+                    continue
+            except OSError:
+                continue
+            descriptors.append(PersonaDescriptor(path.stem, scope, path))
+            seen.add(normalized)
+    return descriptors
 
 
 def _safe_persona_stem(name: str) -> str:
-    """Strip directory components from a persona name to prevent path traversal."""
-    return Path(name).name
+    """Return a plain persona stem, rejecting path syntax and traversal."""
+    candidate = name.strip()
+    if not candidate or ".." in candidate or "/" in candidate or "\\" in candidate:
+        return ""
+    return candidate
 
 
-def resolve_persona_name(persona_name: str, project_root: str = ".") -> Optional[str]:
+def resolve_persona_name(
+    persona_name: str,
+    project_root: str = ".",
+    *,
+    include_project: bool = True,
+    include_user: bool = True,
+    include_builtin: bool = True,
+) -> Optional[str]:
     """Resolve flexible persona names to an existing persona file stem."""
-    agents_dir = _find_agents_dir(project_root)
-    if agents_dir is None or not persona_name:
+    if not persona_name:
         return None
 
     candidate = _safe_persona_stem(persona_name.strip())
     if not candidate:
         return None
 
-    if (agents_dir / f"{candidate}.md").exists():
-        return candidate
-
     normalized = _normalize_persona_name(candidate)
     aliased = PERSONA_NAME_ALIASES.get(normalized, normalized)
 
-    for stem in get_available_personas(project_root):
-        if stem == aliased or _normalize_persona_name(stem) == aliased:
-            return stem
+    for descriptor in get_available_persona_descriptors(
+        project_root,
+        include_project=include_project,
+        include_user=include_user,
+        include_builtin=include_builtin,
+    ):
+        if descriptor.name == candidate or _normalize_persona_name(descriptor.name) == aliased:
+            return descriptor.name
 
     return None
 
@@ -127,21 +227,47 @@ def expand_persona_tools(tool_names: list[str]) -> set[str]:
     return expanded
 
 
-def load_agent_persona(persona_name: str, project_root: str = ".") -> Optional[AgentPersona]:
-    """Load an agent persona from .coderAI/agents/<persona_name>.md.
+def load_agent_persona(
+    persona_name: str,
+    project_root: str = ".",
+    *,
+    include_project: bool = True,
+    include_user: bool = True,
+    include_builtin: bool = True,
+) -> Optional[AgentPersona]:
+    """Load a persona using project → user → built-in precedence.
 
     Parses YAML frontmatter for metadata (name, description, tools, model)
     and uses the rest of the markdown as the system instructions.
     """
-    agents_dir = _find_agents_dir(project_root)
-    if agents_dir is None:
-        return None
-
-    resolved_name = resolve_persona_name(persona_name, project_root) or _safe_persona_stem(
-        persona_name
+    resolved_name = resolve_persona_name(
+        persona_name,
+        project_root,
+        include_project=include_project,
+        include_user=include_user,
+        include_builtin=include_builtin,
+    ) or _safe_persona_stem(persona_name)
+    descriptor = next(
+        (
+            item
+            for item in get_available_persona_descriptors(
+                project_root,
+                include_project=include_project,
+                include_user=include_user,
+                include_builtin=include_builtin,
+            )
+            if item.name == resolved_name
+        ),
+        None,
     )
-    file_path = agents_dir / f"{resolved_name}.md"
-    if not file_path.exists():
+    if descriptor is None:
+        return None
+    try:
+        root = descriptor.path.parent.resolve()
+        file_path = descriptor.path.resolve()
+        if not file_path.is_relative_to(root) or not file_path.is_file():
+            return None
+    except OSError:
         return None
 
     try:
@@ -181,6 +307,7 @@ def load_agent_persona(persona_name: str, project_root: str = ".") -> Optional[A
             mode=metadata.get("mode", "all"),
             hidden=metadata.get("hidden", False),
             permission=metadata.get("permission"),
+            source=descriptor.scope,
         )
     except (KeyboardInterrupt, SystemExit):
         raise
@@ -189,10 +316,20 @@ def load_agent_persona(persona_name: str, project_root: str = ".") -> Optional[A
         return None
 
 
-def get_available_personas(project_root: str = ".") -> list[str]:
-    """Return a list of available persona names."""
-    agents_dir = _find_agents_dir(project_root)
-    if agents_dir is None:
-        return []
-
-    return [f.stem for f in agents_dir.glob("*.md")]
+def get_available_personas(
+    project_root: str = ".",
+    *,
+    include_project: bool = True,
+    include_user: bool = True,
+    include_builtin: bool = True,
+) -> list[str]:
+    """Return unique persona names in project → user → built-in precedence."""
+    return [
+        item.name
+        for item in get_available_persona_descriptors(
+            project_root,
+            include_project=include_project,
+            include_user=include_user,
+            include_builtin=include_builtin,
+        )
+    ]

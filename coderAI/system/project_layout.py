@@ -10,14 +10,14 @@ def find_dot_coderai_subdir(
 ) -> Optional[Path]:
     """Locate ``.coderAI/<relative_under_dot_coderai>`` if it exists as a directory.
 
-    Checks, in order: the given ``project_root``, the current working directory,
-    and the repository/package root next to this package (for development installs).
+    Checks the explicit ``project_root`` and then the current working directory.
+    Package-relative source-checkout fallbacks are intentionally excluded: project
+    content must never change according to how CoderAI itself was installed.
     """
     tail = Path(".coderAI") / relative_under_dot_coderai
     candidates = [
         Path(project_root).resolve(),
         Path.cwd(),
-        Path(__file__).resolve().parent.parent,
     ]
     seen: set[str] = set()
     for base in candidates:

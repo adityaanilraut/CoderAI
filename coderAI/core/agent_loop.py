@@ -1019,6 +1019,10 @@ class ExecutionLoop:
                     schema
                     for schema in self.agent.tools.get_schemas()
                     if (schema.get("function") or {}).get("name") != "submit_plan"
+                    and (
+                        (schema.get("function") or {}).get("name") != "request_plan_amendment"
+                        or bool(vars(self.agent).get("active_plan_id"))
+                    )
                 ]
         try:
             mcp_client = get_services().mcp_client
@@ -1125,7 +1129,16 @@ class ExecutionLoop:
         self.agent.save_session()
 
         if run_stop_hooks:
-            data = hooks_data if hooks_data is not None else self.hooks_manager.load_hooks()
+            # An execution-time plan amendment restores the read-only boundary
+            # mid-turn. Do not let an already-loaded project hook execute after
+            # that transition.
+            data = (
+                {}
+                if vars(self.agent).get("plan_mode") is True
+                else hooks_data
+                if hooks_data is not None
+                else self.hooks_manager.load_hooks()
+            )
             if data:
                 await self.hooks_manager.run_hooks(
                     "*", "on_stop", {"iterations": iterations, "error": stop_reason}, data

@@ -47,7 +47,7 @@ class TestSkillLoading:
         assert skill is None
 
     def test_get_available_skills(self, skills_dir):
-        skills = get_available_skills(str(skills_dir))
+        skills = get_available_skills(str(skills_dir), include_builtin=False)
         assert len(skills) == 2
         names = [s["name"] for s in skills]
         assert "test-skill" in names
@@ -102,6 +102,10 @@ class TestUseSkillTool:
             used = asyncio.run(self.tool.execute(action="use", skill_name="test-skill"))
 
         assert listed["success"] is True
-        assert listed["skills"] == []
+        assert {item["name"] for item in listed["skills"]} == {
+            "security-audit",
+            "tdd-workflow",
+        }
+        assert {item["source"] for item in listed["skills"]} == {"builtin"}
         assert used["success"] is False
         assert "not found" in used["error"]

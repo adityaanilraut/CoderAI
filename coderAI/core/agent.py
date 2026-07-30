@@ -16,6 +16,7 @@ from coderAI.tools import ToolRegistry
 from coderAI.core.personas import AgentPersona
 from coderAI.core.agent_tracker import AgentInfo
 from coderAI.core.permissions import ApprovalRules
+from coderAI.core.execution_context import PermissionPolicySnapshot, create_run_context
 from coderAI.core.services import get_services
 from coderAI.system.hooks_manager import HooksManager
 from coderAI.system.read_cache import FileReadCache
@@ -88,6 +89,7 @@ class Agent(AgentCapabilitiesMixin, AgentSessionMixin):
         self.plan_mode: bool = False
         self.active_plan_id: Optional[str] = None
         self.active_plan_revision: Optional[int] = None
+        self._plan_execution_ready: bool = False
 
         # Initialize LLM provider
         self.provider = self._create_provider()
@@ -111,6 +113,17 @@ class Agent(AgentCapabilitiesMixin, AgentSessionMixin):
         self._context_controller.cost_tracker = self.cost_tracker
         self._context_controller._on_summary_tokens = self._add_summary_tokens
         self._rebuild_tool_registry()
+
+        # One immutable identity/policy carrier per Agent run. Session and
+        # tracker identities are added only at their explicit lifecycle edges.
+        self.run_context = create_run_context(
+            workspace_root=self.config.project_root,
+            permission_policy=PermissionPolicySnapshot(
+                auto_approve=self.auto_approve,
+                workspace_trusted=self._workspace_trusted,
+                allowed_tools=frozenset(self.tools.tools),
+            ),
+        )
 
         # Token accounting snapshot for the current tracking step
         self._tracker_start_completion = 0

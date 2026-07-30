@@ -124,9 +124,10 @@ class ObjectiveState:
         self._sequence += 1
         args = arguments if isinstance(arguments, dict) else {}
         success = isinstance(result, dict) and result.get("success") is True
-        artifacts = self._extract_artifacts(args)
+        artifacts = self._extract_artifacts(args, result)
         check = self._verification_label(tool_name, args)
-        mutation = self._is_workspace_mutation(tool_name, args, tool)
+        observed_changes = bool(isinstance(result, dict) and result.get("_workspace_changes"))
+        mutation = observed_changes or self._is_workspace_mutation(tool_name, args, tool)
 
         if tool_name == "manage_tasks":
             kind: Literal["read", "mutation", "verification", "internal"] = "internal"
@@ -136,17 +137,12 @@ class ObjectiveState:
             if success:
                 self._last_verification = self._sequence
                 self.checks_completed.append(check)
+            if observed_changes:
+                self._record_mutation_evidence(tool_name, artifacts)
         elif mutation:
             kind = "mutation"
-            if success:
-                self._last_mutation = self._sequence
-                if "post-mutation verification" not in self.checks_required:
-                    self.checks_required.append("post-mutation verification")
-                for artifact in artifacts:
-                    if artifact not in self.artifacts_changed:
-                        self.artifacts_changed.append(artifact)
-                    if tool_name in _REQUIRES_POST_EDIT_INSPECTION:
-                        self._artifact_mutations[artifact] = self._sequence
+            if success or observed_changes:
+                self._record_mutation_evidence(tool_name, artifacts)
         else:
             kind = "internal" if tool_name in _INTERNAL_STATE_TOOLS else "read"
             if success and tool_name == "read_file":
@@ -190,7 +186,7 @@ class ObjectiveState:
         if pending:
             issues.append("Task checklist still has open work: " + "; ".join(pending) + ".")
 
-        if self._last_verification <= self._last_mutation:
+        if self._last_verification < self._last_mutation:
             issues.append(
                 "No successful verification was recorded after the last workspace mutation."
             )
@@ -242,8 +238,18 @@ class ObjectiveState:
             "completion_status": self.completion_status,
         }
 
+    def _record_mutation_evidence(self, tool_name: str, artifacts: list[str]) -> None:
+        self._last_mutation = self._sequence
+        if "post-mutation verification" not in self.checks_required:
+            self.checks_required.append("post-mutation verification")
+        for artifact in artifacts:
+            if artifact not in self.artifacts_changed:
+                self.artifacts_changed.append(artifact)
+            if tool_name in _REQUIRES_POST_EDIT_INSPECTION or tool_name == "run_command":
+                self._artifact_mutations[artifact] = self._sequence
+
     @staticmethod
-    def _extract_artifacts(arguments: dict[str, Any]) -> list[str]:
+    def _extract_artifacts(arguments: dict[str, Any], result: Any = None) -> list[str]:
         artifacts: list[str] = []
         for key in _PATH_ARGUMENTS:
             value = arguments.get(key)
@@ -251,6 +257,15 @@ class ObjectiveState:
                 normalized = normpath(value)
                 if normalized not in artifacts:
                     artifacts.append(normalized)
+        if isinstance(result, dict):
+            for change in result.get("_workspace_changes", []) or []:
+                if not isinstance(change, dict):
+                    continue
+                value = change.get("path")
+                if isinstance(value, str) and value:
+                    normalized = normpath(value)
+                    if normalized not in artifacts:
+                        artifacts.append(normalized)
         return artifacts
 
     @staticmethod

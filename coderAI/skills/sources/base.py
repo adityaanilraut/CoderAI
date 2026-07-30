@@ -11,8 +11,8 @@ from coderAI.skills.skill_manager import Skill
 class SkillSource(ABC):
     """A backend that can discover skills.
 
-    The built-in source is ``LocalSkillSource`` (project-local
-    ``.coderAI/skills/<name>/SKILLS.md``).
+    The built-in source is ``LocalSkillSource`` (project, user, and packaged
+    built-in scopes).
     """
 
     @abstractmethod

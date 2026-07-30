@@ -158,6 +158,17 @@ class ToolServices:
 
     @property
     def backup_store(self) -> "FileBackupStore":
+        # Session-scoped recovery state belongs to the immutable RunContext,
+        # not HistoryManager.current_session.  Resolve it before following a
+        # parent service container so concurrently executing agents cannot
+        # inherit one another's undo history.
+        if self._backup_store is None:
+            from coderAI.core.execution_context import get_execution_context
+
+            checkpoint_store = get_execution_context().checkpoint_store
+            if checkpoint_store is not None:
+                return checkpoint_store
+
         def _build() -> "FileBackupStore":
             from coderAI.tools.undo import FileBackupStore
 
