@@ -5,7 +5,7 @@ Each writer takes a ``SupportsWrite`` sink and pushes Rich renderables onto it.
 mirroring the RecordingLog used for render caching in the real app.
 """
 
-from typing import Any, List
+from typing import Any
 
 from coderAI.tui import timeline_render as tr
 
@@ -14,7 +14,7 @@ class RecordingLog:
     """Minimal SupportsWrite sink that records every renderable written."""
 
     def __init__(self) -> None:
-        self.writes: List[Any] = []
+        self.writes: list[Any] = []
 
     def write(self, renderable: Any) -> Any:
         self.writes.append(renderable)
@@ -165,6 +165,20 @@ def test_write_skill_card_with_and_without_steps():
     )
     assert _wrote(log)
 
+
+def test_write_plan_card():
+    log = RecordingLog()
+    tr.write_plan_card(
+        log,
+        {
+            "planId": "abcdef123456",
+            "revision": 2,
+            "status": "draft",
+            "markdown": "# Plan\n\n- Step one",
+        },
+    )
+    assert len(log.writes) == 3
+
     log = RecordingLog()
     tr.write_skill_card(log, {"name": "noop"})
     assert _wrote(log)
@@ -247,3 +261,26 @@ def test_build_stream_tail_markup():
     # Non-verbose with no content still produces the assistant tail + cursor.
     out = tr.build_stream_tail_markup({"content": ""}, verbose=False)
     assert "assistant" in out
+
+
+def test_build_stream_tail_markup_partial_oauth_url():
+    """Mid-stream OAuth URLs must not crash Textual's markup parser.
+
+    ``rich.markup.escape`` leaves incomplete ``[https://...?a=1&scope=...``
+    spans alone; wrapping them in ``[#color]...[/]`` then raises MarkupError
+    on the ``&scope=`` query param (the Gmail MCP sign-in crash).
+    """
+    from textual.content import Content
+
+    content = (
+        "It's asking you to sign in. Since this is an interactive Google "
+        "sign-in page, open:\n"
+        "[https://accounts.google.com/o/oauth2/v2/auth?client_id=xxx"
+        "&scope=https://www.googleapis.com/auth/gmail.modify"
+        "&access_type=offline&redirect_uri=https://developers.google"
+    )
+    out = tr.build_stream_tail_markup({"content": content}, verbose=False)
+    # Must parse without MarkupError, and preserve the opening bracket literally.
+    parsed = str(Content.from_markup(out))
+    assert "[https://accounts.google.com" in parsed
+    assert "&scope=https://www.googleapis.com/auth/gmail.modify" in parsed

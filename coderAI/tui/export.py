@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any
 
 
-def timeline_to_markdown(items: List[Dict[str, Any]]) -> str:
+def timeline_to_markdown(items: list[dict[str, Any]]) -> str:
     md = "# CoderAI Session\n\n"
     md += f"Exported: {datetime.now(timezone.utc).isoformat()}\n\n---\n\n"
     for item in items:

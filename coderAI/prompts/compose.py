@@ -14,7 +14,7 @@ from __future__ import annotations
 import importlib.resources
 import logging
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Optional
 
 from coderAI.tools.base import ToolRegistry
 
@@ -100,7 +100,7 @@ SYSTEM_PROMPT_TAIL = _load_prompt("tail.mdx")
 
 def format_capability_guidance(registry: ToolRegistry) -> str:
     """Return strategy sections only for capabilities present in *registry*."""
-    sections: List[str] = []
+    sections: list[str] = []
     if registry.get("manage_tasks") is not None:
         sections.append(
             """### Task Workflow
@@ -149,7 +149,7 @@ def format_capability_guidance(registry: ToolRegistry) -> str:
 
 
 # Ordered sections: (heading, tool names in preferred display order).
-_TOOL_SECTIONS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
+_TOOL_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "File Operations",
         (
@@ -240,7 +240,7 @@ _TOOL_SECTIONS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
 
 def format_tools_markdown(registry: ToolRegistry) -> str:
     """Build the ``## Available Tools`` section from whatever is in *registry*."""
-    lines: List[str] = [
+    lines: list[str] = [
         "## Available Tools",
         "",
         "Only use tools listed below. If a tool is not listed here, do not assume it exists.",
@@ -249,7 +249,7 @@ def format_tools_markdown(registry: ToolRegistry) -> str:
     seen: set[str] = set()
 
     for heading, names in _TOOL_SECTIONS:
-        chunk: List[str] = []
+        chunk: list[str] = []
         for name in names:
             tool = registry.get(name)
             if tool is None:
@@ -263,7 +263,7 @@ def format_tools_markdown(registry: ToolRegistry) -> str:
             lines.extend(chunk)
             lines.append("")
 
-    other: List[str] = []
+    other: list[str] = []
     for name in sorted(registry.tools.keys()):
         if name in seen:
             continue
@@ -302,7 +302,7 @@ def _format_connected_mcp_tools_appendix() -> str:
     if not getattr(mcp_client, "discovered_tools", None):
         return ""
 
-    blocks: List[str] = [
+    blocks: list[str] = [
         "### MCP (connected servers)",
         "",
         "These names mirror your function-calling schema. Names are identifiers only; "

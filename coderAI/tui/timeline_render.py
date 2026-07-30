@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import logging
 import time as _time_mod
-from typing import Any, Callable, Dict, List, Optional, Protocol
+from typing import Any, Optional, Protocol
+from collections.abc import Callable
 
 from rich.console import Console, ConsoleOptions, Group, RenderResult
-from rich.markup import escape
 from rich.segment import Segment
 from rich.style import Style
 from rich.text import Text
@@ -23,11 +23,24 @@ MAX_TIMELINE = 500
 KEEP_AFTER_TRIM = 400
 
 
+def _escape_markup(text: str) -> str:
+    """Escape text for embedding in Rich/Textual markup strings.
+
+    ``rich.markup.escape`` only escapes *complete* tag-like ``[...]`` spans
+    that start with ``[a-z#/@]``. Streamed assistant text often has an
+    opening ``[`` without a closing ``]`` yet (e.g. a partial OAuth URL in
+    markdown), which the markup parser then misreads as a style with
+    ``key=value&...`` query params and raises ``MarkupError``. Escape every
+    ``[`` so partial/streamed content is always safe.
+    """
+    return text.replace("\\", "\\\\").replace("[", "\\[")
+
+
 def append_capped(
-    timeline: List[Dict[str, Any]],
-    item: Dict[str, Any],
+    timeline: list[dict[str, Any]],
+    item: dict[str, Any],
     next_id: Callable[[], str],
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     out = timeline + [item]
     if len(out) <= MAX_TIMELINE:
         return out
@@ -106,7 +119,7 @@ class _RailBlock:
             yield Segment.line()
 
 
-def write_timeline_item(log: SupportsWrite, it: Dict[str, Any], *, verbose: bool) -> None:
+def write_timeline_item(log: SupportsWrite, it: dict[str, Any], *, verbose: bool) -> None:
     kind = it.get("kind")
     if kind == "user":
         write_user(log, it)
@@ -126,6 +139,8 @@ def write_timeline_item(log: SupportsWrite, it: Dict[str, Any], *, verbose: bool
         write_approval(log, it)
     elif kind == "skill_card":
         write_skill_card(log, it)
+    elif kind == "plan_card":
+        write_plan_card(log, it)
     elif kind == "welcome":
         write_welcome(log, it)
     else:
@@ -147,7 +162,7 @@ def _tail_slice(text: str, limit: int = _STREAM_TAIL_CHARS) -> str:
     return cut[nl + 1 :] if nl != -1 else cut
 
 
-def build_stream_tail_markup(it: Dict[str, Any], *, verbose: bool) -> str:
+def build_stream_tail_markup(it: dict[str, Any], *, verbose: bool) -> str:
     """Rich markup for the live streaming assistant tail."""
     ts = _fmt_ts(it.get("ts"))
     lines: list[str] = []
@@ -158,7 +173,7 @@ def build_stream_tail_markup(it: Dict[str, Any], *, verbose: bool) -> str:
             f"[{Styles.REASONING_LABEL}]reasoning[/]"
             + (f"  [{Tokens.TEXT_MUTED}]{ts}[/]" if ts else "")
         )
-        lines.append(f"  [{Styles.REASONING}]{escape(_tail_slice(reasoning))}[/]")
+        lines.append(f"  [{Styles.REASONING}]{_escape_markup(_tail_slice(reasoning))}[/]")
         lines.append("")
     lines.append(
         f"[{Styles.ASSISTANT_GLYPH}]{Glyphs.ASSISTANT}[/] [{Styles.ASSISTANT}]assistant[/]"
@@ -166,12 +181,12 @@ def build_stream_tail_markup(it: Dict[str, Any], *, verbose: bool) -> str:
     )
     content = it.get("content", "") or ""
     if content:
-        lines.append(f"  [{Styles.TEXT}]{escape(_tail_slice(content))}[/]")
+        lines.append(f"  [{Styles.TEXT}]{_escape_markup(_tail_slice(content))}[/]")
     lines.append(f"  [{Tokens.AGENT}]▌[/]")
     return "\n".join(lines)
 
 
-def write_user(log: SupportsWrite, it: Dict[str, Any]) -> None:
+def write_user(log: SupportsWrite, it: dict[str, Any]) -> None:
     ts = _fmt_ts(it.get("ts"))
     header = Text()
     header.append(f"{Glyphs.USER} ", style=Styles.USER_GLYPH)
@@ -183,7 +198,7 @@ def write_user(log: SupportsWrite, it: Dict[str, Any]) -> None:
     if body:
         if it.get("collapsed"):
             parts.append(
-                Text.from_markup(f"  [{Tokens.TEXT_DIM}]{escape(_first_lines(body, 2))}[/]")
+                Text.from_markup(f"  [{Tokens.TEXT_DIM}]{_escape_markup(_first_lines(body, 2))}[/]")
             )
         else:
             parts.append(Padding(Markdown(body), (0, 0, 0, 2)))
@@ -191,7 +206,7 @@ def write_user(log: SupportsWrite, it: Dict[str, Any]) -> None:
     log.write("")
 
 
-def write_assistant(log: SupportsWrite, it: Dict[str, Any], verbose: bool) -> None:
+def write_assistant(log: SupportsWrite, it: dict[str, Any], verbose: bool) -> None:
     ts = _fmt_ts(it.get("ts"))
     collapsed = it.get("collapsed")
     reasoning = (it.get("reasoning") or "").strip()
@@ -215,7 +230,9 @@ def write_assistant(log: SupportsWrite, it: Dict[str, Any], verbose: bool) -> No
     if content:
         if collapsed:
             parts.append(
-                Text.from_markup(f"  [{Tokens.TEXT_DIM}]{escape(_first_lines(content, 3))}[/]")
+                Text.from_markup(
+                    f"  [{Tokens.TEXT_DIM}]{_escape_markup(_first_lines(content, 3))}[/]"
+                )
             )
         else:
             parts.append(Padding(Markdown(content), (0, 0, 0, 2)))
@@ -244,7 +261,7 @@ _ARG_PREVIEW_KEYS = (
 )
 
 
-def write_tool(log: SupportsWrite, it: Dict[str, Any]) -> None:
+def write_tool(log: SupportsWrite, it: dict[str, Any]) -> None:
     ts = _fmt_ts(it.get("ts"))
     collapsed = it.get("collapsed")
     ok = it.get("ok")
@@ -293,7 +310,7 @@ def write_tool(log: SupportsWrite, it: Dict[str, Any]) -> None:
         log.write(Text(f"    → {it['error']}", style=f"{Tokens.DANGER}"))
 
 
-def write_diff(log: SupportsWrite, it: Dict[str, Any], verbose: bool) -> None:
+def write_diff(log: SupportsWrite, it: dict[str, Any], verbose: bool) -> None:
     ts = _fmt_ts(it.get("ts"))
     collapsed = it.get("collapsed")
     path = it.get("path", "")
@@ -316,7 +333,7 @@ def write_diff(log: SupportsWrite, it: Dict[str, Any], verbose: bool) -> None:
         log.write(Text.from_markup(rendered))
 
 
-def write_error(log: SupportsWrite, it: Dict[str, Any]) -> None:
+def write_error(log: SupportsWrite, it: dict[str, Any]) -> None:
     ts = _fmt_ts(it.get("ts"))
     head = Text()
     head.append(f"{Glyphs.ERROR} ", style=Tokens.DANGER)
@@ -329,14 +346,14 @@ def write_error(log: SupportsWrite, it: Dict[str, Any]) -> None:
         log.write(Text("  " + str(it["hint"]), style=Styles.TEXT_DIM))
 
 
-def write_toast(log: SupportsWrite, it: Dict[str, Any]) -> None:
+def write_toast(log: SupportsWrite, it: dict[str, Any]) -> None:
     level = it.get("level", "info")
     color = _TOAST_STYLES.get(level, Tokens.TEXT_DIM)
     glyph = _TOAST_GLYPHS.get(level, "·")
     log.write(Text(f"{glyph} " + str(it.get("message", "")), style=color))
 
 
-def write_approval(log: SupportsWrite, it: Dict[str, Any]) -> None:
+def write_approval(log: SupportsWrite, it: dict[str, Any]) -> None:
     decided = it.get("decided", "pending")
     head = Text()
     head.append(f"{Glyphs.APPROVAL} ", style=Styles.APPROVAL_GLYPH)
@@ -346,9 +363,9 @@ def write_approval(log: SupportsWrite, it: Dict[str, Any]) -> None:
     log.write(head)
 
 
-def write_skill_card(log: SupportsWrite, it: Dict[str, Any]) -> None:
-    name = escape(str(it.get("name") or ""))
-    desc = escape(str(it.get("description") or ""))
+def write_skill_card(log: SupportsWrite, it: dict[str, Any]) -> None:
+    name = _escape_markup(str(it.get("name") or ""))
+    desc = _escape_markup(str(it.get("description") or "")[:120])
     steps = it.get("steps") or []
     total = len(steps)
 
@@ -358,26 +375,41 @@ def write_skill_card(log: SupportsWrite, it: Dict[str, Any]) -> None:
     )
     log.write(head)
     if desc:
-        log.write(Text.from_markup(f"  [{Tokens.TEXT_DIM}]{desc[:120]}[/]"))
+        log.write(Text.from_markup(f"  [{Tokens.TEXT_DIM}]{desc}[/]"))
 
     if steps:
         for s in steps[:12]:
             idx = int(s.get("index", 0))
-            label = escape(str(s.get("label", ""))[:100])
+            label = _escape_markup(str(s.get("label", ""))[:100])
             log.write(
                 Text.from_markup(f"  [{Tokens.TEXT_MUTED}]{idx:>2}.[/] [{Tokens.TEXT}]{label}[/]")
             )
     log.write("")
 
 
-def write_welcome(log: SupportsWrite, it: Dict[str, Any]) -> None:
+def write_plan_card(log: SupportsWrite, it: dict[str, Any]) -> None:
+    status = str(it.get("status") or "draft")
+    plan_id = str(it.get("planId") or "")[:8]
+    revision = int(it.get("revision") or 1)
+    head = Text()
+    head.append("▎ ", style=Tokens.ACCENT)
+    head.append("PLAN", style=f"bold {Tokens.ACCENT}")
+    head.append(f" · {plan_id} r{revision} · {status}", style=Tokens.TEXT_MUTED)
+    log.write(head)
+    markdown = str(it.get("markdown") or "")
+    if markdown:
+        log.write(Padding(Markdown(markdown), (0, 0, 0, 2)))
+    log.write("")
+
+
+def write_welcome(log: SupportsWrite, it: dict[str, Any]) -> None:
     """Empty-state block seeded at session start.
 
     Renders exactly 5 lines (4 rail lines + trailing blank) — keep
     ``calculate_item_lines`` in sync when adding or removing a line.
     """
-    model = escape(str(it.get("model") or "…"))
-    provider = escape(str(it.get("provider") or ""))
+    model = _escape_markup(str(it.get("model") or "…"))
+    provider = _escape_markup(str(it.get("provider") or ""))
     cwd = str(it.get("cwd") or "")
     if len(cwd) > 60:
         cwd = "…" + cwd[-59:]
@@ -388,7 +420,7 @@ def write_welcome(log: SupportsWrite, it: Dict[str, Any]) -> None:
     parts: list[Any] = [
         head,
         Text.from_markup(f"  [{Tokens.TEXT_DIM}]{session_line}[/]"),
-        Text.from_markup(f"  [{Tokens.TEXT_MUTED}]{escape(cwd)}[/]"),
+        Text.from_markup(f"  [{Tokens.TEXT_MUTED}]{_escape_markup(cwd)}[/]"),
         Text(""),
     ]
     log.write(_RailBlock(Group(*parts), Tokens.ACCENT))
@@ -410,7 +442,7 @@ def _body_lines(body: str, width: Optional[int]) -> int:
     return sum(max(1, -(-len(line) // usable)) for line in body.splitlines())
 
 
-def calculate_item_lines(it: Dict[str, Any], verbose: bool, width: Optional[int] = None) -> int:
+def calculate_item_lines(it: dict[str, Any], verbose: bool, width: Optional[int] = None) -> int:
     """Precisely calculate the height (in lines) of a rendered timeline item.
 
     When ``width`` is given, text bodies and multi-line toasts are measured at
@@ -485,6 +517,9 @@ def calculate_item_lines(it: Dict[str, Any], verbose: bool, width: Optional[int]
         lines += min(len(steps), 12)
         lines += 1  # empty line
         return lines
+    elif kind == "plan_card":
+        markdown = str(it.get("markdown") or "")
+        return 2 + _body_lines(markdown, width)
     elif kind == "welcome":
         return 5  # 4 rail lines + trailing blank (see write_welcome)
     return 3

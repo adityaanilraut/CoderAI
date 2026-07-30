@@ -24,7 +24,7 @@ import os
 import re
 import tempfile
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Optional
 
 from coderAI.system.events import event_emitter
 from coderAI.system.proc import build_hook_env, run_scrubbed
@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 
 # Valid status values returned by permission.ask hooks
-VALID_PERMISSION_STATUSES: Tuple[str, ...] = ("allow", "deny", "ask")
+VALID_PERMISSION_STATUSES: tuple[str, ...] = ("allow", "deny", "ask")
 
 # Shared regex and sanitizer for shell metacharacter removal. Used by both
 # run_hooks() and run_hooks_structured() to prevent hook scripts from being
@@ -62,11 +62,11 @@ class HooksManager:
     def __init__(self, agent: "Agent") -> None:
         self.agent = agent
         # Cache for project hooks.json (keyed by path → (mtime_ns, parsed))
-        self._hooks_cache: Dict[str, Tuple[int, Optional[Dict[str, Any]]]] = {}
+        self._hooks_cache: dict[str, tuple[int, Optional[dict[str, Any]]]] = {}
 
     def _prepare_hook_environment(
         self, tool_name: str, arguments: dict
-    ) -> Tuple[Dict[str, str], Optional[str]]:
+    ) -> tuple[dict[str, str], Optional[str]]:
         """Build the env dict and optional temp-file path for hook execution.
 
         Returns (env, args_file_path) — callers MUST ``os.unlink(args_file_path)``
@@ -114,7 +114,7 @@ class HooksManager:
 
         return env, args_file_path
 
-    def load_hooks(self) -> Optional[Dict[str, Any]]:
+    def load_hooks(self) -> Optional[dict[str, Any]]:
         """Load project hooks from .coderAI/hooks.json (cached by mtime).
 
         Fail-closed on the Agent-lifetime workspace trust snapshot: an
@@ -142,10 +142,10 @@ class HooksManager:
             return None
 
     async def run_hooks(
-        self, tool_name: str, hook_type: str, arguments: dict, hooks_data: Optional[Dict[str, Any]]
-    ) -> List[str]:
+        self, tool_name: str, hook_type: str, arguments: dict, hooks_data: Optional[dict[str, Any]]
+    ) -> list[str]:
         """Run hooks for a tool stage; parallel-executes multiple hooks."""
-        hooks_results: List[str] = []
+        hooks_results: list[str] = []
         if not hooks_data:
             return hooks_results
 
@@ -298,8 +298,8 @@ class HooksManager:
         tool_name: str,
         hook_type: str,
         arguments: dict,
-        hooks_data: Optional[Dict[str, Any]],
-    ) -> Dict[str, Any]:
+        hooks_data: Optional[dict[str, Any]],
+    ) -> dict[str, Any]:
         """Run hooks and return structured results for behavior-modifying hooks.
 
         Unlike ``run_hooks`` which returns plain strings, this method
@@ -311,7 +311,7 @@ class HooksManager:
         Plain-text (non-JSON) output is preserved under the ``_text`` key
         for backward compatibility.
         """
-        hooks_results: Dict[str, Any] = {}
+        hooks_results: dict[str, Any] = {}
         if not hooks_data:
             return hooks_results
 
@@ -352,7 +352,7 @@ class HooksManager:
 
             async def _exec_structured_hook(
                 cmd: str,
-            ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+            ) -> tuple[Optional[dict[str, Any]], Optional[str]]:
                 """Run a hook and attempt JSON parsing of stdout."""
                 returncode, stdout, stderr, timed_out = await run_scrubbed(
                     cmd,
@@ -418,7 +418,7 @@ class HooksManager:
     async def run_chat_message_hooks(
         self,
         user_message: str,
-        hooks_data: Optional[Dict[str, Any]],
+        hooks_data: Optional[dict[str, Any]],
     ) -> Optional[str]:
         """Run ``chat.message`` hooks that can transform the user message.
 
@@ -445,7 +445,7 @@ class HooksManager:
         self,
         tool_name: str,
         arguments: dict,
-        hooks_data: Optional[Dict[str, Any]],
+        hooks_data: Optional[dict[str, Any]],
     ) -> Optional[str]:
         """Run ``permission.ask`` hooks that can override tool approval.
 

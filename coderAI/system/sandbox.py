@@ -20,7 +20,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Iterable, List, Literal, Optional, Sequence, Tuple, cast
+from typing import Literal, Optional, cast
+from collections.abc import Iterable, Sequence
 
 SandboxMode = Literal["off", "best_effort", "required"]
 
@@ -35,7 +36,7 @@ class SandboxUnavailableError(RuntimeError):
 class SandboxLaunch:
     """A fully prepared subprocess argv and its truthful confinement status."""
 
-    argv: List[str]
+    argv: list[str]
     sandboxed: bool
     backend: Optional[str] = None
     fallback_reason: Optional[str] = None
@@ -59,11 +60,11 @@ class SandboxBackend(ABC):
         cwd: Path,
         allow_network: bool,
         temp_dirs: Sequence[Path],
-    ) -> List[str]:
+    ) -> list[str]:
         """Return an argv that launches *argv* under this backend."""
 
 
-def _probe(command: Tuple[str, ...]) -> bool:
+def _probe(command: tuple[str, ...]) -> bool:
     try:
         completed = subprocess.run(
             command,
@@ -122,7 +123,7 @@ class BubblewrapBackend(SandboxBackend):
         cwd: Path,
         allow_network: bool,
         temp_dirs: Sequence[Path],
-    ) -> List[str]:
+    ) -> list[str]:
         if not self.executable:
             raise SandboxUnavailableError("Bubblewrap executable was not found")
 
@@ -186,7 +187,7 @@ class SandboxExecBackend(SandboxBackend):
         cwd: Path,
         allow_network: bool,
         temp_dirs: Sequence[Path],
-    ) -> List[str]:
+    ) -> list[str]:
         del cwd  # sandbox-exec inherits cwd from create_subprocess_exec.
         if not self.executable:
             raise SandboxUnavailableError("sandbox-exec was not found")
@@ -202,7 +203,7 @@ class SandboxExecBackend(SandboxBackend):
         return [self.executable, "-p", profile, *argv]
 
 
-def _candidate_backends() -> List[SandboxBackend]:
+def _candidate_backends() -> list[SandboxBackend]:
     if sys.platform.startswith("linux"):
         return [BubblewrapBackend()]
     if sys.platform == "darwin":
@@ -220,7 +221,7 @@ def select_backend(
     return None
 
 
-def _configured_settings() -> Tuple[SandboxMode, bool, Path]:
+def _configured_settings() -> tuple[SandboxMode, bool, Path]:
     try:
         from coderAI.core.services import get_services
 
@@ -234,9 +235,9 @@ def _configured_settings() -> Tuple[SandboxMode, bool, Path]:
         return "off", False, Path.cwd().resolve()
 
 
-def _writable_temp_dirs() -> List[Path]:
+def _writable_temp_dirs() -> list[Path]:
     candidates = [Path(tempfile.gettempdir()), Path("/tmp"), Path("/var/tmp")]
-    result: List[Path] = []
+    result: list[Path] = []
     for candidate in candidates:
         try:
             resolved = candidate.expanduser().resolve()

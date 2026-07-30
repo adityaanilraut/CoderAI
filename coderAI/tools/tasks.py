@@ -3,7 +3,7 @@
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -51,6 +51,15 @@ class ManageTasksParams(BaseModel):
 
 # Priority ordering for sort
 _PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}
+_TASK_STATUSES = {"pending", "in_progress", "completed"}
+
+
+class TasksDataError(ValueError):
+    """Raised when persisted task data cannot be safely interpreted."""
+
+    def __init__(self, message: str, code: ToolErrorCode = ToolErrorCode.VALIDATION):
+        super().__init__(message)
+        self.code = code
 
 
 class ManageTasksTool(Tool):
@@ -82,7 +91,7 @@ class ManageTasksTool(Tool):
         description: Optional[str] = None,
         priority: Optional[str] = None,
         project_root: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Execute task management action."""
         try:
             # Kept only for typed internal callers predating the model schema.
@@ -198,32 +207,71 @@ class ManageTasksTool(Tool):
 
         except ProjectPathError as e:
             return e.as_result()
+        except TasksDataError as e:
+            return {
+                "success": False,
+                "error": f"Task data is invalid; refusing to modify it: {e}",
+                "error_code": e.code,
+            }
         except Exception as e:
             return {"success": False, "error": str(e), "error_code": ToolErrorCode.TOOL_ERROR}
 
-    def _load_tasks(self, filepath: Path) -> List[Dict[str, Any]]:
+    def _load_tasks(self, filepath: Path) -> list[dict[str, Any]]:
         if not filepath.exists():
             return []
         try:
             with open(filepath, "r") as f:
                 tasks = json.load(f)
-            # Backfill priority for tasks created before this field existed
-            for t in tasks:
-                if "priority" not in t:
-                    t["priority"] = "medium"
-            return cast(List[Dict[str, Any]], tasks)
-        except (json.JSONDecodeError, IOError):
-            return []
+        except json.JSONDecodeError as exc:
+            raise TasksDataError("malformed JSON", ToolErrorCode.PARSE_ERROR) from exc
+        except OSError as exc:
+            raise TasksDataError(f"could not read tasks file: {exc}", ToolErrorCode.IO) from exc
 
-    def _save_tasks(self, filepath: Path, tasks: List[Dict[str, Any]]) -> None:
+        if not isinstance(tasks, list):
+            raise TasksDataError(f"expected a JSON array, got {type(tasks).__name__}")
+
+        validated: list[dict[str, Any]] = []
+        seen_ids: set[int] = set()
+        for position, raw in enumerate(tasks):
+            if not isinstance(raw, dict):
+                raise TasksDataError(f"task at position {position} is not an object")
+            task = dict(raw)
+            task_id = task.get("id")
+            if isinstance(task_id, bool) or not isinstance(task_id, int) or task_id < 1:
+                raise TasksDataError(f"task at position {position} has an invalid id")
+            if task_id in seen_ids:
+                raise TasksDataError(f"duplicate task id {task_id}")
+            seen_ids.add(task_id)
+            if not isinstance(task.get("title"), str) or not task["title"].strip():
+                raise TasksDataError(f"task #{task_id} has an invalid title")
+            if task.get("status") not in _TASK_STATUSES:
+                raise TasksDataError(f"task #{task_id} has an invalid status")
+
+            # Backfill fields introduced after the original task format.
+            task.setdefault("priority", "medium")
+            task.setdefault("description", "")
+            task.setdefault("created_at", "")
+            task.setdefault("completed_at", None)
+            if task["priority"] not in _PRIORITY_ORDER:
+                raise TasksDataError(f"task #{task_id} has an invalid priority")
+            if not isinstance(task["description"], str):
+                raise TasksDataError(f"task #{task_id} has an invalid description")
+            if not isinstance(task["created_at"], str):
+                raise TasksDataError(f"task #{task_id} has an invalid created_at")
+            if task["completed_at"] is not None and not isinstance(task["completed_at"], str):
+                raise TasksDataError(f"task #{task_id} has an invalid completed_at")
+            validated.append(task)
+        return validated
+
+    def _save_tasks(self, filepath: Path, tasks: list[dict[str, Any]]) -> None:
         atomic_write_json(filepath, tasks, fsync=True)
         event_emitter.emit("tasks_update", tasks=tasks)
 
-    def _format_tasks(self, tasks: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def _format_tasks(self, tasks: list[dict[str, Any]]) -> dict[str, Any]:
         if not tasks:
             return {"success": True, "message": "No tasks found", "tasks": []}
 
-        def _sort_key(t: Dict[str, Any]) -> int:
+        def _sort_key(t: dict[str, Any]) -> int:
             return _PRIORITY_ORDER.get(t.get("priority", "medium"), 1)
 
         in_progress = sorted([t for t in tasks if t.get("status") == "in_progress"], key=_sort_key)

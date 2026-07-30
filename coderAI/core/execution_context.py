@@ -5,7 +5,8 @@ from __future__ import annotations
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
-from typing import Any, Dict, Iterator, Literal, Optional, cast
+from typing import Any, Literal, Optional, cast
+from collections.abc import Iterator
 
 IsolationDomain = Literal["auto", "read_only", "browser", "desktop", "workspace"]
 
@@ -53,7 +54,7 @@ def execution_context_scope(
         reset_execution_context(token)
 
 
-def resolve_delegation_isolation_domain(arguments: Optional[Dict[str, Any]]) -> IsolationDomain:
+def resolve_delegation_isolation_domain(arguments: Optional[dict[str, Any]]) -> IsolationDomain:
     """Map ``delegate_task`` arguments to an executor routing domain."""
     if not isinstance(arguments, dict):
         return "workspace"

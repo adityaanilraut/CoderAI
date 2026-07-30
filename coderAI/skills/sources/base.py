@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import List, Optional
+from typing import Optional
 
 from coderAI.skills.skill_manager import Skill
 
@@ -16,7 +16,7 @@ class SkillSource(ABC):
     """
 
     @abstractmethod
-    async def discover(self) -> List[Skill]:
+    async def discover(self) -> list[Skill]:
         """Return every skill available from this source."""
         ...
 

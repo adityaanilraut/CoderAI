@@ -8,7 +8,7 @@ commit.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from coderAI.core.agent_tracker import AgentInfo, AgentStatus, agent_tracker
 
@@ -72,7 +72,7 @@ def _infer_error_hint(category: str, message: str) -> Optional[str]:
     return None
 
 
-def _agent_info_dict(info: AgentInfo) -> Dict[str, Any]:
+def _agent_info_dict(info: AgentInfo) -> dict[str, Any]:
     return {
         "id": info.agent_id,
         "name": info.name,
@@ -107,7 +107,7 @@ _PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}
 _COMPLETED_CAP = 5
 
 
-def _task_ui_item(task: Dict[str, Any]) -> Dict[str, Any]:
+def _task_ui_item(task: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": int(task.get("id") or 0),
         "title": str(task.get("title") or ""),
@@ -116,10 +116,10 @@ def _task_ui_item(task: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _serialize_tasks_for_ui(tasks: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _serialize_tasks_for_ui(tasks: list[dict[str, Any]]) -> dict[str, Any]:
     """Serialize tasks into a grouped payload for the tasks_card UI event."""
 
-    def _sort_key(t: Dict[str, Any]) -> int:
+    def _sort_key(t: dict[str, Any]) -> int:
         return _PRIORITY_ORDER.get(str(t.get("priority", "medium")), 1)
 
     in_progress = sorted(
@@ -146,7 +146,7 @@ def _serialize_tasks_for_ui(tasks: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
-def _load_tasks_from_disk(project_root: str) -> List[Dict[str, Any]]:
+def _load_tasks_from_disk(project_root: str) -> list[dict[str, Any]]:
     from coderAI.tools.tasks import get_tasks_file
 
     tasks_file = get_tasks_file(project_root)

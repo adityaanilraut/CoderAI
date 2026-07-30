@@ -5,7 +5,8 @@ import logging
 import time as _time_module
 from collections import OrderedDict
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Optional
+from collections.abc import Callable
 
 from coderAI.llm.base import normalize_usage
 from coderAI.types.provenance import UNTRUSTED_OPEN_TAG, fence_project_context
@@ -69,7 +70,7 @@ class ContextController:
         self.provider = provider
         self.cost_tracker = cost_tracker
         self._on_summary_tokens: Optional[Callable[[int, int], None]] = None
-        self.request_tool_schemas: Optional[List[Dict[str, Any]]] = None
+        self.request_tool_schemas: Optional[list[dict[str, Any]]] = None
         self._token_cache: "OrderedDict[str, int]" = OrderedDict()
         self._last_summary_time: float = 0.0
         self._inject_cache_fp: Optional[tuple] = None
@@ -77,8 +78,8 @@ class ContextController:
         self.allow_project_instructions = allow_project_instructions
 
         # Pinned-file state (formerly ContextManager)
-        self.pinned_files: Dict[str, str] = {}
-        self._pinned_mtimes: Dict[str, float] = {}
+        self.pinned_files: dict[str, str] = {}
+        self._pinned_mtimes: dict[str, float] = {}
         self.project_instructions: Optional[str] = None
         self._instructions_loaded: bool = False
         self._instructions_fingerprint: Optional[tuple] = None
@@ -88,7 +89,7 @@ class ContextController:
     # Pinned-file management (formerly ContextManager)
     # ------------------------------------------------------------------
 
-    def _instruction_paths(self) -> List[Path]:
+    def _instruction_paths(self) -> list[Path]:
         """Return trusted instruction files from project root to current directory."""
         if not self.allow_project_instructions:
             return []
@@ -110,7 +111,7 @@ class ContextController:
         except (OSError, ValueError):
             candidates.append(project_root / "AGENTS.md")
 
-        result: List[Path] = []
+        result: list[Path] = []
         seen: set[Path] = set()
         for path in candidates:
             try:
@@ -132,7 +133,7 @@ class ContextController:
 
         self._instructions_loaded = True
         self._instructions_fingerprint = fingerprint
-        sections: List[str] = []
+        sections: list[str] = []
         for path in paths:
             try:
                 content = path.read_text(encoding="utf-8").strip()
@@ -146,28 +147,65 @@ class ContextController:
 
     def add_file(self, path: str) -> bool:
         import os
+        import stat
+
+        from coderAI.tools.filesystem._guards import (
+            ProjectPathError,
+            _is_path_protected,
+            _safe_open_no_symlink,
+            resolve_under_project,
+        )
 
         try:
-            file_path = Path(path).resolve()
-            project_root = (
-                Path(self.config.project_root).resolve() if self.config.project_root else Path.cwd()
+            # ``ContextController`` can be constructed with an injected Config,
+            # while the generic filesystem resolver reads the active service
+            # container. Resolve the caller's relative path against this
+            # controller's project root first, then use the shared protected-path
+            # and symlink policy on that absolute candidate.
+            project_root = Path(self.config.project_root or Path.cwd()).expanduser().resolve()
+            requested = Path(path).expanduser()
+            candidate = requested if requested.is_absolute() else project_root / requested
+            allow_outside = bool(getattr(self.config, "allow_outside_project", False)) or (
+                os.environ.get("CODERAI_ALLOW_OUTSIDE_PROJECT") == "1"
             )
-            allow_outside = os.environ.get("CODERAI_ALLOW_OUTSIDE_PROJECT") == "1"
+            file_path = resolve_under_project(
+                candidate,
+                operation="pin context file",
+                enforce_scope=False,
+                check_protected=True,
+                reject_symlink=True,
+            )
             if not allow_outside:
                 try:
                     file_path.relative_to(project_root)
                 except ValueError:
-                    logger.warning(f"File {path} is outside project root, not pinning")
+                    logger.warning("File %s is outside project root, not pinning", path)
                     return False
-            if not file_path.exists():
+            # Re-check explicitly against the resolved path. This keeps the
+            # controller safe even when its injected config differs from the
+            # process-wide service config used by other tools.
+            if _is_path_protected(file_path):
+                logger.warning("File %s is protected, not pinning", path)
                 return False
-            if file_path.stat().st_size > 100 * 1024:
-                logger.warning(f"File {path} too large to pin")
-                return False
-            content = file_path.read_text(encoding="utf-8")
+
+            with _safe_open_no_symlink(file_path, "r") as handle:
+                file_stat = os.fstat(handle.fileno())
+                if not stat.S_ISREG(file_stat.st_mode):
+                    logger.warning("File %s is not a regular file, not pinning", path)
+                    return False
+                if file_stat.st_size > 100 * 1024:
+                    logger.warning("File %s too large to pin", path)
+                    return False
+                content = handle.read()
+
             self.pinned_files[str(file_path)] = content
-            self._pinned_mtimes[str(file_path)] = file_path.stat().st_mtime
+            self._pinned_mtimes[str(file_path)] = file_stat.st_mtime
+            self._inject_cache_fp = None
+            self._inject_cache_msg = None
             return True
+        except ProjectPathError as e:
+            logger.warning("Failed to pin file %s: %s", path, e)
+            return False
         except Exception as e:
             logger.error(f"Failed to pin file {path}: {e}")
             return False
@@ -193,21 +231,29 @@ class ContextController:
         self._inject_cache_fp = None
         self._inject_cache_msg = None
 
-    def refresh_pinned_files(self) -> None:
+    def refresh_pinned_files(self, *, force: bool = False) -> None:
         now = _time_module.monotonic()
-        if now - self._last_refresh_at < 2.0:
+        if not force and now - self._last_refresh_at < 2.0:
             return
         self._last_refresh_at = now
         stale_keys = []
         for path_str in list(self.pinned_files.keys()):
             try:
                 p = Path(path_str)
+                # A pinned regular file may be replaced after the initial add.
+                # Never follow a replacement symlink during automatic refresh.
+                if p.is_symlink():
+                    logger.warning("Pinned file %s became a symlink; removing it", path_str)
+                    stale_keys.append(path_str)
+                    continue
                 if p.exists() and p.is_file():
                     current_mtime = p.stat().st_mtime
                     cached_mtime = self._pinned_mtimes.get(path_str, 0)
                     if current_mtime != cached_mtime:
-                        self.pinned_files[path_str] = p.read_text(encoding="utf-8")
-                        self._pinned_mtimes[path_str] = current_mtime
+                        # Reuse the full protected-path, scope, regular-file, size,
+                        # and O_NOFOLLOW checks instead of reading directly.
+                        if not self.add_file(path_str):
+                            stale_keys.append(path_str)
                 else:
                     stale_keys.append(path_str)
             except Exception as e:
@@ -220,7 +266,7 @@ class ContextController:
     def get_system_message(
         self,
         query: Optional[str] = None,
-        messages: Optional[List[dict]] = None,
+        messages: Optional[list[dict]] = None,
     ) -> Optional[str]:
         self._load_instructions()
         self.refresh_pinned_files()
@@ -243,7 +289,7 @@ class ContextController:
             effective_query[:80] if effective_query else "<none>",
             len(self.pinned_files),
         )
-        parts: List[str] = []
+        parts: list[str] = []
         if self.project_instructions:
             parts.append(
                 fence_project_context(
@@ -297,7 +343,7 @@ class ContextController:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _msg_fingerprint(msg: Dict[str, Any]) -> str:
+    def _msg_fingerprint(msg: dict[str, Any]) -> str:
         """Stable content-derived key for the token cache."""
         return json.dumps(
             {
@@ -313,7 +359,7 @@ class ContextController:
             sort_keys=True,
         )
 
-    def _estimate_message_tokens(self, msg: Dict[str, Any]) -> int:
+    def _estimate_message_tokens(self, msg: dict[str, Any]) -> int:
         """Estimate tokens for a single message, populating the cache."""
         key = self._msg_fingerprint(msg)
         cached = self._token_cache.get(key)
@@ -366,7 +412,7 @@ class ContextController:
             self._token_cache.popitem(last=False)
         return total
 
-    def estimate_tokens(self, messages: List[Dict[str, Any]]) -> int:
+    def estimate_tokens(self, messages: list[dict[str, Any]]) -> int:
         """Estimate token count for a list of messages."""
         total = 0
         for msg in messages:
@@ -374,7 +420,7 @@ class ContextController:
         total += 3  # 3 tokens reserved for assistant reply priming overhead
         return total
 
-    def estimate_tool_tokens(self, tools: Optional[List[Dict[str, Any]]] = None) -> int:
+    def estimate_tool_tokens(self, tools: Optional[list[dict[str, Any]]] = None) -> int:
         """Estimate serialized tool-schema tokens included in a request."""
         schemas = self.request_tool_schemas if tools is None else tools
         if not schemas:
@@ -415,11 +461,11 @@ class ContextController:
     _EPHEMERAL_MARKER_KEY = "_ephemeral"
 
     @classmethod
-    def _is_pinned_injection(cls, msg: Dict[str, Any]) -> bool:
+    def _is_pinned_injection(cls, msg: dict[str, Any]) -> bool:
         return bool(msg.get(cls._CONTEXT_MARKER_KEY)) and msg.get("role") == "system"
 
     @classmethod
-    def strip_internal_markers(cls, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def strip_internal_markers(cls, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Return a copy of *messages* with internal-only keys removed.
 
         Use this just before handing the list to a provider — providers reject
@@ -431,7 +477,7 @@ class ContextController:
             cls._SUMMARY_MARKER_KEY,
             cls._EPHEMERAL_MARKER_KEY,
         )
-        cleaned: List[Dict[str, Any]] = []
+        cleaned: list[dict[str, Any]] = []
         for m in messages:
             if any(k in m for k in internal_keys):
                 m = {k: v for k, v in m.items() if k not in internal_keys}
@@ -441,18 +487,18 @@ class ContextController:
     def _pinned_context_fingerprint(
         self,
         query: Optional[str],
-        messages: List[Dict[str, Any]],
+        messages: list[dict[str, Any]],
     ) -> tuple:
         pins = tuple(sorted(self.pinned_files.keys()))
         mtimes = tuple(self._pinned_mtimes.get(k, 0) for k in pins)
         effective_query = query
         if not effective_query and messages:
             effective_query = summarize_conversation_focus(messages)
-        return (pins, mtimes, effective_query or "")
+        return (pins, mtimes, self._instructions_fingerprint, effective_query or "")
 
     def inject_context(
-        self, messages: List[Dict[str, Any]], query: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
+        self, messages: list[dict[str, Any]], query: Optional[str] = None
+    ) -> list[dict[str, Any]]:
         """Inject the pinned-context system message after the last system message.
 
         Returns a *new* list — the caller's list is never mutated. Any
@@ -460,6 +506,11 @@ class ContextController:
         ``_CONTEXT_MARKER_KEY`` flag) are stripped first to prevent
         accumulation across loop iterations.
         """
+        # Refresh every source before computing the cache key.  Previously a
+        # repeated query could hit the cache before either check ran, leaving
+        # edited pinned files and project instructions stale indefinitely.
+        self._load_instructions()
+        self.refresh_pinned_files(force=True)
         fp = self._pinned_context_fingerprint(query, messages)
         context_msg: Optional[str] = None
         if fp == self._inject_cache_fp and self._inject_cache_msg is not None:
@@ -494,9 +545,9 @@ class ContextController:
 
     async def manage_context_window(
         self,
-        messages: List[Dict[str, Any]],
+        messages: list[dict[str, Any]],
         context_limit_override: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Manage context window by summarizing old messages to fit."""
         context_limit = self._effective_context_limit(context_limit_override)
         max_content_tokens = max(
@@ -569,7 +620,7 @@ class ContextController:
         effective_budget = max(0, remaining_budget - CONTEXT_MARGIN_TOKENS)
 
         groups = self._group_messages_for_truncation(non_system)
-        kept_groups: List[List[Dict[str, Any]]] = []
+        kept_groups: list[list[dict[str, Any]]] = []
         running_tokens = 0
         for group in reversed(groups):
             group_tokens = sum(self._estimate_message_tokens(m) for m in group)
@@ -748,8 +799,8 @@ class ContextController:
         )
 
     def _group_messages_for_truncation(
-        self, messages: List[Dict[str, Any]]
-    ) -> List[List[Dict[str, Any]]]:
+        self, messages: list[dict[str, Any]]
+    ) -> list[list[dict[str, Any]]]:
         """Group messages into atomic units for safe truncation."""
         groups = []
         i = 0
@@ -767,7 +818,7 @@ class ContextController:
                 i += 1
         return groups
 
-    def summarize_tool_result(self, result: Any) -> Dict[str, Any]:
+    def summarize_tool_result(self, result: Any) -> dict[str, Any]:
         """Summarize large tool results to prevent context overflow."""
         if not isinstance(result, dict):
             return {

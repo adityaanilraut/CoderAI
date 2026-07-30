@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from coderAI.tools.git_extended import EXTENDED_GIT_TOOLS
 
@@ -24,7 +24,7 @@ SERVER_NAME = "git_extended"
 PROTOCOL_VERSION = "2024-11-05"
 
 
-def _tool_descriptors() -> List[Dict[str, Any]]:
+def _tool_descriptors() -> list[dict[str, Any]]:
     return [
         {
             "name": tool.name,
@@ -35,24 +35,24 @@ def _tool_descriptors() -> List[Dict[str, Any]]:
     ]
 
 
-def _tools_by_name() -> Dict[str, Any]:
+def _tools_by_name() -> dict[str, Any]:
     return {t.name: t for t in EXTENDED_GIT_TOOLS}
 
 
-def _ok(req_id: Any, result: Dict[str, Any]) -> Dict[str, Any]:
+def _ok(req_id: Any, result: dict[str, Any]) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": req_id, "result": result}
 
 
-def _err(req_id: Any, code: int, message: str) -> Dict[str, Any]:
+def _err(req_id: Any, code: int, message: str) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
 
 
-def _write(msg: Dict[str, Any]) -> None:
+def _write(msg: dict[str, Any]) -> None:
     sys.stdout.write(json.dumps(msg) + "\n")
     sys.stdout.flush()
 
 
-async def _call_tool(name: str, arguments: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+async def _call_tool(name: str, arguments: Optional[dict[str, Any]]) -> dict[str, Any]:
     tool = _tools_by_name().get(name)
     if tool is None:
         return {
@@ -79,7 +79,7 @@ async def _call_tool(name: str, arguments: Optional[Dict[str, Any]]) -> Dict[str
     }
 
 
-async def _handle(msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+async def _handle(msg: dict[str, Any]) -> Optional[dict[str, Any]]:
     method = msg.get("method")
     req_id = msg.get("id")
     params = msg.get("params") or {}

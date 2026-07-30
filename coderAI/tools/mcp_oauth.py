@@ -30,7 +30,7 @@ import time
 import urllib.parse
 import webbrowser
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 import requests
 
@@ -81,7 +81,7 @@ def mcp_credentials_path() -> Path:
     return config_manager.config_dir / "mcp_credentials.json"
 
 
-def load_mcp_credentials() -> Dict[str, Any]:
+def load_mcp_credentials() -> dict[str, Any]:
     """Read the credential store, tolerating a missing or corrupt file."""
     path = mcp_credentials_path()
     if not path.exists():
@@ -95,7 +95,7 @@ def load_mcp_credentials() -> Dict[str, Any]:
         return {}
 
 
-def save_mcp_credentials(data: Dict[str, Any]) -> None:
+def save_mcp_credentials(data: dict[str, Any]) -> None:
     """Atomically write the credential store with ``0600`` permissions.
 
     Mirrors ``mcp.save_mcp_servers`` / ``ConfigManager.save``: write a temp file
@@ -107,13 +107,13 @@ def save_mcp_credentials(data: Dict[str, Any]) -> None:
     atomic_write_json(path, data)
 
 
-def get_credentials(name: str) -> Optional[Dict[str, Any]]:
+def get_credentials(name: str) -> Optional[dict[str, Any]]:
     """Return the stored credential record for a server, or ``None``."""
     rec = load_mcp_credentials().get(name)
     return rec if isinstance(rec, dict) else None
 
 
-def set_credentials(name: str, record: Dict[str, Any]) -> None:
+def set_credentials(name: str, record: dict[str, Any]) -> None:
     """Persist (overwrite) the credential record for a server."""
     data = load_mcp_credentials()
     data[name] = record
@@ -144,7 +144,7 @@ def _b64url(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
 
 
-def generate_pkce() -> Tuple[str, str]:
+def generate_pkce() -> tuple[str, str]:
     """Return a ``(code_verifier, code_challenge)`` PKCE pair (S256)."""
     verifier = _b64url(secrets.token_bytes(32))
     challenge = _b64url(hashlib.sha256(verifier.encode()).digest())
@@ -309,28 +309,66 @@ def parse_www_authenticate_resource(header: Optional[str]) -> Optional[str]:
     return None
 
 
-def _well_known(origin: str, suffix: str) -> str:
-    parsed = urllib.parse.urlparse(origin)
-    return f"{parsed.scheme}://{parsed.netloc}/.well-known/{suffix}"
+def _well_known_candidates(resource_url: str, suffix: str) -> list[str]:
+    """Build RFC 9728 / RFC 8414 well-known URLs for a resource or issuer.
+
+    Path-aware insertion comes first when the URL has a path (e.g. Google's
+    Gmail MCP publishes metadata at
+    ``/.well-known/oauth-protected-resource/mcp/v1``, not the origin root).
+    """
+    parsed = urllib.parse.urlparse(resource_url)
+    base = f"{parsed.scheme}://{parsed.netloc}"
+    path = parsed.path.rstrip("/")
+    candidates: list[str] = []
+    if path:
+        candidates.append(f"{base}/.well-known/{suffix}{path}")
+    candidates.append(f"{base}/.well-known/{suffix}")
+    # Deduplicate while preserving order (issuer "/" collapses path to empty).
+    seen: set[str] = set()
+    out: list[str] = []
+    for url in candidates:
+        if url not in seen:
+            seen.add(url)
+            out.append(url)
+    return out
 
 
 def discover_protected_resource(
     server_url: str, www_authenticate: Optional[str] = None
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Fetch the protected-resource metadata document (RFC 9728)."""
-    rm_url = parse_www_authenticate_resource(www_authenticate) or _well_known(
-        server_url, "oauth-protected-resource"
+    advertised = parse_www_authenticate_resource(www_authenticate)
+    candidates = (
+        [advertised]
+        if advertised
+        else _well_known_candidates(server_url, "oauth-protected-resource")
     )
-    _require_https_endpoint(rm_url, "protected-resource metadata")
-    resp = requests.get(rm_url, timeout=_HTTP_TIMEOUT)
-    resp.raise_for_status()
-    data = resp.json()
-    if not isinstance(data, dict):
-        raise OAuthError(f"Malformed protected-resource metadata at {rm_url}")
-    return data
+    last_err: Optional[Exception] = None
+    for rm_url in candidates:
+        if not rm_url:
+            continue
+        try:
+            _require_https_endpoint(rm_url, "protected-resource metadata")
+            resp = requests.get(rm_url, timeout=_HTTP_TIMEOUT)
+            if resp.status_code != 200:
+                last_err = OAuthError(f"HTTP {resp.status_code} at {rm_url}")
+                continue
+            data = resp.json()
+            if not isinstance(data, dict):
+                last_err = OAuthError(f"Malformed protected-resource metadata at {rm_url}")
+                continue
+            return data
+        except OAuthError as e:
+            last_err = e
+        except Exception as e:
+            last_err = e
+    raise OAuthError(
+        f"Could not locate protected-resource metadata for {server_url!r}"
+        + (f" ({last_err})" if last_err else "")
+    )
 
 
-def discover_auth_server(issuer: str) -> Dict[str, Any]:
+def discover_auth_server(issuer: str) -> dict[str, Any]:
     """Fetch authorization-server metadata for an issuer (RFC 8414 / OIDC).
 
     Tries the RFC 8414 path-insertion form first (which is what Strava and most
@@ -365,7 +403,7 @@ def discover_auth_server(issuer: str) -> Dict[str, Any]:
 
 def discover_metadata(
     server_url: str, www_authenticate: Optional[str] = None
-) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+) -> tuple[dict[str, Any], dict[str, Any]]:
     """Return ``(protected_resource_metadata, authorization_server_metadata)``."""
     rm = discover_protected_resource(server_url, www_authenticate)
     auth_servers = rm.get("authorization_servers") or []
@@ -406,8 +444,8 @@ def probe_www_authenticate(server_url: str) -> Optional[str]:
 
 
 def register_client(
-    as_meta: Dict[str, Any], redirect_uri: str, client_name: str = "CoderAI"
-) -> Optional[Dict[str, Any]]:
+    as_meta: dict[str, Any], redirect_uri: str, client_name: str = "CoderAI"
+) -> Optional[dict[str, Any]]:
     """Dynamically register a public OAuth client (RFC 7591), if supported.
 
     Returns the registration response (``client_id`` and optionally
@@ -433,7 +471,7 @@ def register_client(
     return data
 
 
-def _token_request(token_endpoint: str, data: Dict[str, Optional[str]]) -> Dict[str, Any]:
+def _token_request(token_endpoint: str, data: dict[str, Optional[str]]) -> dict[str, Any]:
     _require_https_endpoint(token_endpoint, "token endpoint")
     resp = requests.post(
         token_endpoint,
@@ -450,7 +488,7 @@ def _token_request(token_endpoint: str, data: Dict[str, Optional[str]]) -> Dict[
 
 
 def exchange_code(
-    as_meta: Dict[str, Any],
+    as_meta: dict[str, Any],
     *,
     client_id: str,
     client_secret: Optional[str],
@@ -458,7 +496,7 @@ def exchange_code(
     code_verifier: str,
     redirect_uri: str,
     resource: Optional[str],
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Exchange an authorization code for tokens (authorization_code grant)."""
     return _token_request(
         as_meta["token_endpoint"],
@@ -474,7 +512,7 @@ def exchange_code(
     )
 
 
-def refresh_token_grant(record: Dict[str, Any]) -> Dict[str, Any]:
+def refresh_token_grant(record: dict[str, Any]) -> dict[str, Any]:
     """Exchange a stored refresh token for a fresh access token."""
     refresh = record.get("refresh_token")
     if not refresh:
@@ -491,7 +529,7 @@ def refresh_token_grant(record: Dict[str, Any]) -> Dict[str, Any]:
     )
 
 
-def _apply_token(record: Dict[str, Any], token: Dict[str, Any]) -> None:
+def _apply_token(record: dict[str, Any], token: dict[str, Any]) -> None:
     """Merge a token response into a credential record (preserving refresh token)."""
     record["access_token"] = token["access_token"]
     # Refresh tokens are often returned only on first issue; keep the old one.
@@ -514,8 +552,8 @@ def login(
     *,
     client_id: Optional[str] = None,
     client_secret: Optional[str] = None,
-    scopes: Optional[List[str]] = None,
-) -> Dict[str, Any]:
+    scopes: Optional[list[str]] = None,
+) -> dict[str, Any]:
     """Run the interactive OAuth login for a server and persist its credentials.
 
     Discovers metadata, registers (or reuses) a client, opens the browser for
@@ -542,7 +580,10 @@ def login(
         if not reg:
             raise OAuthError(
                 "Server has no dynamic registration endpoint; pass --client-id "
-                "(and --client-secret if confidential)."
+                "(and --client-secret if confidential). For Google Workspace MCP "
+                "(gmail/drive/calendar/…), create an OAuth client in Google Cloud "
+                "Console (Desktop app type works best with the loopback callback) "
+                "and run: coderAI mcp login NAME --client-id … --client-secret …"
             )
         client_id = reg["client_id"]
         secret = reg.get("client_secret")
@@ -577,7 +618,7 @@ def login(
         resource=resource,
     )
 
-    record: Dict[str, Any] = {
+    record: dict[str, Any] = {
         "issuer": as_meta.get("issuer"),
         "token_endpoint": as_meta["token_endpoint"],
         "authorization_endpoint": as_meta.get("authorization_endpoint"),
@@ -593,13 +634,19 @@ def login(
     return record
 
 
-def get_valid_token_sync(name: str) -> Optional[str]:
+def get_valid_token_sync(name: str, *, force_refresh: bool = False) -> Optional[str]:
     """Return a currently-valid access token for a server, refreshing if needed.
 
     Silent only: returns ``None`` (never opens a browser) when there are no
     stored credentials or the refresh fails — the caller decides whether to
     prompt for an interactive ``mcp login``. Safe to call from an executor via
     ``asyncio.to_thread`` so it never blocks the event loop.
+
+    ``force_refresh`` skips the local expiry check and always spends the refresh
+    token. Use it when the server has actually rejected the access token (HTTP
+    401): the stored ``expires_at`` is only the issuer's estimate, so a revoked
+    or server-side-expired token still looks fresh here and would otherwise be
+    handed straight back to the caller that just saw it fail.
     """
     record = get_credentials(name)
     if not record:
@@ -607,7 +654,7 @@ def get_valid_token_sync(name: str) -> Optional[str]:
 
     access = record.get("access_token")
     expires_at = record.get("expires_at", 0)
-    if access and time.time() < float(expires_at) - _EXPIRY_SKEW:
+    if not force_refresh and access and time.time() < float(expires_at) - _EXPIRY_SKEW:
         return str(access)
 
     if not record.get("refresh_token"):

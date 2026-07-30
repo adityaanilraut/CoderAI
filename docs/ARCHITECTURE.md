@@ -136,7 +136,7 @@ timeline/session state; `timeline_render.py` writes rows to the
 │   ├── context/             # Context window + semantic index
 │   ├── embeddings/          # OpenAI + optional local sentence-transformers
 │   ├── llm/                 # Providers + factory
-│   ├── skills/              # Skill discovery framework
+│   ├── skills/              # Skill discovery + installer (GitHub/local)
 │   ├── mcp_servers/         # Bundled stdio MCP (git_extended)
 │   ├── tools/               # Native tools (+ git_extended via bundled MCP)
 │   │   ├── discovery.py / filesystem/ / web/
@@ -175,9 +175,11 @@ entry point resolves to `main()` in `coderAI/cli/__init__.py` → `cli/main.py`.
 - `config`, `history`, `info`, `status`, `cost`, `models`, `setup`,
   `doctor`, `index`, `search`, `tasks list` — one-shot subcommands that
   render with Rich.
-- `mcp` (`cli/mcp_cmd.py`) — command group managing MCP servers in
-  `~/.coderAI/mcp_servers.json` (`list`/`add`/`remove`/`login`/`logout`/
-  `resources`/`prompts`).
+- `mcp` (`cli/mcp_cmd.py`) — MCP host management across user
+  (`~/.coderAI/mcp_servers.json`), project (`.mcp.json`), and local scopes
+  (`list`/`add`/`remove`/`login`/`logout`/`approve`/`import`/`catalog`/
+  `debug`/`resources`/`prompts`). Client implementation: `tools/mcp.py` +
+  `tools/mcp_config.py` + `tools/mcp_catalog.py`.
 
 ### 2. Agent Layer (`coderAI/core/`, `coderAI/context/`)
 

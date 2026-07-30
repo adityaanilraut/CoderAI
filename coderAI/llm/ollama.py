@@ -1,6 +1,6 @@
 """Ollama local LLM provider implementation."""
 
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from coderAI.llm.local_base import OpenAICompatibleLocalProvider
 
@@ -20,7 +20,7 @@ class OllamaProvider(OpenAICompatibleLocalProvider):
         """
         super().__init__(model=model, endpoint=endpoint, **kwargs)
 
-    def _transform_chat_response(self, result: Dict[str, Any]) -> Dict[str, Any]:
+    def _transform_chat_response(self, result: dict[str, Any]) -> dict[str, Any]:
         """Inject reasoning content as <think> tags for Ollama models."""
         choices = result.get("choices", [])
         if choices:
@@ -32,7 +32,7 @@ class OllamaProvider(OpenAICompatibleLocalProvider):
             choices[0]["message"] = message
         return result
 
-    def _transform_stream_chunk(self, chunk: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def _transform_stream_chunk(self, chunk: dict[str, Any]) -> Optional[dict[str, Any]]:
         """Move Ollama reasoning delta to reasoning_content for streaming handler."""
         choices = chunk.get("choices", [])
         if choices:

@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Optional, TYPE_CHECKING
+from collections.abc import Callable
 
 from coderAI.system.history import checkpoint_label
 from coderAI.tui.export import timeline_to_markdown
@@ -178,6 +179,34 @@ def _cmd_mcp(ctx: SlashContext, arg: str, head: str) -> bool:
     return True
 
 
+def _cmd_mcp_prompt(ctx: SlashContext, arg: str, head: str) -> bool:
+    """Invoke ``/mcp__<server>__<prompt> [args…]`` as a user message via get_prompt."""
+    # head is the full ``mcp__server__prompt`` token (no leading slash).
+    parts = head.split("__", 2)
+    if len(parts) != 3 or parts[0] != "mcp":
+        ctx.toast("warning", f"Invalid MCP prompt command: /{head}")
+        return True
+    _, server, prompt = parts
+    # Optional key=value args after the command.
+    prompt_args: dict[str, Any] = {}
+    if arg:
+        for token in arg.split():
+            if "=" in token:
+                k, _, v = token.partition("=")
+                prompt_args[k] = v
+            else:
+                prompt_args.setdefault("_", [])
+                if isinstance(prompt_args["_"], list):
+                    prompt_args["_"].append(token)
+    ctx.controller.enqueue_command(
+        "invoke_mcp_prompt",
+        server=server,
+        prompt=prompt,
+        arguments=prompt_args,
+    )
+    return True
+
+
 def _cmd_skills(ctx: SlashContext, arg: str, head: str) -> bool:
     if not arg or arg == "list":
         ctx.controller.enqueue_command("list_skills")
@@ -260,7 +289,29 @@ def _cmd_show(ctx: SlashContext, arg: str, head: str) -> bool:
 
 
 def _cmd_plan(ctx: SlashContext, arg: str, head: str) -> bool:
-    return _cmd_tasks(ctx, arg, head)
+    raw = arg.strip()
+    if not raw:
+        ctx.controller.enqueue_command("get_plan")
+        return True
+    command, _, remainder = raw.partition(" ")
+    command = command.lower()
+    if command == "approve" and not remainder.strip():
+        ctx.controller.enqueue_command("approve_plan")
+    elif command == "cancel" and not remainder.strip():
+        ctx.controller.enqueue_command("cancel_plan")
+    elif command in {"amend", "answer"}:
+        instruction = remainder.strip()
+        if not instruction:
+            ctx.toast("warning", f"Usage: /plan {command} <instruction>")
+        else:
+            ctx.controller.enqueue_command("amend_plan", instruction=instruction)
+    else:
+        request = remainder.strip() if command == "new" else raw
+        if not request:
+            ctx.toast("warning", "Usage: /plan <request>")
+        else:
+            ctx.controller.enqueue_command("start_plan", request=request)
+    return True
 
 
 def _cmd_exit(ctx: SlashContext, arg: str, head: str) -> bool:
@@ -382,10 +433,10 @@ class CommandSpec:
 
 
 # Maps command names (normalised to lowercase) to the shared CommandSpec.
-_SLASH_REGISTRY: Dict[str, CommandSpec] = {}
+_SLASH_REGISTRY: dict[str, CommandSpec] = {}
 
 # Specs in registration order (one entry per command, not per alias).
-COMMAND_SPECS: List[CommandSpec] = []
+COMMAND_SPECS: list[CommandSpec] = []
 
 
 def _register(handler: Callable[[SlashContext, str, str], bool], *names: str, desc: str) -> None:
@@ -463,7 +514,11 @@ _register(
     "info",
     desc="Reference info · type /show then a topic",
 )
-_register(_cmd_plan, "plan", desc="Show task checklist (same as /tasks)")
+_register(
+    _cmd_plan,
+    "plan",
+    desc="Plan read-only · /plan <request> · approve · amend · cancel",
+)
 _register(_cmd_exit, "exit", "quit", desc="Shut down the agent")
 _register(_cmd_export, "export", "save", desc="Export session to markdown")
 _register(_cmd_search, "search", "find", desc="Show matching transcript snippets")
@@ -534,6 +589,10 @@ def handle_slash_command(
     if entry is not None:
         return entry.handler(ctx, arg, head)
 
+    # Dynamic MCP prompt commands: /mcp__<server>__<prompt>
+    if head.startswith("mcp__") and "__" in head[5:]:
+        return _cmd_mcp_prompt(ctx, arg, head)
+
     ctx.toast("warning", f"Unknown command: /{head} · type /help")
     return True
 
@@ -541,7 +600,7 @@ def handle_slash_command(
 # ── helpers ───────────────────────────────────────────────────────────
 
 
-def _find_last_assistant(timeline: List[Dict[str, Any]]) -> Optional[str]:
+def _find_last_assistant(timeline: list[dict[str, Any]]) -> Optional[str]:
     for it in reversed(timeline):
         if it.get("kind") == "assistant":
             return it.get("content") or ""

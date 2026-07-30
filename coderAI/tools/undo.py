@@ -9,7 +9,7 @@ import stat
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Protocol, cast, runtime_checkable
+from typing import Any, Optional, Protocol, cast, runtime_checkable
 
 from pydantic import BaseModel, Field
 
@@ -25,7 +25,7 @@ MAX_BACKUPS_PER_FILE = 10
 MAX_TOTAL_BACKUPS = 50
 
 
-def _reapply_saved_mode(filepath: Path, entry: Dict[str, Any]) -> None:
+def _reapply_saved_mode(filepath: Path, entry: dict[str, Any]) -> None:
     """Best-effort restore of the file's original permission bits after copy2.
 
     Backups are chmod'd to 0600 at rest, so ``shutil.copy2`` would otherwise
@@ -42,7 +42,7 @@ def _reapply_saved_mode(filepath: Path, entry: Dict[str, Any]) -> None:
         pass
 
 
-def _guard_restore_path(filepath: Path, operation: str) -> Optional[Dict[str, Any]]:
+def _guard_restore_path(filepath: Path, operation: str) -> Optional[dict[str, Any]]:
     """Apply the same scope, protected-path, and symlink guards as file tools."""
     # Imported lazily because coderAI.tools.filesystem re-exports backup_store
     # from this module during package initialization.
@@ -62,7 +62,7 @@ def _guard_restore_path(filepath: Path, operation: str) -> Optional[Dict[str, An
     return None
 
 
-def _atomic_restore_file(backup_path: Path, filepath: Path, entry: Dict[str, Any]) -> None:
+def _atomic_restore_file(backup_path: Path, filepath: Path, entry: dict[str, Any]) -> None:
     """Copy a backup beside its target and atomically replace the target."""
     fd, temporary = tempfile.mkstemp(
         dir=str(filepath.parent), prefix=f".{filepath.name}.", suffix=".undo"
@@ -106,7 +106,7 @@ class FileBackupStore:
         """
         self._custom_backup_dir = backup_dir
         self._last_resolved_dir: Optional[Path] = None
-        self._cached_index: List[Dict[str, Any]] = []
+        self._cached_index: list[dict[str, Any]] = []
 
     @property
     def backup_dir(self) -> Path:
@@ -131,7 +131,7 @@ class FileBackupStore:
         return self.backup_dir / "index.json"
 
     @property
-    def index(self) -> List[Dict[str, Any]]:
+    def index(self) -> list[dict[str, Any]]:
         current_dir = self.backup_dir
         if self._last_resolved_dir != current_dir:
             self._last_resolved_dir = current_dir
@@ -139,15 +139,15 @@ class FileBackupStore:
         return self._cached_index
 
     @index.setter
-    def index(self, val: List[Dict[str, Any]]):
+    def index(self, val: list[dict[str, Any]]):
         self._cached_index = val
 
-    def _load_index(self) -> List[Dict[str, Any]]:
+    def _load_index(self) -> list[dict[str, Any]]:
         """Load backup index from disk."""
         if self.index_file.exists():
             try:
                 with open(self.index_file, "r") as f:
-                    return cast(List[Dict[str, Any]], json.load(f))
+                    return cast(list[dict[str, Any]], json.load(f))
             except Exception as e:
                 logger.warning("Could not load backup index %s: %s", self.index_file, e)
                 return []
@@ -163,7 +163,7 @@ class FileBackupStore:
         """
         atomic_write_json(self.index_file, self.index, fsync=True)
 
-    def backup_file(self, filepath: str, operation: str = "modify") -> Dict[str, Any]:
+    def backup_file(self, filepath: str, operation: str = "modify") -> dict[str, Any]:
         """Create a backup of a file before modification.
 
         Args:
@@ -178,7 +178,7 @@ class FileBackupStore:
         if not source.exists():
             if operation == "create":
                 # For new files, just record that they didn't exist before
-                entry: Dict[str, Any] = {
+                entry: dict[str, Any] = {
                     "filepath": str(source),
                     "backup_path": None,
                     "operation": "create",
@@ -219,7 +219,7 @@ class FileBackupStore:
 
         return entry
 
-    def _restore_entry(self, entry: Dict[str, Any]) -> Dict[str, Any]:
+    def _restore_entry(self, entry: dict[str, Any]) -> dict[str, Any]:
         """Revert one index entry: delete a created file or restore from backup.
 
         Returns ``{"success", "action" ("deleted"|"restored"), "filepath"}`` on
@@ -259,7 +259,7 @@ class FileBackupStore:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    def undo_last(self) -> Dict[str, Any]:
+    def undo_last(self) -> dict[str, Any]:
         """Undo the most recent file operation.
 
         Returns:
@@ -281,7 +281,7 @@ class FileBackupStore:
             )
         return result
 
-    def undo_specific(self, index: int) -> Dict[str, Any]:
+    def undo_specific(self, index: int) -> dict[str, Any]:
         """Undo a specific operation by its index in the history.
 
         Args:
@@ -314,7 +314,7 @@ class FileBackupStore:
             )
         return result
 
-    def restore_after(self, cutoff_epoch: float) -> Dict[str, Any]:
+    def restore_after(self, cutoff_epoch: float) -> dict[str, Any]:
         """Revert every backup recorded after ``cutoff_epoch`` (newest first).
 
         Used by conversation rewind (``/rewind <turn> --files``) to undo file
@@ -330,7 +330,7 @@ class FileBackupStore:
             ``{"success", "restored", "deleted", "errors", "count"}``.
         """
 
-        def _epoch(entry: Dict[str, Any]) -> float:
+        def _epoch(entry: dict[str, Any]) -> float:
             ts = entry.get("timestamp")
             if not isinstance(ts, str):
                 return 0.0
@@ -343,9 +343,9 @@ class FileBackupStore:
         if not to_undo:
             return {"success": True, "restored": [], "deleted": [], "errors": [], "count": 0}
 
-        restored: List[str] = []
-        deleted: List[str] = []
-        errors: List[str] = []
+        restored: list[str] = []
+        deleted: list[str] = []
+        errors: list[str] = []
         consumed: set[int] = set()
 
         # Newest first so layered edits to a single file unwind in order.
@@ -370,7 +370,7 @@ class FileBackupStore:
             "count": len(restored) + len(deleted),
         }
 
-    def get_history(self, limit: int = 10) -> List[Dict[str, Any]]:
+    def get_history(self, limit: int = 10) -> list[dict[str, Any]]:
         """Get recent backup history.
 
         Args:
@@ -452,7 +452,7 @@ class UndoTool(Tool):
     parameters_model = UndoParams
     requires_confirmation = True
 
-    async def execute(self, index: Optional[int] = None) -> Dict[str, Any]:  # type: ignore[override]
+    async def execute(self, index: Optional[int] = None) -> dict[str, Any]:  # type: ignore[override]
         """Undo a file operation."""
         store = get_backup_store()
         if index is not None:
@@ -473,7 +473,7 @@ class UndoHistoryTool(Tool):
     parameters_model = UndoHistoryParams
     is_read_only = True
 
-    async def execute(self, limit: int = 10) -> Dict[str, Any]:  # type: ignore[override]
+    async def execute(self, limit: int = 10) -> dict[str, Any]:  # type: ignore[override]
         """Get undo history."""
         history = get_backup_store().get_history(limit)
         return {

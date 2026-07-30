@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Dict, List, Literal, Optional, Type
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ValidationError
 
@@ -58,7 +58,7 @@ class Tool(ABC):
 
     name: str = ""
     description: str = ""
-    parameters_model: Optional[Type[BaseModel]] = None
+    parameters_model: Optional[type[BaseModel]] = None
 
     # Safety: if True, the agent will ask the user to confirm before executing.
     requires_confirmation: bool = False
@@ -167,7 +167,7 @@ class Tool(ABC):
     batch_serialize_by_path: bool = False
 
     @abstractmethod
-    async def execute(self, **kwargs) -> Dict[str, Any]:
+    async def execute(self, **kwargs) -> dict[str, Any]:
         """Execute the tool with given parameters.
 
         Args:
@@ -178,7 +178,7 @@ class Tool(ABC):
         """
         pass
 
-    def get_schema(self) -> Dict[str, Any]:
+    def get_schema(self) -> dict[str, Any]:
         """Get the JSON schema for this tool.
 
         Returns:
@@ -193,7 +193,7 @@ class Tool(ABC):
             },
         }
 
-    def resolve_timeout(self, arguments: Dict[str, Any]) -> Optional[float]:
+    def resolve_timeout(self, arguments: dict[str, Any]) -> Optional[float]:
         """Argument-derived wall-clock cap for one call, or ``None`` to defer.
 
         Tools whose ``execute`` accepts its own ``timeout`` argument (e.g.
@@ -207,7 +207,7 @@ class Tool(ABC):
         return None
 
     def preview(
-        self, arguments: Dict[str, Any], original: Optional[str]
+        self, arguments: dict[str, Any], original: Optional[str]
     ) -> Optional["ToolPreview"]:
         """Approval-diff preview for a mutating call (Phase 4.3).
 
@@ -222,7 +222,7 @@ class Tool(ABC):
         """
         return None
 
-    def get_parameters(self) -> Dict[str, Any]:
+    def get_parameters(self) -> dict[str, Any]:
         """Get the parameters schema for this tool.
 
         Returns:
@@ -253,7 +253,7 @@ class ToolRegistry:
 
     def __init__(self):
         """Initialize the tool registry."""
-        self.tools: Dict[str, Tool] = {}
+        self.tools: dict[str, Tool] = {}
 
     def register(self, tool: Tool) -> None:
         """Register a tool.
@@ -276,7 +276,7 @@ class ToolRegistry:
         """
         return self.tools.get(name)
 
-    def get_all(self) -> List[Tool]:
+    def get_all(self) -> list[Tool]:
         """Get all registered tools.
 
         Returns:
@@ -284,7 +284,7 @@ class ToolRegistry:
         """
         return list(self.tools.values())
 
-    def find_unclassified(self) -> List[str]:
+    def find_unclassified(self) -> list[str]:
         """Names of registered tools that declare no safety class (Phase 4.1)."""
         return [name for name, tool in self.tools.items() if not tool.is_classified]
 
@@ -302,7 +302,7 @@ class ToolRegistry:
                 "Unclassified: " + ", ".join(sorted(unclassified))
             )
 
-    def get_schemas(self) -> List[Dict[str, Any]]:
+    def get_schemas(self) -> list[dict[str, Any]]:
         """Get schemas for all tools.
 
         Returns:
@@ -314,7 +314,7 @@ class ToolRegistry:
         self,
         name: str,
         **kwargs,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Execute a tool by name.
 
         Confirmation/approval is NOT gated here: the live gate is

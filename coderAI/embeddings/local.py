@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-from typing import Any, List, Optional, Sequence
+from typing import Any, Optional
+from collections.abc import Sequence
 
 DEFAULT_LOCAL_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
@@ -53,7 +54,7 @@ class SentenceTransformerEmbeddingProvider:
             self._dimension = value
         return self._dimension
 
-    def _embed_sync(self, texts: Sequence[str]) -> List[List[float]]:
+    def _embed_sync(self, texts: Sequence[str]) -> list[list[float]]:
         if not texts:
             return []
         vectors = self._load_encoder().encode(
@@ -77,5 +78,5 @@ class SentenceTransformerEmbeddingProvider:
             )
         return result
 
-    async def embed(self, texts: Sequence[str]) -> List[List[float]]:
+    async def embed(self, texts: Sequence[str]) -> list[list[float]]:
         return await asyncio.to_thread(self._embed_sync, texts)

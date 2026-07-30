@@ -82,12 +82,6 @@ def test_checkpoints_round_trip_through_json() -> None:
     assert restored.checkpoints[1].message_index == 3
 
 
-def test_legacy_session_without_checkpoints_defaults_empty() -> None:
-    # A session JSON written before this feature has no "checkpoints" key.
-    s = Session(session_id="session_1_abcd1234", messages=[{"role": "system", "content": "x"}])
-    assert s.checkpoints == []
-
-
 def test_compact_request_view_survives_append_and_round_trip_without_losing_transcript() -> None:
     session = _two_turn_session()
     transcript_size = len(session.messages)

@@ -17,7 +17,8 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Optional
+from collections.abc import Callable
 
 # A callback that accepts either (message) like Textual App.notify,
 # or (level, message) like the toast helper.

@@ -73,6 +73,7 @@ EXPECTED_TOOLS = {
     "save_memory",
     "search_replace",
     "semantic_search",
+    "submit_plan",
     "symbol_search",
     "type_keystrokes",
     "undo",
@@ -99,4 +100,4 @@ def test_discovered_tool_names_match_snapshot():
 def test_discovered_tool_count():
     registry = ToolRegistry()
     discover_tools(registry)
-    assert len(registry.tools) == len(EXPECTED_TOOLS) == 67
+    assert len(registry.tools) == len(EXPECTED_TOOLS) == 68

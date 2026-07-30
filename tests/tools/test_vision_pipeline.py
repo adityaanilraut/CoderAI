@@ -1,8 +1,8 @@
 """End-to-end wiring tests for the read_image -> LLM vision pipeline.
 
 These cover the fix for the previously dead ``_vision`` path: a ``read_image``
-tool result must reach an Anthropic model as a real image content block, and
-must be stripped (not crash) for providers that don't support it.
+tool result must reach Anthropic and OpenAI-compatible models as real image
+content blocks.
 """
 
 from coderAI.core.tool_executor import _extract_vision_images
@@ -89,6 +89,41 @@ class TestProviderCleaning:
         assert "tool_images" not in cleaned[0]
         # Original list is not mutated.
         assert "tool_images" in msgs[0]
+
+    def test_openai_compatible_cleaning_renders_data_url(self):
+        messages = [
+            {
+                "role": "tool",
+                "content": '{"image_attached": true}',
+                "tool_call_id": "c1",
+                "tool_images": [{"mime_type": "image/png", "data": _B64}],
+            }
+        ]
+
+        cleaned = LLMProvider._render_tool_images_openai(messages)
+
+        assert "tool_images" not in cleaned[0]
+        assert cleaned[1]["role"] == "user"
+        assert cleaned[1]["content"][1] == {
+            "type": "image_url",
+            "image_url": {"url": f"data:image/png;base64,{_B64}"},
+        }
+        assert "tool_images" in messages[0]
+
+    def test_consecutive_tool_results_stay_together_before_images(self):
+        messages = [
+            {"role": "tool", "content": "first", "tool_call_id": "c1"},
+            {
+                "role": "tool",
+                "content": "second",
+                "tool_call_id": "c2",
+                "tool_images": [{"mime_type": "image/jpeg", "data": _B64}],
+            },
+        ]
+
+        cleaned = LLMProvider._render_tool_images_openai(messages)
+
+        assert [message["role"] for message in cleaned] == ["tool", "tool", "user"]
 
 
 class TestAnthropicVisionRendering:

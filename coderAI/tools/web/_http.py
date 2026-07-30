@@ -19,7 +19,8 @@ import logging
 import os
 import socket
 import ssl
-from typing import Any, Dict, List, Optional, Tuple
+import sys
+from typing import Any, Optional
 from urllib.parse import urljoin, urlparse
 
 import aiohttp
@@ -61,9 +62,12 @@ def _redact_url(url: str) -> str:
         p = urlparse(url)
     except ValueError:
         return "<unparseable-url>"
-    host = p.hostname or ""
-    if p.port:
-        host = f"{host}:{p.port}"
+    try:
+        host = p.hostname or ""
+        if p.port:
+            host = f"{host}:{p.port}"
+    except ValueError:
+        return "<unparseable-url>"
     scheme = f"{p.scheme}://" if p.scheme else ""
     redacted = f"{scheme}{host}{p.path}"
     return redacted or "<redacted-url>"
@@ -129,7 +133,7 @@ _BODY_HEADERS = frozenset(
 )
 
 
-def _normalized_origin(url: str) -> Optional[Tuple[str, str, int]]:
+def _normalized_origin(url: str) -> Optional[tuple[str, str, int]]:
     """Return a scheme/host/effective-port origin tuple for an HTTP URL."""
     try:
         parsed = urlparse(url)
@@ -143,13 +147,13 @@ def _normalized_origin(url: str) -> Optional[Tuple[str, str, int]]:
         return None
 
 
-def _has_sensitive_headers(headers: Optional[Dict[str, str]]) -> bool:
+def _has_sensitive_headers(headers: Optional[dict[str, str]]) -> bool:
     if not headers:
         return False
     return any(k.lower() in _SENSITIVE_REDIRECT_HEADERS for k in headers)
 
 
-def _without_body_headers(headers: Optional[Dict[str, str]]) -> Optional[Dict[str, str]]:
+def _without_body_headers(headers: Optional[dict[str, str]]) -> Optional[dict[str, str]]:
     if not headers:
         return headers
     return {k: v for k, v in headers.items() if k.lower() not in _BODY_HEADERS}
@@ -158,10 +162,10 @@ def _without_body_headers(headers: Optional[Dict[str, str]]) -> Optional[Dict[st
 def _redirect_request_state(
     status: int,
     method: str,
-    headers: Optional[Dict[str, str]],
+    headers: Optional[dict[str, str]],
     json_body: Any,
     body: Any,
-) -> tuple[str, Optional[Dict[str, str]], Any, Any]:
+) -> tuple[str, Optional[dict[str, str]], Any, Any]:
     """Apply RFC redirect method/body semantics for the next request."""
     next_method = method
     if status == 303 and method != "HEAD":
@@ -193,7 +197,7 @@ def _allow_local(allow_local: bool) -> bool:
     return bool(allow_local) or os.getenv("CODERAI_ALLOW_LOCAL_URLS") == "1"
 
 
-def _is_cloudflare_block(status: int, headers: Dict[str, str]) -> bool:
+def _is_cloudflare_block(status: int, headers: dict[str, str]) -> bool:
     if status not in (403, 429, 503):
         return False
     lower_keys = {k.lower() for k in headers}
@@ -216,7 +220,7 @@ class _SSRFResolver(aiohttp.abc.AbstractResolver):
         except Exception as e:
             raise OSError(f"SSRF guard: DNS failed for {host}: {e}") from e
 
-        results: List[Dict[str, Any]] = []
+        results: list[dict[str, Any]] = []
         for fam, _type, _proto, _canon, sockaddr in infos:
             if fam not in (socket.AF_INET, socket.AF_INET6):
                 continue
@@ -259,6 +263,7 @@ class HttpClient:
         self._session: Optional[aiohttp.ClientSession] = None
         self._allow_local_session: Optional[aiohttp.ClientSession] = None
         self._session_loop_id: Optional[int] = None
+        self._allow_local_session_loop_id: Optional[int] = None
 
     def get_ssl_ctx(self) -> ssl.SSLContext:
         if self._ssl_ctx is not None:
@@ -271,6 +276,30 @@ class HttpClient:
             self._ssl_ctx = ssl.create_default_context()
         return self._ssl_ctx
 
+    def _new_connector(self, *, allow_local: bool) -> aiohttp.TCPConnector:
+        kwargs: dict[str, Any] = {
+            "ssl": self.get_ssl_ctx(),
+            "resolver": _SSRFResolver(allow_local=allow_local),
+            "limit": 100,
+            "limit_per_host": 20,
+            "ttl_dns_cache": 300,
+        }
+        version = sys.version_info[:3]
+        if version < (3, 12, 7) or (3, 13, 0) <= version < (3, 13, 1):
+            kwargs["enable_cleanup_closed"] = True
+        return aiohttp.TCPConnector(**kwargs)
+
+    async def close(self) -> None:
+        """Close both session pools; safe to call more than once."""
+        sessions = (self._session, self._allow_local_session)
+        self._session = None
+        self._allow_local_session = None
+        self._session_loop_id = None
+        self._allow_local_session_loop_id = None
+        for session in sessions:
+            if session is not None and not session.closed:
+                await session.close()
+
     async def get_session(self, allow_local: bool = False) -> aiohttp.ClientSession:
         try:
             loop = asyncio.get_running_loop()
@@ -282,31 +311,21 @@ class HttpClient:
             if (
                 self._allow_local_session is None
                 or self._allow_local_session.closed
-                or self._session_loop_id != loop_id
+                or self._allow_local_session_loop_id != loop_id
             ):
+                if self._allow_local_session is not None and not self._allow_local_session.closed:
+                    await self._allow_local_session.close()
                 self._allow_local_session = aiohttp.ClientSession(
-                    connector=aiohttp.TCPConnector(
-                        ssl=self.get_ssl_ctx(),
-                        resolver=_SSRFResolver(allow_local=True),
-                        limit=100,
-                        limit_per_host=20,
-                        ttl_dns_cache=300,
-                        enable_cleanup_closed=True,
-                    ),
+                    connector=self._new_connector(allow_local=True),
                 )
-                self._session_loop_id = loop_id
+                self._allow_local_session_loop_id = loop_id
             return self._allow_local_session
         else:
             if self._session is None or self._session.closed or self._session_loop_id != loop_id:
+                if self._session is not None and not self._session.closed:
+                    await self._session.close()
                 self._session = aiohttp.ClientSession(
-                    connector=aiohttp.TCPConnector(
-                        ssl=self.get_ssl_ctx(),
-                        resolver=_SSRFResolver(allow_local=False),
-                        limit=100,
-                        limit_per_host=20,
-                        ttl_dns_cache=300,
-                        enable_cleanup_closed=True,
-                    ),
+                    connector=self._new_connector(allow_local=False),
                 )
                 self._session_loop_id = loop_id
             return self._session
@@ -316,13 +335,13 @@ class HttpClient:
         method: str,
         url: str,
         *,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         json_body: Any = None,
         body: Any = None,
         timeout_s: float = 15.0,
         allow_local: bool = False,
         max_bytes: int = _MAX_RESPONSE_BYTES,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Optional[dict[str, Any]]:
         """Issue an HTTP request with SSRF protection via a shared session pool.
 
         Redirects are handled manually so a public→private redirect cannot
@@ -494,13 +513,15 @@ class HttpClient:
         method: str,
         url: str,
         *,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs: Any,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Optional[dict[str, Any]]:
         resp = await _web._safe_request(method, url, headers=headers, **kwargs)
         if resp is None:
             return None
-        if not _is_cloudflare_block(resp.get("status", 0), resp.get("headers", {})):
+        if method.upper() not in ("GET", "HEAD") or not _is_cloudflare_block(
+            resp.get("status", 0), resp.get("headers", {})
+        ):
             return resp
 
         fallback_headers = dict(headers or _HEADERS_CHROME)
@@ -527,8 +548,12 @@ class HttpClient:
         raw = resp["text"]
         content_type = resp.get("content_type", "")
 
-        is_pdf = "pdf" in content_type.lower() or url.lower().endswith(".pdf")
-        if is_pdf and "pdf" in content_type.lower():
+        is_pdf = (
+            "pdf" in content_type.lower()
+            or urlparse(url).path.lower().endswith(".pdf")
+            or resp.get("content", b"").startswith(b"%PDF-")
+        )
+        if is_pdf:
             pdf_text = _extract_pdf_text(resp.get("content", b""))
             if pdf_text:
                 text = pdf_text
@@ -539,9 +564,6 @@ class HttpClient:
                 raw = _extract_main_content(raw)
             text = _html_to_text(raw, fmt)
 
-        if len(text) > max_length:
-            text = text[:max_length] + "\n\n[...truncated...]"
-
         if text and len(text) > 0:
             try:
                 ttl = get_services().config.page_cache_ttl_seconds
@@ -551,7 +573,7 @@ class HttpClient:
                 ttl = _DEFAULT_PAGE_TTL
             _web._set_cached(cache_key, text, ttl)
 
-        return text if len(text) > 0 else None
+        return text[:max_length] if len(text) > 0 else None
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -573,13 +595,13 @@ async def _safe_request(
     method: str,
     url: str,
     *,
-    headers: Optional[Dict[str, str]] = None,
+    headers: Optional[dict[str, str]] = None,
     json_body: Any = None,
     body: Any = None,
     timeout_s: float = 15.0,
     allow_local: bool = False,
     max_bytes: int = _MAX_RESPONSE_BYTES,
-) -> Optional[Dict[str, Any]]:
+) -> Optional[dict[str, Any]]:
     return await get_services().http.safe_request(
         method,
         url,
@@ -596,9 +618,9 @@ async def _safe_request_cf(
     method: str,
     url: str,
     *,
-    headers: Optional[Dict[str, str]] = None,
+    headers: Optional[dict[str, str]] = None,
     **kwargs: Any,
-) -> Optional[Dict[str, Any]]:
+) -> Optional[dict[str, Any]]:
     return await get_services().http.safe_request_cf(method, url, headers=headers, **kwargs)
 
 

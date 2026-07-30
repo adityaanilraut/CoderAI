@@ -10,7 +10,8 @@ returned agent; the headless path adds its ``confirmation_override``.
 from __future__ import annotations
 
 import logging
-from typing import Callable, Optional
+from typing import Optional
+from collections.abc import Callable
 
 from coderAI.core.agent import Agent
 from coderAI.system.history import history_manager
@@ -86,10 +87,10 @@ def bootstrap_agent(
         session = None
         try:
             session = agent.load_session(resume_id)
-        except Exception:
+        except Exception as exc:
             logger.exception("Failed to load session %s", resume_id)
             if not resume_fresh_on_failure:
-                raise BootstrapError(f"Could not load session {resume_id}.")
+                raise BootstrapError(f"Could not load session {resume_id}.") from exc
             if warn is not None:
                 try:
                     warn(f"Failed to resume session {resume_id}. Starting a fresh session.")

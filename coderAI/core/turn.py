@@ -12,7 +12,9 @@ object instead of the agent's internals.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
+
+from coderAI.core.objective import ObjectiveState
 
 
 @dataclass
@@ -40,8 +42,8 @@ class TurnContext:
     """
 
     user_message: str = ""
-    messages: List[Dict[str, Any]] = field(default_factory=list)
-    tool_schemas: Optional[List[Dict[str, Any]]] = None
+    messages: list[dict[str, Any]] = field(default_factory=list)
+    tool_schemas: Optional[list[dict[str, Any]]] = None
     hooks_data: Any = None
     max_iterations: int = 1
     iteration: int = 0
@@ -52,4 +54,5 @@ class TurnContext:
     tools_were_used: bool = False
     ingested_untrusted: bool = False
     ingested_untrusted_mcp: bool = False
-    reply_parts: List[str] = field(default_factory=list)
+    reply_parts: list[str] = field(default_factory=list)
+    objective_state: Optional[ObjectiveState] = None

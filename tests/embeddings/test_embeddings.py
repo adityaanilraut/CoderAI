@@ -7,7 +7,6 @@ import pytest
 
 from coderAI.embeddings import create_embedding_provider, embedding_fingerprint
 from coderAI.embeddings.local import SentenceTransformerEmbeddingProvider
-from coderAI.embeddings.openai import create_embedding_provider as legacy_factory
 from coderAI.system.config import Config
 
 
@@ -73,13 +72,6 @@ def test_missing_local_dependency_has_install_hint(monkeypatch):
 
     with pytest.raises(ImportError, match=r"coderai-agent\[local-embeddings\]"):
         provider.dimension()
-
-
-def test_legacy_openai_factory_path_forwards_to_common_factory():
-    provider = legacy_factory(Config(embedding_backend="local", embedding_model="offline"))
-
-    assert isinstance(provider, SentenceTransformerEmbeddingProvider)
-    assert provider.model == "offline"
 
 
 def test_explicit_openai_backend_without_key_is_unavailable():

@@ -13,7 +13,7 @@ is no safe way to tell whether a future full read will see the same bytes.
 
 import logging
 import threading
-from typing import Dict, Optional, Tuple
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,7 @@ class FileReadCache:
     """Tracks (path, mtime, size) → turn for full-file reads in this session."""
 
     def __init__(self) -> None:
-        self._entries: Dict[str, Tuple[float, int, int]] = {}
+        self._entries: dict[str, tuple[float, int, int]] = {}
         self._turn: int = 0
         self._warned_disabled: bool = False
         self._lock = threading.Lock()

@@ -7,7 +7,7 @@ they need for the current task instead of everything available.
 import re
 import logging
 from collections import Counter
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Optional
 
 from coderAI.types.provenance import fence_project_context
 
@@ -159,13 +159,13 @@ _BLOCK_START_RE = re.compile(
 )
 
 
-def extract_keywords(text: str) -> List[str]:
+def extract_keywords(text: str) -> list[str]:
     """Extract meaningful keywords from text for relevance matching.
 
     Pulls out identifiers (camelCase, snake_case, PascalCase),
     file paths, and domain terms while filtering stop words.
     """
-    keywords: List[str] = []
+    keywords: list[str] = []
 
     # File paths / module references (e.g. src/auth/login.ts)
     for match in re.finditer(r"[\w./\\-]+\.[\w]+", text):
@@ -193,7 +193,7 @@ def extract_keywords(text: str) -> List[str]:
     return keywords
 
 
-def score_relevance(keywords: List[str], content: str, file_path: str = "") -> float:
+def score_relevance(keywords: list[str], content: str, file_path: str = "") -> float:
     """Score how relevant *content* is to *keywords* (0.0 – 1.0)."""
     if not keywords or not content:
         return 0.0
@@ -221,7 +221,7 @@ def score_relevance(keywords: List[str], content: str, file_path: str = "") -> f
 
 def extract_relevant_snippets(
     content: str,
-    keywords: List[str],
+    keywords: list[str],
     max_lines: int = 80,
     context_lines: int = 3,
 ) -> str:
@@ -237,7 +237,7 @@ def extract_relevant_snippets(
     keywords_lower = {kw.lower() for kw in keywords}
 
     # Identify lines that match any keyword
-    relevant_lines: Set[int] = set()
+    relevant_lines: set[int] = set()
     for i, line in enumerate(lines):
         line_lower = line.lower()
         if any(kw in line_lower for kw in keywords_lower):
@@ -255,12 +255,12 @@ def extract_relevant_snippets(
         )
 
     # Locate block-starting lines (function/class definitions)
-    block_starts: List[int] = [
+    block_starts: list[int] = [
         i for i, line in enumerate(lines) if _BLOCK_START_RE.match(line.lstrip())
     ]
 
     # Expand each relevant line to include its enclosing block
-    expanded: Set[int] = set()
+    expanded: set[int] = set()
     for rel in sorted(relevant_lines):
         enclosing_start = 0
         for bs in block_starts:
@@ -282,7 +282,7 @@ def extract_relevant_snippets(
     if not sorted_lines:
         return content[: max_lines * 80]
 
-    result_parts: List[str] = []
+    result_parts: list[str] = []
     prev_line = -2
     for line_num in sorted_lines:
         if line_num > prev_line + 1 and prev_line >= 0:
@@ -304,17 +304,17 @@ def extract_relevant_snippets(
 
 
 def select_relevant_files(
-    files: Dict[str, str],
+    files: dict[str, str],
     query: str,
     max_files: int = 5,
     min_score: float = 0.1,
-) -> List[Tuple[str, str, float]]:
+) -> list[tuple[str, str, float]]:
     """Return the most relevant files for *query*, sorted by relevance."""
     keywords = extract_keywords(query)
     if not keywords:
         return [(p, c, 0.5) for p, c in list(files.items())[:max_files]]
 
-    scored: List[Tuple[str, str, float]] = []
+    scored: list[tuple[str, str, float]] = []
     for path, content in files.items():
         s = score_relevance(keywords, content, file_path=path)
         if s >= min_score:
@@ -325,7 +325,7 @@ def select_relevant_files(
 
 
 def build_focused_context(
-    files: Dict[str, str],
+    files: dict[str, str],
     query: str,
     project_instructions: Optional[str] = None,
     max_total_chars: int = 30_000,
@@ -339,7 +339,7 @@ def build_focused_context(
     keywords = extract_keywords(query)
     relevant = select_relevant_files(files, query, max_files=max_files)
 
-    parts: List[str] = []
+    parts: list[str] = []
     total_chars = 0
 
     if project_instructions:
@@ -357,7 +357,7 @@ def build_focused_context(
     if not relevant:
         return "\n\n".join(parts) if parts else None
 
-    file_parts: List[str] = []
+    file_parts: list[str] = []
     for path, content, score_val in relevant:
         snippet = extract_relevant_snippets(content, keywords)
         entry = f"### File: {path} (relevance: {score_val:.0%})\n```\n{snippet}\n```"
@@ -392,13 +392,13 @@ def _extract_text(content: Any) -> str:
     return ""
 
 
-def summarize_conversation_focus(messages: List[Dict[str, str]], recent_count: int = 6) -> str:
+def summarize_conversation_focus(messages: list[dict[str, str]], recent_count: int = 6) -> str:
     """Derive a short textual summary of the conversation's current focus.
 
     Used as the *query* when deciding which context files are relevant.
     """
     recent = messages[-recent_count:] if len(messages) > recent_count else messages
-    parts: List[str] = []
+    parts: list[str] = []
 
     if len(messages) > recent_count:
         first_msg = next((m for m in messages if m.get("role") == "user"), None)

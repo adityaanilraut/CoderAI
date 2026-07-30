@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -58,7 +58,7 @@ class SemanticSearchTool(Tool):
         query: str,
         top_k: int = 10,
         file_filter: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         top_k = min(top_k, 20)
 
         try:

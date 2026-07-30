@@ -4,7 +4,7 @@ import json
 import logging
 import shutil
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -15,7 +15,7 @@ from coderAI.tools.base import SUBPROCESS_TIMEOUT_MARGIN_SECONDS, Tool
 
 logger = logging.getLogger(__name__)
 
-PACKAGE_MANAGERS: Dict[str, Dict[str, Any]] = {
+PACKAGE_MANAGERS: dict[str, dict[str, Any]] = {
     "pip": {
         "cmd": "pip",
         "install_cmd": ["install"],
@@ -260,7 +260,7 @@ class PackageManagerTool(Tool):
     timeout = None
     category = "other"
 
-    def resolve_timeout(self, arguments: Dict[str, Any]) -> Optional[float]:
+    def resolve_timeout(self, arguments: dict[str, Any]) -> Optional[float]:
         # No timeout argument on this tool; the inner run_scrubbed timeout is
         # at most PACKAGE_MANAGER_MAX_TIMEOUT_SECONDS regardless of manager.
         return PACKAGE_MANAGER_MAX_TIMEOUT_SECONDS + SUBPROCESS_TIMEOUT_MARGIN_SECONDS
@@ -274,7 +274,7 @@ class PackageManagerTool(Tool):
         dev: bool = False,
         max_results: int = 20,
         allow_remote_source: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         try:
             action = action.strip().lower()
             if action not in ("install", "uninstall", "list", "outdated", "info"):
@@ -340,7 +340,7 @@ class PackageManagerTool(Tool):
                     else:
                         pkg_with_version = f"{package}>={version}"
 
-            cmd: List[str] = [cmd_binary]
+            cmd: list[str] = [cmd_binary]
 
             if action == "install":
                 cmd.extend(config["install_cmd"])
@@ -439,7 +439,7 @@ class PackageManagerTool(Tool):
 
             stdout_str, _ = truncate_output(stdout_str, max_chars=8000)
 
-            result: Dict[str, Any] = {
+            result: dict[str, Any] = {
                 "success": returncode == 0,
                 "action": action,
                 "manager": manager_name,

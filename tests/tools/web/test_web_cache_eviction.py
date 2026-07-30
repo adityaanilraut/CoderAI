@@ -1,5 +1,6 @@
 """Tests for Phase 5.3 bounded growth: rate-limit LRU cap + cache eviction."""
 
+import asyncio
 import json
 import os
 import time
@@ -49,6 +50,18 @@ class TestRateLimitLruCap:
         await ratelimit_mod._rate_limit_async("")
         await ratelimit_mod._rate_limit_async(None)
         assert len(ratelimit_mod._last_request) == 0
+
+    @pytest.mark.asyncio
+    async def test_concurrent_requests_reserve_separate_slots(self, monkeypatch):
+        waits = []
+        monkeypatch.setattr(ratelimit_mod.time, "monotonic", lambda: 100.0)
+
+        async def record_sleep(delay):
+            waits.append(delay)
+
+        monkeypatch.setattr(ratelimit_mod.asyncio, "sleep", record_sleep)
+        await asyncio.gather(*(ratelimit_mod._rate_limit_async("example.com") for _ in range(3)))
+        assert waits == [1.0, 2.0]
 
 
 # ---------------------------------------------------------------------------
@@ -116,23 +129,3 @@ class TestCachePrune:
     def test_prune_on_missing_dir_is_noop(self, monkeypatch):
         monkeypatch.setattr(cache_mod, "_CACHE_DIR", self.cache_dir / "does-not-exist")
         assert cache_mod._prune_cache() == 0
-
-
-class TestMaybePruneThrottle:
-    def test_throttled_within_interval(self, monkeypatch):
-        calls = {"n": 0}
-
-        def _fake_prune(*a, **k):
-            calls["n"] += 1
-            return 0
-
-        monkeypatch.setattr(cache_mod, "_prune_cache", _fake_prune)
-        monkeypatch.setattr(cache_mod, "_PRUNE_INTERVAL", 60.0)
-        # Force the throttle window open, then call twice in quick succession.
-        monkeypatch.setattr(cache_mod, "_last_prune", 0.0)
-        monkeypatch.setattr(cache_mod.time, "monotonic", lambda: 1000.0)
-
-        cache_mod._maybe_prune()
-        cache_mod._maybe_prune()
-
-        assert calls["n"] == 1  # second call is throttled

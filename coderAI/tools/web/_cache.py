@@ -20,8 +20,6 @@ _DEFAULT_PAGE_TTL = 3600
 # again, so every write enforces both count and total-byte caps.
 _MAX_CACHE_ENTRIES = 1000
 _MAX_CACHE_BYTES = 50 * 1024 * 1024
-_PRUNE_INTERVAL = 60.0  # min seconds between opportunistic prunes
-_last_prune: float = 0.0
 _cache_lock = threading.RLock()
 
 
@@ -126,19 +124,3 @@ def _prune_cache(
                 pass
 
         return removed
-
-
-def _maybe_prune() -> None:
-    """Run :func:`_prune_cache` at most once per ``_PRUNE_INTERVAL`` seconds."""
-    global _last_prune
-    with _cache_lock:
-        now = time.monotonic()
-        if now - _last_prune < _PRUNE_INTERVAL:
-            return
-        _last_prune = now
-        try:
-            removed = _prune_cache()
-            if removed:
-                logger.debug("Pruned %d expired/excess cache files", removed)
-        except Exception:
-            logger.debug("Cache prune failed", exc_info=True)

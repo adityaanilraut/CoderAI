@@ -146,6 +146,18 @@ class TestReadURL:
         assert result["success"] is False
         assert "pypdf" in result["error"]
 
+    def test_pdf_url_with_generic_content_type(self, monkeypatch):
+        monkeypatch.setattr(web_mod, "_get_cached", lambda key: None)
+        monkeypatch.setattr(web_mod, "_set_cached", lambda *a, **k: None)
+        _patch_cf(
+            monkeypatch,
+            lambda m, u, k: _resp(content_type="application/octet-stream", content=b"%PDF-1.4"),
+        )
+        monkeypatch.setattr(tools_mod, "_extract_pdf_text", lambda c: "Generic PDF text")
+        result = asyncio.run(ReadURLTool().execute(url="https://example.com/doc.pdf?download=1"))
+        assert result["success"] is True
+        assert result["content"] == "Generic PDF text"
+
     def test_extract_main_content(self, monkeypatch):
         monkeypatch.setattr(web_mod, "_get_cached", lambda key: None)
         monkeypatch.setattr(web_mod, "_set_cached", lambda *a, **k: None)

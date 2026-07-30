@@ -19,9 +19,10 @@ from .history_cmd import history
 from .setup_cmd import setup
 from .index_cmd import index_cmd, search_cmd
 from .mcp_cmd import mcp as mcp_cmd
+from .skills_cmd import skills as skills_cmd
 from .run_cmd import run as run_cmd
 from .tasks_cmd import tasks
-from .utils import missing_api_key_message, valid_models
+from .utils import is_valid_model, missing_api_key_message
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +115,7 @@ def chat(
 
     from .bootstrap import BootstrapError, resolve_resume_id
 
-    key_error = missing_api_key_message()
+    key_error = missing_api_key_message(model)
     if key_error:
         display.print_error(key_error)
         sys.exit(1)
@@ -148,6 +149,9 @@ def chat(
         )
     except KeyboardInterrupt:
         pass
+    except Exception as e:
+        display.print_error(f"Could not start chat: {e}")
+        sys.exit(1)
 
 
 @cli.command()
@@ -210,8 +214,7 @@ def set_model(model_name: str) -> None:
     """Set default model for new sessions."""
     from coderAI.cli.utils import display
 
-    valid = valid_models()
-    if model_name not in valid:
+    if not is_valid_model(model_name):
         display.print_error(f"Invalid model: {model_name}")
         display.print_info("Run 'coderAI models' to see all available models")
         sys.exit(2)
@@ -283,6 +286,7 @@ def status() -> None:
     _key_row("Groq", bool(config.groq_api_key), "groq_api_key")
     _key_row("DeepSeek", bool(config.deepseek_api_key), "deepseek_api_key")
     _key_row("Gemini", bool(config.gemini_api_key), "gemini_api_key")
+    _key_row("Meta", bool(config.meta_api_key), "meta_api_key")
 
     display.print("\n[bold cyan]Local providers[/bold cyan]")
     display.print(f"  LM Studio     endpoint {config.lmstudio_endpoint}")
@@ -397,18 +401,13 @@ def doctor() -> None:
         ("Tavily", cfg.tavily_api_key),
         ("Exa", cfg.exa_api_key),
     ]
-    # Tavily and Exa power search but cannot satisfy an LLM provider key check.
-    any_cloud = any(v for _, v in keys[:6])
     for name, val in keys:
         if val:
             check_ok(f"{name}: configured")
         else:
             check_warn(f"{name}: not configured")
-    if not any_cloud and (cfg.default_model or "").lower() not in ("lmstudio", "ollama"):
-        check_fail(
-            "No cloud key and default is not lmstudio/ollama",
-            "chat won't start until one is set",
-        )
+    if key_error := missing_api_key_message(cfg.default_model):
+        check_fail("Default model is not usable", key_error)
 
     # 4. Textual TUI
     display.print("\n[bold cyan]Interactive UI[/bold cyan]")
@@ -447,6 +446,7 @@ cli.add_command(index_cmd)
 cli.add_command(search_cmd)
 cli.add_command(run_cmd)
 cli.add_command(mcp_cmd)
+cli.add_command(skills_cmd)
 
 
 def main() -> None:

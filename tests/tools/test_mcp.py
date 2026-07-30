@@ -52,6 +52,36 @@ class TestMCPClient:
         assert p.get("type") == "object"
         assert "value" in p.get("properties", {})
 
+    def test_wrapped_root_schema_arguments_are_unwrapped_before_dispatch(self):
+        """The ``value`` wrapper we add for providers must not reach the server."""
+        self.client.discovered_tools = [
+            {"server": "s", "name": "wrapped", "input_schema": {"type": "string"}},
+            {
+                "server": "s",
+                "name": "plain",
+                "input_schema": {"type": "object", "properties": {"value": {}}},
+            },
+        ]
+        sent = []
+
+        async def fake_request(server_name, method, params=None, timeout=30):
+            sent.append(params)
+            return {"success": True, "result": {"content": []}}
+
+        with patch.object(self.client, "_request", side_effect=fake_request):
+            asyncio.run(self.client.call_tool("s", "wrapped", {"value": "hello"}))
+            # An object-rooted schema that genuinely has a ``value`` property
+            # must be passed through untouched.
+            asyncio.run(self.client.call_tool("s", "plain", {"value": "hello"}))
+            # Unknown tools are passed through too — nothing to unwrap against.
+            asyncio.run(self.client.call_tool("s", "unknown", {"value": "hello"}))
+
+        assert [p["arguments"] for p in sent] == [
+            "hello",
+            {"value": "hello"},
+            {"value": "hello"},
+        ]
+
     def test_connect_rejects_server_name_with_reserved_separator(self):
         result = asyncio.run(self.client.connect_stdio("bad__srv", "echo", []))
         assert not result["success"]
@@ -447,36 +477,6 @@ class TestMCPResourcesAndPrompts:
         assert result["result"] == {"resources": []}
 
     # ── discovery + cleanup ─────────────────────────────────────────────
-    def test_discover_extras_populates_stores(self):
-        client = self._connected_client({"resources": {}, "prompts": {}})
-
-        async def fake_request(server, entry, method, params=None, timeout=30):
-            if method == "resources/list":
-                return {
-                    "success": True,
-                    "result": {"resources": [{"uri": "u", "name": "n", "mimeType": "text/plain"}]},
-                }
-            if method == "prompts/list":
-                return {"success": True, "result": {"prompts": [{"name": "p", "arguments": []}]}}
-            return {"success": True, "result": {}}
-
-        with patch.object(client, "_request_entry", side_effect=fake_request):
-            counts = asyncio.run(client._discover_extras("srv"))
-        assert counts == {"resources": 1, "prompts": 1}
-        assert client.discovered_resources[0]["uri"] == "u"
-        assert client.discovered_prompts[0]["name"] == "p"
-
-    def test_discover_extras_is_non_fatal(self):
-        client = self._connected_client({"resources": {}})
-
-        async def boom(server, entry, method, params=None, timeout=30):
-            raise RuntimeError("server hates us")
-
-        with patch.object(client, "_request_entry", side_effect=boom):
-            counts = asyncio.run(client._discover_extras("srv"))
-        assert counts == {"resources": 0, "prompts": 0}
-        assert client.discovered_resources == []
-
     def test_disconnect_purges_resources_and_prompts(self):
         client = self._connected_client({})
         client.discovered_resources = [
@@ -798,46 +798,75 @@ class _FakeHttpSession:
         self.closed = True
 
 
-class _FakeLegacySseResponse:
-    def __init__(self, endpoint="/messages"):
-        self.status = 200
-        self.content = asyncio.StreamReader()
-        self.content.feed_data(f"event: endpoint\ndata: {endpoint}\n\n".encode())
-        self.closed = False
+class TestMCPHealthCheck:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        self.client = MCPClient()
 
-    def close(self):
-        self.closed = True
+    def _sse_entry(self, **overrides):
+        entry = {
+            "transport": "sse",
+            "session": _FakeHttpSession([]),
+            "message_url": "https://h/messages",
+        }
+        entry.update(overrides)
+        self.client.servers["srv"] = entry
+        return entry
 
+    def test_jsonrpc_error_reply_keeps_sse_server_healthy(self):
+        """A server without ``ping`` is still reachable — don't strip its tools.
 
-class _FakeLegacySseSession:
-    def __init__(self, endpoint="/messages"):
-        self.stream = _FakeLegacySseResponse(endpoint)
-        self.closed = False
-        self.posts = []
+        The old probe opened a *fresh* session and sent ``OPTIONS``; POST-only
+        message endpoints answered 405, the server was marked degraded, and
+        ``auto_reconnect_degraded`` then burned its whole back-off ladder.
+        """
+        entry = self._sse_entry()
 
-    async def get(self, url, **kwargs):
-        return self.stream
+        async def method_not_found(info, request, timeout):
+            assert info is entry, "the probe must reuse the live connection's session"
+            return {
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "error": {"code": -32601, "message": "Method not found"},
+            }
 
-    def post(self, url, json=None, **kwargs):
-        self.posts.append({"url": url, "json": json})
-        request_id = (json or {}).get("id")
-        method = (json or {}).get("method")
-        if request_id is not None:
-            if method == "initialize":
-                result = {"serverInfo": {"name": "legacy"}}
-            elif method == "tools/list":
-                result = {"tools": [{"name": "legacy_tool", "description": "d"}]}
-            else:
-                result = {"content": [{"type": "text", "text": "legacy result"}]}
-            event = {"jsonrpc": "2.0", "id": request_id, "result": result}
-            self.stream.content.feed_data(
-                f"event: message\ndata: {__import__('json').dumps(event)}\n\n".encode()
-            )
-        return _FakeHttpResponse(status=202, headers={})
+        with patch.object(self.client, "_sse_exchange", side_effect=method_not_found):
+            asyncio.run(self.client.check_server_health())
 
-    async def close(self):
-        self.closed = True
-        self.stream.content.feed_eof()
+        assert not entry.get("degraded")
+
+    def test_transport_failure_degrades_sse_server(self):
+        entry = self._sse_entry()
+        with patch.object(
+            self.client, "_sse_exchange", side_effect=RuntimeError("SSE POST failed: 502")
+        ):
+            asyncio.run(self.client.check_server_health())
+
+        assert entry["degraded"] is True
+
+    def test_closed_session_degrades_without_probing(self):
+        session = _FakeHttpSession([])
+        session.closed = True
+        entry = self._sse_entry(session=session)
+        probe = AsyncMock()
+        with patch.object(self.client, "_sse_exchange", probe):
+            asyncio.run(self.client.check_server_health())
+
+        assert entry["degraded"] is True
+        probe.assert_not_awaited()
+
+    def test_ended_event_stream_degrades_without_probing(self):
+        async def run():
+            task = asyncio.create_task(asyncio.sleep(0))
+            await task
+            entry = self._sse_entry(reader_task=task)
+            probe = AsyncMock()
+            with patch.object(self.client, "_sse_exchange", probe):
+                await self.client.check_server_health()
+            assert entry["degraded"] is True
+            probe.assert_not_awaited()
+
+        asyncio.run(run())
 
 
 class TestMCPHttpTransport:
@@ -938,6 +967,70 @@ class TestMCPHttpTransport:
         assert result["success"]
         assert result["content"] == "hello"
         assert session.posts[0]["headers"].get("Mcp-Session-Id") == "s1"
+
+    def _http_server_with_401_then_ok(self, headers):
+        """Entry whose first POST 401s and whose second returns a result."""
+        session = _FakeHttpSession(
+            [
+                _FakeHttpResponse(status=401, headers={"WWW-Authenticate": "Bearer"}),
+                _FakeHttpResponse(
+                    status=200,
+                    headers={"Content-Type": "application/json"},
+                    json_body={
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {"content": [{"type": "text", "text": "after refresh"}]},
+                    },
+                ),
+            ]
+        )
+        session.headers = headers
+        self.client.servers["remote"] = {
+            "transport": "http",
+            "session": session,
+            "url": "https://h/mcp",
+            "session_id": "s1",
+            "headers": {},
+        }
+        return session
+
+    def test_mid_session_401_refreshes_token_and_replays(self):
+        session = self._http_server_with_401_then_ok({"Authorization": "Bearer stale"})
+        with patch(
+            "coderAI.tools.mcp_oauth.get_valid_token_sync", return_value="fresh"
+        ) as get_token:
+            result = asyncio.run(self.client.call_tool("remote", "t1", {}))
+
+        assert result["success"]
+        assert result["content"] == "after refresh"
+        # The refresh must be forced: a 401 means the token failed even though the
+        # locally stored expiry may still look valid.
+        assert get_token.call_args.kwargs == {"force_refresh": True}
+        assert session.headers["Authorization"] == "Bearer fresh"
+        assert len(session.posts) == 2
+
+    def test_mid_session_401_surfaces_when_refresh_yields_same_token(self):
+        session = self._http_server_with_401_then_ok({"Authorization": "Bearer stale"})
+        with patch("coderAI.tools.mcp_oauth.get_valid_token_sync", return_value="stale"):
+            result = asyncio.run(self.client.call_tool("remote", "t1", {}))
+
+        assert result["success"] is False
+        assert result["needs_auth"] is True
+        assert "mcp login remote" in result["error"]
+        assert len(session.posts) == 1
+
+    def test_mid_session_401_leaves_config_supplied_authorization_alone(self):
+        session = self._http_server_with_401_then_ok({"Authorization": "Bearer static"})
+        self.client.servers["remote"]["headers"] = {"Authorization": "Bearer static"}
+        with patch(
+            "coderAI.tools.mcp_oauth.get_valid_token_sync", return_value="fresh"
+        ) as get_token:
+            result = asyncio.run(self.client.call_tool("remote", "t1", {}))
+
+        assert result["success"] is False
+        assert result["needs_auth"] is True
+        get_token.assert_not_called()
+        assert session.headers["Authorization"] == "Bearer static"
 
     def test_disconnect_closes_http_session(self):
         session = _FakeHttpSession([])
@@ -1117,31 +1210,48 @@ class TestMCPTransportHardening:
         assert result["success"] is False
         assert "repeated pagination cursor" in result["error"]
 
-    def test_duplicate_or_invalid_discovered_tool_rejected_before_commit(self):
+    def test_duplicate_or_invalid_discovered_tools_are_skipped_not_fatal(self):
+        """One unrepresentable tool name must not cost us the whole server."""
+        client = MCPClient()
+        client.servers["srv"] = {"transport": "http", "session": _FakeHttpSession([])}
+        client.discovered_tools = [{"server": "srv", "name": "old"}]
+        candidate = {"transport": "http", "session": _FakeHttpSession([])}
+        init = {"jsonrpc": "2.0", "id": 1, "result": {}}
+        mixed = {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": {
+                "tools": [
+                    {"name": "good"},
+                    {"name": "same"},
+                    {"name": "same"},
+                    {"name": "not valid"},
+                    {"name": "browser.navigate"},
+                    {"name": 17},
+                    "not-an-object",
+                ]
+            },
+        }
+        result = asyncio.run(client._finish_connect("srv", candidate, init, mixed))
+
+        assert result["success"] is True
+        assert result["tools"] == ["good", "same"]
+        assert client.servers["srv"] is candidate
+        assert [t["name"] for t in client.discovered_tools] == ["good", "same"]
+
+    def test_structurally_invalid_tools_list_still_aborts_before_commit(self):
         client = MCPClient()
         old = {"transport": "http", "session": _FakeHttpSession([])}
         client.servers["srv"] = old
         client.discovered_tools = [{"server": "srv", "name": "old"}]
         candidate = {"transport": "http", "session": _FakeHttpSession([])}
         init = {"jsonrpc": "2.0", "id": 1, "result": {}}
-        duplicate = {
-            "jsonrpc": "2.0",
-            "id": 2,
-            "result": {"tools": [{"name": "same"}, {"name": "same"}]},
-        }
-        with pytest.raises(ValueError, match="duplicate"):
-            asyncio.run(client._finish_connect("srv", candidate, init, duplicate))
+        not_an_array = {"jsonrpc": "2.0", "id": 2, "result": {"tools": {"name": "good"}}}
+
+        with pytest.raises(RuntimeError, match="must be an array"):
+            asyncio.run(client._finish_connect("srv", candidate, init, not_an_array))
         assert client.servers["srv"] is old
         assert client.discovered_tools == [{"server": "srv", "name": "old"}]
-
-        invalid = {
-            "jsonrpc": "2.0",
-            "id": 2,
-            "result": {"tools": [{"name": "not valid"}]},
-        }
-        with pytest.raises(ValueError, match="only letters"):
-            asyncio.run(client._finish_connect("srv", candidate, init, invalid))
-        assert client.servers["srv"] is old
 
     def test_successful_replacement_purges_stale_state_and_sanitizes_metadata(self):
         client = MCPClient()
@@ -1196,34 +1306,6 @@ class TestMCPTransportHardening:
         finally:
             mcp_mod.mcp_client = original
         assert result == {"success": False, "error": "close failed"}
-
-    def test_legacy_sse_stream_stays_open_and_dispatches_calls(self):
-        async def run():
-            client = MCPClient()
-            session = _FakeLegacySseSession()
-            with patch("aiohttp.ClientSession", return_value=session):
-                connected = await client.connect_sse("legacy", "https://mcp.example/sse")
-            assert connected["success"], connected
-            assert not client.servers["legacy"]["reader_task"].done()
-            called = await client.call_tool("legacy", "legacy_tool", {})
-            assert called["success"]
-            assert called["content"] == "legacy result"
-            await client.disconnect("legacy")
-            assert session.closed
-
-        asyncio.run(run())
-
-    def test_legacy_sse_rejects_cross_origin_message_endpoint(self):
-        async def run():
-            client = MCPClient()
-            session = _FakeLegacySseSession("https://evil.example/messages")
-            with patch("aiohttp.ClientSession", return_value=session):
-                result = await client.connect_sse("legacy", "https://mcp.example/sse")
-            assert result["success"] is False
-            assert "cross-origin" in result["error"]
-            assert session.closed
-
-        asyncio.run(run())
 
     def test_http_timeout_schedules_protocol_cancellation(self):
         async def run():

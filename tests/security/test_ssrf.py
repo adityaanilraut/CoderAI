@@ -17,7 +17,7 @@ the redirect handed it. The browser layer must resolve-and-validate hostnames
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -32,7 +32,7 @@ from .conftest import INTERNAL_IP_TARGETS
 
 
 class _FakeResp:
-    def __init__(self, status: int, headers: Dict[str, str], body: bytes) -> None:
+    def __init__(self, status: int, headers: dict[str, str], body: bytes) -> None:
         self.status = status
         self.headers = headers
         self._body = body
@@ -57,9 +57,9 @@ class _FakeResp:
 class _FakeSession:
     """Serves a queued list of ``(status, headers, body)`` responses in order."""
 
-    def __init__(self, responses: List[Tuple[int, Dict[str, str], bytes]]) -> None:
+    def __init__(self, responses: list[tuple[int, dict[str, str], bytes]]) -> None:
         self._responses = list(responses)
-        self.requests: List[Tuple[str, str, Dict[str, str]]] = []
+        self.requests: list[tuple[str, str, dict[str, str]]] = []
 
     @property
     def closed(self) -> bool:
@@ -70,7 +70,7 @@ class _FakeSession:
         method: str,
         url: str,
         *,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **_kwargs: Any,
     ) -> _FakeResp:
         self.requests.append((method, url, dict(headers or {})))
@@ -78,21 +78,21 @@ class _FakeSession:
         return _FakeResp(status, hdrs, body)
 
 
-def _redirect(target: str, code: int = 302) -> Tuple[int, Dict[str, str], bytes]:
+def _redirect(target: str, code: int = 302) -> tuple[int, dict[str, str], bytes]:
     return (code, {"Location": target}, b"")
 
 
-def _ok() -> Tuple[int, Dict[str, str], bytes]:
+def _ok() -> tuple[int, dict[str, str], bytes]:
     return (200, {"Content-Type": "text/plain"}, b"OK")
 
 
 async def _run_safe_request(
-    responses: List[Tuple[int, Dict[str, str], bytes]],
+    responses: list[tuple[int, dict[str, str], bytes]],
     url: str,
     *,
-    headers: Optional[Dict[str, str]] = None,
+    headers: Optional[dict[str, str]] = None,
     allow_local: bool = False,
-) -> Tuple[Optional[Dict[str, Any]], _FakeSession]:
+) -> tuple[Optional[dict[str, Any]], _FakeSession]:
     """Drive ``HttpClient.safe_request`` against a fake session; return result + session."""
     from coderAI.tools.web._http import HttpClient
 
@@ -236,7 +236,10 @@ async def test_real_server_follows_legit_redirect_chain(ssrf_redirect_server) ->
     # still walks a redirect chain end-to-end and returns the final 200 body.
     chain = server.redirect_chain([server.ok_url])
     client = HttpClient()
-    result = await client.safe_request("GET", chain, allow_local=True)
+    try:
+        result = await client.safe_request("GET", chain, allow_local=True)
+    finally:
+        await client.close()
 
     assert result is not None
     assert result["status"] == 200

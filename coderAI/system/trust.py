@@ -39,7 +39,8 @@ import time
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Any, BinaryIO, Dict, Iterator, List
+from typing import Any, BinaryIO
+from collections.abc import Iterator
 
 from coderAI.system.fsperms import atomic_write_json
 
@@ -54,6 +55,7 @@ _STORE_NAME = "trusted_folders.json"
 _FINGERPRINT_FILES = (
     ".coderAI/hooks.json",
     ".coderAI/config.json",
+    ".mcp.json",
 )
 
 _FINGERPRINT_TREES = (
@@ -87,7 +89,7 @@ class WorkspaceTrust:
     def __init__(self) -> None:
         # (mtime_ns, parsed folders dict) cache so the hot ``is_trusted`` path
         # (called per turn) doesn't re-read + re-parse the store every time.
-        self._cache: tuple[int, Dict[str, Any]] | None = None
+        self._cache: tuple[int, dict[str, Any]] | None = None
         self._pinned_decision: ContextVar[tuple[str, bool] | None] = ContextVar(
             f"workspace_trust_decision_{id(self)}", default=None
         )
@@ -108,7 +110,7 @@ class WorkspaceTrust:
 
     # ── store I/O ────────────────────────────────────────────────────────────
 
-    def _load_store(self) -> Dict[str, Any]:
+    def _load_store(self) -> dict[str, Any]:
         """Return the ``{resolved_root: entry}`` map, or ``{}`` on any error."""
         path = self._store_path()
         try:
@@ -126,11 +128,11 @@ class WorkspaceTrust:
             logger.debug("Failed to read trust store %s: %s", path, e)
             return {}  # fail closed → untrusted
         folders = data.get("folders") if isinstance(data, dict) else None
-        result: Dict[str, Any] = folders if isinstance(folders, dict) else {}
+        result: dict[str, Any] = folders if isinstance(folders, dict) else {}
         self._cache = (stat.st_mtime_ns, result)
         return result
 
-    def _save_store(self, folders: Dict[str, Any]) -> None:
+    def _save_store(self, folders: dict[str, Any]) -> None:
         path = self._store_path()
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         payload = {"version": 1, "folders": folders}
@@ -187,7 +189,7 @@ class WorkspaceTrust:
         return total_bytes
 
     @classmethod
-    def _tree_files(cls, root: Path, rel_root: str) -> List[tuple[str, Path]]:
+    def _tree_files(cls, root: Path, rel_root: str) -> list[tuple[str, Path]]:
         """Return every regular tree file in deterministic, symlink-safe order."""
         try:
             mode = root.lstat().st_mode
@@ -198,8 +200,8 @@ class WorkspaceTrust:
         if not stat.S_ISDIR(mode):
             raise ValueError(f"Trusted workspace input must be a directory: {rel_root}")
 
-        files: List[tuple[str, Path]] = []
-        pending: List[tuple[Path, str, int]] = [(root, rel_root, 0)]
+        files: list[tuple[str, Path]] = []
+        pending: list[tuple[Path, str, int]] = [(root, rel_root, 0)]
         while pending:
             directory, rel_dir, depth = pending.pop()
             try:
@@ -207,7 +209,7 @@ class WorkspaceTrust:
                     entries = sorted(iterator, key=lambda entry: entry.name)
             except OSError as e:
                 raise ValueError(f"Cannot scan trusted workspace input {rel_dir}: {e}") from e
-            child_dirs: List[tuple[Path, str, int]] = []
+            child_dirs: list[tuple[Path, str, int]] = []
             for entry in entries:
                 rel = f"{rel_dir}/{entry.name}"
                 try:
@@ -287,15 +289,18 @@ class WorkspaceTrust:
         return h.hexdigest()
 
     def has_execution_surface(self, root: Any) -> bool:
-        """True when *root* carries any ``.coderAI`` surface worth prompting on.
+        """True when *root* carries any ``.coderAI`` / ``.mcp.json`` surface worth prompting on.
 
         Used to decide whether the first-run trust prompt should appear at all —
         a plain repo with no automation should not nag the user.
         """
         try:
-            dot = Path(self._resolve(root)) / ".coderAI"
+            resolved = Path(self._resolve(root))
         except (OSError, ValueError):
             return False
+        if (resolved / ".mcp.json").is_file():
+            return True
+        dot = resolved / ".coderAI"
         if not dot.is_dir():
             return False
         if (dot / "hooks.json").is_file() or (dot / "config.json").is_file():
@@ -366,7 +371,7 @@ class WorkspaceTrust:
             return True
         return False
 
-    def trusted_folders(self) -> List[str]:
+    def trusted_folders(self) -> list[str]:
         """Resolved roots that currently have a trust record (unfiltered)."""
         return sorted(self._load_store().keys())
 

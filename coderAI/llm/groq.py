@@ -1,6 +1,6 @@
 """Groq LLM provider implementation."""
 
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from groq import AsyncGroq
 
@@ -21,12 +21,20 @@ class GroqProvider(OpenAICompatibleCloudProvider):
         "mixtral-8x7b-32768": "mixtral-8x7b-32768",
         "gemma-7b-it": "gemma-7b-it",
     }
+    MODEL_CONTEXT_WINDOWS = {
+        "openai/gpt-oss-120b": 131_072,
+        "openai/gpt-oss-20b": 131_072,
+        "llama3-70b-8192": 8_192,
+        "llama3-8b-8192": 8_192,
+        "mixtral-8x7b-32768": 32_768,
+        "gemma-7b-it": 8_192,
+    }
 
     def __init__(self, model: str, api_key: Optional[str] = None, **kwargs: Any):
         super().__init__(model, api_key, **kwargs)
         self.client = AsyncGroq(api_key=api_key, timeout=HTTP_TOTAL_TIMEOUT)
 
-    def _extract_stream_usage(self, chunk_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def _extract_stream_usage(self, chunk_data: dict[str, Any]) -> Optional[dict[str, Any]]:
         # Groq reports streaming usage under ``x_groq`` rather than top-level.
         usage = chunk_data.get("x_groq", {}).get("usage")
         if usage:

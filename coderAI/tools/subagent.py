@@ -5,7 +5,7 @@ import logging
 import os
 import time as _time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -186,7 +186,7 @@ def _summarize_parent_tool_history(
         return None
 
     # Walk backwards collecting tool names with matching assistant calls.
-    tool_names: List[str] = []
+    tool_names: list[str] = []
     i = len(messages) - 1
     while i >= 0 and len(tool_names) < limit:
         msg = messages[i]
@@ -212,7 +212,7 @@ def _summarize_parent_tool_history(
     if not tool_names:
         return None
 
-    lines: List[str] = [
+    lines: list[str] = [
         "The parent agent already made these calls. This is metadata, not task guidance; "
         "use the task and your own inspection to decide whether another call is needed.",
         "",
@@ -249,7 +249,7 @@ class DelegateTaskParams(BaseModel):
             "role-specific guidance."
         ),
     )
-    context_hints: Optional[List[str]] = Field(
+    context_hints: Optional[list[str]] = Field(
         None,
         description=(
             "Optional list of file paths or short notes to give the sub-agent "
@@ -375,13 +375,13 @@ class DelegateTaskTool(Tool):
         self,
         task_description: str,
         agent_role: Optional[str] = None,
-        context_hints: Optional[List[str]] = None,
+        context_hints: Optional[list[str]] = None,
         model: Optional[str] = None,
         inherit_project_context: bool = True,
         read_only_task: bool = False,
         isolation_domain: str = "auto",
         task_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Execute the sub-agent delegation."""
         if self.context.delegation_depth >= MAX_DELEGATION_DEPTH:
             return {
@@ -407,13 +407,13 @@ class DelegateTaskTool(Tool):
         self,
         task_description: str,
         agent_role: Optional[str],
-        context_hints: Optional[List[str]],
+        context_hints: Optional[list[str]],
         model: Optional[str],
         inherit_project_context: bool,
         read_only_task: bool = False,
         isolation_domain: str = "auto",
         task_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Core sub-agent spawning and execution logic."""
         sub_agent = None
         try:
@@ -934,8 +934,8 @@ class DelegateTaskTool(Tool):
         if sub_agent.session is None:
             return ""
 
-        tool_summaries: List[str] = []
-        assistant_texts: List[str] = []
+        tool_summaries: list[str] = []
+        assistant_texts: list[str] = []
 
         for msg in sub_agent.session.messages:
             if msg.role == "assistant" and isinstance(msg.content, str) and msg.content.strip():

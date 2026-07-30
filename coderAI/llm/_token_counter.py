@@ -13,7 +13,7 @@ import hashlib
 import logging
 import threading
 from collections import OrderedDict
-from typing import Optional, Tuple
+from typing import Optional
 import requests
 
 logger = logging.getLogger(__name__)
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 _TOKENS_PER_CHAR_FALLBACK = 4
 _CACHE_MAX = 1024
 
-_cache: "OrderedDict[Tuple[str, str], int]" = OrderedDict()
+_cache: "OrderedDict[tuple[str, str], int]" = OrderedDict()
 _cache_lock = threading.Lock()
 
 

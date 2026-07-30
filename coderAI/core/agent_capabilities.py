@@ -17,7 +17,7 @@ import sys
 import time as _time
 import importlib.util as _importlib_util
 from pathlib import Path
-from typing import Any, List, Optional, TYPE_CHECKING
+from typing import Any, Optional, TYPE_CHECKING
 
 from coderAI.system.history import Message, Session
 from coderAI.tools import ToolRegistry
@@ -71,7 +71,8 @@ class AgentCapabilitiesMixin:
     _cached_system_prompt: Optional[str]
     _system_prompt_cache_key: Optional[str]
     _workspace_trusted: bool
-    _active_skill_context: List[str]
+    _active_skill_context: list[str]
+    plan_mode: bool
 
     if TYPE_CHECKING:
 
@@ -79,8 +80,16 @@ class AgentCapabilitiesMixin:
 
     def init_skills(self, project_root: str) -> None:
         config = self.config
+        # User-installed skills (~/.coderAI/skills) are always available.
+        # Project skills require workspace trust (repo-supplied overlays).
         self.skill_manager = SkillManager(
-            sources=[LocalSkillSource(project_root)] if self._workspace_trusted else [],
+            sources=[
+                LocalSkillSource(
+                    project_root,
+                    include_project=self._workspace_trusted,
+                    include_user=True,
+                )
+            ],
             threshold=config.skill_confidence_threshold,
             top_n=config.skill_top_n,
             provider=self.provider,
@@ -158,10 +167,8 @@ class AgentCapabilitiesMixin:
         registry = ToolRegistry()
         discover_tools(registry)
         registry.register(ManageContextTool(self._context_controller))
-        if not self._workspace_trusted:
-            # The tool resolves project and package skills through one fallback
-            # path, so their provenance is not distinguishable here. Fail closed.
-            registry.tools.pop("use_skill", None)
+        # use_skill stays registered: LocalSkillSource already omits untrusted
+        # project overlays while still exposing ~/.coderAI/skills.
         self._filter_gated_tools(registry)
         registry.validate_classifications()
         return registry
@@ -175,9 +182,9 @@ class AgentCapabilitiesMixin:
 
         current_platform = sys.platform
         drop_network = not self.config.web_tools_in_main
-        removed_platform: List[str] = []
-        removed_package: List[str] = []
-        removed_network: List[str] = []
+        removed_platform: list[str] = []
+        removed_package: list[str] = []
+        removed_network: list[str] = []
 
         for name, tool in list(registry.tools.items()):
             platforms = getattr(tool, "platforms", None)
@@ -353,7 +360,9 @@ class AgentCapabilitiesMixin:
         allowed_set = expand_persona_tools(allowed_tools)
         if not allowed_set:
             return
-        always_available = {"delegate_task"}
+        # submit_plan remains present under specialist personas but is hidden
+        # from normal turns; Plan Mode exposes it as its structured terminal.
+        always_available = {"delegate_task", "submit_plan"}
         to_remove = [
             name
             for name, tool in self.tools.tools.items()
@@ -364,12 +373,13 @@ class AgentCapabilitiesMixin:
 
     def _compute_system_prompt_cache_key(self) -> str:
         """Build a cache key that changes when rules, tools, or persona change."""
-        parts: List[str] = []
+        parts: list[str] = []
         parts.append(self.model)
         if self.persona:
             parts.append(f"persona:{self.persona.name}")
         parts.append(f"tools:{len(self.tools.tools)}:{','.join(sorted(self.tools.tools.keys()))}")
         parts.append(f"auto:{self.auto_approve}")
+        parts.append(f"plan:{self.plan_mode}")
         parts.append(f"web:{self.config.web_tools_in_main}")
         rules_dir = Path(self.config.project_root, ".coderAI", "rules")
         if self._workspace_trusted and rules_dir.exists() and rules_dir.is_dir():
@@ -398,7 +408,7 @@ class AgentCapabilitiesMixin:
         if self._cached_system_prompt is not None and self._system_prompt_cache_key == cache_key:
             return self._cached_system_prompt
 
-        sections: List[str] = []
+        sections: list[str] = []
         seen_hashes: set[str] = set()
 
         def _append_once(text: str) -> None:
@@ -434,6 +444,17 @@ class AgentCapabilitiesMixin:
             )
         else:
             _append_once(compose_default_system_prompt(self.tools, env_section=env_section))
+
+        if self.plan_mode:
+            _append_once(
+                "## Enforced Plan Mode\n\n"
+                "You are producing a reviewable implementation plan, not implementing it. "
+                "Explore with read-only tools only. Do not edit files, run mutating commands, "
+                "change tasks, install packages, or perform external side effects. Resolve all "
+                "discoverable repository facts yourself. When the plan is decision-complete, call "
+                "`submit_plan` exactly once. Put only genuinely user-owned product decisions in "
+                "`unanswered_questions`; an unanswered question prevents approval."
+            )
 
         if self._workspace_trusted:
             try:
@@ -472,12 +493,17 @@ class AgentCapabilitiesMixin:
         return result
 
     def _inject_skill_context(self, skills: list) -> None:
-        """Replace the ephemeral auto-selected skill guidance for this turn."""
-        if not self._workspace_trusted:
-            return
-        contexts: List[str] = []
+        """Replace the ephemeral auto-selected skill guidance for this turn.
+
+        User-scoped skills (``source == "user"``) are always injectable.
+        Project / other sources require a trusted workspace snapshot.
+        """
+        contexts: list[str] = []
         seen: set[str] = set()
         for skill in skills:
+            source = getattr(skill, "source", "local") or "local"
+            if source != "user" and not self._workspace_trusted:
+                continue
             instructions = skill.instructions if skill.instructions else skill.description
             if not instructions:
                 continue

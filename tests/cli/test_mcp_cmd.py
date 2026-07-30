@@ -100,7 +100,7 @@ def test_add_sse_after_dashdash_rejects_extra_args(runner, cfg_file):
 def test_add_rejects_disallowed_launcher_after_dashdash(runner, cfg_file):
     result = runner.invoke(mcp, ["add", "bad", "--", "rm", "-rf"])
     assert result.exit_code == 2
-    assert "not allowed" in result.output
+    assert "not in the allowed set" in result.output
     assert not cfg_file.exists()
 
 
@@ -192,7 +192,15 @@ def test_add_rejects_sse_and_http_together(runner, cfg_file):
 def test_add_rejects_disallowed_launcher(runner, cfg_file):
     result = runner.invoke(mcp, ["add", "bad", "--command", "rm"])
     assert result.exit_code == 2
-    assert "not allowed" in result.output
+    assert "not in the allowed set" in result.output
+    assert not cfg_file.exists()
+
+
+def test_add_rejects_inline_exec_flag(runner, cfg_file):
+    """The CLI shares connect's choke point, so ``node -e`` is refused up front."""
+    result = runner.invoke(mcp, ["add", "evil", "--", "node", "-e", "require('fs')"])
+    assert result.exit_code == 2
+    assert "arbitrary inline code" in result.output
     assert not cfg_file.exists()
 
 
@@ -216,9 +224,16 @@ def test_add_requires_a_transport(runner, cfg_file):
 
 
 def test_add_allows_pathed_launcher(runner, cfg_file):
-    result = runner.invoke(mcp, ["add", "p", "--command", "/usr/local/bin/node"])
+    result = runner.invoke(mcp, ["add", "p", "--", "/usr/local/bin/node", "server.js"])
     assert result.exit_code == 0, result.output
     assert _read(cfg_file)["mcpServers"]["p"]["command"] == "/usr/local/bin/node"
+
+
+def test_add_allows_versioned_python_launcher(runner, cfg_file):
+    """``python3.12`` resolves to the python3 launcher kind, as it does at connect."""
+    result = runner.invoke(mcp, ["add", "v", "--", "python3.12", "-m", "my_server"])
+    assert result.exit_code == 0, result.output
+    assert _read(cfg_file)["mcpServers"]["v"]["command"] == "python3.12"
 
 
 def test_add_overwrites_existing(runner, cfg_file):
@@ -424,3 +439,91 @@ def test_prompts_lists_table(runner, cfg_file, monkeypatch):
     result = runner.invoke(mcp, ["prompts", "fs"])
     assert result.exit_code == 0, result.output
     assert "summarize" in result.output
+
+
+def test_add_with_env_and_cwd(runner, cfg_file):
+    result = runner.invoke(
+        mcp,
+        [
+            "add",
+            "gh",
+            "-e",
+            "GITHUB_PERSONAL_ACCESS_TOKEN=${GITHUB_TOKEN}",
+            "--cwd",
+            ".",
+            "--",
+            "npx",
+            "-y",
+            "@modelcontextprotocol/server-github",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    entry = _read(cfg_file)["mcpServers"]["gh"]
+    assert entry["env"]["GITHUB_PERSONAL_ACCESS_TOKEN"] == "${GITHUB_TOKEN}"
+    assert entry["cwd"] == "."
+
+
+def test_add_preset_github(runner, cfg_file):
+    result = runner.invoke(mcp, ["add", "--preset", "github"])
+    assert result.exit_code == 0, result.output
+    entry = _read(cfg_file)["mcpServers"]["github"]
+    assert entry["command"] == "npx"
+    assert "GITHUB_PERSONAL_ACCESS_TOKEN" in entry["env"]
+
+
+def test_catalog(runner, cfg_file):
+    result = runner.invoke(mcp, ["catalog"])
+    assert result.exit_code == 0, result.output
+    assert "filesystem" in result.output
+    assert "github" in result.output
+
+
+def test_enable_disable(runner, cfg_file):
+    runner.invoke(mcp, ["add", "x", "--command", "npx"])
+    assert runner.invoke(mcp, ["disable", "x"]).exit_code == 0
+    assert _read(cfg_file)["mcpServers"]["x"].get("disabled") is True
+    assert runner.invoke(mcp, ["enable", "x"]).exit_code == 0
+    assert "disabled" not in _read(cfg_file)["mcpServers"]["x"]
+
+
+def test_get_shows_json(runner, cfg_file):
+    runner.invoke(mcp, ["add", "x", "--command", "npx"])
+    result = runner.invoke(mcp, ["get", "x"])
+    assert result.exit_code == 0, result.output
+    assert '"command": "npx"' in result.output
+
+
+def test_import_from_file(runner, cfg_file, tmp_path):
+    src = tmp_path / "other.json"
+    src.write_text(
+        json.dumps(
+            {"mcpServers": {"imported": {"type": "stdio", "command": "uvx", "args": ["pkg"]}}}
+        ),
+        encoding="utf-8",
+    )
+    result = runner.invoke(mcp, ["import", "--from", "file", "--path", str(src)])
+    assert result.exit_code == 0, result.output
+    assert _read(cfg_file)["mcpServers"]["imported"]["command"] == "uvx"
+
+
+def test_import_skips_entries_that_could_never_connect(runner, cfg_file, tmp_path):
+    """Foreign configs may name launchers/schemes CoderAI refuses to start."""
+    src = tmp_path / "other.json"
+    src.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "ok": {"type": "stdio", "command": "uvx", "args": ["pkg"]},
+                    "bad_launcher": {"type": "stdio", "command": "bash", "args": ["-c", "x"]},
+                    "plaintext": {"type": "http", "url": "http://evil.example/mcp"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = runner.invoke(mcp, ["import", "--from", "file", "--path", str(src)])
+    assert result.exit_code == 0, result.output
+    assert set(_read(cfg_file)["mcpServers"]) == {"ok"}
+    assert "Skipping 'bad_launcher'" in result.output
+    assert "Skipping 'plaintext'" in result.output
+    assert "Imported 1 server(s)" in result.output

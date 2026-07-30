@@ -52,6 +52,16 @@ def _write(root, name, content):
     return p
 
 
+def test_non_object_manifest_is_treated_as_empty_cache(tmp_path):
+    indexer = _make_indexer(tmp_path)
+    indexer._manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    indexer._manifest_path.write_text("[]", encoding="utf-8")
+
+    indexer._load_manifest()
+
+    assert indexer._manifest == {}
+
+
 # ---------------------------------------------------------------------------
 # _entry_meta coercion
 # ---------------------------------------------------------------------------
@@ -60,9 +70,6 @@ def _write(root, name, content):
 class TestEntryMeta:
     def test_none(self):
         assert _entry_meta(None) is None
-
-    def test_legacy_string_hash(self):
-        assert _entry_meta("abc123") == {"hash": "abc123", "mtime": None, "size": None}
 
     def test_dict_passthrough(self):
         entry = {"hash": "h", "mtime": 1.0, "size": 5}
@@ -128,24 +135,6 @@ class TestIncrementalDiscovery:
 
         assert [p.name for p in to_index] == ["b.py"]
         assert (added, updated, unchanged) == (1, 0, 1)
-
-    @pytest.mark.asyncio
-    async def test_legacy_string_manifest_is_upgraded(self, tmp_path):
-        a = _write(tmp_path, "a.py", "def a():\n    return 1\n")
-        indexer = _make_indexer(tmp_path)
-        # Legacy format: bare hash string, no stat metadata.
-        indexer._manifest = {"a.py": _file_hash(a)}
-
-        _files, to_index, added, updated, unchanged = await indexer._discover_changed_files(
-            None, True
-        )
-
-        assert to_index == []
-        assert unchanged == 1
-        # Entry upgraded to the dict form and flagged for persistence.
-        assert isinstance(indexer._manifest["a.py"], dict)
-        assert indexer._manifest["a.py"]["mtime"] == a.stat().st_mtime
-        assert indexer._manifest_dirty is True
 
     @pytest.mark.asyncio
     async def test_touch_without_content_change_refreshes_mtime(self, tmp_path):

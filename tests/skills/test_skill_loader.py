@@ -124,7 +124,7 @@ class TestDiscoverLocalSkills:
             "---\nname: skill-b\ndescription: Second skill\n---\n\n## B\n"
         )
 
-        skills = discover_local_skills(str(tmp_path))
+        skills = discover_local_skills(str(tmp_path), include_user=False)
         assert len(skills) == 2
         names = {s.name for s in skills}
         assert names == {"skill-a", "skill-b"}
@@ -132,7 +132,7 @@ class TestDiscoverLocalSkills:
     def test_empty_directory(self, tmp_path):
         dot_dir = tmp_path / ".coderAI" / "skills"
         dot_dir.mkdir(parents=True)
-        skills = discover_local_skills(str(tmp_path))
+        skills = discover_local_skills(str(tmp_path), include_user=False)
         assert skills == []
 
 
@@ -145,7 +145,7 @@ class TestLoadSkillByName:
             "---\nname: csv-analyzer\ndescription: Parse CSV\n---\n\n# CSV\n"
         )
 
-        skill = load_skill_by_name("csv-analyzer", str(tmp_path))
+        skill = load_skill_by_name("csv-analyzer", str(tmp_path), include_user=False)
         assert skill is not None
         assert skill.name == "csv-analyzer"
         assert "CSV" in skill.instructions
@@ -154,17 +154,17 @@ class TestLoadSkillByName:
         dot_dir = tmp_path / ".coderAI" / "skills"
         dot_dir.mkdir(parents=True)
 
-        skill = load_skill_by_name("../../etc/passwd", str(tmp_path))
+        skill = load_skill_by_name("../../etc/passwd", str(tmp_path), include_user=False)
         assert skill is None
 
-        skill = load_skill_by_name("foo/../bar", str(tmp_path))
+        skill = load_skill_by_name("foo/../bar", str(tmp_path), include_user=False)
         assert skill is None
 
     def test_nonexistent_skill(self, tmp_path):
         dot_dir = tmp_path / ".coderAI" / "skills"
         dot_dir.mkdir(parents=True)
 
-        skill = load_skill_by_name("nonexistent", str(tmp_path))
+        skill = load_skill_by_name("nonexistent", str(tmp_path), include_user=False)
         assert skill is None
 
 

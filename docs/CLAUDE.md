@@ -65,7 +65,8 @@ elsewhere.
 
 Shared leaf types live in `coderAI/types/`. Persona loader is `core/personas.py`
 (orchestrator remains `core/agent.py`). Skill *framework* is `coderAI/skills/`;
-the tool is `tools/use_skill.py`; content is `.coderAI/skills/`.
+the tool is `tools/use_skill.py`; content is `.coderAI/skills/` (and
+`~/.coderAI/skills/`). Install with `coderAI skills install`.
 
 CoderAI is a pure-Python AI coding agent CLI. The Click entry point
 (`coderAI.cli:main` → `coderAI/cli/__init__.py` → `cli/main.py`) dispatches
@@ -148,7 +149,8 @@ Per-turn flow (`Agent.process_message()` → `agent_loop`):
 - `undo.py` — undo, undo_history
 - `context_manage.py` — pin/unpin files into the pinned-context manager (takes `Agent` at construction → registered manually)
 - `tasks.py` — persistent task-list management
-- `use_skill.py` — `use_skill` loads a workflow from `.coderAI/skills/<name>/SKILLS.md`
+- `use_skill.py` — `use_skill` loads a workflow from `.coderAI/skills/<name>/SKILLS.md` (or `SKILL.md` / user scope)
+- `cli/skills_cmd.py` — `coderAI skills install|list|remove` (GitHub or local path)
 - `format.py`, `lint.py`, `repl.py`, `vision.py` — code formatting, linting, Python REPL, and image/vision helpers (`lint`/`format` use `run_scrubbed()` from project root)
 - `_detect.py` — shared `walk_up_detect()` used by lint/format/testing/package_manager
 - `package_manager.py`, `refactor.py`, `testing.py` — package install/remove, rename_symbol/find_references refactor (writes via `WriteFileTool`), test runner dispatch
@@ -176,6 +178,12 @@ Inside `coderAI chat` (the Textual TUI), slash commands include:
 `UIBridge`. Reference output (`/show models`, `/show cost`, …) is rendered
 as plain text by `coderAI/tui/commands.py`. Full CLI + slash reference:
 [`COMMANDS.md`](COMMANDS.md). Event catalog: [`CHAT_EVENTS.md`](CHAT_EVENTS.md).
+
+`/plan <request>` runs a separate enforced read-only turn. Only read tools,
+read-only delegation, and `submit_plan` are exposed; the executor independently
+denies mutations. Drafts and immutable revisions live under `.coderAI/plans/`.
+`/plan approve` hashes and executes the exact reviewed revision, linking its
+plan ID and revision into the execution turn's `ObjectiveState`.
 
 ## Model Aliases
 

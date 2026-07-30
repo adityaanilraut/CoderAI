@@ -4,7 +4,7 @@ import html as html_lib
 import json
 import logging
 import re
-from typing import Dict, List, Optional
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -164,8 +164,8 @@ def _extract_main_content(html: str) -> str:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def _extract_metadata(html: str) -> Dict[str, str]:
-    meta: Dict[str, str] = {}
+def _extract_metadata(html: str) -> dict[str, str]:
+    meta: dict[str, str] = {}
     m = _TITLE_RE.search(html)
     if m:
         meta["title"] = _strip_tags(m.group(1))
@@ -203,7 +203,7 @@ def _extract_pdf_text(content: bytes) -> Optional[str]:
         from pypdf import PdfReader
 
         reader = PdfReader(BytesIO(content))
-        pages: List[str] = []
+        pages: list[str] = []
         for page in reader.pages:
             text = page.extract_text()
             if text:

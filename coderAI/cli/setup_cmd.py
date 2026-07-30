@@ -3,7 +3,7 @@
 import click
 
 from coderAI.system.config import config_manager
-from .utils import valid_models, valid_endpoint
+from .utils import is_valid_model, valid_endpoint
 
 _REASONING_CHOICES = ("high", "medium", "low", "none")
 
@@ -58,7 +58,6 @@ def setup() -> None:
             break
         display.print()
 
-    valid = valid_models()
     display.print("[bold]7. Default Model[/bold]")
     display.print("   Run `coderAI models` after setup for the full list.")
     display.print(
@@ -68,7 +67,7 @@ def setup() -> None:
     )
     while True:
         model = click.prompt("   Enter default model", default="claude-4-sonnet").strip()
-        if model in valid:
+        if is_valid_model(model):
             config_manager.set("default_model", model)
             display.print_success(f"   Default model set to {model}")
             break
@@ -184,7 +183,14 @@ def setup() -> None:
     display.print("    Add Model Context Protocol servers to provide custom tools.")
     use_mcp = click.confirm("    Configure MCP servers?", default=False)
     if use_mcp:
-        from coderAI.tools.mcp import load_mcp_servers, mcp_servers_path, save_mcp_servers
+        from coderAI.tools.mcp import (
+            ALLOWED_MCP_LAUNCHERS,
+            load_mcp_servers,
+            mcp_servers_path,
+            save_mcp_servers,
+            validate_remote_mcp_url,
+            validate_stdio_launch,
+        )
 
         mcp_data = load_mcp_servers()
         mcp_data.setdefault("mcpServers", {})
@@ -192,9 +198,10 @@ def setup() -> None:
         def _prompt_mcp_url(example: str) -> str:
             while True:
                 url: str = click.prompt(f"    Enter URL (e.g. {example})").strip()
-                if valid_endpoint(url):
+                err = validate_remote_mcp_url(url)
+                if not err:
                     return url
-                display.print_error("    Invalid URL — must start with http:// or https://")
+                display.print_error(f"    {err}")
 
         while True:
             server_name = click.prompt(
@@ -204,6 +211,9 @@ def setup() -> None:
             ).strip()
             if not server_name:
                 break
+            if "__" in server_name:
+                display.print_error("    Server name must not contain '__'.")
+                continue
 
             transport = click.prompt(
                 "    Transport type",
@@ -211,7 +221,7 @@ def setup() -> None:
                 default="stdio",
             )
             if transport == "sse":
-                url = _prompt_mcp_url("http://localhost:8080/sse")
+                url = _prompt_mcp_url("http://127.0.0.1:8080/sse")
                 mcp_data["mcpServers"][server_name] = {
                     "transport": "sse",
                     "url": url,
@@ -236,10 +246,29 @@ def setup() -> None:
                     "    Enter command arguments (comma-separated, optional)", default=""
                 ).strip()
                 args = [a.strip() for a in args_str.split(",") if a.strip()] if args_str else []
-                mcp_data["mcpServers"][server_name] = {
-                    "command": command,
-                    "args": args,
-                }
+                launch_err = validate_stdio_launch(command, args)
+                if launch_err:
+                    display.print_error(f"    {launch_err}")
+                    display.print_info(
+                        f"    Allowed launchers: {', '.join(sorted(ALLOWED_MCP_LAUNCHERS))}"
+                    )
+                    continue
+                env_str = click.prompt(
+                    "    Env KEY=VALUE pairs (comma-separated, optional)", default=""
+                ).strip()
+                cwd = click.prompt("    Working directory (optional)", default="").strip()
+                stdio_entry: dict = {"command": command, "args": args}
+                if env_str:
+                    env_map: dict[str, str] = {}
+                    for part in env_str.split(","):
+                        if "=" in part:
+                            k, _, v = part.partition("=")
+                            env_map[k.strip()] = v.strip()
+                    if env_map:
+                        stdio_entry["env"] = env_map
+                if cwd:
+                    stdio_entry["cwd"] = cwd
+                mcp_data["mcpServers"][server_name] = stdio_entry
             display.print_success(f"    Configured MCP server '{server_name}'")
 
         try:

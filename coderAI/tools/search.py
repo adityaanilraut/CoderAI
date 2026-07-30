@@ -5,7 +5,7 @@ import ast
 import re
 import shutil
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -47,7 +47,7 @@ class GrepTool(Tool):
         case_insensitive: bool = False,
         recursive: bool = True,
         max_results: int = 50,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Execute grep search using create_subprocess_exec to avoid shell injection.
 
         The ``grep`` binary is absent on stock Windows, so when it is not on
@@ -139,7 +139,7 @@ class GrepTool(Tool):
         case_insensitive: bool,
         recursive: bool,
         max_results: int,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Pure-Python ``grep -n`` fallback for hosts without the binary (Windows).
 
         Mirrors the subprocess path's result shape. Runs on a worker thread via
@@ -163,7 +163,7 @@ class GrepTool(Tool):
             else:
                 files = (p for p in base.iterdir() if p.is_file())
 
-            matches: List[Dict[str, Any]] = []
+            matches: list[dict[str, Any]] = []
             truncated = False
             for file_path in files:
                 # Filter on the path *relative to the search base*, not the
@@ -195,7 +195,7 @@ class GrepTool(Tool):
                 if truncated:
                     break
 
-            result: Dict[str, Any] = {
+            result: dict[str, Any] = {
                 "success": True,
                 "pattern": pattern,
                 "matches": matches[:max_results],
@@ -242,7 +242,7 @@ class SymbolSearchTool(Tool):
         kind: str = "any",
         path: str = ".",
         max_results: int = 20,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         try:
             if max_results < 1:
                 return {
@@ -276,10 +276,10 @@ class SymbolSearchTool(Tool):
 
     def _walk(
         self, base: Path, symbol: str, kind: str, max_results: int
-    ) -> tuple[List[Dict[str, Any]], bool]:
+    ) -> tuple[list[dict[str, Any]], bool]:
         """Synchronous tree walk + ast/regex parse — runs on a worker thread."""
         files = iter([base]) if base.is_file() else (p for p in base.rglob("*") if p.is_file())
-        results: List[Dict[str, Any]] = []
+        results: list[dict[str, Any]] = []
         for file_path in files:
             try:
                 rel_parts = file_path.relative_to(base).parts
@@ -302,7 +302,7 @@ class SymbolSearchTool(Tool):
                 break
         return results[:max_results], len(results) > max_results
 
-    def _search_python(self, file_path: Path, symbol: str, kind: str) -> List[Dict[str, Any]]:
+    def _search_python(self, file_path: Path, symbol: str, kind: str) -> list[dict[str, Any]]:
         try:
             source = file_path.read_text(encoding="utf-8")
             tree = ast.parse(source)
@@ -310,7 +310,7 @@ class SymbolSearchTool(Tool):
             return []
 
         wanted = kind.lower()
-        results: List[Dict[str, Any]] = []
+        results: list[dict[str, Any]] = []
 
         for node in ast.walk(tree):
             node_kind = None
@@ -346,7 +346,7 @@ class SymbolSearchTool(Tool):
                     )
         return results
 
-    def _search_jsts(self, file_path: Path, symbol: str, kind: str) -> List[Dict[str, Any]]:
+    def _search_jsts(self, file_path: Path, symbol: str, kind: str) -> list[dict[str, Any]]:
         try:
             source = file_path.read_text(encoding="utf-8", errors="ignore")
         except Exception:
@@ -363,7 +363,7 @@ class SymbolSearchTool(Tool):
             ("variable", rf"^\s*(export\s+)?(const|let|var)\s+{re.escape(symbol)}\b"),
         ]
         wanted = kind.lower()
-        results: List[Dict[str, Any]] = []
+        results: list[dict[str, Any]] = []
         for line_no, line in enumerate(source.splitlines(), 1):
             for node_kind, pattern in patterns:
                 if wanted not in {"any", node_kind, "method"} and not (

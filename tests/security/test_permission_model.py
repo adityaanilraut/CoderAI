@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
-from typing import Any, Dict, List
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -32,7 +32,7 @@ from coderAI.tools.discovery import discover_tools
 class _UnclassifiedTool(Tool):
     name = "unclassified_probe"
 
-    async def execute(self, **kwargs: Any) -> Dict[str, Any]:
+    async def execute(self, **kwargs: Any) -> dict[str, Any]:
         return {"success": True}
 
 
@@ -40,7 +40,7 @@ class _MutatingSafeTool(Tool):
     name = "mutating_safe_probe"
     safe = True
 
-    async def execute(self, **kwargs: Any) -> Dict[str, Any]:
+    async def execute(self, **kwargs: Any) -> dict[str, Any]:
         return {"success": True}
 
 
@@ -48,7 +48,7 @@ class _ReadOnlyTool(Tool):
     name = "readonly_probe"
     is_read_only = True
 
-    async def execute(self, **kwargs: Any) -> Dict[str, Any]:
+    async def execute(self, **kwargs: Any) -> dict[str, Any]:
         return {"success": True}
 
 
@@ -177,9 +177,9 @@ class _RunCommandStub(Tool):
 
     def __init__(self) -> None:
         super().__init__()
-        self.executed: List[str] = []
+        self.executed: list[str] = []
 
-    async def execute(self, command: str = "", **kwargs: Any) -> Dict[str, Any]:
+    async def execute(self, command: str = "", **kwargs: Any) -> dict[str, Any]:
         self.executed.append(command)
         return {"success": True, "output": "ok"}
 
@@ -198,7 +198,7 @@ def _make_agent(session: Session, registry: ToolRegistry, rules: ApprovalRules) 
     )
 
 
-def _tool_call(command: str, tool_id: str = "t1") -> Dict[str, Any]:
+def _tool_call(command: str, tool_id: str = "t1") -> dict[str, Any]:
     return {
         "id": tool_id,
         "type": "function",
@@ -206,7 +206,7 @@ def _tool_call(command: str, tool_id: str = "t1") -> Dict[str, Any]:
     }
 
 
-async def _orchestrate(executor: ToolExecutor, session: Session, tc: Dict[str, Any]) -> None:
+async def _orchestrate(executor: ToolExecutor, session: Session, tc: dict[str, Any]) -> None:
     session.add_message("assistant", None, tool_calls=[tc])
     await executor.orchestrate_tool_calls(
         tool_calls=[tc],

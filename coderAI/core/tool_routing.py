@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Optional
 
 MCP_FUNCTION_PREFIX = "mcp__"
 MAX_PROVIDER_FUNCTION_NAME_LENGTH = 64
@@ -35,7 +35,7 @@ def build_mcp_function_name(server: str, tool: str) -> str:
     return name
 
 
-def coerce_tool_arguments(raw: Any) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+def coerce_tool_arguments(raw: Any) -> tuple[Optional[dict[str, Any]], Optional[str]]:
     """Parse tool ``function.arguments`` from providers (string JSON or dict)."""
     if raw is None:
         return {}, None
@@ -55,7 +55,7 @@ def coerce_tool_arguments(raw: Any) -> Tuple[Optional[Dict[str, Any]], Optional[
     return out, None
 
 
-def parse_mcp_function_name(name: str) -> Optional[Tuple[str, str]]:
+def parse_mcp_function_name(name: str) -> Optional[tuple[str, str]]:
     """Parse ``mcp__<server>__<tool>``.
 
     The tool segment is everything after the *first* ``__`` following the server
@@ -89,8 +89,8 @@ def is_mcp_function_name(name: str) -> bool:
 
 
 async def call_mcp_tool_by_function_name(
-    name: str, arguments: Optional[Dict[str, Any]]
-) -> Dict[str, Any]:
+    name: str, arguments: Optional[dict[str, Any]]
+) -> dict[str, Any]:
     """Dispatch ``mcp__...`` tool calls to :func:`mcp_client.call_tool`."""
     from coderAI.core.services import get_services
 

@@ -109,19 +109,67 @@ coderAI run --trust-workspace "..."     # CI: trust this repo's .coderAI hooks/c
 ---
 
 ### `coderAI mcp`
-Manage MCP (Model Context Protocol) servers written to `~/.coderAI/mcp_servers.json` — the same file the setup wizard writes and that `coderAI chat` auto-connects on startup. Servers added here become available the next time you start a chat.
+Manage MCP (Model Context Protocol) servers. Config scopes:
+
+| Scope | Path |
+|-------|------|
+| **user** (default) | `~/.coderAI/mcp_servers.json` |
+| **project** | `.mcp.json` at the project root (Claude/Cursor-compatible) |
+| **local** | `~/.coderAI/mcp_local.json` keyed by project root |
+
+Merge precedence (same name): local → project → user → bundled (`git_extended`).
+Project servers require a trusted workspace and `coderAI mcp approve <name>` (or `/mcp <name>` in chat) before autoconnect.
+
+Per-server fields: `transport` (`stdio`/`sse`/`http`), `command`/`args`, `url`/`headers`, `env`, `cwd`, `timeout` (ms), `disabled`. String fields support `${VAR}` / `${VAR:-default}` expansion at connect time. Stdio `env` is applied **after** secret scrubbing (only listed keys).
 
 ```bash
-coderAI mcp list                                   # Show configured servers (+ auth status)
-coderAI mcp add fetch -- npx -y @scope/server      # stdio launcher after '--'
-coderAI mcp add remote --transport sse -- https://example.com/sse
+coderAI mcp list                                   # Scope, status, auth
+coderAI mcp catalog                                # Curated presets
+coderAI mcp add                                    # Interactive wizard
+coderAI mcp add --preset github                    # Preset → user scope
+coderAI mcp add fetch --scope project -- npx -y @modelcontextprotocol/server-fetch
+coderAI mcp add gh -e GITHUB_PERSONAL_ACCESS_TOKEN='${GITHUB_TOKEN}' -- npx -y @modelcontextprotocol/server-github
 coderAI mcp add api --http https://host/mcp -H "Authorization: Bearer TOKEN"
-coderAI mcp remove <name>                          # Remove a server (and its saved creds)
-coderAI mcp login <name>                           # OAuth login for an HTTP server (opens browser)
-coderAI mcp logout <name>                          # Revoke + delete saved OAuth credentials
-coderAI mcp resources <name>                        # List resources exposed by a server
-coderAI mcp prompts <name>                          # List prompt templates exposed by a server
+coderAI mcp get <name>                             # Resolved entry + meta
+coderAI mcp enable|disable <name>
+coderAI mcp approve|reject <name>                  # Project .mcp.json trust
+coderAI mcp remove <name> [--scope user|project|local]
+coderAI mcp import --from cursor|claude-desktop|claude-code|file --path …
+coderAI mcp debug <name>                           # One-shot connect diagnostics
+coderAI mcp login <name>                           # OAuth for HTTP servers
+coderAI mcp logout <name>
+coderAI mcp resources <name>
+coderAI mcp prompts <name>
 ```
+
+In chat: `/mcp` lists/toggles servers; `/mcp__<server>__<prompt>` loads an MCP prompt template.
+
+---
+
+### `coderAI skills`
+Install and manage skill workflows (Claude Code–style). Scopes:
+
+| Scope | Path |
+|-------|------|
+| **project** (default) | `.coderAI/skills/<name>/SKILLS.md` |
+| **user** | `~/.coderAI/skills/<name>/SKILLS.md` |
+
+Sources: local path, `owner/repo`, `owner/repo/path`, or a GitHub URL. Ecosystem
+`SKILL.md` files are accepted and normalized to `SKILLS.md` on install. Project
+skills require workspace trust; user skills are always available.
+
+```bash
+coderAI skills install ./my-skill
+coderAI skills install owner/repo
+coderAI skills install owner/repo/skills/foo --scope user
+coderAI skills install https://github.com/owner/repo --path skills/bar
+coderAI skills install owner/repo --list              # Discover without installing
+coderAI skills install owner/repo --only foo --force
+coderAI skills list [--scope all|project|user]
+coderAI skills remove <name> [--scope project|user] [-y]
+```
+
+In chat: `/skills` lists installed workflows; the agent loads them via `use_skill`.
 
 ---
 
@@ -295,8 +343,13 @@ These commands are typed inside an active `coderAI chat` session.
 | `/allowed-tools` | List tools already allowlisted this session |
 | `/undo` | Undo last tool action |
 | `/rewind <n> [--files]` | Rewind conversation to a past turn |
-| `/mcp <name>` | List MCP servers or toggle one on/off |
-| `/plan` | Alias for `/tasks` |
+| `/mcp <name>` | List MCP servers or toggle/approve one · `/mcp__server__prompt` loads an MCP prompt |
+
+| `/plan <request>` | Explore read-only and create a versioned implementation plan |
+| `/plan` | Show the active plan |
+| `/plan approve` | Approve and execute the exact active revision |
+| `/plan amend <instruction>` | Revise the plan; `/plan answer` is an alias for answering open questions |
+| `/plan cancel` | Cancel the active plan |
 | `/export` | Export session to markdown |
 | `/search <query>` | Show matching snippets from the conversation transcript |
 | `/retry` | Restart the agent after a crash |

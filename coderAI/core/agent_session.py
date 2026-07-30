@@ -13,7 +13,7 @@ import asyncio
 import logging
 import time as _time
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
+from typing import Any, Optional, TYPE_CHECKING
 
 from coderAI.context.context_controller import RESPONSE_TOKEN_RESERVE, TOOL_OVERHEAD_TOKENS
 from coderAI.core.agent_tracker import AgentStatus, AgentInfo
@@ -63,9 +63,9 @@ class AgentSessionMixin:
     _tracker_start_completion: int
     _tracker_start_tokens: int
     _tracker_start_cost: float
-    _hooks_approved: Dict[str, bool]
+    _hooks_approved: dict[str, bool]
     _save_executor: Optional[ThreadPoolExecutor]
-    _pending_saves: Set["Future[Any]"]
+    _pending_saves: set["Future[Any]"]
 
     if TYPE_CHECKING:
         # Provided by AgentCapabilitiesMixin on the composed Agent class.
@@ -187,13 +187,16 @@ class AgentSessionMixin:
             self._save_executor.shutdown(wait=True)
             self._save_executor = None
 
-    def get_context_usage(self) -> Tuple[int, int]:
+    def get_context_limit(self) -> int:
+        """Get the active model's context limit, falling back to config."""
+        return self._context_controller._effective_context_limit(None)
+
+    def get_context_usage(self) -> tuple[int, int]:
         """Get the current context window usage and limit."""
         messages = self.session.get_messages_for_api() if self.session else []
         messages = self._context_controller.inject_context(messages)
         used_tokens = self._context_controller.estimate_tokens(messages)
-        limit = self.config.context_window
-        return used_tokens, limit
+        return used_tokens, self.get_context_limit()
 
     def _add_summary_tokens(self, input_delta: int, output_delta: int) -> None:
         """Update cumulative token counters after a context summarization LLM call."""
@@ -201,7 +204,7 @@ class AgentSessionMixin:
         self.total_completion_tokens += output_delta
         self.total_tokens += input_delta + output_delta
 
-    async def _record_auxiliary_usage(self, raw_usage: Dict[str, Any]) -> None:
+    async def _record_auxiliary_usage(self, raw_usage: dict[str, Any]) -> None:
         """Meter a provider call made outside the main execution loop."""
         usage = normalize_usage(raw_usage)
         input_tokens = usage["input_tokens"]
@@ -250,7 +253,7 @@ class AgentSessionMixin:
                             return tuple(_freeze(v) for v in value)
                         return value
 
-                    originals_by_identity: Dict[tuple, List[float]] = {}
+                    originals_by_identity: dict[tuple, list[float]] = {}
                     for orig in self.session.messages:
                         key = (
                             orig.role,
@@ -316,7 +319,7 @@ class AgentSessionMixin:
             role=role or (persona.description if persona else None),
             model=self.model,
             parent_id=parent_id,
-            context_limit=self.config.context_window,
+            context_limit=self.get_context_limit(),
         )
         self._tracker_start_completion = self.total_completion_tokens
         self._tracker_start_tokens = self.total_tokens
@@ -363,6 +366,7 @@ class AgentSessionMixin:
         if self.session:
             msgs = self.session.get_messages_for_api()
             info.context_used_tokens = self._context_controller.estimate_tokens(msgs)
+        info.context_limit_tokens = self.get_context_limit()
         get_services().events.emit("agent_tracker_sync", info=info)
 
     def _finish_tracker(self, error: bool = False) -> None:
@@ -389,7 +393,7 @@ class AgentSessionMixin:
             return
         self.session.add_checkpoint(checkpoint_label(user_message))
 
-    def rewind_to(self, turn: int, restore_files: bool = False) -> Dict[str, Any]:
+    def rewind_to(self, turn: int, restore_files: bool = False) -> dict[str, Any]:
         """Rewind the conversation to before the given user ``turn``.
 
         Truncates message history (and the checkpoint list) back to that
@@ -410,8 +414,8 @@ class AgentSessionMixin:
         dropped = sum(1 for c in self.session.checkpoints if c.turn >= turn)
         cutoff = target.created_at
         self.session.truncate_to_checkpoint(turn)
-        restored_files: List[str] = []
-        file_errors: List[str] = []
+        restored_files: list[str] = []
+        file_errors: list[str] = []
         if restore_files:
             from coderAI.tools.undo import get_backup_store
 
@@ -428,14 +432,14 @@ class AgentSessionMixin:
             "file_errors": file_errors,
         }
 
-    def get_model_info(self) -> Dict[str, Any]:
+    def get_model_info(self) -> dict[str, Any]:
         """Get information about the current model.
 
         The provider supplies static details (name, model, endpoint), but the
         token totals come from the Agent — the source of truth for the session —
         so they stay continuous across a mid-session provider/model swap.
         """
-        info: Dict[str, Any] = self.provider.get_model_info()
+        info: dict[str, Any] = self.provider.get_model_info()
         info["total_input_tokens"] = self.total_prompt_tokens
         info["total_output_tokens"] = self.total_completion_tokens
         info["total_tokens"] = self.total_tokens

@@ -30,6 +30,7 @@ consumers because unknown phases are ignored.
 | `status`        | `{ctxUsed, ctxLimit, workspaceTrusted, costUsd, budgetUsd, promptTokens, completionTokens, totalTokens, iteration, maxIterations, elapsedSeconds}` | Emitted after bootstrap and every turn. `iteration` is the current agent-loop pass (1-based after the first user message). `maxIterations` mirrors `config.max_iterations` (default 50). `elapsedSeconds` is wall time since session bootstrap. `workspaceTrusted` is `true`/`false` when the project has a workspace-trust surface, otherwise `null`. |
 | `skill_card`    | `{id?, name, description, steps: [{index, label}]}`                                           | Parsed skill workflow card emitted after a successful `use_skill` call               |
 | `tasks_card`    | `{tasks: {summary, inProgress, pending, completed, total}}`                                   | Task-list snapshot. `inProgress`/`pending`/`completed` are arrays of `{id, title, priority, status}` sorted by priority; `completed` holds only the last 5. `summary` is a human-readable count string. Updates the session task panel (chrome), not a timeline row. |
+| `plan_card`     | `{planId, revision, status, markdown, unansweredQuestions}`                                  | Versioned Plan Mode artifact rendered in the timeline for review, amendment, approval, and execution status. |
 | `agent`         | `{phase: "update" \| "started" \| "finished", info: AgentInfo, parentId}`                     | Per-agent snapshot; `started`/`finished` are lifecycle edges, `update` is throttled live sync |
 | `session_patch` | `{model?, provider?, autoApprove?, reasoning?}`                                               | Partial session-state update — only changed fields are present                       |
 | `available_models`| `{current, models: Record<string, string[]>}`                                                 | Emitted for the model picker                                                         |
@@ -128,6 +129,11 @@ turns can't interleave.
 | `manage_context`       | `{action: "add" \| "remove", path}`                     | Pin/unpin a file in the pinned-context manager; emits `success`/`warning`, then `context_state` + `status` |
 | `get_state`            | `{}`                                                   | Re-emit `status` + `agent` updates                                     |
 | `get_tasks`            | `{}`                                                   | Re-emits `tasks_card` from the on-disk task list                       |
+| `start_plan`           | `{request}`                                            | Runs enforced read-only exploration and emits a versioned `plan_card` |
+| `get_plan`             | `{}`                                                   | Re-emits the active versioned plan                                    |
+| `amend_plan`           | `{instruction}`                                        | Revises the active plan in read-only mode and creates a new revision  |
+| `approve_plan`         | `{}`                                                   | Approves and executes the exact current revision                      |
+| `cancel_plan`          | `{}`                                                   | Marks the active plan cancelled                                       |
 | `init_project`         | `{}`                                                   | Scaffolds `.coderAI/{agents,skills,rules}` and starter files (`CODERAI.md`, …) in the project root; emits `success` or `error` |
 | `list_models`          | `{}`                                                   | Emits `available_models` for the model picker                          |
 | `list_personas`        | `{}`                                                   | Emits `available_personas` for the persona picker                      |

@@ -4,7 +4,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -46,6 +46,7 @@ _INT_KEYS = frozenset(
         "tool_retry_max_attempts",
         "max_background_processes",
         "session_retention_days",
+        "completion_gate_max_retries",
     }
 )
 _BOOL_KEYS = frozenset(
@@ -58,6 +59,7 @@ _BOOL_KEYS = frozenset(
         "tui_notifications",
         "browser_headless",
         "sandbox_allow_network",
+        "completion_gate_enabled",
     }
 )
 
@@ -127,6 +129,11 @@ class Config(BaseModel):
     # to. Guards against a runaway ``max_iterations`` in a project config
     # draining the budget before the cost-tracker hard stop kicks in.
     max_iterations_hard_cap: int = Field(default=200, gt=0)
+    # A model response without tool calls is only a completion proposal.  For
+    # workspace-changing turns, require post-mutation inspection and a
+    # successful check before the runtime reports success.
+    completion_gate_enabled: bool = Field(default=True)
+    completion_gate_max_retries: int = Field(default=1, ge=0, le=3)
     max_tool_output: int = Field(default=8000)
     log_level: str = Field(default="WARNING")  # DEBUG, INFO, WARNING, ERROR
     project_instruction_file: str = Field(default="CODERAI.md")
@@ -161,7 +168,7 @@ class Config(BaseModel):
     # (DEFAULT_TOOL_TIMEOUT_SECONDS) applies.
     tool_timeout_seconds: float = Field(default=120.0, gt=0.0)
     # Per-tool-name overrides of the outer cap, e.g. {"run_tests": 900}.
-    tool_timeout_overrides: Dict[str, float] = Field(default_factory=dict)
+    tool_timeout_overrides: dict[str, float] = Field(default_factory=dict)
     # Default timeout for one-shot tool subprocesses (format/lint/grep/git…)
     # that previously hardcoded 60s.
     subprocess_timeout_seconds: float = Field(default=60.0, gt=0.0)
@@ -233,14 +240,23 @@ class ConfigManager:
             return self._config
 
         # Load from file if exists
-        config_data = {}
+        config_data: dict[str, Any] = {}
         if self.config_file.exists():
             try:
                 with open(self.config_file, "r") as f:
-                    config_data = json.load(f)
-            except json.JSONDecodeError as e:
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    config_data = loaded
+                else:
+                    logger.warning(
+                        "Config file %s must contain a JSON object, got %s. "
+                        "Using defaults and environment variables.",
+                        self.config_file,
+                        type(loaded).__name__,
+                    )
+            except (json.JSONDecodeError, OSError) as e:
                 logger.warning(
-                    "Config file %s is corrupted (JSON parse error: %s). "
+                    "Config file %s could not be read (%s). "
                     "Using defaults and environment variables.",
                     self.config_file,
                     e,
@@ -277,6 +293,8 @@ class ConfigManager:
             "CODERAI_SESSION_RETENTION_DAYS": "session_retention_days",
             "CODERAI_REASONING_EFFORT": "reasoning_effort",
             "CODERAI_MAX_ITERATIONS": "max_iterations",
+            "CODERAI_COMPLETION_GATE_ENABLED": "completion_gate_enabled",
+            "CODERAI_COMPLETION_GATE_MAX_RETRIES": "completion_gate_max_retries",
             "CODERAI_MAX_TOOL_OUTPUT": "max_tool_output",
             "CODERAI_PROJECT_INSTRUCTION_FILE": "project_instruction_file",
             "CODERAI_WEB_TOOLS_IN_MAIN": "web_tools_in_main",
@@ -328,10 +346,37 @@ class ConfigManager:
                 ", ".join(sorted(unknown)),
             )
 
-        self._config = Config(**config_data)
+        # Preserve valid settings when one persisted or environment-supplied
+        # field no longer matches the schema.  Loading must never brick every
+        # command, and recovery must not rewrite the user's source file.
+        validated_data = dict(config_data)
+        while True:
+            try:
+                self._config = Config(**validated_data)
+                break
+            except ValidationError as exc:
+                invalid_fields = {
+                    str(error["loc"][0])
+                    for error in exc.errors()
+                    if error.get("loc") and str(error["loc"][0]) in validated_data
+                }
+                if not invalid_fields:
+                    logger.warning("Config validation failed; using schema defaults: %s", exc)
+                    validated_data.clear()
+                    self._explicit_keys.clear()
+                    self._env_keys.clear()
+                    continue
+                logger.warning(
+                    "Ignoring invalid config fields: %s",
+                    ", ".join(sorted(invalid_fields)),
+                )
+                for field in invalid_fields:
+                    validated_data.pop(field, None)
+                    self._explicit_keys.discard(field)
+                    self._env_keys.discard(field)
         return self._config
 
-    def _data_to_persist(self, config: Config) -> Dict[str, Any]:
+    def _data_to_persist(self, config: Config) -> dict[str, Any]:
         """Select which fields ``save()`` writes to disk.
 
         Persist explicitly-set keys plus any value that differs from the
@@ -342,7 +387,7 @@ class ConfigManager:
         """
         defaults = Config()
         data = config.model_dump(exclude_none=True)
-        persist: Dict[str, Any] = {}
+        persist: dict[str, Any] = {}
         for key, value in data.items():
             if key in self._NEVER_PERSIST_KEYS:
                 continue
@@ -379,7 +424,7 @@ class ConfigManager:
         config = self.load()
         return getattr(config, key, default)
 
-    def show(self) -> Dict[str, Any]:
+    def show(self) -> dict[str, Any]:
         """Get all configuration with credentials fully redacted."""
         config = self.load()
         data = config.model_dump(exclude_none=True)
@@ -436,6 +481,8 @@ class ConfigManager:
             "temperature",
             "max_tokens",
             "max_iterations",
+            "completion_gate_enabled",
+            "completion_gate_max_retries",
             "context_window",
             "max_tool_output",
             "max_file_size",

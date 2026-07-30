@@ -13,7 +13,7 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Optional
 
 from coderAI.system.redaction import redact_text
 
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 # (frozensets) below answers ``binary in _INTERACTIVE_BINARIES``.
 # Adding a binary here automatically makes it available for all lookups;
 # no separate subsets to maintain.
-_INTERACTIVE_COMMAND_CATEGORIES: Dict[str, frozenset[str]] = {
+_INTERACTIVE_COMMAND_CATEGORIES: dict[str, frozenset[str]] = {
     "interpreter": frozenset(
         {
             "python",
@@ -257,7 +257,7 @@ def is_interactive_command(command: str) -> bool:
 
 
 # Files that indicate a real project
-PROJECT_INDICATORS: Set[str] = {
+PROJECT_INDICATORS: set[str] = {
     "package.json",
     "tsconfig.json",
     "pyproject.toml",
@@ -288,7 +288,7 @@ PROJECT_INDICATORS: Set[str] = {
 }
 
 # Directories that indicate source code
-SOURCE_DIRECTORIES: Set[str] = {
+SOURCE_DIRECTORIES: set[str] = {
     "src",
     "lib",
     "app",
@@ -310,7 +310,7 @@ SOURCE_DIRECTORIES: Set[str] = {
 }
 
 # Junk files that should be ignored when assessing directory content
-JUNK_FILES: Set[str] = {
+JUNK_FILES: set[str] = {
     ".DS_Store",
     "Thumbs.db",
     "desktop.ini",
@@ -319,7 +319,7 @@ JUNK_FILES: Set[str] = {
 }
 
 
-def project_sanity_check(directory: str = ".") -> Dict[str, Any]:
+def project_sanity_check(directory: str = ".") -> dict[str, Any]:
     """Verify that a directory contains a real project worth operating on.
 
     Returns a dict with:
@@ -346,8 +346,8 @@ def project_sanity_check(directory: str = ".") -> Dict[str, Any]:
             "reasons": [f"Path is not a directory: {dir_path}"],
         }
 
-    detected_files: List[str] = []
-    detected_source_dirs: List[str] = []
+    detected_files: list[str] = []
+    detected_source_dirs: list[str] = []
     has_git = (dir_path / ".git").exists()
 
     # Check for project indicator files
@@ -399,7 +399,7 @@ def project_sanity_check(directory: str = ".") -> Dict[str, Any]:
 
     is_valid = bool(detected_files) or bool(detected_source_dirs) or has_source_files
 
-    reasons: List[str] = []
+    reasons: list[str] = []
     if not is_valid:
         # Build helpful reasons
         try:
@@ -430,7 +430,7 @@ def project_sanity_check(directory: str = ".") -> Dict[str, Any]:
     }
 
 
-async def resolve_git_root(working_dir: str = ".") -> Dict[str, Any]:
+async def resolve_git_root(working_dir: str = ".") -> dict[str, Any]:
     """Resolve the git repository root for a given working directory.
 
     Returns:
@@ -542,8 +542,8 @@ JUNK_PATTERNS: tuple[str, ...] = (
 
 
 def filter_stageable_files(
-    files: List[str],
-) -> Tuple[List[str], List[str]]:
+    files: list[str],
+) -> tuple[list[str], list[str]]:
     """Filter a list of files to remove junk that should not be staged.
 
     Args:
@@ -552,8 +552,8 @@ def filter_stageable_files(
     Returns:
         Tuple of (allowed_files, rejected_files).
     """
-    allowed: List[str] = []
-    rejected: List[str] = []
+    allowed: list[str] = []
+    rejected: list[str] = []
 
     for filepath in files:
         # Check each path component against junk patterns
@@ -592,7 +592,7 @@ def truncate_output(
     max_chars: int,
     mode: str = "head_tail",
     marker: str = _TRUNCATION_MARKER,
-) -> Tuple[str, bool]:
+) -> tuple[str, bool]:
     """Cap oversized tool output, returning ``(text, was_truncated)`` (Phase 4.7).
 
     Single shared implementation for the git / terminal / testing tools, which

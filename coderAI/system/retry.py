@@ -12,9 +12,33 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Optional
+from collections.abc import Awaitable, Callable
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_RETRYABLE_STATUSES = frozenset({429, 502, 503})
+
+
+def default_retryable(exc: Exception) -> bool:
+    """Return whether a provider failure is safe to retry by default."""
+    status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+    if isinstance(status, (int, float)):
+        return int(status) in _DEFAULT_RETRYABLE_STATUSES
+    message = str(exc).lower()
+    return any(
+        marker in message
+        for marker in (
+            "429",
+            "502",
+            "503",
+            "rate limit",
+            "too many requests",
+            "service unavailable",
+            "bad gateway",
+            "server error",
+        )
+    )
 
 
 def backoff_delay(
@@ -39,8 +63,8 @@ def backoff_delay(
 async def retry_async(
     fn: Callable[[], Awaitable[Any]],
     *,
-    max_retries: int,
-    is_retryable: Callable[[Exception], bool],
+    max_retries: int = 3,
+    is_retryable: Optional[Callable[[Exception], bool]] = None,
     base_delay: float = 1.0,
     cap: float = 8.0,
     description: str = "operation",
@@ -56,7 +80,8 @@ async def retry_async(
         try:
             return await fn()
         except Exception as exc:
-            if attempt > max_retries or not is_retryable(exc):
+            retryable = is_retryable or default_retryable
+            if attempt > max_retries or not retryable(exc):
                 raise
             if cancel_event is not None and cancel_event.is_set():
                 raise

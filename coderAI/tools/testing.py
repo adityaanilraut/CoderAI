@@ -4,7 +4,7 @@ import logging
 import re
 import shutil
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -16,7 +16,7 @@ from coderAI.tools.filesystem import ProjectPathError, resolve_under_project
 
 logger = logging.getLogger(__name__)
 
-TEST_FRAMEWORKS: Dict[str, Dict[str, Any]] = {
+TEST_FRAMEWORKS: dict[str, dict[str, Any]] = {
     "pytest": {
         "cmd": "pytest",
         "args": ["-v", "--tb=short"],
@@ -137,7 +137,7 @@ def detect_test_framework(project_root: str = ".") -> Optional[str]:
     return None
 
 
-def _parse_pytest_output(stdout: str) -> Dict[str, Any]:
+def _parse_pytest_output(stdout: str) -> dict[str, Any]:
     passed = len(re.findall(r"\s+PASSED\b", stdout))
     failed = len(re.findall(r"\s+FAILED\b", stdout))
     errors = len(re.findall(r"\s+ERROR\b", stdout))
@@ -173,7 +173,7 @@ def _parse_pytest_output(stdout: str) -> Dict[str, Any]:
     }
 
 
-def _parse_go_test_output(stdout: str) -> Dict[str, Any]:
+def _parse_go_test_output(stdout: str) -> dict[str, Any]:
     pass_lines = [line for line in stdout.splitlines() if line.strip().startswith("--- PASS:")]
     fail_lines = [line for line in stdout.splitlines() if line.strip().startswith("--- FAIL:")]
     return {
@@ -191,7 +191,7 @@ def _parse_go_test_output(stdout: str) -> Dict[str, Any]:
     }
 
 
-def _parse_cargo_test_output(stdout: str) -> Dict[str, Any]:
+def _parse_cargo_test_output(stdout: str) -> dict[str, Any]:
     test_result = re.findall(
         r"test result: (ok|FAILED)\.\s+(\d+)\s+passed;\s+(\d+)\s+failed", stdout
     )
@@ -209,7 +209,7 @@ def _parse_cargo_test_output(stdout: str) -> Dict[str, Any]:
     }
 
 
-def _parse_jest_vitest_output(stdout: str) -> Dict[str, Any]:
+def _parse_jest_vitest_output(stdout: str) -> dict[str, Any]:
     m_total = re.search(r"Tests:\s+(\d+)\s+(passed|total)", stdout)
     m_failed = re.search(r"(\d+)\s+failed", stdout)
     m_passed = re.search(r"(\d+)\s+passed", stdout)
@@ -236,7 +236,7 @@ def _parse_jest_vitest_output(stdout: str) -> Dict[str, Any]:
     }
 
 
-def _parse_unittest_output(stdout: str, stderr: str) -> Dict[str, Any]:
+def _parse_unittest_output(stdout: str, stderr: str) -> dict[str, Any]:
     combined = stdout + "\n" + stderr
     m_ran = re.search(r"Ran\s+(\d+)\s+tests?", combined)
     m_failures = re.search(r"FAILED\s+\((\w+)=(\d+)\)", combined)
@@ -294,7 +294,7 @@ class RunTestsTool(Tool):
     timeout = None
     category = "code_quality"
 
-    def resolve_timeout(self, arguments: Dict[str, Any]) -> Optional[float]:
+    def resolve_timeout(self, arguments: dict[str, Any]) -> Optional[float]:
         # The framework isn't detected yet at this point, so fall back to the
         # largest per-framework default (300s) when no explicit timeout is
         # passed; execute()'s inner run_scrubbed timeout is always <= that.
@@ -311,7 +311,7 @@ class RunTestsTool(Tool):
         filter: Optional[str] = None,
         verbose: bool = True,
         timeout: Optional[int] = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         try:
             requested_path = resolve_under_project(
                 path,
@@ -353,7 +353,7 @@ class RunTestsTool(Tool):
                     "error": f"Test binary '{cmd_binary}' not found on PATH. Install {framework_name}.",
                 }
 
-            cmd: List[str] = [cmd_binary] + list(config["args"])
+            cmd: list[str] = [cmd_binary] + list(config["args"])
 
             if filter:
                 if framework_name == "pytest":

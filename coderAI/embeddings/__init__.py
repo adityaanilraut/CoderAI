@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, List, Optional, Protocol, Sequence, runtime_checkable
+from typing import Any, Optional, Protocol, runtime_checkable
 
 from coderAI.embeddings.openai import OpenAIEmbeddingProvider
 
@@ -16,7 +17,7 @@ class EmbeddingFingerprint:
     model: str
     dimension: int
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
@@ -30,7 +31,7 @@ class EmbeddingProvider(Protocol):
     @property
     def model(self) -> str: ...
 
-    async def embed(self, texts: Sequence[str]) -> List[List[float]]: ...
+    async def embed(self, texts: Sequence[str]) -> list[list[float]]: ...
 
     def dimension(self) -> int: ...
 

@@ -52,6 +52,29 @@ def test_auto_selected_skills_are_ephemeral_and_deduplicated():
     assert agent.session.messages == []
 
 
+def test_untrusted_workspace_blocks_project_skill_injection_allows_user():
+    agent = object.__new__(AgentCapabilitiesMixin)
+    agent._workspace_trusted = False
+    agent._active_skill_context = ["stale"]
+    agent.session = Session(session_id="session_2_abcdef12")
+    project_skill = Skill(
+        name="evil",
+        source="local",
+        instructions="UNTRUSTED-PROJECT-SKILL",
+    )
+    user_skill = Skill(
+        name="safe",
+        source="user",
+        instructions="USER-SKILL-OK",
+    )
+
+    agent._inject_skill_context([project_skill, user_skill])
+
+    assert len(agent._active_skill_context) == 1
+    assert "USER-SKILL-OK" in agent._active_skill_context[0]
+    assert "UNTRUSTED-PROJECT-SKILL" not in agent._active_skill_context[0]
+
+
 def make_mock_provider(response_text):
     """Build an AsyncMock LLM provider that returns *response_text*."""
     provider = AsyncMock()
@@ -249,6 +272,41 @@ class TestKeywordScoring:
 
 
 class TestGetTopSkills:
+    @pytest.mark.asyncio
+    async def test_user_scoped_skills_are_matchable(self):
+        """``~/.coderAI/skills`` entries are tagged ``source="user"``.
+
+        Scoring only ``find_by_source("local")`` discovered, registered and then
+        silently ignored every skill installed with ``--scope user``.
+        """
+        source = FakeSkillSource(
+            name="user",
+            skills=[Skill(name="security-audit", description="Security audit workflow")],
+        )
+        manager = SkillManager(sources=[source])
+
+        skills = await manager.get_top_skills("run a security audit")
+
+        assert [skill.name for skill in skills] == ["security-audit"]
+        assert skills[0].source == "user"
+
+    @pytest.mark.asyncio
+    async def test_project_and_user_skills_compete_together(self):
+        project = FakeSkillSource(
+            name="local", skills=[Skill(name="tdd-workflow", description="Test-driven development")]
+        )
+        user = FakeSkillSource(
+            name="user", skills=[Skill(name="csv-analyzer", description="Analyze CSV files")]
+        )
+        manager = SkillManager(sources=[project, user], threshold=0.3)
+
+        assert [s.name for s in await manager.get_top_skills("analyze a CSV file")] == [
+            "csv-analyzer"
+        ]
+        assert [s.name for s in await manager.get_top_skills("test-driven development")] == [
+            "tdd-workflow"
+        ]
+
     @pytest.mark.asyncio
     async def test_deterministic_match_runs_before_llm(self):
         source = FakeSkillSource(

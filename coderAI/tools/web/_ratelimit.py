@@ -46,12 +46,14 @@ async def _rate_limit_async(hostname: Optional[str]) -> None:
     domain = hostname.lower()
     now = time.monotonic()
     last = _last_request.get(domain, 0)
-    wait = delay - (now - last)
-    if wait > 0:
-        logger.debug(f"Rate limiting {domain}: waiting {wait:.2f}s")
-        await asyncio.sleep(wait)
-    _last_request[domain] = time.monotonic()
-    # Mark as most-recently-used and evict the oldest domains past the cap.
+    scheduled = max(now, last + delay)
+    wait = scheduled - now
+    _last_request[domain] = scheduled
+    # Reserve the slot before sleeping so concurrent callers queue instead of
+    # waking together and hitting the remote service at once.
     _last_request.move_to_end(domain)
     while len(_last_request) > _MAX_TRACKED_DOMAINS:
         _last_request.popitem(last=False)
+    if wait > 0:
+        logger.debug(f"Rate limiting {domain}: waiting {wait:.2f}s")
+        await asyncio.sleep(wait)

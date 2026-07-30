@@ -427,5 +427,7 @@ personas, sample skills, project rules). At runtime the agent also reads:
 - Project `.coderAI/` overlays (trusted when workspace trust allows)
 - User home `~/.coderAI/` for config, history, and caches
 
-Content skill files use `SKILLS.md` (plural) by design — not the ecosystem's
-common `SKILL.md` name.
+Content skill files use `SKILLS.md` (plural) by design. The installer and
+loader also accept the ecosystem's common `SKILL.md` name; `coderAI skills install`
+normalizes to `SKILLS.md`. Install from GitHub or a local path with
+`coderAI skills install owner/repo` (see COMMANDS.md).

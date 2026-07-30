@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-from typing import Dict
 
 logger = logging.getLogger(__name__)
 
@@ -10,7 +9,7 @@ logger = logging.getLogger(__name__)
 # Provider-specific long-context tiers are not represented by this flat table.
 # Updated: July 2026 (canonical API model IDs)
 
-MODEL_PRICING: Dict[str, Dict[str, float]] = {
+MODEL_PRICING: dict[str, dict[str, float]] = {
     # OpenAI
     "gpt-5.6": {"input": 5.00, "output": 30.00},
     "gpt-5.6-sol": {"input": 5.00, "output": 30.00},
@@ -96,7 +95,7 @@ class CostTracker:
         self._lock = asyncio.Lock()
 
     @staticmethod
-    def get_model_pricing(model: str) -> Dict[str, float]:
+    def get_model_pricing(model: str) -> dict[str, float]:
         """Get the pricing for a model (USD per 1M tokens).
 
         Resolves via: exact key → friendly-alias normalization → longest-substring match.

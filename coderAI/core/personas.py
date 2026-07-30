@@ -2,7 +2,7 @@ import re
 import yaml
 import logging
 from pathlib import Path
-from typing import List, Optional, Set, Dict, Any
+from typing import Optional, Any
 
 from coderAI.system.config import config_manager
 from coderAI.system.project_layout import find_dot_coderai_subdir
@@ -17,7 +17,7 @@ PERSONA_NAME_ALIASES = {
 }
 
 # Mapping of persona tool labels to registry tool names
-PERSONA_TOOL_ALIASES: Dict[str, Set[str]] = {
+PERSONA_TOOL_ALIASES: dict[str, set[str]] = {
     "read": {"read_file", "list_directory", "glob_search"},
     "write": {"write_file", "search_replace", "apply_diff"},
     "edit": {"search_replace", "apply_diff"},
@@ -35,12 +35,12 @@ class AgentPersona:
         self,
         name: str,
         description: str,
-        tools: List[str],
+        tools: list[str],
         model: str,
         instructions: str,
         mode: str = "all",
         hidden: bool = False,
-        permission: Optional[Dict[str, str]] = None,
+        permission: Optional[dict[str, str]] = None,
     ):
         self.name = name
         self.description = description
@@ -52,7 +52,7 @@ class AgentPersona:
         self.mode: str = mode
         self.hidden = hidden
         # Per-agent permission rules: {"tool_name": "allow"|"deny"}
-        self.permission: Dict[str, str] = permission or {}
+        self.permission: dict[str, str] = permission or {}
 
 
 def persona_allowed_in_context(persona: "AgentPersona", *, is_subagent: bool) -> bool:
@@ -117,9 +117,9 @@ def resolve_persona_name(persona_name: str, project_root: str = ".") -> Optional
     return None
 
 
-def expand_persona_tools(tool_names: List[str]) -> Set[str]:
+def expand_persona_tools(tool_names: list[str]) -> set[str]:
     """Expand persona tool labels into concrete registry tool names."""
-    expanded: Set[str] = set()
+    expanded: set[str] = set()
     for tool_name in tool_names or []:
         normalized = _normalize_tool_name(tool_name)
         expanded.add(normalized)
@@ -148,7 +148,7 @@ def load_agent_persona(persona_name: str, project_root: str = ".") -> Optional[A
         content = file_path.read_text()
 
         # Parse YAML frontmatter
-        metadata: Dict[str, Any] = {}
+        metadata: dict[str, Any] = {}
         instructions = content
 
         if content.startswith("---"):
@@ -189,7 +189,7 @@ def load_agent_persona(persona_name: str, project_root: str = ".") -> Optional[A
         return None
 
 
-def get_available_personas(project_root: str = ".") -> List[str]:
+def get_available_personas(project_root: str = ".") -> list[str]:
     """Return a list of available persona names."""
     agents_dir = _find_agents_dir(project_root)
     if agents_dir is None:

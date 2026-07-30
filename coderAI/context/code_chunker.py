@@ -15,7 +15,6 @@ import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict
 
 from coderAI.system.constants import SKIP_DIRS
 
@@ -65,7 +64,7 @@ _SKIP_SUFFIXES: set[str] = {
 _SKIP_DIRS: set[str] = set(SKIP_DIRS)
 
 # File suffixes we attempt to chunk.
-_CODE_SUFFIXES: Dict[str, str] = {
+_CODE_SUFFIXES: dict[str, str] = {
     ".py": "python",
     ".pyi": "python",
     ".js": "javascript",
@@ -346,7 +345,7 @@ def _chunk_jsts(source: str, rel_path: str, language: str) -> list[Chunk]:
             )
 
     # Entity chunks
-    for i, (start_line, name, chunk_type) in enumerate(boundaries):
+    for i, (start_line, _name, chunk_type) in enumerate(boundaries):
         end_line = boundaries[i + 1][0] - 1 if i + 1 < len(boundaries) else len(lines)
         body = "\n".join(lines[start_line - 1 : end_line]).strip()
         if body:

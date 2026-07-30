@@ -21,7 +21,7 @@ CoderAI is a Python CLI tool that pairs an LLM with a focused set of coding tool
 | **Coding Tools** | File I/O, core Git, terminal, web, browser automation, HTTP, memory, process management, semantic search; rare git via bundled MCP |
 | **Browser Automation** | Cross-platform browser control via Playwright — form filling, shopping, data entry, web scraping |
 | **Multi-Agent System** | Spawn isolated sub-agents for code review, security audit, research, etc. |
-| **Task Tracking** | Persistent TODO checklist via `manage_tasks` (also `/tasks` / `/plan`) |
+| **Planning & Tasks** | Enforced read-only `/plan` workflow plus persistent execution checklists via `manage_tasks` / `/tasks` |
 | **Textual interactive UI** | `coderAI chat` uses a pure-Python [Textual](https://textual.textualize.io/) TUI ([`docs/CHAT_EVENTS.md`](docs/CHAT_EVENTS.md)) |
 | **Rich CLI output** | Non-interactive commands (`status`, `config`, `history`, …) use [Rich](https://github.com/Textualize/rich) for tables and formatting |
 | **Semantic Search** | Natural-language code search via OpenAI or fully local embeddings + ChromaDB |
@@ -351,6 +351,7 @@ configured, or install `coderai-agent[local-embeddings]` for private local embed
 | Tool | Description |
 |---|---|
 | `manage_tasks` | Persistent TODO list with priorities |
+| `submit_plan` | Submit a structured versioned proposal (available only in Plan Mode) |
 
 ### Multi-Agent
 
@@ -438,9 +439,14 @@ Browser tools provide full control over a headless Chromium browser for form fil
 
 ### MCP Integration
 
+Connect external Model Context Protocol servers (stdio / SSE / Streamable HTTP)
+via `coderAI mcp add`, presets (`coderAI mcp catalog`), or project `.mcp.json`.
+Scopes: user (`~/.coderAI/mcp_servers.json`), project (`.mcp.json`), local.
+Tools appear as `mcp__<server>__<tool>`; prompts as `/mcp__<server>__<prompt>`.
+
 | Tool | Description |
 |---|---|
-| `mcp_connect` | Connect to an external MCP server |
+| `mcp_connect` | Connect to an external MCP server (`env`/`cwd`/`timeout` supported) |
 | `mcp_disconnect` | Disconnect from an MCP server |
 | `mcp_list` | List connected servers and their tools, resources, and prompts |
 | `mcp_list_resources` | List resources exposed by a connected MCP server |
@@ -532,7 +538,22 @@ The `ResourceManager` (`locks.py`) prevents race conditions during parallel exec
 
 ### Skills
 
-Skills are predefined step-by-step workflows stored in `.coderAI/skills/<name>/SKILLS.md`:
+Skills are predefined step-by-step workflows stored in `.coderAI/skills/<name>/SKILLS.md`
+(or user-wide in `~/.coderAI/skills/`). Ecosystem `SKILL.md` files are accepted and
+normalized on install.
+
+**Install from GitHub or a local path** (Claude Code–style):
+
+```bash
+coderAI skills install owner/repo
+coderAI skills install owner/repo/skills/foo --scope user
+coderAI skills install https://github.com/owner/repo --path skills/bar
+coderAI skills install ./my-skill
+coderAI skills list
+coderAI skills remove foo
+```
+
+Shipped examples:
 
 | Skill | Description |
 |---|---|
@@ -546,8 +567,10 @@ Use them via the `use_skill` tool:
 
 ### Task Tracking
 
-Use `manage_tasks` for a persistent checklist during multi-step work. In chat,
-`/tasks` refreshes the checklist panel and `/plan` remains an alias for `/tasks`.
+Use `manage_tasks` for a persistent execution checklist during multi-step work.
+In chat, `/tasks` refreshes that checklist. `/plan <request>` is a separate,
+enforced read-only workflow that creates a versioned plan for review; use
+`/plan approve`, `/plan amend <instruction>`, or `/plan cancel` to act on it.
 
 ### Project Rules
 

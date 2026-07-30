@@ -1,10 +1,11 @@
 """Base class for cloud LLM providers with OpenAI-compatible SDK clients."""
 
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, Optional
+from collections.abc import AsyncIterator
 
 from coderAI.llm.base import LLMProvider
-from coderAI.llm.base import _retry_async as _retry
 from coderAI.system.redaction import redact_text
+from coderAI.system.retry import retry_async as _retry
 
 
 class OpenAICompatibleCloudProvider(LLMProvider):
@@ -21,7 +22,7 @@ class OpenAICompatibleCloudProvider(LLMProvider):
     # constructors after ``super().__init__`` validates the API key.
     client: Any
 
-    SUPPORTED_MODELS: Dict[str, str] = {}
+    SUPPORTED_MODELS: dict[str, str] = {}
 
     # Human-readable name used in error messages and retry logs.
     PROVIDER_LABEL = "LLM"
@@ -43,13 +44,13 @@ class OpenAICompatibleCloudProvider(LLMProvider):
 
     def _build_request_params(
         self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
+        messages: list[dict[str, Any]],
+        tools: Optional[list[dict[str, Any]]] = None,
         *,
         stream: bool = False,
         **kwargs: Any,
-    ) -> Dict[str, Any]:
-        params: Dict[str, Any] = {
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
             "model": self.actual_model,
             "messages": messages,
             "temperature": kwargs.get("temperature", self.temperature),
@@ -76,21 +77,21 @@ class OpenAICompatibleCloudProvider(LLMProvider):
         verb = "streaming error" if streaming else "error"
         raise RuntimeError(f"{self.PROVIDER_LABEL} API {verb}: {redact_text(str(exc))}") from exc
 
-    def _extract_stream_usage(self, chunk_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def _extract_stream_usage(self, chunk_data: dict[str, Any]) -> Optional[dict[str, Any]]:
         """Pull the usage dict out of a stream chunk (provider-specific shape)."""
         usage = chunk_data.get("usage")
         return usage if isinstance(usage, dict) else None
 
-    def _track_usage(self, usage: Dict[str, Any]) -> None:
+    def _track_usage(self, usage: dict[str, Any]) -> None:
         self.total_input_tokens += usage.get("prompt_tokens", 0)
         self.total_output_tokens += usage.get("completion_tokens", 0)
 
     async def chat(
         self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
+        messages: list[dict[str, Any]],
+        tools: Optional[list[dict[str, Any]]] = None,
         **kwargs: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         params = self._build_request_params(messages, tools, **kwargs)
 
         async def _call() -> Any:
@@ -109,10 +110,10 @@ class OpenAICompatibleCloudProvider(LLMProvider):
 
     async def stream(
         self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
+        messages: list[dict[str, Any]],
+        tools: Optional[list[dict[str, Any]]] = None,
         **kwargs: Any,
-    ) -> AsyncIterator[Dict[str, Any]]:
+    ) -> AsyncIterator[dict[str, Any]]:
         params = self._build_request_params(messages, tools, stream=True, **kwargs)
 
         async def _create_stream() -> Any:

@@ -14,7 +14,7 @@ misrepresent severity.
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 _SKILL_STEP_RE = re.compile(r"^\s*(\d+)[\.\)\-]\s+(.+)", re.MULTILINE)
 
@@ -22,8 +22,8 @@ _ARG_PREVIEW_LIMIT = 240
 _RESULT_PREVIEW_LIMIT = 400
 
 
-def parse_skill_steps(instructions: str) -> list[Dict[str, Any]]:
-    steps: list[Dict[str, Any]] = []
+def parse_skill_steps(instructions: str) -> list[dict[str, Any]]:
+    steps: list[dict[str, Any]] = []
     for m in _SKILL_STEP_RE.finditer(instructions):
         steps.append(
             {
@@ -52,7 +52,7 @@ def tool_category(name: str, registry: Optional[Any] = None) -> str:
 # most of these require confirmation (→ derived "high") but are medium-severity
 # in practice; delegate_task/get_accessibility_tree derive "low" yet spawn
 # sub-agents / read OS-level UI state.
-_RISK_OVERRIDES: Dict[str, str] = {
+_RISK_OVERRIDES: dict[str, str] = {
     "copy_file": "medium",
     "delegate_task": "medium",
     "download_file": "medium",
@@ -81,7 +81,7 @@ def tool_risk(name: str, registry: Optional[Any] = None) -> str:
     return "medium"
 
 
-_RISK_FACTOR_OVERRIDES: Dict[str, list[str]] = {
+_RISK_FACTOR_OVERRIDES: dict[str, list[str]] = {
     "run_command": ["Could spawn child processes", "Writes to filesystem"],
     "run_background": ["Long-running process", "Could consume resources"],
     "write_file": ["Writes to filesystem", "Could overwrite existing files"],
@@ -125,10 +125,10 @@ def tool_risk_factors(name: str, registry: Optional[Any] = None) -> list[str]:
     return factors
 
 
-def truncate_args(args: Dict[str, Any], limit: int, *, show_count: bool = False) -> Dict[str, Any]:
+def truncate_args(args: dict[str, Any], limit: int, *, show_count: bool = False) -> dict[str, Any]:
     if not isinstance(args, dict):
         return {"value": str(args)[:limit]}
-    out: Dict[str, Any] = {}
+    out: dict[str, Any] = {}
     for k, v in args.items():
         if isinstance(v, str) and len(v) > limit:
             suffix = f"… ({len(v)} chars total)" if show_count else "…"
@@ -144,7 +144,7 @@ def truncate_args(args: Dict[str, Any], limit: int, *, show_count: bool = False)
 _NO_TRUNCATE_APPROVAL_KEYS = ("command", "code")
 
 
-def preview_args_for_approval(arguments: Dict[str, Any]) -> Dict[str, Any]:
+def preview_args_for_approval(arguments: dict[str, Any]) -> dict[str, Any]:
     preview = truncate_args(arguments, 800, show_count=True)
     if isinstance(arguments, dict):
         for key in _NO_TRUNCATE_APPROVAL_KEYS:
@@ -154,11 +154,11 @@ def preview_args_for_approval(arguments: Dict[str, Any]) -> Dict[str, Any]:
     return preview
 
 
-def arg_preview(args: Dict[str, Any]) -> Dict[str, Any]:
+def arg_preview(args: dict[str, Any]) -> dict[str, Any]:
     return truncate_args(args, _ARG_PREVIEW_LIMIT)
 
 
-def result_preview(result: Dict[str, Any]) -> str:
+def result_preview(result: dict[str, Any]) -> str:
     if not isinstance(result, dict):
         return str(result)[:_RESULT_PREVIEW_LIMIT]
 

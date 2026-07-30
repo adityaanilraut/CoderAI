@@ -18,7 +18,7 @@ import os
 import asyncio
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from coderAI.embeddings import (
     EmbeddingFingerprint,
@@ -84,7 +84,7 @@ class CodeIndexer:
         # Manifest values are per-file entries: {"hash", "mtime", "size"}.
         # Legacy manifests stored a bare hash string; those are coerced on read
         # and upgraded to the dict form on the next index pass.
-        self._manifest: Dict[str, Any] = {}
+        self._manifest: dict[str, Any] = {}
         self._manifest_dirty = False
         self._collection: Optional[Any] = None
         self._client: Optional[Any] = None
@@ -96,8 +96,8 @@ class CodeIndexer:
     async def index(
         self,
         skip_if_unchanged: bool = True,
-        paths: Optional[List[str]] = None,
-    ) -> Dict[str, int]:
+        paths: Optional[list[str]] = None,
+    ) -> dict[str, int]:
         """Build or update the index.
 
         Args:
@@ -186,11 +186,11 @@ class CodeIndexer:
             metadata={"hnsw:space": "cosine"},
         )
 
-    def _scan_files_sync(self) -> List[Path]:
+    def _scan_files_sync(self) -> list[Path]:
         """Synchronously scan directory for files to index (run in a thread pool)."""
         return self._scan_scopes_sync([self._root])
 
-    def _scan_scopes_sync(self, scopes: List[Path]) -> List[Path]:
+    def _scan_scopes_sync(self, scopes: list[Path]) -> list[Path]:
         """Expand scoped files and directories into indexable files."""
         from coderAI.context.code_chunker import is_skip_dir, should_index
 
@@ -210,7 +210,7 @@ class CodeIndexer:
                         files[fp] = None
         return list(files)
 
-    def _resolve_scopes(self, paths: List[str]) -> List[Path]:
+    def _resolve_scopes(self, paths: list[str]) -> list[Path]:
         """Resolve explicit scopes and discard paths outside the project."""
         scopes: dict[Path, None] = {}
         for value in paths:
@@ -225,7 +225,7 @@ class CodeIndexer:
 
     async def _discover_changed_files(
         self,
-        paths: Optional[List[str]],
+        paths: Optional[list[str]],
         skip_if_unchanged: bool,
     ) -> tuple:
         """Walk project, gather files, and separate changed from unchanged.
@@ -294,7 +294,7 @@ class CodeIndexer:
 
         return files, to_index, added, updated, unchanged
 
-    def _cleanup_removed_files(self, files: list[Path], paths: Optional[List[str]] = None) -> int:
+    def _cleanup_removed_files(self, files: list[Path], paths: Optional[list[str]] = None) -> int:
         """Remove missing entries and vectors within the scanned scope.
 
         Returns count of removed entries.
@@ -317,7 +317,7 @@ class CodeIndexer:
             self._save_manifest()
         return len(removed_rels)
 
-    def _delete_vectors(self, file_paths: List[str]) -> None:
+    def _delete_vectors(self, file_paths: list[str]) -> None:
         """Delete all indexed chunks belonging to the supplied relative paths."""
         if self._collection is None or not file_paths:
             return
@@ -332,7 +332,7 @@ class CodeIndexer:
         from coderAI.context.code_chunker import chunk_file
 
         all_chunks: list = []
-        file_entries: Dict[str, dict] = {}
+        file_entries: dict[str, dict] = {}
         for fp in to_index:
             rel = fp.relative_to(self._root).as_posix()
             result = await asyncio.to_thread(chunk_file, fp, self._root)
@@ -378,7 +378,7 @@ class CodeIndexer:
                 files=len(file_entries),
             )
 
-            for chunk, vec in zip(batch, vecs):
+            for chunk, vec in zip(batch, vecs, strict=True):
                 cid = f"{chunk.file_path}:{chunk.start_line}"
                 ids.append(cid)
                 docs.append(chunk.text)
@@ -414,7 +414,7 @@ class CodeIndexer:
             embeddings=embeddings,
         )
 
-    def _update_manifest(self, file_entries: Dict[str, dict]) -> None:
+    def _update_manifest(self, file_entries: dict[str, dict]) -> None:
         """Persist updated file entries to the manifest after a successful write."""
         for rel, entry in file_entries.items():
             self._manifest[rel] = entry
@@ -429,7 +429,7 @@ class CodeIndexer:
         query: str,
         top_k: int = 10,
         file_filter: Optional[str] = None,
-    ) -> List[dict]:
+    ) -> list[dict]:
         """Find code chunks semantically similar to *query*.
 
         Args:
@@ -460,7 +460,7 @@ class CodeIndexer:
         if not results or not results["ids"] or not results["ids"][0]:
             return out
 
-        for i, cid in enumerate(results["ids"][0]):
+        for i, _cid in enumerate(results["ids"][0]):
             meta = results["metadatas"][0][i] if results["metadatas"] else {}
             doc = results["documents"][0][i] if results["documents"] else ""
             dist = results["distances"][0][i] if results["distances"] else 0.0
@@ -546,7 +546,15 @@ class CodeIndexer:
         self._manifest_dirty = False
         if self._manifest_path.is_file():
             try:
-                self._manifest = json.loads(self._manifest_path.read_text())
+                loaded = json.loads(self._manifest_path.read_text())
+                if isinstance(loaded, dict):
+                    self._manifest = loaded
+                else:
+                    logger.warning(
+                        "Code index manifest %s must contain a JSON object; rebuilding it.",
+                        self._manifest_path,
+                    )
+                    self._manifest = {}
             except (json.JSONDecodeError, OSError):
                 self._manifest = {}
 
@@ -663,7 +671,7 @@ class CodeIndexer:
         self._manifest_dirty = False
 
 
-def _entry_meta(value: Any) -> Optional[Dict[str, Any]]:
+def _entry_meta(value: Any) -> Optional[dict[str, Any]]:
     """Coerce a manifest value into ``{"hash", "mtime", "size"}`` form.
 
     Accepts the current dict form, the legacy bare-hash string (no stat — so

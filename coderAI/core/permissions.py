@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import os
 import shlex
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Optional
+from collections.abc import Callable
 
 __all__ = [
     "ApprovalRules",
@@ -39,7 +40,7 @@ ToolResolver = Callable[[str], Any]
 # The single source of truth remains the Tool classes; this table exists so a
 # bare ``ApprovalRules()`` still refuses blanket-allow for the known high-risk
 # tools and scopes them correctly.
-_STATIC_SCOPE: Dict[str, str] = {
+_STATIC_SCOPE: dict[str, str] = {
     "run_command": "command",
     "run_background": "command",
     "write_file": "path",
@@ -175,7 +176,7 @@ class ApprovalRules:
     def __init__(self, resolver: Optional[ToolResolver] = None) -> None:
         self._resolver = resolver
         self._names: set[str] = set()
-        self._scopes: Dict[str, set[str]] = {}
+        self._scopes: dict[str, set[str]] = {}
 
     def _is_high_risk(self, tool_name: str) -> bool:
         return is_high_risk_no_blanket(tool_name, self._resolver)
@@ -183,7 +184,7 @@ class ApprovalRules:
     def _scope_kind(self, tool_name: str) -> Optional[str]:
         return _approval_scope(tool_name, self._resolver)
 
-    def allow(self, tool_name: str, scope: Optional[str] = None) -> Tuple[bool, str]:
+    def allow(self, tool_name: str, scope: Optional[str] = None) -> tuple[bool, str]:
         """Record an allow rule. Returns ``(accepted, user_message)``."""
         tool_name = (tool_name or "").strip()
         if not tool_name:
@@ -218,7 +219,7 @@ class ApprovalRules:
         self._names.clear()
         self._scopes.clear()
 
-    def is_allowed(self, tool_name: str, arguments: Optional[Dict[str, Any]]) -> bool:
+    def is_allowed(self, tool_name: str, arguments: Optional[dict[str, Any]]) -> bool:
         """True if this exact call is pre-approved by a recorded rule."""
         if tool_name in self._names:
             # High-risk names never enter ``_names`` via ``allow()``; this guard
@@ -230,7 +231,7 @@ class ApprovalRules:
         args = arguments if isinstance(arguments, dict) else {}
         return any(self._scope_matches(tool_name, s, args) for s in scopes)
 
-    def _scope_matches(self, tool_name: str, scope: str, args: Dict[str, Any]) -> bool:
+    def _scope_matches(self, tool_name: str, scope: str, args: dict[str, Any]) -> bool:
         kind = self._scope_kind(tool_name)
         if kind == "command":
             return _command_matches_prefix(str(args.get("command", "")), scope)

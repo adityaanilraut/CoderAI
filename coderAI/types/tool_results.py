@@ -1,6 +1,6 @@
 """Canonical normalization for values returned by tools."""
 
-from typing import Any, Dict
+from typing import Any
 
 from coderAI.types.tool_error_codes import ToolErrorCode
 
@@ -10,7 +10,7 @@ def normalize_tool_result(
     *,
     tool_name: str,
     default_error_code: str = ToolErrorCode.TOOL_ERROR,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Return an idempotent, tool-shaped result dictionary.
 
     Strings are treated as legacy error responses. Dictionaries are copied so

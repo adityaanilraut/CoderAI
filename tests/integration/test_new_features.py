@@ -11,6 +11,7 @@ from coderAI.system.history import history_manager, Session
 from coderAI.tools.undo import FileBackupStore
 from coderAI.tools.web import _select_search_backend, _TavilyBackend, _ExaBackend, _DDGBackend
 from coderAI.core.agent_loop import ExecutionLoop
+from coderAI.core.services import services_scope
 
 
 def test_session_scoped_backups(monkeypatch, tmp_path):
@@ -77,6 +78,14 @@ def test_web_search_backend_fallbacks(monkeypatch):
     config_manager.set("exa_api_key", None)
 
 
+def _stdio_awaits(client) -> set:
+    """``{(name, command, args)}`` for every ``connect_stdio`` await on *client*."""
+    return {
+        (call.args[0], call.args[1], tuple(call.args[2]))
+        for call in client.connect_stdio.await_args_list
+    }
+
+
 @pytest.mark.asyncio
 async def test_mcp_autoconnect(monkeypatch, tmp_path):
     # Auto-connect resolves the config path through config_manager.config_dir
@@ -103,22 +112,23 @@ async def test_mcp_autoconnect(monkeypatch, tmp_path):
     mock_mcp_client.connect_stdio = AsyncMock(return_value={"success": True})
     mock_mcp_client.connect_sse = AsyncMock(return_value={"success": True})
 
-    monkeypatch.setattr("coderAI.tools.mcp.mcp_client", mock_mcp_client)
-
-    # Initialize a mock agent and execution loop
+    # Initialize a mock agent and execution loop. ``project_root`` has to be a
+    # real path: autoconnect resolves config scopes against it.
     mock_agent = MagicMock()
+    mock_agent.config.project_root = str(tmp_path)
     loop = ExecutionLoop(agent=mock_agent)
 
-    await loop._autoconnect_mcp_servers()
+    # Exercise the scoped service path. Autoconnect must not fall back to the
+    # process-wide singleton when a client is explicitly injected.
+    with services_scope(mcp_client=mock_mcp_client):
+        await loop._autoconnect_mcp_servers()
 
     # Verify configured servers and the bundled git server were connected.
-    mock_mcp_client.connect_stdio.assert_any_await("mock_stdio", "npx", ["mock-server-args"])
-    mock_mcp_client.connect_stdio.assert_any_await(
-        "git_extended",
-        sys.executable,
-        ["-I", "-m", "coderAI.mcp_servers.git_extended"],
-    )
-    assert mock_mcp_client.connect_stdio.await_count == 2
+    # ``connect_from_entry`` passes env/cwd/timeout as keywords.
+    assert _stdio_awaits(mock_mcp_client) == {
+        ("mock_stdio", "npx", ("mock-server-args",)),
+        ("git_extended", sys.executable, ("-I", "-m", "coderAI.mcp_servers.git_extended")),
+    }
     mock_mcp_client.connect_sse.assert_called_once_with("mock_sse", "http://localhost:8080/sse")
 
 
@@ -142,15 +152,13 @@ async def test_mcp_autoconnect_skips_disabled(monkeypatch, tmp_path):
     mock_mcp_client.servers = {}
     mock_mcp_client.connect_stdio = AsyncMock(return_value={"success": True})
     mock_mcp_client.connect_sse = AsyncMock(return_value={"success": True})
-    monkeypatch.setattr("coderAI.tools.mcp.mcp_client", mock_mcp_client)
+    agent = MagicMock()
+    agent.config.project_root = str(tmp_path)
+    loop = ExecutionLoop(agent=agent)
+    with services_scope(mcp_client=mock_mcp_client):
+        await loop._autoconnect_mcp_servers()
 
-    loop = ExecutionLoop(agent=MagicMock())
-    await loop._autoconnect_mcp_servers()
-
-    mock_mcp_client.connect_stdio.assert_any_await("enabled_srv", "npx", ["a"])
-    mock_mcp_client.connect_stdio.assert_any_await(
-        "git_extended",
-        sys.executable,
-        ["-I", "-m", "coderAI.mcp_servers.git_extended"],
-    )
-    assert mock_mcp_client.connect_stdio.await_count == 2
+    assert _stdio_awaits(mock_mcp_client) == {
+        ("enabled_srv", "npx", ("a",)),
+        ("git_extended", sys.executable, ("-I", "-m", "coderAI.mcp_servers.git_extended")),
+    }

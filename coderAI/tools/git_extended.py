@@ -8,7 +8,7 @@ startup) to get ``mcp__git_extended__git_*`` for the long tail.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -46,7 +46,7 @@ class GitCheckoutTool(Tool):
     @_tool_errors
     async def execute(  # type: ignore[override]
         self, branch: str, create: bool = False, repo_path: str = "."
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         from coderAI.system.safeguards import get_current_branch
 
         branch_before = await get_current_branch(repo_path)
@@ -94,7 +94,7 @@ class GitStashTool(Tool):
         message: Optional[str] = None,
         stash_index: int = 0,
         repo_path: str = ".",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         if action == "push":
             args = ["stash", "push"]
             if message:
@@ -146,7 +146,7 @@ class GitPushTool(Tool):
         force: bool = False,
         set_upstream: bool = False,
         repo_path: str = ".",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         args = ["push"]
         if set_upstream:
             args.append("-u")
@@ -187,7 +187,7 @@ class GitPullTool(Tool):
         branch: Optional[str] = None,
         rebase: bool = False,
         repo_path: str = ".",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         args = ["pull"]
         if rebase:
             args.append("--rebase")
@@ -223,7 +223,7 @@ class GitMergeTool(Tool):
         squash: bool = False,
         message: Optional[str] = None,
         repo_path: str = ".",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         args = ["merge"]
         if no_ff:
             args.append("--no-ff")
@@ -262,7 +262,7 @@ class GitRebaseTool(Tool):
         abort: bool = False,
         continue_rebase: bool = False,
         repo_path: str = ".",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         if abort:
             args = ["rebase", "--abort"]
         elif continue_rebase:
@@ -297,7 +297,7 @@ class GitRevertTool(Tool):
         commit: str,
         no_commit: bool = False,
         repo_path: str = ".",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         args = ["revert", "--no-edit"]
         if no_commit:
             args.append("-n")
@@ -337,7 +337,7 @@ class GitResetTool(Tool):
         ref: str = "HEAD",
         mode: str = "mixed",
         repo_path: str = ".",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         if mode not in ("soft", "mixed", "hard"):
             return {
                 "success": False,
@@ -371,7 +371,7 @@ class GitShowTool(Tool):
         ref: str = "HEAD",
         stat_only: bool = False,
         repo_path: str = ".",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         reject = _reject_option_like(ref, "ref")
         if reject:
             return reject
@@ -421,7 +421,7 @@ class GitRemoteTool(Tool):
         name: Optional[str] = None,
         url: Optional[str] = None,
         repo_path: str = ".",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         if action == "list":
             args = ["remote", "-v"]
         elif action == "add":
@@ -471,7 +471,7 @@ class GitBlameTool(Tool):
         start_line: Optional[int] = None,
         end_line: Optional[int] = None,
         repo_path: str = ".",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         reject = _reject_option_like(file_path, "file_path")
         if reject:
             return reject
@@ -492,8 +492,8 @@ class GitBlameTool(Tool):
             return error
 
         raw, truncated = _truncate_output(_decode(result["stdout"]))
-        lines: List[Dict[str, str]] = []
-        current: Dict[str, str] = {}
+        lines: list[dict[str, str]] = []
+        current: dict[str, str] = {}
         for line in raw.splitlines():
             if line.startswith("\t"):
                 current["code"] = line[1:]
@@ -519,7 +519,7 @@ class GitBlameTool(Tool):
 
 
 class GitCherryPickParams(BaseModel):
-    commits: List[str] = Field(..., description="List of commit hashes to cherry-pick")
+    commits: list[str] = Field(..., description="List of commit hashes to cherry-pick")
     no_commit: bool = Field(False, description="Apply changes without committing")
     repo_path: str = Field(".", description="Path to the git repository")
 
@@ -536,10 +536,10 @@ class GitCherryPickTool(Tool):
     @_tool_errors
     async def execute(  # type: ignore[override]
         self,
-        commits: List[str],
+        commits: list[str],
         no_commit: bool = False,
         repo_path: str = ".",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         args = ["cherry-pick"]
         if no_commit:
             args.append("-n")
@@ -580,7 +580,7 @@ class GitTagTool(Tool):
         message: Optional[str] = None,
         ref: str = "HEAD",
         repo_path: str = ".",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         if action == "list":
             args = ["tag", "--list", "--sort=-version:refname"]
         elif action == "create":
@@ -638,7 +638,7 @@ class GitFetchTool(Tool):
         branch: Optional[str] = None,
         prune: bool = False,
         repo_path: str = ".",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         args = ["fetch", remote]
         if prune:
             args.append("--prune")
@@ -649,7 +649,7 @@ class GitFetchTool(Tool):
 
 
 # Tools exposed by the bundled git_extended MCP server (order is stable for tests).
-EXTENDED_GIT_TOOLS: List[Tool] = [
+EXTENDED_GIT_TOOLS: list[Tool] = [
     GitCheckoutTool(),
     GitStashTool(),
     GitPushTool(),

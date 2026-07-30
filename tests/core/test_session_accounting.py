@@ -96,3 +96,15 @@ def test_skill_auto_detection_and_retention_defaults() -> None:
 
     assert config.auto_detect_skills is False
     assert config.session_retention_days == 30
+
+
+def test_context_usage_reports_model_limit_instead_of_config_fallback() -> None:
+    agent = Agent.__new__(Agent)
+    agent.session = None
+    agent._context_controller = SimpleNamespace(
+        inject_context=lambda messages: messages,
+        estimate_tokens=lambda messages: 3,
+        _effective_context_limit=lambda override: 1_000_000,
+    )
+
+    assert agent.get_context_usage() == (3, 1_000_000)

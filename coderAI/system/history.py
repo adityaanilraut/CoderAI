@@ -8,9 +8,9 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from coderAI.system.fsperms import OWNER_RWX, atomic_write_json, restrict_path
 
@@ -35,7 +35,7 @@ class Message(BaseModel):
     role: str  # 'user', 'assistant', 'system', 'tool'
     content: Optional[str] = None
     timestamp: float = Field(default_factory=time.time)
-    tool_calls: Optional[List[Dict[str, Any]]] = None
+    tool_calls: Optional[list[dict[str, Any]]] = None
     tool_call_id: Optional[str] = None
     name: Optional[str] = None  # Tool name for tool messages
     reasoning_content: Optional[str] = None
@@ -43,7 +43,7 @@ class Message(BaseModel):
     # Each entry is ``{"mime_type": str, "data": <base64>}``. Providers that
     # support vision render these as real image blocks; the heavy base64 is
     # kept out of the text ``content`` so it survives result summarization.
-    tool_images: Optional[List[Dict[str, Any]]] = None
+    tool_images: Optional[list[dict[str, Any]]] = None
 
 
 def _default_session_model() -> str:
@@ -102,14 +102,14 @@ class Session(BaseModel):
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
     name: Optional[str] = None
-    tags: List[str] = Field(default_factory=list)
-    messages: List[Message] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    messages: list[Message] = Field(default_factory=list)
     model: str = Field(default_factory=_default_session_model)
-    metadata: Dict[str, Any] = Field(default_factory=dict)
-    checkpoints: List[Checkpoint] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    checkpoints: list[Checkpoint] = Field(default_factory=list)
     # Compact provider-facing view. ``messages`` remains the complete transcript
     # used by the UI and rewind; new transcript entries are appended on read.
-    context_messages: Optional[List[Dict[str, Any]]] = None
+    context_messages: Optional[list[dict[str, Any]]] = None
     context_message_count: int = Field(default=0, ge=0)
     prompt_tokens: int = 0
     completion_tokens: int = 0
@@ -159,7 +159,7 @@ class Session(BaseModel):
         self.updated_at = time.time()
         return target
 
-    def set_context_messages(self, messages: List[Dict[str, Any]]) -> None:
+    def set_context_messages(self, messages: list[dict[str, Any]]) -> None:
         """Persist a compact API view without changing the full transcript."""
         self.context_messages = [
             dict(message) for message in messages if not message.get("_ephemeral")
@@ -172,8 +172,8 @@ class Session(BaseModel):
         self.context_message_count = 0
 
     @staticmethod
-    def _message_for_api(msg: Message) -> Dict[str, Any]:
-        msg_dict: Dict[str, Any] = {"role": msg.role, "content": msg.content}
+    def _message_for_api(msg: Message) -> dict[str, Any]:
+        msg_dict: dict[str, Any] = {"role": msg.role, "content": msg.content}
         if msg.tool_calls:
             msg_dict["tool_calls"] = msg.tool_calls
         if msg.tool_call_id:
@@ -186,7 +186,7 @@ class Session(BaseModel):
             msg_dict["tool_images"] = msg.tool_images
         return msg_dict
 
-    def get_messages_for_api(self) -> List[Dict[str, Any]]:
+    def get_messages_for_api(self) -> list[dict[str, Any]]:
         """Get messages in OpenAI API format."""
         if self.context_messages is not None:
             if 0 < self.context_message_count <= len(self.messages):
@@ -209,7 +209,7 @@ _DEFAULT_SESSION_RETENTION_DAYS = 30
 _VALID_ROLES = {"system", "user", "assistant", "tool"}
 
 
-def _sanitize_session_data(data: Dict[str, Any]) -> Dict[str, Any]:
+def _sanitize_session_data(data: dict[str, Any]) -> dict[str, Any]:
     """Drop or repair malformed messages before loading a session."""
     messages = data.get("messages", []) or []
     sanitized_messages = []
@@ -318,9 +318,9 @@ def _sanitize_session_data(data: Dict[str, Any]) -> Dict[str, Any]:
     return data
 
 
-def _normalize_tags(tags: List[Any]) -> List[str]:
+def _normalize_tags(tags: list[Any]) -> list[str]:
     """Trim and de-duplicate tags while preserving their display spelling."""
-    normalized: List[str] = []
+    normalized: list[str] = []
     seen = set()
     for raw in tags:
         if not isinstance(raw, str):
@@ -333,7 +333,7 @@ def _normalize_tags(tags: List[Any]) -> List[str]:
     return normalized
 
 
-def _index_entry(data: Dict[str, Any], fallback_id: Optional[str] = None) -> Dict[str, Any]:
+def _index_entry(data: dict[str, Any], fallback_id: Optional[str] = None) -> dict[str, Any]:
     """Build the cached list representation for one persisted session."""
     session_id = data.get("session_id") or fallback_id
     name = data.get("name")
@@ -350,6 +350,19 @@ def _index_entry(data: Dict[str, Any], fallback_id: Optional[str] = None) -> Dic
         "messages": len(data.get("messages", [])),
         "model": data.get("model", "unknown"),
     }
+
+
+def _valid_index_entry(entry: Any, expected_id: Optional[str] = None) -> bool:
+    """Return whether a cached index row is safe for listing/filtering."""
+    return (
+        isinstance(entry, dict)
+        and isinstance(entry.get("session_id"), str)
+        and (expected_id is None or entry.get("session_id") == expected_id)
+        and (entry.get("name") is None or isinstance(entry.get("name"), str))
+        and isinstance(entry.get("tags"), list)
+        and all(isinstance(tag, str) for tag in entry["tags"])
+        and isinstance(entry.get("updated_at"), str)
+    )
 
 
 def _session_retention_seconds() -> Optional[float]:
@@ -406,11 +419,18 @@ class HistoryManager:
 
         try:
             with open(session_file, "r") as f:
-                data = _sanitize_session_data(json.load(f))
-        except (json.JSONDecodeError, OSError) as e:
+                loaded = json.load(f)
+            if not isinstance(loaded, dict):
+                raise TypeError(f"expected a JSON object, got {type(loaded).__name__}")
+            if loaded.get("session_id") != session_id:
+                raise ValueError("stored session_id does not match its filename")
+            if not isinstance(loaded.get("messages", []), list):
+                raise TypeError("session messages must contain a JSON array")
+            data = _sanitize_session_data(loaded)
+            session = Session.model_validate(data)
+        except (json.JSONDecodeError, OSError, TypeError, ValueError, ValidationError) as e:
             logger.warning("Failed to load session %s: %s", session_id, e)
             return None
-        session = Session(**data)
         self.current_session = session
         return session
 
@@ -431,7 +451,7 @@ class HistoryManager:
         # a background thread) can never race with in-loop session mutations.
         self.save_session_data(session.model_dump(), run_cleanup=False)
 
-    def save_session_data(self, data: Dict[str, Any], *, run_cleanup: bool = True) -> None:
+    def save_session_data(self, data: dict[str, Any], *, run_cleanup: bool = True) -> None:
         """Write a pre-serialized session dict to disk.
 
         Split out from :meth:`save_session` so the expensive disk I/O can be
@@ -448,7 +468,8 @@ class HistoryManager:
         data = dict(data)
         data["schema_version"] = SESSION_SCHEMA_VERSION
         session_id = data.get("session_id")
-        if not session_id:
+        if not isinstance(session_id, str) or not _SESSION_ID_PATTERN.fullmatch(session_id):
+            logger.warning("Refusing to save session with invalid id %r", session_id)
             return
 
         session_file = self.history_dir / f"{session_id}.json"
@@ -456,10 +477,10 @@ class HistoryManager:
 
         self._update_index(data)
 
-    def _update_index(self, data: Dict[str, Any]) -> None:
+    def _update_index(self, data: dict[str, Any]) -> None:
         """Update the fast-lookup index from a session dict."""
         session_id = data.get("session_id")
-        if not session_id:
+        if not isinstance(session_id, str) or not _SESSION_ID_PATTERN.fullmatch(session_id):
             return
         index_file = self.history_dir / "index.json"
         with self._index_lock:
@@ -467,7 +488,14 @@ class HistoryManager:
             if index_file.exists():
                 try:
                     with open(index_file, "r") as f:
-                        index = json.load(f)
+                        loaded = json.load(f)
+                    if isinstance(loaded, dict):
+                        index = loaded
+                    else:
+                        logger.warning(
+                            "Session index %s must contain a JSON object, rebuilding.",
+                            index_file,
+                        )
                 except json.JSONDecodeError:
                     logger.warning(
                         "Session index %s is corrupted, rebuilding from session files.",
@@ -484,22 +512,33 @@ class HistoryManager:
 
     def list_sessions(
         self, *, tag: Optional[str] = None, query: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """List sessions, optionally filtering by tag or name/id text."""
         self._cleanup_expired_sessions()
         index_file = self.history_dir / "index.json"
         index = {}
+        needs_save = False
         if index_file.exists():
             try:
                 with open(index_file, "r") as f:
-                    index = json.load(f)
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    index = loaded
+                else:
+                    needs_save = True
+                    logger.warning(
+                        "Session index %s must contain a JSON object, rebuilding.", index_file
+                    )
             except Exception as e:
+                needs_save = True
                 logger.warning(f"Failed to read session index, rebuilding: {e}")
 
-        session_files = list(self.history_dir.glob("session_*.json"))
+        session_files = [
+            path
+            for path in self.history_dir.glob("session_*.json")
+            if _SESSION_ID_PATTERN.fullmatch(path.stem)
+        ]
         valid_ids = {f.stem for f in session_files}
-
-        needs_save = False
 
         # Clean deleted
         for sid in list(index.keys()):
@@ -511,16 +550,27 @@ class HistoryManager:
         for session_file in session_files:
             sid = session_file.stem
             entry = index.get(sid)
-            if not isinstance(entry, dict) or "name" not in entry or "tags" not in entry:
+            if not _valid_index_entry(entry, sid):
                 try:
                     with open(session_file, "r") as f:
-                        data = json.load(f)
-                        index[sid] = _index_entry(data, sid)
-                        needs_save = True
-                except Exception:
+                        loaded = json.load(f)
+                    if not isinstance(loaded, dict):
+                        raise TypeError(f"expected a JSON object, got {type(loaded).__name__}")
+                    if loaded.get("session_id") != sid:
+                        raise ValueError("stored session_id does not match its filename")
+                    if not isinstance(loaded.get("messages", []), list):
+                        raise TypeError("session messages must contain a JSON array")
+                    data = _sanitize_session_data(loaded)
+                    validated = Session.model_validate(data)
+                    index[sid] = _index_entry(validated.model_dump(), sid)
+                    needs_save = True
+                except (json.JSONDecodeError, OSError, TypeError, ValueError, ValidationError):
                     # A corrupt session file shouldn't break listing the rest;
                     # it stays out of the index until repaired or deleted.
                     logger.debug(f"skipping unreadable session file {session_file}", exc_info=True)
+                    if sid in index:
+                        del index[sid]
+                        needs_save = True
                     continue
 
         if needs_save:
@@ -531,7 +581,7 @@ class HistoryManager:
                 # in-memory copy and the save is retried on the next call.
                 logger.warning(f"Failed to save rebuilt session index: {e}")
 
-        sessions = list(index.values())
+        sessions = [entry for entry in index.values() if _valid_index_entry(entry)]
         if tag:
             wanted_tag = tag.strip().casefold()
             sessions = [
@@ -572,7 +622,7 @@ class HistoryManager:
         self.save_session(session)
         return True
 
-    def set_session_tags(self, session_id: str, tags: List[str]) -> bool:
+    def set_session_tags(self, session_id: str, tags: list[str]) -> bool:
         """Replace a session's tags with a normalized list."""
         session = self.load_session(session_id)
         if session is None:
@@ -582,7 +632,7 @@ class HistoryManager:
         self.save_session(session)
         return True
 
-    def tag_session(self, session_id: str, tags: List[str], *, remove: bool = False) -> bool:
+    def tag_session(self, session_id: str, tags: list[str], *, remove: bool = False) -> bool:
         """Add tags to a session, or remove them when ``remove`` is true."""
         session = self.load_session(session_id)
         if session is None:
@@ -637,6 +687,8 @@ class HistoryManager:
             try:
                 with open(index_file, "r") as f:
                     index = json.load(f)
+                if not isinstance(index, dict):
+                    raise TypeError("session index must contain a JSON object")
                 if session_id in index:
                     del index[session_id]
                     _atomic_write_json(index_file, index)
@@ -683,6 +735,8 @@ class HistoryManager:
                     if index_file.exists():
                         with open(index_file, "r") as f:
                             index = json.load(f)
+                        if not isinstance(index, dict):
+                            raise TypeError("session index must contain a JSON object")
                         for sid in removed_ids:
                             index.pop(sid, None)
                         _atomic_write_json(index_file, index)

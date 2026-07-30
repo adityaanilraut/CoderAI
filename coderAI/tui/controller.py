@@ -25,7 +25,8 @@ import logging
 import os
 import time as _time
 import uuid
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Optional
+from collections.abc import Callable
 
 from coderAI.core.agent_tracker import AgentInfo, agent_tracker
 from coderAI.system.events import event_emitter
@@ -43,6 +44,11 @@ from coderAI.tui.commands import (  # noqa: F401
     _cmd_exit,
     _cmd_get_state,
     _cmd_get_tasks,
+    _cmd_get_plan,
+    _cmd_start_plan,
+    _cmd_amend_plan,
+    _cmd_approve_plan,
+    _cmd_cancel_plan,
     _cmd_init_project,
     _cmd_list_allowed_tools,
     _cmd_list_models,
@@ -101,13 +107,13 @@ class UIBridge:
         self,
         agent: "Agent",
         *,
-        on_event: Callable[[str, Dict[str, Any]], None],
+        on_event: Callable[[str, dict[str, Any]], None],
     ) -> None:
         self.agent = agent
         self._on_event = on_event
         self._turn_lock = asyncio.Lock()
         self._exit = asyncio.Event()
-        self._approval_waiters: Dict[str, asyncio.Future] = {}
+        self._approval_waiters: dict[str, asyncio.Future] = {}
         self._pending_tasks: set[asyncio.Task] = set()
         self._said_goodbye = False
         self._shutdown_started = False
@@ -122,7 +128,7 @@ class UIBridge:
         # The tracker fires high-frequency token/cost ticks; we coalesce them
         # to ≤1Hz per agent so the UI panel doesn't thrash. Lifecycle
         # transitions bypass this throttle (see _on_agent_lifecycle).
-        self._agent_update_last_ms: Dict[str, int] = {}
+        self._agent_update_last_ms: dict[str, int] = {}
         self._agent_update_prune_ct: int = 0
 
         # Verbosity filter — set by the UI via the ``set_verbosity`` command.
@@ -152,7 +158,7 @@ class UIBridge:
         except Exception:
             logger.exception("on_event callback failed for %s", event)
 
-    def _should_emit_event(self, event: str, data: Dict[str, Any]) -> bool:
+    def _should_emit_event(self, event: str, data: dict[str, Any]) -> bool:
         """Decide whether ``event`` survives the current verbosity filter.
 
         Structural protocol events (hello/ready/goodbye/tool_*/file_diff/
@@ -186,7 +192,7 @@ class UIBridge:
         details: Optional[str] = None,
     ) -> None:
         """Emit an ``error`` event with a canonical hint if one isn't supplied."""
-        payload: Dict[str, Any] = {"category": category, "message": message}
+        payload: dict[str, Any] = {"category": category, "message": message}
         resolved_hint = hint if hint is not None else _infer_error_hint(category, message)
         if resolved_hint:
             payload["hint"] = resolved_hint
@@ -201,7 +207,7 @@ class UIBridge:
         self,
         tool_id: str,
         tool_name: str,
-        arguments: Dict[str, Any],
+        arguments: dict[str, Any],
         diff: Optional[str] = None,
     ) -> bool:
         """Block until the UI sends ``tool_approval_resp`` for this tool call.
@@ -265,7 +271,7 @@ class UIBridge:
             # Drop any leftover waiter (handler normally pops on approve/deny).
             self._approval_waiters.pop(tool_id, None)
 
-    def _approval_memory_option(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    def _approval_memory_option(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Describe the narrowest safe session approval the modal may remember.
 
         The enforcement source remains :class:`ApprovalRules`; this method only
@@ -326,7 +332,7 @@ class UIBridge:
             provider=self.agent.provider.__class__.__name__,
             cwd=os.getcwd(),
             version=getattr(self.agent, "version", "0.1.0"),
-            contextLimit=getattr(config, "context_window", 200000),
+            contextLimit=self.agent.get_context_limit(),
             budgetLimit=getattr(config, "budget_limit", 0.0) or 0.0,
             autoApprove=bool(getattr(self.agent, "auto_approve", False)),
             reasoning=str(getattr(config, "reasoning_effort", "none") or "none"),
@@ -440,7 +446,7 @@ class UIBridge:
             self.emit("info", message=strip_rich_markup(message))
 
     def _on_tool_call(
-        self, tool_name: str, arguments: Dict[str, Any], tool_id: Optional[str] = None
+        self, tool_name: str, arguments: dict[str, Any], tool_id: Optional[str] = None
     ) -> None:
         # Use provided tool_id if available, otherwise generate one
         if not tool_id:
@@ -458,7 +464,7 @@ class UIBridge:
         )
 
     def _on_tool_result(
-        self, tool_name: str, result: Dict[str, Any], tool_id: Optional[str] = None
+        self, tool_name: str, result: dict[str, Any], tool_id: Optional[str] = None
     ) -> None:
         if not tool_id:
             tool_id = f"t_{uuid.uuid4().hex[:12]}"
@@ -540,7 +546,7 @@ class UIBridge:
         tool_name: str,
         elapsed: Optional[float] = None,
     ) -> None:
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "label": tool_name,
             "current": step,
             "total": total,
@@ -550,7 +556,7 @@ class UIBridge:
             payload["elapsed"] = elapsed
         self.emit("progress", **payload)
 
-    def _on_tasks_update(self, tasks: Optional[List[Dict[str, Any]]] = None) -> None:
+    def _on_tasks_update(self, tasks: Optional[list[dict[str, Any]]] = None) -> None:
         self.emit("tasks_card", tasks=_serialize_tasks_for_ui(tasks or []))
 
     def _emit_tasks_from_disk(self) -> None:
@@ -560,7 +566,7 @@ class UIBridge:
 
     # -- inbound --------------------------------------------------------------
 
-    async def _dispatch(self, msg: Dict[str, Any]) -> None:
+    async def _dispatch(self, msg: dict[str, Any]) -> None:
         cmd = msg.get("cmd")
         if not isinstance(cmd, str):
             self.emit("warning", message=f"Invalid command format: {cmd}")
@@ -584,7 +590,7 @@ class UIBridge:
         its own event loop; callers from the Textual UI thread reach the
         loop via :py:meth:`asyncio.AbstractEventLoop.call_soon_threadsafe`.
         """
-        msg: Dict[str, Any] = {
+        msg: dict[str, Any] = {
             "kind": "cmd",
             "cmd": cmd,
             "id": cmd_id or str(uuid.uuid4()),
@@ -624,7 +630,7 @@ class UIBridge:
         the agent loop that owns the waiter Future; dispatching on the UI loop
         leaves the turn asleep until a later ``enqueue_command`` wakes it.
         """
-        msg: Dict[str, Any] = {
+        msg: dict[str, Any] = {
             "kind": "cmd",
             "cmd": cmd,
             "id": cmd_id or str(uuid.uuid4()),
@@ -716,7 +722,7 @@ class UIBridge:
 
     def _resolve_approval_waiters_on_shutdown(self) -> None:
         """Resolve any pending tool-approval futures when the server shuts down."""
-        for tool_id, fut in list(self._approval_waiters.items()):
+        for _tool_id, fut in list(self._approval_waiters.items()):
             if not fut.done():
                 fut.set_result(False)
         self._approval_waiters.clear()

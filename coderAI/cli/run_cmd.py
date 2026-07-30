@@ -21,7 +21,8 @@ import threading
 import time
 from dataclasses import fields, is_dataclass
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Optional
+from collections.abc import Callable
 
 import click
 
@@ -78,17 +79,17 @@ class _NDJSONEventStream:
         self._sequence = 0
         self._terminal = False
         self._lock = threading.Lock()
-        self._listeners: List[Tuple[str, Callable[..., None]]] = []
+        self._listeners: list[tuple[str, Callable[..., None]]] = []
 
-    def emit(self, event_type: str, data: Optional[Dict[str, Any]] = None) -> None:
+    def emit(self, event_type: str, data: Optional[dict[str, Any]] = None) -> None:
         """Write one non-terminal envelope unless a terminal event was sent."""
         self._write(event_type, data or {}, terminal=False)
 
-    def finish(self, event_type: str, data: Dict[str, Any]) -> None:
+    def finish(self, event_type: str, data: dict[str, Any]) -> None:
         """Write the stream's exactly-once terminal result or error envelope."""
         self._write(event_type, data, terminal=True)
 
-    def _write(self, event_type: str, data: Dict[str, Any], *, terminal: bool) -> None:
+    def _write(self, event_type: str, data: dict[str, Any], *, terminal: bool) -> None:
         with self._lock:
             if self._terminal:
                 return
@@ -212,7 +213,7 @@ def _build_agent(
     return agent
 
 
-async def _run_agent(agent: Any, prompt: str, blocked_tools: List[str]) -> Dict[str, Any]:
+async def _run_agent(agent: Any, prompt: str, blocked_tools: list[str]) -> dict[str, Any]:
     """Run the agent once and return the result dict, always closing the agent.
 
     ``blocked_tools`` is populated (in place) with the names of any mutating
@@ -220,7 +221,7 @@ async def _run_agent(agent: Any, prompt: str, blocked_tools: List[str]) -> Dict[
     """
     if not agent.auto_approve:
 
-        async def _deny_mutations(tool_name: str, _arguments: Dict[str, Any]) -> bool:
+        async def _deny_mutations(tool_name: str, _arguments: dict[str, Any]) -> bool:
             blocked_tools.append(tool_name)
             return False
 
@@ -233,7 +234,7 @@ async def _run_agent(agent: Any, prompt: str, blocked_tools: List[str]) -> Dict[
             agent._configure_delegate_tool_context()
 
     try:
-        result: Dict[str, Any] = await agent.process_message(prompt)
+        result: dict[str, Any] = await agent.process_message(prompt)
         return result
     finally:
         await agent.close()
@@ -336,11 +337,11 @@ def run(
             },
         )
     try:
-        key_error = missing_api_key_message()
+        key_error = missing_api_key_message(model)
         if key_error:
             _fail(key_error, output_mode, event_stream, exit_code=1)
 
-        blocked_tools: List[str] = []
+        blocked_tools: list[str] = []
         agent = _build_agent(
             model=model,
             persona=persona,

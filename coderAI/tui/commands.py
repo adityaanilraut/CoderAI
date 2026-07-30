@@ -11,7 +11,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, Optional
+from typing import TYPE_CHECKING, Any, Optional
+from collections.abc import Awaitable, Callable
 
 from coderAI.core.agent_tracker import AgentStatus
 from coderAI.core.permissions import ApprovalRules
@@ -39,7 +40,7 @@ def _truncate(text: str, max_chars: int = _MAX_CHARS) -> str:
     return text[: max_chars - 48].rstrip() + "\n\n… (truncated — run the CLI for full output)"
 
 
-def _mask_keys(data: Dict[str, Any]) -> Dict[str, Any]:
+def _mask_keys(data: dict[str, Any]) -> dict[str, Any]:
     """Backward-compatible TUI helper routed through central redaction."""
     redacted = redact_secrets(data)
     assert isinstance(redacted, dict)
@@ -244,7 +245,7 @@ async def _build_tasks_text(project_root: str) -> str:
 def _resolve_reference_text(topic: str, agent: Any) -> str:
     from coderAI import __version__ as _ver
 
-    resolvers: Dict[str, Callable[[], str]] = {
+    resolvers: dict[str, Callable[[], str]] = {
         "version": lambda: f"CoderAI {_ver}",
         "v": lambda: f"CoderAI {_ver}",
         "models": _build_models_text,
@@ -347,7 +348,7 @@ def _handle_persona_slash(server: "UIBridge", arg: str) -> None:
 # --- Command handlers -------------------------------------------------------
 
 
-async def _cmd_send_message(server: UIBridge, msg: Dict[str, Any]) -> None:
+async def _cmd_send_message(server: UIBridge, msg: dict[str, Any]) -> None:
     text = msg.get("text", "")
     async with server._turn_lock:
         server.tick_iteration()
@@ -371,7 +372,214 @@ async def _cmd_send_message(server: UIBridge, msg: Dict[str, Any]) -> None:
             server.emit_ready()
 
 
-async def _cmd_cancel(server: UIBridge, msg: Dict[str, Any]) -> None:
+def _emit_plan(server: UIBridge, record: Any) -> None:
+    from coderAI.core.planning import render_plan_markdown
+
+    server.emit(
+        "plan_card",
+        planId=record.plan_id,
+        revision=record.revision,
+        status=record.status,
+        markdown=render_plan_markdown(record),
+        unansweredQuestions=list(record.proposal.unanswered_questions),
+    )
+
+
+def _plan_store(server: UIBridge) -> Any:
+    from coderAI.core.planning import PlanStore
+
+    return PlanStore(getattr(server.agent.config, "project_root", ".") or ".")
+
+
+async def _run_planning_turn(
+    server: UIBridge,
+    *,
+    objective: str,
+    planning_prompt: str,
+    current: Any = None,
+    amendment: str = "",
+) -> None:
+    from coderAI.tools.planning import SubmitPlanTool
+
+    async with server._turn_lock:
+        tool = server.agent.tools.get("submit_plan")
+        if not isinstance(tool, SubmitPlanTool):
+            server.emit(
+                "warning", message="Plan Mode is unavailable: submit_plan is not registered."
+            )
+            server.emit_ready()
+            return
+        tool.last_proposal = None
+        server.agent.plan_mode = True
+        server.agent._cached_system_prompt = None
+        server.agent._refresh_session_system_prompt()
+        server.tick_iteration()
+        try:
+            result = await server.agent.process_message(planning_prompt)
+            if not getattr(server.agent, "streaming", True):
+                content = str((result or {}).get("content", "") or "")
+                server.emit("turn", phase="start", reasoningActive=False)
+                if content:
+                    server.emit("turn", phase="text", delta=content, reasoningActive=False)
+                server.emit("turn", phase="end", reasoningActive=False)
+            if not bool((result or {}).get("success")):
+                server.emit(
+                    "warning",
+                    message="Planning did not complete cleanly; no plan revision was saved.",
+                )
+                return
+        except Exception as e:
+            logger.exception("planning turn failed")
+            server._emit_error("internal", str(e), hint="The draft plan was not saved.")
+            return
+        finally:
+            server.agent.plan_mode = False
+            server.agent._cached_system_prompt = None
+            server.agent._refresh_session_system_prompt()
+            server.emit_status()
+            server.emit_ready()
+
+        proposal = tool.last_proposal
+        if proposal is None:
+            server.emit(
+                "warning",
+                message="The planning turn ended without a structured plan. Run /plan amend with guidance.",
+            )
+            return
+        store = _plan_store(server)
+        if current is None:
+            session = getattr(server.agent, "session", None)
+            record = store.create(
+                objective,
+                proposal,
+                source_session_id=getattr(session, "session_id", None),
+            )
+        else:
+            record = store.revise(current, proposal, amendment)
+        _emit_plan(server, record)
+
+
+async def _cmd_start_plan(server: UIBridge, msg: dict[str, Any]) -> None:
+    request = str(msg.get("request") or "").strip()
+    if not request:
+        server.emit("warning", message="Usage: /plan <request>")
+        return
+    prompt = (
+        "Create a decision-complete implementation plan for this request:\n\n"
+        f"{request}\n\n"
+        "First inspect the repository with read-only tools. Resolve discoverable facts yourself. "
+        "Then call submit_plan exactly once. Do not implement any part of the plan."
+    )
+    await _run_planning_turn(server, objective=request, planning_prompt=prompt)
+
+
+async def _cmd_get_plan(server: UIBridge, _msg: dict[str, Any]) -> None:
+    record = _plan_store(server).load_active()
+    if record is None:
+        server.emit("info", message="No active plan. Start one with /plan <request>.")
+        return
+    _emit_plan(server, record)
+
+
+async def _cmd_amend_plan(server: UIBridge, msg: dict[str, Any]) -> None:
+    instruction = str(msg.get("instruction") or "").strip()
+    store = _plan_store(server)
+    current = store.load_active()
+    if current is None:
+        server.emit("warning", message="No active plan to amend. Start one with /plan <request>.")
+        return
+    if current.status in {"executing", "completed"}:
+        server.emit(
+            "warning", message=f"Plan is already {current.status}; start a new plan instead."
+        )
+        return
+    from coderAI.core.planning import render_plan_markdown
+
+    prompt = (
+        "Revise the existing plan using the user's amendment. Re-inspect repository facts when "
+        "needed, preserve valid decisions, and call submit_plan exactly once. Do not implement.\n\n"
+        f"Existing plan:\n{render_plan_markdown(current)}\n\n"
+        f"Amendment or answer:\n{instruction}"
+    )
+    await _run_planning_turn(
+        server,
+        objective=current.objective,
+        planning_prompt=prompt,
+        current=current,
+        amendment=instruction,
+    )
+
+
+async def _cmd_cancel_plan(server: UIBridge, _msg: dict[str, Any]) -> None:
+    store = _plan_store(server)
+    current = store.load_active()
+    if current is None:
+        server.emit("info", message="No active plan to cancel.")
+        return
+    if current.status in {"executing", "completed"}:
+        server.emit(
+            "warning", message=f"Plan cannot be cancelled while status is {current.status}."
+        )
+        return
+    _emit_plan(server, store.cancel(current))
+
+
+async def _cmd_approve_plan(server: UIBridge, _msg: dict[str, Any]) -> None:
+    from coderAI.core.planning import build_execution_prompt
+
+    async with server._turn_lock:
+        store = _plan_store(server)
+        current = store.load_active()
+        if current is None:
+            server.emit("warning", message="No active plan to approve.")
+            return
+        if current.status not in {"draft", "needs_input"}:
+            server.emit(
+                "warning", message=f"Plan cannot be approved while status is {current.status}."
+            )
+            return
+        try:
+            approved = store.approve(current)
+            proposal = store.load_revision(
+                approved, approved.approved_revision or approved.revision
+            )
+        except ValueError as e:
+            server.emit("warning", message=str(e))
+            _emit_plan(server, current)
+            return
+        executing = store.mark_executing(approved)
+        _emit_plan(server, executing)
+        server.agent.active_plan_id = executing.plan_id
+        server.agent.active_plan_revision = executing.approved_revision
+        server.agent.plan_mode = False
+        server.tick_iteration()
+        try:
+            result = await server.agent.process_message(build_execution_prompt(executing, proposal))
+            if not getattr(server.agent, "streaming", True):
+                content = str((result or {}).get("content", "") or "")
+                server.emit("turn", phase="start", reasoningActive=False)
+                if content:
+                    server.emit("turn", phase="text", delta=content, reasoningActive=False)
+                server.emit("turn", phase="end", reasoningActive=False)
+            finished = store.mark_finished(
+                executing,
+                success=bool((result or {}).get("success")),
+                stop_reason=str((result or {}).get("stop_reason") or "unknown"),
+            )
+            _emit_plan(server, finished)
+        except Exception as e:
+            logger.exception("approved plan execution failed")
+            finished = store.mark_finished(executing, success=False, stop_reason="error")
+            _emit_plan(server, finished)
+            server._emit_error("internal", str(e), hint="The approved plan remains resumable.")
+        finally:
+            server.agent.active_plan_id = None
+            server.agent.active_plan_revision = None
+            server.emit_status()
+            server.emit_ready()
+
+
+async def _cmd_cancel(server: UIBridge, msg: dict[str, Any]) -> None:
     approvals_cancelled = server._cancel_pending_approvals("cancelled_by_user")
     agent_id = msg.get("agentId")
     if agent_id:
@@ -387,7 +595,7 @@ async def _cmd_cancel(server: UIBridge, msg: Dict[str, Any]) -> None:
         server.emit("info", message=f"Cancelled {len(active)} active agent(s){suffix}")
 
 
-async def _cmd_set_model(server: UIBridge, msg: Dict[str, Any]) -> None:
+async def _cmd_set_model(server: UIBridge, msg: dict[str, Any]) -> None:
     model = msg.get("model", "")
     old_model = server.agent.model
     old_provider = server.agent.provider
@@ -429,7 +637,7 @@ def _approval_rules(server: UIBridge) -> Optional[ApprovalRules]:
     return rules if isinstance(rules, ApprovalRules) else None
 
 
-async def _cmd_allow_tool(server: UIBridge, msg: Dict[str, Any]) -> None:
+async def _cmd_allow_tool(server: UIBridge, msg: dict[str, Any]) -> None:
     tool = str(msg.get("tool", "")).strip()
     scope = str(msg.get("scope", "")).strip()
     if not tool:
@@ -443,7 +651,7 @@ async def _cmd_allow_tool(server: UIBridge, msg: Dict[str, Any]) -> None:
     server.emit("info" if accepted else "warning", message=message)
 
 
-async def _cmd_disallow_tool(server: UIBridge, msg: Dict[str, Any]) -> None:
+async def _cmd_disallow_tool(server: UIBridge, msg: dict[str, Any]) -> None:
     tool = str(msg.get("tool", "")).strip()
     if not tool:
         server.emit("warning", message="Usage: /disallow-tool <tool-name>")
@@ -454,13 +662,13 @@ async def _cmd_disallow_tool(server: UIBridge, msg: Dict[str, Any]) -> None:
     server.emit("info", message=f"Tool approval memory removed for {tool}.")
 
 
-async def _cmd_list_allowed_tools(server: UIBridge, _msg: Dict[str, Any]) -> None:
+async def _cmd_list_allowed_tools(server: UIBridge, _msg: dict[str, Any]) -> None:
     rules = _approval_rules(server)
     names = rules.describe() if rules is not None else "(none)"
     server.emit("info", message=f"Always-allowed tools for this session: {names}")
 
 
-async def _cmd_set_persona(server: UIBridge, msg: Dict[str, Any]) -> None:
+async def _cmd_set_persona(server: UIBridge, msg: dict[str, Any]) -> None:
     """Switch the active persona programmatically (used by future UI picker).
 
     Payload: ``{"persona": "<name>"}``; empty/omitted/``"default"`` clears it.
@@ -470,7 +678,7 @@ async def _cmd_set_persona(server: UIBridge, msg: Dict[str, Any]) -> None:
     server.emit_ready()
 
 
-async def _cmd_toggle_auto_approve(server: UIBridge, msg: Dict[str, Any]) -> None:
+async def _cmd_toggle_auto_approve(server: UIBridge, msg: dict[str, Any]) -> None:
     server.agent.auto_approve = not server.agent.auto_approve
     server.agent._configure_delegate_tool_context()
     server.agent._refresh_session_system_prompt()
@@ -485,7 +693,7 @@ async def _cmd_toggle_auto_approve(server: UIBridge, msg: Dict[str, Any]) -> Non
     )
 
 
-async def _cmd_set_auto_approve(server: UIBridge, msg: Dict[str, Any]) -> None:
+async def _cmd_set_auto_approve(server: UIBridge, msg: dict[str, Any]) -> None:
     """Idempotently enable or disable YOLO (``auto_approve``).
 
     Used by the approval modal's Always (a) path so a stale UI flag can never
@@ -505,7 +713,7 @@ async def _cmd_set_auto_approve(server: UIBridge, msg: Dict[str, Any]) -> None:
         )
 
 
-async def _cmd_set_reasoning(server: UIBridge, msg: Dict[str, Any]) -> None:
+async def _cmd_set_reasoning(server: UIBridge, msg: dict[str, Any]) -> None:
     effort = str(msg.get("effort", "none")).lower()
     if effort not in ("high", "medium", "low", "none"):
         server.emit(
@@ -520,7 +728,7 @@ async def _cmd_set_reasoning(server: UIBridge, msg: Dict[str, Any]) -> None:
     provider = getattr(server.agent, "provider", None)
     if provider is not None:
         try:
-            setattr(provider, "reasoning_effort", effort)
+            provider.reasoning_effort = effort
         except Exception:
             # Provider may expose reasoning_effort as a read-only property;
             # the config value above still applies on the next provider build.
@@ -529,7 +737,7 @@ async def _cmd_set_reasoning(server: UIBridge, msg: Dict[str, Any]) -> None:
     # Status bar shows current reasoning level; no toast.
 
 
-async def _cmd_tool_approval_resp(server: UIBridge, msg: Dict[str, Any]) -> None:
+async def _cmd_tool_approval_resp(server: UIBridge, msg: dict[str, Any]) -> None:
     tool_id = str(msg.get("toolId") or msg.get("id") or "")
     approve = bool(msg.get("approve", False))
     waiter = server._approval_waiters.pop(tool_id, None)
@@ -552,7 +760,7 @@ async def _cmd_tool_approval_resp(server: UIBridge, msg: Dict[str, Any]) -> None
     waiter.set_result(approve)
 
 
-async def _cmd_clear_context(server: UIBridge, msg: Dict[str, Any]) -> None:
+async def _cmd_clear_context(server: UIBridge, msg: dict[str, Any]) -> None:
     async with server._turn_lock:
         server.agent.session = None
         server.agent.context_controller.clear()
@@ -576,7 +784,7 @@ async def _cmd_clear_context(server: UIBridge, msg: Dict[str, Any]) -> None:
     server.emit_status()
 
 
-async def _cmd_rewind(server: UIBridge, msg: Dict[str, Any]) -> None:
+async def _cmd_rewind(server: UIBridge, msg: dict[str, Any]) -> None:
     """Rewind the conversation to before a prior user turn.
 
     Payload: ``{"turn": int, "files": bool}``. Truncates the session's message
@@ -627,7 +835,7 @@ def _emit_context_state(server: UIBridge) -> None:
     server.emit("context_state", files=context_files)
 
 
-async def _cmd_manage_context(server: UIBridge, msg: Dict[str, Any]) -> None:
+async def _cmd_manage_context(server: UIBridge, msg: dict[str, Any]) -> None:
     action = msg.get("action")
     path = msg.get("path")
     async with server._turn_lock:
@@ -658,7 +866,7 @@ async def _cmd_manage_context(server: UIBridge, msg: Dict[str, Any]) -> None:
         server.emit_status()
 
 
-async def _cmd_compact_context(server: UIBridge, msg: Dict[str, Any]) -> None:
+async def _cmd_compact_context(server: UIBridge, msg: dict[str, Any]) -> None:
     try:
         await server.agent.compact_context()
     except Exception as e:
@@ -668,7 +876,7 @@ async def _cmd_compact_context(server: UIBridge, msg: Dict[str, Any]) -> None:
     server.emit_status()
 
 
-async def _cmd_get_state(server: UIBridge, msg: Dict[str, Any]) -> None:
+async def _cmd_get_state(server: UIBridge, msg: dict[str, Any]) -> None:
     server.emit_status()
     for info in _tracker().get_all():
         server.emit("agent", phase="update", info=_agent_info_dict(info), parentId=info.parent_id)
@@ -676,11 +884,11 @@ async def _cmd_get_state(server: UIBridge, msg: Dict[str, Any]) -> None:
     _emit_context_state(server)
 
 
-async def _cmd_get_tasks(server: UIBridge, _msg: Dict[str, Any]) -> None:
+async def _cmd_get_tasks(server: UIBridge, _msg: dict[str, Any]) -> None:
     server._emit_tasks_from_disk()
 
 
-async def _cmd_list_personas(server: UIBridge, _msg: Dict[str, Any]) -> None:
+async def _cmd_list_personas(server: UIBridge, _msg: dict[str, Any]) -> None:
     from coderAI.core.personas import get_available_personas
 
     project_root = getattr(server.agent.config, "project_root", ".")
@@ -693,35 +901,59 @@ async def _cmd_list_personas(server: UIBridge, _msg: Dict[str, Any]) -> None:
     server.emit("available_personas", current=current, personas=sorted(available))
 
 
-async def _cmd_list_skills(server: UIBridge, _msg: Dict[str, Any]) -> None:
-    from coderAI.tools.use_skill import get_available_skills
+async def _cmd_list_skills(server: UIBridge, _msg: dict[str, Any]) -> None:
+    """Emit skills for the /skills picker.
+
+    Mirrors SkillManager: user skills (``~/.coderAI/skills``) are always listed;
+    project skills (``.coderAI/skills``) require a trusted workspace snapshot.
+    """
+    from coderAI.skills.skill_manager import discover_local_skills
 
     project_root = getattr(server.agent.config, "project_root", ".")
-    skills = (
-        get_available_skills(project_root)
-        if getattr(server.agent, "_workspace_trusted", False)
-        else []
+    trusted = bool(getattr(server.agent, "_workspace_trusted", False))
+    found = discover_local_skills(
+        project_root,
+        include_project=trusted,
+        include_user=True,
     )
+    skills = [{"name": s.name, "description": s.description} for s in found]
     server.emit("available_skills", skills=skills)
+    if not skills and not trusted:
+        server.emit(
+            "info",
+            message=(
+                "Project skills are disabled until this workspace is trusted "
+                "(then restart CoderAI). User skills in ~/.coderAI/skills still "
+                "appear here. Install with: coderAI skills install … --scope user"
+            ),
+        )
 
 
-async def _cmd_list_mcp_servers(server: UIBridge, _msg: Dict[str, Any]) -> None:
+async def _cmd_list_mcp_servers(server: UIBridge, _msg: dict[str, Any]) -> None:
     """Emit the merged live + configured MCP server list for the /mcp picker."""
     from coderAI.tools.mcp import effective_mcp_servers, mcp_client
 
-    configured = effective_mcp_servers().get("mcpServers", {})
-    rows: list[Dict[str, Any]] = []
+    root = getattr(getattr(server, "agent", None), "config", None)
+    project_root = getattr(root, "project_root", ".") if root else "."
+    trusted = bool(getattr(getattr(server, "agent", None), "_workspace_trusted", False))
+    configured = effective_mcp_servers(project_root=project_root, workspace_trusted=trusted).get(
+        "mcpServers", {}
+    )
+    rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     for name, info in mcp_client.servers.items():
         seen.add(name)
+        cfg = configured.get(name, {})
         rows.append(
             {
                 "name": name,
                 "connected": True,
-                "disabled": bool(configured.get(name, {}).get("disabled")),
+                "disabled": bool(cfg.get("disabled")),
                 "degraded": bool(info.get("degraded")),
                 "tools": len(info.get("tools", [])),
                 "transport": info.get("transport", "stdio"),
+                "scope": cfg.get("_scope", "user"),
+                "approval": cfg.get("_approval") or cfg.get("_connect_blocked"),
             }
         )
     for name, cfg in configured.items():
@@ -735,6 +967,8 @@ async def _cmd_list_mcp_servers(server: UIBridge, _msg: Dict[str, Any]) -> None:
                 "degraded": False,
                 "tools": 0,
                 "transport": cfg.get("transport", "stdio"),
+                "scope": cfg.get("_scope", "user"),
+                "approval": cfg.get("_approval") or cfg.get("_connect_blocked"),
             }
         )
 
@@ -747,43 +981,68 @@ async def _cmd_list_mcp_servers(server: UIBridge, _msg: Dict[str, Any]) -> None:
         )
 
 
-async def _cmd_toggle_mcp_server(server: UIBridge, msg: Dict[str, Any]) -> None:
+async def _cmd_toggle_mcp_server(server: UIBridge, msg: dict[str, Any]) -> None:
     """Toggle an MCP server on/off — persistent (config) + live (connection).
 
     Off: disconnect the live connection now and mark it ``disabled`` so it does
-    not auto-reconnect next session. On: connect now and clear the flag. The
-    connect path mirrors ``ExecutionLoop._autoconnect_mcp_servers`` — the config
-    was validated when the server was added, so no launcher re-check is needed.
+    not auto-reconnect next session. On: connect now and clear the flag. Pending
+    project servers are approved on toggle-on.
     """
     from coderAI.tools.mcp import effective_mcp_servers, mcp_client, set_mcp_server_disabled
+    from coderAI.tools.mcp_config import (
+        connect_from_entry,
+        load_project_mcp_servers,
+        set_project_approval,
+    )
 
     name = str(msg.get("server", "")).strip()
     if not name:
         server.emit("warning", message="Usage: /mcp <server-name>")
         return
 
+    root = getattr(getattr(server, "agent", None), "config", None)
+    project_root = getattr(root, "project_root", ".") if root else "."
+    trusted = bool(getattr(getattr(server, "agent", None), "_workspace_trusted", False))
+
     if name in mcp_client.servers:
         await mcp_client.disconnect(name)
-        set_mcp_server_disabled(name, True)
-        server.emit("success", message=f"MCP server '{name}' turned off (disconnected)")
+        persisted = set_mcp_server_disabled(name, True, project_root=project_root)
+        if persisted:
+            server.emit("success", message=f"MCP server '{name}' turned off (disconnected)")
+        else:
+            server.emit(
+                "warning",
+                message=(
+                    f"MCP server '{name}' disconnected, but the off state could not be "
+                    "saved — it will reconnect on the next start."
+                ),
+            )
         await _cmd_list_mcp_servers(server, {})
         return
 
-    cfg = effective_mcp_servers().get("mcpServers", {}).get(name)
+    cfg = (
+        effective_mcp_servers(project_root=project_root, workspace_trusted=trusted)
+        .get("mcpServers", {})
+        .get(name)
+    )
     if not isinstance(cfg, dict):
         server.emit("warning", message=f"No MCP server named '{name}' is configured.")
         return
 
-    transport = cfg.get("transport", "stdio")
-    if transport == "sse":
-        result = await mcp_client.connect_sse(name, cfg.get("url", ""))
-    elif transport == "http":
-        result = await mcp_client.connect_http(name, cfg.get("url", ""), cfg.get("headers"))
-    else:
-        result = await mcp_client.connect_stdio(name, cfg.get("command", ""), cfg.get("args"))
+    # Approving a pending project server via /mcp toggle.
+    if cfg.get("_scope") == "project" and cfg.get("_connect_blocked") in ("pending", "rejected"):
+        project_entry = load_project_mcp_servers(project_root).get(name) or cfg
+        set_project_approval(name, approved=True, entry=project_entry, project_root=project_root)
+        cfg = (
+            effective_mcp_servers(project_root=project_root, workspace_trusted=trusted)
+            .get("mcpServers", {})
+            .get(name, cfg)
+        )
+
+    result = await connect_from_entry(name, cfg, project_root=project_root)
 
     if result.get("success"):
-        set_mcp_server_disabled(name, False)
+        set_mcp_server_disabled(name, False, project_root=project_root)
         count = result.get("tools_discovered", 0)
         server.emit("success", message=f"MCP server '{name}' turned on ({count} tools)")
     else:
@@ -791,7 +1050,48 @@ async def _cmd_toggle_mcp_server(server: UIBridge, msg: Dict[str, Any]) -> None:
     await _cmd_list_mcp_servers(server, {})
 
 
-async def _cmd_search_codebase(server: UIBridge, msg: Dict[str, Any]) -> None:
+async def _cmd_invoke_mcp_prompt(server: UIBridge, msg: dict[str, Any]) -> None:
+    """Fetch an MCP prompt template and inject it as the next user message."""
+    from coderAI.tools.mcp import mcp_client
+
+    srv = str(msg.get("server", "")).strip()
+    prompt = str(msg.get("prompt", "")).strip()
+    arguments = msg.get("arguments") if isinstance(msg.get("arguments"), dict) else {}
+    if not srv or not prompt:
+        server.emit("warning", message="Usage: /mcp__<server>__<prompt> [key=value…]")
+        return
+    if srv not in mcp_client.servers:
+        server.emit(
+            "warning",
+            message=f"MCP server '{srv}' is not connected. Use /mcp {srv} to enable it.",
+        )
+        return
+    result = await mcp_client.get_prompt(srv, prompt, arguments)
+    if not result.get("success"):
+        server.emit("warning", message=f"MCP prompt failed: {result.get('error')}")
+        return
+    messages = result.get("messages") or []
+    chunks: list[str] = []
+    if isinstance(messages, list):
+        for m in messages:
+            if not isinstance(m, dict):
+                continue
+            role = m.get("role", "user")
+            content = m.get("content")
+            if isinstance(content, list):
+                text = "".join(str(p.get("text", "")) for p in content if isinstance(p, dict))
+            elif isinstance(content, dict):
+                text = str(content.get("text", content))
+            else:
+                text = str(content or "")
+            chunks.append(f"[{role}] {text}".strip())
+    description = result.get("description") or ""
+    body = "\n\n".join(c for c in chunks if c) or description or f"(empty prompt {prompt})"
+    server.emit("info", message=f"Loaded MCP prompt mcp__{srv}__{prompt}")
+    await _cmd_send_message(server, {"text": body})
+
+
+async def _cmd_search_codebase(server: UIBridge, msg: dict[str, Any]) -> None:
     query = msg.get("query", "")
     if not query:
         return
@@ -827,7 +1127,7 @@ async def _cmd_search_codebase(server: UIBridge, msg: Dict[str, Any]) -> None:
         server.emit("warning", message=f"Codebase search failed: {e}")
 
 
-async def _cmd_list_models(server: UIBridge, _msg: Dict[str, Any]) -> None:
+async def _cmd_list_models(server: UIBridge, _msg: dict[str, Any]) -> None:
     """Return all available models grouped by provider for the model-picker UI."""
     from ..llm.anthropic import MODEL_ALIASES
     from ..llm.deepseek import DeepSeekProvider
@@ -851,7 +1151,7 @@ async def _cmd_list_models(server: UIBridge, _msg: Dict[str, Any]) -> None:
     )
 
 
-async def _cmd_reference(server: UIBridge, msg: Dict[str, Any]) -> None:
+async def _cmd_reference(server: UIBridge, msg: dict[str, Any]) -> None:
     """Emit long-form help text (models, cost, system status, config, info, tasks)."""
     topic = str(msg.get("topic", "")).strip()
     if not topic:
@@ -883,7 +1183,7 @@ async def _cmd_reference(server: UIBridge, msg: Dict[str, Any]) -> None:
     server.emit("info", message=text)
 
 
-async def _cmd_set_default_model(server: UIBridge, msg: Dict[str, Any]) -> None:
+async def _cmd_set_default_model(server: UIBridge, msg: dict[str, Any]) -> None:
     """Persist default_model in global config (like ``coderAI set-model``)."""
     from ..llm.factory import get_all_model_ids
 
@@ -919,7 +1219,7 @@ async def _cmd_set_default_model(server: UIBridge, msg: Dict[str, Any]) -> None:
         )
 
 
-async def _cmd_set_verbosity(server: UIBridge, msg: Dict[str, Any]) -> None:
+async def _cmd_set_verbosity(server: UIBridge, msg: dict[str, Any]) -> None:
     """Adjust the IPC server's event filter.
 
     Levels (least → most chatty):
@@ -942,13 +1242,13 @@ async def _cmd_set_verbosity(server: UIBridge, msg: Dict[str, Any]) -> None:
     server.emit("session_patch", verbosity=level)
 
 
-async def _cmd_exit(server: UIBridge, msg: Dict[str, Any]) -> None:
+async def _cmd_exit(server: UIBridge, msg: dict[str, Any]) -> None:
     server.emit("goodbye", reason="user")
     server._said_goodbye = True
     server._exit.set()
 
 
-async def _cmd_init_project(server: UIBridge, _msg: Dict[str, Any]) -> None:
+async def _cmd_init_project(server: UIBridge, _msg: dict[str, Any]) -> None:
     project_root = Path(getattr(server.agent.config, "project_root", ".")).resolve()
     # Scaffolding is blocking filesystem I/O (mkdir + write_text) — run it off
     # the event loop so the TUI stays responsive.
@@ -1110,7 +1410,7 @@ def _do_init_project(
     return created_dirs, created_files, skipped_files, None
 
 
-async def _cmd_cancel_agent(server: UIBridge, msg: Dict[str, Any]) -> None:
+async def _cmd_cancel_agent(server: UIBridge, msg: dict[str, Any]) -> None:
     """Cancel a specific sub-agent by ID."""
     agent_id = msg.get("agentId") or (msg.get("payload") or {}).get("agentId")
     if not agent_id:
@@ -1123,7 +1423,7 @@ async def _cmd_cancel_agent(server: UIBridge, msg: Dict[str, Any]) -> None:
     )
 
 
-async def _cmd_trust(server: UIBridge, msg: Dict[str, Any]) -> None:
+async def _cmd_trust(server: UIBridge, msg: dict[str, Any]) -> None:
     """``/trust`` — manage workspace trust for the current project root.
 
     Payload: ``{"action": "grant"|"revoke"|"status"}`` (default ``grant``).
@@ -1180,7 +1480,7 @@ async def _cmd_trust(server: UIBridge, msg: Dict[str, Any]) -> None:
     server.emit_status()
 
 
-_COMMAND_HANDLERS: Dict[str, Callable[["UIBridge", Dict[str, Any]], Awaitable[None]]] = {
+_COMMAND_HANDLERS: dict[str, Callable[["UIBridge", dict[str, Any]], Awaitable[None]]] = {
     "send_message": _cmd_send_message,
     "trust": _cmd_trust,
     "allow_tool": _cmd_allow_tool,
@@ -1200,11 +1500,17 @@ _COMMAND_HANDLERS: Dict[str, Callable[["UIBridge", Dict[str, Any]], Awaitable[No
     "manage_context": _cmd_manage_context,
     "get_state": _cmd_get_state,
     "get_tasks": _cmd_get_tasks,
+    "start_plan": _cmd_start_plan,
+    "get_plan": _cmd_get_plan,
+    "amend_plan": _cmd_amend_plan,
+    "approve_plan": _cmd_approve_plan,
+    "cancel_plan": _cmd_cancel_plan,
     "list_models": _cmd_list_models,
     "list_personas": _cmd_list_personas,
     "list_skills": _cmd_list_skills,
     "list_mcp_servers": _cmd_list_mcp_servers,
     "toggle_mcp_server": _cmd_toggle_mcp_server,
+    "invoke_mcp_prompt": _cmd_invoke_mcp_prompt,
     "search_codebase": _cmd_search_codebase,
     "reference": _cmd_reference,
     "set_default_model": _cmd_set_default_model,

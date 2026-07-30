@@ -14,7 +14,8 @@ import re
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Optional
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 
 import yaml
 
@@ -24,6 +25,9 @@ logger = logging.getLogger(__name__)
 
 SKILL_MGR_PREFIX = "[SkillManager]"
 SKILLS_FILE_NAME = "SKILLS.md"
+# Ecosystem / Claude Code / OpenCode / Cursor commonly use the singular form.
+LEGACY_SKILL_FILE_NAME = "SKILL.md"
+SKILL_MARKDOWN_NAMES = (SKILLS_FILE_NAME, LEGACY_SKILL_FILE_NAME)
 SKILLS_DIR_NAME = "skills"
 MAX_SKILL_FILE_BYTES = 100 * 1024
 _MATCH_CACHE_MAX_ENTRIES = 128
@@ -42,9 +46,9 @@ class Skill:
     instructions: str = ""
     path: Optional[Path] = None
     version: Optional[str] = None
-    dependencies: List[str] = field(default_factory=list)
+    dependencies: list[str] = field(default_factory=list)
     category: Optional[str] = None
-    tags: List[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
     source: str = "local"
 
     def __hash__(self) -> int:
@@ -65,7 +69,7 @@ class SkillRegistry:
     """Session-scoped container that indexes skills by name."""
 
     def __init__(self) -> None:
-        self._skills: Dict[str, Skill] = {}
+        self._skills: dict[str, Skill] = {}
 
     def register(self, skill: Skill) -> None:
         if skill.name in self._skills:
@@ -81,10 +85,10 @@ class SkillRegistry:
     def get(self, name: str) -> Optional[Skill]:
         return self._skills.get(name)
 
-    def list_all(self) -> List[Skill]:
+    def list_all(self) -> list[Skill]:
         return list(self._skills.values())
 
-    def find_by_source(self, source: str) -> List[Skill]:
+    def find_by_source(self, source: str) -> list[Skill]:
         return [s for s in self._skills.values() if s.source == source]
 
     def clear(self) -> None:
@@ -107,6 +111,26 @@ def _find_skills_root(project_root: str = ".") -> Optional[Path]:
     return find_dot_coderai_subdir(SKILLS_DIR_NAME, project_root)
 
 
+def user_skills_root() -> Optional[Path]:
+    """Return ``~/.coderAI/skills`` when that directory exists."""
+    try:
+        from coderAI.system.config import config_manager
+
+        path = Path(config_manager.config_dir) / SKILLS_DIR_NAME
+    except Exception:
+        path = Path.home() / ".coderAI" / SKILLS_DIR_NAME
+    return path if path.is_dir() else None
+
+
+def skill_markdown_path(skill_dir: Path) -> Optional[Path]:
+    """Return the skill markdown file in ``skill_dir``, preferring ``SKILLS.md``."""
+    for name in SKILL_MARKDOWN_NAMES:
+        candidate = skill_dir / name
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def _is_safe_path(file_path: Path, skills_root: Path) -> bool:
     # String-prefix checks would accept sibling directories like
     # ``<root>-evil`` (reachable via symlinks inside the skills dir).
@@ -116,8 +140,8 @@ def _is_safe_path(file_path: Path, skills_root: Path) -> bool:
         return False
 
 
-def _parse_frontmatter(content: str) -> tuple[Dict[str, Any], str]:
-    metadata: Dict[str, Any] = {}
+def _parse_frontmatter(content: str) -> tuple[dict[str, Any], str]:
+    metadata: dict[str, Any] = {}
     instructions = content
     if content.startswith("---"):
         parts = content.split("---", 2)
@@ -141,7 +165,7 @@ def load_skill_from_path(file_path: Path, source: str = "local") -> Optional[Ski
         metadata, instructions = _parse_frontmatter(content)
         if "name" in metadata:
             skill_name = str(metadata["name"])
-        elif file_path.name == SKILLS_FILE_NAME:
+        elif file_path.name in SKILL_MARKDOWN_NAMES:
             skill_name = file_path.parent.name
         else:
             skill_name = file_path.stem
@@ -161,33 +185,88 @@ def load_skill_from_path(file_path: Path, source: str = "local") -> Optional[Ski
         return None
 
 
-def discover_local_skills(project_root: str = ".") -> List[Skill]:
-    skills_root = _find_skills_root(project_root)
-    if skills_root is None:
+def discover_skills_in_directory(
+    skills_root: Optional[Path],
+    *,
+    source: str = "local",
+) -> list[Skill]:
+    """Scan one skills root for ``<name>/SKILLS.md`` (or legacy ``SKILL.md``)."""
+    if skills_root is None or not skills_root.is_dir():
         return []
-    skills: List[Skill] = []
-    seen_names: set[str] = set()
-    for item in sorted(skills_root.iterdir()):
-        if item.is_dir():
-            skills_file = item / SKILLS_FILE_NAME
-            if skills_file.is_file():
-                skill = load_skill_from_path(skills_file, source="local")
-                if skill and skill.name not in seen_names:
-                    skills.append(skill)
-                    seen_names.add(skill.name)
+    skills: list[Skill] = []
+    try:
+        items = sorted(skills_root.iterdir())
+    except OSError as e:
+        logger.warning("Failed to list skills in %s: %s", skills_root, e)
+        return []
+    for item in items:
+        if not item.is_dir():
+            continue
+        skills_file = skill_markdown_path(item)
+        if skills_file is None:
+            continue
+        if not _is_safe_path(skills_file.resolve(), skills_root):
+            continue
+        skill = load_skill_from_path(skills_file, source=source)
+        if skill:
+            skills.append(skill)
     return skills
 
 
-def load_skill_by_name(skill_name: str, project_root: str = ".") -> Optional[Skill]:
+def discover_local_skills(
+    project_root: str = ".",
+    *,
+    include_project: bool = True,
+    include_user: bool = True,
+) -> list[Skill]:
+    """Discover skills from project and/or user skill directories.
+
+    Project skills win when the same name exists in both places.
+    """
+    skills: list[Skill] = []
+    seen_names: set[str] = set()
+
+    roots: list[tuple[Optional[Path], str]] = []
+    if include_project:
+        roots.append((_find_skills_root(project_root), "local"))
+    if include_user:
+        roots.append((user_skills_root(), "user"))
+
+    for root, source in roots:
+        for skill in discover_skills_in_directory(root, source=source):
+            if skill.name in seen_names:
+                continue
+            skills.append(skill)
+            seen_names.add(skill.name)
+    return skills
+
+
+def load_skill_by_name(
+    skill_name: str,
+    project_root: str = ".",
+    *,
+    include_project: bool = True,
+    include_user: bool = True,
+) -> Optional[Skill]:
     if ".." in skill_name or "/" in skill_name or "\\" in skill_name:
         logger.warning("Rejected skill_name with path traversal: %s", skill_name)
         return None
-    skills_root = _find_skills_root(project_root)
-    if skills_root is None:
-        return None
-    subdir_file = (skills_root / skill_name / SKILLS_FILE_NAME).resolve()
-    if subdir_file.is_file() and _is_safe_path(subdir_file, skills_root):
-        return load_skill_from_path(subdir_file, source="local")
+
+    roots: list[tuple[Optional[Path], str]] = []
+    if include_project:
+        roots.append((_find_skills_root(project_root), "local"))
+    if include_user:
+        roots.append((user_skills_root(), "user"))
+
+    for skills_root, source in roots:
+        if skills_root is None:
+            continue
+        skill_dir = (skills_root / skill_name).resolve()
+        if not skill_dir.is_dir() or not _is_safe_path(skill_dir, skills_root):
+            continue
+        skills_file = skill_markdown_path(skill_dir)
+        if skills_file is not None and _is_safe_path(skills_file.resolve(), skills_root):
+            return load_skill_from_path(skills_file, source=source)
     return None
 
 
@@ -224,7 +303,7 @@ class SkillManager:
         threshold: float = 0.7,
         top_n: int = 3,
         provider: Any = None,
-        usage_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+        usage_callback: Optional[Callable[[dict[str, Any]], Awaitable[None]]] = None,
     ) -> None:
         self._sources = list(sources)
         self.threshold = threshold
@@ -235,7 +314,7 @@ class SkillManager:
         self._discovery_complete = False
         self._discovery_lock = asyncio.Lock()
         self._match_lock = asyncio.Lock()
-        self._match_cache: "OrderedDict[str, List[Tuple[Skill, float]]]" = OrderedDict()
+        self._match_cache: "OrderedDict[str, list[tuple[Skill, float]]]" = OrderedDict()
 
     @property
     def provider(self) -> Any:
@@ -276,11 +355,11 @@ class SkillManager:
             )
 
     async def _match_via_llm(
-        self, task_description: str, skills: List[Skill], threshold: float, top_n: int
-    ) -> List[Tuple[Skill, float]]:
+        self, task_description: str, skills: list[Skill], threshold: float, top_n: int
+    ) -> list[tuple[Skill, float]]:
         if not self._provider or not skills:
             return []
-        skill_index: Dict[str, Skill] = {s.name: s for s in skills}
+        skill_index: dict[str, Skill] = {s.name: s for s in skills}
         user_message = _json.dumps(
             {
                 "task": task_description,
@@ -291,7 +370,7 @@ class SkillManager:
             },
             ensure_ascii=True,
         )
-        messages: List[Dict[str, Any]] = [
+        messages: list[dict[str, Any]] = [
             {"role": "system", "content": _SKILL_MATCHING_SYSTEM_PROMPT},
             {"role": "user", "content": user_message},
         ]
@@ -328,8 +407,8 @@ class SkillManager:
             return ""
 
     def _parse_matches_json(
-        self, content: str, skill_index: Dict[str, Skill], threshold: float, top_n: int
-    ) -> List[Tuple[Skill, float]]:
+        self, content: str, skill_index: dict[str, Skill], threshold: float, top_n: int
+    ) -> list[tuple[Skill, float]]:
         text = content.strip()
         text = re.sub(r"^```(?:json)?\s*", "", text)
         text = re.sub(r"\s*```$", "", text)
@@ -343,7 +422,7 @@ class SkillManager:
         raw_matches = data["matches"]
         if not isinstance(raw_matches, list):
             return []
-        results: List[Tuple[Skill, float]] = []
+        results: list[tuple[Skill, float]] = []
         for item in raw_matches:
             if not isinstance(item, dict):
                 continue
@@ -369,11 +448,11 @@ class SkillManager:
         return results[:top_n]
 
     def _keyword_score(
-        self, task_description: str, skills: List[Skill], threshold: float, top_n: int
-    ) -> List[Tuple[Skill, float]]:
+        self, task_description: str, skills: list[Skill], threshold: float, top_n: int
+    ) -> list[tuple[Skill, float]]:
         query_words = set(re.findall(r"[a-z0-9]+", task_description.casefold()))
         query_phrase = f" {' '.join(re.findall(r'[a-z0-9]+', task_description.casefold()))} "
-        scored: List[Tuple[Skill, float]] = []
+        scored: list[tuple[Skill, float]] = []
         for skill in skills:
             name_words = re.findall(r"[a-z0-9]+", skill.name.casefold())
             name_phrase = " ".join(name_words)
@@ -399,7 +478,7 @@ class SkillManager:
         task_description: str,
         top_n: Optional[int] = None,
         threshold: Optional[float] = None,
-    ) -> List[Skill]:
+    ) -> list[Skill]:
         await self._ensure_discovered()
         effective_top_n = top_n if top_n is not None else self.top_n
         effective_threshold = threshold if threshold is not None else self.threshold
@@ -411,22 +490,26 @@ class SkillManager:
                 )
                 return [s for s, _ in self._match_cache[cache_key]]
             logger.info("%s Searching skills for: %s...", SKILL_MGR_PREFIX, task_description[:80])
-            local_skills = self.registry.find_by_source("local")
-            matches: List[Tuple[Skill, float]] = []
-            if local_skills:
+            # Every discovered skill is a candidate regardless of source. Project
+            # skills are already withheld upstream when the workspace is untrusted
+            # (``LocalSkillSource(include_project=...)``), and injection applies its
+            # own trust gate, so filtering by source here only dropped user skills.
+            candidates = self.registry.list_all()
+            matches: list[tuple[Skill, float]] = []
+            if candidates:
                 matches = self._keyword_score(
-                    task_description, local_skills, effective_threshold, effective_top_n
+                    task_description, candidates, effective_threshold, effective_top_n
                 )
-            if not matches and local_skills:
+            if not matches and candidates:
                 logger.debug(
-                    "%s Deterministic matching found no result; evaluating %d local skill(s) via LLM...",
+                    "%s Deterministic matching found no result; evaluating %d skill(s) via LLM...",
                     SKILL_MGR_PREFIX,
-                    len(local_skills),
+                    len(candidates),
                 )
                 matches = await self._match_via_llm(
-                    task_description, local_skills, effective_threshold, effective_top_n
+                    task_description, candidates, effective_threshold, effective_top_n
                 )
-            merged: Dict[str, Tuple[Skill, float]] = {}
+            merged: dict[str, tuple[Skill, float]] = {}
             for skill, conf in matches:
                 existing = merged.get(skill.name)
                 if existing is None or conf > existing[1]:
@@ -448,9 +531,9 @@ class SkillManager:
         skills = await self.get_top_skills(task_description, top_n=1)
         return skills[0] if skills else None
 
-    async def preload_skills(self, skill_names: List[str]) -> List[Skill]:
+    async def preload_skills(self, skill_names: list[str]) -> list[Skill]:
         await self._ensure_discovered()
-        loaded: List[Skill] = []
+        loaded: list[Skill] = []
         for name in skill_names:
             existing = self.registry.get(name)
             if existing is not None:

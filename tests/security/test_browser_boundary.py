@@ -34,21 +34,35 @@ async def test_context_interception_is_installed_before_page_use() -> None:
     context.route_web_socket = AsyncMock(side_effect=lambda *_args: events.append("websocket"))
     context.add_init_script = AsyncMock(side_effect=lambda **_kwargs: events.append("script"))
     context.new_page = AsyncMock(side_effect=lambda: events.append("page") or MagicMock())
+    context.close = AsyncMock()
     launched_browser = MagicMock()
     launched_browser.new_context = AsyncMock(return_value=context)
+    launched_browser.close = AsyncMock()
     playwright = SimpleNamespace(
-        chromium=SimpleNamespace(launch=AsyncMock(return_value=launched_browser))
+        chromium=SimpleNamespace(launch=AsyncMock(return_value=launched_browser)),
+        stop=AsyncMock(),
     )
     manager = MagicMock()
     manager.start = AsyncMock(return_value=playwright)
+    safety_proxy = MagicMock(url="http://127.0.0.1:43123")
+    safety_proxy.start = AsyncMock()
+    safety_proxy.close = AsyncMock()
 
     session = BrowserSession("test")
-    with patch.object(browser, "_playwright_manager", return_value=manager):
+    with (
+        patch.object(browser, "_playwright_manager", return_value=manager),
+        patch.object(browser, "_SafeBrowserProxy", return_value=safety_proxy),
+    ):
         await session._ensure_browser()
 
     assert events == ["route", "websocket", "script", "page"]
     assert launched_browser.new_context.await_args.kwargs["service_workers"] == "block"
     assert context.route.await_args.args[0] == "**/*"
+    launch_kwargs = playwright.chromium.launch.await_args.kwargs
+    assert launch_kwargs["proxy"]["server"].startswith("http://127.0.0.1:")
+    assert "--proxy-bypass-list=<-loopback>" in launch_kwargs["args"]
+    await session.close()
+    safety_proxy.close.assert_awaited_once_with()
 
 
 @pytest.mark.asyncio
@@ -80,6 +94,51 @@ async def test_context_route_validates_and_continues_public_fetch() -> None:
 
     route.continue_.assert_awaited_once_with()
     route.abort.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_connection_proxy_blocks_rebound_private_dns_answer() -> None:
+    """A public route-check answer cannot be rebound when the socket opens."""
+    session = BrowserSession("test")
+    proxy = browser._SafeBrowserProxy(session._record_blocked_request)
+
+    with (
+        patch.object(
+            browser,
+            "_resolve_host_addrs",
+            AsyncMock(side_effect=[["93.184.216.34"], ["169.254.169.254"]]),
+        ),
+        patch.object(browser.asyncio, "open_connection", AsyncMock()) as open_connection,
+    ):
+        assert await browser._validate_navigation_url("https://rebind.example/") is None
+        with pytest.raises(browser._BrowserProxyBlocked, match="non-public"):
+            await proxy._open_upstream("rebind.example", 443, scheme="https")
+
+    open_connection.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_connection_proxy_connects_to_validated_literal_ip() -> None:
+    session = BrowserSession("test")
+    proxy = browser._SafeBrowserProxy(session._record_blocked_request)
+    upstream = (MagicMock(), MagicMock())
+
+    with (
+        patch.object(
+            browser,
+            "_resolve_host_addrs",
+            AsyncMock(return_value=["93.184.216.34"]),
+        ),
+        patch.object(
+            browser.asyncio,
+            "open_connection",
+            AsyncMock(return_value=upstream),
+        ) as open_connection,
+    ):
+        result = await proxy._open_upstream("public.example", 443, scheme="https")
+
+    assert result == upstream
+    open_connection.assert_awaited_once_with("93.184.216.34", 443)
 
 
 @pytest.mark.asyncio

@@ -3,7 +3,7 @@
 import logging
 import shutil
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -17,7 +17,7 @@ from coderAI.tools.filesystem import ProjectPathError, resolve_under_project
 logger = logging.getLogger(__name__)
 
 # Formatter configurations keyed by name
-FORMATTERS: Dict[str, Dict[str, Any]] = {
+FORMATTERS: dict[str, dict[str, Any]] = {
     "ruff": {
         "cmd": "ruff",
         "args": ["format"],
@@ -121,7 +121,7 @@ class FormatTool(Tool):
         path: str = ".",
         check: bool = False,
         formatter: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Run formatter on the given path."""
         try:
             target = resolve_under_project(
@@ -165,7 +165,7 @@ class FormatTool(Tool):
             project_root = resolve_under_project(".", operation="format")
 
             # Same shape for every formatter, incl. prettier: <binary> <args> <path>
-            cmd: List[str] = [cmd_binary] + extra + [str(target)]
+            cmd: list[str] = [cmd_binary] + extra + [str(target)]
 
             fmt_timeout = subprocess_timeout()
             returncode, stdout, stderr, timed_out = await run_scrubbed(

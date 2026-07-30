@@ -170,6 +170,15 @@ def test_mcp_lists_and_toggles(ctrl, red):
     assert ("toggle_mcp_server", {"server": "fetch"}) == ctrl.last()
 
 
+def test_mcp_prompt_slash_invokes_prompt(ctrl, red):
+    _dispatch("/mcp__docs__summarize topic=api", ctrl, red)
+    name, kwargs = ctrl.last()
+    assert name == "invoke_mcp_prompt"
+    assert kwargs["server"] == "docs"
+    assert kwargs["prompt"] == "summarize"
+    assert kwargs["arguments"]["topic"] == "api"
+
+
 def test_verbose_think_status(ctrl, red):
     _, cb = _dispatch("/verbose", ctrl, red)
     cb["toggle_verbose"].assert_called_once()
@@ -224,7 +233,28 @@ def test_agents_tasks_plan(ctrl, red):
     _dispatch("/tasks", ctrl, red)
     assert "get_tasks" in ctrl.names()
     _dispatch("/plan", ctrl, red)
-    assert "get_tasks" in ctrl.names()
+    assert ctrl.last() == ("get_plan", {})
+
+    _dispatch("/plan fix the parser", ctrl, red)
+    assert ctrl.last() == ("start_plan", {"request": "fix the parser"})
+
+    _dispatch("/plan new add caching", ctrl, red)
+    assert ctrl.last() == ("start_plan", {"request": "add caching"})
+
+    _dispatch("/plan approve", ctrl, red)
+    assert ctrl.last() == ("approve_plan", {})
+
+    _dispatch("/plan amend keep Python 3.10 support", ctrl, red)
+    assert ctrl.last() == (
+        "amend_plan",
+        {"instruction": "keep Python 3.10 support"},
+    )
+
+    _dispatch("/plan answer use SQLite", ctrl, red)
+    assert ctrl.last() == ("amend_plan", {"instruction": "use SQLite"})
+
+    _dispatch("/plan cancel", ctrl, red)
+    assert ctrl.last() == ("cancel_plan", {})
 
 
 def test_show_topic_routing(ctrl, red):

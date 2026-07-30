@@ -4,8 +4,8 @@ import asyncio
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
-from urllib.parse import quote_plus
+from typing import Any, Optional
+from urllib.parse import quote_plus, urlparse
 
 from pydantic import BaseModel, Field
 
@@ -100,14 +100,14 @@ class WebSearchParams(BaseModel):
         8000,
         description="Max characters of page content per result when fetch_content=true",
     )
-    allowed_domains: Optional[List[str]] = Field(
+    allowed_domains: Optional[list[str]] = Field(
         None,
         description=(
             "If set, restrict results to these domains (suffix match — "
             "'example.com' also matches 'docs.example.com')."
         ),
     )
-    blocked_domains: Optional[List[str]] = Field(
+    blocked_domains: Optional[list[str]] = Field(
         None,
         description="If set, drop results whose domain matches any of these (suffix match).",
     )
@@ -148,10 +148,10 @@ class WebSearchTool(Tool):
         num_results: int = 5,
         fetch_content: bool = False,
         max_content_length: int = 8000,
-        allowed_domains: Optional[List[str]] = None,
-        blocked_domains: Optional[List[str]] = None,
+        allowed_domains: Optional[list[str]] = None,
+        blocked_domains: Optional[list[str]] = None,
         extract_main_content: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         if not query.strip():
             return {"success": False, "error": "Query must not be empty"}
         num_results = max(1, min(num_results, 10))
@@ -236,12 +236,12 @@ class WebSearchTool(Tool):
 
     async def _fetch_top_results(
         self,
-        results: List[Dict[str, Any]],
+        results: list[dict[str, Any]],
         count: int,
         max_length: int,
         extract_main: bool = False,
-    ) -> List[Dict[str, Any]]:
-        async def _fetch_one(result: Dict[str, Any]) -> Dict[str, Any]:
+    ) -> list[dict[str, Any]]:
+        async def _fetch_one(result: dict[str, Any]) -> dict[str, Any]:
             url = result.get("url", "")
             try:
                 text = await _web._fetch_page_text(url, max_length, extract_main=extract_main)
@@ -262,10 +262,10 @@ class WebSearchTool(Tool):
         self,
         query: str,
         num_results: int,
-        allowed_domains: Optional[List[str]] = None,
-        blocked_domains: Optional[List[str]] = None,
+        allowed_domains: Optional[list[str]] = None,
+        blocked_domains: Optional[list[str]] = None,
         backend: Optional[_SearchBackend] = None,
-    ) -> tuple[List[Dict[str, str]], str]:
+    ) -> tuple[list[dict[str, str]], str]:
         backend = backend or _web._select_search_backend()
         from coderAI.core.services import get_services
 
@@ -296,12 +296,12 @@ class WebSearchTool(Tool):
         self,
         query: str,
         num_results: int,
-        allowed_domains: Optional[List[str]] = None,
-        blocked_domains: Optional[List[str]] = None,
-    ) -> List[Dict[str, str]]:
+        allowed_domains: Optional[list[str]] = None,
+        blocked_domains: Optional[list[str]] = None,
+    ) -> list[dict[str, str]]:
         backends = _web._select_free_backends()
 
-        async def _run(be: _SearchBackend) -> Optional[List[Any]]:
+        async def _run(be: _SearchBackend) -> Optional[list[Any]]:
             try:
                 return await be.search(query, num_results * 2, allowed_domains, blocked_domains)
             except Exception as e:
@@ -310,25 +310,35 @@ class WebSearchTool(Tool):
                 logger.debug(f"Backend {be.name} failed: {e}", exc_info=True)
                 return None
 
-        all_results_raw = await asyncio.gather(*[_run(b) for b in backends])
+        tasks = [asyncio.create_task(_run(b)) for b in backends]
+        succeeded = False
+        seen_urls: set = set()
+        merged: list[Any] = []
+        filtered: list[Any] = []
+        try:
+            for completed in asyncio.as_completed(tasks):
+                batch = await completed
+                if batch is None:
+                    continue
+                succeeded = True
+                for r in batch:
+                    normalized = r.url.rstrip("/").lower()
+                    if normalized not in seen_urls:
+                        seen_urls.add(normalized)
+                        merged.append(r)
+                filtered = _filter_by_domain(merged, allowed_domains, blocked_domains)
+                if len(filtered) >= num_results:
+                    break
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
-        succeeded = [r for r in all_results_raw if r is not None]
         if not succeeded:
             raise RuntimeError(
                 f"All search backends failed ({', '.join(b.name for b in backends)}). "
                 "Check your network connection."
             )
-
-        seen_urls: set = set()
-        merged: List[Any] = []
-        for batch in succeeded:
-            for r in batch:
-                normalized = r.url.rstrip("/").lower()
-                if normalized not in seen_urls:
-                    seen_urls.add(normalized)
-                    merged.append(r)
-
-        filtered = _filter_by_domain(merged, allowed_domains, blocked_domains)
         return [r.to_dict() for r in filtered[:num_results]]
 
 
@@ -384,7 +394,7 @@ class ReadURLTool(Tool):
         format: str = "markdown",
         extract_main: bool = False,
         extract_metadata: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
 
@@ -403,7 +413,7 @@ class ReadURLTool(Tool):
             if len(text) > max_length:
                 text = text[:max_length]
                 truncated = True
-            result: Dict[str, Any] = {
+            result: dict[str, Any] = {
                 "success": True,
                 "url": cached.get("url", url),
                 "format": fmt,
@@ -447,9 +457,13 @@ class ReadURLTool(Tool):
 
         content_type = resp.get("content_type", "")
         raw = resp["text"]
-        is_pdf = "pdf" in content_type.lower() or url.lower().endswith(".pdf")
+        is_pdf = (
+            "pdf" in content_type.lower()
+            or urlparse(url).path.lower().endswith(".pdf")
+            or resp.get("content", b"").startswith(b"%PDF-")
+        )
 
-        if is_pdf and "pdf" in content_type.lower():
+        if is_pdf:
             pdf_text = _extract_pdf_text(resp.get("content", b""))
             if pdf_text:
                 text = pdf_text
@@ -481,7 +495,7 @@ class ReadURLTool(Tool):
             except Exception:
                 logger.debug("page_cache_ttl config unavailable, using default", exc_info=True)
                 ttl = _DEFAULT_PAGE_TTL
-            cache_payload: Dict[str, Any] = {
+            cache_payload: dict[str, Any] = {
                 "url": resp["url"],
                 "content": text,
                 "content_type": content_type,
@@ -541,7 +555,7 @@ class DownloadFileTool(Tool):
     parameters_model = DownloadFileParams
     timeout = 300.0
 
-    async def execute(self, url: str, destination_path: str) -> Dict[str, Any]:  # type: ignore[override]
+    async def execute(self, url: str, destination_path: str) -> dict[str, Any]:  # type: ignore[override]
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
 
@@ -628,8 +642,8 @@ class DownloadFileTool(Tool):
 class HTTPRequestParams(BaseModel):
     url: str = Field(..., description="Full URL to send the request to")
     method: str = Field("GET", description="HTTP method: GET, POST, PUT, PATCH, DELETE, HEAD")
-    headers: Optional[Dict[str, str]] = Field(None, description="Optional HTTP headers")
-    json_body: Optional[Dict[str, Any]] = Field(None, description="Request body as a JSON object")
+    headers: Optional[dict[str, str]] = Field(None, description="Optional HTTP headers")
+    json_body: Optional[dict[str, Any]] = Field(None, description="Request body as a JSON object")
     body: Optional[str] = Field(None, description="Raw request body string")
     timeout: int = Field(30, description="Request timeout in seconds (default: 30)")
     max_response_length: int = Field(
@@ -660,12 +674,12 @@ class HTTPRequestTool(Tool):
         self,
         url: str,
         method: str = "GET",
-        headers: Optional[Dict[str, str]] = None,
-        json_body: Optional[Dict[str, Any]] = None,
+        headers: Optional[dict[str, str]] = None,
+        json_body: Optional[dict[str, Any]] = None,
         body: Optional[str] = None,
         timeout: int = 30,
         max_response_length: int = 16000,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
 

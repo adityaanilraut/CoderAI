@@ -1,6 +1,8 @@
 """Tests for ManageTasksTool."""
 
 import asyncio
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -37,6 +39,32 @@ class TestManageTasksTool:
         assert result["success"]
         # Empty list returns {"tasks": []} without a "total" key
         assert result.get("total", 0) == 0
+
+    @pytest.mark.parametrize("contents", ["{bad json", "{}", '[{"id": 1}]'])
+    def test_corrupt_storage_is_not_treated_as_empty_or_overwritten(self, contents):
+        tasks_file = self.root + "/.coderAI/tasks.json"
+        path = Path(tasks_file)
+        path.parent.mkdir(parents=True)
+        path.write_text(contents, encoding="utf-8")
+
+        result = self._run(action="add", title="must not overwrite")
+
+        assert not result["success"]
+        assert "refusing to modify" in result["error"]
+        assert path.read_text(encoding="utf-8") == contents
+
+    def test_legacy_task_without_priority_is_backfilled(self):
+        path = Path(self.root) / ".coderAI" / "tasks.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(
+            json.dumps([{"id": 1, "title": "legacy", "status": "pending"}]),
+            encoding="utf-8",
+        )
+
+        result = self._run(action="list")
+
+        assert result["success"]
+        assert result["pending"][0]["priority"] == "medium"
 
     # ── add ───────────────────────────────────────────────────────────────────
 

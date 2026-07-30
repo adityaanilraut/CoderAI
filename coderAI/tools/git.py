@@ -9,7 +9,8 @@ in :mod:`coderAI.tools.git_extended` and are exposed via the bundled
 import functools
 import logging
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Optional, TypeVar, cast
+from typing import Any, Optional, TypeVar, cast
+from collections.abc import Awaitable, Callable
 
 from pydantic import BaseModel, Field
 
@@ -31,14 +32,14 @@ GIT_NETWORK_TIMEOUT_SECONDS = 300.0
 
 _GIT_TRUNCATION_MARKER = "... [truncated {omitted} chars — re-run with a narrower scope] ..."
 
-_F = TypeVar("_F", bound=Callable[..., Awaitable[Dict[str, Any]]])
+_F = TypeVar("_F", bound=Callable[..., Awaitable[dict[str, Any]]])
 
 
 def _tool_errors(fn: _F) -> _F:
     """Turn unexpected exceptions from ``execute()`` into a TOOL_ERROR result."""
 
     @functools.wraps(fn)
-    async def wrapper(*args: Any, **kwargs: Any) -> Dict[str, Any]:
+    async def wrapper(*args: Any, **kwargs: Any) -> dict[str, Any]:
         try:
             return await fn(*args, **kwargs)
         except Exception as e:
@@ -62,26 +63,26 @@ def _decode(data: bytes) -> str:
     return data.decode("utf-8", errors="replace")
 
 
-def _stderr_error(result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _stderr_error(result: dict[str, Any]) -> Optional[dict[str, Any]]:
     """Error dict when a completed git command exited non-zero, else None."""
     if result["returncode"] != 0:
         return {"success": False, "error": _decode(result["stderr"]).strip()}
     return None
 
 
-def _simple_result(result: Dict[str, Any]) -> Dict[str, Any]:
+def _simple_result(result: dict[str, Any]) -> dict[str, Any]:
     """Shape a completed git command as ``{"success", "output"}`` (stdout+stderr)."""
     output = _decode(result["stdout"]) + _decode(result["stderr"])
     return {"success": result["returncode"] == 0, "output": output.strip()}
 
 
 async def _run_simple(
-    args: List[str],
+    args: list[str],
     repo_path: str,
     *,
     needs_lock: bool = True,
     timeout: Optional[float] = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Run a git command and shape it with :func:`_simple_result`."""
     result = await _run_git_command(args, repo_path, needs_lock=needs_lock, timeout=timeout)
     if not result["success"]:
@@ -89,7 +90,7 @@ async def _run_simple(
     return _simple_result(result)
 
 
-def _reject_option_like(value: Optional[str], label: str) -> Optional[Dict[str, Any]]:
+def _reject_option_like(value: Optional[str], label: str) -> Optional[dict[str, Any]]:
     """Guard against argument injection via a user-controlled positional.
 
     A value that begins with ``-`` (e.g. ``--output=/etc/passwd``) would be
@@ -111,13 +112,13 @@ def _reject_option_like(value: Optional[str], label: str) -> Optional[Dict[str, 
 
 
 async def _run_git_command(
-    args: List[str],
+    args: list[str],
     repo_path: str,
     *,
     needs_lock: bool = False,
     validate_scope: bool = True,
     timeout: Optional[float] = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Run a git command with scope validation and optional lock acquisition.
 
     Returns ``{"success": False, ...}`` on scope validation error or timeout,
@@ -167,7 +168,7 @@ async def _run_git_command(
     }
 
 
-async def _validate_git_scope(repo_path: str) -> Optional[Dict[str, Any]]:
+async def _validate_git_scope(repo_path: str) -> Optional[dict[str, Any]]:
     """Validate that the git root matches the intended repo_path.
 
     Returns an error dict if scope is mismatched, or None if valid.
@@ -201,7 +202,7 @@ async def _validate_git_scope(repo_path: str) -> Optional[Dict[str, Any]]:
 
 
 class GitAddParams(BaseModel):
-    files: List[str] = Field(
+    files: list[str] = Field(
         ...,
         description="List of explicit file paths to stage. Do NOT use ['.'] — specify individual files.",
     )
@@ -218,7 +219,7 @@ class GitAddTool(Tool):
     category = "git"
 
     @_tool_errors
-    async def execute(self, files: list, repo_path: str = ".") -> Dict[str, Any]:  # type: ignore[override]
+    async def execute(self, files: list, repo_path: str = ".") -> dict[str, Any]:  # type: ignore[override]
         """Stage files for git commit with safety checks."""
         if files == ["."] or files == ["*"]:
             return {
@@ -284,7 +285,7 @@ class GitStatusTool(Tool):
     category = "git"
 
     @_tool_errors
-    async def execute(self, repo_path: str = ".") -> Dict[str, Any]:  # type: ignore[override]
+    async def execute(self, repo_path: str = ".") -> dict[str, Any]:  # type: ignore[override]
         result = await _run_git_command(["status", "--porcelain", "-b"], repo_path)
         if not result["success"]:
             return result
@@ -324,7 +325,7 @@ class GitDiffTool(Tool):
     @_tool_errors
     async def execute(  # type: ignore[override]
         self, repo_path: str = ".", file_path: Optional[str] = None, staged: bool = False
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         args = ["diff"]
         if staged:
             args.append("--cached")
@@ -368,7 +369,7 @@ class GitCommitTool(Tool):
     category = "git"
 
     @_tool_errors
-    async def execute(self, message: str, repo_path: str = ".") -> Dict[str, Any]:  # type: ignore[override]
+    async def execute(self, message: str, repo_path: str = ".") -> dict[str, Any]:  # type: ignore[override]
         result = await _run_git_command(["commit", "-m", message], repo_path, needs_lock=True)
         if not result["success"]:
             return result
@@ -392,7 +393,7 @@ class GitLogTool(Tool):
     category = "git"
 
     @_tool_errors
-    async def execute(self, repo_path: str = ".", limit: int = 10) -> Dict[str, Any]:  # type: ignore[override]
+    async def execute(self, repo_path: str = ".", limit: int = 10) -> dict[str, Any]:  # type: ignore[override]
         limit = max(1, min(limit, 1000))
 
         result = await _run_git_command(["log", "--oneline", "-n", str(limit)], repo_path)
@@ -437,8 +438,8 @@ class GitBranchTool(Tool):
     @_tool_errors
     async def execute(  # type: ignore[override]
         self, action: str, branch_name: Optional[str] = None, repo_path: str = "."
-    ) -> Dict[str, Any]:
-        args: List[str]
+    ) -> dict[str, Any]:
+        args: list[str]
         if action == "list":
             args = ["branch", "-a"]
         elif action == "create":

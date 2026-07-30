@@ -8,7 +8,8 @@ family, so it is injected as a callback.
 """
 
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional, Sequence
+from typing import Any, Optional
+from collections.abc import Callable, Mapping, Sequence
 
 
 def walk_up_detect(

@@ -7,7 +7,7 @@ discovery, loading, and relevance matching.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -45,7 +45,7 @@ def get_available_skills(
     *,
     include_project: bool = True,
     include_user: bool = True,
-) -> List[Dict[str, str]]:
+) -> list[dict[str, str]]:
     """Return a list of available skills with name and description.
 
     Maintained for backward compatibility; delegates to
@@ -96,7 +96,7 @@ class UseSkillTool(Tool):
         self,
         action: str,
         skill_name: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Execute skill action."""
         try:
             from coderAI.core.services import get_services

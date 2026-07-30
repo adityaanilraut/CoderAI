@@ -4,7 +4,7 @@ import logging
 import os
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Dict, Optional, Set
+from typing import Any, Optional
 
 
 from coderAI.system.config import config_manager
@@ -83,6 +83,11 @@ class Agent(AgentCapabilitiesMixin, AgentSessionMixin):
         self.auto_approve = auto_approve  # Can be toggled via /auto-approve
         self.is_subagent = is_subagent
         self.delegation_depth = int(delegation_depth)
+        # Plan Mode is an enforced runtime capability boundary, not a prompt
+        # label. TUI plan commands toggle it only for the planning turn.
+        self.plan_mode: bool = False
+        self.active_plan_id: Optional[str] = None
+        self.active_plan_revision: Optional[int] = None
 
         # Initialize LLM provider
         self.provider = self._create_provider()
@@ -136,7 +141,7 @@ class Agent(AgentCapabilitiesMixin, AgentSessionMixin):
         # serialized; ``_pending_saves`` holds in-flight futures so they aren't
         # GC'd and can be drained on ``close()``. Created lazily on first save.
         self._save_executor: Optional[ThreadPoolExecutor] = None
-        self._pending_saves: Set["Future[Any]"] = set()
+        self._pending_saves: set["Future[Any]"] = set()
         self._closed = False
 
         # Cumulative token usage tracking (#13). The Agent is the source of
@@ -165,7 +170,7 @@ class Agent(AgentCapabilitiesMixin, AgentSessionMixin):
 
         # Per-command approval cache for project hooks. Keyed by command string
         # so new or changed hooks re-prompt instead of inheriting an approval.
-        self._hooks_approved: Dict[str, bool] = {}
+        self._hooks_approved: dict[str, bool] = {}
         # Argument-scoped "always allow" rules (Phase 4.2). High-risk tools
         # (run_command/write_file/…) cannot be blanket-allowed by name; they may
         # only be scoped to a reviewed command-prefix / path. The resolver reads
@@ -234,7 +239,7 @@ class Agent(AgentCapabilitiesMixin, AgentSessionMixin):
     def context_controller(self, value: ContextController):
         self._context_controller = value
 
-    async def process_message(self, user_message: str, progress_callback=None) -> Dict[str, Any]:
+    async def process_message(self, user_message: str, progress_callback=None) -> dict[str, Any]:
         """Process a user message using ExecutionLoop.
 
         Before running the main loop, auto-detects and injects relevant

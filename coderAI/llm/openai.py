@@ -1,6 +1,6 @@
 """OpenAI LLM provider implementation."""
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 import openai
 import tiktoken
@@ -28,7 +28,16 @@ class OpenAIProvider(OpenAICompatibleCloudProvider):
         "o1-pro": "o1-pro",
         "o3-mini": "o3-mini",
     }
-    MODEL_CONTEXT_WINDOWS = {"gpt-5.6-sol": 1_050_000}
+    MODEL_CONTEXT_WINDOWS = {
+        "gpt-5.6-sol": 1_050_000,
+        "gpt-5.4": 1_050_000,
+        "gpt-5.4-mini": 400_000,
+        "gpt-5.4-nano": 400_000,
+        "o1": 200_000,
+        "o1-mini": 128_000,
+        "o1-pro": 200_000,
+        "o3-mini": 200_000,
+    }
 
     def __init__(self, model: str, api_key: Optional[str] = None, **kwargs: Any):
         super().__init__(model, api_key, **kwargs)
@@ -62,6 +71,10 @@ class OpenAIProvider(OpenAICompatibleCloudProvider):
     # Models that cannot accept reasoning_effort with function tools in /v1/chat/completions
     _NO_REASONING_EFFORT_MODELS = {"gpt-5.4-nano", "gpt-5.4-mini"}
 
+    # gpt-5.6* rejects function tools + any non-none reasoning on /v1/chat/completions
+    # (including the server default). Force reasoning_effort="none" when tools are present.
+    _FORCE_NONE_REASONING_WITH_TOOLS_PREFIX = ("gpt-5.6",)
+
     @property
     def _rejects_temperature(self) -> bool:
         """Whether this model rejects temperature (only accepts default=1).
@@ -78,21 +91,26 @@ class OpenAIProvider(OpenAICompatibleCloudProvider):
     def _supports_reasoning_effort(self) -> bool:
         """Whether this model accepts the reasoning_effort parameter.
 
-        gpt-5.4-nano does not support reasoning_effort with function tools
-        in /v1/chat/completions, so we omit it for that model.
+        gpt-5.4-nano/mini do not support reasoning_effort with function tools
+        in /v1/chat/completions, so we omit it for those models.
         """
         return (
             self._rejects_temperature and self.actual_model not in self._NO_REASONING_EFFORT_MODELS
         )
 
+    @property
+    def _requires_none_reasoning_with_tools(self) -> bool:
+        """Whether tools on chat/completions require reasoning_effort='none'."""
+        return self.actual_model.startswith(self._FORCE_NONE_REASONING_WITH_TOOLS_PREFIX)
+
     def _build_request_params(
         self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
+        messages: list[dict[str, Any]],
+        tools: Optional[list[dict[str, Any]]] = None,
         *,
         stream: bool = False,
         **kwargs: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         params = super()._build_request_params(messages, tools, stream=stream, **kwargs)
 
         # Newer OpenAI models take max_completion_tokens, and either reject
@@ -101,7 +119,10 @@ class OpenAIProvider(OpenAICompatibleCloudProvider):
         del params["temperature"]
         if self._rejects_temperature:
             effort = kwargs.get("reasoning_effort", self.reasoning_effort)
-            if self._supports_reasoning_effort and effort and effort != "none":
+            # gpt-5.6 + function tools on chat/completions only allows effort "none".
+            if tools and self._requires_none_reasoning_with_tools:
+                params["reasoning_effort"] = "none"
+            elif self._supports_reasoning_effort and effort and effort != "none":
                 params["reasoning_effort"] = effort
         else:
             params["temperature"] = kwargs.get("temperature", self.temperature)

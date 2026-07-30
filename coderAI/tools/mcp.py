@@ -10,7 +10,7 @@ import signal
 import shutil
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional, cast
 
 from pydantic import BaseModel, Field
 
@@ -18,7 +18,7 @@ from coderAI.types.provenance import Provenance
 from coderAI.types.tool_error_codes import ToolErrorCode
 from coderAI.core.tool_routing import build_mcp_function_name
 from coderAI.system.fsperms import atomic_write_json
-from coderAI.system.proc import kill_process_group, new_session_kwargs, scrub_env
+from coderAI.system.proc import kill_process_group, new_session_kwargs
 from coderAI.system.sandbox import prepare_sandbox_launch
 from coderAI.tools.base import Tool
 
@@ -32,6 +32,9 @@ MCP_MAX_LIST_ITEMS = 10_000
 MCP_MAX_DESCRIPTION_LENGTH = 1_024
 MCP_MAX_METADATA_DEPTH = 12
 MCP_MAX_METADATA_ITEMS = 1_000
+# Property a non-object ``inputSchema`` root is nested under so providers that
+# require object-rooted parameters accept it. Stripped again before dispatch.
+WRAPPED_ARG_KEY = "value"
 
 # Per-launcher tokens that evaluate inline code, turning an *allowed* launcher
 # into an arbitrary-code sink (``python -c "…"``, ``node -e "…"``, ``deno eval
@@ -47,6 +50,29 @@ _INLINE_EXEC_TOKENS = {
     "bun": {"-e", "--eval", "-p", "--print"},
     "deno": {"eval"},
 }
+
+
+def _is_inline_exec_arg(launcher_kind: str, token: str) -> bool:
+    """Return whether *token* enables the launcher's inline-code mode.
+
+    Python, Node, and Bun accept code attached to short options (``-cCODE`` /
+    ``-eCODE``) and Node-style long options accept ``=CODE``. Exact-token-only
+    checks are therefore bypassable even though the subprocess is launched
+    without a shell.
+    """
+    blocked = _INLINE_EXEC_TOKENS.get(launcher_kind, set())
+    if token in blocked:
+        return True
+    if launcher_kind in {"python", "python3"}:
+        return token.startswith("-c") and len(token) > 2
+    if launcher_kind in {"node", "bun"}:
+        return (
+            (token.startswith("-e") and not token.startswith("--") and len(token) > 2)
+            or (token.startswith("-p") and not token.startswith("--") and len(token) > 2)
+            or token.startswith("--eval=")
+            or token.startswith("--print=")
+        )
+    return False
 
 
 def _launcher_kind(command: str) -> Optional[str]:
@@ -79,7 +105,7 @@ def _sanitize_model_metadata(value: Any, *, depth: int = 0) -> Any:
     if depth >= MCP_MAX_METADATA_DEPTH:
         return None
     if isinstance(value, dict):
-        out: Dict[str, Any] = {}
+        out: dict[str, Any] = {}
         for index, (key, item) in enumerate(value.items()):
             if index >= MCP_MAX_METADATA_ITEMS:
                 break
@@ -106,32 +132,54 @@ def _sanitize_model_metadata(value: Any, *, depth: int = 0) -> Any:
 def _validate_discovered_tools(
     server_name: str,
     tools: Any,
-    existing_tools: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
-    """Validate exact names and reject duplicate/colliding provider function IDs."""
+    existing_tools: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Validate exact names, dropping duplicate/colliding/unrepresentable tools.
+
+    Only structural faults in the reply itself (not an array, past the item cap)
+    abort the connection. A single tool the provider naming rules cannot express
+    — a dot in the name, or a ``mcp__<server>__<tool>`` id over the length limit
+    — used to raise straight out of ``connect_*`` and make the whole server
+    unusable; such tools are now skipped with a warning so the server's other
+    tools still work.
+    """
     if not isinstance(tools, list):
         raise ValueError("MCP tools/list result must contain a tools array")
     if len(tools) > MCP_MAX_LIST_ITEMS:
         raise ValueError(f"MCP server returned more than {MCP_MAX_LIST_ITEMS} tools")
 
-    occupied = {
-        build_mcp_function_name(str(item.get("server", "")), str(item.get("name", "")))
-        for item in existing_tools
-        if item.get("server") != server_name
-    }
+    occupied = set()
+    for item in existing_tools:
+        if item.get("server") == server_name:
+            continue
+        try:
+            occupied.add(
+                build_mcp_function_name(str(item.get("server", "")), str(item.get("name", "")))
+            )
+        except ValueError:
+            continue
     seen = set()
-    validated: List[Dict[str, Any]] = []
+    skipped: list[str] = []
+    validated: list[dict[str, Any]] = []
     for raw in tools:
         if not isinstance(raw, dict):
-            raise ValueError("MCP tools/list entries must be objects")
+            skipped.append("<non-object entry>")
+            continue
         name = raw.get("name")
         if not isinstance(name, str):
-            raise ValueError("MCP tool name must be a string")
-        function_name = build_mcp_function_name(server_name, name)
+            skipped.append(f"<non-string name {name!r}>")
+            continue
+        try:
+            function_name = build_mcp_function_name(server_name, name)
+        except ValueError as exc:
+            skipped.append(f"{name} ({exc})")
+            continue
         if function_name in seen:
-            raise ValueError(f"MCP server returned duplicate tool name {name!r}")
+            skipped.append(f"{name} (duplicate)")
+            continue
         if function_name in occupied:
-            raise ValueError(f"MCP tool function name collision: {function_name!r}")
+            skipped.append(f"{name} (function name collision)")
+            continue
         seen.add(function_name)
         validated.append(
             {
@@ -140,10 +188,17 @@ def _validate_discovered_tools(
                 "inputSchema": _sanitize_model_metadata(raw.get("inputSchema", {})),
             }
         )
+    if skipped:
+        logger.warning(
+            "Skipped %d unusable tool(s) from MCP server '%s': %s",
+            len(skipped),
+            server_name,
+            "; ".join(_sanitize_metadata_text(s, 128) for s in skipped[:20]),
+        )
     return validated
 
 
-def validate_stdio_launch(command: str, args: Optional[List[str]]) -> Optional[str]:
+def validate_stdio_launch(command: str, args: Optional[list[str]]) -> Optional[str]:
     """Validate a stdio MCP launcher + argv; return an error string or ``None``.
 
     The single choke point shared by ``MCPConnectTool`` (LLM-driven) and startup
@@ -164,9 +219,8 @@ def validate_stdio_launch(command: str, args: Optional[List[str]]) -> Optional[s
         )
 
     arg_list = list(args or [])
-    blocked_tokens = _INLINE_EXEC_TOKENS.get(launcher_kind, set())
     for token in arg_list:
-        if token in blocked_tokens:
+        if _is_inline_exec_arg(launcher_kind, token):
             return (
                 f"MCP launcher flag '{command} {token}' runs arbitrary inline code, "
                 "which is not allowed (it defeats the launcher allow-list)."
@@ -198,6 +252,29 @@ def _is_loopback_host(host: str) -> bool:
         return False
 
 
+def _parse_ip_literal(host: str) -> Optional[Any]:
+    """Parse normal and legacy IPv4/IPv6 URL literals, else return ``None``.
+
+    HTTP stacks commonly accept legacy integer/short IPv4 spellings such as
+    ``2130706433`` and ``127.1``. Treating those as DNS names would let private
+    address checks be bypassed.
+    """
+    import ipaddress
+    import socket
+
+    candidate = (host or "").strip().lower()
+    try:
+        return ipaddress.ip_address(candidate)
+    except ValueError:
+        pass
+    if ":" in candidate:
+        return None
+    try:
+        return ipaddress.ip_address(socket.inet_ntoa(socket.inet_aton(candidate)))
+    except OSError:
+        return None
+
+
 def validate_remote_mcp_url(url: str) -> Optional[str]:
     """Validate a remote MCP/OAuth endpoint URL.
 
@@ -207,7 +284,8 @@ def validate_remote_mcp_url(url: str) -> Optional[str]:
     This is the single scheme gate shared by ``connect_http``/``connect_sse``, the
     ``coderAI mcp add`` CLI, and the OAuth discovery/token calls, so an untrusted
     ``mcp_servers.json`` cannot downgrade a connection or an OAuth token exchange
-    onto the network in cleartext.
+    onto the network in cleartext. Non-loopback private, link-local, reserved,
+    and legacy-encoded IP literals are rejected even when they use HTTPS.
     """
     from urllib.parse import urlparse
 
@@ -220,8 +298,19 @@ def validate_remote_mcp_url(url: str) -> Optional[str]:
         return f"Invalid MCP endpoint URL: {url!r}"
     if not parsed.hostname:
         return f"MCP endpoint URL must include a host: {url!r}"
+    try:
+        _port = parsed.port
+    except ValueError:
+        return f"MCP endpoint URL has an invalid port: {url!r}"
     if parsed.username is not None or parsed.password is not None:
         return "MCP endpoint URLs must not contain embedded credentials"
+    host = parsed.hostname or ""
+    literal_ip = _parse_ip_literal(host)
+    if literal_ip is not None:
+        if literal_ip.is_loopback and not _is_loopback_host(host):
+            return f"Refusing ambiguous legacy loopback address {host!r}"
+        if not (literal_ip.is_global or literal_ip.is_loopback):
+            return f"Refusing non-public MCP/OAuth endpoint address {host!r}"
     scheme = (parsed.scheme or "").lower()
     if scheme == "https":
         return None
@@ -263,24 +352,53 @@ def _validated_same_origin_url(base_url: str, endpoint: str) -> str:
     return resolved
 
 
-def _shape_tool_result(result: Dict[str, Any]) -> Dict[str, Any]:
+def _shape_tool_result(result: dict[str, Any]) -> dict[str, Any]:
     """Shape a ``tools/call`` result into the tool-facing dict.
 
-    Concatenates the text content parts; MCP's ``isError: true`` marks a
-    tool-level failure (distinct from a JSON-RPC protocol error, which
-    :meth:`MCPClient._request` already turned into ``success=False``).
+    Concatenates text content parts and appends bounded placeholders for
+    non-text parts (image/audio/resource) plus a short ``structuredContent``
+    summary so multimodal MCP replies are not silently dropped.
     """
-    text_content = "".join(
-        part.get("text", "") for part in result.get("content", []) if part.get("type") == "text"
-    )
+    parts: list[str] = []
+    for part in result.get("content", []) or []:
+        if not isinstance(part, dict):
+            continue
+        ptype = part.get("type")
+        if ptype == "text":
+            parts.append(str(part.get("text", "")))
+        elif ptype == "image":
+            mime = part.get("mimeType") or "image"
+            data = part.get("data") or ""
+            size = len(data) if isinstance(data, str) else 0
+            parts.append(f"[MCP image: {mime}; {size} chars base64 omitted]")
+        elif ptype == "audio":
+            mime = part.get("mimeType") or "audio"
+            data = part.get("data") or ""
+            size = len(data) if isinstance(data, str) else 0
+            parts.append(f"[MCP audio: {mime}; {size} chars base64 omitted]")
+        elif ptype in ("resource", "resource_link"):
+            uri = part.get("uri") or (part.get("resource") or {}).get("uri") or ""
+            parts.append(f"[MCP resource: {uri}]")
+        else:
+            parts.append(f"[MCP content type={ptype!r}]")
+    structured = result.get("structuredContent")
+    if structured is not None:
+        try:
+            summary = json.dumps(structured, default=str)
+        except (TypeError, ValueError):
+            summary = str(structured)
+        if len(summary) > 2_000:
+            summary = summary[:1_997] + "..."
+        parts.append(f"[MCP structuredContent: {summary}]")
+    text_content = "".join(parts)
     is_error = bool(result.get("isError"))
-    out: Dict[str, Any] = {"success": not is_error, "content": text_content, "raw": result}
+    out: dict[str, Any] = {"success": not is_error, "content": text_content, "raw": result}
     if is_error:
         out["error"] = text_content or "MCP tool returned an error."
     return out
 
 
-def _reject_reserved_server_name(server_name: str) -> Optional[Dict[str, Any]]:
+def _reject_reserved_server_name(server_name: str) -> Optional[dict[str, Any]]:
     """Reject server names that cannot form an exact provider-safe function ID."""
     try:
         build_mcp_function_name(server_name, "t")
@@ -315,7 +433,7 @@ def mcp_servers_path() -> Path:
 BUNDLED_GIT_EXTENDED_SERVER = "git_extended"
 
 
-def bundled_mcp_servers() -> Dict[str, Dict[str, Any]]:
+def bundled_mcp_servers() -> dict[str, dict[str, Any]]:
     """Built-in MCP servers shipped with CoderAI.
 
     These are merged by :func:`effective_mcp_servers` so they auto-connect on
@@ -334,7 +452,7 @@ def bundled_mcp_servers() -> Dict[str, Dict[str, Any]]:
     }
 
 
-def load_mcp_servers() -> Dict[str, Any]:
+def load_mcp_servers() -> dict[str, Any]:
     """Read the on-disk MCP server config, tolerating a missing or corrupt file.
 
     Always returns a dict with an ``mcpServers`` mapping so callers can index
@@ -357,25 +475,23 @@ def load_mcp_servers() -> Dict[str, Any]:
         return {"mcpServers": {}}
 
 
-def effective_mcp_servers() -> Dict[str, Any]:
-    """On-disk MCP config merged with bundled servers.
+def effective_mcp_servers(
+    *,
+    project_root: Optional[str | Path] = None,
+    workspace_trusted: Optional[bool] = None,
+) -> dict[str, Any]:
+    """Merged MCP config across bundled / user / project / local scopes.
 
-    User entries win on name collision (so ``disabled: true`` or a custom
-    launcher for ``git_extended`` overrides the built-in). Bundled defaults
-    are only injected when the name is absent from disk.
+    Precedence (same name): local → project → user → bundled.
+    Project ``.mcp.json`` servers require workspace trust and approval.
+    See :mod:`coderAI.tools.mcp_config`.
     """
-    data = load_mcp_servers()
-    servers = data.setdefault("mcpServers", {})
-    if not isinstance(servers, dict):
-        servers = {}
-        data["mcpServers"] = servers
-    for name, entry in bundled_mcp_servers().items():
-        if name not in servers:
-            servers[name] = dict(entry)
-    return data
+    from coderAI.tools.mcp_config import effective_mcp_servers as _effective
+
+    return _effective(project_root=project_root, workspace_trusted=workspace_trusted)
 
 
-def persist_mcp_server(name: str, entry: Dict[str, Any]) -> None:
+def persist_mcp_server(name: str, entry: dict[str, Any]) -> None:
     """Add or overwrite a single server entry in the persisted MCP config.
 
     Called after a successful interactive ``mcp_connect`` so the server is
@@ -401,18 +517,53 @@ def persist_mcp_server(name: str, entry: Dict[str, Any]) -> None:
         )
 
 
-def set_mcp_server_disabled(name: str, disabled: bool) -> bool:
-    """Flip the ``disabled`` flag on a persisted MCP server.
+def set_mcp_server_disabled(
+    name: str,
+    disabled: bool,
+    *,
+    project_root: Optional[str | Path] = None,
+) -> bool:
+    """Flip the ``disabled`` flag on a configured MCP server, in its own scope.
 
-    A disabled server stays in ``mcp_servers.json`` but is skipped by
+    A disabled server stays in its config file but is skipped by
     ``ExecutionLoop._autoconnect_mcp_servers`` on startup, so it does not
     auto-reconnect until re-enabled. Enabling simply removes the flag (absence
     means enabled) to keep the on-disk config tidy.
 
+    The scope that owns the entry has to be the one written, because the merge
+    in :func:`effective_mcp_servers` runs local → project → user → bundled: a
+    flag written to ``mcp_servers.json`` for a name that a higher-precedence
+    scope also defines is simply overwritten and the toggle appears to do
+    nothing. Local entries are edited in place; project ``.mcp.json`` is a
+    shared repo file, so its servers are toggled through the per-user approval
+    store instead (rejected servers are skipped by autoconnect).
+
     Bundled servers (e.g. ``git_extended``) may not have an on-disk entry yet;
     disabling them writes a stub so the override sticks. Returns ``False`` only
-    when the name is neither on disk nor bundled.
+    when the name is configured in no scope and is not bundled.
     """
+    from coderAI.tools.mcp_config import (
+        load_local_mcp_servers,
+        load_project_mcp_servers,
+        set_local_mcp_disabled,
+        set_project_approval,
+    )
+
+    root = Path(project_root or ".").resolve()
+
+    if name in load_local_mcp_servers(root):
+        return set_local_mcp_disabled(name, disabled, project_root=root)
+
+    project_servers = load_project_mcp_servers(root)
+    if name in project_servers:
+        set_project_approval(
+            name,
+            approved=not disabled,
+            entry=project_servers[name],
+            project_root=root,
+        )
+        return True
+
     data = load_mcp_servers()
     servers = data.setdefault("mcpServers", {})
     entry = servers.get(name)
@@ -438,7 +589,7 @@ def set_mcp_server_disabled(name: str, disabled: bool) -> bool:
     return True
 
 
-def save_mcp_servers(data: Dict[str, Any]) -> None:
+def save_mcp_servers(data: dict[str, Any]) -> None:
     """Write the MCP server config as pretty-printed JSON.
 
     Writes to a temp file in the same directory and ``os.replace``s it into
@@ -458,14 +609,37 @@ class MCPClient:
     registry.
     """
 
+    PREFERRED_PROTOCOL_VERSION = "2025-03-26"
+    FALLBACK_PROTOCOL_VERSION = "2024-11-05"
+
     def __init__(self):
         """Initialize MCP client."""
-        self.servers: Dict[str, Dict[str, Any]] = {}
-        self.discovered_tools: List[Dict[str, Any]] = []
-        self.discovered_resources: List[Dict[str, Any]] = []
-        self.discovered_prompts: List[Dict[str, Any]] = []
+        self.servers: dict[str, dict[str, Any]] = {}
+        self.discovered_tools: list[dict[str, Any]] = []
+        self.discovered_resources: list[dict[str, Any]] = []
+        self.discovered_prompts: list[dict[str, Any]] = []
         self._next_id: int = 1
-        self._reconnect_attempts: Dict[str, int] = {}
+        self._reconnect_attempts: dict[str, int] = {}
+        self._roots: list[dict[str, str]] = []
+        self._schemas_dirty: bool = False
+        # Optional async callable(server_name, params) -> elicitation result dict
+        self.elicitation_handler: Optional[Any] = None
+        self._set_default_roots()
+
+    def _set_default_roots(self, project_root: Optional[str | Path] = None) -> None:
+        root = Path(project_root or ".").resolve()
+        self._roots = [{"uri": root.as_uri(), "name": root.name or "project"}]
+
+    def set_project_root(self, project_root: str | Path) -> None:
+        """Update advertised MCP roots and notify connected servers."""
+        old = list(self._roots)
+        self._set_default_roots(project_root)
+        if old != self._roots:
+            for name, entry in list(self.servers.items()):
+                try:
+                    asyncio.get_running_loop().create_task(self._notify_roots_changed(name, entry))
+                except RuntimeError:
+                    pass
 
     def _get_next_id(self) -> int:
         """Return a unique, incrementing JSON-RPC request ID."""
@@ -474,7 +648,7 @@ class MCPClient:
         return current
 
     @staticmethod
-    def _fail_pending(entry: Dict[str, Any], error: BaseException) -> None:
+    def _fail_pending(entry: dict[str, Any], error: BaseException) -> None:
         """Fail all requests waiting on a transport that reached EOF or closed."""
         pending = entry.get("pending", {})
         for future in list(pending.values()):
@@ -482,10 +656,40 @@ class MCPClient:
                 future.set_exception(error)
         pending.clear()
 
-    @staticmethod
-    def _dispatch_response(entry: Dict[str, Any], response: Dict[str, Any]) -> None:
-        """Resolve the future for a JSON-RPC response without consuming notifications."""
+    def _dispatch_response(
+        self, server_name: str, entry: dict[str, Any], response: dict[str, Any]
+    ) -> None:
+        """Route JSON-RPC responses, notifications, and server→client requests."""
         response_id = response.get("id")
+        method = response.get("method")
+
+        # Server → client request (has method + id, no result/error yet)
+        if (
+            method
+            and response_id is not None
+            and "result" not in response
+            and "error" not in response
+        ):
+            try:
+                asyncio.get_running_loop().create_task(
+                    self._handle_server_request(server_name, entry, response)
+                )
+            except RuntimeError:
+                logger.debug("No event loop to handle MCP server request %s", method)
+            return
+
+        # Notification (method, no id)
+        if method and response_id is None:
+            try:
+                asyncio.get_running_loop().create_task(
+                    self._handle_notification(
+                        server_name, entry, method, response.get("params") or {}
+                    )
+                )
+            except RuntimeError:
+                logger.debug("No event loop to handle MCP notification %s", method)
+            return
+
         if response_id is None:
             return
         future = entry.get("pending", {}).get(response_id)
@@ -495,8 +699,160 @@ class MCPClient:
         if not future.done():
             future.set_result(response)
 
+    async def _handle_notification(
+        self,
+        server_name: str,
+        entry: dict[str, Any],
+        method: str,
+        params: Any,
+    ) -> None:
+        if method == "notifications/progress":
+            import time
+
+            entry["_last_progress"] = time.monotonic()
+            return
+        if method in (
+            "notifications/tools/list_changed",
+            "notifications/resources/list_changed",
+            "notifications/prompts/list_changed",
+        ):
+            try:
+                await self._rediscover_server(server_name, entry)
+                self._schemas_dirty = True
+            except Exception:
+                logger.warning(
+                    "Failed to refresh discovery after %s from '%s'",
+                    method,
+                    server_name,
+                    exc_info=True,
+                )
+            return
+        logger.debug("Ignoring MCP notification %s from '%s'", method, server_name)
+
+    async def _handle_server_request(
+        self,
+        server_name: str,
+        entry: dict[str, Any],
+        request: dict[str, Any],
+    ) -> None:
+        method = request.get("method")
+        req_id = request.get("id")
+        params = request.get("params") or {}
+        try:
+            if method == "roots/list":
+                result: dict[str, Any] = {"roots": list(self._roots)}
+            elif method == "ping":
+                result = {}
+            elif method == "elicitation/create":
+                result = await self._handle_elicitation(server_name, params)
+            else:
+                await self._send_raw(
+                    entry,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "error": {"code": -32601, "message": f"Method not found: {method}"},
+                    },
+                )
+                return
+            await self._send_raw(entry, {"jsonrpc": "2.0", "id": req_id, "result": result})
+        except Exception as exc:
+            logger.warning("MCP server request %s failed: %s", method, exc, exc_info=True)
+            with suppress(Exception):
+                await self._send_raw(
+                    entry,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "error": {"code": -32603, "message": str(exc)[:500]},
+                    },
+                )
+
+    async def _handle_elicitation(self, server_name: str, params: Any) -> dict[str, Any]:
+        handler = self.elicitation_handler
+        if handler is None:
+            return {"action": "cancel", "content": {}}
+        try:
+            result = await handler(server_name, params if isinstance(params, dict) else {})
+            if isinstance(result, dict) and result.get("action") in ("accept", "decline", "cancel"):
+                return result
+        except Exception:
+            logger.warning("MCP elicitation handler failed for '%s'", server_name, exc_info=True)
+        return {"action": "cancel", "content": {}}
+
+    async def _send_raw(self, entry: dict[str, Any], payload: dict[str, Any]) -> None:
+        transport = entry.get("transport", "stdio")
+        if transport == "stdio":
+            await self._stdio_send(entry, payload)
+            return
+        if transport == "sse":
+            import aiohttp
+
+            session = entry.get("session")
+            message_url = entry.get("message_url")
+            if session and message_url:
+                async with session.post(
+                    message_url,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=5),
+                    allow_redirects=False,
+                ) as response:
+                    if response.status >= 400:
+                        logger.debug("MCP server reply POST returned HTTP %s", response.status)
+            return
+        session = entry.get("session")
+        url = entry.get("url")
+        if session and url:
+            await self._http_send(
+                session,
+                url,
+                payload,
+                expected_id=None,
+                session_id=entry.get("session_id"),
+                timeout=5,
+            )
+
+    async def _notify_roots_changed(self, server_name: str, entry: dict[str, Any]) -> None:
+        with suppress(Exception):
+            await self._send_raw(
+                entry,
+                {"jsonrpc": "2.0", "method": "notifications/roots/list_changed"},
+            )
+
+    async def _rediscover_server(self, server_name: str, entry: dict[str, Any]) -> None:
+        """Re-run tools/resources/prompts discovery after a list_changed notification."""
+        raw_tools = await self._paginate_entry(server_name, entry, "tools/list", "tools")
+        server_tools = _validate_discovered_tools(server_name, raw_tools, self.discovered_tools)
+        staged_tools = [
+            {
+                "server": server_name,
+                "name": tool["name"],
+                "description": tool["description"],
+                "input_schema": tool["inputSchema"],
+            }
+            for tool in server_tools
+        ]
+        entry["tools"] = server_tools
+        staged_resources, staged_prompts = await self._discover_extras_for_entry(server_name, entry)
+        self.discovered_tools = [
+            tool for tool in self.discovered_tools if tool.get("server") != server_name
+        ] + staged_tools
+        self.discovered_resources = [
+            resource
+            for resource in self.discovered_resources
+            if resource.get("server") != server_name
+        ] + staged_resources
+        self.discovered_prompts = [
+            prompt for prompt in self.discovered_prompts if prompt.get("server") != server_name
+        ] + staged_prompts
+        logger.info(
+            "Refreshed MCP server '%s' after list_changed (%d tools)",
+            server_name,
+            len(server_tools),
+        )
+
     async def _stdio_reader(
-        self, server_name: str, entry: Dict[str, Any], stdout: asyncio.StreamReader
+        self, server_name: str, entry: dict[str, Any], stdout: asyncio.StreamReader
     ) -> None:
         """Sole stdout reader for a stdio connection; dispatch replies by JSON-RPC ID."""
         error: BaseException = RuntimeError(f"MCP server '{server_name}' closed stdout")
@@ -513,7 +869,7 @@ class MCPClient:
                 if not isinstance(parsed, dict):
                     logger.warning("Ignoring non-object JSON from MCP server '%s'", server_name)
                     continue
-                self._dispatch_response(entry, parsed)
+                self._dispatch_response(server_name, entry, parsed)
         except asyncio.CancelledError:
             error = RuntimeError(f"MCP server '{server_name}' reader was cancelled")
             raise
@@ -525,7 +881,7 @@ class MCPClient:
             if self.servers.get(server_name) is entry:
                 entry["degraded"] = True
 
-    async def _stdio_send(self, entry: Dict[str, Any], payload: Dict[str, Any]) -> None:
+    async def _stdio_send(self, entry: dict[str, Any], payload: dict[str, Any]) -> None:
         process = entry.get("process")
         if process is None or process.returncode is not None or process.stdin is None:
             raise RuntimeError("MCP stdio process is not running")
@@ -534,9 +890,15 @@ class MCPClient:
             await process.stdin.drain()
 
     async def _stdio_exchange(
-        self, entry: Dict[str, Any], request: Dict[str, Any], timeout: float
-    ) -> Dict[str, Any]:
-        """Register a request future before writing, then await dispatcher delivery."""
+        self, entry: dict[str, Any], request: dict[str, Any], timeout: float
+    ) -> dict[str, Any]:
+        """Register a request future before writing, then await dispatcher delivery.
+
+        Progress notifications reset the idle wait so long-running tools that
+        emit ``notifications/progress`` are not aborted early.
+        """
+        import time
+
         request_id = request.get("id")
         if request_id is None:
             await self._stdio_send(entry, request)
@@ -547,9 +909,31 @@ class MCPClient:
         if request_id in pending:
             raise RuntimeError(f"Duplicate in-flight MCP request id {request_id!r}")
         pending[request_id] = future
+        entry["_last_progress"] = time.monotonic()
         try:
             await self._stdio_send(entry, request)
-            return await asyncio.wait_for(asyncio.shield(future), timeout=timeout)
+            deadline = time.monotonic() + timeout
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise asyncio.TimeoutError()
+                # Poll in chunks so progress can extend the overall deadline.
+                chunk = min(remaining, 1.0)
+                try:
+                    return cast(
+                        dict[str, Any],
+                        await asyncio.wait_for(asyncio.shield(future), timeout=chunk),
+                    )
+                except asyncio.TimeoutError:
+                    if future.done():
+                        return cast(dict[str, Any], future.result())
+                    last = float(entry.get("_last_progress") or 0)
+                    # Extend deadline when progress arrived since the request started.
+                    if last > deadline - timeout:
+                        deadline = max(deadline, last + timeout)
+                        continue
+                    if time.monotonic() >= deadline:
+                        raise
         except (asyncio.TimeoutError, asyncio.CancelledError):
             future.cancel()
             self._schedule_request_cancellation(entry, request_id)
@@ -582,21 +966,25 @@ class MCPClient:
                 "stderr drain for MCP server '%s' ended unexpectedly", server_name, exc_info=True
             )
 
-    def _init_request(self, init_id: int) -> Dict[str, Any]:
+    def _init_request(self, init_id: int, protocol_version: Optional[str] = None) -> dict[str, Any]:
         """The MCP ``initialize`` request (JSON-RPC 2.0), shared by all transports."""
+        version = protocol_version or self.PREFERRED_PROTOCOL_VERSION
         return {
             "jsonrpc": "2.0",
             "id": init_id,
             "method": "initialize",
             "params": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
+                "protocolVersion": version,
+                "capabilities": {
+                    "roots": {"listChanged": True},
+                    "elicitation": {},
+                },
                 "clientInfo": {"name": "CoderAI", "version": "0.1.0"},
             },
         }
 
     @staticmethod
-    def _response_result(response: Any, method: str) -> Dict[str, Any]:
+    def _response_result(response: Any, method: str) -> dict[str, Any]:
         if not isinstance(response, dict):
             raise RuntimeError(f"MCP {method} returned a non-object response")
         error = response.get("error")
@@ -611,13 +999,13 @@ class MCPClient:
     async def _paginate_entry(
         self,
         server_name: str,
-        entry: Dict[str, Any],
+        entry: dict[str, Any],
         method: str,
         item_key: str,
-        first_response: Optional[Dict[str, Any]] = None,
-    ) -> List[Any]:
+        first_response: Optional[dict[str, Any]] = None,
+    ) -> list[Any]:
         """Collect a cursor-based MCP list with hard page and item limits."""
-        items: List[Any] = []
+        items: list[Any] = []
         cursor: Optional[str] = None
         seen_cursors = set()
         for page in range(MCP_MAX_PAGES):
@@ -652,10 +1040,10 @@ class MCPClient:
     async def _finish_connect(
         self,
         server_name: str,
-        entry: Dict[str, Any],
-        init_response: Dict[str, Any],
-        tools_response: Dict[str, Any],
-    ) -> Dict[str, Any]:
+        entry: dict[str, Any],
+        init_response: dict[str, Any],
+        tools_response: dict[str, Any],
+    ) -> dict[str, Any]:
         """Validate and stage discovery, then atomically replace same-name state."""
         init_result = _sanitize_model_metadata(self._response_result(init_response, "initialize"))
         raw_tools = await self._paginate_entry(
@@ -697,7 +1085,7 @@ class MCPClient:
                     "Failed to close replaced MCP server '%s'", server_name, exc_info=True
                 )
 
-        out: Dict[str, Any] = {
+        out: dict[str, Any] = {
             "success": True,
             "server": server_name,
             "tools_discovered": len(server_tools),
@@ -711,18 +1099,30 @@ class MCPClient:
         return out
 
     async def connect_stdio(
-        self, server_name: str, command: str, args: Optional[List[str]] = None
-    ) -> Dict[str, Any]:
+        self,
+        server_name: str,
+        command: str,
+        args: Optional[list[str]] = None,
+        *,
+        env: Optional[dict[str, str]] = None,
+        cwd: Optional[str | Path] = None,
+        timeout: float = 10,
+    ) -> dict[str, Any]:
         """Connect to an MCP server via stdio transport.
 
         Args:
             server_name: Friendly name for this server connection
             command: Server command to run (e.g., 'npx', 'python3')
             args: Command line arguments for the server
+            env: Optional env overlays applied after :func:`scrub_env` (explicit keys only)
+            cwd: Working directory for the server process (default: project cwd)
+            timeout: Seconds to wait for initialize / tools/list
 
         Returns:
             Connection result with discovered tools
         """
+        from coderAI.tools.mcp_config import build_stdio_env, resolve_mcp_cwd
+
         reject = _reject_reserved_server_name(server_name)
         if reject:
             return reject
@@ -734,8 +1134,12 @@ class MCPClient:
             return {"success": False, "error": launch_err}
 
         process = None
-        candidate_entry: Optional[Dict[str, Any]] = None
+        candidate_entry: Optional[dict[str, Any]] = None
         connection_failed = True
+        workdir = resolve_mcp_cwd(str(cwd) if cwd is not None else None)
+        child_env = build_stdio_env(env)
+        # Advertise project dir for presets that reference ${CODERAI_PROJECT_DIR}.
+        child_env.setdefault("CODERAI_PROJECT_DIR", str(Path(".").resolve()))
         try:
             # On Windows ``create_subprocess_exec`` does not consult PATHEXT, so
             # a bare ``npx``/``npm``/``node`` won't resolve to its ``.cmd``/``.exe``
@@ -747,14 +1151,14 @@ class MCPClient:
                 if resolved:
                     launch_command = resolved
             full_args = [launch_command] + (args or [])
-            launch = prepare_sandbox_launch(full_args, cwd=Path.cwd())
+            launch = prepare_sandbox_launch(full_args, cwd=workdir)
             process = await asyncio.create_subprocess_exec(
                 *launch.argv,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                cwd=Path.cwd(),
-                env=scrub_env(),
+                cwd=workdir,
+                env=child_env,
                 **new_session_kwargs(),
             )
             assert process.stdin is not None
@@ -769,7 +1173,14 @@ class MCPClient:
                 "stderr_task": stderr_task,
                 "pending": {},
                 "write_lock": asyncio.Lock(),
-                "_conn_params": {"command": command, "args": args},
+                "_server_name": server_name,
+                "_conn_params": {
+                    "command": command,
+                    "args": args,
+                    "env": dict(env) if env else None,
+                    "cwd": str(workdir),
+                    "timeout": timeout,
+                },
             }
             candidate_entry["reader_task"] = asyncio.create_task(
                 self._stdio_reader(server_name, candidate_entry, process.stdout)
@@ -778,13 +1189,39 @@ class MCPClient:
             init_id = self._get_next_id()
             try:
                 init_response = await self._stdio_exchange(
-                    candidate_entry, self._init_request(init_id), timeout=10
+                    candidate_entry, self._init_request(init_id), timeout=timeout
                 )
             except asyncio.TimeoutError:
                 return {
                     "success": False,
-                    "error": f"Server '{server_name}' did not respond to initialize within 10s",
+                    "error": (
+                        f"Server '{server_name}' did not respond to initialize within {timeout:g}s"
+                    ),
                 }
+
+            # If preferred protocol is rejected, retry once with the fallback version.
+            if isinstance(init_response, dict) and init_response.get("error"):
+                err_msg = str(init_response.get("error"))
+                logger.info(
+                    "MCP initialize preferred version failed for '%s': %s; trying fallback",
+                    server_name,
+                    err_msg,
+                )
+                init_id = self._get_next_id()
+                try:
+                    init_response = await self._stdio_exchange(
+                        candidate_entry,
+                        self._init_request(init_id, self.FALLBACK_PROTOCOL_VERSION),
+                        timeout=timeout,
+                    )
+                except asyncio.TimeoutError:
+                    return {
+                        "success": False,
+                        "error": (
+                            f"Server '{server_name}' did not respond to initialize "
+                            f"within {timeout:g}s"
+                        ),
+                    }
 
             await self._stdio_send(
                 candidate_entry,
@@ -796,7 +1233,7 @@ class MCPClient:
                 tools_response = await self._stdio_exchange(
                     candidate_entry,
                     {"jsonrpc": "2.0", "id": tools_id, "method": "tools/list"},
-                    timeout=10,
+                    timeout=timeout,
                 )
             except asyncio.TimeoutError:
                 return {
@@ -833,16 +1270,38 @@ class MCPClient:
                         "Failed to close MCP candidate in connect_stdio finally", exc_info=True
                     )
 
+    def _unwrap_tool_arguments(
+        self, server_name: str, tool_name: str, arguments: dict[str, Any]
+    ) -> Any:
+        """Undo the ``{"value": …}`` nesting applied to a non-object input schema.
+
+        ``get_tools_as_openai_format`` nests a non-object schema root under
+        :data:`WRAPPED_ARG_KEY` because providers only accept object-rooted
+        parameters, so the model answers with ``{"value": …}``. The server never
+        advertised that property and would reject it, so peel the wrapper back off
+        for exactly the tools whose advertised schema was rewritten.
+        """
+        if not isinstance(arguments, dict) or set(arguments) != {WRAPPED_ARG_KEY}:
+            return arguments
+        for item in self.discovered_tools:
+            if item.get("server") == server_name and item.get("name") == tool_name:
+                _, wrapped = normalize_parameters_schema_ex(item.get("input_schema"))
+                if wrapped:
+                    return arguments[WRAPPED_ARG_KEY]
+                break
+        return arguments
+
     async def call_tool(
-        self, server_name: str, tool_name: str, arguments: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        self, server_name: str, tool_name: str, arguments: dict[str, Any]
+    ) -> dict[str, Any]:
         """Call a tool on a connected MCP server.
 
         Dispatches over the connected transport via :meth:`_request` and shapes
         the reply with :func:`_shape_tool_result`.
         """
+        payload = self._unwrap_tool_arguments(server_name, tool_name, arguments)
         res = await self._request(
-            server_name, "tools/call", {"name": tool_name, "arguments": arguments}
+            server_name, "tools/call", {"name": tool_name, "arguments": payload}
         )
         if not res["success"]:
             return res
@@ -852,9 +1311,9 @@ class MCPClient:
         self,
         server_name: str,
         method: str,
-        params: Optional[Dict[str, Any]] = None,
+        params: Optional[dict[str, Any]] = None,
         timeout: float = 30,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Send one JSON-RPC request to a connected server and return its result.
 
         Dispatches across the stdio / SSE / HTTP transports using the same
@@ -868,7 +1327,7 @@ class MCPClient:
             server_name, self.servers[server_name], method, params, timeout
         )
 
-    def _schedule_request_cancellation(self, entry: Dict[str, Any], request_id: Any) -> None:
+    def _schedule_request_cancellation(self, entry: dict[str, Any], request_id: Any) -> None:
         """Best-effort MCP cancellation without delaying local timeout/cancellation."""
         try:
             task = asyncio.create_task(self._send_request_cancellation(entry, request_id))
@@ -881,7 +1340,7 @@ class MCPClient:
 
         task.add_done_callback(_consume_result)
 
-    async def _send_request_cancellation(self, entry: Dict[str, Any], request_id: Any) -> None:
+    async def _send_request_cancellation(self, entry: dict[str, Any], request_id: Any) -> None:
         payload = {
             "jsonrpc": "2.0",
             "method": "notifications/cancelled",
@@ -919,8 +1378,8 @@ class MCPClient:
             )
 
     async def _sse_exchange(
-        self, entry: Dict[str, Any], request: Dict[str, Any], timeout: float
-    ) -> Dict[str, Any]:
+        self, entry: dict[str, Any], request: dict[str, Any], timeout: float
+    ) -> dict[str, Any]:
         """POST to a legacy SSE endpoint and await the long-lived stream dispatcher."""
         import aiohttp
 
@@ -952,7 +1411,7 @@ class MCPClient:
                 if "application/json" in response.headers.get("Content-Type", ""):
                     parsed = await response.json()
                     if isinstance(parsed, dict):
-                        self._dispatch_response(entry, parsed)
+                        self._dispatch_response(entry.get("_server_name", ""), entry, parsed)
             assert future is not None
             return await asyncio.wait_for(asyncio.shield(future), timeout=timeout)
         except (asyncio.TimeoutError, asyncio.CancelledError):
@@ -965,19 +1424,101 @@ class MCPClient:
             if request_id is not None:
                 entry["pending"].pop(request_id, None)
 
+    async def _refresh_session_token(self, server_name: str, server: dict[str, Any]) -> bool:
+        """Re-stamp a Streamable HTTP session's bearer from the credential store.
+
+        Returns ``True`` only when a *different* token was installed, so callers
+        know a replay is worth attempting. A config-supplied ``Authorization``
+        header is left alone: that is a static credential the user set explicitly,
+        not something the OAuth store owns.
+        """
+        configured = server.get("headers") or {}
+        if any(str(key).lower() == "authorization" for key in configured):
+            return False
+        session = server.get("session")
+        headers = getattr(session, "headers", None)
+        if headers is None:
+            return False
+
+        from coderAI.tools.mcp_oauth import get_valid_token_sync
+
+        current = headers.get("Authorization")
+        try:
+            token = await asyncio.to_thread(get_valid_token_sync, server_name, force_refresh=True)
+        except Exception:
+            logger.debug("MCP token refresh failed for '%s'", server_name, exc_info=True)
+            return False
+        if not token:
+            return False
+        header = f"Bearer {token}"
+        if header == current:
+            return False
+        try:
+            headers["Authorization"] = header
+        except Exception:
+            logger.debug(
+                "Could not update session headers for MCP server '%s'",
+                server_name,
+                exc_info=True,
+            )
+            return False
+        logger.info("Refreshed OAuth token for MCP server '%s' after HTTP 401", server_name)
+        return True
+
+    async def _http_send_with_reauth(
+        self,
+        server_name: str,
+        server: dict[str, Any],
+        session: Any,
+        url: str,
+        request: dict[str, Any],
+        req_id: int,
+        timeout: float,
+    ) -> dict[str, Any]:
+        """POST over Streamable HTTP, refreshing an expired bearer once on 401.
+
+        ``connect_http`` resolves the OAuth access token a single time, at connect,
+        and bakes it into the session's default headers. Any session outliving that
+        token then saw every call fail with "run ``coderAI mcp login``" even though
+        a usable refresh token was sitting on disk. Refresh silently and replay the
+        request instead; a second 401 propagates as before.
+        """
+        try:
+            response, new_session_id = await self._http_send(
+                session,
+                url,
+                request,
+                expected_id=req_id,
+                session_id=server.get("session_id"),
+                timeout=timeout,
+            )
+        except MCPAuthRequiredError:
+            if not await self._refresh_session_token(server_name, server):
+                raise
+            response, new_session_id = await self._http_send(
+                session,
+                url,
+                request,
+                expected_id=req_id,
+                session_id=server.get("session_id"),
+                timeout=timeout,
+            )
+        server["session_id"] = new_session_id
+        return response or {}
+
     async def _request_entry(
         self,
         server_name: str,
-        server: Dict[str, Any],
+        server: dict[str, Any],
         method: str,
-        params: Optional[Dict[str, Any]] = None,
+        params: Optional[dict[str, Any]] = None,
         timeout: float = 30,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Send one request against an active or not-yet-committed connection entry."""
 
         transport = server.get("transport", "stdio")
         req_id = self._get_next_id()
-        request: Dict[str, Any] = {"jsonrpc": "2.0", "id": req_id, "method": method}
+        request: dict[str, Any] = {"jsonrpc": "2.0", "id": req_id, "method": method}
         if params is not None:
             request["params"] = params
 
@@ -987,22 +1528,14 @@ class MCPClient:
             elif transport == "http":
                 session = server.get("session")
                 url = server.get("url")
-                session_id = server.get("session_id")
                 if not session or not url:
                     return {
                         "success": False,
                         "error": f"HTTP connection state invalid for '{server_name}'",
                     }
-                response, new_session_id = await self._http_send(
-                    session,
-                    url,
-                    request,
-                    expected_id=req_id,
-                    session_id=session_id,
-                    timeout=timeout,
+                response = await self._http_send_with_reauth(
+                    server_name, server, session, url, request, req_id, timeout
                 )
-                server["session_id"] = new_session_id
-                response = response or {}
             else:
                 response = await self._stdio_exchange(server, request, timeout=timeout)
         except MCPAuthRequiredError:
@@ -1039,13 +1572,13 @@ class MCPClient:
             return {"success": False, "error": f"MCP {method} returned a non-object result"}
         return {"success": True, "result": result}
 
-    def _capabilities(self, server_name: str) -> Dict[str, Any]:
+    def _capabilities(self, server_name: str) -> dict[str, Any]:
         """Return the server's advertised capabilities from the initialize reply."""
         server = self.servers.get(server_name, {})
         caps = (server.get("server_info") or {}).get("capabilities", {})
         return caps if isinstance(caps, dict) else {}
 
-    async def list_resources(self, server_name: str) -> Dict[str, Any]:
+    async def list_resources(self, server_name: str) -> dict[str, Any]:
         """List resources exposed by a connected server (``resources/list``)."""
         if server_name not in self.servers:
             return {"success": False, "error": f"Server not connected: {server_name}"}
@@ -1068,7 +1601,7 @@ class MCPClient:
             "resources": resources,
         }
 
-    async def read_resource(self, server_name: str, uri: str) -> Dict[str, Any]:
+    async def read_resource(self, server_name: str, uri: str) -> dict[str, Any]:
         """Read the contents of a resource (``resources/read``)."""
         if server_name not in self.servers:
             return {"success": False, "error": f"Server not connected: {server_name}"}
@@ -1090,7 +1623,7 @@ class MCPClient:
             "text": text,
         }
 
-    async def list_prompts(self, server_name: str) -> Dict[str, Any]:
+    async def list_prompts(self, server_name: str) -> dict[str, Any]:
         """List prompt templates exposed by a connected server (``prompts/list``)."""
         if server_name not in self.servers:
             return {"success": False, "error": f"Server not connected: {server_name}"}
@@ -1109,8 +1642,8 @@ class MCPClient:
         return {"success": True, "server": server_name, "count": len(prompts), "prompts": prompts}
 
     async def get_prompt(
-        self, server_name: str, name: str, arguments: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+        self, server_name: str, name: str, arguments: Optional[dict[str, Any]] = None
+    ) -> dict[str, Any]:
         """Fetch a prompt template with arguments filled in (``prompts/get``)."""
         if server_name not in self.servers:
             return {"success": False, "error": f"Server not connected: {server_name}"}
@@ -1134,13 +1667,13 @@ class MCPClient:
         }
 
     async def _discover_extras_for_entry(
-        self, server_name: str, entry: Dict[str, Any]
-    ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        self, server_name: str, entry: dict[str, Any]
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         """Stage bounded resource/prompt metadata without mutating global state."""
         caps = (entry.get("server_info") or {}).get("capabilities", {})
         caps = caps if isinstance(caps, dict) else {}
-        resources: List[Dict[str, Any]] = []
-        prompts: List[Dict[str, Any]] = []
+        resources: list[dict[str, Any]] = []
+        prompts: list[dict[str, Any]] = []
         if "resources" in caps:
             try:
                 discovered = await self._paginate_entry(
@@ -1178,21 +1711,9 @@ class MCPClient:
                 logger.debug("prompt discovery failed for '%s'", server_name, exc_info=True)
         return resources, prompts
 
-    async def _discover_extras(self, server_name: str) -> Dict[str, int]:
-        """Refresh extra discovery for an already-connected server."""
-        entry = self.servers[server_name]
-        resources, prompts = await self._discover_extras_for_entry(server_name, entry)
-        self.discovered_resources = [
-            item for item in self.discovered_resources if item.get("server") != server_name
-        ] + resources
-        self.discovered_prompts = [
-            item for item in self.discovered_prompts if item.get("server") != server_name
-        ] + prompts
-        return {"resources": len(resources), "prompts": len(prompts)}
-
-    async def _close_server_entry(self, server: Dict[str, Any], *, force: bool = False) -> None:
+    async def _close_server_entry(self, server: dict[str, Any], *, force: bool = False) -> None:
         """Close one transport entry and surface cleanup failures to the caller."""
-        errors: List[str] = []
+        errors: list[str] = []
         self._fail_pending(server, RuntimeError("MCP connection closed"))
         tasks = [server.get("reader_task"), server.get("stderr_task")]
         for task in tasks:
@@ -1236,7 +1757,7 @@ class MCPClient:
         if errors:
             raise RuntimeError("; ".join(errors))
 
-    async def disconnect(self, server_name: str) -> Dict[str, Any]:
+    async def disconnect(self, server_name: str) -> dict[str, Any]:
         """Disconnect from an MCP server.
 
         Args:
@@ -1267,10 +1788,10 @@ class MCPClient:
             }
         return {"success": True, "message": f"Disconnected from {server_name}"}
 
-    async def _sse_reader(self, server_name: str, entry: Dict[str, Any], response: Any) -> None:
+    async def _sse_reader(self, server_name: str, entry: dict[str, Any], response: Any) -> None:
         """Keep the legacy SSE response open and dispatch complete events."""
         event_name = "message"
-        data_lines: List[str] = []
+        data_lines: list[str] = []
         error: BaseException = RuntimeError(f"MCP SSE server '{server_name}' closed the stream")
         try:
             while True:
@@ -1294,7 +1815,7 @@ class MCPClient:
                                 )
                             else:
                                 if isinstance(parsed, dict):
-                                    self._dispatch_response(entry, parsed)
+                                    self._dispatch_response(server_name, entry, parsed)
                     event_name = "message"
                     data_lines = []
                     continue
@@ -1320,7 +1841,7 @@ class MCPClient:
             if self.servers.get(server_name) is entry:
                 entry["degraded"] = True
 
-    async def connect_sse(self, server_name: str, url: str) -> Dict[str, Any]:
+    async def connect_sse(self, server_name: str, url: str) -> dict[str, Any]:
         """Connect to an MCP server via SSE transport.
 
         Args:
@@ -1340,7 +1861,7 @@ class MCPClient:
         if scheme_err:
             return {"success": False, "error": scheme_err}
 
-        candidate_entry: Optional[Dict[str, Any]] = None
+        candidate_entry: Optional[dict[str, Any]] = None
         committed = False
         try:
             session = aiohttp.ClientSession()
@@ -1359,6 +1880,7 @@ class MCPClient:
                 "sse_url": url,
                 "endpoint_future": endpoint_future,
                 "pending": {},
+                "_server_name": server_name,
                 "_conn_params": {"url": url},
             }
             candidate_entry["reader_task"] = asyncio.create_task(
@@ -1412,8 +1934,8 @@ class MCPClient:
         self,
         server_name: str,
         url: str,
-        headers: Optional[Dict[str, str]] = None,
-    ) -> Dict[str, Any]:
+        headers: Optional[dict[str, str]] = None,
+    ) -> dict[str, Any]:
         """Connect to an MCP server via Streamable HTTP transport.
 
         This is the modern remote-server transport (MCP spec 2025-03-26) that
@@ -1441,7 +1963,7 @@ class MCPClient:
         if scheme_err:
             return {"success": False, "error": scheme_err}
 
-        candidate_entry: Optional[Dict[str, Any]] = None
+        candidate_entry: Optional[dict[str, Any]] = None
         committed = False
         try:
             base_headers = {
@@ -1467,6 +1989,8 @@ class MCPClient:
                 "url": url,
                 "session_id": None,
                 "headers": headers or {},
+                "_server_name": server_name,
+                "pending": {},
                 "_conn_params": {"url": url, "headers": headers or {}},
             }
 
@@ -1536,7 +2060,7 @@ class MCPClient:
         self,
         session: Any,
         url: str,
-        payload: Dict[str, Any],
+        payload: dict[str, Any],
         expected_id: Optional[int],
         session_id: Optional[str],
         timeout: float = 30,
@@ -1583,7 +2107,7 @@ class MCPClient:
 
     async def _read_http_sse(
         self, resp: Any, expected_id: int, timeout: float = 30
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Read an SSE-framed HTTP body until the matching JSON-RPC reply lands.
 
         Streamable HTTP servers may answer a single request with an event
@@ -1594,7 +2118,7 @@ class MCPClient:
         import time
 
         deadline = time.monotonic() + timeout
-        data_lines: List[str] = []
+        data_lines: list[str] = []
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -1621,7 +2145,7 @@ class MCPClient:
                 data_lines.append(text[5:].lstrip())
             # Other SSE fields (event:, id:, retry:) are not needed here.
 
-    def get_tools_as_openai_format(self) -> List[Dict[str, Any]]:
+    def get_tools_as_openai_format(self) -> list[dict[str, Any]]:
         """Get discovered MCP tools in OpenAI function-calling format.
 
         Returns:
@@ -1651,12 +2175,22 @@ class MCPClient:
         """Check if each connected MCP server is still alive.
 
         For stdio servers: checks if the subprocess has exited (returncode is not None).
-        For SSE servers: attempts a lightweight request to the message URL.
+        For SSE servers: sends an in-band MCP ``ping`` over the live session.
         Dead servers are marked with a ``degraded`` flag and a warning is logged.
         """
-        import aiohttp
 
-        async def _probe_sse(name: str, info: Dict[str, Any]) -> None:
+        async def _probe_sse(name: str, info: dict[str, Any]) -> None:
+            """Liveness-probe one SSE server with an in-band MCP ``ping``.
+
+            The probe reuses the connection's own session so its auth headers
+            and cookies apply, and sends a real JSON-RPC request rather than an
+            ``OPTIONS`` preflight — most MCP message endpoints accept POST only,
+            so preflighting a perfectly healthy server returned 405 and got it
+            marked degraded (dropping all of its tools and kicking off reconnect
+            back-offs). A JSON-RPC error reply such as ``Method not found`` still
+            proves the transport is alive, so only a raised exception (timeout,
+            connection failure, non-2xx POST, dead event stream) degrades.
+            """
             message_url = info.get("message_url")
             if not message_url:
                 return
@@ -1666,11 +2200,20 @@ class MCPClient:
                     logger.warning("MCP server '%s' (SSE) session is closed", name)
                     info["degraded"] = True
                 return
+            reader_task = info.get("reader_task")
+            if reader_task is not None and reader_task.done():
+                if not info.get("degraded"):
+                    logger.warning("MCP server '%s' (SSE) event stream has ended", name)
+                    info["degraded"] = True
+                return
             try:
-                timeout = aiohttp.ClientTimeout(total=5)
-                async with aiohttp.ClientSession() as tmp_session:
-                    async with tmp_session.options(message_url, timeout=timeout) as _resp:
-                        _resp.raise_for_status()
+                await self._sse_exchange(
+                    info,
+                    {"jsonrpc": "2.0", "id": self._get_next_id(), "method": "ping"},
+                    timeout=5,
+                )
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 if not info.get("degraded"):
                     logger.warning(
@@ -1743,7 +2286,7 @@ class MCPClient:
             transport = info.get("transport", "stdio")
             conn_params = info.get("_conn_params", {})
 
-            result: Dict[str, Any]
+            result: dict[str, Any]
             if transport == "sse":
                 result = await self.connect_sse(name, conn_params.get("url", ""))
             elif transport == "http":
@@ -1755,10 +2298,17 @@ class MCPClient:
                     name,
                     conn_params.get("command", ""),
                     conn_params.get("args"),
+                    env=conn_params.get("env"),
+                    cwd=conn_params.get("cwd"),
+                    timeout=float(conn_params.get("timeout") or 10),
                 )
 
             if result.get("success"):
                 self._reconnect_attempts.pop(name, None)
+                # Reconnect can restore tools that were filtered out while the
+                # server was degraded — mark schemas dirty so the next LLM call
+                # rebuilds them even if the owning ExecutionLoop already ended.
+                self._schemas_dirty = True
                 logger.info("Successfully reconnected to MCP server '%s'", name)
             else:
                 logger.warning(
@@ -1768,19 +2318,32 @@ class MCPClient:
                 )
 
 
-def _normalize_parameters_schema(schema: Any) -> Dict[str, Any]:
+def _normalize_parameters_schema(schema: Any) -> dict[str, Any]:
     """Ensure JSON Schema is OpenAI-tool friendly (object root with properties)."""
+    normalized, _ = normalize_parameters_schema_ex(schema)
+    return normalized
+
+
+def normalize_parameters_schema_ex(schema: Any) -> tuple[dict[str, Any], bool]:
+    """Return ``(openai_schema, wrapped)`` for an MCP ``inputSchema``.
+
+    ``wrapped`` is ``True`` when a non-object root had to be nested under
+    :data:`WRAPPED_ARG_KEY` to satisfy providers that only accept object-rooted
+    parameters. Callers dispatching a tool call need that bit to undo the nesting
+    (see :meth:`MCPClient._unwrap_tool_arguments`) — otherwise the model's
+    ``{"value": …}`` reply reaches a server that never asked for it.
+    """
     if not isinstance(schema, dict):
-        return {"type": "object", "properties": {}}
+        return {"type": "object", "properties": {}}, False
     out = dict(schema)
     if out.get("type") is None and "properties" in out:
         out["type"] = "object"
     if out.get("type") != "object":
         # Non-object roots (e.g. union) — wrap for providers expecting object args
-        return {"type": "object", "properties": {"value": out}}
+        return {"type": "object", "properties": {WRAPPED_ARG_KEY: out}}, True
     if "properties" not in out:
         out["properties"] = {}
-    return out
+    return out, False
 
 
 # Global MCP client instance
@@ -1794,7 +2357,7 @@ def _cleanup_mcp_servers():
     an async session that can't be awaited from an atexit hook (the loop is
     gone) and is released when the interpreter tears down, so they're skipped.
     """
-    for name, info in list(mcp_client.servers.items()):
+    for _name, info in list(mcp_client.servers.items()):
         proc = info.get("process")
         if proc is None:
             continue
@@ -1814,7 +2377,7 @@ class MCPConnectParams(BaseModel):
     command: str = Field(
         "", description="Command to start the MCP server (e.g., 'npx'), for stdio transport"
     )
-    args: Optional[List[str]] = Field(None, description="Arguments for the server command")
+    args: Optional[list[str]] = Field(None, description="Arguments for the server command")
     transport: str = Field(
         "stdio",
         description="Transport type: 'stdio', 'sse', or 'http' (Streamable HTTP). Default: stdio",
@@ -1826,12 +2389,27 @@ class MCPConnectParams(BaseModel):
             "or Streamable HTTP (e.g. https://host/mcp)."
         ),
     )
-    headers: Optional[Dict[str, str]] = Field(
+    headers: Optional[dict[str, str]] = Field(
         None,
         description=(
             "Extra HTTP headers (e.g. {'Authorization': 'Bearer …'}) sent on every "
             "request for the 'http' transport — used for token-authenticated servers."
         ),
+    )
+    env: Optional[dict[str, str]] = Field(
+        None,
+        description=(
+            "Environment variables for stdio servers (applied after scrubbing). "
+            "Values may use ${VAR} or ${VAR:-default} expansion."
+        ),
+    )
+    cwd: Optional[str] = Field(
+        None,
+        description="Working directory for stdio servers (relative paths resolve from the project root).",
+    )
+    timeout: Optional[int] = Field(
+        None,
+        description="Per-request timeout in milliseconds for initialize/tools (stdio).",
     )
     persist: bool = Field(
         True,
@@ -1860,13 +2438,18 @@ class MCPConnectTool(Tool):
         self,
         server_name: str,
         command: str = "",
-        args: Optional[List[str]] = None,
+        args: Optional[list[str]] = None,
         transport: str = "stdio",
         url: Optional[str] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
+        env: Optional[dict[str, str]] = None,
+        cwd: Optional[str] = None,
+        timeout: Optional[int] = None,
         persist: bool = True,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Connect to an MCP server."""
+        from coderAI.tools.mcp_config import parse_timeout_ms
+
         if transport == "sse":
             if not url:
                 return {"success": False, "error": "URL is required for SSE transport"}
@@ -1879,7 +2462,7 @@ class MCPConnectTool(Tool):
                 return {"success": False, "error": "URL is required for HTTP transport"}
             result = await mcp_client.connect_http(server_name, url, headers)
             if result.get("success") and persist:
-                entry: Dict[str, Any] = {"transport": "http", "url": url}
+                entry: dict[str, Any] = {"transport": "http", "url": url}
                 if headers:
                     entry["headers"] = headers
                 persist_mcp_server(server_name, entry)
@@ -1887,9 +2470,19 @@ class MCPConnectTool(Tool):
         # Launcher allow-list, inline-exec block, blocklist and interactive checks
         # all live in ``connect_stdio`` (via ``validate_stdio_launch``) so this
         # LLM-driven path and config-driven autoconnect share one choke point.
-        result = await mcp_client.connect_stdio(server_name, command, args)
+        timeout_s = parse_timeout_ms({"timeout": timeout} if timeout else {}, default_s=10.0)
+        result = await mcp_client.connect_stdio(
+            server_name, command, args, env=env, cwd=cwd, timeout=timeout_s
+        )
         if result.get("success") and persist:
-            persist_mcp_server(server_name, {"command": command, "args": list(args or [])})
+            saved: dict[str, Any] = {"command": command, "args": list(args or [])}
+            if env:
+                saved["env"] = env
+            if cwd:
+                saved["cwd"] = cwd
+            if timeout:
+                saved["timeout"] = timeout
+            persist_mcp_server(server_name, saved)
         return result
 
 
@@ -1908,7 +2501,7 @@ class MCPListTool(Tool):
     result_provenance = Provenance.UNTRUSTED_EXTERNAL
     mcp_source = True
 
-    async def execute(self) -> Dict[str, Any]:  # type: ignore[override]
+    async def execute(self) -> dict[str, Any]:  # type: ignore[override]
         """List MCP servers and tools (live connections + effective config)."""
         configured = effective_mcp_servers().get("mcpServers", {})
         servers = {}
@@ -1970,7 +2563,7 @@ class MCPDisconnectTool(Tool):
     is_read_only = False
     requires_confirmation = True
 
-    async def execute(self, server_name: str) -> Dict[str, Any]:  # type: ignore[override]
+    async def execute(self, server_name: str) -> dict[str, Any]:  # type: ignore[override]
         try:
             return await mcp_client.disconnect(server_name)
         except Exception as e:
@@ -2003,7 +2596,7 @@ class MCPListResourcesTool(Tool):
     result_provenance = Provenance.UNTRUSTED_EXTERNAL
     mcp_source = True
 
-    async def execute(self, server_name: str) -> Dict[str, Any]:  # type: ignore[override]
+    async def execute(self, server_name: str) -> dict[str, Any]:  # type: ignore[override]
         return await mcp_client.list_resources(server_name)
 
 
@@ -2026,7 +2619,7 @@ class MCPReadResourceTool(Tool):
     is_egress = True
     mcp_source = True
 
-    async def execute(self, server_name: str, uri: str) -> Dict[str, Any]:  # type: ignore[override]
+    async def execute(self, server_name: str, uri: str) -> dict[str, Any]:  # type: ignore[override]
         return await mcp_client.read_resource(server_name, uri)
 
 
@@ -2052,14 +2645,14 @@ class MCPListPromptsTool(Tool):
     result_provenance = Provenance.UNTRUSTED_EXTERNAL
     mcp_source = True
 
-    async def execute(self, server_name: str) -> Dict[str, Any]:  # type: ignore[override]
+    async def execute(self, server_name: str) -> dict[str, Any]:  # type: ignore[override]
         return await mcp_client.list_prompts(server_name)
 
 
 class MCPGetPromptParams(BaseModel):
     server_name: str = Field(..., description="Name of the connected MCP server")
     name: str = Field(..., description="Name of the prompt to fetch (from mcp_list_prompts)")
-    arguments: Optional[Dict[str, Any]] = Field(
+    arguments: Optional[dict[str, Any]] = Field(
         None, description="Arguments to fill into the prompt template"
     )
 
@@ -2079,6 +2672,6 @@ class MCPGetPromptTool(Tool):
     mcp_source = True
 
     async def execute(  # type: ignore[override]
-        self, server_name: str, name: str, arguments: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+        self, server_name: str, name: str, arguments: Optional[dict[str, Any]] = None
+    ) -> dict[str, Any]:
         return await mcp_client.get_prompt(server_name, name, arguments or {})

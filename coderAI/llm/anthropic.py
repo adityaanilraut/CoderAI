@@ -3,7 +3,8 @@
 import json
 import logging
 import ssl
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, Optional
+from collections.abc import AsyncIterator
 
 import aiohttp
 
@@ -14,8 +15,8 @@ from coderAI.llm.base import (
     HTTP_SOCK_READ_TIMEOUT,
     HTTP_TOTAL_TIMEOUT,
 )
-from coderAI.llm.base import _retry_async as _retry
 from coderAI.system.redaction import redact_text
+from coderAI.system.retry import retry_async as _retry
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +132,10 @@ class AnthropicProvider(LLMProvider):
         "claude-opus-4-7": 1_000_000,
         "claude-sonnet-4-6": 1_000_000,
         "claude-haiku-4-5-20251001": 200_000,
+        "claude-3-7-sonnet-20250219": 200_000,
+        "claude-3-5-sonnet-20241022": 200_000,
+        "claude-3-5-haiku-20241022": 200_000,
+        "claude-3-opus-20240229": 200_000,
     }
 
     def __init__(self, model: str, api_key: Optional[str] = None, **kwargs: Any):
@@ -163,7 +168,7 @@ class AnthropicProvider(LLMProvider):
         if self._session and not self._session.closed:
             await self._session.close()
 
-    def _get_headers(self) -> Dict[str, str]:
+    def _get_headers(self) -> dict[str, str]:
         """Get API headers."""
         headers = {
             "Content-Type": "application/json",
@@ -174,7 +179,7 @@ class AnthropicProvider(LLMProvider):
             headers["anthropic-beta"] = "prompt-caching-2024-07-31"
         return headers
 
-    def _convert_messages(self, messages: List[Dict[str, Any]]) -> tuple:
+    def _convert_messages(self, messages: list[dict[str, Any]]) -> tuple:
         """Convert OpenAI-style messages to Anthropic format.
 
         Returns:
@@ -253,7 +258,7 @@ class AnthropicProvider(LLMProvider):
                 tool_images = msg.get("tool_images")
                 result_content: Any = content
                 if tool_images:
-                    image_blocks: List[Dict[str, Any]] = []
+                    image_blocks: list[dict[str, Any]] = []
                     if content:
                         image_blocks.append({"type": "text", "text": content})
                     for img in tool_images:
@@ -311,8 +316,8 @@ class AnthropicProvider(LLMProvider):
         return system_prompt.strip(), anthropic_messages
 
     def _convert_tools(
-        self, tools: Optional[List[Dict[str, Any]]]
-    ) -> Optional[List[Dict[str, Any]]]:
+        self, tools: Optional[list[dict[str, Any]]]
+    ) -> Optional[list[dict[str, Any]]]:
         """Convert OpenAI tool format to Anthropic format."""
         if not tools:
             return None
@@ -329,7 +334,7 @@ class AnthropicProvider(LLMProvider):
             )
         return anthropic_tools
 
-    def _convert_response(self, response: Dict[str, Any]) -> Dict[str, Any]:
+    def _convert_response(self, response: dict[str, Any]) -> dict[str, Any]:
         """Convert Anthropic response to OpenAI-compatible format."""
         content_blocks = response.get("content", [])
         text_content = ""
@@ -358,7 +363,7 @@ class AnthropicProvider(LLMProvider):
                     pending_thinking = []
                 tool_calls.append(tool_call)
 
-        message: Dict[str, Any] = {"content": text_content or None, "role": "assistant"}
+        message: dict[str, Any] = {"content": text_content or None, "role": "assistant"}
         if tool_calls:
             message["tool_calls"] = tool_calls
 
@@ -387,8 +392,8 @@ class AnthropicProvider(LLMProvider):
     def _apply_cache_control(
         self,
         system_prompt: str,
-        anthropic_messages: List[Dict[str, Any]],
-        anthropic_tools: Optional[List[Dict[str, Any]]],
+        anthropic_messages: list[dict[str, Any]],
+        anthropic_tools: Optional[list[dict[str, Any]]],
     ) -> tuple:
         """Add cache_control breakpoints to system, tools, and message history.
 
@@ -432,12 +437,12 @@ class AnthropicProvider(LLMProvider):
 
     def _build_payload(
         self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
+        messages: list[dict[str, Any]],
+        tools: Optional[list[dict[str, Any]]] = None,
         *,
         stream: bool = False,
         **kwargs: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Build the Anthropic API payload.
 
         Returns the fully-assembled request body as a dictionary.
@@ -446,7 +451,7 @@ class AnthropicProvider(LLMProvider):
         system_prompt, anthropic_messages = self._convert_messages(messages)
         anthropic_tools = self._convert_tools(tools)
 
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "model": self.actual_model,
             "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
         }
@@ -486,7 +491,7 @@ class AnthropicProvider(LLMProvider):
 
         return payload
 
-    async def _post_to_anthropic(self, payload: Dict[str, Any]) -> aiohttp.ClientResponse:
+    async def _post_to_anthropic(self, payload: dict[str, Any]) -> aiohttp.ClientResponse:
         session = await self._get_session()
 
         async def _do_post() -> Any:
@@ -515,10 +520,10 @@ class AnthropicProvider(LLMProvider):
 
     async def chat(
         self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
+        messages: list[dict[str, Any]],
+        tools: Optional[list[dict[str, Any]]] = None,
         **kwargs: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Send a chat request to Anthropic."""
         payload = self._build_payload(messages, tools, **kwargs)
         response = await self._post_to_anthropic(payload)
@@ -538,10 +543,10 @@ class AnthropicProvider(LLMProvider):
 
     async def stream(
         self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
+        messages: list[dict[str, Any]],
+        tools: Optional[list[dict[str, Any]]] = None,
         **kwargs: Any,
-    ) -> AsyncIterator[Dict[str, Any]]:
+    ) -> AsyncIterator[dict[str, Any]]:
         """Stream response from Anthropic (SSE-based)."""
         payload = self._build_payload(messages, tools, stream=True, **kwargs)
         response = await self._post_to_anthropic(payload)
@@ -561,9 +566,9 @@ class AnthropicProvider(LLMProvider):
             call_cache_creation = 0
             call_cache_read = 0
             # State for reconstructing tool calls from streaming events
-            tool_call_blocks: Dict[int, Dict[str, Any]] = {}  # index -> {id, name, arguments}
-            thinking_blocks: Dict[int, Dict[str, Any]] = {}
-            pending_thinking: List[Dict[str, Any]] = []
+            tool_call_blocks: dict[int, dict[str, Any]] = {}  # index -> {id, name, arguments}
+            thinking_blocks: dict[int, dict[str, Any]] = {}
+            pending_thinking: list[dict[str, Any]] = []
             async for raw_chunk in response.content:
                 buffer += raw_chunk.decode("utf-8")
                 while "\n" in buffer:
@@ -758,7 +763,7 @@ class AnthropicProvider(LLMProvider):
         """Claude supports tool calling."""
         return True
 
-    def get_cost(self) -> Dict[str, Any]:
+    def get_cost(self) -> dict[str, Any]:
         """Get current session cost estimate."""
         from coderAI.system.cost import CostTracker
 
@@ -794,11 +799,11 @@ class AnthropicProvider(LLMProvider):
             "model": self.actual_model,
         }
 
-    def clean_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def clean_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Keep Anthropic's opaque tool-call state for message conversion."""
         return messages
 
-    def get_model_info(self) -> Dict[str, Any]:
+    def get_model_info(self) -> dict[str, Any]:
         info = super().get_model_info()
         info["provider"] = "anthropic"
         info["cache_creation_tokens"] = self.total_cache_creation_tokens

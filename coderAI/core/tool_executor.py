@@ -12,7 +12,7 @@ import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 from coderAI.core.agent_tracker import AgentStatus
 from coderAI.core.execution_context import (
@@ -150,14 +150,14 @@ class ToolBatchOutcome:
     """Typed result of :meth:`ToolExecutor.orchestrate_tool_calls`."""
 
     status: BatchStatus
-    denied_tools: List[str] = field(default_factory=list)
+    denied_tools: list[str] = field(default_factory=list)
     doom_tool: Optional[str] = None
     doom_count: int = 0
 
 
 def _extract_vision_images(
     res: Any,
-) -> Tuple[Any, Optional[List[Dict[str, Any]]]]:
+) -> tuple[Any, Optional[list[dict[str, Any]]]]:
     """Split a vision tool result into a lightweight text dict + image blocks.
 
     Tools like ``read_image`` return ``{"_vision": True, "image_data": <b64>,
@@ -188,7 +188,7 @@ class ToolExecutor:
     _subagent_ro_semaphore: asyncio.Semaphore
     _subagent_mut_semaphore: asyncio.Semaphore
     _confirm_lock: asyncio.Lock
-    _preview_file_cache: "OrderedDict[str, Tuple[float, str]]"
+    _preview_file_cache: "OrderedDict[str, tuple[float, str]]"
 
     def __init__(self, agent: Any, loop_guard: Optional[LoopGuard] = None) -> None:
         self.agent = agent
@@ -207,7 +207,7 @@ class ToolExecutor:
         mut_cap = self._mutating_subagent_cap()
         self._subagent_mut_semaphore = asyncio.Semaphore(mut_cap)
         self._confirm_lock = asyncio.Lock()
-        self._preview_file_cache: "OrderedDict[str, Tuple[float, str]]" = OrderedDict()
+        self._preview_file_cache: "OrderedDict[str, tuple[float, str]]" = OrderedDict()
         # Once a mutation has run in this turn, earlier cached reads may be
         # stale. Consecutive reads can still dedupe within their current phase.
         self._mutation_seen = False
@@ -236,7 +236,7 @@ class ToolExecutor:
         ):
             self._preview_file_cache.popitem(last=False)
 
-    def _is_call_preapproved(self, tool_name: str, arguments: Optional[Dict[str, Any]]) -> bool:
+    def _is_call_preapproved(self, tool_name: str, arguments: Optional[dict[str, Any]]) -> bool:
         """True if this exact call is covered by an "always allow" rule (Phase 4.2).
 
         The real agent carries an :class:`ApprovalRules`, which scopes high-risk
@@ -289,7 +289,7 @@ class ToolExecutor:
         return self._turn.ingested_untrusted_mcp
 
     @staticmethod
-    def _untrusted_source(pc: Dict[str, Any]) -> str:
+    def _untrusted_source(pc: dict[str, Any]) -> str:
         """Short ``source`` label for the untrusted-output fence.
 
         Tool name, plus the fetch target (url/query) when available so a reviewer
@@ -326,7 +326,7 @@ class ToolExecutor:
 
     def _enter_waiting_for_user(
         self, tool_name: str
-    ) -> Optional[Tuple[AgentStatus, Optional[str]]]:
+    ) -> Optional[tuple[AgentStatus, Optional[str]]]:
         info = self.agent.tracker_info
         if not info:
             return None
@@ -334,7 +334,7 @@ class ToolExecutor:
         self.agent.tracker_update(status=AgentStatus.WAITING_FOR_USER, current_tool=tool_name)
         return previous
 
-    def _exit_waiting_for_user(self, previous: Optional[Tuple[AgentStatus, Optional[str]]]) -> None:
+    def _exit_waiting_for_user(self, previous: Optional[tuple[AgentStatus, Optional[str]]]) -> None:
         info = self.agent.tracker_info
         if not info or previous is None:
             return
@@ -360,7 +360,7 @@ class ToolExecutor:
             return text[:32768] + f"\n... (diff truncated) {hidden} chars hidden"
         return text
 
-    def _compute_preview_diff(self, tool_name: str, arguments: Dict[str, Any]) -> Optional[str]:
+    def _compute_preview_diff(self, tool_name: str, arguments: dict[str, Any]) -> Optional[str]:
         """Render an approval diff for a file-editing call (Phase 4.3).
 
         The editing *semantics* live on the tool (:meth:`Tool.preview`); this
@@ -433,8 +433,8 @@ class ToolExecutor:
             logger.debug("Preview diff computation failed for %s: %s", tool_name, e)
             return None
 
-    async def _precompute_diffs(self, parsed_calls: list) -> Dict[int, Optional[str]]:
-        gated: List[Tuple[int, dict]] = []
+    async def _precompute_diffs(self, parsed_calls: list) -> dict[int, Optional[str]]:
+        gated: list[tuple[int, dict]] = []
         for i, pc in enumerate(parsed_calls):
             if pc.get("parse_error") or pc.get("arguments") is None:
                 continue
@@ -445,13 +445,13 @@ class ToolExecutor:
         if not gated:
             return {}
 
-        async def _one(idx: int, pc: dict) -> Tuple[int, Optional[str]]:
+        async def _one(idx: int, pc: dict) -> tuple[int, Optional[str]]:
             diff = await asyncio.to_thread(
                 self._compute_preview_diff, pc["tool_name"], pc["arguments"]
             )
             return idx, diff
 
-        diffs: Dict[int, Optional[str]] = {}
+        diffs: dict[int, Optional[str]] = {}
         results = await asyncio.gather(*(_one(i, pc) for i, pc in gated))
         for idx, diff in results:
             if diff is not None:
@@ -461,7 +461,7 @@ class ToolExecutor:
     async def _confirmation_callback(
         self,
         tool_name: str,
-        arguments: Dict[str, Any],
+        arguments: dict[str, Any],
         tool_id: Optional[str] = None,
         precomputed_diff: Optional[str] = None,
         *,
@@ -567,11 +567,11 @@ class ToolExecutor:
 
     async def execute_single_tool(
         self,
-        pc: Dict[str, Any],
-        hooks_data: Optional[Dict[str, Any]],
+        pc: dict[str, Any],
+        hooks_data: Optional[dict[str, Any]],
         hooks_manager: Any,
         precomputed_diff: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         if pc.get("parse_error"):
             return normalize_tool_result(
                 {
@@ -615,17 +615,40 @@ class ToolExecutor:
 
     async def _execute_single_tool_inner(
         self,
-        pc: Dict[str, Any],
-        hooks_data: Optional[Dict[str, Any]],
+        pc: dict[str, Any],
+        hooks_data: Optional[dict[str, Any]],
         hooks_manager: Any,
         *,
         precomputed_diff: Optional[str] = None,
         tool: Any = None,
         tool_name: str = "",
         arguments: Any = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         try:
             is_mcp_proxy = is_mcp_function_name(tool_name) and tool is None
+            if vars(self.agent).get("plan_mode") is True:
+                read_only_delegation = (
+                    tool_name == "delegate_task"
+                    and isinstance(arguments, dict)
+                    and bool(arguments.get("read_only_task"))
+                )
+                allowed_in_plan = bool(
+                    tool_name == "submit_plan"
+                    or read_only_delegation
+                    or (tool is not None and getattr(tool, "is_read_only", False))
+                )
+                if not allowed_in_plan:
+                    return normalize_tool_result(
+                        {
+                            "success": False,
+                            "error": (
+                                f"Tool '{tool_name}' is blocked by enforced Plan Mode. "
+                                "Use read-only exploration and submit_plan."
+                            ),
+                            "error_code": ToolErrorCode.PERMISSION_DENIED,
+                        },
+                        tool_name=tool_name,
+                    )
             allowed_native = vars(self.agent).get("_allowed_native_tool_names")
             if allowed_native is not None and (
                 is_mcp_proxy or tool_name not in allowed_native or tool is None
@@ -680,7 +703,7 @@ class ToolExecutor:
             if mcp_mutation_gated:
                 needs_confirmation = True
 
-            async def _confirm(name: str, args: Dict[str, Any]) -> bool:
+            async def _confirm(name: str, args: dict[str, Any]) -> bool:
                 return await self._confirmation_callback(
                     name,
                     args,
@@ -846,7 +869,7 @@ class ToolExecutor:
                 await hooks_manager.run_hooks(tool_name, "PostToolUse", post_hook_args, hooks_data)
                 or []
             )
-            normalized_res: Dict[str, Any] = normalize_tool_result(result, tool_name=tool_name)
+            normalized_res: dict[str, Any] = normalize_tool_result(result, tool_name=tool_name)
 
             if pre_hooks or post_hooks:
                 normalized_res["_hooks"] = {"pre": pre_hooks, "post": post_hooks}
@@ -864,9 +887,9 @@ class ToolExecutor:
     async def orchestrate_tool_calls(
         self,
         tool_calls: list,
-        messages: List[Dict[str, Any]],
+        messages: list[dict[str, Any]],
         user_message: str,
-        hooks_data: Optional[Dict[str, Any]],
+        hooks_data: Optional[dict[str, Any]],
         hooks_manager: Any,
         turn: Optional[TurnContext] = None,
     ) -> ToolBatchOutcome:
@@ -894,9 +917,9 @@ class ToolExecutor:
     async def _orchestrate_tool_calls(
         self,
         tool_calls: list,
-        messages: List[Dict[str, Any]],
+        messages: list[dict[str, Any]],
         user_message: str,
-        hooks_data: Optional[Dict[str, Any]],
+        hooks_data: Optional[dict[str, Any]],
         hooks_manager: Any,
     ) -> ToolBatchOutcome:
         parsed_calls = []
@@ -927,6 +950,17 @@ class ToolExecutor:
             # ask the loop for another LLM round. The loop's
             # ``consecutive_errors`` counter terminates if this keeps happening.
             for pc in parsed_calls:
+                if self._turn.objective_state is not None:
+                    self._turn.objective_state.record_tool_result(
+                        pc["tool_name"],
+                        None,
+                        {
+                            "success": False,
+                            "error": pc["parse_error"],
+                            "error_code": ToolErrorCode.PARSE_ERROR,
+                        },
+                        self.agent.tools.get(pc["tool_name"]),
+                    )
                 self.agent.session.add_message(
                     "tool",
                     json.dumps(
@@ -963,9 +997,9 @@ class ToolExecutor:
                     tool_id=pc["tool_id"],
                 )
 
-        dup_results: Dict[int, Dict[str, Any]] = {}
-        batch_seen: Dict[str, int] = {}
-        to_run_indices: List[int] = []
+        dup_results: dict[int, dict[str, Any]] = {}
+        batch_seen: dict[str, int] = {}
+        to_run_indices: list[int] = []
         mutation_before = self._mutation_seen
         for idx, pc in enumerate(parsed_calls):
             if pc["parse_error"] is not None or pc["arguments"] is None:
@@ -1031,8 +1065,8 @@ class ToolExecutor:
         run_results = await self.run_tool_batch(calls_to_run, hooks_data, hooks_manager)
 
         # Merge real results + dup short-circuit results back into original order
-        results: List[Any] = [None] * len(parsed_calls)
-        for i, r in zip(to_run_indices, run_results):
+        results: list[Any] = [None] * len(parsed_calls)
+        for i, r in zip(to_run_indices, run_results, strict=True):
             results[i] = r
         for i, placeholder in dup_results.items():
             src = placeholder.pop("_dup_of_batch_index", None)
@@ -1052,9 +1086,9 @@ class ToolExecutor:
         # shared LoopGuard, and detect cross-iteration doom-loops here: if any
         # fingerprint has now been called past its hard threshold we signal the
         # loop to terminate after persisting the current results.
-        doom_offender: Optional[Tuple[str, int]] = None  # (tool_name, count)
+        doom_offender: Optional[tuple[str, int]] = None  # (tool_name, count)
         executed_indices = set(to_run_indices)
-        for idx, (pc, res) in enumerate(zip(parsed_calls, results)):
+        for idx, (pc, res) in enumerate(zip(parsed_calls, results, strict=True)):
             fp_val = pc.get("_fp")
             if not fp_val or not isinstance(fp_val, str):
                 continue
@@ -1084,7 +1118,14 @@ class ToolExecutor:
             ):
                 doom_offender = (pc["tool_name"], cached_count)
 
-        for pc, res in zip(parsed_calls, results):
+        for pc, res in zip(parsed_calls, results, strict=True):
+            if self._turn.objective_state is not None:
+                self._turn.objective_state.record_tool_result(
+                    pc["tool_name"],
+                    pc.get("arguments"),
+                    res,
+                    self.agent.tools.get(pc["tool_name"]),
+                )
             # Pull any base64 image out BEFORE summarization so it reaches the
             # model as a real vision block instead of being truncated/stringified.
             res, images = _extract_vision_images(res)
@@ -1092,7 +1133,7 @@ class ToolExecutor:
             get_services().events.emit(
                 "tool_result", tool_name=pc["tool_name"], result=res, tool_id=pc["tool_id"]
             )
-            extra: Dict[str, Any] = {"name": pc["tool_name"]}
+            extra: dict[str, Any] = {"name": pc["tool_name"]}
             if images:
                 extra["tool_images"] = images
 
@@ -1123,8 +1164,8 @@ class ToolExecutor:
         messages.extend(self.agent.session.get_messages_for_api())
 
         # Detect which failures are user denials (not real errors).
-        denied_tools: List[str] = []
-        for pc, res in zip(parsed_calls, results):
+        denied_tools: list[str] = []
+        for pc, res in zip(parsed_calls, results, strict=True):
             if isinstance(res, dict) and res.get("error_code") == ToolErrorCode.DENIED:
                 denied_tools.append(pc.get("tool_name", "unknown"))
 
@@ -1156,9 +1197,9 @@ class ToolExecutor:
         return ToolBatchOutcome(BatchStatus.OK)
 
     async def run_tool_batch(
-        self, parsed_calls: list, hooks_data: Optional[Dict[str, Any]], hooks_manager: Any
+        self, parsed_calls: list, hooks_data: Optional[dict[str, Any]], hooks_manager: Any
     ) -> list:
-        results: List[Any] = [None] * len(parsed_calls)
+        results: list[Any] = [None] * len(parsed_calls)
         total, done = len(parsed_calls), 0
         # _cancel_event is an asyncio.Event on AgentTrackerInfo used to
         # signal cancellation across concurrent tool tasks.
@@ -1166,20 +1207,20 @@ class ToolExecutor:
 
         precomputed_diffs = await self._precompute_diffs(parsed_calls)
 
-        def _is_read_call(pc: Dict[str, Any]) -> bool:
+        def _is_read_call(pc: dict[str, Any]) -> bool:
             if pc.get("tool_name") == "delegate_task" and isinstance(pc.get("arguments"), dict):
                 return resolve_delegation_isolation_domain(pc["arguments"]) == "read_only"
             tool = self.agent.tools.get(pc.get("tool_name", ""))
             return bool(tool and getattr(tool, "is_read_only", False))
 
-        def _cancelled_result() -> Dict[str, Any]:
+        def _cancelled_result() -> dict[str, Any]:
             return {
                 "success": False,
                 "error": "Cancelled by user.",
                 "error_code": ToolErrorCode.CANCELLED,
             }
 
-        async def _run(pc: Dict[str, Any], diff: Optional[str] = None) -> Dict[str, Any]:
+        async def _run(pc: dict[str, Any], diff: Optional[str] = None) -> dict[str, Any]:
             if not cancel_event:
                 return await self.execute_single_tool(
                     pc, hooks_data, hooks_manager, precomputed_diff=diff
@@ -1228,7 +1269,7 @@ class ToolExecutor:
                 payload["elapsed"] = elapsed
             get_services().events.emit("tool_progress", **payload)
 
-        def _coerce_gather_result(idx: int, raw: Any) -> Dict[str, Any]:
+        def _coerce_gather_result(idx: int, raw: Any) -> dict[str, Any]:
             if isinstance(raw, BaseException):
                 if isinstance(raw, (KeyboardInterrupt, SystemExit)):
                     raise raw
@@ -1243,7 +1284,7 @@ class ToolExecutor:
                 return raw
             return {"success": True, "result": raw}
 
-        def _phase_kind(pc: Dict[str, Any]) -> str:
+        def _phase_kind(pc: dict[str, Any]) -> str:
             if _is_read_call(pc):
                 return "read"
             if pc.get("tool_name") == "delegate_task" and isinstance(pc.get("arguments"), dict):
@@ -1251,7 +1292,7 @@ class ToolExecutor:
                     return "browser"
             return "mutation"
 
-        async def _run_read(idx: int, caps: Dict[str, asyncio.Semaphore]) -> Dict[str, Any]:
+        async def _run_read(idx: int, caps: dict[str, asyncio.Semaphore]) -> dict[str, Any]:
             pc = parsed_calls[idx]
             tool_name = pc.get("tool_name", "")
             tool = self.agent.tools.get(tool_name)
@@ -1266,7 +1307,7 @@ class ToolExecutor:
                         return await _run(pc, diff=precomputed_diffs.get(idx))
                 return await _run(pc, diff=precomputed_diffs.get(idx))
 
-        async def _run_browser(idx: int) -> Dict[str, Any]:
+        async def _run_browser(idx: int) -> dict[str, Any]:
             async with self._subagent_mut_semaphore:
                 return await _run(parsed_calls[idx], diff=None)
 
@@ -1275,18 +1316,18 @@ class ToolExecutor:
         while cursor < len(parsed_calls):
             kind = _phase_kind(parsed_calls[cursor])
             if kind in {"read", "browser"}:
-                phase_indices: List[int] = []
+                phase_indices: list[int] = []
                 while cursor < len(parsed_calls) and _phase_kind(parsed_calls[cursor]) == kind:
                     phase_indices.append(cursor)
                     cursor += 1
 
                 if kind == "read":
-                    caps: Dict[str, asyncio.Semaphore] = {}
+                    caps: dict[str, asyncio.Semaphore] = {}
                     raw_results = await asyncio.gather(
                         *(_run_read(idx, caps) for idx in phase_indices),
                         return_exceptions=True,
                     )
-                    for idx, raw in zip(phase_indices, raw_results):
+                    for idx, raw in zip(phase_indices, raw_results, strict=True):
                         results[idx] = _coerce_gather_result(idx, raw)
                         _emit_progress(idx)
                     continue
@@ -1296,7 +1337,7 @@ class ToolExecutor:
                         *(_run_browser(idx) for idx in phase_indices),
                         return_exceptions=True,
                     )
-                    for idx, raw in zip(phase_indices, raw_results):
+                    for idx, raw in zip(phase_indices, raw_results, strict=True):
                         results[idx] = _coerce_gather_result(idx, raw)
                         _emit_progress(idx)
                     mutation_completed = True

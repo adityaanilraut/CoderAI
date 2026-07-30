@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from coderAI.llm.base import empty_usage, normalize_usage
 
@@ -44,7 +44,7 @@ class BridgeStreamingHandler:
         self.server = server
         self.current_content = ""
         self.current_reasoning = ""
-        self.tool_calls: List[Dict[str, Any]] = []
+        self.tool_calls: list[dict[str, Any]] = []
         self._in_reasoning = False
         self._reasoning_type: Optional[str] = None
         self._tag_buffer = ""
@@ -56,7 +56,7 @@ class BridgeStreamingHandler:
 
     async def handle_stream(
         self, stream: Any, initial_content: str = "", cancel_event: Any = None
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         self.current_content = initial_content
         self.current_reasoning = ""
         self.tool_calls = []

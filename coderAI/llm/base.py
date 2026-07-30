@@ -1,12 +1,9 @@
 """Base LLM provider interface."""
 
-import asyncio
-import logging
 import math
 from abc import ABC, abstractmethod
-from typing import Any, AsyncIterator, Callable, Dict, List, Optional
-
-from coderAI.system.retry import backoff_delay
+from typing import Any, Optional
+from collections.abc import AsyncIterator
 
 # Shared reasoning-effort → budget-tokens mapping used by Anthropic and DeepSeek.
 REASONING_BUDGET_MAP = {"high": 16384, "medium": 8192, "low": 2048}
@@ -19,77 +16,6 @@ HTTP_CONNECT_TIMEOUT = 10
 HTTP_SOCK_READ_TIMEOUT = 120
 HTTP_TOTAL_TIMEOUT = 180
 DEFAULT_CONTEXT_WINDOW = 128000
-
-logger = logging.getLogger(__name__)
-
-# ── Retry helpers ──────────────────────────────────────────────────────────
-
-_RETRYABLE_STATUSES = frozenset({429, 502, 503})
-_MAX_RETRIES = 3
-
-
-def _exponential_backoff_sleep(
-    attempt: int,
-    *,
-    base: float = 1.0,
-    cap: float = 8.0,
-    jitter: float = 0.3,
-) -> float:
-    # Thin delegate kept for the existing provider call sites; the canonical
-    # curve lives in coderAI.system.retry.
-    return backoff_delay(attempt, base=base, cap=cap, jitter=jitter)
-
-
-async def _retry_async(
-    fn: Callable[[], Any],
-    *,
-    max_retries: int = _MAX_RETRIES,
-    description: str = "LLM request",
-    is_retryable: Optional[Callable[[Exception], bool]] = None,
-) -> Any:
-    last_exc: Optional[Exception] = None
-    for attempt in range(1, max_retries + 2):
-        try:
-            return await fn()
-        except Exception as exc:
-            last_exc = exc
-            if attempt > max_retries:
-                raise
-            retryable = is_retryable(exc) if is_retryable else _default_retryable(exc)
-            if not retryable:
-                raise
-            delay = _exponential_backoff_sleep(attempt)
-            logger.warning(
-                "%s failed (attempt %d/%d), retrying in %.1fs: %s",
-                description,
-                attempt,
-                max_retries,
-                delay,
-                exc,
-            )
-            await asyncio.sleep(delay)
-    raise last_exc  # type: ignore[misc]
-
-
-def _default_retryable(exc: Exception) -> bool:
-    status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
-    if isinstance(status, (int, float)):
-        return int(status) in _RETRYABLE_STATUSES
-    msg = str(exc).lower()
-    return any(
-        kw in msg
-        for kw in (
-            "429",
-            "502",
-            "503",
-            "rate limit",
-            "too many requests",
-            "service unavailable",
-            "bad gateway",
-            "server error",
-        )
-    )
-
 
 # ── Token estimation helpers ───────────────────────────────────────────────
 
@@ -111,12 +37,12 @@ USAGE_KEYS = (
 )
 
 
-def empty_usage() -> Dict[str, int]:
+def empty_usage() -> dict[str, int]:
     """Return a zeroed per-call usage dict in the canonical schema."""
     return {k: 0 for k in USAGE_KEYS}
 
 
-def normalize_usage(raw: Optional[Dict[str, Any]]) -> Dict[str, int]:
+def normalize_usage(raw: Optional[dict[str, Any]]) -> dict[str, int]:
     """Map a provider usage dict to the canonical per-call schema.
 
     Accepts both the OpenAI shape (``prompt_tokens`` / ``completion_tokens``)
@@ -148,7 +74,7 @@ class LLMProvider(ABC):
     # Anthropic does (it expects the paused tool_use blocks replayed); OpenAI-
     # compatible providers do not, so the loop strips them before resuming.
     preserves_tool_calls_on_pause: bool = False
-    MODEL_CONTEXT_WINDOWS: Dict[str, int] = {}
+    MODEL_CONTEXT_WINDOWS: dict[str, int] = {}
 
     def __init__(self, model: str, api_key: Optional[str] = None, **kwargs: Any):
         """Initialize the LLM provider.
@@ -196,10 +122,10 @@ class LLMProvider(ABC):
     @abstractmethod
     async def chat(
         self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
+        messages: list[dict[str, Any]],
+        tools: Optional[list[dict[str, Any]]] = None,
         **kwargs: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Send a chat completion request.
 
         Args:
@@ -215,10 +141,10 @@ class LLMProvider(ABC):
     @abstractmethod
     def stream(
         self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
+        messages: list[dict[str, Any]],
+        tools: Optional[list[dict[str, Any]]] = None,
         **kwargs: Any,
-    ) -> AsyncIterator[Dict[str, Any]]:
+    ) -> AsyncIterator[dict[str, Any]]:
         """Send a streaming chat completion request.
 
         Args:
@@ -241,19 +167,19 @@ class LLMProvider(ABC):
 
     def _build_payload(
         self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
+        messages: list[dict[str, Any]],
+        tools: Optional[list[dict[str, Any]]] = None,
         *,
         stream: bool = False,
         **kwargs: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Build the request payload for the provider's API.
 
         Providers override this to handle provider-specific fields
         (thinking budget, caching, etc.) while the base handles the
         common fields.
         """
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
             "temperature": kwargs.get("temperature", self.temperature),
@@ -274,9 +200,9 @@ class LLMProvider(ABC):
         """
         return True
 
-    def get_model_info(self) -> Dict[str, Any]:
+    def get_model_info(self) -> dict[str, Any]:
         """Get information about the current model."""
-        info: Dict[str, Any] = {
+        info: dict[str, Any] = {
             "provider": self.__class__.__name__,
             "model": self.model,
             "temperature": self.temperature if hasattr(self, "temperature") else 1.0,
@@ -299,7 +225,7 @@ class LLMProvider(ABC):
         if hasattr(self, "client"):
             await self.client.close()
 
-    def get_cost(self) -> Dict[str, Any]:
+    def get_cost(self) -> dict[str, Any]:
         """Get current session cost estimate.
 
         Returns:
@@ -345,13 +271,11 @@ class LLMProvider(ABC):
             self.total_cache_read_tokens = 0
 
     @staticmethod
-    def _strip_tool_images(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Drop Anthropic-only state from messages sent to other providers.
+    def _strip_tool_images(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Drop internal image state for an explicitly text-only adapter.
 
-        Only the Anthropic provider renders base64 images inside a tool result;
-        every other provider would reject the unknown key (or has no way to use
-        it), so it is stripped before the request. Providers that override
-        ``clean_messages`` (DeepSeek, Gemini) must call this to stay safe.
+        OpenAI-compatible adapters should normally use
+        :meth:`_render_tool_images_openai` instead so image bytes are not lost.
         """
         cleaned = []
         for m in messages:
@@ -365,19 +289,88 @@ class LLMProvider(ABC):
             cleaned.append(m)
         return cleaned
 
-    def clean_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    @staticmethod
+    def _render_tool_images_openai(
+        messages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Render internal tool images as OpenAI-compatible user image blocks.
+
+        Chat-completions APIs do not permit image blocks directly on a ``tool``
+        message.  Keep each consecutive tool-result group intact, then append a
+        user message containing data URLs for the images returned by that group.
+        This preserves tool-call ordering while delivering the actual pixels.
+        """
+        cleaned: list[dict[str, Any]] = []
+        pending_images: list[dict[str, str]] = []
+
+        def flush_images() -> None:
+            if not pending_images:
+                return
+            content: list[dict[str, Any]] = [
+                {
+                    "type": "text",
+                    "text": "Images returned by the preceding tool result(s).",
+                }
+            ]
+            content.extend(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{image['mime_type']};base64,{image['data']}"},
+                }
+                for image in pending_images
+            )
+            cleaned.append({"role": "user", "content": content})
+            pending_images.clear()
+
+        for original in messages:
+            if pending_images and original.get("role") != "tool":
+                flush_images()
+
+            message = {k: v for k, v in original.items() if k != "tool_images"}
+            if message.get("tool_calls") and any(
+                isinstance(call, dict) and "provider_state" in call
+                for call in message["tool_calls"]
+            ):
+                message["tool_calls"] = [
+                    {k: v for k, v in call.items() if k != "provider_state"}
+                    if isinstance(call, dict)
+                    else call
+                    for call in message["tool_calls"]
+                ]
+            cleaned.append(message)
+
+            images = original.get("tool_images")
+            if isinstance(images, list):
+                for image in images:
+                    if not isinstance(image, dict):
+                        continue
+                    mime_type = image.get("mime_type")
+                    data = image.get("data")
+                    if (
+                        isinstance(mime_type, str)
+                        and mime_type.startswith("image/")
+                        and isinstance(data, str)
+                        and data
+                    ):
+                        pending_images.append({"mime_type": mime_type, "data": data})
+
+        flush_images()
+        return cleaned
+
+    def clean_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Clean messages before sending to the API.
 
         By default, strips reasoning_content from assistant messages for compatibility
         with providers that reject this field. Providers that support round-tripping
         reasoning_content (DeepSeek, Gemini) MUST override this method. Anthropic
         replays signed thinking blocks through opaque provider state instead.
-        The ``tool_images`` vision carrier is always stripped here (Anthropic
-        overrides to keep it).
+        The internal ``tool_images`` carrier is converted into multimodal
+        OpenAI-compatible content blocks. Anthropic overrides this method and
+        performs its native content-block conversion separately.
         """
         cleaned = []
         for m in messages:
             if m.get("role") == "assistant" and "reasoning_content" in m:
                 m = {k: v for k, v in m.items() if k != "reasoning_content"}
             cleaned.append(m)
-        return self._strip_tool_images(cleaned)
+        return self._render_tool_images_openai(cleaned)

@@ -1,5 +1,6 @@
 """Coverage for coderAI/tools/web/_search.py parsers, selection, and backends."""
 
+import asyncio
 import json
 from types import SimpleNamespace
 
@@ -270,6 +271,13 @@ async def test_exa_backend_search(monkeypatch):
     assert results[0].snippet == "exatext"
 
 
+async def test_exa_backend_accepts_empty_highlights(monkeypatch):
+    payload = {"results": [{"title": "E", "url": "https://e.com", "highlights": []}]}
+    _patch_request(monkeypatch, lambda *a: {"status": 200, "text": json.dumps(payload)})
+    results = await s._ExaBackend("k").search("q", 3)
+    assert results[0].snippet == ""
+
+
 async def test_ddg_backend_search_success(monkeypatch):
     _patch_request(monkeypatch, lambda *a: {"status": 200, "text": DDG_HTML})
     results = await s._DDGBackend().search("q", 5)
@@ -298,6 +306,30 @@ async def test_searxng_backend_all_fail(monkeypatch):
     _patch_request(monkeypatch, lambda *a: {"status": 502, "text": ""})
     with pytest.raises(RuntimeError, match="SearXNG"):
         await s._SearXNGBackend().search("q", 5)
+
+
+async def test_searxng_returns_without_waiting_for_slow_instance(monkeypatch):
+    slow_cancelled = False
+
+    async def fake(method, url, **kwargs):
+        nonlocal slow_cancelled
+        if "fast" in url:
+            return {
+                "status": 200,
+                "text": (
+                    '<article class="result"><a href="https://result.example">Result</a>'
+                    '<p class="content">snippet</p></article>'
+                ),
+            }
+        try:
+            await asyncio.Event().wait()
+        finally:
+            slow_cancelled = True
+
+    monkeypatch.setattr("coderAI.tools.web._safe_request", fake)
+    results = await s._SearXNGBackend(["https://slow", "https://fast"]).search("q", 5)
+    assert results[0].url == "https://result.example"
+    assert slow_cancelled is True
 
 
 async def _noop_sleep(*_a, **_k):

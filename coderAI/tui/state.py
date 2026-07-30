@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Literal, Optional
 
 ReasoningEffort = Literal["high", "medium", "low", "none"]
 
@@ -17,7 +17,7 @@ class AgentInfo:
     task: Optional[str] = None
 
     @classmethod
-    def from_payload(cls, info: Dict[str, Any]) -> "AgentInfo":
+    def from_payload(cls, info: dict[str, Any]) -> "AgentInfo":
         return cls(
             id=str(info.get("id", "")),
             name=str(info.get("name", "")),
@@ -49,13 +49,13 @@ class SessionState:
     iteration: int = 0
     max_iterations: int = 50
     elapsed_s: float = 0.0
-    available_models: Optional[Dict[str, List[str]]] = None
-    available_personas: Optional[List[str]] = None
-    available_skills: Optional[List[Dict[str, str]]] = None
-    available_mcp_servers: Optional[List[Dict[str, Any]]] = None
-    context_files: Optional[List[Dict[str, Any]]] = None
-    agents: Dict[str, AgentInfo] = field(default_factory=dict)
-    progress: Optional[Dict[str, Any]] = None
+    available_models: Optional[dict[str, list[str]]] = None
+    available_personas: Optional[list[str]] = None
+    available_skills: Optional[list[dict[str, str]]] = None
+    available_mcp_servers: Optional[list[dict[str, Any]]] = None
+    context_files: Optional[list[dict[str, Any]]] = None
+    agents: dict[str, AgentInfo] = field(default_factory=dict)
+    progress: Optional[dict[str, Any]] = None
     ready: bool = False
-    current_tasks: Optional[Dict[str, Any]] = None
+    current_tasks: Optional[dict[str, Any]] = None
     active_persona: Optional[str] = None

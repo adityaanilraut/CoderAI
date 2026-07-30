@@ -3,7 +3,7 @@
 import json as _json
 import logging
 import re
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
     from coderAI.system.cost import CostTracker
@@ -200,7 +200,7 @@ def compute_retry_delay(exc: Exception, attempt: int) -> float:
     return float(min(delay, RETRY_MAX_DELAY))
 
 
-def _try_extract_headers(exc: Exception) -> Optional[Dict[str, str]]:
+def _try_extract_headers(exc: Exception) -> Optional[dict[str, str]]:
     """Extract HTTP response headers from an exception, if available.
 
     Supports aiohttp (``ClientResponseError.headers``, ``ContentTypeError.headers``),

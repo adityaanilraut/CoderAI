@@ -86,6 +86,26 @@ class TestDefaultWins:
         assert cfg.temperature == 0.3
 
 
+class TestInvalidConfigRecovery:
+    def test_non_object_config_uses_defaults_without_rewriting_source(self, manager):
+        manager.config_file.write_text("[]", encoding="utf-8")
+
+        cfg = manager.load()
+
+        assert cfg.default_model == Config().default_model
+        assert manager.config_file.read_text(encoding="utf-8") == "[]"
+
+    def test_invalid_field_is_dropped_while_valid_fields_survive(self, manager):
+        source = '{"temperature": "not-a-number", "streaming": false}'
+        manager.config_file.write_text(source, encoding="utf-8")
+
+        cfg = manager.load()
+
+        assert cfg.temperature == Config().temperature
+        assert cfg.streaming is False
+        assert manager.config_file.read_text(encoding="utf-8") == source
+
+
 class TestEmbeddingConfig:
     def test_embedding_environment_mappings(self, manager, monkeypatch):
         monkeypatch.setenv("CODERAI_EMBEDDING_BACKEND", "local")

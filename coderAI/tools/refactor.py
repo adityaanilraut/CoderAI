@@ -5,7 +5,7 @@ import asyncio
 import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -71,7 +71,7 @@ class RefactorTool(Tool):
         path: str = ".",
         kind: str = "any",
         dry_run: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         try:
             action = action.strip().lower()
             if action not in ("rename_symbol", "find_references"):
@@ -164,7 +164,7 @@ class RefactorTool(Tool):
             message = f"Renamed '{symbol}' to '{new_name}' in {len(modified_files)} file(s)."
             if skipped_files:
                 message += f" Skipped {len(skipped_files)} file(s); see files_skipped."
-            result: Dict[str, Any] = {
+            result: dict[str, Any] = {
                 "success": True,
                 "action": "rename_symbol",
                 "dry_run": False,
@@ -182,8 +182,8 @@ class RefactorTool(Tool):
             logger.exception("refactor failed")
             return {"success": False, "error": str(e)}
 
-    def _collect_files(self, base: Path) -> List[Path]:
-        files: List[Path] = []
+    def _collect_files(self, base: Path) -> list[Path]:
+        files: list[Path] = []
         if base.is_file():
             if base.suffix.lower() in {".py", ".ts", ".tsx", ".js", ".jsx"}:
                 return [base]
@@ -200,7 +200,7 @@ class RefactorTool(Tool):
         return files
 
     @staticmethod
-    def _validate_new_name(new_name: str, files: List[Path]) -> Optional[Dict[str, Any]]:
+    def _validate_new_name(new_name: str, files: list[Path]) -> Optional[dict[str, Any]]:
         if not new_name or not new_name.strip():
             return {
                 "success": False,
@@ -224,9 +224,9 @@ class RefactorTool(Tool):
         return None
 
     def _find_all_references(
-        self, files: List[Path], symbol: str, kind: str
-    ) -> List[Dict[str, Any]]:
-        results: List[Dict[str, Any]] = []
+        self, files: list[Path], symbol: str, kind: str
+    ) -> list[dict[str, Any]]:
+        results: list[dict[str, Any]] = []
         for file_path in files:
             refs = self._find_references_in_file(file_path, symbol, kind)
             if refs:
@@ -235,7 +235,7 @@ class RefactorTool(Tool):
 
     def _find_references_in_file(
         self, file_path: Path, symbol: str, kind: str
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         suffix = file_path.suffix.lower()
         try:
             source = file_path.read_text(encoding="utf-8", errors="ignore")
@@ -248,8 +248,8 @@ class RefactorTool(Tool):
             return self._find_jsts_references(source, symbol, kind)
         return []
 
-    def _find_python_references(self, source: str, symbol: str, kind: str) -> List[Dict[str, Any]]:
-        refs: List[Dict[str, Any]] = []
+    def _find_python_references(self, source: str, symbol: str, kind: str) -> list[dict[str, Any]]:
+        refs: list[dict[str, Any]] = []
 
         try:
             tree = ast.parse(source)
@@ -323,12 +323,12 @@ class RefactorTool(Tool):
 
         return refs
 
-    def _find_jsts_references(self, source: str, symbol: str, kind: str) -> List[Dict[str, Any]]:
-        refs: List[Dict[str, Any]] = []
+    def _find_jsts_references(self, source: str, symbol: str, kind: str) -> list[dict[str, Any]]:
+        refs: list[dict[str, Any]] = []
         wanted = kind.lower()
         escaped = re.escape(symbol)
 
-        patterns: List[Tuple[str, str]] = [
+        patterns: list[tuple[str, str]] = [
             ("definition", rf"\b{escaped}\s*[:=]"),
             ("definition", rf"\b(function|class|const|let|var)\s+{escaped}\b"),
             ("definition", rf"\b(export\s+)?(function|class|const|let|var)\s+{escaped}\b"),
@@ -379,7 +379,7 @@ class RefactorTool(Tool):
         The mask keeps byte positions stable, letting regex matches on the
         masked text map back to columns in the original source.
         """
-        out: List[str] = []
+        out: list[str] = []
         i = 0
         n = len(source)
         state: Optional[str] = None
@@ -454,8 +454,8 @@ class RefactorTool(Tool):
         return "".join(out)
 
     async def _apply_rename(
-        self, all_refs: List[Dict[str, Any]], symbol: str, new_name: str
-    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        self, all_refs: list[dict[str, Any]], symbol: str, new_name: str
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         """Apply the rename to each file, returning ``(modified, skipped)``.
 
         Per-file writes are delegated to :class:`WriteFileTool`, which supplies
@@ -464,8 +464,8 @@ class RefactorTool(Tool):
         raw ``write_text`` had. A file that fails any of those guards is recorded
         in ``skipped`` (with the reason) rather than silently dropped.
         """
-        modified: List[Dict[str, Any]] = []
-        skipped: List[Dict[str, Any]] = []
+        modified: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
         writer = WriteFileTool()
 
         for file_info in all_refs:

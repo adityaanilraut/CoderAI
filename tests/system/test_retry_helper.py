@@ -4,7 +4,6 @@ import asyncio
 
 import pytest
 
-from coderAI.llm.base import _exponential_backoff_sleep
 from coderAI.system.retry import backoff_delay, retry_async
 
 
@@ -27,13 +26,11 @@ class TestBackoffDelay:
                 delay = backoff_delay(attempt, base=1.0, cap=8.0, jitter=0.3)
                 assert expected <= delay <= expected * 1.3 + 1e-9
 
-    def test_llm_delegate_keeps_historical_bounds(self):
-        """llm/base.py's helper now delegates here; pin its historic envelope
-        (base=1.0, factor=2, cap=8.0, jitter=0.3) so provider retry pacing
-        is unchanged."""
+    def test_provider_default_bounds(self):
+        """Pin the default provider retry envelope."""
         for attempt in (1, 2, 3, 4, 5):
             expected = min(2 ** (attempt - 1), 8.0)
-            delay = _exponential_backoff_sleep(attempt)
+            delay = backoff_delay(attempt, base=1.0, cap=8.0, jitter=0.3)
             assert expected <= delay <= expected * 1.3 + 1e-9
 
 

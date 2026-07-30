@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
-from typing import Any, Dict
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -45,7 +45,7 @@ def _make_agent(
     )
 
 
-def _tool_call(name: str, args: Dict[str, Any], tool_id: str = "t1") -> Dict[str, Any]:
+def _tool_call(name: str, args: dict[str, Any], tool_id: str = "t1") -> dict[str, Any]:
     return {
         "id": tool_id,
         "type": "function",
@@ -53,7 +53,7 @@ def _tool_call(name: str, args: Dict[str, Any], tool_id: str = "t1") -> Dict[str
     }
 
 
-async def _orchestrate(executor: ToolExecutor, session: Session, tc: Dict[str, Any]) -> None:
+async def _orchestrate(executor: ToolExecutor, session: Session, tc: dict[str, Any]) -> None:
     session.add_message("assistant", None, tool_calls=[tc])
     await executor.orchestrate_tool_calls(
         tool_calls=[tc],
@@ -67,7 +67,7 @@ async def _orchestrate(executor: ToolExecutor, session: Session, tc: Dict[str, A
 def _patch_ok(monkeypatch: pytest.MonkeyPatch) -> None:
     import coderAI.tools.web as web_mod
 
-    async def fake_cf(method: str, url: str, **kwargs: Any) -> Dict[str, Any]:
+    async def fake_cf(method: str, url: str, **kwargs: Any) -> dict[str, Any]:
         return {
             "status": 200,
             "url": url,

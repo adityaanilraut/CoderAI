@@ -1,7 +1,8 @@
 """Gemini LLM provider implementation."""
 
 import logging
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, Optional
+from collections.abc import AsyncIterator
 
 from openai import AsyncOpenAI
 
@@ -29,6 +30,17 @@ class GeminiProvider(OpenAICompatibleCloudProvider):
         "gemini-1.5-flash": "gemini-1.5-flash",
         "gemini-1.5-pro": "gemini-1.5-pro",
     }
+    MODEL_CONTEXT_WINDOWS = {
+        "gemini-3.5-flash": 1_048_576,
+        "gemini-3.1-pro": 1_048_576,
+        "gemini-3.1-flash-lite": 1_048_576,
+        "gemini-2.5-flash": 1_048_576,
+        "gemini-2.5-pro": 1_048_576,
+        "gemini-2.0-flash": 1_048_576,
+        "gemini-2.0-pro": 2_097_152,
+        "gemini-1.5-flash": 1_048_576,
+        "gemini-1.5-pro": 2_097_152,
+    }
 
     def __init__(self, model: str, api_key: Optional[str] = None, **kwargs: Any):
         super().__init__(model, api_key, **kwargs)
@@ -52,10 +64,10 @@ class GeminiProvider(OpenAICompatibleCloudProvider):
 
     async def stream(
         self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
+        messages: list[dict[str, Any]],
+        tools: Optional[list[dict[str, Any]]] = None,
         **kwargs: Any,
-    ) -> AsyncIterator[Dict[str, Any]]:
+    ) -> AsyncIterator[dict[str, Any]]:
         # Gemini's OpenAI-compatible endpoint may finish a stream without ever
         # reporting usage; accumulate content so we can estimate in that case.
         accumulated_content = ""
@@ -92,6 +104,6 @@ class GeminiProvider(OpenAICompatibleCloudProvider):
                     "usage": {"prompt_tokens": est_in, "completion_tokens": est_out},
                 }
 
-    def clean_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Gemini round-trips reasoning_content but rejects tool-result images."""
-        return self._strip_tool_images(messages)
+    def clean_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Round-trip reasoning and render tool images as multimodal content."""
+        return self._render_tool_images_openai(messages)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from rich.markup import escape
 from textual import events, on
@@ -27,7 +27,7 @@ from coderAI.tui.theme import Glyphs, Styles, Tokens
 class AgentEventMsg(Message):
     """Agent event delivered to the UI thread."""
 
-    def __init__(self, event: str, data: Dict[str, Any]) -> None:
+    def __init__(self, event: str, data: dict[str, Any]) -> None:
         super().__init__()
         self.event = event
         self.data = data
@@ -195,7 +195,7 @@ class ApprovalScreen(ModalScreen[Optional[tuple[bool, bool]]]):
     }}
     """
 
-    def __init__(self, approval: Dict[str, Any]) -> None:
+    def __init__(self, approval: dict[str, Any]) -> None:
         super().__init__()
         self.approval = approval
 
@@ -387,7 +387,7 @@ class SearchScreen(ModalScreen[None]):
     }}
     """
 
-    def __init__(self, timeline: List[Dict[str, Any]], query: str = "") -> None:
+    def __init__(self, timeline: list[dict[str, Any]], query: str = "") -> None:
         super().__init__()
         self.timeline = timeline
         self.search_query = query.lower()
@@ -599,7 +599,7 @@ class FilePickerScreen(FuzzyPickerScreen):
 
     def __init__(
         self,
-        files: List[str],
+        files: list[str],
         *,
         placeholder: Optional[str] = None,
         footer_help: Optional[str] = None,
@@ -614,7 +614,7 @@ class FilePickerScreen(FuzzyPickerScreen):
         )
         self.files = files
 
-    def _get_matches(self, query: str) -> List[str]:
+    def _get_matches(self, query: str) -> list[str]:
         q = query.lower().strip()
         if not q:
             return self.files[:100]
@@ -658,7 +658,7 @@ class SessionPickerScreen(FuzzyPickerScreen):
 
     def __init__(
         self,
-        sessions: List[Dict[str, Any]],
+        sessions: list[dict[str, Any]],
         current_id: Optional[str] = None,
     ) -> None:
         super().__init__(
@@ -672,7 +672,7 @@ class SessionPickerScreen(FuzzyPickerScreen):
         self.sessions = sessions
         self.current_id = current_id
 
-    def _get_matches(self, query: str) -> List[Dict[str, Any]]:
+    def _get_matches(self, query: str) -> list[dict[str, Any]]:
         q = query.lower().strip()
         if not q:
             return self.sessions[:100]
@@ -733,15 +733,15 @@ class CommandPaletteScreen(FuzzyPickerScreen):
         )
         self._s = session
         self._only_section = only_section
-        self._cached_sections: Optional[List[Dict[str, Any]]] = None
+        self._cached_sections: Optional[list[dict[str, Any]]] = None
         self._cached_query: str = "\0"
 
-    def _gather_items(self, query: str) -> List[Dict[str, Any]]:
+    def _gather_items(self, query: str) -> list[dict[str, Any]]:
         q = query.lower().strip()
-        sections: List[Dict[str, Any]] = []
+        sections: list[dict[str, Any]] = []
         only = self._only_section
 
-        def add_section(title: str, items: List[Dict[str, Any]]) -> None:
+        def add_section(title: str, items: list[dict[str, Any]]) -> None:
             if not items:
                 return
             sections.append({"title": title, "items": items})
@@ -820,7 +820,7 @@ class CommandPaletteScreen(FuzzyPickerScreen):
 
         return sections
 
-    def _get_sections(self, query: str) -> List[Dict[str, Any]]:
+    def _get_sections(self, query: str) -> list[dict[str, Any]]:
         if self._cached_query != query or self._cached_sections is None:
             self._cached_sections = self._gather_items(query)
             self._cached_query = query

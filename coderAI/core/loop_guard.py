@@ -17,7 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ DUPLICATE_CALL_THRESHOLD = 2
 # than legitimate work. Triggered in production by gpt-5.4-mini calling
 # ``plan action=show`` 14+ times in a single turn before the user cancelled.
 DOOM_LOOP_HARD_THRESHOLD = 10
-DELEGATE_DOOM_LOOP_HARD_THRESHOLD = 3
+DELEGATE_DOOM_LOOP_HARD_THRESHOLD = DOOM_LOOP_HARD_THRESHOLD
 
 
 def doom_message(tool_name: str, count: int) -> str:
@@ -53,12 +53,12 @@ class LoopGuard:
 
     def __init__(self) -> None:
         # fingerprint -> cumulative execution count this turn.
-        self._call_counts: Dict[str, int] = {}
+        self._call_counts: dict[str, int] = {}
         # fingerprint -> last successful result, for the cached-repeat path.
-        self._last_results: Dict[str, Dict[str, Any]] = {}
+        self._last_results: dict[str, dict[str, Any]] = {}
 
     @staticmethod
-    def fingerprint(tool_name: str, arguments: Optional[Dict[str, Any]]) -> str:
+    def fingerprint(tool_name: str, arguments: Optional[dict[str, Any]]) -> str:
         """Stable hash of ``(tool_name, arguments)`` used to spot repeats."""
         try:
             args_blob = json.dumps(arguments or {}, sort_keys=True, default=str)
@@ -78,7 +78,7 @@ class LoopGuard:
 
     def cached_repeat(
         self, tool_name: str, is_read_only: bool, fp: str
-    ) -> Optional[Tuple[Dict[str, Any], int]]:
+    ) -> Optional[tuple[dict[str, Any], int]]:
         """Decide whether *this* repeat should be short-circuited with the
         previously cached result.
 
@@ -116,8 +116,8 @@ class LoopGuard:
         return count >= self.hard_threshold(tool_name)
 
     def detect_in_batch(
-        self, tool_calls: Optional[List[Dict[str, Any]]]
-    ) -> Optional[Tuple[str, int]]:
+        self, tool_calls: Optional[list[dict[str, Any]]]
+    ) -> Optional[tuple[str, int]]:
         """Detect repetition *within a single* assistant response.
 
         Returns ``(tool_name, count)`` for the most-repeated (tool, args) when
@@ -130,8 +130,8 @@ class LoopGuard:
 
         from coderAI.core.tool_routing import coerce_tool_arguments
 
-        counts: Dict[str, int] = {}
-        names: Dict[str, str] = {}
+        counts: dict[str, int] = {}
+        names: dict[str, str] = {}
         for tc in tool_calls:
             func = tc.get("function", {}) or {}
             name = func.get("name", "") or ""

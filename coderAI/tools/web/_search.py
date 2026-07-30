@@ -7,7 +7,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 from urllib.parse import quote_plus, unquote, urlparse
 
 # Calls to _safe_request go through the package namespace so tests can patch
@@ -78,7 +78,7 @@ class _SearchResult:
     url: str
     snippet: str
 
-    def to_dict(self) -> Dict[str, str]:
+    def to_dict(self) -> dict[str, str]:
         return {"title": self.title, "url": self.url, "snippet": self.snippet}
 
 
@@ -94,9 +94,9 @@ class _SearchBackend:
         self,
         query: str,
         num_results: int,
-        allowed_domains: Optional[List[str]] = None,
-        blocked_domains: Optional[List[str]] = None,
-    ) -> List[_SearchResult]:
+        allowed_domains: Optional[list[str]] = None,
+        blocked_domains: Optional[list[str]] = None,
+    ) -> list[_SearchResult]:
         raise NotImplementedError
 
 
@@ -116,10 +116,10 @@ class _TavilyBackend(_SearchBackend):
         self,
         query: str,
         num_results: int,
-        allowed_domains: Optional[List[str]] = None,
-        blocked_domains: Optional[List[str]] = None,
-    ) -> List[_SearchResult]:
-        body: Dict[str, Any] = {
+        allowed_domains: Optional[list[str]] = None,
+        blocked_domains: Optional[list[str]] = None,
+    ) -> list[_SearchResult]:
+        body: dict[str, Any] = {
             "api_key": self.api_key,
             "query": query,
             "max_results": num_results,
@@ -165,10 +165,10 @@ class _ExaBackend(_SearchBackend):
         self,
         query: str,
         num_results: int,
-        allowed_domains: Optional[List[str]] = None,
-        blocked_domains: Optional[List[str]] = None,
-    ) -> List[_SearchResult]:
-        body: Dict[str, Any] = {
+        allowed_domains: Optional[list[str]] = None,
+        blocked_domains: Optional[list[str]] = None,
+    ) -> list[_SearchResult]:
+        body: dict[str, Any] = {
             "query": query,
             "numResults": num_results,
             "type": "auto",
@@ -197,7 +197,8 @@ class _ExaBackend(_SearchBackend):
             raise RuntimeError(f"Exa returned non-JSON: {e}") from e
         out = []
         for r in data.get("results", []):
-            snippet = r.get("text") or r.get("highlights", [""])[0] or ""
+            highlights = r.get("highlights") or []
+            snippet = r.get("text") or (highlights[0] if highlights else "")
             out.append(
                 _SearchResult(
                     title=r.get("title", ""),
@@ -221,9 +222,9 @@ class _DDGBackend(_SearchBackend):
         self,
         query: str,
         num_results: int,
-        allowed_domains: Optional[List[str]] = None,
-        blocked_domains: Optional[List[str]] = None,
-    ) -> List[_SearchResult]:
+        allowed_domains: Optional[list[str]] = None,
+        blocked_domains: Optional[list[str]] = None,
+    ) -> list[_SearchResult]:
         wanted = num_results
         if allowed_domains or blocked_domains:
             wanted = min(20, num_results * 3)
@@ -263,8 +264,8 @@ class _DDGBackend(_SearchBackend):
         )
 
 
-def _parse_ddg_results(html_text: str, max_results: int) -> List[_SearchResult]:
-    results: List[_SearchResult] = []
+def _parse_ddg_results(html_text: str, max_results: int) -> list[_SearchResult]:
+    results: list[_SearchResult] = []
     for m in _DDG_RESULT_RE.finditer(html_text):
         if len(results) >= max_results:
             break
@@ -278,20 +279,20 @@ def _parse_ddg_results(html_text: str, max_results: int) -> List[_SearchResult]:
     return results
 
 
-def _parse_ddg_results_v2(html_text: str, max_results: int) -> List[_SearchResult]:
+def _parse_ddg_results_v2(html_text: str, max_results: int) -> list[_SearchResult]:
     """Fallback parser for DDG results when regex pattern fails."""
     from html.parser import HTMLParser
 
     class _DDGParser(HTMLParser):
         def __init__(self):
             super().__init__()
-            self.results: List[_SearchResult] = []
+            self.results: list[_SearchResult] = []
             self._in_link = False
             self._in_snippet = False
             self._current_url: Optional[str] = None
             self._current_title: Optional[str] = None
-            self._current_snippet: List[str] = []
-            self._row_urls: List[str] = []
+            self._current_snippet: list[str] = []
+            self._row_urls: list[str] = []
 
         def handle_starttag(self, tag, attrs):
             attrs_d = dict(attrs)
@@ -349,7 +350,7 @@ def _parse_ddg_results_v2(html_text: str, max_results: int) -> List[_SearchResul
         # Keep whatever results were parsed before the failure.
         logger.debug("DDG v2 parse error", exc_info=True)
 
-    results: List[_SearchResult] = []
+    results: list[_SearchResult] = []
     for r in parser.results:
         if len(results) >= max_results:
             break
@@ -375,17 +376,17 @@ def _parse_ddg_results_v2(html_text: str, max_results: int) -> List[_SearchResul
 class _SearXNGBackend(_SearchBackend):
     name = "searxng"
 
-    def __init__(self, instances: Optional[List[str]] = None):
+    def __init__(self, instances: Optional[list[str]] = None):
         self.instances = list(instances) if instances else list(_SEARXNG_INSTANCES)
 
     async def search(
         self,
         query: str,
         num_results: int,
-        allowed_domains: Optional[List[str]] = None,
-        blocked_domains: Optional[List[str]] = None,
-    ) -> List[_SearchResult]:
-        async def _try_instance(instance: str) -> Optional[List[_SearchResult]]:
+        allowed_domains: Optional[list[str]] = None,
+        blocked_domains: Optional[list[str]] = None,
+    ) -> list[_SearchResult]:
+        async def _try_instance(instance: str) -> Optional[list[_SearchResult]]:
             try:
                 search_url = (
                     f"{instance}/search?q={quote_plus(query)}&format=html&categories=general"
@@ -412,17 +413,21 @@ class _SearXNGBackend(_SearchBackend):
                 logger.debug(f"SearXNG {instance}: {e}", exc_info=True)
                 return None
 
-        # Try all instances concurrently
-        gathered = await asyncio.gather(*[_try_instance(inst) for inst in self.instances])
-        for batch in gathered:
-            if batch is not None and len(batch) > 0:
-                return batch
+        tasks = [asyncio.create_task(_try_instance(inst)) for inst in self.instances]
+        try:
+            for completed in asyncio.as_completed(tasks):
+                if batch := await completed:
+                    return batch
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
         raise RuntimeError("All SearXNG instances failed")
 
 
-def _parse_searxng_results(html_text: str, max_results: int) -> List[_SearchResult]:
-    results: List[_SearchResult] = []
+def _parse_searxng_results(html_text: str, max_results: int) -> list[_SearchResult]:
+    results: list[_SearchResult] = []
     for block_m in _SEARXNG_BLOCK_RE.finditer(html_text):
         if len(results) >= max_results:
             break
@@ -471,7 +476,7 @@ def _concurrent_search_enabled() -> bool:
         )
 
 
-def _searxng_instances() -> List[str]:
+def _searxng_instances() -> list[str]:
     """Return SearXNG base URLs: custom config/env if set, else public defaults."""
     custom = os.getenv("CODERAI_SEARXNG_URL")
     if not custom:
@@ -532,7 +537,7 @@ def _select_search_backend() -> _SearchBackend:
     return _DDGBackend()
 
 
-def _select_free_backends() -> List[_SearchBackend]:
+def _select_free_backends() -> list[_SearchBackend]:
     return [_DDGBackend(), _SearXNGBackend(_searxng_instances())]
 
 
@@ -550,7 +555,7 @@ def _domain_of(url: str) -> str:
         return ""
 
 
-def _matches_domain(domain: str, patterns: List[str]) -> bool:
+def _matches_domain(domain: str, patterns: list[str]) -> bool:
     domain = domain.lower()
     for p in patterns:
         p = p.lower().lstrip(".")
@@ -562,10 +567,10 @@ def _matches_domain(domain: str, patterns: List[str]) -> bool:
 
 
 def _filter_by_domain(
-    results: List[_SearchResult],
-    allowed: Optional[List[str]],
-    blocked: Optional[List[str]],
-) -> List[_SearchResult]:
+    results: list[_SearchResult],
+    allowed: Optional[list[str]],
+    blocked: Optional[list[str]],
+) -> list[_SearchResult]:
     out = []
     for r in results:
         d = _domain_of(r.url)

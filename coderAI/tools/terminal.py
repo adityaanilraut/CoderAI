@@ -9,7 +9,7 @@ import shutil
 import signal
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -135,12 +135,12 @@ class _PreparedCommand:
 
     command: str  # alias-rewritten command, for tracking / result payloads
     working_dir: str
-    spawn_cmd: Union[str, List[str]]
+    spawn_cmd: Union[str, list[str]]
 
 
 def _prepare_command(
     command: str, working_dir: str, *, background: bool = False
-) -> Union[Dict[str, Any], _PreparedCommand]:
+) -> Union[dict[str, Any], _PreparedCommand]:
     """Shared block/interactive/dangerous/alias/shlex pipeline for the run tools.
 
     Resolves the working dir, applies the safety checks, rewrites aliases, and
@@ -186,7 +186,7 @@ def _prepare_command(
     command = _rewrite_command_aliases(command)
 
     # Use exec (no shell) for simple commands; only shell syntax needs a shell
-    spawn_cmd: Union[str, List[str]]
+    spawn_cmd: Union[str, list[str]]
     if _needs_shell(command):
         spawn_cmd = command
     else:
@@ -231,7 +231,7 @@ class RunCommandTool(Tool):
     timeout = None
     category = "terminal"
 
-    def resolve_timeout(self, arguments: Dict[str, Any]) -> Optional[float]:
+    def resolve_timeout(self, arguments: dict[str, Any]) -> Optional[float]:
         # Mirror execute()'s clamp so the executor's outer cap always sits
         # SUBPROCESS_TIMEOUT_MARGIN_SECONDS above run_scrubbed's inner timeout
         # — previously a run_command(timeout=600) was killed at the outer 120s,
@@ -248,7 +248,7 @@ class RunCommandTool(Tool):
         working_dir: str = ".",
         timeout: int = 60,
         input: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Execute shell command with safety checks.
 
         Uses direct argv for simple commands and an explicit shell argv for
@@ -329,18 +329,18 @@ class BgProcessInfo:
     def __init__(self, process: asyncio.subprocess.Process, command: str = ""):
         self.process = process
         self.command = command
-        self.stdout_buf: List[str] = []
-        self.stderr_buf: List[str] = []
+        self.stdout_buf: list[str] = []
+        self.stderr_buf: list[str] = []
         self._buf_bytes = 0
         self._max_buf_bytes = 65536  # 64KB total cap
-        self._reader_tasks: "List[asyncio.Task[None]]" = []
+        self._reader_tasks: "list[asyncio.Task[None]]" = []
 
     def cancel_readers(self) -> None:
         for task in self._reader_tasks:
             task.cancel()
         self._reader_tasks.clear()
 
-    def _append(self, buf: List[str], data: str) -> None:
+    def _append(self, buf: list[str], data: str) -> None:
         if self._buf_bytes >= self._max_buf_bytes:
             return
         encoded = data.encode("utf-8", errors="replace")
@@ -351,7 +351,7 @@ class BgProcessInfo:
 
 
 # Module-level registry of all tracked background processes.
-_tracked_bg_processes: Dict[int, BgProcessInfo] = {}
+_tracked_bg_processes: dict[int, BgProcessInfo] = {}
 
 
 class RunBackgroundTool(Tool):
@@ -369,11 +369,11 @@ class RunBackgroundTool(Tool):
     def __init__(self):
         super().__init__()
         # Instance shares the module-level process registry
-        self._processes: Dict[int, BgProcessInfo] = _tracked_bg_processes
+        self._processes: dict[int, BgProcessInfo] = _tracked_bg_processes
 
     async def execute(  # type: ignore[override]
         self, command: str, working_dir: str = ".", capture_output: bool = False
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Start background process with tracking.
 
         Uses the same exec-vs-shell heuristic as ``run_command``. Both forms are
@@ -459,7 +459,7 @@ class RunBackgroundTool(Tool):
                 "error_code": ToolErrorCode.TOOL_ERROR,
             }
 
-    def get_tracked_processes(self) -> Dict[int, BgProcessInfo]:
+    def get_tracked_processes(self) -> dict[int, BgProcessInfo]:
         """Get all tracked background processes for this instance."""
         return self._processes
 
@@ -477,7 +477,7 @@ class RunBackgroundTool(Tool):
     def terminate_all(self) -> int:
         """Forcefully terminate all remaining tracked processes."""
         terminated = 0
-        for pid, info in dict(self._processes).items():
+        for info in list(self._processes.values()):
             info.cancel_readers()
             if info.process.returncode is None:
                 try:
@@ -493,7 +493,7 @@ class RunBackgroundTool(Tool):
 
 def _cleanup_all_background():
     """Terminate background processes from the shared module-level registry."""
-    for pid, info in dict(_tracked_bg_processes).items():
+    for info in list(_tracked_bg_processes.values()):
         info.cancel_readers()
         if info.process.returncode is None:
             try:
@@ -539,7 +539,7 @@ class ListProcessesTool(Tool):
     parameters_model = ListProcessesParams
     is_read_only = True
 
-    async def execute(self) -> Dict[str, Any]:  # type: ignore[override]
+    async def execute(self) -> dict[str, Any]:  # type: ignore[override]
         try:
             processes = []
             for pid, info in _tracked_bg_processes.items():
@@ -581,7 +581,7 @@ class KillProcessTool(Tool):
     parameters_model = KillProcessParams
     requires_confirmation = True
 
-    async def execute(self, pid: int, force: bool = False) -> Dict[str, Any]:  # type: ignore[override]
+    async def execute(self, pid: int, force: bool = False) -> dict[str, Any]:  # type: ignore[override]
         try:
             info = _tracked_bg_processes.get(pid)
             if info is None:
@@ -647,7 +647,7 @@ class ReadBgOutputTool(Tool):
     parameters_model = ReadBgOutputParams
     is_read_only = True
 
-    async def execute(self, pid: int) -> Dict[str, Any]:  # type: ignore[override]
+    async def execute(self, pid: int) -> dict[str, Any]:  # type: ignore[override]
         try:
             info = _tracked_bg_processes.get(pid)
             if info is None:

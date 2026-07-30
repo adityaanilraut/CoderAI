@@ -8,9 +8,10 @@ import asyncio
 import threading
 import time
 import uuid
+from collections.abc import Iterable, Set as AbstractSet
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import AbstractSet, Any, Dict, Iterable, List, Optional, cast
+from typing import Any, Optional, cast
 
 
 class AgentStatus(str, Enum):
@@ -84,7 +85,7 @@ class AgentTracker:
     """
 
     def __init__(self) -> None:
-        self._agents: Dict[str, AgentInfo] = {}
+        self._agents: dict[str, AgentInfo] = {}
         # threading.Lock is intentionally used here rather than asyncio.Lock.
         # The critical sections only perform dict lookups/insertions which take
         # microseconds, so the event loop is never blocked for any meaningful
@@ -150,7 +151,7 @@ class AgentTracker:
         with self._lock:
             return self._agents.get(agent_id)
 
-    def get_active(self) -> List[AgentInfo]:
+    def get_active(self) -> list[AgentInfo]:
         """Return all agents that are not yet done, cancelled, or errored."""
         with self._lock:
             return [
@@ -159,7 +160,7 @@ class AgentTracker:
                 if a.status not in (AgentStatus.DONE, AgentStatus.ERROR, AgentStatus.CANCELLED)
             ]
 
-    def get_all(self) -> List[AgentInfo]:
+    def get_all(self) -> list[AgentInfo]:
         with self._lock:
             return list(self._agents.values())
 
@@ -178,12 +179,12 @@ class AgentTracker:
             # Build a parent → live-children map once so we descend the tree in
             # O(n) instead of rescanning ``self._agents`` per recursive hop.
             terminal = (AgentStatus.DONE, AgentStatus.ERROR, AgentStatus.CANCELLED)
-            children_by_parent: Dict[str, List[AgentInfo]] = {}
+            children_by_parent: dict[str, list[AgentInfo]] = {}
             for info in self._agents.values():
                 if info.parent_id:
                     children_by_parent.setdefault(info.parent_id, []).append(info)
             # Iterative DFS — cheap and avoids re-entering the lock per child.
-            stack: List[AgentInfo] = [root]
+            stack: list[AgentInfo] = [root]
             visited: set[str] = set()
             while stack:
                 cur = stack.pop()

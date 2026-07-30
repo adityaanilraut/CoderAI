@@ -4,7 +4,7 @@ import asyncio
 import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -37,7 +37,7 @@ class SearchReplaceParams(BaseModel):
     search: str = Field("", description="Text to search for")
     replace: str = Field("", description="Text to replace with")
     replace_all: bool = Field(False, description="Replace all occurrences (default: first only)")
-    edits: Optional[List[EditChunk]] = Field(
+    edits: Optional[list[EditChunk]] = Field(
         None, description="Apply multiple search/replace edits in a single atomic operation"
     )
 
@@ -93,7 +93,7 @@ class SearchReplaceTool(Tool):
         search: str = "",
         replace: str = "",
         replace_all: bool = False,
-        edits: Optional[List[Dict[str, Any]]] = None,
+        edits: Optional[list[dict[str, Any]]] = None,
     ) -> dict[str, Any]:
         """Search and replace in file with protection. Supports batch edits via *edits*."""
         try:
@@ -469,7 +469,9 @@ class ApplyDiffTool(Tool):
         def _matches_at(pos: int) -> bool:
             if pos < 0 or pos + n_old > len(file_lines):
                 return False
-            for file_line, old_line in zip(file_lines[pos : pos + n_old], old_normalized):
+            for file_line, old_line in zip(
+                file_lines[pos : pos + n_old], old_normalized, strict=True
+            ):
                 if file_line.rstrip() != old_line:
                     return False
             return True

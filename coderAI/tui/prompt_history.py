@@ -6,7 +6,7 @@ isolation; :class:`coderAI.tui.screens.PromptArea` drives it from key events.
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Optional
 
 
 class PromptHistory:
@@ -21,13 +21,13 @@ class PromptHistory:
     """
 
     def __init__(self, max_entries: int = 500) -> None:
-        self._entries: List[str] = []
+        self._entries: list[str] = []
         self._max_entries = max_entries
         self._pos: Optional[int] = None
         self._stash: str = ""
 
     @property
-    def entries(self) -> List[str]:
+    def entries(self) -> list[str]:
         return list(self._entries)
 
     @property

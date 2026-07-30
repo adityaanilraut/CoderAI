@@ -293,7 +293,13 @@ async def test_orchestrate_signals_doom_loop_after_hard_threshold() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cached_read_only_repeats_trip_doom_loop_hard_threshold() -> None:
+@pytest.mark.parametrize(
+    ("tool_name", "expected_executions"),
+    [("read_file", 2), ("delegate_task", 1)],
+)
+async def test_cached_repeats_trip_general_doom_loop_hard_threshold(
+    tool_name: str, expected_executions: int
+) -> None:
     registry = SimpleNamespace(
         get=MagicMock(
             return_value=SimpleNamespace(
@@ -326,7 +332,7 @@ async def test_cached_read_only_repeats_trip_doom_loop_hard_threshold() -> None:
             {
                 "id": f"t{i}",
                 "type": "function",
-                "function": {"name": "read_file", "arguments": '{"path":"README.md"}'},
+                "function": {"name": tool_name, "arguments": '{"path":"README.md"}'},
             }
         ]
         session.add_message("assistant", None, tool_calls=tool_calls)
@@ -338,7 +344,7 @@ async def test_cached_read_only_repeats_trip_doom_loop_hard_threshold() -> None:
             hooks_manager=hooks_manager,
         )
 
-    assert registry.execute.await_count == 2
+    assert registry.execute.await_count == expected_executions
     assert last_outcome is not None
     assert last_outcome.status is BatchStatus.DOOM_LOOP
     assert last_outcome.doom_count == DOOM_LOOP_HARD_THRESHOLD

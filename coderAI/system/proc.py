@@ -28,7 +28,8 @@ import os
 import re
 import signal
 import subprocess
-from typing import Any, Dict, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Optional, Union
+from collections.abc import Mapping, Sequence
 
 from coderAI.system.sandbox import prepare_sandbox_launch
 
@@ -75,14 +76,14 @@ def is_secret_env_var(name: str) -> bool:
     return any(p.search(name) for p in _SECRET_ENV_PATTERNS)
 
 
-def scrub_env(base: Optional[Mapping[str, str]] = None) -> Dict[str, str]:
+def scrub_env(base: Optional[Mapping[str, str]] = None) -> dict[str, str]:
     """Return a copy of the environment with secret-bearing variables removed.
 
     Pass *base* to scrub a specific mapping; otherwise ``os.environ`` is used.
     Only credential-looking names are dropped — ``PATH``/``HOME``/``LANG`` and
     everything else the child legitimately needs are preserved.
     """
-    env: Dict[str, str] = dict(os.environ if base is None else base)
+    env: dict[str, str] = dict(os.environ if base is None else base)
     for name in list(env):
         if is_secret_env_var(name):
             del env[name]
@@ -134,7 +135,7 @@ _HOOK_ENV_ALLOWLIST = frozenset(
 )
 
 
-def build_hook_env(base: Optional[Mapping[str, str]] = None) -> Dict[str, str]:
+def build_hook_env(base: Optional[Mapping[str, str]] = None) -> dict[str, str]:
     """Return a *minimal allowlisted* environment for hook subprocesses.
 
     Unlike :func:`scrub_env` (which keeps everything not matching a secret
@@ -144,7 +145,7 @@ def build_hook_env(base: Optional[Mapping[str, str]] = None) -> Dict[str, str]:
     variable can never leak into one — even a name no denylist anticipated.
     """
     src = os.environ if base is None else base
-    env: Dict[str, str] = {}
+    env: dict[str, str] = {}
     for name, val in src.items():
         upper = name.upper()
         if upper in _HOOK_ENV_ALLOWLIST or upper.startswith("LC_"):
@@ -155,7 +156,7 @@ def build_hook_env(base: Optional[Mapping[str, str]] = None) -> Dict[str, str]:
 # ── Process-group isolation ──────────────────────────────────────────────────
 
 
-def new_session_kwargs() -> Dict[str, Any]:
+def new_session_kwargs() -> dict[str, Any]:
     """kwargs for ``create_subprocess_exec``/``_shell`` that isolate the child.
 
     POSIX: ``start_new_session=True`` makes the child a session/group leader so
@@ -258,7 +259,7 @@ async def run_scrubbed(
     sandbox_workspace: Union[str, os.PathLike[str], None] = None,
     stdin: Optional[bytes] = None,
     term_grace: float = 2.0,
-) -> Tuple[Optional[int], bytes, bytes, bool]:
+) -> tuple[Optional[int], bytes, bytes, bool]:
     """Spawn with a scrubbed env, process-group isolation, and configured sandbox.
 
     Bundles the safety concerns shared by every model-driven subprocess:

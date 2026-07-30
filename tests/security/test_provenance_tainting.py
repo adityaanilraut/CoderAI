@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
-from typing import Any, Dict, List
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -50,7 +50,7 @@ class _InternalTool(Tool):
     name = "internal_note"
     is_read_only = True
 
-    async def execute(self, **kwargs: Any) -> Dict[str, Any]:
+    async def execute(self, **kwargs: Any) -> dict[str, Any]:
         return {"success": True, "note": f"internal bookkeeping {INJECTION}"}
 
 
@@ -68,7 +68,7 @@ def _make_agent(session: Session, registry: ToolRegistry, *, auto_approve: bool 
     )
 
 
-def _tool_call(name: str, args: Dict[str, Any], tool_id: str = "t1") -> Dict[str, Any]:
+def _tool_call(name: str, args: dict[str, Any], tool_id: str = "t1") -> dict[str, Any]:
     return {
         "id": tool_id,
         "type": "function",
@@ -76,7 +76,7 @@ def _tool_call(name: str, args: Dict[str, Any], tool_id: str = "t1") -> Dict[str
     }
 
 
-async def _run(executor: ToolExecutor, session: Session, calls: List[Dict[str, Any]]) -> None:
+async def _run(executor: ToolExecutor, session: Session, calls: list[dict[str, Any]]) -> None:
     for tc in calls:
         session.add_message("assistant", None, tool_calls=[tc])
         await executor.orchestrate_tool_calls(
@@ -187,7 +187,7 @@ def test_mcp_listing_tools_declare_untrusted_and_source_no_egress(tool_cls: type
 async def test_fetched_page_is_wrapped_and_taints_turn(monkeypatch: pytest.MonkeyPatch) -> None:
     import coderAI.tools.web as web_mod
 
-    async def fake_cf(method: str, url: str, **kwargs: Any) -> Dict[str, Any]:
+    async def fake_cf(method: str, url: str, **kwargs: Any) -> dict[str, Any]:
         return {
             "status": 200,
             "url": url,

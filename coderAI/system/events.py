@@ -3,7 +3,8 @@
 import asyncio
 import inspect
 import logging
-from typing import Any, Callable, Dict, List
+from typing import Any
+from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -13,7 +14,7 @@ class EventEmitter:
 
     def __init__(self) -> None:
         """Initialize event emitter."""
-        self._listeners: Dict[str, List[Callable]] = {}
+        self._listeners: dict[str, list[Callable]] = {}
         self._pending_tasks: "set[asyncio.Task[Any]]" = set()
 
     def on(self, event: str, callback: Callable) -> None:

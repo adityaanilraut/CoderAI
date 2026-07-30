@@ -4,7 +4,7 @@ import base64
 import logging
 import mimetypes
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -46,7 +46,7 @@ class ReadImageTool(Tool):
     parameters_model = ReadImageParams
     is_read_only = True
 
-    async def execute(self, path: str) -> Dict[str, Any]:  # type: ignore[override]
+    async def execute(self, path: str) -> dict[str, Any]:  # type: ignore[override]
         """Read and base64-encode an image file.
 
         Args:

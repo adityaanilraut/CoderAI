@@ -1,52 +1,58 @@
 """Shared CLI utilities."""
 
-from typing import Optional, Set
+from typing import Optional
 
 from coderAI.system.display import Display, display
 
 __all__ = [
     "Display",
     "display",
+    "is_valid_model",
     "missing_api_key_message",
     "valid_endpoint",
     "valid_models",
 ]
 
-_NO_API_KEY_MESSAGE = (
-    "No API key configured. Run `coderAI setup` to add one, or set a "
-    "provider env var (ANTHROPIC_API_KEY, OPENAI_API_KEY, GROQ_API_KEY, "
-    "DEEPSEEK_API_KEY, GEMINI_API_KEY). For local models, run `coderAI config set "
-    "default_model lmstudio` (or ollama)."
-)
+_PROVIDER_KEYS = {
+    "openai": ("OpenAI", "openai_api_key", "OPENAI_API_KEY"),
+    "anthropic": ("Anthropic", "anthropic_api_key", "ANTHROPIC_API_KEY"),
+    "groq": ("Groq", "groq_api_key", "GROQ_API_KEY"),
+    "deepseek": ("DeepSeek", "deepseek_api_key", "DEEPSEEK_API_KEY"),
+    "gemini": ("Gemini", "gemini_api_key", "GEMINI_API_KEY"),
+    "meta": ("Meta", "meta_api_key", "MODEL_API_KEY or META_API_KEY"),
+}
 
 
-def missing_api_key_message() -> Optional[str]:
-    """Return an error string if no usable provider is configured, else ``None``.
-
-    A provider is usable when any cloud API key is set, or the default model is
-    a local provider (lmstudio/ollama). Shared by ``chat`` and ``run`` so both
-    entry points apply the same precheck (with their own output formatting).
-    """
+def missing_api_key_message(model: Optional[str] = None) -> Optional[str]:
+    """Return an error if the selected model's provider lacks its credential."""
     from coderAI.system.config import config_manager
+    from coderAI.llm.factory import provider_id_for_model
 
     cfg = config_manager.load()
-    has_cloud_key = any(
-        [
-            getattr(cfg, "openai_api_key", None),
-            getattr(cfg, "anthropic_api_key", None),
-            getattr(cfg, "groq_api_key", None),
-            getattr(cfg, "deepseek_api_key", None),
-            getattr(cfg, "gemini_api_key", None),
-            getattr(cfg, "meta_api_key", None),
-        ]
-    )
-    local_default = (cfg.default_model or "").lower() in ("lmstudio", "ollama")
-    if has_cloud_key or local_default:
+    selected = (model or cfg.default_model or "").strip()
+    try:
+        provider_id = provider_id_for_model(selected)
+    except ValueError as exc:
+        return str(exc)
+    if provider_id in ("lmstudio", "ollama"):
         return None
-    return _NO_API_KEY_MESSAGE
+    label, config_key, env_var = _PROVIDER_KEYS[provider_id]
+    if getattr(cfg, config_key, None):
+        return None
+    return (
+        f"{label} API key is required for model '{selected}'. Set {env_var}, "
+        f"run `coderAI config set {config_key} <YOUR_KEY>`, or choose another model."
+    )
 
 
-def valid_models() -> Set[str]:
+def is_valid_model(model: str) -> bool:
+    """Return whether the provider factory accepts this model identifier."""
+    from coderAI.llm.factory import is_valid_model_name
+
+    return is_valid_model_name(model)
+
+
+def valid_models() -> set[str]:
     """Return the set of valid default-model values accepted by setup()."""
     from coderAI.llm.factory import get_all_model_ids
 

@@ -1,6 +1,6 @@
 """Meta Model API LLM provider (OpenAI-compatible Chat Completions)."""
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from openai import AsyncOpenAI
 
@@ -19,6 +19,9 @@ class MetaProvider(OpenAICompatibleCloudProvider):
         "muse-spark": "muse-spark-1.1",
         "muse": "muse-spark-1.1",
     }
+    MODEL_CONTEXT_WINDOWS = {
+        "muse-spark-1.1": 1_048_576,
+    }
 
     def __init__(self, model: str, api_key: Optional[str] = None, **kwargs: Any):
         super().__init__(model, api_key, **kwargs)
@@ -34,12 +37,12 @@ class MetaProvider(OpenAICompatibleCloudProvider):
 
     def _build_request_params(
         self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
+        messages: list[dict[str, Any]],
+        tools: Optional[list[dict[str, Any]]] = None,
         *,
         stream: bool = False,
         **kwargs: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         params = super()._build_request_params(messages, tools, stream=stream, **kwargs)
 
         # Muse Spark always reasons; sending reasoning_effort="none" returns HTTP 400.

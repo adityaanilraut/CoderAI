@@ -116,8 +116,9 @@ confinement.
 - A **single launcher-validation choke point** (`connect_stdio`) enforces the
   launcher allow-list, an inline-exec block (`python -c`, `node -e`,
   `deno eval`), and the command blocklist for **both** the `mcp_connect` tool and
-  config-driven autoconnect — a server planted in `mcp_servers.json` is held to
-  the same bar.
+  config-driven autoconnect — a server planted in `mcp_servers.json` or
+  `.mcp.json` is held to the same bar. Project `.mcp.json` is ignored until
+  workspace trust + per-server approval.
 - The OAuth authorization-server origin is shown before the browser opens, with a
   warning when it differs from the MCP server's registrable domain.
 
@@ -157,11 +158,13 @@ the code provides:
   Bubblewrap installation and user-namespace support. macOS needs the deprecated
   but still shipped `sandbox-exec` facility. Windows has no backend and therefore
   needs `off` or `best_effort`; `required` fails closed.
-- **MCP stdio preserves its launcher environment.** Some MCP servers obtain
-  credentials from environment variables, so stdio launch keeps the pre-existing
-  behavior instead of applying the model-command scrubber. Treat configured MCP
-  launchers as trusted code; enable the OS sandbox to restrict their writes and
-  network access when compatible with the server.
+- **MCP stdio env is scrubbed, then overlaid.** Stdio servers start from a
+  scrubbed environment (host API keys stripped) and only receive keys listed in
+  the server's config ``env`` map (with ``${VAR}`` expansion). Treat configured
+  MCP launchers and their env overlays as trusted; enable the OS sandbox to
+  restrict their writes and network access when compatible with the server.
+  Project ``.mcp.json`` servers are ignored until the workspace is trusted and
+  each server is approved.
 - **Some read tools are deliberately `TRUSTED`.** `read_file`, `grep`,
   `semantic_search`, and terminal *stdout* are not provenance-tainted, on the
   assumption that project source is content you chose to open. A repository whose

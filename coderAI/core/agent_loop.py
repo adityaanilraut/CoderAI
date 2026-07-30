@@ -4,9 +4,10 @@ import asyncio
 import json
 import logging
 import time as _time
-from typing import Any, cast, Dict, List, Optional, Set
+from typing import Any, cast, Optional
 
 from coderAI.core.agent_tracker import AgentStatus
+from coderAI.core.objective import ObjectiveState
 from coderAI.llm.base import normalize_usage
 from coderAI.system.cost import CostTracker
 from coderAI.system.history import Message
@@ -80,17 +81,17 @@ class ExecutionLoop:
 
     def _inject_step_reminders(
         self,
-        messages: List[Dict[str, Any]],
+        messages: list[dict[str, Any]],
         iteration: int,
         max_iterations: int,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Append a ``system`` reminder when the iteration budget is nearly spent.
 
         The step-limit hint is emitted on every iteration that falls inside the
         5-step window so the model can see the budget shrink in real time.
         """
         result = list(messages)
-        parts: List[str] = []
+        parts: list[str] = []
 
         steps_left = max_iterations - iteration
         if 1 <= steps_left <= 5:
@@ -112,14 +113,14 @@ class ExecutionLoop:
             )
         return result
 
-    def _refresh_messages_from_session(self, messages: List[Dict[str, Any]]) -> None:
+    def _refresh_messages_from_session(self, messages: list[dict[str, Any]]) -> None:
         """Replace the in-memory message list with the session transcript."""
         if self.agent.session is None:
             return
         messages.clear()
         messages.extend(self.agent.session.get_messages_for_api())
 
-    async def run(self, user_message: str) -> Dict[str, Any]:
+    async def run(self, user_message: str) -> dict[str, Any]:
         """Process a user message and return response."""
 
         # Reset turn-scoped flags so state never leaks across user messages.
@@ -137,17 +138,22 @@ class ExecutionLoop:
 
         # 1b. First-run workspace-trust gate — decide trust before any hook or
         # project-config surface is honoured this turn.
-        await self._ensure_workspace_trust()
+        plan_mode = vars(self.agent).get("plan_mode") is True
+        if not plan_mode:
+            await self._ensure_workspace_trust()
 
         # Auto-connect MCP servers only after the workspace trust decision. A
         # bundled or user-configured launcher must never run before an untrusted
         # checkout has been assessed.
-        if not self.agent._mcp_initialized:
+        if not self.agent._mcp_initialized and not plan_mode:
             self.agent._mcp_initialized = True
             await self._autoconnect_mcp_servers()
 
         # 2. Run on_user_prompt and chat.message hooks
-        hooks_data = self.hooks_manager.load_hooks()
+        # Project hooks may execute shell commands. Plan Mode is an enforced
+        # read-only boundary, so suppress every hook phase by carrying an empty
+        # (non-None) hook set through the turn; the finalizer must not reload it.
+        hooks_data = {} if plan_mode else self.hooks_manager.load_hooks()
         if hooks_data:
             await self.hooks_manager.run_hooks(
                 "*", "on_user_prompt", {"text": user_message}, hooks_data
@@ -192,6 +198,11 @@ class ExecutionLoop:
             tool_schemas=tool_schemas,
             hooks_data=hooks_data,
             max_iterations=max_iterations,
+            objective_state=ObjectiveState(
+                objective=user_message,
+                plan_id=vars(self.agent).get("active_plan_id"),
+                plan_revision=vars(self.agent).get("active_plan_revision"),
+            ),
         )
         self._turn = state
 
@@ -296,12 +307,12 @@ class ExecutionLoop:
         return answer.strip().lower() in ("y", "yes")
 
     @staticmethod
-    def _describe_trust_surface(root: Any) -> List[str]:
+    def _describe_trust_surface(root: Any) -> list[str]:
         """Human-readable list of the ``.coderAI`` surface a trust decision enables."""
         from pathlib import Path
 
         dot = Path(str(root)) / ".coderAI"
-        items: List[str] = []
+        items: list[str] = []
         try:
             if (dot / "hooks.json").is_file():
                 items.append("hooks.json (runs shell commands)")
@@ -317,7 +328,7 @@ class ExecutionLoop:
             pass
         return items or ["project automation"]
 
-    async def _run_iteration(self, state: TurnContext) -> Optional[Dict[str, Any]]:
+    async def _run_iteration(self, state: TurnContext) -> Optional[dict[str, Any]]:
         """Run a single loop iteration.
 
         Returns a final response dict to end the turn, or ``None`` to
@@ -379,7 +390,7 @@ class ExecutionLoop:
             )
             return None
 
-    async def _handle_llm_phase(self, state: TurnContext) -> Dict[str, Any]:
+    async def _handle_llm_phase(self, state: TurnContext) -> dict[str, Any]:
         """Call the LLM (including the one-shot ``length`` retry) and return
         the parsed response data."""
         info = self.agent.tracker_info
@@ -454,7 +465,7 @@ class ExecutionLoop:
 
         return response_data
 
-    async def _handle_finish_reason(self, state: TurnContext, response_data: Dict[str, Any]) -> Any:
+    async def _handle_finish_reason(self, state: TurnContext, response_data: dict[str, Any]) -> Any:
         """Persist the assistant reply and route on ``finish_reason``.
 
         Returns ``_PROCEED_TO_TOOLS`` to continue into the tool phase,
@@ -538,8 +549,8 @@ class ExecutionLoop:
         return _PROCEED_TO_TOOLS
 
     async def _handle_tools_phase(
-        self, state: TurnContext, response_data: Dict[str, Any]
-    ) -> Optional[Dict[str, Any]]:
+        self, state: TurnContext, response_data: dict[str, Any]
+    ) -> Optional[dict[str, Any]]:
         """Execute the tool calls and post-process the results.
 
         Returns a final response dict to end the turn, or ``None`` to
@@ -601,6 +612,12 @@ class ExecutionLoop:
                         msgs.pop()
                     self.agent.session.add_message("assistant", summary)
                     state.reply_parts.append(summary.strip())
+
+            gate_result = await self._apply_completion_gate(state, content or "")
+            if gate_result is not None:
+                return gate_result
+            if state.objective_state and state.objective_state.completion_status == "incomplete":
+                return None
 
             return await self._finalize_turn(
                 fallback=(
@@ -727,6 +744,61 @@ class ExecutionLoop:
         )
         return None
 
+    async def _apply_completion_gate(
+        self, state: TurnContext, proposed_content: str
+    ) -> Optional[dict[str, Any]]:
+        """Accept, retry, or reject a model's proposal to finish the turn."""
+        objective = state.objective_state
+        enabled = bool(getattr(self.agent.config, "completion_gate_enabled", True))
+        if objective is None:
+            return None
+        if not enabled:
+            objective.completion_status = "reasoned"
+            return None
+
+        decision = objective.evaluate_completion()
+        if decision.allowed:
+            return None
+
+        max_retries = int(getattr(self.agent.config, "completion_gate_max_retries", 1) or 0)
+        if (
+            objective.completion_gate_attempts < max_retries
+            and state.iteration < state.max_iterations
+        ):
+            objective.completion_gate_attempts += 1
+            messages = self.agent.session.messages
+            if messages and messages[-1].role == "assistant" and not messages[-1].tool_calls:
+                messages.pop()
+            if proposed_content.strip() and state.reply_parts:
+                if state.reply_parts[-1] == proposed_content.strip():
+                    state.reply_parts.pop()
+            feedback = (
+                "[Completion Gate]: The runtime rejected the completion proposal. "
+                "Resolve the missing evidence before answering finally:\n- "
+                + "\n- ".join(decision.issues)
+                + "\nRun the narrowest relevant checks after the latest change and inspect each "
+                "changed file. If verification is impossible, explain the exact blocker and "
+                "remaining risk; the runtime will return an unverified outcome, not success."
+            )
+            self.agent.session.add_message("system", feedback)
+            self._refresh_messages_from_session(state.messages)
+            get_services().events.emit(
+                "agent_warning",
+                message="Completion gate requested missing verification evidence.",
+            )
+            return None
+
+        objective.mark_unverified(decision.issues)
+        note = "Runtime completion status: unverified. " + " ".join(decision.issues)
+        return await self._finalize_turn(
+            fallback=proposed_content,
+            tail=note,
+            error=True,
+            stop_reason="unverified",
+            iterations=state.iteration,
+            hooks_data=state.hooks_data,
+        )
+
     def _maybe_start_mcp_health_check(self) -> None:
         """Run the MCP health check + auto-reconnect off the critical path.
 
@@ -766,51 +838,41 @@ class ExecutionLoop:
     async def _autoconnect_mcp_servers(self):
         """Auto-connect configured + bundled MCP servers (e.g. git_extended)."""
         from coderAI.tools.mcp import effective_mcp_servers
+        from coderAI.tools.mcp_config import connect_from_entry
 
         try:
-            servers = effective_mcp_servers().get("mcpServers", {})
+            trusted = bool(getattr(self.agent, "_workspace_trusted", False))
+            root = getattr(self.agent.config, "project_root", ".") or "."
+            mcp_client = get_services().mcp_client
+            mcp_client.set_project_root(root)
+            servers = effective_mcp_servers(project_root=root, workspace_trusted=trusted).get(
+                "mcpServers", {}
+            )
             if not servers:
                 return
-            mcp_client = get_services().mcp_client
 
             for name, config in servers.items():
                 if name in mcp_client.servers:
                     continue  # Already connected
-                if config.get("disabled"):
-                    continue  # Toggled off via /mcp — don't auto-reconnect
-                transport = config.get("transport", "stdio")
-                if transport == "sse":
-                    url = config.get("url")
-                    if url:
-                        logger.info("Auto-connecting MCP server %s via SSE...", name)
-                        res = await mcp_client.connect_sse(name, url)
-                        if not res.get("success"):
-                            logger.error(
-                                "Failed to auto-connect MCP server %s: %s", name, res.get("error")
-                            )
-                elif transport == "http":
-                    url = config.get("url")
-                    if url:
-                        logger.info("Auto-connecting MCP server %s via HTTP...", name)
-                        res = await mcp_client.connect_http(name, url, config.get("headers"))
-                        if not res.get("success"):
-                            logger.error(
-                                "Failed to auto-connect MCP server %s: %s", name, res.get("error")
-                            )
-                else:
-                    command = config.get("command")
-                    args = config.get("args", [])
-                    if command:
-                        logger.info("Auto-connecting MCP server %s via stdio...", name)
-                        res = await mcp_client.connect_stdio(name, command, args)
-                        if not res.get("success"):
-                            logger.error(
-                                "Failed to auto-connect MCP server %s: %s", name, res.get("error")
-                            )
+                if config.get("disabled") or config.get("_connect_blocked"):
+                    continue  # Toggled off / pending project approval
+                logger.info(
+                    "Auto-connecting MCP server %s via %s...",
+                    name,
+                    config.get("transport", "stdio"),
+                )
+                res = await connect_from_entry(
+                    name,
+                    config,
+                    project_root=root,
+                    client=mcp_client,
+                )
+                if not res.get("success"):
+                    logger.error("Failed to auto-connect MCP server %s: %s", name, res.get("error"))
         except Exception as e:
             logger.error("Error auto-connecting MCP servers: %s", e)
 
-    def _prepare_session(self, user_message: str) -> Optional[Dict[str, Any]]:
+    def _prepare_session(self, user_message: str) -> Optional[dict[str, Any]]:
         """Initialize session and tracker, check budget limits."""
         if self.agent.session is None:
             self.agent.create_session()
@@ -842,7 +904,7 @@ class ExecutionLoop:
             }
         return None
 
-    async def _prepare_messages(self, user_message: str) -> List[Dict[str, Any]]:
+    async def _prepare_messages(self, user_message: str) -> list[dict[str, Any]]:
         """Retrieve messages from session and inject pinned context."""
         session = self.agent.session
         if session:
@@ -878,8 +940,8 @@ class ExecutionLoop:
 
         # Pass 1: collect expected tool_call_ids per assistant index and
         # track which tool_call_ids already have corresponding tool messages.
-        expected_by_assistant: Dict[int, Set[str]] = {}
-        seen_tool_ids: Set[str] = set()
+        expected_by_assistant: dict[int, set[str]] = {}
+        seen_tool_ids: set[str] = set()
         for i, msg in enumerate(msgs):
             if msg.role == "assistant" and msg.tool_calls:
                 ids = set()
@@ -904,7 +966,7 @@ class ExecutionLoop:
 
         # Pass 2: rebuild messages list, injecting synthetic tool responses
         # after each assistant message that has unpaired tool calls.
-        repaired: List[Message] = []
+        repaired: list[Message] = []
         for i, msg in enumerate(msgs):
             repaired.append(msg)
             if i in expected_by_assistant:
@@ -937,15 +999,31 @@ class ExecutionLoop:
             missing_total,
         )
 
-    def _get_tool_schemas(self) -> Optional[List[Dict[str, Any]]]:
+    def _get_tool_schemas(self) -> Optional[list[dict[str, Any]]]:
         """Collect tool schemas from built-in registry and MCP."""
-        tool_schemas = (
-            self.agent.tools.get_schemas() if self.agent.provider.supports_tools() else None
-        )
+        tool_schemas = None
+        plan_mode = vars(self.agent).get("plan_mode") is True
+        if self.agent.provider.supports_tools():
+            if plan_mode:
+                selected = []
+                for tool in self.agent.tools.get_all():
+                    if (
+                        tool.name == "submit_plan"
+                        or tool.is_read_only
+                        or tool.name == "delegate_task"
+                    ):
+                        selected.append(tool.get_schema())
+                tool_schemas = selected
+            else:
+                tool_schemas = [
+                    schema
+                    for schema in self.agent.tools.get_schemas()
+                    if (schema.get("function") or {}).get("name") != "submit_plan"
+                ]
         try:
             mcp_client = get_services().mcp_client
 
-            mcp_schemas = mcp_client.get_tools_as_openai_format()
+            mcp_schemas = [] if plan_mode else mcp_client.get_tools_as_openai_format()
             # Domain-scoped sub-agents fail closed on dynamic MCP. Server-side
             # annotations are untrusted, and no local exact-tool trust metadata
             # mechanism exists yet.
@@ -1014,7 +1092,7 @@ class ExecutionLoop:
         run_stop_hooks: bool = True,
         hooks_data: Any = None,
         repair_unpaired: Optional[bool] = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Single terminal-turn path shared by every loop-exit site.
 
         Owns the previously-duplicated end-of-turn sequence: finish the tracker,
@@ -1071,9 +1149,12 @@ class ExecutionLoop:
             "success": success,
             "stop_reason": stop_reason,
             "error": None if success else stop_reason,
+            "objective_state": self._turn.objective_state.as_dict()
+            if self._turn.objective_state is not None
+            else None,
         }
 
-    async def _handle_cancellation(self) -> Dict[str, Any]:
+    async def _handle_cancellation(self) -> dict[str, Any]:
         # Cancellation is handled consistently with the other terminal paths
         # (refusal, normal stop, max_iterations) via the shared finalizer.
         return await self._finalize_turn(
@@ -1082,7 +1163,7 @@ class ExecutionLoop:
             iterations=0,
         )
 
-    async def _handle_fatal_error(self, e: Exception, count: int) -> Dict[str, Any]:
+    async def _handle_fatal_error(self, e: Exception, count: int) -> dict[str, Any]:
         get_services().events.emit(
             "agent_error", message=f"Too many consecutive errors ({count}). Last: {e}"
         )
@@ -1096,7 +1177,7 @@ class ExecutionLoop:
 
     async def _handle_recoverable_error(
         self, e: Exception, count: int, user_message: str
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         # Sanitize error message to avoid leaking sensitive info (API keys, tracebacks)
         error_str = str(e)
         # Truncate long error messages
@@ -1128,7 +1209,7 @@ class ExecutionLoop:
         messages = self.agent.context_controller.inject_context(messages, query=user_message)
         return messages  # type: ignore[no-any-return]
 
-    async def _handle_budget_exceeded(self, e: BudgetExceededError) -> Dict[str, Any]:
+    async def _handle_budget_exceeded(self, e: BudgetExceededError) -> dict[str, Any]:
         """Stop the loop cleanly when the budget has been exhausted."""
         get_services().events.emit("agent_error", message=str(e))
         return await self._finalize_turn(
@@ -1137,7 +1218,7 @@ class ExecutionLoop:
             stop_reason="budget",
         )
 
-    async def _handle_max_iterations(self) -> Dict[str, Any]:
+    async def _handle_max_iterations(self) -> dict[str, Any]:
         """Handle hitting the iteration limit."""
         msg = "I've reached the maximum number of iterations. Please try again."
         get_services().events.emit("agent_warning", message=msg)
@@ -1148,7 +1229,7 @@ class ExecutionLoop:
             iterations=self.agent.config.max_iterations,
         )
 
-    async def _handle_pause_storm(self, pause_count: int, iterations: int) -> Dict[str, Any]:
+    async def _handle_pause_storm(self, pause_count: int, iterations: int) -> dict[str, Any]:
         """Abort when the model returns ``pause_turn`` too many times in a row."""
         msg = (
             f"Model returned pause_turn {pause_count} times in a row; "
@@ -1164,9 +1245,9 @@ class ExecutionLoop:
 
     async def _call_llm_with_retry(
         self,
-        messages: List[Dict[str, Any]],
-        tool_schemas: Optional[List[Dict[str, Any]]],
-    ) -> Dict[str, Any]:
+        messages: list[dict[str, Any]],
+        tool_schemas: Optional[list[dict[str, Any]]],
+    ) -> dict[str, Any]:
         """Call the LLM with retry logic for transient errors."""
         controller = self.agent.context_controller
         controller.request_tool_schemas = tool_schemas
@@ -1190,7 +1271,7 @@ class ExecutionLoop:
                     )
                     if raw_result is _CANCELLED_REQUEST:
                         return {"content": None, "tool_calls": None, "finish_reason": "cancelled"}
-                    result = cast(Dict[str, Any], raw_result)
+                    result = cast(dict[str, Any], raw_result)
                 else:
                     raw = await self._await_llm_request(
                         self.agent.provider.chat(provider_messages, tools=tool_schemas)
@@ -1271,8 +1352,8 @@ class ExecutionLoop:
         return await request_task
 
     async def _stream_response(
-        self, messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]] = None
-    ) -> Dict[str, Any]:
+        self, messages: list[dict[str, Any]], tools: Optional[list[dict[str, Any]]] = None
+    ) -> dict[str, Any]:
         """Stream response from LLM."""
         if self.agent.streaming_handler is None:
             raw = await self.agent.provider.chat(messages, tools=tools)
@@ -1282,7 +1363,7 @@ class ExecutionLoop:
         result = await self.agent.streaming_handler.handle_stream(stream, cancel_event=cancel_event)
         return result  # type: ignore[no-any-return]
 
-    def _extract_response_data(self, response: Dict[str, Any]) -> Dict[str, Any]:
+    def _extract_response_data(self, response: dict[str, Any]) -> dict[str, Any]:
         """Extract content, tool calls, and per-call usage from an API response."""
         usage = normalize_usage(response.get("usage"))
         choices = response.get("choices", [])

@@ -32,7 +32,8 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Optional
+from collections.abc import Callable
 from uuid import uuid4
 
 import pytest
@@ -44,7 +45,7 @@ import pytest
 _SECURITY_ROOT = Path(__file__).resolve().parent
 
 
-def pytest_collection_modifyitems(config: pytest.Config, items: List[pytest.Item]) -> None:
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     """Tag every test collected under ``tests/security/`` with ``security``.
 
     This makes ``pytest -m security`` select the whole suite without each file
@@ -134,7 +135,7 @@ def malicious_repo(tmp_path: Path) -> MaliciousRepoFactory:
         *,
         marker: Optional[str] = None,
         hook_command: Optional[str] = None,
-        config_overrides: Optional[Dict[str, Any]] = None,
+        config_overrides: Optional[dict[str, Any]] = None,
         rule_body: Optional[str] = None,
         skill_body: Optional[str] = None,
         agents_body: Optional[str] = None,
@@ -183,7 +184,7 @@ def malicious_repo(tmp_path: Path) -> MaliciousRepoFactory:
         # ``max_iterations`` is an allowed project key today; ``budget_limit``
         # and ``allow_outside_project`` exercise Phase 2.5 (a repo must not be
         # able to raise the budget or persist an auto-approve flag).
-        config: Dict[str, Any] = {
+        config: dict[str, Any] = {
             "max_iterations": 9999,
             "budget_limit": 1_000_000.0,
             "allow_outside_project": True,
@@ -266,9 +267,9 @@ class RedirectServer:
     """
 
     base_url: str
-    hits: List[str]
+    hits: list[str]
     _redirect_to: Callable[[str], str]
-    _chain: Callable[[List[str]], str]
+    _chain: Callable[[list[str]], str]
 
     @property
     def ok_url(self) -> str:
@@ -278,7 +279,7 @@ class RedirectServer:
         """URL that responds 302 with ``Location: <target>``."""
         return self._redirect_to(target)
 
-    def redirect_chain(self, targets: List[str]) -> str:
+    def redirect_chain(self, targets: list[str]) -> str:
         """URL that redirects through each target in order, ending at the last."""
         return self._chain(targets)
 
@@ -299,7 +300,7 @@ async def ssrf_redirect_server() -> Any:
 
     from aiohttp import web
 
-    hits: List[str] = []
+    hits: list[str] = []
 
     async def _ok(request: "web.Request") -> "web.Response":
         hits.append(request.path_qs)
@@ -343,7 +344,7 @@ async def ssrf_redirect_server() -> Any:
     def _redirect_to(target: str) -> str:
         return f"{base_url}/redirect?to={quote(target, safe='')}"
 
-    def _make_chain(targets: List[str]) -> str:
+    def _make_chain(targets: list[str]) -> str:
         return f"{base_url}/chain?" + urlencode([("to", t) for t in targets])
 
     server = RedirectServer(
@@ -400,7 +401,7 @@ def isolated_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
 
 # URL-host forms (usable directly as ``http://{host}/``). Kept as a module-level
 # constant so tests can also ``@pytest.mark.parametrize("host", INTERNAL_IP_TARGETS)``.
-INTERNAL_IP_TARGETS: List[str] = [
+INTERNAL_IP_TARGETS: list[str] = [
     "169.254.169.254",  # cloud metadata (AWS/GCP/Azure IMDS)
     "127.0.0.1",  # loopback
     "10.0.0.5",  # RFC1918
@@ -410,6 +411,6 @@ INTERNAL_IP_TARGETS: List[str] = [
 
 
 @pytest.fixture
-def internal_ip_targets() -> List[str]:
+def internal_ip_targets() -> list[str]:
     """The canonical list of hosts that egress/SSRF guards must block."""
     return list(INTERNAL_IP_TARGETS)

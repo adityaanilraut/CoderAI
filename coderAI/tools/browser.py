@@ -14,8 +14,9 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
+from contextlib import suppress
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
@@ -43,7 +44,7 @@ logger = logging.getLogger(__name__)
 _playwright_available: Optional[bool] = None
 
 
-def _check_playwright() -> Optional[Dict[str, Any]]:
+def _check_playwright() -> Optional[dict[str, Any]]:
     """Return an error dict if Playwright is not installed, else None."""
     global _playwright_available
     if _playwright_available is None:
@@ -70,7 +71,7 @@ def _check_playwright() -> Optional[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-async def _resolve_host_addrs(host: str) -> List[str]:
+async def _resolve_host_addrs(host: str) -> list[str]:
     """Resolve ``host`` to its IP addresses without blocking the event loop."""
     import socket
 
@@ -82,15 +83,42 @@ async def _resolve_host_addrs(host: str) -> List[str]:
     return [str(info[4][0]) for info in infos if info[0] in (socket.AF_INET, socket.AF_INET6)]
 
 
-async def _validate_navigation_url(url: str) -> Optional[Dict[str, Any]]:
+class _BrowserProxyBlocked(RuntimeError):
+    """Raised when the browser's connection-level network policy denies a target."""
+
+
+async def _public_addresses_for_host(host: str) -> list[str]:
+    """Resolve *host* once and return only policy-approved connection targets.
+
+    The returned strings are literal IP addresses. Callers must connect to one
+    of these literals rather than resolving ``host`` again; that is what turns
+    DNS validation into an actual DNS-rebinding boundary.
+    """
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        addrs = await _resolve_host_addrs(host)
+        if not addrs:
+            raise _BrowserProxyBlocked(f"SSRF guard: could not resolve {host}")
+        for addr in addrs:
+            if not _is_ip_public(addr):
+                raise _BrowserProxyBlocked(
+                    f"SSRF guard: '{host}' resolves to non-public address {addr}"
+                )
+        return addrs
+
+    if not _is_ip_public(str(ip)):
+        raise _BrowserProxyBlocked(f"SSRF guard: blocked navigation to {host}")
+    return [str(ip)]
+
+
+async def _validate_navigation_url(url: str) -> Optional[dict[str, Any]]:
     """Check a URL for SSRF before allowing browser navigation (6.2).
 
     Rejects non-http(s) schemes and literal private IPs, then — for a hostname —
-    **resolves it and requires every resolved address to be public**. This is the
-    browser mirror of the web layer's ``_SSRFResolver``: without it a hostname
-    that resolves to link-local/loopback/RFC1918 (including a DNS-rebinding
-    record) would sail past the literal-IP check. The post-navigation ``page.url``
-    re-check in :meth:`BrowserSession.navigate` closes the redirect path.
+    resolves it and requires every address to be public. This is the early URL
+    check; the per-browser safety proxy repeats the policy at connection time and
+    opens the socket using the approved literal IP, closing the DNS-rebinding gap.
     """
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
@@ -100,31 +128,14 @@ async def _validate_navigation_url(url: str) -> Optional[Dict[str, Any]]:
     if not host:
         return {"success": False, "error": "SSRF guard: URL has no host"}
 
-    # Literal IP: validate directly, no DNS lookup needed.
     try:
-        ip = ipaddress.ip_address(host)
-        if not _is_ip_public(str(ip)):
-            return {
-                "success": False,
-                "error": f"SSRF guard: blocked navigation to {host}",
-            }
-        return None
-    except ValueError:
-        pass  # a hostname → resolve and pin below
-
-    addrs = await _resolve_host_addrs(host)
-    if not addrs:
-        return {"success": False, "error": f"SSRF guard: could not resolve {host}"}
-    for addr in addrs:
-        if not _is_ip_public(addr):
-            return {
-                "success": False,
-                "error": f"SSRF guard: '{host}' resolves to non-public address {addr}",
-            }
+        await _public_addresses_for_host(host)
+    except _BrowserProxyBlocked as exc:
+        return {"success": False, "error": str(exc)}
     return None
 
 
-def _get_allowed_domains() -> Optional[List[str]]:
+def _get_allowed_domains() -> Optional[list[str]]:
     """Read the comma-separated allowed-domains list from config."""
     try:
         from coderAI.core.services import get_services
@@ -140,7 +151,7 @@ def _get_allowed_domains() -> Optional[List[str]]:
     return None
 
 
-def _check_domain_allowlist(url: str) -> Optional[Dict[str, Any]]:
+def _check_domain_allowlist(url: str) -> Optional[dict[str, Any]]:
     """If allowed domains are configured, reject URLs outside that list."""
     allowed = _get_allowed_domains()
     if not allowed:
@@ -156,7 +167,7 @@ def _check_domain_allowlist(url: str) -> Optional[Dict[str, Any]]:
     }
 
 
-async def _validate_browser_request(url: str) -> Optional[Dict[str, Any]]:
+async def _validate_browser_request(url: str) -> Optional[dict[str, Any]]:
     """Validate one Playwright request against browser network policy."""
     try:
         if err := await _validate_navigation_url(url):
@@ -170,6 +181,275 @@ async def _validate_browser_request(url: str) -> Optional[Dict[str, Any]]:
         }
 
 
+_PROXY_HEADER_LIMIT = 64 * 1024
+
+
+def _parse_proxy_authority(authority: str, default_port: int) -> tuple[str, int]:
+    """Parse an HTTP proxy authority without accepting missing/invalid hosts."""
+    try:
+        parsed = urlparse(f"//{authority}")
+        host = parsed.hostname
+        port = parsed.port or default_port
+    except ValueError as exc:
+        raise _BrowserProxyBlocked(f"Browser proxy rejected invalid target: {authority}") from exc
+    if not host:
+        raise _BrowserProxyBlocked(f"Browser proxy rejected target without a host: {authority}")
+    return host, port
+
+
+class _SafeBrowserProxy:
+    """Small per-browser forward proxy that pins every connection to a safe IP.
+
+    Playwright route interception can inspect a URL, but Chromium performs its
+    own DNS lookup after ``route.continue_()``. Routing Chromium through this
+    loopback proxy makes the final resolver and the socket opener the same
+    component: it resolves, rejects any non-public answer, then opens the
+    upstream socket using the approved literal IP.
+    """
+
+    def __init__(self, on_block: Any) -> None:
+        self._on_block = on_block
+        self._server: Optional[asyncio.AbstractServer] = None
+        self._tasks: set[asyncio.Task[Any]] = set()
+        self._port: Optional[int] = None
+
+    @property
+    def url(self) -> str:
+        if self._port is None:
+            raise RuntimeError("Browser proxy has not started")
+        return f"http://127.0.0.1:{self._port}"
+
+    async def start(self) -> None:
+        if self._server is not None:
+            return
+        self._server = await asyncio.start_server(
+            self._accept_client,
+            host="127.0.0.1",
+            port=0,
+            limit=_PROXY_HEADER_LIMIT,
+        )
+        sockets: list[Any] = list(self._server.sockets or [])
+        if not sockets:
+            await self.close()
+            raise RuntimeError("Browser safety proxy failed to bind")
+        self._port = int(sockets[0].getsockname()[1])
+
+    def _accept_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        task = asyncio.create_task(self._handle_client(reader, writer))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def _open_upstream(
+        self, host: str, port: int, *, scheme: str
+    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        if err := _check_domain_allowlist(f"{scheme}://{host}"):
+            raise _BrowserProxyBlocked(str(err["error"]))
+
+        addresses = await _public_addresses_for_host(host)
+        last_error: Optional[BaseException] = None
+        for address in addresses:
+            try:
+                # Connect to the validated literal address. Never hand the
+                # hostname to the socket layer, or DNS rebinding reappears.
+                return await asyncio.wait_for(
+                    asyncio.open_connection(address, port),
+                    timeout=10.0,
+                )
+            except (OSError, asyncio.TimeoutError) as exc:
+                last_error = exc
+        raise OSError(f"Could not connect to public target {host}:{port}: {last_error}")
+
+    @staticmethod
+    async def _relay(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        while data := await reader.read(64 * 1024):
+            writer.write(data)
+            await writer.drain()
+
+    @staticmethod
+    async def _forward_request_body(
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        headers: dict[str, str],
+    ) -> None:
+        transfer_encoding = headers.get("transfer-encoding", "").lower()
+        if "chunked" in transfer_encoding:
+            while True:
+                line = await reader.readuntil(b"\r\n")
+                writer.write(line)
+                await writer.drain()
+                try:
+                    size = int(line.split(b";", 1)[0].strip(), 16)
+                except ValueError as exc:
+                    raise OSError("Invalid chunked request body") from exc
+                if size == 0:
+                    while True:
+                        trailer = await reader.readuntil(b"\r\n")
+                        writer.write(trailer)
+                        await writer.drain()
+                        if trailer == b"\r\n":
+                            return
+                data = await reader.readexactly(size + 2)
+                writer.write(data)
+                await writer.drain()
+
+        try:
+            remaining = int(headers.get("content-length", "0"))
+        except ValueError as exc:
+            raise OSError("Invalid Content-Length from browser") from exc
+        if remaining < 0:
+            raise OSError("Invalid negative Content-Length from browser")
+        while remaining:
+            chunk = await reader.readexactly(min(remaining, 64 * 1024))
+            remaining -= len(chunk)
+            writer.write(chunk)
+            await writer.drain()
+
+    @classmethod
+    async def _tunnel(
+        cls,
+        client_reader: asyncio.StreamReader,
+        client_writer: asyncio.StreamWriter,
+        upstream_reader: asyncio.StreamReader,
+        upstream_writer: asyncio.StreamWriter,
+    ) -> None:
+        tasks = {
+            asyncio.create_task(cls._relay(client_reader, upstream_writer)),
+            asyncio.create_task(cls._relay(upstream_reader, client_writer)),
+        }
+        _done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    @staticmethod
+    async def _send_error(writer: asyncio.StreamWriter, status: int, reason: str) -> None:
+        body = reason.encode("utf-8", errors="replace")[:4096]
+        writer.write(
+            f"HTTP/1.1 {status} Browser Request Blocked\r\n".encode("ascii")
+            + b"Content-Type: text/plain; charset=utf-8\r\n"
+            + f"Content-Length: {len(body)}\r\n".encode("ascii")
+            + b"Connection: close\r\n\r\n"
+            + body
+        )
+        with suppress(ConnectionError):
+            await writer.drain()
+
+    async def _handle_client(
+        self, client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter
+    ) -> None:
+        upstream_writer: Optional[asyncio.StreamWriter] = None
+        try:
+            raw_head = await client_reader.readuntil(b"\r\n\r\n")
+            if len(raw_head) > _PROXY_HEADER_LIMIT:
+                raise _BrowserProxyBlocked("Browser proxy rejected oversized request headers")
+            lines = raw_head[:-4].split(b"\r\n")
+            request_line = lines[0].decode("latin-1")
+            try:
+                method, target, version = request_line.split(" ", 2)
+            except ValueError as exc:
+                raise _BrowserProxyBlocked("Browser proxy rejected malformed request line") from exc
+
+            header_pairs: list[tuple[str, str]] = []
+            for raw_line in lines[1:]:
+                if b":" not in raw_line:
+                    raise _BrowserProxyBlocked("Browser proxy rejected malformed request header")
+                raw_name, raw_value = raw_line.split(b":", 1)
+                header_pairs.append(
+                    (
+                        raw_name.decode("latin-1").strip(),
+                        raw_value.decode("latin-1").strip(),
+                    )
+                )
+            headers = {name.lower(): value for name, value in header_pairs}
+
+            if method.upper() == "CONNECT":
+                host, port = _parse_proxy_authority(target, 443)
+                upstream_reader, upstream_writer = await self._open_upstream(
+                    host, port, scheme="https"
+                )
+                client_writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                await client_writer.drain()
+                await self._tunnel(
+                    client_reader,
+                    client_writer,
+                    upstream_reader,
+                    upstream_writer,
+                )
+                return
+
+            parsed = urlparse(target)
+            if parsed.scheme.lower() != "http" or not parsed.hostname:
+                raise _BrowserProxyBlocked(
+                    f"Browser proxy rejected unsupported request target: {target}"
+                )
+            try:
+                port = parsed.port or 80
+            except ValueError as exc:
+                raise _BrowserProxyBlocked(
+                    f"Browser proxy rejected invalid request target: {target}"
+                ) from exc
+            host = parsed.hostname
+            upstream_reader, upstream_writer = await self._open_upstream(host, port, scheme="http")
+
+            path = parsed.path or "/"
+            if parsed.params:
+                path += f";{parsed.params}"
+            if parsed.query:
+                path += f"?{parsed.query}"
+            upstream_writer.write(f"{method} {path} {version}\r\n".encode("latin-1"))
+            for name, value in header_pairs:
+                if name.lower() not in ("connection", "proxy-connection"):
+                    upstream_writer.write(f"{name}: {value}\r\n".encode("latin-1"))
+            # One plain-HTTP request per proxy connection prevents a later
+            # keep-alive request from changing hosts without another policy check.
+            upstream_writer.write(b"Connection: close\r\n\r\n")
+            await upstream_writer.drain()
+
+            body_task = asyncio.create_task(
+                self._forward_request_body(client_reader, upstream_writer, headers)
+            )
+            response_task = asyncio.create_task(self._relay(upstream_reader, client_writer))
+            done, _pending = await asyncio.wait(
+                {body_task, response_task}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if response_task in done:
+                body_task.cancel()
+            else:
+                await response_task
+            await asyncio.gather(body_task, response_task, return_exceptions=True)
+        except _BrowserProxyBlocked as exc:
+            reason = str(exc)
+            self._on_block(reason)
+            await self._send_error(client_writer, 403, reason)
+        except (asyncio.IncompleteReadError, asyncio.LimitOverrunError):
+            await self._send_error(client_writer, 400, "Malformed browser proxy request")
+        except Exception as exc:
+            logger.debug("Browser safety proxy request failed: %s", exc, exc_info=True)
+            await self._send_error(client_writer, 502, "Browser proxy upstream connection failed")
+        finally:
+            if upstream_writer is not None:
+                upstream_writer.close()
+                with suppress(Exception):
+                    await upstream_writer.wait_closed()
+            client_writer.close()
+            with suppress(Exception):
+                await client_writer.wait_closed()
+
+    async def close(self) -> None:
+        if self._server is not None:
+            self._server.close()
+            await self._server.wait_closed()
+            self._server = None
+        self._port = None
+        current = asyncio.current_task()
+        tasks = [task for task in self._tasks if task is not current]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._tasks.clear()
+
+
 def _active_project_root() -> Path:
     try:
         from coderAI.core.services import get_services
@@ -180,7 +460,7 @@ def _active_project_root() -> Path:
         return Path.cwd().resolve()
 
 
-def _guard_screenshot_path(path: str) -> Tuple[Optional[Path], Optional[Dict[str, Any]]]:
+def _guard_screenshot_path(path: str) -> tuple[Optional[Path], Optional[dict[str, Any]]]:
     """Resolve and validate a screenshot destination using filesystem guards."""
     try:
         target = resolve_under_project(
@@ -236,7 +516,8 @@ class BrowserSession:
         self._browser: Any = None
         self._context: Any = None
         self._page: Any = None
-        self._ref_map: Dict[str, Dict[str, str]] = {}
+        self._proxy: Optional[_SafeBrowserProxy] = None
+        self._ref_map: dict[str, dict[str, str]] = {}
         self._blocked_request_reason: Optional[str] = None
         self._initialized = False
         self._lock = asyncio.Lock()
@@ -265,7 +546,24 @@ class BrowserSession:
                 # Config unavailable → keep the safe headless default.
                 logger.debug("browser_headless config unavailable, using default", exc_info=True)
 
-            self._browser = await self._playwright.chromium.launch(headless=headless)
+            self._proxy = _SafeBrowserProxy(self._record_blocked_request)
+            await self._proxy.start()
+            try:
+                self._browser = await self._playwright.chromium.launch(
+                    headless=headless,
+                    proxy={"server": self._proxy.url},
+                    args=[
+                        "--proxy-bypass-list=<-loopback>",
+                        "--disable-quic",
+                    ],
+                )
+            except Exception:
+                await self._proxy.close()
+                self._proxy = None
+                if self._playwright is not None:
+                    await self._playwright.stop()
+                    self._playwright = None
+                raise
             self._context = await self._browser.new_context(
                 viewport={"width": 1280, "height": 720},
                 service_workers="block",
@@ -337,7 +635,7 @@ class BrowserSession:
     def _begin_network_action(self) -> None:
         self._blocked_request_reason = None
 
-    def _blocked_request_result(self) -> Optional[Dict[str, Any]]:
+    def _blocked_request_result(self) -> Optional[dict[str, Any]]:
         if self._blocked_request_reason is None:
             return None
         return {
@@ -356,7 +654,7 @@ class BrowserSession:
             logger.debug("browser_timeout config unavailable, using default", exc_info=True)
             return 30.0
 
-    async def navigate(self, url: str) -> Dict[str, Any]:
+    async def navigate(self, url: str) -> dict[str, Any]:
         await self._ensure_browser()
         self._begin_network_action()
         try:
@@ -400,7 +698,7 @@ class BrowserSession:
         self._ref_map = ref_map
         return snapshot_text
 
-    async def click_by_ref(self, ref: str) -> Dict[str, Any]:
+    async def click_by_ref(self, ref: str) -> dict[str, Any]:
         await self._ensure_browser()
         if ref not in self._ref_map:
             return {
@@ -445,7 +743,7 @@ class BrowserSession:
                 "error_code": ToolErrorCode.TOOL_ERROR,
             }
 
-    async def type_by_ref(self, ref: str, text: str, clear: bool = False) -> Dict[str, Any]:
+    async def type_by_ref(self, ref: str, text: str, clear: bool = False) -> dict[str, Any]:
         await self._ensure_browser()
         if ref not in self._ref_map:
             return {
@@ -485,7 +783,7 @@ class BrowserSession:
                 "error_code": ToolErrorCode.TOOL_ERROR,
             }
 
-    async def select_option_by_ref(self, ref: str, value: str) -> Dict[str, Any]:
+    async def select_option_by_ref(self, ref: str, value: str) -> dict[str, Any]:
         await self._ensure_browser()
         if ref not in self._ref_map:
             return {
@@ -531,7 +829,7 @@ class BrowserSession:
         html = await self._page.content()
         return _html_to_text(html, "markdown")
 
-    async def screenshot(self, path: str) -> Dict[str, Any]:
+    async def screenshot(self, path: str) -> dict[str, Any]:
         await self._ensure_browser()
         target, guard_err = _guard_screenshot_path(path)
         if guard_err is not None:
@@ -554,7 +852,7 @@ class BrowserSession:
                 "error_code": ToolErrorCode.TOOL_ERROR,
             }
 
-    async def evaluate(self, js: str) -> Dict[str, Any]:
+    async def evaluate(self, js: str) -> dict[str, Any]:
         await self._ensure_browser()
         self._begin_network_action()
         try:
@@ -575,7 +873,7 @@ class BrowserSession:
         self,
         text: Optional[str] = None,
         timeout_ms: Optional[float] = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         await self._ensure_browser()
         timeout = (timeout_ms or self._get_timeout() * 1000) / 1000.0
         self._begin_network_action()
@@ -598,16 +896,21 @@ class BrowserSession:
                 "error_code": ToolErrorCode.TOOL_ERROR,
             }
 
-    async def close(self) -> Dict[str, Any]:
-        if self._context:
-            await self._context.close()
-            self._context = None
-        if self._browser:
-            await self._browser.close()
-            self._browser = None
-        if self._playwright:
-            await self._playwright.stop()
-            self._playwright = None
+    async def close(self) -> dict[str, Any]:
+        try:
+            if self._context:
+                await self._context.close()
+                self._context = None
+            if self._browser:
+                await self._browser.close()
+                self._browser = None
+            if self._playwright:
+                await self._playwright.stop()
+                self._playwright = None
+        finally:
+            if self._proxy is not None:
+                await self._proxy.close()
+                self._proxy = None
         self._page = None
         self._ref_map.clear()
         self._blocked_request_reason = None
@@ -622,7 +925,7 @@ class BrowserRegistry:
     _registry_lock = asyncio.Lock()
 
     def __init__(self) -> None:
-        self._sessions: Dict[str, BrowserSession] = {}
+        self._sessions: dict[str, BrowserSession] = {}
 
     @classmethod
     def get(cls) -> "BrowserRegistry":
@@ -661,38 +964,38 @@ class BrowserManager:
     async def _session(self) -> BrowserSession:
         return await BrowserRegistry.get().for_agent()
 
-    async def navigate(self, url: str) -> Dict[str, Any]:
+    async def navigate(self, url: str) -> dict[str, Any]:
         return await (await self._session()).navigate(url)
 
     async def snapshot(self) -> str:
         return await (await self._session()).snapshot()
 
-    async def click_by_ref(self, ref: str) -> Dict[str, Any]:
+    async def click_by_ref(self, ref: str) -> dict[str, Any]:
         return await (await self._session()).click_by_ref(ref)
 
-    async def type_by_ref(self, ref: str, text: str, clear: bool = False) -> Dict[str, Any]:
+    async def type_by_ref(self, ref: str, text: str, clear: bool = False) -> dict[str, Any]:
         return await (await self._session()).type_by_ref(ref, text, clear=clear)
 
-    async def select_option_by_ref(self, ref: str, value: str) -> Dict[str, Any]:
+    async def select_option_by_ref(self, ref: str, value: str) -> dict[str, Any]:
         return await (await self._session()).select_option_by_ref(ref, value)
 
     async def get_content(self, fmt: str = "markdown") -> str:
         return await (await self._session()).get_content(fmt=fmt)
 
-    async def screenshot(self, path: str) -> Dict[str, Any]:
+    async def screenshot(self, path: str) -> dict[str, Any]:
         return await (await self._session()).screenshot(path)
 
-    async def evaluate(self, js: str) -> Dict[str, Any]:
+    async def evaluate(self, js: str) -> dict[str, Any]:
         return await (await self._session()).evaluate(js)
 
     async def wait_for(
         self,
         text: Optional[str] = None,
         timeout_ms: Optional[float] = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         return await (await self._session()).wait_for(text=text, timeout_ms=timeout_ms)
 
-    async def close(self) -> Dict[str, Any]:
+    async def close(self) -> dict[str, Any]:
         return await (await self._session()).close()
 
 
@@ -701,7 +1004,7 @@ class BrowserManager:
 # ---------------------------------------------------------------------------
 
 
-async def _build_accessibility_snapshot(page: Any) -> Tuple[str, Dict[str, Dict[str, str]]]:
+async def _build_accessibility_snapshot(page: Any) -> tuple[str, dict[str, dict[str, str]]]:
     """Walk Playwright's accessibility tree and produce a compact text
     representation with element references (``[e0]``, ``[e1]``, ...).
 
@@ -713,10 +1016,10 @@ async def _build_accessibility_snapshot(page: Any) -> Tuple[str, Dict[str, Dict[
         return "No accessibility tree available.", {}
 
     ref_counter = [0]
-    ref_map: Dict[str, Dict[str, str]] = {}
-    lines: List[str] = []
+    ref_map: dict[str, dict[str, str]] = {}
+    lines: list[str] = []
 
-    def _walk(node: Dict[str, Any], depth: int) -> None:
+    def _walk(node: dict[str, Any], depth: int) -> None:
         role = node.get("role", "unknown")
         name = (node.get("name") or "").strip()
         value = node.get("value")
@@ -730,7 +1033,7 @@ async def _build_accessibility_snapshot(page: Any) -> Tuple[str, Dict[str, Dict[
         ref_map[ref] = {"role": role, "name": name}
 
         indent = "  " * depth
-        tag_parts: List[str] = []
+        tag_parts: list[str] = []
 
         tag_parts.append(f"[{ref}]")
         if disabled:
@@ -787,7 +1090,7 @@ class BrowserNavigateTool(Tool):
     is_egress = True
     result_provenance = Provenance.UNTRUSTED_EXTERNAL
 
-    async def execute(self, url: str) -> Dict[str, Any]:  # type: ignore[override]
+    async def execute(self, url: str) -> dict[str, Any]:  # type: ignore[override]
         if err := _check_playwright():
             return err
         if err := await _validate_navigation_url(url):
@@ -827,7 +1130,7 @@ class BrowserSnapshotTool(Tool):
     result_provenance = Provenance.UNTRUSTED_EXTERNAL
     timeout = 15.0
 
-    async def execute(self) -> Dict[str, Any]:  # type: ignore[override]
+    async def execute(self) -> dict[str, Any]:  # type: ignore[override]
         if err := _check_playwright():
             return err
         try:
@@ -867,7 +1170,7 @@ class BrowserClickTool(Tool):
     result_provenance = Provenance.UNTRUSTED_EXTERNAL
     timeout = 20.0
 
-    async def execute(self, ref: str) -> Dict[str, Any]:  # type: ignore[override]
+    async def execute(self, ref: str) -> dict[str, Any]:  # type: ignore[override]
         if err := _check_playwright():
             return err
         return await BrowserManager().click_by_ref(ref)
@@ -907,7 +1210,7 @@ class BrowserTypeTool(Tool):
     result_provenance = Provenance.UNTRUSTED_EXTERNAL
     timeout = 20.0
 
-    async def execute(self, ref: str, text: str, clear: bool = False) -> Dict[str, Any]:  # type: ignore[override]
+    async def execute(self, ref: str, text: str, clear: bool = False) -> dict[str, Any]:  # type: ignore[override]
         if err := _check_playwright():
             return err
         return await BrowserManager().type_by_ref(ref, text, clear=clear)
@@ -946,7 +1249,7 @@ class BrowserSelectOptionTool(Tool):
     result_provenance = Provenance.UNTRUSTED_EXTERNAL
     timeout = 20.0
 
-    async def execute(self, ref: str, value: str) -> Dict[str, Any]:  # type: ignore[override]
+    async def execute(self, ref: str, value: str) -> dict[str, Any]:  # type: ignore[override]
         if err := _check_playwright():
             return err
         return await BrowserManager().select_option_by_ref(ref, value)
@@ -982,7 +1285,7 @@ class BrowserGetContentTool(Tool):
     result_provenance = Provenance.UNTRUSTED_EXTERNAL
     timeout = 15.0
 
-    async def execute(self, fmt: str = "markdown") -> Dict[str, Any]:  # type: ignore[override]
+    async def execute(self, fmt: str = "markdown") -> dict[str, Any]:  # type: ignore[override]
         if err := _check_playwright():
             return err
         if fmt not in ("markdown", "text", "html"):
@@ -1026,7 +1329,7 @@ class BrowserScreenshotTool(Tool):
     result_provenance = Provenance.UNTRUSTED_EXTERNAL
     timeout = 20.0
 
-    async def execute(self, path: str) -> Dict[str, Any]:  # type: ignore[override]
+    async def execute(self, path: str) -> dict[str, Any]:  # type: ignore[override]
         if err := _check_playwright():
             return err
         try:
@@ -1070,7 +1373,7 @@ class BrowserEvaluateTool(Tool):
     result_provenance = Provenance.UNTRUSTED_EXTERNAL
     timeout = 15.0
 
-    async def execute(self, js: str) -> Dict[str, Any]:  # type: ignore[override]
+    async def execute(self, js: str) -> dict[str, Any]:  # type: ignore[override]
         if err := _check_playwright():
             return err
         try:
@@ -1112,7 +1415,7 @@ class BrowserWaitTool(Tool):
     result_provenance = Provenance.UNTRUSTED_EXTERNAL
     timeout = 60.0
 
-    async def execute(self, **kwargs: Any) -> Dict[str, Any]:  # type: ignore[override]
+    async def execute(self, **kwargs: Any) -> dict[str, Any]:  # type: ignore[override]
         text = kwargs.get("text")
         timeout_ms = kwargs.get("timeout_ms")
         if err := _check_playwright():
@@ -1149,7 +1452,7 @@ class BrowserCloseTool(Tool):
     # external effect — so it runs without per-call confirmation.
     safe = True
 
-    async def execute(self) -> Dict[str, Any]:  # type: ignore[override]
+    async def execute(self) -> dict[str, Any]:  # type: ignore[override]
         if err := _check_playwright():
             return err
         return await BrowserManager().close()

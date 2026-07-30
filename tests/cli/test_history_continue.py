@@ -56,6 +56,51 @@ def test_load_session_drops_orphaned_tool_results(temp_history):
     assert session.messages == []
 
 
+def test_load_session_rejects_non_object_payload(temp_history):
+    sid = f"session_{int(time.time())}_{uuid.uuid4().hex[:8]}"
+    session_file = temp_history.history_dir / f"{sid}.json"
+    session_file.write_text("[]", encoding="utf-8")
+
+    assert temp_history.load_session(sid) is None
+    assert session_file.read_text(encoding="utf-8") == "[]"
+
+
+def test_load_session_rejects_schema_invalid_payload(temp_history):
+    sid = f"session_{int(time.time())}_{uuid.uuid4().hex[:8]}"
+    session_file = temp_history.history_dir / f"{sid}.json"
+    session_file.write_text(
+        json.dumps({"session_id": sid, "messages": [], "total_tokens": "invalid"}),
+        encoding="utf-8",
+    )
+
+    assert temp_history.load_session(sid) is None
+
+
+def test_load_session_rejects_id_that_does_not_match_filename(temp_history):
+    sid = f"session_{int(time.time())}_{uuid.uuid4().hex[:8]}"
+    other_sid = f"session_{int(time.time())}_{uuid.uuid4().hex[:8]}"
+    (temp_history.history_dir / f"{sid}.json").write_text(
+        json.dumps({"session_id": other_sid, "messages": []}), encoding="utf-8"
+    )
+
+    assert temp_history.load_session(sid) is None
+
+
+def test_list_sessions_rebuilds_non_object_index(temp_history):
+    sid = f"session_{int(time.time())}_{uuid.uuid4().hex[:8]}"
+    (temp_history.history_dir / f"{sid}.json").write_text(
+        json.dumps({"session_id": sid, "messages": [], "model": "claude"}),
+        encoding="utf-8",
+    )
+    index_file = temp_history.history_dir / "index.json"
+    index_file.write_text("[]", encoding="utf-8")
+
+    sessions = temp_history.list_sessions()
+
+    assert [session["session_id"] for session in sessions] == [sid]
+    assert isinstance(json.loads(index_file.read_text(encoding="utf-8")), dict)
+
+
 def test_load_session_drops_malformed_tool_call_args(temp_history):
     sid = f"session_{int(time.time())}_{uuid.uuid4().hex[:8]}"
     payload = {
@@ -145,22 +190,6 @@ def test_cleanup_expired_sessions_removes_full_session_id_from_index(temp_histor
     assert not session_file.exists()
     with open(index_file, "r") as f:
         assert sid not in json.load(f)
-
-
-def test_legacy_session_loads_with_zero_accounting(temp_history):
-    sid = f"session_{int(time.time())}_{uuid.uuid4().hex[:8]}"
-    with open(temp_history.history_dir / f"{sid}.json", "w") as f:
-        json.dump({"session_id": sid, "messages": [], "model": "claude"}, f)
-
-    session = temp_history.load_session(sid)
-
-    assert session is not None
-    assert session.schema_version == SESSION_SCHEMA_VERSION
-    assert session.prompt_tokens == 0
-    assert session.completion_tokens == 0
-    assert session.cache_creation_tokens == 0
-    assert session.cache_read_tokens == 0
-    assert session.total_cost_usd == 0.0
 
 
 def test_save_writes_current_schema_and_accounting(temp_history):

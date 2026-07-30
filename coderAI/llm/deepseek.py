@@ -1,6 +1,6 @@
 """DeepSeek LLM provider implementation."""
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from openai import AsyncOpenAI
 
@@ -22,6 +22,14 @@ class DeepSeekProvider(OpenAICompatibleCloudProvider):
         "deepseek-v3": "deepseek-chat",
         "deepseek-v3.2": "deepseek-chat-v3.2",
         "deepseek-r1": "deepseek-reasoner",
+    }
+    MODEL_CONTEXT_WINDOWS = {
+        "deepseek-v4-flash": 1_000_000,
+        "deepseek-v4-pro": 1_000_000,
+        # These compatibility IDs currently route to V4 Flash.
+        "deepseek-chat": 1_000_000,
+        "deepseek-reasoner": 1_000_000,
+        "deepseek-chat-v3.2": 128_000,
     }
 
     def __init__(self, model: str, api_key: Optional[str] = None, **kwargs: Any):
@@ -46,12 +54,12 @@ class DeepSeekProvider(OpenAICompatibleCloudProvider):
 
     def _build_request_params(
         self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
+        messages: list[dict[str, Any]],
+        tools: Optional[list[dict[str, Any]]] = None,
         *,
         stream: bool = False,
         **kwargs: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         if self.actual_model == "deepseek-reasoner":
             tools = None
         params = super()._build_request_params(messages, tools, stream=stream, **kwargs)
@@ -74,6 +82,6 @@ class DeepSeekProvider(OpenAICompatibleCloudProvider):
         """DeepSeek Reasoner model does not support tool use."""
         return self.actual_model != "deepseek-reasoner"
 
-    def clean_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """DeepSeek round-trips reasoning_content but has no vision support."""
-        return self._strip_tool_images(messages)
+    def clean_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Round-trip reasoning and render tool images for compatible models."""
+        return self._render_tool_images_openai(messages)

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, List, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Optional
+from collections.abc import Sequence
 
 from openai import AsyncOpenAI
 
@@ -41,7 +42,7 @@ class OpenAIEmbeddingProvider:
     def model(self) -> str:
         return self._model
 
-    async def embed(self, texts: Sequence[str]) -> List[List[float]]:
+    async def embed(self, texts: Sequence[str]) -> list[list[float]]:
         resp = await self._client.embeddings.create(
             model=self._model,
             input=list(texts),

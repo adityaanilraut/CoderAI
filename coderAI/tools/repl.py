@@ -3,7 +3,7 @@
 import logging
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -51,7 +51,7 @@ class PythonREPLTool(Tool):
     # Arbitrary code execution — no blanket allow, and no safe scope to bind to.
     high_risk_no_blanket = True
 
-    def resolve_timeout(self, arguments: Dict[str, Any]) -> Optional[float]:
+    def resolve_timeout(self, arguments: dict[str, Any]) -> Optional[float]:
         # Same clamp as execute(), plus margin, so the outer executor cap
         # never pre-empts this tool's own process-group timeout cleanup.
         try:
@@ -65,7 +65,7 @@ class PythonREPLTool(Tool):
         code: str,
         timeout: int = 30,
         working_dir: str = ".",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Execute Python code in a subprocess."""
         try:
             timeout = max(1, min(timeout, 3600))

@@ -1,5 +1,6 @@
 """Security regressions for bounded HTTP reads and redirect replay policy."""
 
+import asyncio
 from collections import deque
 
 import pytest
@@ -52,6 +53,15 @@ class _FakeSession:
     def request(self, method: str, url: str, **kwargs):
         self.requests.append((method, url, kwargs))
         return self.responses.popleft()
+
+
+class _LoopSession:
+    def __init__(self, **_kwargs) -> None:
+        self.loop_id = id(asyncio.get_running_loop())
+        self.closed = False
+
+    async def close(self) -> None:
+        self.closed = True
 
 
 @pytest.fixture
@@ -170,3 +180,65 @@ async def test_default_port_is_same_origin(monkeypatch, no_rate_limit):
     assert result is not None
     assert len(session.requests) == 2
     assert session.requests[1][2]["data"] == "payload"
+
+
+@pytest.mark.asyncio
+async def test_page_cache_keeps_full_content(monkeypatch):
+    stored = {}
+
+    async def request(*_args, **_kwargs):
+        return {
+            "status": 200,
+            "url": "https://example.com/page",
+            "content_type": "text/plain",
+            "text": "abcdefghijklmnop",
+            "content": b"abcdefghijklmnop",
+        }
+
+    monkeypatch.setattr("coderAI.tools.web._safe_request_cf", request)
+    monkeypatch.setattr("coderAI.tools.web._get_cached", lambda _key: stored.get("value"))
+    monkeypatch.setattr(
+        "coderAI.tools.web._set_cached", lambda _key, value, _ttl: stored.update(value=value)
+    )
+    client = HttpClient()
+
+    assert await client.fetch_page_text("https://example.com/page", 5) == "abcde"
+    assert stored["value"] == "abcdefghijklmnop"
+    assert await client.fetch_page_text("https://example.com/page", 10) == "abcdefghij"
+
+
+@pytest.mark.asyncio
+async def test_local_and_public_sessions_track_event_loops_separately(monkeypatch):
+    monkeypatch.setattr(http_mod.aiohttp, "ClientSession", _LoopSession)
+    monkeypatch.setattr(http_mod.aiohttp, "TCPConnector", lambda **_kwargs: object())
+    client = HttpClient()
+    client.get_ssl_ctx = lambda: None  # type: ignore[method-assign,return-value]
+    first_local = _LoopSession()
+    client._allow_local_session = first_local
+    client._session_loop_id = id(asyncio.get_running_loop())
+    client._allow_local_session_loop_id = -1
+
+    second_local = await client.get_session(allow_local=True)
+    assert second_local is not first_local
+    assert first_local.closed is True
+
+
+@pytest.mark.asyncio
+async def test_http_client_close_releases_both_session_pools():
+    client = HttpClient()
+    public = _LoopSession()
+    local = _LoopSession()
+    client._session = public  # type: ignore[assignment]
+    client._allow_local_session = local  # type: ignore[assignment]
+    client._session_loop_id = 1
+    client._allow_local_session_loop_id = 2
+
+    await client.close()
+    await client.close()
+
+    assert public.closed is True
+    assert local.closed is True
+    assert client._session is None
+    assert client._allow_local_session is None
+    assert client._session_loop_id is None
+    assert client._allow_local_session_loop_id is None

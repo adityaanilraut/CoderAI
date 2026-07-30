@@ -3,7 +3,7 @@
 import logging
 import shutil
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -17,7 +17,7 @@ from coderAI.tools.filesystem import ProjectPathError, resolve_under_project
 logger = logging.getLogger(__name__)
 
 # Linter configurations: (command, check_args, fix_args, file_extensions)
-LINTERS: Dict[str, Dict[str, Any]] = {
+LINTERS: dict[str, dict[str, Any]] = {
     "ruff": {
         "cmd": "ruff",
         "check_args": ["check", "--output-format=json"],
@@ -95,7 +95,7 @@ class LintTool(Tool):
         path: str = ".",
         fix: bool = False,
         linter: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Run linter on the given path."""
         try:
             target = resolve_under_project(

@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 import time
 import uuid
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Optional
+from collections.abc import Callable
 
 from coderAI.tui.state import AgentInfo, SessionState
 from coderAI.tui.timeline_render import append_capped
@@ -23,13 +24,13 @@ class EventReducer:
 
     def __init__(self) -> None:
         self.session = SessionState()
-        self.timeline: List[Dict[str, Any]] = []
+        self.timeline: list[dict[str, Any]] = []
         self._id_counter = 0
         self._current_assistant_id: Optional[str] = None
         self._stream_pending_content = ""
         self._stream_pending_reasoning = ""
         self._stream_flush_at: Optional[float] = None
-        self._status_pending: Optional[Dict[str, Any]] = None
+        self._status_pending: Optional[dict[str, Any]] = None
         self._status_flush_at: Optional[float] = None
         self._awaiting_first_delta = False
         self.on_change: Optional[Callable[[RefreshMode], None]] = None
@@ -59,7 +60,7 @@ class EventReducer:
             self.on_change(self._pending_refresh)
         self._pending_refresh = None
 
-    def _push(self, item: Dict[str, Any]) -> None:
+    def _push(self, item: dict[str, Any]) -> None:
         item.setdefault("ts", time.time())
         item.setdefault("collapsed", False)
         self.timeline = append_capped(self.timeline, item, self.next_id)
@@ -153,7 +154,7 @@ class EventReducer:
             error = None
         return ok, raw[:400], error
 
-    def _replay_session_messages(self, messages: List[Dict[str, Any]]) -> None:
+    def _replay_session_messages(self, messages: list[dict[str, Any]]) -> None:
         """Reduce stored API messages into the existing timeline item shapes."""
         for message in messages:
             role = message.get("role")
@@ -232,7 +233,7 @@ class EventReducer:
                     self._push(existing)
                 existing.update({"ok": ok, "preview": preview, "error": error})
 
-    def _apply_status(self, data: Dict[str, Any]) -> None:
+    def _apply_status(self, data: dict[str, Any]) -> None:
         if "workspaceTrusted" in data:
             trusted = data.get("workspaceTrusted")
             self.session.workspace_trusted = None if trusted is None else bool(trusted)
@@ -287,7 +288,7 @@ class EventReducer:
             )
             self._bump_refresh("append")
 
-    def handle(self, event: str, data: Dict[str, Any]) -> None:
+    def handle(self, event: str, data: dict[str, Any]) -> None:
         dirty = False
         if event == "hello":
             dirty = True
@@ -331,7 +332,7 @@ class EventReducer:
                 self.session.thinking = True
                 self.session.streaming = False
                 self.session.progress = None
-                item: Dict[str, Any] = {
+                item: dict[str, Any] = {
                     "kind": "assistant",
                     "id": self.next_id(),
                     "content": "",
@@ -511,6 +512,20 @@ class EventReducer:
             dirty = True
             self._bump_refresh("chrome")
             self.session.current_tasks = data.get("tasks")
+        elif event == "plan_card":
+            dirty = True
+            self._bump_refresh("append")
+            self._push(
+                {
+                    "kind": "plan_card",
+                    "id": self.next_id(),
+                    "planId": data.get("planId"),
+                    "revision": data.get("revision"),
+                    "status": data.get("status"),
+                    "markdown": data.get("markdown") or "",
+                    "unansweredQuestions": data.get("unansweredQuestions") or [],
+                }
+            )
         elif event == "skill_card":
             dirty = True
             self._bump_refresh("append")
@@ -585,7 +600,7 @@ class EventReducer:
         if dirty:
             self._notify()
 
-    def pending_approval(self) -> Optional[Dict[str, Any]]:
+    def pending_approval(self) -> Optional[dict[str, Any]]:
         for it in reversed(self.timeline):
             if it.get("kind") == "approval" and it.get("decided") == "pending":
                 return it

@@ -319,6 +319,27 @@ class TestCloudflareFallback:
         assert len(calls) == 1
         assert result["status"] == 403
 
+    def test_does_not_retry_mutating_request(self, monkeypatch):
+        calls = []
+
+        async def fake(method, url, **kw):
+            calls.append((method, kw.get("json_body")))
+            return {
+                "status": 503,
+                "headers": {"Server": "cloudflare"},
+                "url": url,
+                "content_type": "text/html",
+                "text": "blocked",
+                "content": b"",
+            }
+
+        monkeypatch.setattr(web_mod, "_safe_request", fake)
+        result = asyncio.run(
+            _safe_request_cf("POST", "https://example.com", json_body={"action": "once"})
+        )
+        assert len(calls) == 1
+        assert result["status"] == 503
+
 
 # ---------------------------------------------------------------------------
 # Oversize cap

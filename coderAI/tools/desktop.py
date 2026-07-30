@@ -5,7 +5,7 @@ import json
 import re
 import subprocess
 import sys
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -35,21 +35,21 @@ def is_macos() -> bool:
     return sys.platform == "darwin"
 
 
-def _check_platform() -> Dict[str, Any] | None:
+def _check_platform() -> dict[str, Any] | None:
     """Return an error dict if not running on macOS, else None."""
     if not is_macos():
         return {"success": False, "error": "This tool is only available on macOS."}
     return None
 
 
-def _validate_app_name(app_name: str) -> Dict[str, Any] | None:
+def _validate_app_name(app_name: str) -> dict[str, Any] | None:
     """Return an error dict if app_name contains unsafe characters, else None."""
     if not _SAFE_APP_NAME_RE.match(app_name):
         return {"success": False, "error": f"Invalid application name: {app_name!r}"}
     return None
 
 
-def _validate_path_segment(segment: str) -> Dict[str, Any] | None:
+def _validate_path_segment(segment: str) -> dict[str, Any] | None:
     """Return an error dict if an element_path segment is unsafe."""
     if _PATH_EMBEDDED_OF_RE.search(segment):
         return {
@@ -61,7 +61,7 @@ def _validate_path_segment(segment: str) -> Dict[str, Any] | None:
     return None
 
 
-def _validate_keystroke_text(text: str) -> Dict[str, Any] | None:
+def _validate_keystroke_text(text: str) -> dict[str, Any] | None:
     """Reject control characters that can break AppleScript string literals."""
     if any(ord(c) < 32 or ord(c) == 127 for c in text):
         return {
@@ -72,7 +72,7 @@ def _validate_keystroke_text(text: str) -> Dict[str, Any] | None:
 
 
 async def _run_osascript(
-    cmd: List[str],
+    cmd: list[str],
     script: str,
     timeout: float,
 ) -> subprocess.CompletedProcess[bytes]:
@@ -86,7 +86,7 @@ async def _run_osascript(
     )
 
 
-def _cap_accessibility_payload(data: Dict[str, Any]) -> Dict[str, Any]:
+def _cap_accessibility_payload(data: dict[str, Any]) -> dict[str, Any]:
     """Truncate oversized accessibility JSON before returning to the model."""
     encoded = json.dumps(data, ensure_ascii=False)
     if len(encoded.encode("utf-8")) <= MAX_A11Y_JSON_BYTES:
@@ -132,7 +132,7 @@ class RunAppleScriptTool(Tool):
     requires_confirmation = True
     timeout = 35.0
 
-    async def execute(self, script: str, is_jxa: bool = False) -> Dict[str, Any]:  # type: ignore[override]
+    async def execute(self, script: str, is_jxa: bool = False) -> dict[str, Any]:  # type: ignore[override]
         if err := _check_platform():
             return err
         async with get_lock_manager().desktop_lock():
@@ -196,7 +196,7 @@ class GetAccessibilityTreeTool(Tool):
     is_read_only = True
     timeout = 20.0
 
-    async def execute(self, app_name: Optional[str] = None, max_depth: int = 5) -> Dict[str, Any]:  # type: ignore[override]
+    async def execute(self, app_name: Optional[str] = None, max_depth: int = 5) -> dict[str, Any]:  # type: ignore[override]
         if err := _check_platform():
             return err
         if app_name is not None:
@@ -333,7 +333,7 @@ class GetAccessibilityTreeTool(Tool):
 
 class ClickUIElementParams(BaseModel):
     app_name: str = Field(..., description="Name of the application (e.g. 'Calculator').")
-    element_path: List[str] = Field(
+    element_path: list[str] = Field(
         ...,
         min_length=1,
         description=(
@@ -357,7 +357,7 @@ class ClickUIElementTool(Tool):
     requires_confirmation = True
     timeout = 15.0
 
-    async def execute(self, app_name: str, element_path: List[str]) -> Dict[str, Any]:  # type: ignore[override]
+    async def execute(self, app_name: str, element_path: list[str]) -> dict[str, Any]:  # type: ignore[override]
         if err := _check_platform():
             return err
         if err := _validate_app_name(app_name):
@@ -410,7 +410,7 @@ class TypeKeystrokesParams(BaseModel):
         description="AppleScript key code (e.g., 36 for Return, 48 for Tab). Mutually exclusive with 'text'.",
     )
     modifiers: Optional[
-        List[Literal["command down", "option down", "control down", "shift down"]]
+        list[Literal["command down", "option down", "control down", "shift down"]]
     ] = Field(
         None,
         description="Modifiers: 'command down', 'option down', 'control down', 'shift down'.",
@@ -435,8 +435,8 @@ class TypeKeystrokesTool(Tool):
         self,
         text: Optional[str] = None,
         key_code: Optional[int] = None,
-        modifiers: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
+        modifiers: Optional[list[str]] = None,
+    ) -> dict[str, Any]:
         if err := _check_platform():
             return err
         if text is None and key_code is None:

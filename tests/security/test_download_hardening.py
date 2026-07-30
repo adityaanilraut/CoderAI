@@ -87,5 +87,6 @@ def test_redact_url_strips_userinfo() -> None:
 
 def test_redact_url_keeps_port_and_handles_garbage() -> None:
     assert _redact_url("http://127.0.0.1:8080/mcp?k=v") == "http://127.0.0.1:8080/mcp"
+    assert _redact_url("https://host:not-a-port/path") == "<unparseable-url>"
     # Never raises, even on a nonsense value.
     assert isinstance(_redact_url("::::not a url::::"), str)

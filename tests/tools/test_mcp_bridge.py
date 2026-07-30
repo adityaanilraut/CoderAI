@@ -1,6 +1,7 @@
 """Coverage for the /mcp bridge handlers (list_mcp_servers, toggle_mcp_server)."""
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -14,6 +15,10 @@ class FakeBridge:
 
     def __init__(self):
         self.events = []
+        self.agent = SimpleNamespace(
+            config=SimpleNamespace(project_root="."),
+            _workspace_trusted=True,
+        )
 
     def emit(self, event, **fields):
         self.events.append((event, fields))
@@ -72,16 +77,10 @@ def test_list_includes_bundled_server(cfg, monkeypatch):
     asyncio.run(_cmd_list_mcp_servers(bridge, {}))
 
     rows = bridge.last("available_mcp_servers")["servers"]
-    assert rows == [
-        {
-            "name": "git_extended",
-            "connected": False,
-            "disabled": False,
-            "degraded": False,
-            "tools": 0,
-            "transport": "stdio",
-        }
-    ]
+    assert len(rows) == 1
+    assert rows[0]["name"] == "git_extended"
+    assert rows[0]["connected"] is False
+    assert rows[0]["scope"] == "bundled"
     assert "info" not in bridge.names()
 
 
@@ -107,7 +106,9 @@ def test_toggle_connects_configured_and_enables(cfg, monkeypatch):
     bridge = FakeBridge()
     asyncio.run(_cmd_toggle_mcp_server(bridge, {"server": "fetch"}))
 
-    client.connect_stdio.assert_awaited_once_with("fetch", "npx", ["x"])
+    client.connect_stdio.assert_awaited()
+    call_kwargs = client.connect_stdio.await_args
+    assert call_kwargs.args[:3] == ("fetch", "npx", ["x"])
     assert "on" in bridge.last("success")["message"]
     assert "disabled" not in mcp_mod.load_mcp_servers()["mcpServers"]["fetch"]
 

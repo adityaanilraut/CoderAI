@@ -6,7 +6,7 @@ presentation layer.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any
 
 from rich.console import Console
 from rich.table import Table
@@ -34,7 +34,7 @@ class Display:
     def print_info(self, message: str) -> None:
         self.console.print(f"[bold blue]ℹ[/bold blue] {message}")
 
-    def print_table(self, data: List[Dict[str, Any]], title: str = "") -> None:
+    def print_table(self, data: list[dict[str, Any]], title: str = "") -> None:
         if not data:
             return
         table = Table(title=title, show_header=True, header_style="bold magenta")
@@ -45,7 +45,7 @@ class Display:
             table.add_row(*[str(row.get(k, "")) for k in keys])
         self.console.print(table)
 
-    def print_tree(self, data: Dict[str, Any], title: str = "Tree") -> None:
+    def print_tree(self, data: dict[str, Any], title: str = "Tree") -> None:
         tree = Tree(f"[bold]{title}[/bold]")
         self._add_tree_items(tree, data)
         self.console.print(tree)

@@ -4,7 +4,7 @@ Also the single seam for model-alias resolution and model listings so callers
 outside ``coderAI.llm`` never import a specific provider module.
 """
 
-from typing import Any, Dict, List, Set, Tuple
+from typing import Any
 from coderAI.llm.openai import OpenAIProvider
 from coderAI.llm.anthropic import AnthropicProvider, MODEL_ALIASES as ANTHROPIC_MODEL_ALIASES
 from coderAI.llm.lmstudio import LMStudioProvider
@@ -17,7 +17,55 @@ from coderAI.llm.meta import MetaProvider
 # Aggregated friendly-name → canonical-model-ID map, collected from the provider
 # modules that expose one (only Anthropic today). Adding a provider with its own
 # alias table is a one-line merge here.
-_MODEL_ALIASES: Dict[str, str] = {**ANTHROPIC_MODEL_ALIASES}
+_MODEL_ALIASES: dict[str, str] = {**ANTHROPIC_MODEL_ALIASES}
+
+
+def provider_id_for_model(model: str) -> str:
+    """Return the provider id selected by :func:`create_provider` for *model*.
+
+    Keeping this routing decision available without constructing an SDK client
+    lets CLI preflight validate the requested provider's credential instead of
+    treating any unrelated cloud key as sufficient.
+    """
+    model_lower = (model or "").strip().lower()
+    if not model_lower or ("/" in model_lower and not model_lower.split("/", 1)[1]):
+        raise ValueError(f"Unknown model: {model!r}. Run `coderAI models` to see valid models.")
+    if model_lower == "ollama" or model_lower.startswith("ollama/"):
+        return "ollama"
+    if model_lower == "lmstudio" or model_lower.startswith("lmstudio/"):
+        return "lmstudio"
+    if (
+        model_lower.startswith(("claude", "anthropic/"))
+        or model_lower in ANTHROPIC_MODEL_ALIASES
+        or model_lower in ("fable", "sonnet", "opus", "haiku")
+    ):
+        return "anthropic"
+    if model_lower in GroqProvider.SUPPORTED_MODELS or model_lower.startswith("groq/"):
+        return "groq"
+    if model_lower in DeepSeekProvider.SUPPORTED_MODELS or model_lower.startswith("deepseek/"):
+        return "deepseek"
+    if model_lower in GeminiProvider.SUPPORTED_MODELS or model_lower.startswith(
+        ("gemini-", "gemini/")
+    ):
+        return "gemini"
+    if model_lower in MetaProvider.SUPPORTED_MODELS or model_lower.startswith(
+        ("meta/", "muse-spark", "muse")
+    ):
+        return "meta"
+    if model_lower in OpenAIProvider.SUPPORTED_MODELS or model_lower.startswith(
+        ("o1-", "o3", "gpt-", "openai/")
+    ):
+        return "openai"
+    raise ValueError(f"Unknown model: {model!r}. Run `coderAI models` to see valid models.")
+
+
+def is_valid_model_name(model: str) -> bool:
+    """Whether *model* is accepted by the provider factory, including prefixes."""
+    try:
+        provider_id_for_model(model)
+    except ValueError:
+        return False
+    return True
 
 
 def resolve_model_alias(name: str) -> str:
@@ -31,7 +79,7 @@ def resolve_model_alias(name: str) -> str:
     return _MODEL_ALIASES.get(name.lower(), name)
 
 
-def get_all_model_ids() -> Set[str]:
+def get_all_model_ids() -> set[str]:
     """Return the set of all recognised model identifiers across all providers."""
     return (
         set(OpenAIProvider.SUPPORTED_MODELS.keys())
@@ -44,7 +92,7 @@ def get_all_model_ids() -> Set[str]:
     )
 
 
-def get_models_by_provider() -> List[Tuple[str, List[str], str]]:
+def get_models_by_provider() -> list[tuple[str, list[str], str]]:
     """Return ``(provider label, model names, requirement)`` groups for display.
 
     Centralises the per-provider model listings so CLI/UI code doesn't import
@@ -70,11 +118,10 @@ def create_provider(model: str, config: Any) -> Any:
     ``CODERAI_DEFAULT_MODEL`` should fail loudly rather than silently
     routing traffic (and keys) to the wrong backend.
     """
+    model = model.strip()
     model_lower = model.lower()
     if model_lower == "ollama" or model_lower.startswith("ollama/"):
-        actual_model = (
-            model.split("/", 1)[1] if model.startswith("ollama/") else config.ollama_model
-        )
+        actual_model = model.split("/", 1)[1] if "/" in model else config.ollama_model
         return OllamaProvider(
             model=actual_model,
             endpoint=config.ollama_endpoint,
@@ -82,9 +129,7 @@ def create_provider(model: str, config: Any) -> Any:
             max_tokens=config.max_tokens,
         )
     if model_lower == "lmstudio" or model_lower.startswith("lmstudio/"):
-        actual_model = (
-            model.split("/", 1)[1] if model.startswith("lmstudio/") else config.lmstudio_model
-        )
+        actual_model = model.split("/", 1)[1] if "/" in model else config.lmstudio_model
         return LMStudioProvider(
             model=actual_model,
             endpoint=config.lmstudio_endpoint,
@@ -97,9 +142,7 @@ def create_provider(model: str, config: Any) -> Any:
         or model_lower in ANTHROPIC_MODEL_ALIASES
         or model_lower in ("fable", "sonnet", "opus", "haiku")
     ):
-        actual_model = (
-            model.split("anthropic/", 1)[1] if model_lower.startswith("anthropic/") else model
-        )
+        actual_model = model.split("/", 1)[1] if model_lower.startswith("anthropic/") else model
         return AnthropicProvider(
             model=actual_model,
             api_key=config.anthropic_api_key,

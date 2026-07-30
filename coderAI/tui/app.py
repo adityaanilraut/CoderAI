@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import os
 import time
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Optional
+from collections.abc import Callable
 
 from textual import events, on
 from textual.app import App, ComposeResult
@@ -221,7 +222,7 @@ class CoderAIApp(App[None]):
         self._exit_armed_at: Optional[float] = None
         self._search_filter = ""
         self._log_rendered_idx = 0
-        self.project_files: List[str] = []
+        self.project_files: list[str] = []
         self._scan_in_progress = False
         self._agent_retry_count = 0
         # None = follow the responsive auto-hide; True/False = user override
@@ -241,14 +242,14 @@ class CoderAIApp(App[None]):
         # means a "full" refresh only re-renders items whose content changed and
         # blits everything else, instead of re-parsing every message each time a
         # tool finishes. Width is in the key so a terminal resize self-heals.
-        self._render_cache: Dict[
-            tuple[str | None, bool, int], tuple[Dict[str, Any], list[Strip]]
+        self._render_cache: dict[
+            tuple[str | None, bool, int], tuple[dict[str, Any], list[Strip]]
         ] = {}
         # Height side cache for Ctrl-collapse targeting. Keyed on the fields that
         # change an item's rendered height so a stale height never lingers, and
         # kept OFF the timeline dicts themselves (mutating them would poison
         # ``_render_cache``'s ``cached[0] == it`` comparison).
-        self._line_count_cache: Dict[tuple[str | None, bool, bool, int], int] = {}
+        self._line_count_cache: dict[tuple[str | None, bool, bool, int], int] = {}
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="main"):
@@ -332,7 +333,7 @@ class CoderAIApp(App[None]):
             self._awaiting_response = False
             self._notify_attention("CoderAI: finished — ready for your next message")
 
-    def _emit_bridge(self, event: str, data: Dict[str, Any]) -> None:
+    def _emit_bridge(self, event: str, data: dict[str, Any]) -> None:
         try:
             self.call_from_thread(self.post_message, AgentEventMsg(event, data))
         except RuntimeError:
@@ -541,7 +542,7 @@ class CoderAIApp(App[None]):
             pass
 
     def _write_item_cached(
-        self, log: SelectableRichLog, it: Dict[str, Any], verbose: bool, width: int
+        self, log: SelectableRichLog, it: dict[str, Any], verbose: bool, width: int
     ) -> None:
         """Append a timeline item to ``log``, reusing cached rendered Strips.
 
@@ -576,7 +577,7 @@ class CoderAIApp(App[None]):
         except NoMatches:
             pass
 
-    def _render_stream_tail(self, it: Dict[str, Any], verbose: bool) -> None:
+    def _render_stream_tail(self, it: dict[str, Any], verbose: bool) -> None:
         try:
             tail = self.query_one("#stream-tail", Static)
         except NoMatches:
@@ -698,14 +699,14 @@ class CoderAIApp(App[None]):
 
         return write
 
-    def _find_last_content_item(self) -> Optional[tuple[int, Dict[str, Any]]]:
+    def _find_last_content_item(self) -> Optional[tuple[int, dict[str, Any]]]:
         for i in range(len(self.reducer.timeline) - 1, -1, -1):
             it = self.reducer.timeline[i]
             if it.get("kind") in ("user", "assistant", "tool", "diff"):
                 return i, it
         return None
 
-    def _find_visible_content_item(self) -> Optional[tuple[int, Dict[str, Any]]]:
+    def _find_visible_content_item(self) -> Optional[tuple[int, dict[str, Any]]]:
         try:
             log = self.query_one("#timeline", SelectableRichLog)
         except NoMatches:

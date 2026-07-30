@@ -3,7 +3,7 @@
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -22,7 +22,7 @@ class MemoryStore:
         self.memory_dir = Path.home() / ".coderAI" / "memory"
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         self.memory_file = self.memory_dir / "memories.json"
-        self._memories: Dict[str, Any] = {}
+        self._memories: dict[str, Any] = {}
         self.load()
 
     def load(self) -> None:
@@ -52,7 +52,7 @@ class MemoryStore:
         """Get a memory by key."""
         return self._memories.get(key)
 
-    def search(self, query: str) -> List[Dict[str, Any]]:
+    def search(self, query: str) -> list[dict[str, Any]]:
         """Search memories by query."""
         results = []
         query_lower = query.lower()
@@ -63,7 +63,7 @@ class MemoryStore:
                 results.append({"key": key, "value": value})
         return results
 
-    def list_all(self) -> Dict[str, Any]:
+    def list_all(self) -> dict[str, Any]:
         """Get all memories."""
         return self._memories.copy()
 
@@ -100,7 +100,7 @@ class SaveMemoryTool(Tool):
     safe = True
     category = "memory"
 
-    async def execute(self, **kwargs: Any) -> Dict[str, Any]:  # type: ignore[override]
+    async def execute(self, **kwargs: Any) -> dict[str, Any]:  # type: ignore[override]
         """Save memory."""
         key = kwargs["key"]
         value = kwargs["value"]
@@ -135,7 +135,7 @@ class RecallMemoryTool(Tool):
     is_read_only = True
     category = "memory"
 
-    async def execute(self, **kwargs: Any) -> Dict[str, Any]:  # type: ignore[override]
+    async def execute(self, **kwargs: Any) -> dict[str, Any]:  # type: ignore[override]
         key = kwargs.get("key")
         query = kwargs.get("query")
         try:
@@ -187,7 +187,7 @@ class DeleteMemoryTool(Tool):
     parameters_model = DeleteMemoryParams
     requires_confirmation = True
 
-    async def execute(self, **kwargs: Any) -> Dict[str, Any]:  # type: ignore[override]
+    async def execute(self, **kwargs: Any) -> dict[str, Any]:  # type: ignore[override]
         try:
             key = kwargs["key"]
             store = get_memory_store()

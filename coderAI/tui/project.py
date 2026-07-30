@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
-from typing import List
 
 from coderAI.system.constants import SKIP_DIRS
 
@@ -37,13 +36,13 @@ SKIP_EXTENSIONS = frozenset(
 )
 
 
-def scan_project_files(root: str) -> List[str]:
+def scan_project_files(root: str) -> list[str]:
     """Walk *root* and return a sorted list of relative file paths.
 
     Skips binary, media, lock, and build-artifact directories / extensions.
     """
     root_path = Path(root).resolve()
-    files_list: List[str] = []
+    files_list: list[str] = []
     for dirpath, dirnames, filenames in os.walk(root_path):
         # Prune skipped directories in-place so os.walk doesn't descend into them.
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
@@ -60,7 +59,7 @@ def scan_project_files(root: str) -> List[str]:
     return files_list
 
 
-async def async_scan_project_files(root: str) -> List[str]:
+async def async_scan_project_files(root: str) -> list[str]:
     """Async wrapper for :func:`scan_project_files` using a thread pool."""
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, scan_project_files, root)

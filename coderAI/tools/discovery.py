@@ -4,7 +4,6 @@ import importlib
 import inspect
 import logging
 import pkgutil
-from typing import Set, Type
 
 from coderAI.tools.base import Tool, ToolRegistry
 
@@ -27,9 +26,9 @@ def discover_tools(registry: ToolRegistry, package_name: str = "coderAI.tools") 
 
     # Keep track of what we've registered to avoid duplicates if multiple
     # paths lead to the same class.
-    registered_classes: Set[Type[Tool]] = set()
+    registered_classes: set[type[Tool]] = set()
 
-    for loader, module_name, is_pkg in pkgutil.walk_packages(pkg.__path__, pkg.__name__ + "."):
+    for _loader, module_name, is_pkg in pkgutil.walk_packages(pkg.__path__, pkg.__name__ + "."):
         # git_extended tools are served only via the bundled MCP server — skip
         # native auto-registration so they don't inflate the default tool list.
         if (

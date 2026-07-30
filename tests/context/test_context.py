@@ -158,6 +158,83 @@ class TestContextController:
         success = cm.remove_file("non_existent_file")
         assert success is False
 
+    def test_pin_rejects_protected_file(self, monkeypatch):
+        protected = self.test_dir / "credentials.txt"
+        protected.write_text("do-not-send", encoding="utf-8")
+        cm = _make_controller(config=Config(project_root=str(self.test_dir)))
+
+        monkeypatch.setattr(
+            "coderAI.tools.filesystem._guards._is_path_protected",
+            lambda candidate: candidate == protected.resolve(),
+        )
+
+        assert cm.add_file(str(protected)) is False
+        assert cm.pinned_files == {}
+
+    def test_pin_rejects_symlink_leaf(self):
+        target = self.test_dir / "target.txt"
+        target.write_text("sensitive", encoding="utf-8")
+        link = self.test_dir / "link.txt"
+        try:
+            link.symlink_to(target)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable")
+
+        cm = _make_controller(config=Config(project_root=str(self.test_dir)))
+
+        assert cm.add_file(str(link)) is False
+        assert cm.pinned_files == {}
+
+    def test_refresh_removes_file_replaced_by_symlink(self):
+        pinned = self.test_dir / "pinned.txt"
+        replacement = self.test_dir / "replacement.txt"
+        pinned.write_text("safe content", encoding="utf-8")
+        replacement.write_text("must not be read", encoding="utf-8")
+        cm = _make_controller(config=Config(project_root=str(self.test_dir)))
+        assert cm.add_file(str(pinned)) is True
+        pinned_key = str(pinned.resolve())
+
+        pinned.unlink()
+        try:
+            pinned.symlink_to(replacement)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable")
+        cm._last_refresh_at = float("-inf")
+
+        cm.refresh_pinned_files()
+
+        assert pinned_key not in cm.pinned_files
+        assert "must not be read" not in "".join(cm.pinned_files.values())
+
+    def test_inject_context_refreshes_pinned_file_before_cache_hit(self):
+        pinned = self.test_dir / "pinned.txt"
+        pinned.write_text("old pinned value", encoding="utf-8")
+        cm = _make_controller(config=Config(project_root=str(self.test_dir)))
+        assert cm.add_file(str(pinned))
+
+        first = cm.inject_context([], query="pinned value")
+        assert "old pinned value" in first[0]["content"]
+
+        pinned.write_text("new pinned value", encoding="utf-8")
+        second = cm.inject_context([], query="pinned value")
+
+        assert "new pinned value" in second[0]["content"]
+        assert "old pinned value" not in second[0]["content"]
+
+    def test_inject_context_invalidates_cache_when_instructions_change(self):
+        instructions = self.test_dir / "AGENTS.md"
+        instructions.write_text("old project guidance", encoding="utf-8")
+        cm = _make_controller(config=Config(project_root=str(self.test_dir)))
+
+        first = cm.inject_context([], query="same query")
+        assert "old project guidance" in first[0]["content"]
+
+        instructions.write_text("new project guidance with more text", encoding="utf-8")
+        second = cm.inject_context([], query="same query")
+
+        assert "new project guidance with more text" in second[0]["content"]
+        assert "old project guidance" not in second[0]["content"]
+
     def test_clear_context(self):
         dummy_file = self.test_dir / "dummy.py"
         dummy_file.write_text("content", encoding="utf-8")

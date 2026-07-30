@@ -1,7 +1,7 @@
 """Tool for managing context."""
 
 import logging
-from typing import Any, Dict, Optional, Literal
+from typing import Any, Optional, Literal
 
 from pydantic import BaseModel, Field
 
@@ -36,7 +36,7 @@ class ManageContextTool(Tool):
         super().__init__()
         self.context_controller = context_controller
 
-    async def execute(self, action: str, path: Optional[str] = None) -> Dict[str, Any]:  # type: ignore[override]
+    async def execute(self, action: str, path: Optional[str] = None) -> dict[str, Any]:  # type: ignore[override]
         """Execute context management action."""
         if action == "add":
             if not path:

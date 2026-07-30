@@ -2,7 +2,8 @@
 
 import json
 import logging
-from typing import Any, AsyncIterator, Dict, List, Optional, cast
+from typing import Any, Optional, cast
+from collections.abc import AsyncIterator
 from urllib.parse import urljoin
 
 import aiohttp
@@ -13,7 +14,7 @@ from coderAI.llm.base import (
     HTTP_TOTAL_TIMEOUT,
     LLMProvider,
 )
-from coderAI.llm.base import _retry_async as _retry
+from coderAI.system.retry import retry_async as _retry
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,7 @@ class OpenAICompatibleLocalProvider(LLMProvider):
     def _get_url(self) -> str:
         return f"{self.endpoint}/chat/completions"
 
-    def _track_usage(self, usage: Dict[str, Any]) -> None:
+    def _track_usage(self, usage: dict[str, Any]) -> None:
         self.total_input_tokens += usage.get("prompt_tokens", 0)
         self.total_output_tokens += usage.get("completion_tokens", 0)
 
@@ -57,15 +58,15 @@ class OpenAICompatibleLocalProvider(LLMProvider):
 
     async def chat(
         self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
+        messages: list[dict[str, Any]],
+        tools: Optional[list[dict[str, Any]]] = None,
         **kwargs: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         url = self._get_url()
         payload = self._build_payload(messages, tools, **kwargs)
         label = self._get_provider_label()
 
-        async def _call() -> Dict[str, Any]:
+        async def _call() -> dict[str, Any]:
             async with self._get_session().post(
                 url,
                 json=payload,
@@ -85,18 +86,18 @@ class OpenAICompatibleLocalProvider(LLMProvider):
                 self._track_usage(result.get("usage", {}))
                 return self._transform_chat_response(result)
 
-        return cast(Dict[str, Any], await _retry(_call, description=f"{label} chat"))
+        return cast(dict[str, Any], await _retry(_call, description=f"{label} chat"))
 
-    def _transform_chat_response(self, result: Dict[str, Any]) -> Dict[str, Any]:
+    def _transform_chat_response(self, result: dict[str, Any]) -> dict[str, Any]:
         """Hook for subclasses to mutate the chat response before returning."""
         return result
 
     async def stream(
         self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
+        messages: list[dict[str, Any]],
+        tools: Optional[list[dict[str, Any]]] = None,
         **kwargs: Any,
-    ) -> AsyncIterator[Dict[str, Any]]:
+    ) -> AsyncIterator[dict[str, Any]]:
         url = self._get_url()
         payload = self._build_payload(messages, tools, stream=True, **kwargs)
         label = self._get_provider_label()
@@ -142,14 +143,14 @@ class OpenAICompatibleLocalProvider(LLMProvider):
                             logger.debug("Failed to parse SSE data: %s", data)
                             continue
 
-    def _transform_stream_chunk(self, chunk: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def _transform_stream_chunk(self, chunk: dict[str, Any]) -> Optional[dict[str, Any]]:
         """Hook for subclasses to mutate each stream chunk before yielding."""
         return chunk
 
     def supports_tools(self) -> bool:
         return True
 
-    def get_cost(self) -> Dict[str, Any]:
+    def get_cost(self) -> dict[str, Any]:
         return {
             "input_tokens": self.total_input_tokens,
             "output_tokens": self.total_output_tokens,
@@ -162,7 +163,7 @@ class OpenAICompatibleLocalProvider(LLMProvider):
             "note": "Local model — no API cost",
         }
 
-    def get_model_info(self) -> Dict[str, Any]:
+    def get_model_info(self) -> dict[str, Any]:
         info = super().get_model_info()
         info["endpoint"] = self.endpoint
         return info

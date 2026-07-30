@@ -11,6 +11,7 @@ from coderAI.tui.controller import (
     _cmd_compact_context,
     _cmd_get_state,
     _cmd_get_tasks,
+    _cmd_list_skills,
     _cmd_manage_context,
     _cmd_reference,
     _cmd_send_message,
@@ -231,6 +232,7 @@ def test_hello_includes_initial_reasoning_state() -> None:
         model="claude",
         provider=SimpleNamespace(),
         auto_approve=False,
+        get_context_limit=MagicMock(return_value=1_000_000),
     )
     server.emit = MagicMock()
 
@@ -240,6 +242,7 @@ def test_hello_includes_initial_reasoning_state() -> None:
     event, payload = server.emit.call_args.args[0], server.emit.call_args.kwargs
     assert event == "hello"
     assert payload["reasoning"] == "medium"
+    assert payload["contextLimit"] == 1_000_000
 
 
 def test_reset_session_accounting_zeros_counters() -> None:
@@ -632,3 +635,75 @@ async def test_get_tasks_emits_tasks_card() -> None:
     await _cmd_get_tasks(server, {})
 
     server._emit_tasks_from_disk.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_list_skills_includes_user_skills_when_untrusted(tmp_path, monkeypatch) -> None:
+    project = tmp_path / "proj"
+    project.mkdir()
+    cfg = tmp_path / "cfg"
+    user_skills = cfg / "skills" / "my-user-skill"
+    user_skills.mkdir(parents=True)
+    (user_skills / "SKILLS.md").write_text(
+        "---\nname: my-user-skill\ndescription: from user scope\n---\nDo the thing.\n",
+        encoding="utf-8",
+    )
+    project_skills = project / ".coderAI" / "skills" / "proj-skill"
+    project_skills.mkdir(parents=True)
+    (project_skills / "SKILLS.md").write_text(
+        "---\nname: proj-skill\ndescription: from project\n---\nSecret.\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("coderAI.system.config.config_manager.config_dir", cfg)
+
+    server = SimpleNamespace(
+        agent=SimpleNamespace(
+            config=SimpleNamespace(project_root=str(project)),
+            _workspace_trusted=False,
+        ),
+        emit=MagicMock(),
+    )
+
+    await _cmd_list_skills(server, {})
+
+    skills_calls = [
+        c for c in server.emit.call_args_list if c.args and c.args[0] == "available_skills"
+    ]
+    assert len(skills_calls) == 1
+    names = {s["name"] for s in skills_calls[0].kwargs["skills"]}
+    assert "my-user-skill" in names
+    assert "proj-skill" not in names
+
+
+@pytest.mark.asyncio
+async def test_list_skills_includes_project_when_trusted(tmp_path, monkeypatch) -> None:
+    project = tmp_path / "proj"
+    project.mkdir()
+    cfg = tmp_path / "cfg"
+    cfg.mkdir()
+    project_skills = project / ".coderAI" / "skills" / "proj-skill"
+    project_skills.mkdir(parents=True)
+    (project_skills / "SKILLS.md").write_text(
+        "---\nname: proj-skill\ndescription: from project\n---\nDo it.\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("coderAI.system.config.config_manager.config_dir", cfg)
+
+    server = SimpleNamespace(
+        agent=SimpleNamespace(
+            config=SimpleNamespace(project_root=str(project)),
+            _workspace_trusted=True,
+        ),
+        emit=MagicMock(),
+    )
+
+    await _cmd_list_skills(server, {})
+
+    skills_calls = [
+        c for c in server.emit.call_args_list if c.args and c.args[0] == "available_skills"
+    ]
+    assert len(skills_calls) == 1
+    names = {s["name"] for s in skills_calls[0].kwargs["skills"]}
+    assert "proj-skill" in names

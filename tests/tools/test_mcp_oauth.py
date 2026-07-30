@@ -87,6 +87,52 @@ def test_discover_auth_server_prefers_path_insertion(creds_dir):
     assert seen[0] == "https://www.x.com/.well-known/oauth-authorization-server/iss"
 
 
+def test_discover_protected_resource_prefers_path_insertion(creds_dir):
+    """Google Workspace MCP publishes RFC 9728 metadata under the path, not origin root."""
+    seen = []
+    payload = {
+        "authorization_servers": ["https://accounts.google.com/"],
+        "resource": "https://gmailmcp.googleapis.com/mcp/v1",
+    }
+
+    def fake_get(url, timeout=None):
+        seen.append(url)
+        if url == ("https://gmailmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1"):
+            return _FakeResp(200, payload)
+        return _FakeResp(404)
+
+    with patch.object(oauth.requests, "get", side_effect=fake_get):
+        meta = oauth.discover_protected_resource("https://gmailmcp.googleapis.com/mcp/v1")
+
+    assert meta["resource"] == "https://gmailmcp.googleapis.com/mcp/v1"
+    assert seen[0].endswith("/oauth-protected-resource/mcp/v1")
+
+
+def test_discover_protected_resource_falls_back_to_origin(creds_dir):
+    seen = []
+
+    def fake_get(url, timeout=None):
+        seen.append(url)
+        if url == "https://h.example/.well-known/oauth-protected-resource":
+            return _FakeResp(
+                200,
+                {
+                    "authorization_servers": ["https://auth.example/"],
+                    "resource": "https://h.example/mcp",
+                },
+            )
+        return _FakeResp(404)
+
+    with patch.object(oauth.requests, "get", side_effect=fake_get):
+        meta = oauth.discover_protected_resource("https://h.example/mcp")
+
+    assert meta["authorization_servers"] == ["https://auth.example/"]
+    assert seen == [
+        "https://h.example/.well-known/oauth-protected-resource/mcp",
+        "https://h.example/.well-known/oauth-protected-resource",
+    ]
+
+
 def test_discover_metadata_requires_auth_servers(creds_dir):
     with patch.object(oauth, "discover_protected_resource", return_value={"resource": "u"}):
         with pytest.raises(oauth.OAuthError):

@@ -7,6 +7,7 @@ name = "coderai-agent"
 version = "0.3.3"
 description = "Intelligent coding agent CLI with a Textual terminal UI and MCP tools"
 readme = "README.md"
+license = "MIT"
 requires-python = ">=3.10"
 authors = [
     {name = "CoderAI", email = "hello@coderai.dev"}
@@ -14,7 +15,6 @@ authors = [
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
@@ -88,6 +88,9 @@ coderAI = ["prompts/*.mdx"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+
+[tool.ruff.lint]
+extend-select = ["UP006", "UP035"]
 
 [tool.ruff.lint.per-file-ignores]
 # load_dotenv() must run before package imports read env vars

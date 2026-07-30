@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import difflib
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import Optional
 
 from rich.markup import escape
 
@@ -20,7 +20,7 @@ _WORD_RE = re.compile(r"\s+|\w+|[^\w\s]+")
 # rewrite: emphasizing nearly everything is worse than emphasizing nothing.
 _EMPH_MIN_RATIO = 0.4
 
-Span = Tuple[int, int]
+Span = tuple[int, int]
 
 
 def _window_lines(parsed, max_lines):
@@ -34,9 +34,9 @@ def _window_lines(parsed, max_lines):
     return head + mid + tail
 
 
-def parse_unified_diff(diff: str) -> List[Tuple[str, str]]:
+def parse_unified_diff(diff: str) -> list[tuple[str, str]]:
     """Return (line_type, text) where line_type is add|del|ctx|hunk|meta."""
-    lines: List[Tuple[str, str]] = []
+    lines: list[tuple[str, str]] = []
     for raw in diff.splitlines():
         if raw.startswith("@@"):
             lines.append(("hunk", raw))
@@ -51,7 +51,7 @@ def parse_unified_diff(diff: str) -> List[Tuple[str, str]]:
     return lines
 
 
-def _word_spans(old: str, new: str) -> Optional[Tuple[List[Span], List[Span]]]:
+def _word_spans(old: str, new: str) -> Optional[tuple[list[Span], list[Span]]]:
     """Char-offset spans that differ between a paired −/+ line.
 
     Returns (old_spans, new_spans), or None when the lines are too dissimilar
@@ -65,7 +65,7 @@ def _word_spans(old: str, new: str) -> Optional[Tuple[List[Span], List[Span]]]:
     if matcher.ratio() < _EMPH_MIN_RATIO:
         return None
 
-    def offsets(tokens: List[str]) -> List[int]:
+    def offsets(tokens: list[str]) -> list[int]:
         out = [0]
         for tok in tokens:
             out.append(out[-1] + len(tok))
@@ -73,8 +73,8 @@ def _word_spans(old: str, new: str) -> Optional[Tuple[List[Span], List[Span]]]:
 
     old_off = offsets(old_tokens)
     new_off = offsets(new_tokens)
-    old_spans: List[Span] = []
-    new_spans: List[Span] = []
+    old_spans: list[Span] = []
+    new_spans: list[Span] = []
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == "equal":
             continue
@@ -85,13 +85,13 @@ def _word_spans(old: str, new: str) -> Optional[Tuple[List[Span], List[Span]]]:
     return old_spans, new_spans
 
 
-def _paired_emphasis(window: List[Tuple[str, str]]) -> Dict[int, List[Span]]:
+def _paired_emphasis(window: list[tuple[str, str]]) -> dict[int, list[Span]]:
     """Word-diff spans per window index, for del-runs followed by add-runs.
 
     The i-th deleted line of a run is paired with the i-th added line — the
     common shape of an edit — and unpaired leftovers keep whole-line styling.
     """
-    emphasis: Dict[int, List[Span]] = {}
+    emphasis: dict[int, list[Span]] = {}
     i = 0
     while i < len(window):
         if window[i][0] != "del":
@@ -115,11 +115,11 @@ def _paired_emphasis(window: List[Tuple[str, str]]) -> Dict[int, List[Span]]:
     return emphasis
 
 
-def _emphasized_body(text: str, spans: List[Span], base_style: str, emph_style: str) -> str:
+def _emphasized_body(text: str, spans: list[Span], base_style: str, emph_style: str) -> str:
     """Markup for a diff line body with emphasized spans over a base style."""
     if not spans:
         return f"[{base_style}]{escape(text)}[/]"
-    parts: List[str] = []
+    parts: list[str] = []
     pos = 0
     for start, end in spans:
         if start > pos:
@@ -141,7 +141,7 @@ def format_diff_gutter(diff: str, max_lines: int = DIFF_MAX_LINES) -> str:
     if not parsed:
         return ""
 
-    lines_out: List[str] = []
+    lines_out: list[str] = []
     window = _window_lines(parsed, max_lines)
     emphasis = _paired_emphasis(window)
 
