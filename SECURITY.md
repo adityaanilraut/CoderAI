@@ -116,6 +116,23 @@ Restoring session metadata does not itself authorize continuation: mutations
 remain blocked until `/plan resume` or `coderAI plan execute` explicitly
 reactivates the approved execution.
 
+### Progressive capability routing (`coderAI/core/capability_routing.py`)
+
+The model receives a compact universal schema set plus native capability
+families selected deterministically from the current objective. Routing only
+narrows the registry after workspace-trust, persona, platform, optional-package,
+network, and delegated-agent filters have run; it cannot construct or restore a
+missing tool. A successful tool stays warm only in the current turn's
+`TurnContext` and is intersected with the live eligible surface again after
+every tool batch. A new objective, session, agent, or Plan Mode transition gets
+a fresh or narrower surface. Dynamic MCP selection matches trusted function and
+server identifiers, never server-supplied descriptions, and remains disabled
+for domain-scoped subagents.
+
+Schema absence is not the enforcement boundary. Invented calls still pass
+through `ToolExecutor`, which repeats Plan Mode, amendment, parent/child domain,
+permission, approval, provenance/egress, and transaction checks.
+
 ### Execution hard-stops and OS sandbox (`coderAI/system/proc.py`, `sandbox.py`)
 
 An argv-level command blocklist and interactive-command detector run before any

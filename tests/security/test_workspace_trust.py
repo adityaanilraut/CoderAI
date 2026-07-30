@@ -76,7 +76,7 @@ async def test_mcp_autoconnect_runs_after_workspace_trust(monkeypatch: pytest.Mo
         AsyncMock(side_effect=lambda: order.append("mcp")),
     )
     monkeypatch.setattr(loop, "_prepare_messages", AsyncMock(return_value=[]))
-    monkeypatch.setattr(loop, "_get_tool_schemas", lambda: [])
+    monkeypatch.setattr(loop, "_get_tool_schemas", lambda _objective: [])
     monkeypatch.setattr(loop, "_run_iteration", AsyncMock(return_value={"content": "ok"}))
 
     assert await loop.run("hello") == {"content": "ok"}

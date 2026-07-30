@@ -65,6 +65,31 @@ Milestone 3 remains open: mutating delegates still need isolated worktrees and
 reviewed patch integration, background-process mutations outlive the current
 transaction bracket, and `.git` metadata is excluded from snapshots.
 
+### Progressive Capability Routing
+
+`core/capability_routing.py` owns a compact deterministic catalog. Ordinary
+unknown objectives see only eight universal schemas; recognized objective
+vocabulary adds relevant native families such as editing, execution, quality,
+Git, web, browser, desktop, package, memory, vision, or MCP. The router consumes
+only schemas that survived registry construction, persona filtering,
+platform/optional-package/network gates, and delegated-agent domain ceilings.
+It therefore narrows capability exposure but never grants authority.
+
+`ExecutionLoop` routes once when it creates the objective's `TurnContext` and
+again after tool batches or MCP topology changes. Successful tool names are
+kept warm in that `TurnContext` only. Warm names are re-intersected with the
+eligible surface, so an amendment's Plan Mode transition, a persona/domain
+ceiling, a missing optional dependency, or a disabled MCP boundary wins over
+warmth. Dynamic MCP schemas are selected from provider-safe server/tool
+identifiers; untrusted MCP descriptions do not participate in routing.
+
+Every decision emits `capability_routing` telemetry with selected schema names,
+the deterministic reason, selection success/failure, Plan Mode state, and the
+provider-estimated serialized schema-token cost. `coderAI run --output ndjson`
+exposes this as `capability.routing`. The executor remains the final authority
+for Plan Mode, approvals, workspace trust, provenance/egress, and transaction
+enforcement even if a model invents a schema name.
+
 ### Communication Flow
 
 Inbound (UI → agent) and outbound (agent → UI) are asymmetric by design.
@@ -259,6 +284,8 @@ entry point resolves to `main()` in `coderAI/cli/__init__.py` → `cli/main.py`.
   Textual UI is attached; otherwise falls back to a terminal prompt.
 - `tool_routing.py` — Dispatches `function.name` to either the
   `ToolRegistry` or an MCP server (`mcp__<server>__<tool>` wire format).
+- `capability_routing.py` — Narrows already-permitted native and dynamic MCP
+  schemas for the current objective and reports schema-cost telemetry.
 - `context/context_controller.py` — Pinned-file state, token estimation,
   truncation, and summarization. Reserves `RESPONSE_TOKEN_RESERVE=1024` and
   `TOOL_OVERHEAD_TOKENS=512` when budgeting.

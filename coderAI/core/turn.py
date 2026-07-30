@@ -56,3 +56,8 @@ class TurnContext:
     ingested_untrusted_mcp: bool = False
     reply_parts: list[str] = field(default_factory=list)
     objective_state: Optional[ObjectiveState] = None
+    # Capability warmth is objective-local. A fresh TurnContext is constructed
+    # for every user objective, so successful schemas cannot leak into another
+    # turn, session, or agent. The router still intersects these names with the
+    # current permission/persona/Plan Mode eligible surface.
+    warm_tool_names: set[str] = field(default_factory=set)

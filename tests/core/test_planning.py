@@ -313,7 +313,11 @@ def test_plan_mode_schema_surface_is_read_only_plus_submit(mock_agent):
     mock_agent.plan_mode = False
     normal_schemas = ExecutionLoop(mock_agent)._get_tool_schemas()
     normal_names = {schema["function"]["name"] for schema in normal_schemas or []}
-    assert normal_names == {"read_file", "write_file"}
+    assert normal_names == {"read_file"}
+
+    routed_schemas = ExecutionLoop(mock_agent)._get_tool_schemas("write the requested file")
+    routed_names = {schema["function"]["name"] for schema in routed_schemas or []}
+    assert routed_names == {"read_file", "write_file"}
 
 
 @pytest.mark.asyncio

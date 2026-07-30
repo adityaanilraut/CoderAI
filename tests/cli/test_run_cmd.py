@@ -117,6 +117,14 @@ def test_run_ndjson_success_emits_ordered_events_and_one_terminal(runner):
             from coderAI.system.events import event_emitter
 
             event_emitter.emit(
+                "capability_routing",
+                schema_token_cost=42,
+                selected_capabilities=["read_file"],
+                routing_reason="conservative_unknown",
+                selection_success=False,
+                plan_mode=False,
+            )
+            event_emitter.emit(
                 "tool_call", tool_name="read_file", arguments={"path": "README.md"}, tool_id="t1"
             )
             event_emitter.emit(
@@ -135,6 +143,7 @@ def test_run_ndjson_success_emits_ordered_events_and_one_terminal(runner):
     assert {event["schema_version"] for event in events} == {1}
     assert [event["type"] for event in events] == [
         "run.started",
+        "capability.routing",
         "tool.started",
         "tool.completed",
         "result",
@@ -142,6 +151,7 @@ def test_run_ndjson_success_emits_ordered_events_and_one_terminal(runner):
     terminal = [event for event in events if event["terminal"]]
     assert len(terminal) == 1
     assert terminal[0]["data"]["response"] == "done"
+    assert events[1]["data"]["schema_token_cost"] == 42
 
 
 def test_run_ndjson_emits_actual_provider_deltas_when_streaming(runner):

@@ -74,6 +74,7 @@ class AgentCapabilitiesMixin:
     _workspace_trusted: bool
     _active_skill_context: list[str]
     plan_mode: bool
+    active_plan_id: Optional[str]
 
     if TYPE_CHECKING:
 
@@ -441,8 +442,25 @@ class AgentCapabilitiesMixin:
             persona_description=(self.persona.description if self.persona else None),
         )
 
+        # Keep narrative capability guidance aligned with the compact baseline.
+        # Objective-routed additions describe themselves in their function
+        # schemas; advertising the full registry here would defeat progressive
+        # disclosure even if those schemas were absent from the request.
+        from coderAI.core.capability_routing import UNIVERSAL_TOOL_NAMES
+
+        prompt_registry = ToolRegistry()
+        prompt_names = set(UNIVERSAL_TOOL_NAMES)
+        if self.plan_mode:
+            prompt_names.add("submit_plan")
+        elif self.active_plan_id:
+            prompt_names.add("request_plan_amendment")
+        for name in prompt_names:
+            tool = self.tools.get(name)
+            if tool is not None:
+                prompt_registry.register(tool)
+
         if self.persona:
-            guidance = format_capability_guidance(self.tools)
+            guidance = format_capability_guidance(prompt_registry)
             tail = f"{guidance}\n\n{SYSTEM_PROMPT_TAIL}" if guidance else SYSTEM_PROMPT_TAIL
             _append_once(
                 f"{env_section}\n\n{SYSTEM_PROMPT_INTRO}\n\n{SYSTEM_PROMPT_RUNTIME}\n\n"
@@ -450,7 +468,7 @@ class AgentCapabilitiesMixin:
                 f"{SYSTEM_PROMPT_INTERACTION}\n\n{SYSTEM_PROMPT_OUTPUT_STYLE}\n\n{tail}"
             )
         else:
-            _append_once(compose_default_system_prompt(self.tools, env_section=env_section))
+            _append_once(compose_default_system_prompt(prompt_registry, env_section=env_section))
 
         if self.plan_mode:
             _append_once(

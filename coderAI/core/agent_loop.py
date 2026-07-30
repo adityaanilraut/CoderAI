@@ -173,7 +173,7 @@ class ExecutionLoop:
         # 4. Prepare messages (retrieve, inject context, manage window)
         messages = await self._prepare_messages(user_message)
 
-        tool_schemas = self._get_tool_schemas()
+        tool_schemas = self._get_tool_schemas(user_message)
 
         # Process with LLM (potentially multiple rounds for tool calls)
         max_iterations = self.agent.config.max_iterations
@@ -430,7 +430,10 @@ class ExecutionLoop:
             pass
         if schemas_dirty or client_dirty:
             self.agent._tool_schemas_dirty = False
-            state.tool_schemas = self._get_tool_schemas()
+            state.tool_schemas = self._get_tool_schemas(
+                state.user_message,
+                warm_tool_names=state.warm_tool_names,
+            )
 
         response_data = await self._call_llm_with_retry(step_aware_messages, state.tool_schemas)
 
@@ -653,6 +656,15 @@ class ExecutionLoop:
             self.hooks_manager,
             turn=state,
         )
+
+        # Re-route after every batch. Successful tools stay warm for this
+        # objective, while a mid-turn Plan Mode amendment immediately removes
+        # any mutating schemas regardless of warmth.
+        if hasattr(self.agent, "provider") and hasattr(self.agent, "tools"):
+            state.tool_schemas = self._get_tool_schemas(
+                state.user_message,
+                warm_tool_names=state.warm_tool_names,
+            )
 
         called_tool_names = {
             (call.get("function") or {}).get("name")
@@ -999,13 +1011,21 @@ class ExecutionLoop:
             missing_total,
         )
 
-    def _get_tool_schemas(self) -> Optional[list[dict[str, Any]]]:
-        """Collect tool schemas from built-in registry and MCP."""
-        tool_schemas = None
+    def _get_tool_schemas(
+        self,
+        objective: str = "",
+        *,
+        warm_tool_names: Optional[set[str]] = None,
+    ) -> Optional[list[dict[str, Any]]]:
+        """Route eligible native and MCP schemas for one objective."""
+        from coderAI.core.capability_routing import route_capabilities
+
+        native_schemas: list[dict[str, Any]] = []
         plan_mode = vars(self.agent).get("plan_mode") is True
-        if self.agent.provider.supports_tools():
+        supports_tools = bool(self.agent.provider.supports_tools())
+        if supports_tools:
             if plan_mode:
-                selected = []
+                selected: list[dict[str, Any]] = []
                 for tool in self.agent.tools.get_all():
                     if (
                         tool.name == "submit_plan"
@@ -1013,9 +1033,9 @@ class ExecutionLoop:
                         or tool.name == "delegate_task"
                     ):
                         selected.append(tool.get_schema())
-                tool_schemas = selected
+                native_schemas = selected
             else:
-                tool_schemas = [
+                native_schemas = [
                     schema
                     for schema in self.agent.tools.get_schemas()
                     if (schema.get("function") or {}).get("name") != "submit_plan"
@@ -1024,6 +1044,7 @@ class ExecutionLoop:
                         or bool(vars(self.agent).get("active_plan_id"))
                     )
                 ]
+        mcp_schemas: list[dict[str, Any]] = []
         try:
             mcp_client = get_services().mcp_client
 
@@ -1046,14 +1067,46 @@ class ExecutionLoop:
                             for srv in degraded_servers
                         )
                     ]
-                if mcp_schemas:
-                    if tool_schemas is None:
-                        tool_schemas = mcp_schemas
-                    else:
-                        tool_schemas = tool_schemas + mcp_schemas
         except Exception as e:
             logger.debug(f"MCP tool discovery skipped: {e}")
-        return tool_schemas
+
+        if not supports_tools:
+            decision_schemas: list[dict[str, Any]] = []
+            selected_names: list[str] = []
+            routing_reason = "provider_without_tools"
+            selection_success = False
+        else:
+            decision = route_capabilities(
+                objective=objective,
+                native_schemas=native_schemas,
+                mcp_schemas=mcp_schemas,
+                warm_tool_names=warm_tool_names or set(),
+                plan_mode=plan_mode,
+                active_plan=bool(vars(self.agent).get("active_plan_id")),
+            )
+            decision_schemas = list(decision.schemas)
+            selected_names = list(decision.selected_names)
+            routing_reason = decision.routing_reason
+            selection_success = decision.selection_success
+
+        try:
+            schema_token_cost = self.agent.context_controller.estimate_tool_tokens(decision_schemas)
+            if not isinstance(schema_token_cost, int):
+                schema_token_cost = 0
+        except Exception:
+            schema_token_cost = 0
+        try:
+            get_services().events.emit(
+                "capability_routing",
+                schema_token_cost=schema_token_cost,
+                selected_capabilities=selected_names,
+                routing_reason=routing_reason,
+                selection_success=selection_success,
+                plan_mode=plan_mode,
+            )
+        except Exception:
+            logger.debug("Capability routing event emission skipped", exc_info=True)
+        return decision_schemas or None
 
     async def _post_tool_closing_message(self, user_message: str) -> Optional[str]:
         """Ask once for a short user-visible wrap-up when tools ran but the model returned no final text."""

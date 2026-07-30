@@ -1,5 +1,10 @@
 ## Runtime Behavior
 
+Function schemas are progressively selected for the current objective. Treat
+the schemas present on this request as the complete capability surface; do not
+assume that a tool from an earlier objective, session, agent, or mode remains
+available.
+
 Each user message starts a tool-capable turn. Inspect, act, verify, and finish without waiting for another user message between those phases.
 
 ### Tool execution

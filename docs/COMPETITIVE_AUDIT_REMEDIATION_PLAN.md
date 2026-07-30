@@ -258,14 +258,65 @@ Milestone 3 remains independently in progress.
 
 ## Milestone 5 — Capability Routing and Code Intelligence
 
-Keep fewer than ten universal tools loaded. Add a compact capability catalog
-and load only the most relevant schemas, keeping successful tools warm for the
-current objective. Track schema tokens, routing accuracy, and time to first
-useful action.
+Status: **in progress; first progressive capability-routing slice implemented**.
 
-Add an LSP gateway for Python and TypeScript first: definitions, references,
-hover, symbols, diagnostics, and rename preview. Feed compact repository-graph
-results into planning and completion evidence.
+Completed in the first slice:
+
+- Ordinary unknown objectives load an eight-schema universal set. A compact,
+  ordered native catalog deterministically adds editing, execution, quality,
+  Git, search, web, browser, desktop, package, memory, undo, vision, context,
+  and MCP families from objective vocabulary. Unknown and targetless ambiguous
+  mutation requests fail conservatively to the universal set.
+- Routing consumes only the already-filtered registry. Persona rules,
+  workspace trust, platform and optional dependency availability,
+  `web_tools_in_main`, delegated-agent native ceilings, and disabled dynamic MCP
+  therefore remain hard upper bounds. Dynamic MCP matching uses server/tool
+  identifiers rather than untrusted descriptions and stays disabled for
+  domain-scoped subagents.
+- Successful schemas remain warm only in the current objective's `TurnContext`.
+  Every reroute intersects warmth with current eligibility, so it cannot cross
+  objective, session, agent, permission, persona, dependency, MCP-health, or
+  Plan Mode/amendment boundaries.
+- The executor remains the enforcement boundary for invented calls and retains
+  all confirmation, workspace-trust, provenance/egress, MCP confused-deputy,
+  approved-plan, transaction, and parent-to-child checks.
+- The existing event bus now carries `capability_routing` telemetry with
+  provider-estimated schema-token cost, selected names, deterministic reason,
+  Plan Mode state, and selection success/failure. Headless NDJSON exposes the
+  same payload as `capability.routing` without changing terminal result shapes.
+- Deterministic core and security regression coverage exercises the universal
+  limit, objective selection, warm/reset behavior, Plan Mode and amendment
+  boundaries, persona/subagent ceilings, optional/browser/desktop gates,
+  dynamic MCP selection, conservative unknowns, completion evidence, and
+  permission enforcement.
+
+Remaining before Milestone 5 is complete:
+
+Build an offline routing-evaluation corpus with expected families, false-positive
+and false-negative scoring, schema-token deltas against the former full-registry
+baseline, and time-to-first-useful-action instrumentation. Calibrate vocabulary
+and caps from that evidence rather than adding a model classifier by default.
+Add an LSP gateway for Python and TypeScript with definitions, references,
+hover, workspace/document symbols, diagnostics, and rename preview. Feed compact
+repository-graph and diagnostic evidence into planning and the completion
+ledger, including invalidation after mutations. Add supported-platform and
+clean-wheel probes for the gateway and optional language-server dependencies.
+
+### Milestone 5 exit criteria
+
+- Fewer than ten universal schemas are loaded on ordinary turns, and routed
+  additions meet a checked accuracy/token-cost budget on the offline corpus.
+- Warm capabilities improve repeat actions without crossing any objective,
+  session, agent, permission, persona, Plan Mode, dependency, or MCP boundary.
+- Routing telemetry supports schema cost, accuracy, and time-to-first-useful-
+  action reporting without leaking objective or tool arguments.
+- Python and TypeScript LSP operations cover definition, references, hover,
+  symbols, diagnostics, and rename preview from a clean installed artifact.
+- Compact repository-graph/LSP evidence participates in planning and completion
+  verification, with deterministic mutation invalidation and security tests.
+
+Keep Milestone 5 open until all criteria above pass. The LSP gateway is not part
+of this first routing slice.
 
 ## Milestone 6 — Recovery and Durable State
 

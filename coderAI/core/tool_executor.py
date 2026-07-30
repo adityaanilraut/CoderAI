@@ -1318,6 +1318,8 @@ class ToolExecutor:
                 doom_offender = (pc["tool_name"], cached_count)
 
         for pc, res in zip(parsed_calls, results, strict=True):
+            if isinstance(res, dict) and res.get("success") is True:
+                self._turn.warm_tool_names.add(pc["tool_name"])
             if self._turn.objective_state is not None:
                 self._turn.objective_state.record_tool_result(
                     pc["tool_name"],

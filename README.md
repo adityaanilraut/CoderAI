@@ -18,7 +18,7 @@ CoderAI is a Python CLI tool that pairs an LLM with a focused set of coding tool
 | Feature | Description |
 |---|---|
 | **Multi-Provider LLM** | OpenAI, Anthropic Claude, Groq, DeepSeek, Gemini, Meta, LM Studio, Ollama |
-| **Coding Tools** | File I/O, core Git, terminal, web, browser automation, HTTP, memory, process management, semantic search; rare git via bundled MCP |
+| **Progressive Tools** | A compact universal schema set plus deterministic objective-routed file, Git, terminal, web, browser, MCP, memory, and code-intelligence capabilities |
 | **Browser Automation** | Cross-platform browser control via Playwright — form filling, shopping, data entry, web scraping |
 | **Multi-Agent System** | Spawn isolated sub-agents for code review, security audit, research, etc. |
 | **Planning & Tasks** | Enforced read-only `/plan` workflow plus persistent execution checklists via `manage_tasks` / `/tasks` |
@@ -178,6 +178,7 @@ CoderAI/
 │   │   ├── agent.py            #   Main agent orchestrator
 │   │   ├── agent_loop.py       #   ExecutionLoop: LLM-tool iteration loop
 │   │   ├── agent_capabilities.py # Tool registry, personas, approvals, hooks
+│   │   ├── capability_routing.py # Objective-scoped progressive schemas
 │   │   ├── agent_session.py    #   Session lifecycle, checkpoints, rewind
 │   │   ├── execution_context.py # Immutable run/session/workspace identity
 │   │   ├── agent_tracker.py    #   Real-time agent registry & cooperative cancellation

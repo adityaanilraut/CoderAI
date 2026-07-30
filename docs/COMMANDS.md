@@ -96,7 +96,7 @@ coderAI run --trust-workspace "..."     # CI: trust this repo's .coderAI hooks/c
 
 **Deny-on-mutate (default).** With no TTY to confirm mutations, a run that needs a mutating tool (e.g. `write_file`, `run_command`, `git_push`) is blocked cleanly instead of prompting: the tool call is denied, the run exits non-zero, and stderr prints which tools were blocked (`--json` lists them under `blocked_tools`). Pass `--yolo`/`--auto-approve` to allow mutations.
 
-`--output` accepts `text`, `json`, or `ndjson`. NDJSON writes one JSON object per stdout line with `schema_version: 1`, a monotonic `sequence`, `timestamp`, `type`, `terminal`, and `data`. It forwards actual lifecycle, tool, warning/error, and progress events from the core. Assistant delta events are present only when the configured provider path streams; nonstreaming providers are represented by the terminal result without synthetic deltas. Every run ends with exactly one terminal `result` or `error` envelope.
+`--output` accepts `text`, `json`, or `ndjson`. NDJSON writes one JSON object per stdout line with `schema_version: 1`, a monotonic `sequence`, `timestamp`, `type`, `terminal`, and `data`. It forwards actual lifecycle, tool, warning/error, progress, and `capability.routing` events from the core. The routing payload contains `schema_token_cost`, `selected_capabilities`, `routing_reason`, `selection_success`, and `plan_mode`. Assistant delta events are present only when the configured provider path streams; nonstreaming providers are represented by the terminal result without synthetic deltas. Every run ends with exactly one terminal `result` or `error` envelope.
 
 **Exit codes:**
 

@@ -86,4 +86,4 @@ async def test_schema_dirty_flag_survives_new_execution_loop(mock_agent):
 
     assert mock_agent._tool_schemas_dirty is False
     assert state.tool_schemas == schemas
-    loop._get_tool_schemas.assert_called_once_with()
+    loop._get_tool_schemas.assert_called_once_with("hi", warm_tool_names=set())

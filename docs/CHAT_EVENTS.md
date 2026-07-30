@@ -20,6 +20,12 @@ of the long-running things (`turn`, `tool`, `agent`) instead of a
 `*_start` / `*_end` pair. New phases can be added without breaking older
 consumers because unknown phases are ignored.
 
+Capability routing is core telemetry rather than a Textual wire event. The
+event bus emits `capability_routing` with `{schema_token_cost,
+selected_capabilities, routing_reason, selection_success, plan_mode}`; headless
+`coderAI run --output ndjson` serializes it as `capability.routing`. The TUI
+does not currently render it.
+
 | event           | payload                                                                                       | notes                                                                                |
 | --------------- | --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
 | `hello`         | `{model, provider, cwd, version, contextLimit, budgetLimit, autoApprove, reasoning}`          | First message emitted from `start()`                                                 |
