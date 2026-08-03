@@ -129,6 +129,18 @@ a fresh or narrower surface. Dynamic MCP selection matches trusted function and
 server identifiers, never server-supplied descriptions, and remains disabled
 for domain-scoped subagents.
 
+The offline routing corpus represents persona, permission, Plan Mode,
+dependency, platform, network, MCP-health, and delegated-agent ceilings as
+already-filtered eligible registries. Checked thresholds require exact/subset
+expectations and every forbidden family to pass with no false positives or
+negatives; the evaluator cannot bypass executor policy.
+
+Time-to-first-useful-action uses a monotonic per-objective clock and emits only
+the selected tool identifier and elapsed milliseconds. Objective text, tool
+arguments, secrets, and tool-result content—including untrusted external
+content—are never copied into that event. Failed, denied, cached, synthetic,
+task-management, and routing/control-only activity cannot stop the clock.
+
 Schema absence is not the enforcement boundary. Invented calls still pass
 through `ToolExecutor`, which repeats Plan Mode, amendment, parent/child domain,
 permission, approval, provenance/egress, and transaction checks.
@@ -195,6 +207,14 @@ confinement.
   scope, protected-path, and symlink-leaf guards. Conflicts and incomplete scans
   fail closed as retryable partial failures. Parent/child session and workspace
   identities are revalidated before record, recovery, or rollback.
+- Workspace-mutating subagents never receive the parent's writable directory.
+  They run in owner-only detached Git worktrees seeded from the parent's live
+  tracked and non-ignored files. Only a fingerprinted, parent-approved patch is
+  integrated. The runtime rejects unsafe paths, changed symlinks, oversized
+  reviews, non-Git roots, child changes after review, and concurrent parent
+  changes; integration and parent stop hooks are captured in the parent's own
+  transaction while child ledgers remain separate. Native background and
+  Git-mutating tools are absent from these children.
 - Session files are
   written atomically via `mkstemp` so there is never a world-readable window.
 
@@ -252,10 +272,12 @@ the code provides:
   edits yourself or move the file into the project.
 - **Transaction coverage is synchronous and workspace-focused.** A background
   process may mutate after its launching tool returns, and Git metadata under
-  `.git` is intentionally excluded from snapshots. Mutating delegated agents
-  still share the project worktree until isolated patch integration lands.
-  Transaction snapshots also have no retention/incremental-object policy yet,
-  so long sessions can consume substantial disk space.
+  `.git` is intentionally excluded from snapshots. Detached delegation
+  worktrees isolate ordinary workspace files but share the repository's Git
+  object and reference storage; arbitrary foreground commands could still
+  mutate that metadata. Mutating delegation fails closed for non-Git projects.
+  Transaction and delegation snapshots also have no retention/incremental-object
+  policy yet, so long sessions can consume substantial disk space.
 
 ## Supported platforms
 

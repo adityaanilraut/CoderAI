@@ -20,6 +20,7 @@ from coderAI.core.execution_context import PermissionPolicySnapshot, create_run_
 from coderAI.core.services import get_services
 from coderAI.system.hooks_manager import HooksManager
 from coderAI.system.read_cache import FileReadCache
+from coderAI.core.objective import ObjectiveState
 from coderAI.core.agent_session import AgentSessionMixin
 from coderAI.core.agent_capabilities import AgentCapabilitiesMixin
 
@@ -43,6 +44,8 @@ class Agent(AgentCapabilitiesMixin, AgentSessionMixin):
         persona_name: Optional[str] = None,
         is_subagent: bool = False,
         delegation_depth: int = 0,
+        project_root: Optional[str] = None,
+        workspace_trusted: Optional[bool] = None,
     ):
         """Initialize the agent.
 
@@ -58,20 +61,27 @@ class Agent(AgentCapabilitiesMixin, AgentSessionMixin):
                 tree. Root agent = 0, sub-agent of root = 1, etc. The tool
                 registry's ``delegate_task`` reads this from the agent's
                 ``SubagentContext`` to enforce ``MAX_DELEGATION_DEPTH``.
+            project_root: Explicit workspace root for isolated delegated agents.
+            workspace_trusted: Pinned parent trust decision for that explicit
+                workspace. Ordinary root agents resolve trust normally.
         """
-        project_root = str(Path(".").resolve())
+        resolved_project_root = str(Path(project_root or ".").resolve())
         from coderAI.system.trust import workspace_trust
 
         # Pin one trust decision for the full Agent lifetime. A grant made by
         # the first-turn prompt is persisted for the next Agent launch but must
         # not partially activate project-controlled surfaces in this instance.
-        self._workspace_trusted: bool = workspace_trust.is_trusted(project_root)
+        self._workspace_trusted = (
+            bool(workspace_trusted)
+            if workspace_trusted is not None
+            else workspace_trust.is_trusted(resolved_project_root)
+        )
         if self._workspace_trusted:
-            with workspace_trust.pinned_decision(project_root, self._workspace_trusted):
-                self.config = config_manager.load_project_config(".")
+            with workspace_trust.pinned_decision(resolved_project_root, self._workspace_trusted):
+                self.config = config_manager.load_project_config(project_root or ".")
         else:
             self.config = config_manager.load().model_copy(deep=True)
-            self.config.project_root = project_root
+            self.config.project_root = resolved_project_root
 
         # Load custom persona if requested
         self.persona: Optional[AgentPersona] = None
@@ -147,6 +157,9 @@ class Agent(AgentCapabilitiesMixin, AgentSessionMixin):
 
         # Session management
         self.session: Optional[Session] = None
+        # Most recent objective state is restored from its independent ledger
+        # when a session is resumed. It is not derived from transcript text.
+        self.last_objective_state: Optional[ObjectiveState] = None
 
         # Background session-save machinery. ``save_session`` snapshots on the
         # caller thread and offloads the blocking disk write to a single worker

@@ -15,6 +15,7 @@ from collections.abc import Awaitable, Callable
 from pydantic import BaseModel, Field
 
 from coderAI.tools.base import Tool
+from coderAI.tools.filesystem import ProjectPathError, resolve_under_project
 from coderAI.types.tool_error_codes import ToolErrorCode
 from coderAI.system.locks import get_lock_manager
 from coderAI.system.proc import run_scrubbed, subprocess_timeout
@@ -134,6 +135,11 @@ async def _run_git_command(
         if scope_error:
             return scope_error
 
+    try:
+        repo_path = str(resolve_under_project(repo_path, operation="use git repository"))
+    except ProjectPathError as exc:
+        return exc.as_result()
+
     if timeout is None:
         timeout = subprocess_timeout()
 
@@ -175,6 +181,11 @@ async def _validate_git_scope(repo_path: str) -> Optional[dict[str, Any]]:
     Mutating git operations should call this before proceeding.
     """
     from coderAI.system.safeguards import resolve_git_root
+
+    try:
+        repo_path = str(resolve_under_project(repo_path, operation="use git repository"))
+    except ProjectPathError as exc:
+        return exc.as_result()
 
     result = await resolve_git_root(repo_path)
 

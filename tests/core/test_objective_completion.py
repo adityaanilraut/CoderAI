@@ -93,6 +93,86 @@ def test_latest_failed_tool_outcome_prevents_false_success():
     assert any("run_tests" in issue for issue in decision.issues)
 
 
+@pytest.mark.parametrize(
+    ("tool_name", "arguments", "result"),
+    [
+        (
+            "run_tests",
+            {"path": "tests/test_parser.py"},
+            {
+                "success": True,
+                "returncode": 1,
+                "results": {"passed_clean": False},
+            },
+        ),
+        (
+            "lint",
+            {"path": ".", "fix": False},
+            {"success": True, "returncode": 1, "has_issues": True},
+        ),
+        (
+            "format",
+            {"path": ".", "check": True},
+            {"success": True, "needs_formatting": True},
+        ),
+    ],
+)
+def test_failed_check_result_does_not_verify_mutation(tool_name, arguments, result):
+    state = ObjectiveState("Fix the parser")
+    state.record_tool_result(
+        "write_file",
+        {"path": "parser.py"},
+        {"success": True},
+        _tool(category="filesystem", read_only=False),
+    )
+    state.record_tool_result(
+        "read_file",
+        {"path": "parser.py"},
+        {"success": True},
+        _tool(category="filesystem", read_only=True),
+    )
+    state.record_tool_result(
+        tool_name,
+        arguments,
+        result,
+        _tool(category="code_quality", read_only=False),
+    )
+
+    decision = state.evaluate_completion()
+
+    assert decision.allowed is False
+    assert any(tool_name in issue for issue in decision.issues)
+
+
+def test_transaction_paths_are_canonical_objective_artifacts(tmp_path):
+    state = ObjectiveState("Fix the parser")
+    absolute_path = str(tmp_path / "parser.py")
+    state.record_tool_result(
+        "write_file",
+        {"path": absolute_path},
+        {
+            "success": True,
+            "_workspace_changes": [{"path": "parser.py", "change": "modified"}],
+        },
+        _tool(category="filesystem", read_only=False),
+    )
+    state.record_tool_result(
+        "read_file",
+        {"path": "parser.py"},
+        {"success": True},
+        _tool(category="filesystem", read_only=True),
+    )
+    state.record_tool_result(
+        "run_tests",
+        {"path": "tests"},
+        {"success": True, "returncode": 0, "results": {"passed_clean": True}},
+        _tool(category="code_quality", read_only=False),
+    )
+
+    assert state.evaluate_completion().allowed is True
+    assert state.artifacts_changed == ["parser.py"]
+
+
 def test_failed_tool_does_not_become_reasoned_success_without_a_mutation():
     state = ObjectiveState("Read the configuration")
     state.record_tool_result(

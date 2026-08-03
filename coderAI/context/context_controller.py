@@ -329,7 +329,7 @@ class ContextController:
 
     def get_token_usage_estimate(self) -> int:
         text = self.get_system_message() or ""
-        return len(text) // 4
+        return self.provider.count_tokens(text)
 
     def copy_pinned_state_from(self, other: "ContextController") -> None:
         self.pinned_files = dict(other.pinned_files)

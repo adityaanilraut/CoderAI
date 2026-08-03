@@ -96,7 +96,7 @@ coderAI run --trust-workspace "..."     # CI: trust this repo's .coderAI hooks/c
 
 **Deny-on-mutate (default).** With no TTY to confirm mutations, a run that needs a mutating tool (e.g. `write_file`, `run_command`, `git_push`) is blocked cleanly instead of prompting: the tool call is denied, the run exits non-zero, and stderr prints which tools were blocked (`--json` lists them under `blocked_tools`). Pass `--yolo`/`--auto-approve` to allow mutations.
 
-`--output` accepts `text`, `json`, or `ndjson`. NDJSON writes one JSON object per stdout line with `schema_version: 1`, a monotonic `sequence`, `timestamp`, `type`, `terminal`, and `data`. It forwards actual lifecycle, tool, warning/error, progress, and `capability.routing` events from the core. The routing payload contains `schema_token_cost`, `selected_capabilities`, `routing_reason`, `selection_success`, and `plan_mode`. Assistant delta events are present only when the configured provider path streams; nonstreaming providers are represented by the terminal result without synthetic deltas. Every run ends with exactly one terminal `result` or `error` envelope.
+`--output` accepts `text`, `json`, or `ndjson`. NDJSON writes one JSON object per stdout line with `schema_version: 1`, a monotonic `sequence`, `timestamp`, `type`, `terminal`, and `data`. It forwards actual lifecycle, tool, warning/error, progress, `capability.routing`, and `capability.first_useful_action` events from the core. The routing payload contains `schema_token_cost`, `selected_capabilities`, `routing_reason`, `selection_success`, and `plan_mode`. The first-useful-action payload contains only `tool_name` and `elapsed_ms`; it never includes the objective, tool arguments, secrets, or result content. Assistant delta events are present only when the configured provider path streams; nonstreaming providers are represented by the terminal result without synthetic deltas. Every run ends with exactly one terminal `result` or `error` envelope.
 
 **Exit codes:**
 
@@ -105,6 +105,23 @@ coderAI run --trust-workspace "..."     # CI: trust this repo's .coderAI hooks/c
 | `0` | Success — completed without a blocked mutation |
 | `1` | A mutating tool was blocked (non-yolo), missing API key, interrupted, or an agent/runtime error |
 | `2` | Usage error — no prompt provided, or both `--resume` and `--continue` given |
+
+---
+
+### Offline capability-routing evaluation
+
+Contributors can run the deterministic routing corpus without a provider or
+network connection:
+
+```bash
+python -m coderAI.evals.capability_routing
+python -m coderAI.evals.capability_routing --json
+```
+
+The checked command exits non-zero unless all cases pass, conservative fallback
+is perfect, false-positive and false-negative counts are zero, and aggregate
+schema-token savings against the full eligible-registry baselines remain at
+least 50%. `--no-check` prints the same report without failing the process.
 
 ---
 

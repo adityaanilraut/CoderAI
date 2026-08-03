@@ -41,10 +41,10 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Ruff Format
-        run: python -m ruff format --check coderAI/
+        run: python -m ruff format --check coderAI/ tests/ scripts/
 
       - name: Ruff Lint
-        run: python -m ruff check coderAI/
+        run: python -m ruff check coderAI/ tests/ scripts/
 
       - name: Mypy
         run: python -m mypy coderAI/
@@ -73,18 +73,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
-      # Blocking: the red-team regression corpus (blocklist bypass, exec sandbox,
-      # workspace trust, provenance/egress, SSRF/redirect, delegation, MCP/OAuth
-      # trust, FS hygiene, download hardening) must stay green. Kept separate from
-      # the coverage-gated suite so a security regression is unambiguous in CI.
+      # Keep a separate status for the security corpus even though the coverage
+      # job also exercises it.
       - name: Security tests
         run: pytest -m security -q
 
-      # Advisory (non-blocking): pip-audit has no severity filter, so a fresh
-      # transitive CVE must not block unrelated PRs. Dependabot opens update
-      # PRs; triage failures here before promoting this step to blocking.
       - name: Dependency audit (pip-audit)
-        continue-on-error: true
         run: |
           python -m pip install pip-audit
           pip-audit -r requirements.lock --desc --strict

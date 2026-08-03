@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+from pathlib import Path
 import time as _time
 from dataclasses import dataclass
 from typing import Any, Literal, Optional
@@ -92,16 +93,12 @@ WORKSPACE_NATIVE_CAPABILITIES = frozenset(
         "file_readlink",
         "file_stat",
         "format",
-        "git_add",
-        "git_branch",
-        "git_commit",
         "git_diff",
         "git_log",
         "git_status",
         "glob_search",
         "grep",
         "http_request",
-        "kill_process",
         "lint",
         "list_directory",
         "list_processes",
@@ -110,13 +107,11 @@ WORKSPACE_NATIVE_CAPABILITIES = frozenset(
         "move_file",
         "package_manager",
         "python_repl",
-        "read_bg_output",
         "read_file",
         "read_image",
         "read_url",
         "recall_memory",
         "refactor",
-        "run_background",
         "run_command",
         "run_tests",
         "save_memory",
@@ -162,6 +157,13 @@ class SubagentContext:
     # propagated so a child's mutating tools face the same gate and denials land
     # in the same audit list. An async ``(tool_name, arguments) -> bool`` callable.
     parent_confirmation_override: Optional[Any] = None
+    # Milestone 3: production Agent wiring enables detached worktree isolation
+    # for workspace-mutating children. The default stays false for lightweight
+    # third-party/test contexts that do not carry a parent RunContext.
+    workspace_isolation: bool = False
+    parent_run_context: Optional[Any] = None
+    parent_workspace_trusted: bool = False
+    parent_patch_approval: Optional[Any] = None
 
 
 # Number of recent parent tool calls to summarise for the sub-agent so it
@@ -313,7 +315,8 @@ class DelegateTaskTool(Tool):
         "The sub-agent has access to all the same tools, runs in an isolated session, "
         "and returns a comprehensive report. Provide a detailed task_description with "
         "specific file paths and expected output format for best results. "
-        "Mutating delegations with isolation_domain='workspace' or 'auto' run one at a time. "
+        "Mutating workspace delegations run in detached Git worktrees; their exact patch "
+        "is integrated only after parent approval and conflict checks. They run one at a time. "
         "For parallel execution set isolation_domain='browser' (Playwright), 'desktop' "
         "(AppleScript), or read_only_task=True (research). Browser and desktop delegations "
         "each get isolated resources and can run concurrently (up to 3 by default). "
@@ -416,8 +419,10 @@ class DelegateTaskTool(Tool):
     ) -> dict[str, Any]:
         """Core sub-agent spawning and execution logic."""
         sub_agent = None
+        delegation_worktree = None
         try:
             from coderAI.core.agent import Agent
+            from coderAI.core.delegation_worktree import DelegationWorktree
             from coderAI.system.history import history_manager
 
             cwd = os.getcwd()
@@ -429,7 +434,9 @@ class DelegateTaskTool(Tool):
                     "isolation_domain": isolation_domain,
                 }
             )
-
+            child_workspace_root = Path(
+                getattr(ctx.parent_config, "project_root", cwd) or cwd
+            ).resolve()
             if child_depth > MAX_DELEGATION_DEPTH:
                 return {
                     "success": False,
@@ -438,6 +445,35 @@ class DelegateTaskTool(Tool):
                         f"at construction time (would-be depth={child_depth})."
                     ),
                 }
+            if effective_domain == "workspace" and ctx.workspace_isolation:
+                if ctx.parent_run_context is None:
+                    return {
+                        "success": False,
+                        "error": "Mutating delegation is missing its parent RunContext.",
+                        "error_code": ToolErrorCode.IO,
+                    }
+                context_workspace = getattr(ctx.parent_run_context, "workspace_root", None)
+                if (
+                    context_workspace is None
+                    or Path(context_workspace).resolve() != child_workspace_root
+                ):
+                    return {
+                        "success": False,
+                        "error": (
+                            "Mutating delegation parent RunContext does not match the "
+                            "configured workspace root."
+                        ),
+                        "error_code": ToolErrorCode.IO,
+                    }
+                delegation_worktree = DelegationWorktree(parent_root=child_workspace_root)
+                try:
+                    child_workspace_root = await asyncio.to_thread(delegation_worktree.create)
+                except Exception as exc:
+                    return {
+                        "success": False,
+                        "error": f"Could not create isolated delegation worktree: {exc}",
+                        "error_code": ToolErrorCode.NOT_GIT_REPO,
+                    }
 
             # If task_id is provided, try to resume an existing sub-agent session
             resumed_session = None
@@ -446,12 +482,17 @@ class DelegateTaskTool(Tool):
                     resumed_session = history_manager.load_session(task_id)
                     if resumed_session is not None:
                         parent_session_id = getattr(ctx.parent_session, "session_id", None)
-                        if parent_session_id and resumed_session.session_id == parent_session_id:
+                        metadata = resumed_session.metadata
+                        if metadata.get("purpose") != "delegation" or (
+                            parent_session_id
+                            and metadata.get("parent_session_id") != parent_session_id
+                        ):
                             return {
                                 "success": False,
                                 "error": (
-                                    "Refusing to resume delegate_task with the parent session id. "
-                                    "Pass the task_id returned by a previous delegate_task call."
+                                    "Refusing to resume a session not owned by this delegation. "
+                                    "Pass the task_id returned by this parent's previous "
+                                    "delegate_task call."
                                 ),
                                 "error_code": ToolErrorCode.INVALID_TASK_ID,
                             }
@@ -498,6 +539,8 @@ class DelegateTaskTool(Tool):
                     auto_approve=ctx.parent_auto_approve,
                     is_subagent=True,
                     delegation_depth=child_depth,
+                    project_root=str(child_workspace_root),
+                    workspace_trusted=ctx.parent_workspace_trusted,
                 )
                 sub_agent.ipc_server = ctx.parent_ipc_server
 
@@ -569,8 +612,8 @@ class DelegateTaskTool(Tool):
                             sub_agent.session.model = effective_model
                         sub_agent.session.updated_at = _time.time()
                 else:
-                    # Sub-agents share project state with the parent, so their
-                    # session bootstrap must not clear the parent's active plan.
+                    # Session bootstrap must not clear the parent's active plan;
+                    # mutating children may use an isolated filesystem worktree.
                     sub_agent.create_session()
                     if sub_agent.session is not None:
                         sub_agent.session.metadata.update(
@@ -582,6 +625,11 @@ class DelegateTaskTool(Tool):
                                 "delegation_depth": child_depth,
                                 "agent_role": agent_role,
                                 "isolation_domain": effective_domain,
+                                "workspace_isolated": delegation_worktree is not None,
+                                "workspace_root": str(child_workspace_root),
+                                "parent_workspace_root": str(
+                                    getattr(ctx.parent_config, "project_root", cwd) or cwd
+                                ),
                             }
                         )
 
@@ -591,7 +639,7 @@ class DelegateTaskTool(Tool):
                     sub_agent.cost_tracker = ctx.parent_cost_tracker
                     sub_agent.context_controller.cost_tracker = sub_agent.cost_tracker
 
-                if ctx.parent_read_cache is not None:
+                if ctx.parent_read_cache is not None and delegation_worktree is None:
                     sub_agent.read_cache = ctx.parent_read_cache
                     sub_agent._wire_read_cache()
 
@@ -611,7 +659,7 @@ class DelegateTaskTool(Tool):
 
                 system_preamble_parts = [
                     "You are a sub-agent. Complete the assigned task autonomously.",
-                    f"Project directory: {cwd}",
+                    f"Project directory: {child_workspace_root}",
                     "Use tools to gather facts — do not guess. Cite file paths and line numbers.",
                     "Final turn must be a plain-text report (Summary, Findings, Recommendations).",
                     "Do not end on a tool call; an empty final turn is a failure.",
@@ -826,6 +874,46 @@ class DelegateTaskTool(Tool):
             tokens_used = sub_agent.total_tokens
             cost_usd = self._final_cost_for(sub_agent)
 
+            patch_metadata: dict[str, Any] = {}
+            if delegation_worktree is not None:
+                prepared = await asyncio.to_thread(delegation_worktree.prepare_patch)
+                if prepared.changes:
+                    approval = ctx.parent_patch_approval
+                    approval_args = {
+                        "change_count": len(prepared.changes),
+                        "paths": [change.path for change in prepared.changes],
+                        "patch_fingerprint": prepared.fingerprint,
+                    }
+                    approved = bool(
+                        approval is not None and await approval(approval_args, prepared.preview)
+                    )
+                    if not approved:
+                        return {
+                            "success": False,
+                            "error": "Sub-agent patch was not approved for parent integration.",
+                            "error_code": ToolErrorCode.DENIED,
+                            "patch_status": "denied",
+                            "patch_fingerprint": prepared.fingerprint,
+                            "changed_paths": approval_args["paths"],
+                            "final_report": final_report,
+                            "tokens_used": tokens_used,
+                            "cost_usd": cost_usd,
+                        }
+                    patch_result = await self._integrate_delegated_patch(
+                        delegation_worktree,
+                        prepared,
+                    )
+                    if patch_result.get("success") is not True:
+                        return {
+                            **patch_result,
+                            "final_report": final_report,
+                            "tokens_used": tokens_used,
+                            "cost_usd": cost_usd,
+                        }
+                    patch_metadata = patch_result
+                else:
+                    patch_metadata = {"patch_status": "no_changes", "_workspace_changes": []}
+
             # Run on_subagent_stop hooks on the parent agent. The whole chain
             # (parent_ipc_server → agent → hooks_manager) is optional in
             # headless / test setups, so guard each hop instead of letting an
@@ -864,6 +952,7 @@ class DelegateTaskTool(Tool):
                 "final_report": final_report,
                 "tokens_used": tokens_used,
                 "cost_usd": cost_usd,
+                **patch_metadata,
                 **(
                     {
                         "task_id": task_session_id,
@@ -893,6 +982,34 @@ class DelegateTaskTool(Tool):
                     await sub_agent.close()
                 except Exception:
                     pass
+            if delegation_worktree is not None:
+                try:
+                    await asyncio.to_thread(delegation_worktree.cleanup)
+                except Exception:
+                    logger.warning("Failed to clean delegation worktree", exc_info=True)
+
+    async def _integrate_delegated_patch(
+        self,
+        worktree: Any,
+        prepared: Any,
+    ) -> dict[str, Any]:
+        """Apply an approved child patch inside the executor's parent transaction."""
+        try:
+            changes = await asyncio.to_thread(worktree.integrate, prepared)
+            result: dict[str, Any] = {
+                "success": True,
+                "patch_status": "integrated",
+                "patch_fingerprint": prepared.fingerprint,
+                "_workspace_changes": changes,
+            }
+        except Exception as exc:
+            result = {
+                "success": False,
+                "error": f"Delegated patch integration failed closed: {exc}",
+                "error_code": ToolErrorCode.IO,
+                "patch_status": "conflict",
+            }
+        return result
 
     @staticmethod
     def _final_cost_for(sub_agent: Any) -> float:

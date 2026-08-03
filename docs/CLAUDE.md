@@ -116,7 +116,6 @@ Per-turn flow (`Agent.process_message()` → `agent_loop`):
 - `coderAI/system/safeguards.py` — reusable validators that run before dangerous actions: interactive-command detection (blocks REPLs invoked via non-interactive pipes), project-directory validation, git-scope guards (prevent operations leaking to a parent repo), staging blocklist for junk files (`.DS_Store`, `__pycache__`, `.coderAI/`, …).
 - `coderAI/system/proc.py` — scrubbed subprocess runner used by lint/format/terminal (env scrub, timeout, process-group kill).
 - `coderAI/system/trust.py` — workspace trust gate for repo-supplied overlays/hooks.
-- `coderAI/system/project_layout.py` — `find_dot_coderai_subdir()` resolves `.coderAI/<subdir>` across project root, cwd, and the package dir (for dev installs). Use this instead of hardcoding `.coderAI/` paths.
 - `coderAI/tui/commands.py` — `UIBridge` command handlers, plus plain-text reference output for `/show <topic>` slash commands (`/show models`, `/show cost`, `/show status`, `/show config`, `/show info`, `/show tasks`).
 - `coderAI/cli/utils.py` — Rich display helpers for one-shot CLI subcommands. Not used by the Textual chat UI.
 - `coderAI/system/config.py` — Pydantic-based `ConfigManager` reading from `~/.coderAI/config.json` then env vars.
@@ -132,7 +131,7 @@ Per-turn flow (`Agent.process_message()` → `agent_loop`):
 - `coderAI/context/code_chunker.py` — Splits source files into semantic chunks (AST-aware for Python, regex for JS/TS, sliding window fallback).
 - `coderAI/context/code_indexer.py` — ChromaDB-backed semantic code index with incremental updates via file-hash manifests.
 - `coderAI/embeddings/` — common embedding factory with OpenAI and optional local sentence-transformers backends. Index fingerprints prevent backend/model/dimension mixing.
-- `.github/workflows/ci.yml` — On push/PR: matrix of (ubuntu-latest, macos-latest) × (Python 3.10, 3.12). Installs `pip install -e ".[dev]"`, then runs `ruff format --check coderAI/`, `ruff check coderAI/`, `mypy coderAI/`, `pytest -q --cov-fail-under=…`, and a `coderAI --version` smoke test. `make test` mirrors the pytest + smoke portion; `make check` runs the full sequence. Security suite: `make test-security`.
+- `.github/workflows/ci.yml` — On push/PR: matrix of (ubuntu-latest, macos-latest) × (Python 3.10, 3.12). Installs `pip install -e ".[dev]"`, then checks formatting and lint across `coderAI/`, `tests/`, and `scripts/`, runs `mypy coderAI/`, `pytest -q --cov-fail-under=…`, and a `coderAI --version` smoke test. `make test` mirrors the pytest + smoke portion; `make check` runs the full sequence. Security suite: `make test-security`.
 - `.github/workflows/release.yml` — On tagged releases (`v*`), builds the Python wheel + sdist with `python -m build`, attaches them to the GitHub Release, and publishes the wheel to PyPI via trusted publishing.
 
 **Tool categories** (`coderAI/tools/`):

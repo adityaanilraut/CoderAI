@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from coderAI.types.tool_error_codes import ToolErrorCode
 from coderAI.tools.base import Tool
-from coderAI.tools.filesystem import WriteFileTool, _enforce_project_scope
+from coderAI.tools.filesystem import ProjectPathError, WriteFileTool, resolve_under_project
 
 logger = logging.getLogger(__name__)
 
@@ -95,12 +95,9 @@ class RefactorTool(Tool):
                     "error_code": ToolErrorCode.VALIDATION,
                 }
 
-            base = Path(path).expanduser().resolve()
+            base = resolve_under_project(path, operation="refactor")
             if not base.exists():
                 return {"success": False, "error": f"Path not found: {path}"}
-            scope_err = _enforce_project_scope(base, "refactor")
-            if scope_err is not None:
-                return scope_err
 
             # Offload the tree walk + parse to a worker thread so a large tree
             # never blocks the event loop.
@@ -178,6 +175,8 @@ class RefactorTool(Tool):
                 result["files_skipped"] = skipped_files
             return result
 
+        except ProjectPathError as e:
+            return e.as_result()
         except Exception as e:
             logger.exception("refactor failed")
             return {"success": False, "error": str(e)}

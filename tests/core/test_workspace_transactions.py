@@ -133,6 +133,23 @@ def test_failed_tool_outcome_still_commits_observed_mutation(tmp_path) -> None:
     assert record["changes"][0]["operation"] == "created"
 
 
+def test_generated_directories_are_not_snapshotted(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    generated = workspace / "node_modules"
+    generated.mkdir(parents=True)
+    (generated / "package.js").write_text("before")
+    context = _bound_context(workspace, tmp_path / "ledgers")
+    store = context.transaction_store
+
+    handle = _begin(store, context)
+    (generated / "package.js").write_text("after")
+    (workspace / "source.py").write_text("tracked")
+    record = store.finalize(handle, run_context=context, tool_result={"success": True})
+
+    assert [change["path"] for change in record["changes"]] == ["source.py"]
+    assert not (store.store_dir / handle.transaction_id / "before" / "node_modules").exists()
+
+
 def test_incomplete_pre_snapshot_is_durable_partial_failure_and_blocks_open(
     tmp_path, monkeypatch
 ) -> None:

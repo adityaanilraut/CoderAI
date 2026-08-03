@@ -3,7 +3,6 @@
 import asyncio
 import itertools
 import logging
-from pathlib import Path
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field
@@ -21,6 +20,8 @@ from coderAI.tools.filesystem._guards import (
     _is_path_protected,
     _reject_symlink_leaf,
     _safe_open_no_symlink,
+    ProjectPathError,
+    resolve_under_project,
 )
 
 logger = logging.getLogger(__name__)
@@ -72,7 +73,7 @@ class ReadFileTool(Tool):
                     "error_code": ToolErrorCode.VALIDATION,
                 }
 
-            path_obj = Path(path).expanduser()
+            path_obj = resolve_under_project(path, operation="read", reject_symlink=True)
             scope_err = _enforce_project_scope(path_obj, "read")
             if scope_err:
                 return scope_err
@@ -158,6 +159,8 @@ class ReadFileTool(Tool):
                 "lines": line_count,
                 "size_bytes": file_size,
             }
+        except ProjectPathError as e:
+            return e.as_result()
         except UnicodeDecodeError:
             return {
                 "success": False,
@@ -204,7 +207,12 @@ class WriteFileTool(Tool):
     async def execute(self, path: str, content: str, append: bool = False) -> dict[str, Any]:  # type: ignore[override]
         """Write content to file with path protection."""
         try:
-            path_obj = Path(path).expanduser()
+            path_obj = resolve_under_project(
+                path,
+                operation="write_file",
+                check_protected=True,
+                reject_symlink=True,
+            )
 
             # Acquire lock for this specific file
             lock = await get_lock_manager().get_file_lock(str(path_obj))
@@ -302,6 +310,8 @@ class WriteFileTool(Tool):
                     "bytes_written": bytes_written,
                     "mode": "append" if append else "write",
                 }
+        except ProjectPathError as e:
+            return e.as_result()
         except Exception as e:
             return {
                 "success": False,

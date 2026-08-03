@@ -79,7 +79,7 @@ TEST_FRAMEWORKS: dict[str, dict[str, Any]] = {
     },
 }
 
-_FRAMEWORK_PREFERENCE = ["pytest", "jest", "vitest", "go_test", "cargo_test", "unittest"]
+_FRAMEWORK_PREFERENCE = ["pytest", "vitest", "jest", "go_test", "cargo_test", "unittest"]
 
 
 def detect_test_framework(project_root: str = ".") -> Optional[str]:
@@ -400,8 +400,7 @@ class RunTestsTool(Tool):
             stdout_str = stdout.decode("utf-8", errors="replace")
             stderr_str = stderr.decode("utf-8", errors="replace")
 
-            # Phase 4.7: shared head+tail truncation — a test run's pass/fail
-            # summary lives at the tail, so keep both ends rather than head-only.
+            # Test summaries live at the tail, so preserve both ends.
             max_output = 16000
             stdout_str, _ = truncate_output(stdout_str, max_chars=max_output)
             stderr_str, _ = truncate_output(stderr_str, max_chars=max_output)

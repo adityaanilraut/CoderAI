@@ -8,12 +8,20 @@ runtime can distinguish a plausible final message from a verified outcome.
 from __future__ import annotations
 
 import re
+import time
+import uuid
+from collections.abc import Callable
 from os.path import normpath
 from dataclasses import asdict, dataclass, field
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, cast
 
 
 CompletionStatus = Literal["reasoned", "verified", "incomplete", "unverified"]
+CriterionStatus = Literal["unverified", "verified", "reasoned", "blocked"]
+EvidenceKind = Literal["read", "mutation", "verification", "internal"]
+_COMPLETION_STATUSES = frozenset({"reasoned", "verified", "incomplete", "unverified"})
+_CRITERION_STATUSES = frozenset({"unverified", "verified", "reasoned", "blocked"})
+_EVIDENCE_KINDS = frozenset({"read", "mutation", "verification", "internal"})
 
 _WORKSPACE_MUTATION_TOOLS = frozenset(
     {
@@ -53,10 +61,26 @@ _CHECK_COMMAND = re.compile(
 )
 
 
+def _string_int_dict(value: Any) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        str(key): int(item)
+        for key, item in value.items()
+        if isinstance(item, int) and not isinstance(item, bool)
+    }
+
+
+def _string_bool_dict(value: Any) -> dict[str, bool]:
+    if not isinstance(value, dict):
+        return {}
+    return {str(key): item for key, item in value.items() if isinstance(item, bool)}
+
+
 @dataclass
 class AcceptanceCriterion:
     description: str
-    status: Literal["unverified", "verified", "reasoned", "blocked"] = "unverified"
+    status: CriterionStatus = "unverified"
     evidence: list[str] = field(default_factory=list)
 
 
@@ -72,7 +96,7 @@ class ToolEvidence:
     sequence: int
     tool_name: str
     success: bool
-    kind: Literal["read", "mutation", "verification", "internal"]
+    kind: EvidenceKind
     summary: str
     artifacts: list[str] = field(default_factory=list)
 
@@ -89,6 +113,9 @@ class ObjectiveState:
     """Turn-local engineering state used by the completion gate."""
 
     objective: str
+    objective_id: str = field(default_factory=lambda: f"objective_{uuid.uuid4().hex}")
+    created_at: float = field(default_factory=time.time)
+    updated_at: float = field(default_factory=time.time)
     plan_id: Optional[str] = None
     plan_revision: Optional[int] = None
     acceptance_criteria: list[AcceptanceCriterion] = field(default_factory=list)
@@ -108,10 +135,30 @@ class ObjectiveState:
     _artifact_mutations: dict[str, int] = field(default_factory=dict)
     _artifact_inspections: dict[str, int] = field(default_factory=dict)
     _last_tool_outcome: dict[str, bool] = field(default_factory=dict)
+    _persist_callback: Optional[Callable[["ObjectiveState"], None]] = field(
+        default=None, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         if not self.acceptance_criteria:
             self.acceptance_criteria.append(AcceptanceCriterion(self.objective))
+
+    def bind_persistence(
+        self,
+        callback: Callable[["ObjectiveState"], None],
+        *,
+        persist_now: bool = True,
+    ) -> None:
+        """Persist now and after every subsequent ledger state transition."""
+        self._persist_callback = callback
+        if persist_now:
+            self.persist()
+
+    def persist(self) -> None:
+        """Write the current state through the session-owned durable store."""
+        self.updated_at = time.time()
+        if self._persist_callback is not None:
+            self._persist_callback(self)
 
     def record_tool_result(
         self,
@@ -126,6 +173,18 @@ class ObjectiveState:
         success = isinstance(result, dict) and result.get("success") is True
         artifacts = self._extract_artifacts(args, result)
         check = self._verification_label(tool_name, args)
+        if success and check and isinstance(result, dict):
+            if tool_name == "run_tests" and ("returncode" in result or "results" in result):
+                results = result.get("results")
+                success = (
+                    result.get("returncode") == 0
+                    and isinstance(results, dict)
+                    and results.get("passed_clean") is True
+                )
+            elif tool_name == "lint" and "has_issues" in result:
+                success = result.get("returncode") == 0 and result.get("has_issues") is False
+            elif tool_name == "format" and "needs_formatting" in result:
+                success = result.get("needs_formatting") is False
         observed_changes = bool(isinstance(result, dict) and result.get("_workspace_changes"))
         mutation = observed_changes or self._is_workspace_mutation(tool_name, args, tool)
 
@@ -161,6 +220,7 @@ class ObjectiveState:
                 artifacts=artifacts,
             )
         )
+        self.persist()
 
     def evaluate_completion(self) -> CompletionDecision:
         """Return the runtime's deterministic decision for a completion proposal."""
@@ -173,9 +233,11 @@ class ObjectiveState:
             if issues:
                 self.completion_status = "incomplete"
                 self.unresolved_risks = list(issues)
+                self.persist()
                 return CompletionDecision(False, "incomplete", issues)
             self.completion_status = "reasoned"
             self.acceptance_criteria[0].status = "reasoned"
+            self.persist()
             return CompletionDecision(True, "reasoned")
 
         pending = [
@@ -206,6 +268,7 @@ class ObjectiveState:
         if issues:
             self.completion_status = "incomplete"
             self.unresolved_risks = list(issues)
+            self.persist()
             return CompletionDecision(False, "incomplete", issues)
 
         self.completion_status = "verified"
@@ -213,17 +276,22 @@ class ObjectiveState:
         criterion = self.acceptance_criteria[0]
         criterion.status = "verified"
         criterion.evidence = list(self.checks_completed)
+        self.persist()
         return CompletionDecision(True, "verified")
 
     def mark_unverified(self, issues: list[str]) -> None:
         self.completion_status = "unverified"
         self.unresolved_risks = list(issues)
         self.acceptance_criteria[0].status = "blocked"
+        self.persist()
 
     def as_dict(self) -> dict[str, Any]:
         """Return the stable, public portion of the objective ledger."""
         return {
+            "objective_id": self.objective_id,
             "objective": self.objective,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
             "plan_id": self.plan_id,
             "plan_revision": self.plan_revision,
             "acceptance_criteria": [asdict(item) for item in self.acceptance_criteria],
@@ -238,6 +306,103 @@ class ObjectiveState:
             "completion_status": self.completion_status,
         }
 
+    def snapshot(self) -> dict[str, Any]:
+        """Return all state needed to resume deterministic completion checks."""
+        return {
+            **self.as_dict(),
+            "completion_gate_attempts": self.completion_gate_attempts,
+            "sequence": self._sequence,
+            "last_mutation": self._last_mutation,
+            "last_verification": self._last_verification,
+            "artifact_mutations": dict(self._artifact_mutations),
+            "artifact_inspections": dict(self._artifact_inspections),
+            "last_tool_outcome": dict(self._last_tool_outcome),
+        }
+
+    @classmethod
+    def from_snapshot(cls, data: dict[str, Any]) -> "ObjectiveState":
+        """Restore a trusted, validated snapshot from the objective store."""
+        objective = data.get("objective")
+        objective_id = data.get("objective_id")
+        if not isinstance(objective, str) or not objective:
+            raise ValueError("objective snapshot has no objective")
+        if not isinstance(objective_id, str) or not objective_id.startswith("objective_"):
+            raise ValueError("objective snapshot has an invalid objective_id")
+
+        criteria = [
+            AcceptanceCriterion(
+                description=str(item.get("description") or ""),
+                status=cast(
+                    CriterionStatus,
+                    item.get("status")
+                    if item.get("status") in _CRITERION_STATUSES
+                    else "unverified",
+                ),
+                evidence=[str(value) for value in item.get("evidence", [])],
+            )
+            for item in data.get("acceptance_criteria", [])
+            if isinstance(item, dict)
+        ]
+        planned_steps = {
+            int(item["task_id"]): PlanStep(
+                task_id=int(item["task_id"]),
+                title=str(item.get("title") or "task"),
+                status=str(item.get("status") or "pending"),
+            )
+            for item in data.get("planned_steps", [])
+            if isinstance(item, dict)
+            and isinstance(item.get("task_id"), int)
+            and not isinstance(item.get("task_id"), bool)
+        }
+        evidence = [
+            ToolEvidence(
+                sequence=int(item.get("sequence", 0)),
+                tool_name=str(item.get("tool_name") or "unknown"),
+                success=bool(item.get("success")),
+                kind=cast(
+                    EvidenceKind,
+                    item.get("kind") if item.get("kind") in _EVIDENCE_KINDS else "read",
+                ),
+                summary=str(item.get("summary") or ""),
+                artifacts=[str(value) for value in item.get("artifacts", [])],
+            )
+            for item in data.get("evidence", [])
+            if isinstance(item, dict)
+        ]
+        state = cls(
+            objective=objective,
+            objective_id=objective_id,
+            created_at=float(data.get("created_at") or time.time()),
+            updated_at=float(data.get("updated_at") or time.time()),
+            plan_id=data.get("plan_id") if isinstance(data.get("plan_id"), str) else None,
+            plan_revision=(
+                data.get("plan_revision") if isinstance(data.get("plan_revision"), int) else None
+            ),
+            acceptance_criteria=criteria,
+            constraints=[str(value) for value in data.get("constraints", [])],
+            assumptions=[str(value) for value in data.get("assumptions", [])],
+            planned_steps=planned_steps,
+            artifacts_changed=[str(value) for value in data.get("artifacts_changed", [])],
+            evidence=evidence,
+            checks_required=[str(value) for value in data.get("checks_required", [])],
+            checks_completed=[str(value) for value in data.get("checks_completed", [])],
+            unresolved_risks=[str(value) for value in data.get("unresolved_risks", [])],
+            completion_status=cast(
+                CompletionStatus,
+                data.get("completion_status")
+                if data.get("completion_status") in _COMPLETION_STATUSES
+                else "incomplete",
+            ),
+            completion_gate_attempts=int(data.get("completion_gate_attempts", 0)),
+        )
+        state._sequence = int(data.get("sequence", 0))
+        state._last_mutation = int(data.get("last_mutation", 0))
+        state._last_verification = int(data.get("last_verification", 0))
+        state._artifact_mutations = _string_int_dict(data.get("artifact_mutations"))
+        state._artifact_inspections = _string_int_dict(data.get("artifact_inspections"))
+        state._last_tool_outcome = _string_bool_dict(data.get("last_tool_outcome"))
+        return state
+
     def _record_mutation_evidence(self, tool_name: str, artifacts: list[str]) -> None:
         self._last_mutation = self._sequence
         if "post-mutation verification" not in self.checks_required:
@@ -250,6 +415,17 @@ class ObjectiveState:
 
     @staticmethod
     def _extract_artifacts(arguments: dict[str, Any], result: Any = None) -> list[str]:
+        if isinstance(result, dict) and result.get("_workspace_changes"):
+            return list(
+                dict.fromkeys(
+                    normpath(value)
+                    for change in result["_workspace_changes"]
+                    if isinstance(change, dict)
+                    and isinstance((value := change.get("path")), str)
+                    and value
+                )
+            )
+
         artifacts: list[str] = []
         for key in _PATH_ARGUMENTS:
             value = arguments.get(key)
@@ -257,15 +433,6 @@ class ObjectiveState:
                 normalized = normpath(value)
                 if normalized not in artifacts:
                     artifacts.append(normalized)
-        if isinstance(result, dict):
-            for change in result.get("_workspace_changes", []) or []:
-                if not isinstance(change, dict):
-                    continue
-                value = change.get("path")
-                if isinstance(value, str) and value:
-                    normalized = normpath(value)
-                    if normalized not in artifacts:
-                        artifacts.append(normalized)
         return artifacts
 
     @staticmethod

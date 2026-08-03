@@ -48,7 +48,14 @@ class TestDetectTestFramework:
             (tmp_path / "package.json").write_text('{"name":"test","scripts":{"test":"jest"}}')
             (tmp_path / "jest.config.js").write_text("module.exports = {};")
             result = detect_test_framework(str(tmp_path))
-            assert result in ("jest", "vitest", None)
+            assert result == "jest"
+
+    def test_prefers_vitest_config_over_generic_package_json(self, tmp_path):
+        if shutil.which("npx"):
+            (tmp_path / "package.json").write_text('{"name":"test"}')
+            (tmp_path / "vitest.config.ts").write_text("export default {}")
+
+            assert detect_test_framework(str(tmp_path)) == "vitest"
 
 
 class TestRunTestsTool:

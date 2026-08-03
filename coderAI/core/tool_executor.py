@@ -908,10 +908,17 @@ class ToolExecutor:
 
             transaction_store = None
             transaction_handle = None
-            # Delegated agents own their own ledgers. Wrapping delegate_task in
-            # the parent ledger would duplicate child mutations and let a
-            # parent rollback target another agent's work indirectly.
-            if is_mutating_call and tool_name != "delegate_task":
+            # Workspace-mutating delegates now run in detached worktrees. The
+            # parent transaction therefore observes only the reviewed patch
+            # integration (plus parent on_subagent_stop hooks), never the
+            # child's isolated intermediate mutations. Read-only/browser/
+            # desktop delegations still do not open a parent workspace record.
+            records_parent_workspace = bool(
+                tool_name == "delegate_task"
+                and isinstance(arguments, dict)
+                and resolve_delegation_isolation_domain(arguments) == "workspace"
+            )
+            if is_mutating_call and (tool_name != "delegate_task" or records_parent_workspace):
                 (
                     transaction_store,
                     transaction_handle,
@@ -1317,7 +1324,7 @@ class ToolExecutor:
             ):
                 doom_offender = (pc["tool_name"], cached_count)
 
-        for pc, res in zip(parsed_calls, results, strict=True):
+        for idx, (pc, res) in enumerate(zip(parsed_calls, results, strict=True)):
             if isinstance(res, dict) and res.get("success") is True:
                 self._turn.warm_tool_names.add(pc["tool_name"])
             if self._turn.objective_state is not None:
@@ -1327,6 +1334,13 @@ class ToolExecutor:
                     res,
                     self.agent.tools.get(pc["tool_name"]),
                 )
+            useful_action = self._turn.record_first_useful_action(
+                pc["tool_name"],
+                res,
+                executed=idx in executed_indices,
+            )
+            if useful_action is not None:
+                get_services().events.emit("first_useful_action", **useful_action)
             # Pull any base64 image out BEFORE summarization so it reaches the
             # model as a real vision block instead of being truncated/stringified.
             res, images = _extract_vision_images(res)

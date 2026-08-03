@@ -173,12 +173,6 @@ def _load_json_object(path: Path) -> dict[str, Any]:
         return {}
 
 
-def load_user_mcp_servers() -> dict[str, Any]:
-    from coderAI.tools.mcp import load_mcp_servers
-
-    return load_mcp_servers()
-
-
 def load_project_mcp_servers(
     project_root: Optional[str | Path] = None,
 ) -> dict[str, dict[str, Any]]:

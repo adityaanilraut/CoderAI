@@ -43,6 +43,7 @@ from coderAI.prompts.compose import (
     format_capability_guidance,
 )
 from coderAI.llm.factory import create_provider
+from coderAI.core.services import get_services
 
 if TYPE_CHECKING:
     from coderAI.context.context_controller import ContextController
@@ -249,7 +250,53 @@ class AgentCapabilitiesMixin:
                 parent_read_cache=getattr(self, "read_cache", None),
                 parent_tool_names=frozenset(self.tools.tools.keys()),
                 parent_confirmation_override=getattr(self, "confirmation_override", None),
+                parent_run_context=getattr(self, "run_context", None),
+                parent_workspace_trusted=bool(getattr(self, "_workspace_trusted", False)),
+                parent_patch_approval=self._approve_subagent_patch,
+                workspace_isolation=True,
             )
+
+    async def _approve_subagent_patch(
+        self,
+        arguments: dict[str, Any],
+        diff: str,
+    ) -> bool:
+        """Route a completed child patch through the parent's approval surface."""
+        if self.auto_approve:
+            return True
+        override = getattr(self, "confirmation_override", None)
+        if override is not None:
+            return bool(await override("integrate_subagent_patch", arguments))
+        ipc_server = getattr(self, "ipc_server", None)
+        if ipc_server is not None:
+            approval = ipc_server.request_tool_approval(
+                tool_id=f"subagent-patch-{_time.time_ns()}",
+                tool_name="integrate_subagent_patch",
+                arguments=arguments,
+                diff=diff,
+            )
+            timeout = int(getattr(self.config, "approval_timeout_seconds", 300) or 0)
+            try:
+                return bool(
+                    await asyncio.wait_for(approval, timeout=timeout)
+                    if timeout > 0
+                    else await approval
+                )
+            except asyncio.TimeoutError:
+                logger.warning("Sub-agent patch review timed out; integration denied.")
+                return False
+        import sys
+
+        if not sys.stdin.isatty():
+            return False
+        from prompt_toolkit import PromptSession
+
+        get_services().events.emit(
+            "agent_status",
+            message=(f"\n⚠ A sub-agent patch is ready for integration.\n{diff}\n"),
+        )
+        answer = await PromptSession().prompt_async("Integrate this sub-agent patch? (y/n) > ")
+        return answer.strip().lower() in {"y", "yes"}
 
     def _rebuild_tool_registry(self) -> None:
         """Rebuild registry so persona changes take effect immediately."""
@@ -433,9 +480,9 @@ class AgentCapabilitiesMixin:
 
         env_section = build_environment_section(
             model=self.model,
-            working_directory=os.getcwd(),
+            working_directory=project_root,
             workspace_root=project_root,
-            is_git_repo=is_git,
+            is_git_repo=is_git or os.path.isfile(os.path.join(project_root, ".git")),
             platform=_platform.system(),
             auto_approve=self.auto_approve,
             persona_name=self.persona.name if self.persona else None,

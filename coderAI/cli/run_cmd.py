@@ -72,6 +72,7 @@ class _NDJSONEventStream:
         "agent_lifecycle": "agent.lifecycle",
         "agent_tracker_sync": "agent.update",
         "capability_routing": "capability.routing",
+        "first_useful_action": "capability.first_useful_action",
         "file_diff": "file.diff",
         "tasks_update": "tasks.updated",
     }

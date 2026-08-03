@@ -1,14 +1,16 @@
 """Vision tool for reading and encoding images for LLM vision APIs."""
 
+import asyncio
 import base64
 import logging
 import mimetypes
-from pathlib import Path
+import os
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 from coderAI.tools.base import Tool
+from coderAI.tools.filesystem import ProjectPathError, _O_NOFOLLOW, resolve_under_project
 
 logger = logging.getLogger(__name__)
 
@@ -56,15 +58,12 @@ class ReadImageTool(Tool):
             Dictionary with base64 data and metadata, or error info
         """
         try:
-            filepath = Path(path).resolve()
-
-            from coderAI.tools.filesystem import _is_path_protected, _enforce_project_scope
-
-            if _is_path_protected(filepath):
-                return {"success": False, "error": f"Refusing to read protected path: {path}"}
-            scope_err = _enforce_project_scope(filepath, "read_image")
-            if scope_err is not None:
-                return scope_err
+            filepath = resolve_under_project(
+                path,
+                operation="read_image",
+                check_protected=True,
+                reject_symlink=True,
+            )
 
             # Check file exists
             if not filepath.is_file():
@@ -81,8 +80,15 @@ class ReadImageTool(Tool):
                     ),
                 }
 
-            # Check file size
-            file_size = filepath.stat().st_size
+            def _read() -> tuple[bytes, int]:
+                fd = os.open(str(filepath), os.O_RDONLY | _O_NOFOLLOW)
+                try:
+                    file_size = os.fstat(fd).st_size
+                    return os.read(fd, MAX_IMAGE_SIZE + 1), file_size
+                finally:
+                    os.close(fd)
+
+            image_data, file_size = await asyncio.to_thread(_read)
             if file_size > MAX_IMAGE_SIZE:
                 return {
                     "success": False,
@@ -92,8 +98,12 @@ class ReadImageTool(Tool):
                     ),
                 }
 
-            # Read and encode
-            image_data = filepath.read_bytes()
+            if len(image_data) > MAX_IMAGE_SIZE:
+                return {
+                    "success": False,
+                    "error": "Image grew beyond the 10 MB limit while reading.",
+                }
+
             b64_data = base64.b64encode(image_data).decode("utf-8")
 
             return {
@@ -105,6 +115,8 @@ class ReadImageTool(Tool):
                 "_vision": True,  # Flag for agent to detect vision content
             }
 
+        except ProjectPathError as e:
+            return e.as_result()
         except PermissionError:
             return {"success": False, "error": f"Permission denied: {path}"}
         except Exception as e:

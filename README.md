@@ -509,7 +509,7 @@ The `delegate_task` tool spawns **isolated sub-agents** in their own sessions. T
 Parent Agent
 │
 ├── delegate_task("Review auth module", role="security-reviewer")
-│   └── Sub-Agent (security-reviewer persona)
+│   └── Sub-Agent (security-reviewer persona; isolated Git worktree for mutations)
 │       ├── read_file("src/auth.py")
 │       ├── grep("password|token|secret")
 │       ├── ... (autonomous tool calls)
@@ -529,6 +529,8 @@ Parent Agent
 - Sub-agents inherit the parent's pinned context and project instructions
 - Failed sub-agents are **retried up to 2 times** with exponential backoff
 - Each sub-agent has its own isolated session and token tracking
+- Workspace-mutating sub-agents use detached Git worktrees; their exact patch is
+  conflict-checked and integrated only after parent review/approval
 - Sub-agents are tracked in the global `AgentTracker` with parent-child links
 
 ### Agent Tracker
@@ -717,10 +719,13 @@ Pull requests run **Ruff** and **pytest** on GitHub Actions (see [`.github/workf
 pip install -e ".[dev]"
 
 # Lint (same as CI)
-python -m ruff check coderAI/
+python -m ruff check coderAI/ tests/ scripts/
 
 # Run the full test suite
 pytest
+
+# Deterministic progressive-routing accuracy and schema-token budget
+python -m coderAI.evals.capability_routing
 
 # Or use the Makefile (also runs install + CLI smoke checks)
 make test

@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from coderAI.system.proc import run_scrubbed
 from coderAI.system.safeguards import truncate_output
+from coderAI.core.services import get_services
 from coderAI.tools._detect import walk_up_detect
 from coderAI.tools.base import SUBPROCESS_TIMEOUT_MARGIN_SECONDS, Tool
 
@@ -416,7 +417,7 @@ class PackageManagerTool(Tool):
 
             effective_timeout = config.get("timeout", 180)
 
-            project_root = Path(".").resolve()
+            project_root = Path(get_services().config.project_root).resolve()
 
             # Scrub secrets from the child env — package managers run
             # arbitrary install/build scripts (postinstall hooks, build.rs) that

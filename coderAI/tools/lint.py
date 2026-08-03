@@ -131,9 +131,7 @@ class LintTool(Tool):
             args = config["fix_args"] if fix else config["check_args"]
             cmd = [cmd_binary] + args
 
-            # Resolve the target against the project root and run under it, so the
-            # linter finds project config and the child env is scrubbed of secrets
-            # with a bounded timeout + process-group kill (finding 3).
+            # Run from the project root so the linter finds its configuration.
             project_root = resolve_under_project(".", operation="lint")
 
             # For file-level linters, append the resolved path; project-level

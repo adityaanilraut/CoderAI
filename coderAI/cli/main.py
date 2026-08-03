@@ -27,8 +27,6 @@ from .utils import is_valid_model, missing_api_key_message
 
 logger = logging.getLogger(__name__)
 
-_REASONING_CHOICES = ("high", "medium", "low", "none")
-
 
 @click.group(invoke_without_command=True)
 @click.option("--version", "-v", is_flag=True, help="Show version")

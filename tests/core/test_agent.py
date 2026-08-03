@@ -5,6 +5,8 @@ import re
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from coderAI.context.context_controller import ContextController
 
 
@@ -806,7 +808,8 @@ class TestRepositoryPromptHygiene:
 class TestProcessMessageAfterCancel:
     """Cancelled turns must not strand the asyncio.Event so the next message works."""
 
-    def test_new_message_after_cancel_registers_fresh_tracker(self):
+    @pytest.mark.asyncio
+    async def test_new_message_after_cancel_registers_fresh_tracker(self):
         with patch("coderAI.core.agent.config_manager") as cm:
             from coderAI.system.config import Config
 
@@ -846,7 +849,7 @@ class TestProcessMessageAfterCancel:
                 ExecutionLoop, "_call_llm_with_retry", new_callable=AsyncMock
             ) as mock_llm:
                 mock_llm.return_value = {"content": "ok", "tool_calls": None}
-                result = asyncio.run(agent.process_message("hello again"))
+                result = await agent.process_message("hello again")
 
             assert result["content"] == "ok"
             assert agent.tracker_info.agent_id != old_info.agent_id

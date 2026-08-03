@@ -23,8 +23,14 @@ consumers because unknown phases are ignored.
 Capability routing is core telemetry rather than a Textual wire event. The
 event bus emits `capability_routing` with `{schema_token_cost,
 selected_capabilities, routing_reason, selection_success, plan_mode}`; headless
-`coderAI run --output ndjson` serializes it as `capability.routing`. The TUI
-does not currently render it.
+`coderAI run --output ndjson` serializes it as `capability.routing`. It also
+serializes the first qualifying action as `capability.first_useful_action` with
+only `{tool_name, elapsed_ms}`. A qualifying action must be a real, successful
+tool execution that is relevant to the current routed objective; routing-only,
+task-management-only, denied, failed, cached, and synthetic recovery activity
+does not qualify. Neither event contains objective text or tool arguments, and
+the timing event contains no result content. The TUI does not currently render
+these core telemetry events.
 
 | event           | payload                                                                                       | notes                                                                                |
 | --------------- | --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |

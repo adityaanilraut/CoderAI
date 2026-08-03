@@ -29,7 +29,7 @@ success, tool-schema tokens, approval burden, and task cost/latency.
 
 ## Milestone 1 — Completion Contract
 
-Status: **first runtime slice implemented**.
+Status: **first runtime slice and durable objective-ledger persistence implemented**.
 
 The runtime now creates an `ObjectiveState` for every turn and records:
 
@@ -47,15 +47,24 @@ inspection and verification. It gives the agent one evidence-focused retry by
 default. If evidence is still missing, the turn ends as `unverified` with
 `success=false`; it is no longer silently reported as successful.
 
+The objective ledger is now independent of the chat transcript. Every turn
+gets a stable objective ID and an owner-only, atomically replaced record under
+`~/.coderAI/objectives/<session-id>/`. Initial state, tool evidence, mutation
+and inspection clocks, checks, completion decisions, plan linkage, open work,
+and unresolved risks are persisted after each state transition. The store is
+bound to the immutable run context and rejects cross-session, cross-workspace,
+unsafe-ID, and symlink-escape access. Session resume restores the latest
+objective with its deterministic completion clocks intact; transcript
+compaction and rewind cannot remove the separate ledger.
+
 ### Follow-up slices
 
-1. Persist the objective ledger independently of transcript compaction.
-2. Add explicit acceptance-criterion editing and `verified`, `reasoned`,
+1. Add explicit acceptance-criterion editing and `verified`, `reasoned`,
    `blocked`, and `not-applicable` evidence outcomes.
-3. Capture pre/post workspace hashes so shell-driven mutations enter the ledger.
-4. Associate checks with affected artifacts and invalidate only impacted checks.
-5. Surface objective, evidence, open work, and completion status in the TUI.
-6. Add fixture-repository evals that grade final repository state and false success.
+2. Capture pre/post workspace hashes so shell-driven mutations enter the ledger.
+3. Associate checks with affected artifacts and invalidate only impacted checks.
+4. Surface objective, evidence, open work, and completion status in the TUI.
+5. Add fixture-repository evals that grade final repository state and false success.
 
 ### Exit criteria
 
@@ -119,7 +128,8 @@ resumability, approval integrity, or the read-only boundary.
 
 ## Milestone 3 — Isolation and Transactions
 
-Status: **in progress; run/session isolation and synchronous transaction ledger implemented**.
+Status: **in progress; run/session isolation, synchronous transaction ledger,
+and mutating-subagent worktree integration implemented**.
 
 Replace ambient `HistoryManager.current_session` with an immutable `RunContext`
 carrying run, session, agent, workspace, checkpoint store, and permission
@@ -171,15 +181,47 @@ Implemented transaction-ledger slice:
   observation, conflict/partial rollback, traversal and symlink attacks,
   Plan Mode/approval rejection, and parent/child ownership boundaries.
 
+Implemented mutating-subagent worktree slice:
+
+- Production `workspace`/`auto` delegations require the configured project root
+  to be a Git root and run in a detached, owner-only worktree under
+  `~/.coderAI/worktrees/`. The child is constructed with that explicit root;
+  filesystem, terminal, quality, package, context, transaction, prompt, and
+  project-trust resolution therefore point at the child workspace rather than
+  the process CWD.
+- The child starts from the parent's live tracked and non-ignored state,
+  including dirty and untracked files. A private baseline distinguishes those
+  pre-existing parent changes from the child's delta, so integration never
+  replays or discards unrelated work already in progress.
+- After the child finishes, the runtime creates an exact unified/binary review
+  preview and stable fingerprint. Integration requires parent approval (or the
+  parent's explicit auto-approval policy), rejects changed symlinks and unsafe
+  paths, rechecks both the reviewed child state and the live parent baseline,
+  and fails closed on either-side drift before overwriting anything.
+- Parent `delegate_task` execution now opens a parent transaction only for the
+  workspace domain. That record brackets the approved patch integration and
+  parent `on_subagent_stop` hooks while remaining separate from every child
+  transaction. Denied/no-change delegations produce no parent workspace delta.
+- Worktrees are removed and unregistered on success, denial, failure, timeout,
+  and resume attempts. Child task/plan runtime artifacts are not integrated.
+  Native background-process and Git-mutating tools are withheld from workspace
+  children while the remaining background/Git-metadata policies stay open.
+- Deterministic core and security coverage exercises dirty/untracked seeding,
+  approval and denial, parent/child drift, transaction recording, symlink
+  traversal, review-swap attacks, cleanup, non-Git refusal, and capability
+  narrowing.
+
 Remaining before Milestone 3 is complete:
 
-Give mutating subagents isolated worktrees and integrate reviewed patches
-instead of sharing a writable directory. Extend transaction supervision across
-long-lived background processes, and decide how Git metadata-only mutations
-(`.git` is intentionally excluded from workspace snapshots) should be previewed
-and reversed. Add retention/incremental storage for full snapshots plus
+Extend transaction supervision across long-lived background processes, and
+decide how Git metadata-only mutations (`.git` is intentionally excluded from
+workspace snapshots and linked worktrees share the repository's Git metadata)
+should be previewed and reversed, including mutations reached through arbitrary
+foreground commands. Add retention/incremental storage for full snapshots plus
 process-kill fault-injection coverage beyond the deterministic interrupted-state
-tests. Remove or formally deprecate the legacy
+tests. Decide whether non-Git projects need an equivalently isolated copy-and-
+patch backend; mutating delegation currently fails closed outside a Git root.
+Remove or formally deprecate the legacy
 `HistoryManager.current_session` compatibility surface after remaining callers
 and integrations use explicit session objects.
 
@@ -258,7 +300,7 @@ Milestone 3 remains independently in progress.
 
 ## Milestone 5 — Capability Routing and Code Intelligence
 
-Status: **in progress; first progressive capability-routing slice implemented**.
+Status: **in progress; routing evaluation and useful-action observability implemented**.
 
 Completed in the first slice:
 
@@ -290,12 +332,33 @@ Completed in the first slice:
   dynamic MCP selection, conservative unknowns, completion evidence, and
   permission enforcement.
 
+Completed in the evaluation and observability slice:
+
+- A 40-case deterministic offline corpus covers ordinary read/search; every
+  routed native family; multi-capability, unknown, and ambiguous objectives;
+  persona, Plan Mode, amendment, subagent, dependency, platform, network, and
+  dynamic-MCP ceilings; same-objective warmth; and every documented warmth
+  reset boundary.
+- Exact and required-subset scoring reports false positives, false negatives,
+  conservative-fallback accuracy, routed and full eligible-registry schema
+  tokens, absolute/percentage savings, and capability/boundary groups. Checked
+  thresholds are 100% routing and fallback accuracy, zero false positives and
+  negatives, and at least 50% aggregate token savings. The calibrated corpus is
+  40/40 with 74.63% savings (100,001 routed versus 394,178 baseline tokens using
+  the deterministic `cl100k_base` encoding).
+- Corpus evidence removed an editing-family false positive from undo objectives:
+  when undo vocabulary matches, the router now fails closed instead of exposing
+  forward mutation tools because the objective mentions the change being
+  reversed.
+- A monotonic objective clock records the first real, successful action that is
+  present in the current routed eligible surface. Routing/control-only,
+  task-management-only, denied, failed, cached, and synthetic recovery activity
+  does not qualify. The `first_useful_action` event and headless
+  `capability.first_useful_action` envelope contain only `tool_name` and
+  `elapsed_ms`, never objective text, arguments, secrets, or result content.
+
 Remaining before Milestone 5 is complete:
 
-Build an offline routing-evaluation corpus with expected families, false-positive
-and false-negative scoring, schema-token deltas against the former full-registry
-baseline, and time-to-first-useful-action instrumentation. Calibrate vocabulary
-and caps from that evidence rather than adding a model classifier by default.
 Add an LSP gateway for Python and TypeScript with definitions, references,
 hover, workspace/document symbols, diagnostics, and rename preview. Feed compact
 repository-graph and diagnostic evidence into planning and the completion
@@ -309,7 +372,9 @@ clean-wheel probes for the gateway and optional language-server dependencies.
 - Warm capabilities improve repeat actions without crossing any objective,
   session, agent, permission, persona, Plan Mode, dependency, or MCP boundary.
 - Routing telemetry supports schema cost, accuracy, and time-to-first-useful-
-  action reporting without leaking objective or tool arguments.
+  action reporting without leaking objective, tool arguments, secrets, or
+  untrusted result content. **Met locally by the routing evaluation and
+  observability slice.**
 - Python and TypeScript LSP operations cover definition, references, hover,
   symbols, diagnostics, and rename preview from a clean installed artifact.
 - Compact repository-graph/LSP evidence participates in planning and completion

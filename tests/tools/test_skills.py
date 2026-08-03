@@ -1,6 +1,8 @@
 """Tests for Skills loading and UseSkillTool."""
 
 import asyncio
+from types import SimpleNamespace
+
 import pytest
 
 from coderAI.tools.use_skill import UseSkillTool, load_skill, get_available_skills
@@ -89,6 +91,19 @@ class TestUseSkillTool:
         assert instructions.startswith("[BEGIN PROJECT SKILL")
         assert instructions.rstrip().endswith("[END PROJECT SKILL]")
         assert "Do step 1." in instructions
+
+    def test_uses_bound_project_root_instead_of_process_cwd(
+        self, skills_dir, tmp_path, monkeypatch
+    ):
+        from coderAI.core.services import services_scope
+
+        monkeypatch.chdir(tmp_path)
+        config = SimpleNamespace(project_root=str(skills_dir))
+        with services_scope(config=config, workspace_trusted=True):
+            result = asyncio.run(self.tool.execute(action="use", skill_name="test-skill"))
+
+        assert result["success"] is True
+        assert "Do step 1." in result["instructions"]
 
     def test_services_pin_blocks_project_skills_after_mid_session_trust(
         self, skills_dir, monkeypatch

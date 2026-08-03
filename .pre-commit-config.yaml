@@ -7,10 +7,10 @@ repos:
     hooks:
       # Lint (check-only, matching `make lint` — no autofix so it fails like CI).
       - id: ruff
-        files: ^coderAI/
+        files: ^(coderAI|tests|scripts)/
       # Format check + apply.
       - id: ruff-format
-        files: ^coderAI/
+        files: ^(coderAI|tests|scripts)/
 
   # mypy runs over the whole package because the per-module strict config needs
   # the full import graph, so it ignores the changed-file list and runs the same

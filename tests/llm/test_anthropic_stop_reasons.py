@@ -63,6 +63,8 @@ async def test_anthropic_refusal(mock_agent):
 
     # It should exit without looping and return the refusal text
     assert result["content"] == "I cannot help with that."
+    assert result["success"] is False
+    assert result["stop_reason"] == "refusal"
     assert mock_emitter.emit.call_count >= 1
     warning_calls = [c for c in mock_emitter.emit.call_args_list if c[0][0] == "agent_warning"]
     assert "refused this request" in warning_calls[0][1]["message"]

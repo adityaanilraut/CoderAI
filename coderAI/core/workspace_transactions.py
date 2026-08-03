@@ -28,7 +28,22 @@ from coderAI.system.fsperms import OWNER_RW, OWNER_RWX, atomic_write_json, restr
 
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
-_EXCLUDED_TOP_LEVEL = frozenset({".git"})
+_EXCLUDED_TOP_LEVEL = frozenset(
+    {
+        ".git",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".tox",
+        ".venv",
+        "__pycache__",
+        "build",
+        "dist",
+        "node_modules",
+        "target",
+        "venv",
+    }
+)
 
 
 class TransactionState(str, Enum):

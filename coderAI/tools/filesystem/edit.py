@@ -3,7 +3,6 @@
 import asyncio
 import logging
 import re
-from pathlib import Path
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field
@@ -21,6 +20,8 @@ from coderAI.tools.filesystem._guards import (
     _reject_symlink_leaf,
     _safe_open_no_symlink,
     _get_max_file_size,
+    ProjectPathError,
+    resolve_under_project,
 )
 
 logger = logging.getLogger(__name__)
@@ -103,7 +104,12 @@ class SearchReplaceTool(Tool):
                     "error": "path is required and must be a non-empty file path.",
                 }
 
-            path_obj = Path(path).expanduser()
+            path_obj = resolve_under_project(
+                path,
+                operation="search_replace",
+                check_protected=True,
+                reject_symlink=True,
+            )
 
             lock = await get_lock_manager().get_file_lock(str(path_obj))
             async with lock:
@@ -249,6 +255,8 @@ class SearchReplaceTool(Tool):
                     "path": str(path_obj),
                     "replacements": count,
                 }
+        except ProjectPathError as e:
+            return e.as_result()
         except Exception as e:
             return {
                 "success": False,
@@ -305,7 +313,12 @@ class ApplyDiffTool(Tool):
     async def execute(self, path: str, diff: str) -> dict[str, Any]:  # type: ignore[override]
         """Apply a unified diff to a file."""
         try:
-            path_obj = Path(path).expanduser()
+            path_obj = resolve_under_project(
+                path,
+                operation="apply_diff",
+                check_protected=True,
+                reject_symlink=True,
+            )
 
             lock = await get_lock_manager().get_file_lock(str(path_obj))
             async with lock:
@@ -441,6 +454,8 @@ class ApplyDiffTool(Tool):
                     "lines_after": len(result_lines),
                 }
 
+        except ProjectPathError as e:
+            return e.as_result()
         except Exception as e:
             return {
                 "success": False,

@@ -39,9 +39,9 @@ native UI binary.
 Each `Agent` owns a frozen `RunContext` (`core/execution_context.py`). It
 identifies the run, persisted session, tracker agent, and workspace; carries a
 pinned permission-policy snapshot and isolation domain; and points to the
-session-owned checkpoint/undo and workspace-transaction stores. Session creation, resume, tracker
-registration, and permission changes replace this value explicitly rather
-than mutating it in place.
+session-owned checkpoint/undo, objective-ledger, and workspace-transaction
+stores. Session creation, resume, tracker registration, and permission changes
+replace this value explicitly rather than mutating it in place.
 
 `ToolExecutor` binds the owning context around every tool call. Python context
 propagation preserves it through concurrent asyncio tasks and
@@ -51,6 +51,16 @@ agent cannot redirect its parent's undo or rewind history by changing global
 history state. The legacy `HistoryManager.current_session` property remains
 for compatibility but is not used to select runtime recovery state.
 
+`ObjectiveLedgerStore` (`core/objective_store.py`) persists one complete,
+resumable `ObjectiveState` record after every evidence or completion-state
+transition. Records are atomically written to owner-only files under the
+session ID and retain the private mutation, inspection, verification, and tool
+outcome clocks needed by the deterministic completion gate. Because this store
+is separate from session history, transcript compaction and rewind cannot erase
+objective, plan, artifact, check, decision, or risk state. Session resume loads
+the latest valid workspace-owned record without reconstructing it from model
+text.
+
 `WorkspaceTransactionStore` (`core/workspace_transactions.py`) brackets each
 approved synchronous mutating call after permission/Plan Mode gates and before
 pre-tool hooks. Its owner-only session directory contains the pre-operation
@@ -58,12 +68,24 @@ snapshot and an atomic state record linked to the run, objective/plan, and tool
 call. A post-hook scan records native and foreground shell changes even when the
 tool fails. Resume recovers interrupted metadata; undo and rewind perform
 conflict-aware rollback through the normal filesystem guards. Delegated agents
-write only their own ledger, and the parent deliberately does not wrap
-`delegate_task` in a duplicate transaction.
+write only their own ledger while they work. Workspace-mutating delegations run
+in detached worktrees created by `core/delegation_worktree.py`, seeded from the
+parent's live tracked and non-ignored state. When the child finishes, a
+fingerprinted patch preview is approved and revalidated against both workspaces
+before integration. Only that integration and the parent's stop hooks are
+enclosed by the parent's `delegate_task` transaction; child intermediate
+mutations never enter it.
 
-Milestone 3 remains open: mutating delegates still need isolated worktrees and
-reviewed patch integration, background-process mutations outlive the current
-transaction bracket, and `.git` metadata is excluded from snapshots.
+Generated worktrees are owner-only and always cleaned up. Changed symlinks,
+unsafe paths, oversized review surfaces, non-Git roots, and parent/child drift
+fail closed. Child task/plan runtime files are excluded from patch integration,
+and native background/Git mutation tools are removed from workspace children.
+
+Milestone 3 remains open: background-process mutations can outlive the current
+transaction bracket, linked worktrees still share `.git` metadata that snapshots
+exclude, non-Git projects have no isolated mutation backend, full snapshots need
+retention/incremental storage, process-kill fault injection is incomplete, and
+the ambient history compatibility surface remains.
 
 ### Progressive Capability Routing
 
@@ -86,9 +108,28 @@ identifiers; untrusted MCP descriptions do not participate in routing.
 Every decision emits `capability_routing` telemetry with selected schema names,
 the deterministic reason, selection success/failure, Plan Mode state, and the
 provider-estimated serialized schema-token cost. `coderAI run --output ndjson`
-exposes this as `capability.routing`. The executor remains the final authority
-for Plan Mode, approvals, workspace trust, provenance/egress, and transaction
-enforcement even if a model invents a schema name.
+exposes this as `capability.routing`.
+
+`coderAI.evals.capability_routing` contains a deterministic offline corpus and
+checked scorer. Cases declare exact or required-subset selections plus forbidden
+tools/families, model upstream eligibility ceilings, and compare routed schema
+cost with each case's complete eligible-registry baseline. The gate requires
+100% case and conservative-fallback accuracy, zero false positives/negatives,
+and at least 50% aggregate token savings. Reports are grouped by capability and
+boundary type.
+
+Each `TurnContext` also starts a monotonic objective clock. The first real,
+successful tool action that remains in the objective's routed eligible surface
+emits `first_useful_action`; task management, skill/plan routing, denied or
+failed calls, cached duplicates, and synthetic recovery do not qualify. The
+payload is limited to `{tool_name, elapsed_ms}` and headless NDJSON exposes it as
+`capability.first_useful_action`, so objective text, arguments, secrets, and
+untrusted result content never enter this metric. A fresh turn resets both the
+clock and observation.
+
+The executor remains the final authority for Plan Mode, approvals, workspace
+trust, provenance/egress, and transaction enforcement even if a model invents
+a schema name.
 
 ### Communication Flow
 

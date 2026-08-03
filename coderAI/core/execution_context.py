@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Optional, cast
 
 if TYPE_CHECKING:
+    from coderAI.core.objective_store import ObjectiveLedgerStore
     from coderAI.core.workspace_transactions import WorkspaceTransactionStore
     from coderAI.tools.undo import FileBackupStore
 
@@ -50,6 +51,7 @@ class RunContext:
     workspace_root: Optional[str] = None
     checkpoint_store: Optional["FileBackupStore"] = None
     transaction_store: Optional["WorkspaceTransactionStore"] = None
+    objective_store: Optional["ObjectiveLedgerStore"] = None
     permission_policy: PermissionPolicySnapshot = PermissionPolicySnapshot()
     isolation_domain: Optional[IsolationDomain] = None
 

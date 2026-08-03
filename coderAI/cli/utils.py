@@ -10,7 +10,6 @@ __all__ = [
     "is_valid_model",
     "missing_api_key_message",
     "valid_endpoint",
-    "valid_models",
 ]
 
 _PROVIDER_KEYS = {
@@ -50,13 +49,6 @@ def is_valid_model(model: str) -> bool:
     from coderAI.llm.factory import is_valid_model_name
 
     return is_valid_model_name(model)
-
-
-def valid_models() -> set[str]:
-    """Return the set of valid default-model values accepted by setup()."""
-    from coderAI.llm.factory import get_all_model_ids
-
-    return get_all_model_ids()
 
 
 def valid_endpoint(url: str) -> bool:

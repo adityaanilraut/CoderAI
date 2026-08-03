@@ -1,8 +1,4 @@
-"""Skill usage tool for loading and applying skill instructions.
-
-Now delegates to the centralized ``coderAI.skills`` package for skill
-discovery, loading, and relevance matching.
-"""
+"""Skill discovery and loading tool."""
 
 from __future__ import annotations
 
@@ -12,7 +8,6 @@ from typing import Any, Optional
 from pydantic import BaseModel, Field
 
 from coderAI.tools.base import Tool
-from coderAI.system.config import config_manager
 from coderAI.types.provenance import Provenance, fence_project_context
 from coderAI.skills import (
     Skill,
@@ -105,12 +100,13 @@ class UseSkillTool(Tool):
             from coderAI.skills.skill_manager import load_skill_by_name
             from coderAI.system.trust import workspace_trust
 
-            config = config_manager.load_project_config(".")
+            services = get_services()
+            config = services.config
             project_root = config.project_root
             # Prefer the Agent's session-pinned trust (bound by ToolExecutor via
             # ToolServices) over the live store. Mid-session ``/trust`` must not
             # unlock project skills until the next Agent launch.
-            pinned = get_services().workspace_trusted
+            pinned = services.workspace_trusted
             if pinned is not None:
                 trusted = bool(pinned)
             else:

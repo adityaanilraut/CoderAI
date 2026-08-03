@@ -1,6 +1,6 @@
 # Makefile for CoderAI
 
-.PHONY: help install dev test test-security clean run lint format typecheck setup install-dev quickstart dist check lock audit
+.PHONY: help install dev test test-security clean run lint format format-check typecheck setup install-dev quickstart dist check lock audit
 
 help:
 	@echo "CoderAI Development Commands"
@@ -14,7 +14,7 @@ help:
 	@echo "make lint          - Run ruff (required for CI)"
 	@echo "make typecheck     - Run mypy (required for CI; strict per-module)"
 	@echo "make format        - Format code with ruff"
-	@echo "make check         - Run format, lint, typecheck, and test"
+	@echo "make check         - Check format, lint, types, and tests without modifying files"
 	@echo "make lock          - Regenerate the pinned, hashed requirements.lock (uv)"
 	@echo "make audit         - Audit locked dependencies for known CVEs (pip-audit)"
 	@echo "make setup         - Run setup wizard"
@@ -54,17 +54,20 @@ run:
 
 lint:
 	@echo "Running ruff..."
-	python3 -m ruff check coderAI/
+	python3 -m ruff check coderAI/ tests/ scripts/
 
 typecheck:
 	@echo "Running mypy..."
 	python3 -m mypy coderAI/
 
 format:
-	python3 -m ruff format coderAI/
+	python3 -m ruff format coderAI/ tests/ scripts/
 	@echo "Code formatted with ruff"
 
-check: format lint typecheck test
+format-check:
+	python3 -m ruff format --check coderAI/ tests/ scripts/
+
+check: format-check lint typecheck test
 
 # Regenerate the pinned, hashed lockfile from pyproject.toml (single source of
 # truth). Universal resolution so one file covers Linux/macOS/Windows + py3.10+.
@@ -92,4 +95,3 @@ dist: clean
 
 # Alias for `make dev`
 install-dev: dev
-

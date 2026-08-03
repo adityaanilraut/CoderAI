@@ -96,6 +96,29 @@ class TestGlobSearchTraversal:
             assert result.get("error_code") == "scope"
 
 
+class TestConfiguredProjectRoot:
+    def test_relative_filesystem_paths_ignore_process_cwd(self, tmp_path, monkeypatch):
+        from coderAI.tools.filesystem import ListDirectoryTool, ReadFileTool, WriteFileTool
+
+        project = tmp_path / "project"
+        elsewhere = tmp_path / "elsewhere"
+        project.mkdir()
+        elsewhere.mkdir()
+        (project / "existing.txt").write_text("project content")
+        _set_project_root(monkeypatch, project)
+        monkeypatch.chdir(elsewhere)
+
+        read_result = asyncio.run(ReadFileTool().execute(path="existing.txt"))
+        list_result = asyncio.run(ListDirectoryTool().execute(path="."))
+        write_result = asyncio.run(WriteFileTool().execute(path="created.txt", content="new"))
+
+        assert read_result["content"] == "project content"
+        assert {entry["name"] for entry in list_result["entries"]} >= {"existing.txt"}
+        assert write_result["success"] is True
+        assert (project / "created.txt").read_text() == "new"
+        assert not (elsewhere / "created.txt").exists()
+
+
 # ---------------------------------------------------------------------------
 # RunCommandTool working_dir scope enforcement
 # ---------------------------------------------------------------------------

@@ -236,6 +236,27 @@ class TestDelegateTaskParentState:
         assert result["success"] is False
         assert result["error_code"] == "invalid_task_id"
 
+    def test_subagent_task_id_rejects_another_parents_delegation(self):
+        parent = Session(session_id="session_1000_aaaaaaaa", model="claude")
+        resumed = Session(
+            session_id="session_1001_bbbbbbbb",
+            model="claude",
+            metadata={
+                "purpose": "delegation",
+                "parent_session_id": "session_9999_cccccccc",
+            },
+        )
+        tool = DelegateTaskTool()
+        tool.context = SubagentContext(parent_session=parent)
+
+        with patch("coderAI.system.history.history_manager.load_session", return_value=resumed):
+            result = asyncio.run(
+                tool.execute(task_description="resume task", task_id=resumed.session_id)
+            )
+
+        assert result["success"] is False
+        assert result["error_code"] == "invalid_task_id"
+
     def test_new_subagent_session_is_marked_as_delegation(self):
         parent = Session(session_id="session_1000_aaaaaaaa", model="claude")
         tool = DelegateTaskTool()

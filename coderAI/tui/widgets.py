@@ -9,7 +9,7 @@ from rich.segment import Segment
 from rich.style import Style
 from textual.geometry import Size
 from textual.strip import Strip
-from textual.widgets._rich_log import RichLog
+from textual.widgets import RichLog
 
 if TYPE_CHECKING:
     from textual.selection import Selection

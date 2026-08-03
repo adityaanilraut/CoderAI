@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from coderAI.types.tool_error_codes import ToolErrorCode
 from coderAI.system.proc import run_scrubbed, subprocess_timeout
 from coderAI.tools.base import Tool
-from coderAI.tools.filesystem._guards import _enforce_project_scope
+from coderAI.tools.filesystem import ProjectPathError, resolve_under_project
 
 from coderAI.system.constants import SKIP_DIRS as _GREP_SKIP_DIRS
 
@@ -61,9 +61,7 @@ class GrepTool(Tool):
                     "error": "max_results must be at least 1.",
                     "error_code": ToolErrorCode.VALIDATION,
                 }
-            scope_err = _enforce_project_scope(Path(path).expanduser(), "search")
-            if scope_err:
-                return scope_err
+            path = str(resolve_under_project(path, operation="search"))
             if shutil.which("grep") is None:
                 return await asyncio.to_thread(
                     self._python_grep,
@@ -129,6 +127,8 @@ class GrepTool(Tool):
                     f"Results capped at {max_results}. Use a more specific pattern to narrow results."
                 )
             return result
+        except ProjectPathError as e:
+            return e.as_result()
         except Exception as e:
             return {"success": False, "error": str(e), "error_code": ToolErrorCode.TOOL_ERROR}
 
@@ -152,7 +152,7 @@ class GrepTool(Tool):
             except re.error as e:
                 return {"success": False, "error": f"Invalid regex: {e}"}
 
-            base = Path(path).expanduser()
+            base = Path(path)
             if not base.exists():
                 return {"success": False, "error": f"Path not found: {path}"}
 
@@ -250,10 +250,7 @@ class SymbolSearchTool(Tool):
                     "error": "max_results must be at least 1.",
                     "error_code": ToolErrorCode.VALIDATION,
                 }
-            base = Path(path).expanduser()
-            scope_err = _enforce_project_scope(base, "search")
-            if scope_err:
-                return scope_err
+            base = resolve_under_project(path, operation="search")
             if not base.exists():
                 return {"success": False, "error": f"Path not found: {path}"}
 
@@ -271,6 +268,8 @@ class SymbolSearchTool(Tool):
                 "was_truncated": was_truncated,
                 "next_offset": len(results) if was_truncated else None,
             }
+        except ProjectPathError as e:
+            return e.as_result()
         except Exception as e:
             return {"success": False, "error": str(e), "error_code": ToolErrorCode.TOOL_ERROR}
 

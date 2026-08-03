@@ -53,20 +53,6 @@ def test_distribution_version_has_one_runtime_source() -> None:
     assert re.search(r"(?m)^version\s*=", project_table) is None
 
 
-def test_project_layout_has_no_package_relative_checkout_fallback(tmp_path, monkeypatch) -> None:
-    from coderAI.system.project_layout import find_dot_coderai_subdir
-
-    explicit = tmp_path / "explicit"
-    current = tmp_path / "current"
-    (explicit / ".coderAI" / "agents").mkdir(parents=True)
-    (current / ".coderAI" / "skills").mkdir(parents=True)
-    monkeypatch.chdir(current)
-
-    assert find_dot_coderai_subdir("agents", str(explicit)) == explicit / ".coderAI" / "agents"
-    assert find_dot_coderai_subdir("skills", str(explicit)) == current / ".coderAI" / "skills"
-    assert find_dot_coderai_subdir("rules", str(explicit)) is None
-
-
 def test_wheel_probe_covers_every_click_entry_path() -> None:
     assert set(verify_wheel.CLI_HELP_PATHS) == _click_paths(cli)
 

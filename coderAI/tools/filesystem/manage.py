@@ -1,7 +1,6 @@
 """Directory browsing and file management tools: list, glob, move, copy, delete, mkdir."""
 
 import asyncio
-import os
 import shutil as _shutil
 from pathlib import Path
 from typing import Any
@@ -17,6 +16,8 @@ from coderAI.tools.filesystem._guards import (
     _get_max_glob_results,
     _is_path_protected,
     _reject_symlink_leaf,
+    ProjectPathError,
+    resolve_under_project,
 )
 
 
@@ -36,7 +37,7 @@ class ListDirectoryTool(Tool):
     async def execute(self, path: str) -> dict[str, Any]:  # type: ignore[override]
         """List directory contents."""
         try:
-            path_obj = Path(path).expanduser()
+            path_obj = resolve_under_project(path, operation="list")
             scope_err = _enforce_project_scope(path_obj, "list")
             if scope_err:
                 return scope_err
@@ -70,6 +71,8 @@ class ListDirectoryTool(Tool):
                 "entries": entries,
                 "count": len(entries),
             }
+        except ProjectPathError as e:
+            return e.as_result()
         except Exception as e:
             return {
                 "success": False,
@@ -95,7 +98,7 @@ class GlobSearchTool(Tool):
     async def execute(self, pattern: str, base_path: str = ".") -> dict[str, Any]:  # type: ignore[override]
         """Find files matching pattern with result limit."""
         try:
-            base = Path(base_path).expanduser()
+            base = resolve_under_project(base_path, operation="glob_search")
             scope_err = _enforce_project_scope(base, "glob_search")
             if scope_err:
                 return scope_err
@@ -144,6 +147,8 @@ class GlobSearchTool(Tool):
                 )
 
             return result
+        except ProjectPathError as e:
+            return e.as_result()
         except Exception as e:
             return {
                 "success": False,
@@ -162,8 +167,18 @@ def _validate_transfer(
     and CopyFileTool must not drift apart; both also re-check symlink leaves
     right before mutating via :func:`_recheck_symlinks`.
     """
-    src = Path(os.path.expanduser(source))
-    dst = Path(os.path.expanduser(destination))
+    src = resolve_under_project(
+        source,
+        operation=f"{verb} from",
+        check_protected=True,
+        reject_symlink=True,
+    )
+    dst = resolve_under_project(
+        destination,
+        operation=f"{verb} to",
+        check_protected=True,
+        reject_symlink=True,
+    )
 
     if not src.exists():
         return src, dst, {"success": False, "error": f"Source does not exist: {source}"}
@@ -260,6 +275,8 @@ class MoveFileTool(Tool):
                 "destination": str(dst),
                 "message": f"Moved '{src}' → '{dst}'",
             }
+        except ProjectPathError as e:
+            return e.as_result()
         except Exception as e:
             return {
                 "success": False,
@@ -317,6 +334,8 @@ class CopyFileTool(Tool):
                 "destination": str(dst),
                 "message": f"Copied '{src}' → '{dst}'",
             }
+        except ProjectPathError as e:
+            return e.as_result()
         except Exception as e:
             return {
                 "success": False,
@@ -350,7 +369,12 @@ class DeleteFileTool(Tool):
     async def execute(self, path: str, recursive: bool = False) -> dict[str, Any]:  # type: ignore[override]
 
         try:
-            target = Path(os.path.expanduser(path))
+            target = resolve_under_project(
+                path,
+                operation="delete",
+                check_protected=True,
+                reject_symlink=True,
+            )
 
             if not target.exists():
                 return {"success": False, "error": f"Path does not exist: {path}"}
@@ -393,6 +417,8 @@ class DeleteFileTool(Tool):
                 "path": str(target),
                 "message": f"Deleted '{target}'",
             }
+        except ProjectPathError as e:
+            return e.as_result()
         except OSError as e:
             if "Directory not empty" in str(e) or e.errno == 39:
                 return {
@@ -427,7 +453,12 @@ class CreateDirectoryTool(Tool):
 
     async def execute(self, path: str, parents: bool = True) -> dict[str, Any]:  # type: ignore[override]
         try:
-            target = Path(os.path.expanduser(path))
+            target = resolve_under_project(
+                path,
+                operation="create_directory",
+                check_protected=True,
+                reject_symlink=True,
+            )
 
             if _is_path_protected(target):
                 return {
@@ -447,6 +478,8 @@ class CreateDirectoryTool(Tool):
                 "path": str(target.resolve()),
                 "message": f"Directory created: '{target}'",
             }
+        except ProjectPathError as e:
+            return e.as_result()
         except Exception as e:
             return {
                 "success": False,

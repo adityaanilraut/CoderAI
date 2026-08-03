@@ -153,6 +153,9 @@ class TestCapabilitySubsetOfParent:
         assert ceiling is not None
         assert "write_file" not in ceiling
         assert "read_file" in ceiling  # sanity: the ceiling is populated
+        assert delegate.context.workspace_isolation is True
+        assert delegate.context.parent_run_context is agent.run_context
+        assert delegate.context.parent_patch_approval is not None
 
     def test_delegation_drops_tools_absent_from_parent(self):
         """A child never keeps a tool the parent lacks — even without a role."""

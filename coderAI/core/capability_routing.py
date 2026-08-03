@@ -398,6 +398,12 @@ def route_capabilities(
     normalized = " ".join(_TOKEN_RE.findall((objective or "").lower()))
     tokens = set(normalized.split())
     matched = [spec for spec in CAPABILITY_CATALOG if _matches(spec, normalized, tokens)]
+    # Undo objectives commonly contain nouns such as "change" or "edit" to
+    # describe the state being reversed.  Loading the editing family for those
+    # objectives is a corpus-measured false positive and expands mutation
+    # choices in exactly the wrong direction, so undo deterministically wins.
+    if any(spec.name == "undo" for spec in matched):
+        matched = [spec for spec in matched if spec.name != "workspace_edit"]
     ambiguous = _is_ambiguous_mutation(tokens, matched)
     if ambiguous:
         matched = []

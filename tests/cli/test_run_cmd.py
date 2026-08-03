@@ -154,6 +154,30 @@ def test_run_ndjson_success_emits_ordered_events_and_one_terminal(runner):
     assert events[1]["data"]["schema_token_cost"] == 42
 
 
+def test_run_ndjson_first_useful_action_is_privacy_safe(runner):
+    class EventAgent(FakeAgent):
+        async def process_message(self, prompt):
+            from coderAI.system.events import event_emitter
+
+            event_emitter.emit(
+                "first_useful_action",
+                tool_name="read_file",
+                elapsed_ms=125,
+            )
+            return {"content": self._content}
+
+    result = _invoke(
+        runner,
+        ["--output", "ndjson", "read password=super-secret"],
+        EventAgent(content="done"),
+    )
+    events = _ndjson_events(result)
+
+    action = next(event for event in events if event["type"] == "capability.first_useful_action")
+    assert action["data"] == {"tool_name": "read_file", "elapsed_ms": 125}
+    assert "super-secret" not in json.dumps(action)
+
+
 def test_run_ndjson_emits_actual_provider_deltas_when_streaming(runner):
     class StreamingAgent(FakeAgent):
         def __init__(self):

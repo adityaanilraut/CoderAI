@@ -12,9 +12,24 @@ object instead of the agent's internals.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import time
 from typing import Any, Optional
 
 from coderAI.core.objective import ObjectiveState
+
+
+# These operations manage or route the task but are not useful engineering
+# work by themselves.  They can enable a later action, but must not stop the
+# time-to-first-useful-action clock.
+_NON_USEFUL_CONTROL_TOOLS = frozenset(
+    {
+        "internal_recovery",
+        "manage_tasks",
+        "request_plan_amendment",
+        "submit_plan",
+        "use_skill",
+    }
+)
 
 
 @dataclass
@@ -56,8 +71,41 @@ class TurnContext:
     ingested_untrusted_mcp: bool = False
     reply_parts: list[str] = field(default_factory=list)
     objective_state: Optional[ObjectiveState] = None
+    # Monotonic objective clock and privacy-safe first-action observation.  The
+    # event payload derived from these fields contains only a tool identifier
+    # and elapsed milliseconds—never objective text, arguments, or results.
+    objective_started_at: float = field(default_factory=time.monotonic)
+    first_useful_action_elapsed_ms: Optional[int] = None
+    routed_tool_names: set[str] = field(default_factory=set)
     # Capability warmth is objective-local. A fresh TurnContext is constructed
     # for every user objective, so successful schemas cannot leak into another
     # turn, session, or agent. The router still intersects these names with the
     # current permission/persona/Plan Mode eligible surface.
     warm_tool_names: set[str] = field(default_factory=set)
+
+    def record_first_useful_action(
+        self,
+        tool_name: str,
+        result: Any,
+        *,
+        executed: bool,
+        now: Optional[float] = None,
+    ) -> Optional[dict[str, Any]]:
+        """Record the first successful, relevant, real engineering action.
+
+        Relevance is deliberately conservative: the tool must be present in
+        the current objective's routed eligible schemas.  Routing/control-only
+        operations, failures, denials, cached duplicates, and synthetic
+        recovery replies do not qualify.  Returns the event-safe payload only
+        for the first qualifying action.
+        """
+        if self.first_useful_action_elapsed_ms is not None or not executed:
+            return None
+        if tool_name in _NON_USEFUL_CONTROL_TOOLS or tool_name not in self.routed_tool_names:
+            return None
+        if not (isinstance(result, dict) and result.get("success") is True):
+            return None
+        observed_at = time.monotonic() if now is None else now
+        elapsed_ms = max(0, round((observed_at - self.objective_started_at) * 1000))
+        self.first_useful_action_elapsed_ms = elapsed_ms
+        return {"tool_name": tool_name, "elapsed_ms": elapsed_ms}

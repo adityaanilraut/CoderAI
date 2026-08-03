@@ -72,6 +72,7 @@ class AgentSessionMixin:
     active_plan_id: Optional[str]
     active_plan_revision: Optional[int]
     _plan_execution_ready: bool
+    last_objective_state: Any
     run_context: Any
 
     if TYPE_CHECKING:
@@ -113,6 +114,7 @@ class AgentSessionMixin:
             self._reset_session_accounting()
         self.session = get_services().history.create_session(model=self.model)
         self._bind_session_run_context(self.session)
+        self.last_objective_state = None
         self.active_plan_id = None
         self.active_plan_revision = None
         self._plan_execution_ready = False
@@ -165,12 +167,15 @@ class AgentSessionMixin:
                 session_id=None,
                 checkpoint_store=None,
                 transaction_store=None,
+                objective_store=None,
             )
+            self.last_objective_state = None
         return self.session
 
     def _bind_session_run_context(self, session: Session) -> None:
         """Bind session-owned recovery state without consulting global history."""
         from coderAI.core.workspace_transactions import WorkspaceTransactionStore
+        from coderAI.core.objective_store import ObjectiveLedgerStore
         from coderAI.tools.undo import FileBackupStore
 
         self.run_context = replace(
@@ -181,6 +186,7 @@ class AgentSessionMixin:
                 session_id=session.session_id,
                 workspace_root=str(self.run_context.workspace_root or self.config.project_root),
             ),
+            objective_store=ObjectiveLedgerStore(session_id=session.session_id),
         )
         recovered = self.run_context.transaction_store.recover_incomplete(
             run_context=self.run_context
@@ -191,6 +197,16 @@ class AgentSessionMixin:
             "workspace_id": self.run_context.workspace_id,
             "recovered_transactions": recovered,
         }
+        self.last_objective_state = self.run_context.objective_store.load_latest(
+            run_context=self.run_context
+        )
+        if self.last_objective_state is not None:
+            objective_store = self.run_context.objective_store
+            run_context = self.run_context
+            self.last_objective_state.bind_persistence(
+                lambda current: objective_store.save(current, run_context=run_context),
+                persist_now=False,
+            )
 
     def _refresh_run_permission_policy(self) -> None:
         """Pin the agent's current, potentially narrowed capability policy."""

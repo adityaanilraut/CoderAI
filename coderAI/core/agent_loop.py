@@ -123,6 +123,7 @@ class ExecutionLoop:
     async def run(self, user_message: str) -> dict[str, Any]:
         """Process a user message and return response."""
 
+        objective_started_at = _time.monotonic()
         # Reset turn-scoped flags so state never leaks across user messages.
         self._length_retry_used = False
         self._hard_cap_warned = False
@@ -192,17 +193,31 @@ class ExecutionLoop:
                 self._hard_cap_warned = True
                 get_services().events.emit("agent_warning", message=clamp_msg)
             max_iterations = hard_cap
+        objective_state = ObjectiveState(
+            objective=user_message,
+            plan_id=vars(self.agent).get("active_plan_id"),
+            plan_revision=vars(self.agent).get("active_plan_revision"),
+        )
+        run_context = getattr(self.agent, "run_context", None)
+        objective_store = getattr(run_context, "objective_store", None)
+        if objective_store is not None:
+            objective_state.bind_persistence(
+                lambda current: objective_store.save(current, run_context=run_context)
+            )
+        self.agent.last_objective_state = objective_state
         state = TurnContext(
             user_message=user_message,
             messages=messages,
             tool_schemas=tool_schemas,
             hooks_data=hooks_data,
             max_iterations=max_iterations,
-            objective_state=ObjectiveState(
-                objective=user_message,
-                plan_id=vars(self.agent).get("active_plan_id"),
-                plan_revision=vars(self.agent).get("active_plan_revision"),
-            ),
+            objective_state=objective_state,
+            objective_started_at=objective_started_at,
+            routed_tool_names={
+                str((schema.get("function") or {}).get("name"))
+                for schema in tool_schemas or []
+                if (schema.get("function") or {}).get("name")
+            },
         )
         self._turn = state
 
@@ -434,6 +449,11 @@ class ExecutionLoop:
                 state.user_message,
                 warm_tool_names=state.warm_tool_names,
             )
+            state.routed_tool_names = {
+                str((schema.get("function") or {}).get("name"))
+                for schema in state.tool_schemas or []
+                if (schema.get("function") or {}).get("name")
+            }
 
         response_data = await self._call_llm_with_retry(step_aware_messages, state.tool_schemas)
 
@@ -665,6 +685,11 @@ class ExecutionLoop:
                 state.user_message,
                 warm_tool_names=state.warm_tool_names,
             )
+            state.routed_tool_names = {
+                str((schema.get("function") or {}).get("name"))
+                for schema in state.tool_schemas or []
+                if (schema.get("function") or {}).get("name")
+            }
 
         called_tool_names = {
             (call.get("function") or {}).get("name")
@@ -778,6 +803,7 @@ class ExecutionLoop:
             and state.iteration < state.max_iterations
         ):
             objective.completion_gate_attempts += 1
+            objective.persist()
             messages = self.agent.session.messages
             if messages and messages[-1].role == "assistant" and not messages[-1].tool_calls:
                 messages.pop()
@@ -1179,6 +1205,8 @@ class ExecutionLoop:
         if repair_unpaired:
             self._repair_unpaired_tool_calls()
         self.agent._finish_tracker(error=error)
+        if self._turn.objective_state is not None:
+            self._turn.objective_state.persist()
         self.agent.save_session()
 
         if run_stop_hooks:
@@ -1207,7 +1235,7 @@ class ExecutionLoop:
                 content = tail if tail is not None else fallback
 
         session = self.agent.session
-        success = not error and stop_reason in {"stop", "refusal"}
+        success = not error and stop_reason == "stop"
         return {
             "content": content,
             "messages": session.messages if session else [],

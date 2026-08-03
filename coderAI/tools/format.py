@@ -158,10 +158,7 @@ class FormatTool(Tool):
 
             extra = config["check_args"] if check else config["args"]
 
-            # Resolve the target against the project root and run under it: the
-            # formatter finds project config (e.g. prettier's .prettierrc), and
-            # run_scrubbed scrubs secrets from the child env with a bounded
-            # timeout + process-group kill — the raw exec did neither (finding 3).
+            # Run from the project root so the formatter finds its configuration.
             project_root = resolve_under_project(".", operation="format")
 
             # Same shape for every formatter, incl. prettier: <binary> <args> <path>
