@@ -67,7 +67,7 @@ jobs:
         run: python scripts/verify_wheel.py dist --archive-only --expected-version "${{ steps.tag.outputs.version }}"
 
       - name: Attest release artifacts
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: "dist/*"
 
