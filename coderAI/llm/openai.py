@@ -3,7 +3,6 @@
 from typing import Any, Optional
 
 import openai
-import tiktoken
 from openai import AsyncOpenAI
 
 from coderAI.llm.base import HTTP_TOTAL_TIMEOUT
@@ -16,27 +15,22 @@ class OpenAIProvider(OpenAICompatibleCloudProvider):
     PROVIDER_LABEL = "OpenAI"
     STREAM_INCLUDES_USAGE = True
 
-    # Supported models with their actual API names
+    # Canonical registry → SUPPORTED_MODELS derived single-source.
+    @staticmethod
+    def _registry_specs() -> list[Any]:
+        from coderAI.llm.registry import ALL_SPECS
+
+        return [s for s in ALL_SPECS if s.provider == "openai"]
+
     SUPPORTED_MODELS = {
-        "gpt-5.6": "gpt-5.6-sol",
         "gpt-5.6-sol": "gpt-5.6-sol",
-        "gpt-5.4": "gpt-5.4",
-        "gpt-5.4-mini": "gpt-5.4-mini",
-        "gpt-5.4-nano": "gpt-5.4-nano",
-        "o1": "o1",
-        "o1-mini": "o1-mini",
-        "o1-pro": "o1-pro",
-        "o3-mini": "o3-mini",
+        "gpt-5.6-terra": "gpt-5.6-terra",
+        "gpt-5.6-luna": "gpt-5.6-luna",
     }
     MODEL_CONTEXT_WINDOWS = {
         "gpt-5.6-sol": 1_050_000,
-        "gpt-5.4": 1_050_000,
-        "gpt-5.4-mini": 400_000,
-        "gpt-5.4-nano": 400_000,
-        "o1": 200_000,
-        "o1-mini": 128_000,
-        "o1-pro": 200_000,
-        "o3-mini": 200_000,
+        "gpt-5.6-terra": 1_050_000,
+        "gpt-5.6-luna": 400_000,
     }
 
     def __init__(self, model: str, api_key: Optional[str] = None, **kwargs: Any):
@@ -48,11 +42,17 @@ class OpenAIProvider(OpenAICompatibleCloudProvider):
         if "temperature" not in kwargs:
             self.temperature = 1.0
 
-        # Initialize tokenizer
+        # Initialize tokenizer - tiktoken is optional
+        self.tokenizer: Any = None
         try:
-            self.tokenizer = tiktoken.encoding_for_model(self.actual_model)
-        except KeyError:
-            self.tokenizer = tiktoken.get_encoding("cl100k_base")
+            import tiktoken
+
+            try:
+                self.tokenizer = tiktoken.encoding_for_model(self.actual_model)
+            except KeyError:
+                self.tokenizer = tiktoken.get_encoding("cl100k_base")
+        except ImportError:
+            pass
 
     def _check_chat_model_compat(self, exc: Exception) -> None:
         """Raise a helpful RuntimeError when the model is not a chat model."""
@@ -60,20 +60,19 @@ class OpenAIProvider(OpenAICompatibleCloudProvider):
         if "not a chat model" in msg and "v1/chat/completions" in msg:
             raise RuntimeError(
                 f"Model '{self.actual_model}' is not compatible with chat.completions "
-                "in this environment. Switch to gpt-5.6, gpt-5.4, gpt-5.4-mini, gpt-5.4-nano, "
-                "o1, o1-mini, or o3-mini."
+                "in this environment. Switch to gpt-5.6-sol, gpt-5.6-terra, or gpt-5.6-luna."
             ) from exc
 
-    # Models that don't support temperature (only accept default=1)
+    # All GPT-5.6 models reject temperature (only accept default=1)
     _NO_TEMPERATURE_MODELS_PREFIX = ("gpt-5",)
-    _NO_TEMPERATURE_MODELS_EXACT = {"o1", "o1-mini", "o1-pro", "o3-mini"}
+    _NO_TEMPERATURE_MODELS_EXACT: set[str] = set()
 
-    # Models that cannot accept reasoning_effort with function tools in /v1/chat/completions
-    _NO_REASONING_EFFORT_MODELS = {"gpt-5.4-nano", "gpt-5.4-mini"}
+    # Luna (small) has no reasoning support at all — registry is source of truth.
+    # This set mirrors registry ModelSpec(supports_reasoning=False) for OpenAI.
+    _NO_REASONING_EFFORT_MODELS = {"gpt-5.6-luna"}
 
-    # gpt-5.6* rejects function tools + any non-none reasoning on /v1/chat/completions
-    # (including the server default). Force reasoning_effort="none" when tools are present.
-    _FORCE_NONE_REASONING_WITH_TOOLS_PREFIX = ("gpt-5.6",)
+    # Only Sol/Terra reject non-none reasoning with tools; Luna omits reasoning entirely.
+    _FORCE_NONE_REASONING_WITH_TOOLS_PREFIX = ("gpt-5.6-sol", "gpt-5.6-terra")
 
     @property
     def _rejects_temperature(self) -> bool:
@@ -89,11 +88,15 @@ class OpenAIProvider(OpenAICompatibleCloudProvider):
 
     @property
     def _supports_reasoning_effort(self) -> bool:
-        """Whether this model accepts the reasoning_effort parameter.
+        """Whether this model accepts the reasoning_effort parameter."""
 
-        gpt-5.4-nano/mini do not support reasoning_effort with function tools
-        in /v1/chat/completions, so we omit it for those models.
-        """
+        # Registry is authoritative — Luna and any future non-reasoning model
+        # must never send reasoning_effort (even "none") or the API 400s.
+        from coderAI.llm.registry import get_spec
+
+        spec = get_spec(self.actual_model)
+        if spec is not None and not spec.supports_reasoning:
+            return False
         return (
             self._rejects_temperature and self.actual_model not in self._NO_REASONING_EFFORT_MODELS
         )
@@ -119,7 +122,8 @@ class OpenAIProvider(OpenAICompatibleCloudProvider):
         del params["temperature"]
         if self._rejects_temperature:
             effort = kwargs.get("reasoning_effort", self.reasoning_effort)
-            # gpt-5.6 + function tools on chat/completions only allows effort "none".
+            # gpt-5.6 Sol/Terra + function tools on chat/completions only allows effort "none".
+            # Luna (and any non-reasoning spec) omits reasoning entirely — see _supports_reasoning_effort.
             if tools and self._requires_none_reasoning_with_tools:
                 params["reasoning_effort"] = "none"
             elif self._supports_reasoning_effort and effort and effort != "none":
@@ -135,10 +139,12 @@ class OpenAIProvider(OpenAICompatibleCloudProvider):
         # Fall through: the original SDK exception is re-raised unwrapped.
 
     def count_tokens(self, text: str) -> int:
-        """Count tokens using tiktoken."""
-        try:
-            return len(self.tokenizer.encode(text))
-        except Exception:
-            from coderAI.llm.base import estimate_tokens_by_chars
+        """Count tokens using tiktoken when available, else char estimate."""
+        if self.tokenizer is not None:
+            try:
+                return len(self.tokenizer.encode(text))
+            except Exception:
+                pass
+        from coderAI.llm.base import estimate_tokens_by_chars
 
-            return estimate_tokens_by_chars(text)
+        return estimate_tokens_by_chars(text)

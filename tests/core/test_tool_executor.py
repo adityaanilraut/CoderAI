@@ -14,6 +14,7 @@ from coderAI.core.tool_executor import (
     ToolBatchOutcome,
     ToolExecutor,
 )
+from coderAI.core.loop_guard import READ_ONLY_DOOM_LOOP_HARD_THRESHOLD
 
 _UNSET = object()
 
@@ -294,11 +295,14 @@ async def test_orchestrate_signals_doom_loop_after_hard_threshold() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("tool_name", "expected_executions"),
-    [("read_file", 2), ("delegate_task", 1)],
+    ("tool_name", "expected_executions", "hard_threshold"),
+    [
+        ("read_file", 2, READ_ONLY_DOOM_LOOP_HARD_THRESHOLD),
+        ("delegate_task", 1, DOOM_LOOP_HARD_THRESHOLD),
+    ],
 )
 async def test_cached_repeats_trip_general_doom_loop_hard_threshold(
-    tool_name: str, expected_executions: int
+    tool_name: str, expected_executions: int, hard_threshold: int
 ) -> None:
     registry = SimpleNamespace(
         get=MagicMock(
@@ -327,7 +331,7 @@ async def test_cached_repeats_trip_general_doom_loop_hard_threshold(
     executor = ToolExecutor(agent)
 
     last_outcome = None
-    for i in range(DOOM_LOOP_HARD_THRESHOLD):
+    for i in range(hard_threshold):
         tool_calls = [
             {
                 "id": f"t{i}",
@@ -347,7 +351,7 @@ async def test_cached_repeats_trip_general_doom_loop_hard_threshold(
     assert registry.execute.await_count == expected_executions
     assert last_outcome is not None
     assert last_outcome.status is BatchStatus.DOOM_LOOP
-    assert last_outcome.doom_count == DOOM_LOOP_HARD_THRESHOLD
+    assert last_outcome.doom_count == hard_threshold
 
 
 @pytest.mark.asyncio

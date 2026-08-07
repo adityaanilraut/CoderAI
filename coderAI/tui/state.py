@@ -15,6 +15,11 @@ class AgentInfo:
     parent_id: Optional[str] = None
     status: str = "idle"
     task: Optional[str] = None
+    prompt: Optional[str] = None
+    total_tokens: int = 0
+    cost_usd: float = 0.0
+    ctx_used: int = 0
+    ctx_limit: int = 0
 
     @classmethod
     def from_payload(cls, info: dict[str, Any]) -> "AgentInfo":
@@ -23,7 +28,12 @@ class AgentInfo:
             name=str(info.get("name", "")),
             parent_id=info.get("parentId"),
             status=str(info.get("status", "idle")),
-            task=info.get("task"),
+            task=info.get("task") or info.get("current_task"),
+            prompt=info.get("prompt") or info.get("current_task"),
+            total_tokens=int(info.get("tokens") or info.get("total_tokens") or 0),
+            cost_usd=float(info.get("costUsd") or info.get("cost_usd") or 0.0),
+            ctx_used=int(info.get("ctxUsed") or info.get("ctx_used") or 0),
+            ctx_limit=int(info.get("ctxLimit") or info.get("ctx_limit") or 0),
         )
 
 
@@ -50,6 +60,7 @@ class SessionState:
     max_iterations: int = 50
     elapsed_s: float = 0.0
     available_models: Optional[dict[str, list[str]]] = None
+    available_model_details: Optional[dict[str, dict[str, Any]]] = None
     available_personas: Optional[list[str]] = None
     available_skills: Optional[list[dict[str, str]]] = None
     available_mcp_servers: Optional[list[dict[str, Any]]] = None

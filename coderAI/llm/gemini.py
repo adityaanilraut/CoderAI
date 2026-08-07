@@ -21,25 +21,13 @@ class GeminiProvider(OpenAICompatibleCloudProvider):
 
     SUPPORTED_MODELS = {
         "gemini-3.5-flash": "gemini-3.5-flash",
-        "gemini-3.1-pro": "gemini-3.1-pro",
+        "gemini-3.6-flash": "gemini-3.6-flash",
         "gemini-3.1-flash-lite": "gemini-3.1-flash-lite",
-        "gemini-2.5-flash": "gemini-2.5-flash",
-        "gemini-2.5-pro": "gemini-2.5-pro",
-        "gemini-2.0-flash": "gemini-2.0-flash",
-        "gemini-2.0-pro": "gemini-2.0-pro",
-        "gemini-1.5-flash": "gemini-1.5-flash",
-        "gemini-1.5-pro": "gemini-1.5-pro",
     }
     MODEL_CONTEXT_WINDOWS = {
         "gemini-3.5-flash": 1_048_576,
-        "gemini-3.1-pro": 1_048_576,
+        "gemini-3.6-flash": 1_048_576,
         "gemini-3.1-flash-lite": 1_048_576,
-        "gemini-2.5-flash": 1_048_576,
-        "gemini-2.5-pro": 1_048_576,
-        "gemini-2.0-flash": 1_048_576,
-        "gemini-2.0-pro": 2_097_152,
-        "gemini-1.5-flash": 1_048_576,
-        "gemini-1.5-pro": 2_097_152,
     }
 
     def __init__(self, model: str, api_key: Optional[str] = None, **kwargs: Any):
@@ -52,7 +40,9 @@ class GeminiProvider(OpenAICompatibleCloudProvider):
         )
 
     def _resolve_model(self, model: str) -> str:
-        return self.SUPPORTED_MODELS.get(model.lower(), model.lower())
+        from coderAI.llm.registry import resolve_alias
+
+        return resolve_alias(model).lower()
 
     def _handle_api_error(self, exc: Exception, *, streaming: bool) -> None:
         verb = "streaming error" if streaming else "error"

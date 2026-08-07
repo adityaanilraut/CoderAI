@@ -5,7 +5,6 @@ from __future__ import annotations
 
 from coderAI.prompts.compose import (
     SYSTEM_PROMPT_BROWSER,
-    SYSTEM_PROMPT_DESKTOP,
     SYSTEM_PROMPT_INTRO,
     SYSTEM_PROMPT_RUNTIME,
     SYSTEM_PROMPT_TAIL,
@@ -44,29 +43,10 @@ class _NamedTool(Tool):
 
 def test_optional_capability_guidance_follows_registered_tools() -> None:
     empty = _normalize(compose_default_system_prompt(ToolRegistry()))
-    assert "desktop automation" not in empty
     assert "browser automation" not in empty
     assert "### task workflow" not in empty
     assert "### delegation" not in empty
     assert "### mcp workflow" not in empty
-
-    partial_desktop = ToolRegistry()
-    partial_desktop.register(_NamedTool("run_applescript"))
-    assert "automate and control macos applications" not in _normalize(
-        compose_default_system_prompt(partial_desktop)
-    )
-
-    desktop = ToolRegistry()
-    for name in (
-        "run_applescript",
-        "get_accessibility_tree",
-        "click_ui_element",
-        "type_keystrokes",
-    ):
-        desktop.register(_NamedTool(name))
-    desktop_prompt = _normalize(compose_default_system_prompt(desktop))
-    assert "automate and control macos applications" in desktop_prompt
-    assert "follow this sequence" not in desktop_prompt
 
     browser = ToolRegistry()
     for name in (
@@ -170,7 +150,6 @@ def test_system_prompt_loaded_from_files() -> None:
     assert len(SYSTEM_PROMPT_INTERACTION) > 0
     assert len(SYSTEM_PROMPT_OUTPUT_STYLE) > 0
     assert len(SYSTEM_PROMPT_TAIL) > 0
-    assert len(SYSTEM_PROMPT_DESKTOP) > 0
     assert len(SYSTEM_PROMPT_BROWSER) > 0
     assert "You are CoderAI" in SYSTEM_PROMPT_INTRO
     assert "Untrusted Content" in SYSTEM_PROMPT_INTERACTION

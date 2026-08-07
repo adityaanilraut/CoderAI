@@ -37,63 +37,36 @@ def _create_ssl_context() -> ssl.SSLContext:
 
 
 # Models that support prompt caching (cache_control on system/tools/messages).
+# Derived from registry — only current 3-tier models support caching.
 CACHING_SUPPORTED_MODELS = frozenset(
     {
         "claude-fable-5",
-        "claude-opus-4-8",
+        "claude-opus-5",
         "claude-sonnet-5",
-        "claude-opus-4-7",
-        "claude-sonnet-4-6",
-        "claude-haiku-4-5-20251001",
-        "claude-3-7-sonnet-20250219",
-        "claude-3-5-sonnet-20241022",
-        "claude-3-5-haiku-20241022",
-        "claude-3-opus-20240229",
     }
 )
 
-# Friendly-name → API model ID.
-# Update the right-hand side when the API retires a dated snapshot.
+# Friendly-name → API model ID. Single source is registry; this dict is kept
+# for import-compat and mirrors registry aliases for the 3-tier catalog.
 MODEL_ALIASES = {
-    # Current Claude models
     "claude-5-fable": "claude-fable-5",
+    "claude-5-opus": "claude-opus-5",
     "claude-5-sonnet": "claude-sonnet-5",
-    "claude-4.8-opus": "claude-opus-4-8",
-    "claude-4.7-opus": "claude-opus-4-7",
-    "claude-4.6-sonnet": "claude-sonnet-4-6",
-    "claude-4.5-haiku": "claude-haiku-4-5-20251001",
-    # Kept for back-compat with existing configs (default_model was
-    # "claude-4-sonnet"). Point at the current 4.6 sonnet.
-    "claude-4-sonnet": "claude-sonnet-4-6",
-    "claude-4-opus": "claude-opus-4-8",
-    "claude-4-haiku": "claude-haiku-4-5-20251001",
-    # Legacy 3.X snapshots (retained so existing sessions still resolve).
-    "claude-3.7-sonnet": "claude-3-7-sonnet-20250219",
-    "claude-3.5-sonnet": "claude-3-5-sonnet-20241022",
-    "claude-3.5-haiku": "claude-3-5-haiku-20241022",
-    "claude-3-opus": "claude-3-opus-20240229",
-    # Short aliases: always resolve to the newest of each tier.
+    # Legacy short aliases resolve via registry LEGACY_ALIASES
     "fable": "claude-fable-5",
-    "opus": "claude-opus-4-8",
+    "opus": "claude-opus-5",
     "sonnet": "claude-sonnet-5",
-    "haiku": "claude-haiku-4-5-20251001",
 }
 
-# Models that support adaptive or manual extended thinking.
+# Models that support adaptive extended thinking (all 3 current tiers).
 _ADAPTIVE_THINKING_MODELS = frozenset(
     {
         "claude-fable-5",
-        "claude-opus-4-8",
+        "claude-opus-5",
         "claude-sonnet-5",
-        "claude-opus-4-7",
-        "claude-sonnet-4-6",
     }
 )
-_MANUAL_THINKING_MODELS = frozenset(
-    {
-        "claude-3-7-sonnet-20250219",
-    }
-)
+_MANUAL_THINKING_MODELS: frozenset[str] = frozenset()
 
 
 def _is_anthropic_retryable(exc: Exception) -> bool:
@@ -127,15 +100,8 @@ class AnthropicProvider(LLMProvider):
     preserves_tool_calls_on_pause = True
     MODEL_CONTEXT_WINDOWS = {
         "claude-fable-5": 1_000_000,
-        "claude-opus-4-8": 1_000_000,
+        "claude-opus-5": 1_000_000,
         "claude-sonnet-5": 1_000_000,
-        "claude-opus-4-7": 1_000_000,
-        "claude-sonnet-4-6": 1_000_000,
-        "claude-haiku-4-5-20251001": 200_000,
-        "claude-3-7-sonnet-20250219": 200_000,
-        "claude-3-5-sonnet-20241022": 200_000,
-        "claude-3-5-haiku-20241022": 200_000,
-        "claude-3-opus-20240229": 200_000,
     }
 
     def __init__(self, model: str, api_key: Optional[str] = None, **kwargs: Any):
@@ -147,7 +113,11 @@ class AnthropicProvider(LLMProvider):
             **kwargs: Additional options
         """
         super().__init__(model, api_key, **kwargs)
-        self.actual_model = MODEL_ALIASES.get(model, model)
+        from coderAI.llm.registry import resolve_alias as _resolve
+
+        self.actual_model = _resolve(model)
+        # keep short alias table for class-level compat
+        self.actual_model = MODEL_ALIASES.get(self.actual_model, self.actual_model)
         self.total_cache_creation_tokens = 0
         self.total_cache_read_tokens = 0
         self._session: Optional[aiohttp.ClientSession] = None
@@ -156,10 +126,22 @@ class AnthropicProvider(LLMProvider):
             raise ValueError("Anthropic API key is required")
 
     async def _get_session(self) -> aiohttp.ClientSession:
-        """Get or create a reusable aiohttp session."""
+        """Get or create a reusable aiohttp session.
+
+        Uses a shared connector with connection pooling (limit 20, 6/host),
+        DNS cache, and cleanup of closed connections so parallel streaming
+        and retry paths reuse TCP connections instead of opening a new
+        socket per request.
+        """
         if self._session is None or self._session.closed:
             ssl_ctx = _create_ssl_context()
-            connector = aiohttp.TCPConnector(ssl=ssl_ctx)
+            connector = aiohttp.TCPConnector(
+                ssl=ssl_ctx,
+                limit=20,
+                limit_per_host=6,
+                enable_cleanup_closed=True,
+                ttl_dns_cache=300,
+            )
             self._session = aiohttp.ClientSession(connector=connector)
         return self._session
 
@@ -685,7 +667,20 @@ class AnthropicProvider(LLMProvider):
                             elif delta.get("type") == "input_json_delta":
                                 partial_json = delta.get("partial_json", "")
                                 if index in tool_call_blocks:
-                                    tool_call_blocks[index]["arguments"] += partial_json
+                                    cur = tool_call_blocks[index].get("arguments", "")
+                                    # Cap per-tool-call JSON buffer (same limit as UI handler)
+                                    _cap = 2_000_000
+                                    if len(cur) < _cap:
+                                        remaining = _cap - len(cur)
+                                        if len(partial_json) > remaining:
+                                            partial_json = (
+                                                partial_json[:remaining]
+                                                + " …[stream argument truncated]"
+                                            )
+                                            tool_call_blocks[index]["_overflow"] = True
+                                        tool_call_blocks[index]["arguments"] = cur + partial_json
+                                    else:
+                                        tool_call_blocks[index]["_overflow"] = True
                                 # Emit the argument chunk in OpenAI format
                                 block_info = tool_call_blocks.get(index, {})
                                 yield {

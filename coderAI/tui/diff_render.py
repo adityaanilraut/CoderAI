@@ -131,10 +131,35 @@ def _emphasized_body(text: str, spans: list[Span], base_style: str, emph_style: 
     return "".join(parts)
 
 
-def format_diff_gutter(diff: str, max_lines: int = DIFF_MAX_LINES) -> str:
+def _parse_hunk_start(line: str) -> tuple[int | None, int | None]:
+    """Extract old/new start lines from a hunk header like @@ -10,7 +11,8 @@."""
+    m = re.search(r"@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@", line)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    return None, None
+
+
+def find_in_diff(diff: str, query: str) -> list[int]:
+    """Return 0-based line indices in the parsed diff where query occurs (case-insensitive)."""
+    if not query:
+        return []
+    q = query.lower()
+    parsed = parse_unified_diff(diff)
+    out: list[int] = []
+    for i, (_, text) in enumerate(parsed):
+        if q in text.lower():
+            out.append(i)
+    return out
+
+
+def format_diff_gutter(
+    diff: str, max_lines: int = DIFF_MAX_LINES, *, show_line_numbers: bool = True
+) -> str:
     """Render a unified diff with monospace gutter: line numbers, +/- prefix, colored backgrounds.
 
     Paired −/+ lines additionally get word-level emphasis on the changed spans.
+    When ``show_line_numbers`` is true, the gutter shows old/new line numbers
+    outside the +/- column; otherwise it keeps the compact 4-space gutter.
     Returns a Rich markup string suitable for Static or RichLog.
     """
     parsed = parse_unified_diff(diff)
@@ -145,39 +170,54 @@ def format_diff_gutter(diff: str, max_lines: int = DIFF_MAX_LINES) -> str:
     window = _window_lines(parsed, max_lines)
     emphasis = _paired_emphasis(window)
 
+    # Track line numbers outside the diff gutter
+    old_ln: int | None = None
+    new_ln: int | None = None
+
     # Build gutter output
     for idx, (kind, text) in enumerate(window):
         if kind == "meta":
             lines_out.append(f"[{Tokens.TEXT_DIM}]{escape(text)}[/]")
         elif kind == "hunk":
+            old_ln, new_ln = _parse_hunk_start(text)
             lines_out.append(f"[{Tokens.TEXT_MUTED}]{escape(text)}[/]")
         elif kind == "add":
             body = _emphasized_body(
                 text, emphasis.get(idx, []), Styles.GUTTER_ADD, Styles.DIFF_ADD_EMPH
             )
+            if show_line_numbers and new_ln is not None:
+                gutter = f"[{Styles.GUTTER_LINE}]{new_ln:4d}[/]"
+                new_ln += 1
+            else:
+                gutter = f"[{Styles.GUTTER_LINE}]    [/]"
             lines_out.append(
-                f"[on {Styles.DIFF_ADD_BG}]"
-                f"[{Styles.GUTTER_LINE}]    [/]"
-                f" [{Styles.GUTTER_ADD}]+[/] "
-                f"{body}"
-                f"[/]"
+                f"[on {Styles.DIFF_ADD_BG}]{gutter} [{Styles.GUTTER_ADD}]+[/] {body}[/]"
             )
         elif kind == "del":
             body = _emphasized_body(
                 text, emphasis.get(idx, []), Styles.GUTTER_REMOVE, Styles.DIFF_REMOVE_EMPH
             )
+            if show_line_numbers and old_ln is not None:
+                gutter = f"[{Styles.GUTTER_LINE}]{old_ln:4d}[/]"
+                old_ln += 1
+            else:
+                gutter = f"[{Styles.GUTTER_LINE}]    [/]"
             lines_out.append(
-                f"[on {Styles.DIFF_REMOVE_BG}]"
-                f"[{Styles.GUTTER_LINE}]    [/]"
-                f" [{Styles.GUTTER_REMOVE}]−[/] "
-                f"{body}"
-                f"[/]"
+                f"[on {Styles.DIFF_REMOVE_BG}]{gutter} [{Styles.GUTTER_REMOVE}]−[/] {body}[/]"
             )
         elif kind == "ctx":
+            if show_line_numbers and old_ln is not None and new_ln is not None:
+                gutter = f"[{Styles.GUTTER_LINE}]{old_ln:4d}[/]"
+                old_ln += 1
+                new_ln += 1
+            else:
+                gutter = f"[{Styles.GUTTER_LINE}]    [/]"
+                if old_ln is not None:
+                    old_ln += 1
+                if new_ln is not None:
+                    new_ln += 1
             lines_out.append(
-                f"[{Styles.GUTTER_LINE}]    [/]"
-                f" [{Styles.GUTTER_CTX}] [/] "
-                f"[{Styles.GUTTER_CTX}]{escape(text)}[/]"
+                f"{gutter} [{Styles.GUTTER_CTX}] [/] [{Styles.GUTTER_CTX}]{escape(text)}[/]"
             )
 
     return "\n".join(lines_out)

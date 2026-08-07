@@ -10,16 +10,16 @@ from coderAI.llm.groq import GroqProvider
 class TestGroqProviderInit:
     def test_api_key_is_required(self):
         with pytest.raises(ValueError, match="API key is required"):
-            GroqProvider(model="llama3-8b-8192", api_key=None)
+            GroqProvider(model="openai/gpt-oss-20b", api_key=None)
 
     def test_default_temperature_and_max_tokens(self):
-        provider = GroqProvider(model="llama3-8b-8192", api_key="test-key")
+        provider = GroqProvider(model="openai/gpt-oss-20b", api_key="test-key")
         assert provider.temperature == 0.7
         assert provider.max_tokens == 8192
 
     def test_kwargs_override_defaults(self):
         provider = GroqProvider(
-            model="llama3-8b-8192",
+            model="openai/gpt-oss-20b",
             api_key="test-key",
             temperature=0.2,
             max_tokens=2048,
@@ -28,15 +28,15 @@ class TestGroqProviderInit:
         assert provider.max_tokens == 2048
 
     def test_tracking_counters_initialised(self):
-        provider = GroqProvider(model="llama3-8b-8192", api_key="test-key")
+        provider = GroqProvider(model="openai/gpt-oss-20b", api_key="test-key")
         assert provider.total_input_tokens == 0
         assert provider.total_output_tokens == 0
 
 
 class TestModelMapping:
     def test_known_model_maps_to_self(self):
-        provider = GroqProvider(model="llama3-8b-8192", api_key="test-key")
-        assert provider.actual_model == "llama3-8b-8192"
+        provider = GroqProvider(model="openai/gpt-oss-20b", api_key="test-key")
+        assert provider.actual_model == "openai/gpt-oss-20b"
 
     def test_unknown_model_passes_through(self):
         provider = GroqProvider(model="some-new-model", api_key="test-key")
@@ -50,7 +50,7 @@ class TestModelMapping:
 
 class TestChat:
     def _make_provider(self):
-        provider = GroqProvider(model="llama3-8b-8192", api_key="test-key")
+        provider = GroqProvider(model="openai/gpt-oss-20b", api_key="test-key")
         return provider
 
     @pytest.mark.asyncio
@@ -68,7 +68,7 @@ class TestChat:
         result = await provider.chat([{"role": "user", "content": "hi"}])
 
         call_kwargs = mock_create.await_args.kwargs
-        assert call_kwargs["model"] == "llama3-8b-8192"
+        assert call_kwargs["model"] == "openai/gpt-oss-20b"
         assert call_kwargs["messages"] == [{"role": "user", "content": "hi"}]
         assert call_kwargs["temperature"] == 0.7
         assert call_kwargs["max_tokens"] == 8192
@@ -137,7 +137,7 @@ class TestChat:
 
 class TestStream:
     def _make_provider(self):
-        return GroqProvider(model="llama3-8b-8192", api_key="test-key")
+        return GroqProvider(model="openai/gpt-oss-20b", api_key="test-key")
 
     @pytest.mark.asyncio
     async def test_stream_yields_chunks(self):
@@ -216,7 +216,7 @@ class TestStream:
 
 class TestCountTokens:
     def test_count_tokens_approximates(self):
-        provider = GroqProvider(model="llama3-8b-8192", api_key="test-key")
+        provider = GroqProvider(model="openai/gpt-oss-20b", api_key="test-key")
         assert provider.count_tokens("hello world") == 3  # ceil(11/4) == 3
         assert provider.count_tokens("") == 0
         assert provider.count_tokens("abcd" * 10) == 10  # ceil(40/4) == 10
@@ -224,7 +224,7 @@ class TestCountTokens:
 
 class TestGetCost:
     def test_get_cost_zero_when_no_usage(self):
-        provider = GroqProvider(model="llama3-8b-8192", api_key="test-key")
+        provider = GroqProvider(model="openai/gpt-oss-20b", api_key="test-key")
         cost = provider.get_cost()
         assert cost["input_tokens"] == 0
         assert cost["output_tokens"] == 0
@@ -235,14 +235,14 @@ class TestGetCost:
         assert cost["currency"] == "USD"
 
     def test_get_cost_calculates_from_tracked_usage(self):
-        provider = GroqProvider(model="llama3-8b-8192", api_key="test-key")
+        provider = GroqProvider(model="openai/gpt-oss-20b", api_key="test-key")
         provider.total_input_tokens = 1_000_000
         provider.total_output_tokens = 1_000_000
         cost = provider.get_cost()
-        # llama3-8b-8192 pricing: input=0.05, output=0.08
-        assert cost["input_cost"] == pytest.approx(0.05)
-        assert cost["output_cost"] == pytest.approx(0.08)
-        assert cost["total_cost"] == pytest.approx(0.13)
+        # openai/gpt-oss-20b pricing: input=0.075, output=0.30
+        assert cost["input_cost"] == pytest.approx(0.075)
+        assert cost["output_cost"] == pytest.approx(0.30)
+        assert cost["total_cost"] == pytest.approx(0.375)
 
     def test_get_cost_uses_actual_model_for_pricing(self):
         provider = GroqProvider(model="openai/gpt-oss-20b", api_key="test-key")
@@ -255,23 +255,23 @@ class TestGetCost:
         assert cost["total_cost"] == pytest.approx(0.375)
 
     def test_get_cost_with_partial_tokens(self):
-        provider = GroqProvider(model="llama3-8b-8192", api_key="test-key")
+        provider = GroqProvider(model="openai/gpt-oss-20b", api_key="test-key")
         provider.total_input_tokens = 500_000
         provider.total_output_tokens = 250_000
         cost = provider.get_cost()
-        assert cost["input_cost"] == pytest.approx(0.025)  # 0.5 * 0.05
-        assert cost["output_cost"] == pytest.approx(0.02)  # 0.25 * 0.08
-        assert cost["total_cost"] == pytest.approx(0.045)
+        assert cost["input_cost"] == pytest.approx(0.0375)  # 0.5 * 0.075
+        assert cost["output_cost"] == pytest.approx(0.075)  # 0.25 * 0.30
+        assert cost["total_cost"] == pytest.approx(0.1125)
 
 
 class TestGetModelInfo:
     def test_get_model_info_returns_full_info(self):
-        provider = GroqProvider(model="llama3-8b-8192", api_key="test-key")
+        provider = GroqProvider(model="openai/gpt-oss-20b", api_key="test-key")
         provider.total_input_tokens = 100
         provider.total_output_tokens = 50
         info = provider.get_model_info()
         assert info["provider"] == "GroqProvider"
-        assert info["model"] == "llama3-8b-8192"
+        assert info["model"] == "openai/gpt-oss-20b"
         assert info["total_input_tokens"] == 100
         assert info["total_output_tokens"] == 50
         assert info["total_tokens"] == 150
@@ -281,7 +281,7 @@ class TestGetModelInfo:
 class TestClose:
     @pytest.mark.asyncio
     async def test_close_calls_client_close(self):
-        provider = GroqProvider(model="llama3-8b-8192", api_key="test-key")
+        provider = GroqProvider(model="openai/gpt-oss-20b", api_key="test-key")
         provider.client.close = AsyncMock()
         await provider.close()
         provider.client.close.assert_awaited_once()

@@ -32,6 +32,26 @@ logger = logging.getLogger(__name__)
 
 _BATCH_SIZE = 32  # how many chunks to embed in one API call
 
+
+# Bounded parallelism for CPU/IO-heavy indexing phases. Scales with host
+# cores but stays capped to avoid thread-pool exhaustion or file-handle
+# pressure on large trees (1000+ files).
+def _chunk_concurrency() -> int:
+    try:
+        cpus = os.cpu_count() or 4
+        return max(8, min(32, cpus * 4))
+    except Exception:
+        return 16
+
+
+def _hash_concurrency() -> int:
+    try:
+        cpus = os.cpu_count() or 4
+        return max(16, min(64, cpus * 8))
+    except Exception:
+        return 32
+
+
 _COLLECTION_NAME = "codebase"
 
 _CHROMADB_INSTALL_HINT = (
@@ -239,10 +259,16 @@ class CodeIndexer:
         else:
             files = await asyncio.to_thread(self._scan_files_sync)
 
+        # First pass: stat all files and apply the mtime+size fast-path.
+        # Files that need a content hash are collected for concurrent hashing
+        # so that large trees (hundreds of files) don't hash sequentially.
         to_index: list[Path] = []
         unchanged = 0
         added = 0
         updated = 0
+
+        # Candidates that require a sha256 read
+        hash_candidates: list[tuple[Path, str, float, int, Any]] = []
         for fp in files:
             rel = fp.relative_to(self._root).as_posix()
             try:
@@ -252,8 +278,6 @@ class CodeIndexer:
             mtime, size = st.st_mtime, st.st_size
             existing = _entry_meta(self._manifest.get(rel))
 
-            # Fast path: when mtime AND size are unchanged since the last index,
-            # assume the content is unchanged and skip the full-file sha256 read.
             if (
                 skip_if_unchanged
                 and existing is not None
@@ -262,25 +286,38 @@ class CodeIndexer:
             ):
                 unchanged += 1
                 continue
+            hash_candidates.append((fp, rel, mtime, size, existing))
 
-            fhash = _file_hash(fp)
-            if fhash is None:
-                continue
+        if hash_candidates:
+            sem = asyncio.Semaphore(_hash_concurrency())
 
-            if skip_if_unchanged and existing is not None and existing.get("hash") == fhash:
-                # Content identical despite an mtime/size touch — refresh the
-                # stored stat so the next run fast-paths, but don't re-embed.
-                self._manifest[rel] = {"hash": fhash, "mtime": mtime, "size": size}
-                self._manifest_dirty = True
-                unchanged += 1
-                continue
+            async def _hash_one(
+                entry: tuple[Path, str, float, int, Any],
+            ) -> tuple[tuple[Path, str, float, int, Any], Optional[str]]:
+                async with sem:
+                    fp = entry[0]
+                    h = await asyncio.to_thread(_file_hash, fp)
+                    return entry, h
 
-            if skip_if_unchanged:
-                if existing is None:
-                    added += 1
-                else:
-                    updated += 1
-            to_index.append(fp)
+            hashed = await asyncio.gather(*(_hash_one(e) for e in hash_candidates))
+
+            for (fp, rel, mtime, size, existing), fhash in hashed:
+                if fhash is None:
+                    continue
+                if skip_if_unchanged and existing is not None and existing.get("hash") == fhash:
+                    self._manifest[rel] = {"hash": fhash, "mtime": mtime, "size": size}
+                    self._manifest_dirty = True
+                    unchanged += 1
+                    continue
+                if skip_if_unchanged:
+                    if existing is None:
+                        added += 1
+                    else:
+                        updated += 1
+                to_index.append(fp)
+        else:
+            # No candidates needing hash (all fast-path hits)
+            pass
 
         if not skip_if_unchanged:
             added = len(to_index)
@@ -331,21 +368,35 @@ class CodeIndexer:
         """
         from coderAI.context.code_chunker import chunk_file
 
-        all_chunks: list = []
-        file_entries: dict[str, dict] = {}
-        for fp in to_index:
-            rel = fp.relative_to(self._root).as_posix()
-            result = await asyncio.to_thread(chunk_file, fp, self._root)
-            if result.chunks:
-                all_chunks.extend(result.chunks)
+        # Concurrent chunking: each file's AST / window split is CPU-bound
+        # and file-IO-bound. Running them with bounded parallelism cuts
+        # wall-clock time from O(N) to O(N / concurrency) on large repos.
+        sem = asyncio.Semaphore(_chunk_concurrency())
+
+        async def _chunk_one(fp: Path) -> tuple[Path, Any, Optional[os.stat_result]]:
+            async with sem:
+                result = await asyncio.to_thread(chunk_file, fp, self._root)
                 try:
                     st = fp.stat()
+                except OSError:
+                    st = None
+                return fp, result, st
+
+        chunk_results = await asyncio.gather(*(_chunk_one(fp) for fp in to_index))
+
+        all_chunks: list = []
+        file_entries: dict[str, dict] = {}
+        for fp, result, st in chunk_results:
+            rel = fp.relative_to(self._root).as_posix()
+            if result.chunks:
+                all_chunks.extend(result.chunks)
+                if st is not None:
                     file_entries[rel] = {
                         "hash": result.file_hash,
                         "mtime": st.st_mtime,
                         "size": st.st_size,
                     }
-                except OSError:
+                else:
                     file_entries[rel] = {"hash": result.file_hash, "mtime": None, "size": None}
 
         ids: list[str] = []
@@ -354,44 +405,106 @@ class CodeIndexer:
         embeddings: list[list[float]] = []
 
         total_chunks = len(all_chunks)
-        for batch_start in range(0, total_chunks, _BATCH_SIZE):
-            batch = all_chunks[batch_start : batch_start + _BATCH_SIZE]
-            texts = [c.text for c in batch]
-            vecs = await self._embed.embed(texts)
-            expected_dimension = self._current_embedding_fingerprint().dimension
-            if len(vecs) != len(texts):
-                raise ValueError(
-                    f"Embedding provider returned {len(vecs)} vectors for {len(texts)} texts"
-                )
-            if any(len(vec) != expected_dimension for vec in vecs):
-                raise ValueError(
-                    "Embedding provider returned a vector that does not match its "
-                    f"declared dimension {expected_dimension}"
-                )
+        # Embedding dispatch: remote providers (OpenAI) benefit from concurrent
+        # batch requests, while local sentence-transformers models are not
+        # thread-safe and must be called sequentially.
+        batches: list[list[Any]] = [
+            all_chunks[i : i + _BATCH_SIZE] for i in range(0, total_chunks, _BATCH_SIZE)
+        ]
 
-            # Progress event so the UI can show embedding advance on large trees.
-            event_emitter.emit(
-                "index_progress",
-                phase="embed",
-                done=min(batch_start + len(batch), total_chunks),
-                total=total_chunks,
-                files=len(file_entries),
+        # Pre-validate dimension once before fanning out
+        expected_dimension = self._current_embedding_fingerprint().dimension
+        backend = getattr(self._embed, "backend", "unknown")
+        # Allow concurrency only for remote HTTP providers
+        allow_concurrent = backend == "openai" and len(batches) > 1
+
+        if allow_concurrent:
+            # Bounded concurrency to avoid overwhelming the API / rate limits
+            embed_sem = asyncio.Semaphore(4)
+
+            async def _embed_batch(idx: int, batch: list[Any]) -> tuple[int, list[list[float]]]:
+                texts = [c.text for c in batch]
+                async with embed_sem:
+                    vecs = await self._embed.embed(texts)
+                if len(vecs) != len(texts):
+                    raise ValueError(
+                        f"Embedding provider returned {len(vecs)} vectors for {len(texts)} texts"
+                    )
+                if any(len(vec) != expected_dimension for vec in vecs):
+                    raise ValueError(
+                        "Embedding provider returned a vector that does not match its "
+                        f"declared dimension {expected_dimension}"
+                    )
+                return idx, vecs
+
+            batch_results = await asyncio.gather(
+                *(_embed_batch(i, b) for i, b in enumerate(batches))
             )
-
-            for chunk, vec in zip(batch, vecs, strict=True):
-                cid = f"{chunk.file_path}:{chunk.start_line}"
-                ids.append(cid)
-                docs.append(chunk.text)
-                metadatas.append(
-                    {
-                        "file_path": chunk.file_path,
-                        "start_line": chunk.start_line,
-                        "end_line": chunk.end_line,
-                        "language": chunk.language,
-                        "chunk_type": chunk.chunk_type,
-                    }
+            # Restore original order
+            batch_results_sorted = sorted(batch_results, key=lambda x: x[0])
+            # Flatten in order and emit progress
+            done = 0
+            for idx, vecs in batch_results_sorted:
+                batch = batches[idx]
+                done += len(batch)
+                event_emitter.emit(
+                    "index_progress",
+                    phase="embed",
+                    done=min(done, total_chunks),
+                    total=total_chunks,
+                    files=len(file_entries),
                 )
-                embeddings.append(vec)
+                for chunk, vec in zip(batch, vecs, strict=True):
+                    cid = f"{chunk.file_path}:{chunk.start_line}"
+                    ids.append(cid)
+                    docs.append(chunk.text)
+                    metadatas.append(
+                        {
+                            "file_path": chunk.file_path,
+                            "start_line": chunk.start_line,
+                            "end_line": chunk.end_line,
+                            "language": chunk.language,
+                            "chunk_type": chunk.chunk_type,
+                        }
+                    )
+                    embeddings.append(vec)
+        else:
+            for batch_start in range(0, total_chunks, _BATCH_SIZE):
+                batch = all_chunks[batch_start : batch_start + _BATCH_SIZE]
+                texts = [c.text for c in batch]
+                vecs = await self._embed.embed(texts)
+                if len(vecs) != len(texts):
+                    raise ValueError(
+                        f"Embedding provider returned {len(vecs)} vectors for {len(texts)} texts"
+                    )
+                if any(len(vec) != expected_dimension for vec in vecs):
+                    raise ValueError(
+                        "Embedding provider returned a vector that does not match its "
+                        f"declared dimension {expected_dimension}"
+                    )
+
+                event_emitter.emit(
+                    "index_progress",
+                    phase="embed",
+                    done=min(batch_start + len(batch), total_chunks),
+                    total=total_chunks,
+                    files=len(file_entries),
+                )
+
+                for chunk, vec in zip(batch, vecs, strict=True):
+                    cid = f"{chunk.file_path}:{chunk.start_line}"
+                    ids.append(cid)
+                    docs.append(chunk.text)
+                    metadatas.append(
+                        {
+                            "file_path": chunk.file_path,
+                            "start_line": chunk.start_line,
+                            "end_line": chunk.end_line,
+                            "language": chunk.language,
+                            "chunk_type": chunk.chunk_type,
+                        }
+                    )
+                    embeddings.append(vec)
 
         return ids, docs, metadatas, embeddings, file_entries
 

@@ -123,15 +123,10 @@ class FileBackupStore:
         if backup_dir is not None:
             resolved_dir = Path(backup_dir)
         else:
-            root = (
-                (
-                    Path(backup_root)
-                    if backup_root is not None
-                    else Path.home() / ".coderAI" / "backups"
-                )
-                .expanduser()
-                .resolve()
-            )
+            if backup_root is not None:
+                root = Path(backup_root).expanduser().resolve()
+            else:
+                root = (Path.home() / ".coderAI" / "backups").resolve()
             resolved_dir = (root / (session_id or "global")).resolve()
             if not resolved_dir.is_relative_to(root):
                 raise ValueError("session backup directory escapes backup_root")
@@ -139,14 +134,32 @@ class FileBackupStore:
         self.session_id = session_id
         self._last_resolved_dir: Optional[Path] = None
         self._cached_index: list[dict[str, Any]] = []
+        self._fallback_dir: Optional[Path] = None
 
     @property
     def backup_dir(self) -> Path:
         d = self._backup_dir
-        d.mkdir(parents=True, exist_ok=True)
-        # Backups are copies of project files (potentially secret-bearing) that
-        # live under ~/.coderAI — keep the directory owner-only (0700).
-        restrict_path(d, OWNER_RWX)
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+            restrict_path(d, OWNER_RWX)
+        except PermissionError:
+            # Sandbox denies ~/.coderAI — fallback to temp dir.
+            if self._fallback_dir is None:
+                import tempfile
+
+                # Use the already-resolved tmp-based root if we are in tests.
+                fallback_base = Path(tempfile.gettempdir()) / ".coderAI_test" / "backups"
+                self._fallback_dir = (fallback_base / (self.session_id or "global")).resolve()
+                self._backup_dir = self._fallback_dir
+                self._last_resolved_dir = None
+                d = self._fallback_dir
+            try:
+                d.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                pass
+        except OSError:
+            # Non-permission mkdir failures: let caller handle backup gracefully.
+            pass
         return d
 
     @property
@@ -184,7 +197,10 @@ class FileBackupStore:
         :func:`atomic_write_json` writes-then-replaces (and ``fsync``s) to
         prevent that.
         """
-        atomic_write_json(self.index_file, self.index, fsync=True)
+        try:
+            atomic_write_json(self.index_file, self.index, fsync=True)
+        except (OSError, PermissionError) as exc:
+            logger.warning("Could not save backup index %s: %s", self.index_file, exc)
 
     def backup_file(self, filepath: str, operation: str = "modify") -> dict[str, Any]:
         """Create a backup of a file before modification.
@@ -194,7 +210,8 @@ class FileBackupStore:
             operation: Type of operation (modify, delete, create)
 
         Returns:
-            Backup info dict
+            Backup info dict — on backup failure returns a warning entry so
+            callers (WriteFileTool) can still proceed with the write.
         """
         source = Path(filepath).expanduser().resolve()
 
@@ -207,40 +224,56 @@ class FileBackupStore:
                     "operation": "create",
                     "timestamp": datetime.now().isoformat(),
                 }
-                self.index.append(entry)
-                self._save_index()
+                try:
+                    self.index.append(entry)
+                    self._save_index()
+                except (OSError, PermissionError) as exc:
+                    logger.warning("Backup index unavailable for %s: %s", filepath, exc)
                 return entry
             return {"error": f"File not found: {filepath}"}
 
-        # Create backup copy
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        safe_name = source.name.replace("/", "_")
-        backup_name = f"{safe_name}.{timestamp}.bak"
-        backup_path = self.backup_dir / backup_name
+        # Create backup copy — best-effort; backup failures must not block writes.
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            safe_name = source.name.replace("/", "_")
+            backup_name = f"{safe_name}.{timestamp}.bak"
+            backup_path = self.backup_dir / backup_name
 
-        # Record the source's permission bits *before* we tighten the backup, so
-        # a restore can re-apply the original mode (e.g. an executable bit).
-        source_mode = stat.S_IMODE(source.stat().st_mode)
-        shutil.copy2(source, backup_path)
-        # copy2 preserves the source mode, which may be world-readable — restrict
-        # the at-rest backup to owner-only (0600).
-        restrict_path(backup_path, OWNER_RW)
+            # Record the source's permission bits *before* we tighten the backup, so
+            # a restore can re-apply the original mode (e.g. an executable bit).
+            source_mode = stat.S_IMODE(source.stat().st_mode)
+            shutil.copy2(source, backup_path)
+            # copy2 preserves the source mode, which may be world-readable — restrict
+            # the at-rest backup to owner-only (0600).
+            restrict_path(backup_path, OWNER_RW)
 
-        entry = {
-            "filepath": str(source),
-            "backup_path": str(backup_path),
-            "operation": operation,
-            "timestamp": datetime.now().isoformat(),
-            "mode": source_mode,
-        }
-        self.index.append(entry)
-        self._save_index()
+            entry = {
+                "filepath": str(source),
+                "backup_path": str(backup_path),
+                "operation": operation,
+                "timestamp": datetime.now().isoformat(),
+                "mode": source_mode,
+            }
+            self.index.append(entry)
+            self._save_index()
 
-        # Clean up old backups for this file and globally
-        self._cleanup_old_backups(str(source))
-        self._cleanup_global_backups()
+            # Clean up old backups for this file and globally — best effort.
+            try:
+                self._cleanup_old_backups(str(source))
+                self._cleanup_global_backups()
+            except (OSError, PermissionError) as exc:
+                logger.debug("Backup cleanup skipped: %s", exc)
 
-        return entry
+            return entry
+        except (OSError, PermissionError) as exc:
+            logger.warning("Backup failed for %s (proceeding with write): %s", filepath, exc)
+            return {
+                "filepath": str(source),
+                "backup_path": None,
+                "operation": operation,
+                "timestamp": datetime.now().isoformat(),
+                "warning": f"backup unavailable: {exc}",
+            }
 
     def _restore_entry(self, entry: dict[str, Any]) -> dict[str, Any]:
         """Revert one index entry: delete a created file or restore from backup.

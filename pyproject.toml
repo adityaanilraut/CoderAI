@@ -22,27 +22,19 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
-    # Pinned to the 8.x line: the strip-blit fast path in tui/widgets.py
-    # relies on RichLog private internals verified against Textual 8.2.x.
-    "textual>=8.0,<9",
+    "textual>=8.0,<10",
     "rich>=13.7.0",
     "click>=8.1.7",
     "openai>=1.10.0",
     "requests>=2.31.0",
     "pydantic>=2.5.0",
     "aiohttp>=3.9.0",
-    "tiktoken>=0.5.2",
     "python-dotenv>=1.0.0",
     "pyyaml>=6.0",
-    "groq>=0.4.2",
     "certifi>=2024.2.2",
-    "html2text>=2024.2.26",
-    "prompt_toolkit>=3.0.0",
 ]
 
 [project.optional-dependencies]
-# Semantic code search (`coderAI index` / `search`, semantic_search tool). ChromaDB
-# and local model inference are separate opt-ins to keep the default install light.
 semantic = [
     "chromadb>=0.4.22",
 ]
@@ -51,9 +43,19 @@ local-embeddings = [
 ]
 web = [
     "pypdf>=3.0.0",
+    "html2text>=2024.2.26",
 ]
 browser = [
     "playwright>=1.45.0",
+]
+groq = [
+    "groq>=0.4.2",
+]
+token-counting = [
+    "tiktoken>=0.5.2",
+]
+repl = [
+    "prompt_toolkit>=3.0.0",
 ]
 dev = [
     "pytest>=8.0",

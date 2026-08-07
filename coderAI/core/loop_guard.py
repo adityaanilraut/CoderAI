@@ -36,6 +36,34 @@ DUPLICATE_CALL_THRESHOLD = 2
 # ``plan action=show`` 14+ times in a single turn before the user cancelled.
 DOOM_LOOP_HARD_THRESHOLD = 10
 DELEGATE_DOOM_LOOP_HARD_THRESHOLD = DOOM_LOOP_HARD_THRESHOLD
+# High-impact fix: idempotent reads can legitimately repeat 3-4x during
+# exploration (e.g. re-reading the same file after a grep). Use a higher
+# ceiling so the in-batch (3) detector still catches tight loops but
+# legitimate exploration does not hit the hard stop.
+READ_ONLY_DOOM_LOOP_HARD_THRESHOLD = 15
+
+# Tools that are safe to repeat — idempotent, read-only, no side effects.
+# Kept local to loop_guard so the guard does not import tool registry.
+_READ_ONLY_DOOM_EXEMPT = frozenset(
+    {
+        "read_file",
+        "grep",
+        "glob_search",
+        "list_directory",
+        "file_stat",
+        "file_readlink",
+        "semantic_search",
+        "symbol_search",
+        "read_url",
+        "web_search",
+        "git_status",
+        "git_diff",
+        "git_log",
+        "undo_history",
+        "recall_memory",
+        "read_image",
+    }
+)
 
 
 def doom_message(tool_name: str, count: int) -> str:
@@ -71,6 +99,8 @@ class LoopGuard:
         """Cross-iteration hard stop threshold for *tool_name*."""
         if tool_name == "delegate_task":
             return DELEGATE_DOOM_LOOP_HARD_THRESHOLD
+        if tool_name in _READ_ONLY_DOOM_EXEMPT:
+            return READ_ONLY_DOOM_LOOP_HARD_THRESHOLD
         return DOOM_LOOP_HARD_THRESHOLD
 
     def prior_count(self, fp: str) -> int:

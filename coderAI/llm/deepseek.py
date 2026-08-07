@@ -15,21 +15,14 @@ class DeepSeekProvider(OpenAICompatibleCloudProvider):
     STREAM_INCLUDES_USAGE = True
 
     SUPPORTED_MODELS = {
-        "deepseek-v4-flash": "deepseek-v4-flash",
         "deepseek-v4-pro": "deepseek-v4-pro",
+        "deepseek-v4-flash": "deepseek-v4-flash",
         "deepseek-chat": "deepseek-chat",
-        "deepseek-reasoner": "deepseek-reasoner",
-        "deepseek-v3": "deepseek-chat",
-        "deepseek-v3.2": "deepseek-chat-v3.2",
-        "deepseek-r1": "deepseek-reasoner",
     }
     MODEL_CONTEXT_WINDOWS = {
-        "deepseek-v4-flash": 1_000_000,
         "deepseek-v4-pro": 1_000_000,
-        # These compatibility IDs currently route to V4 Flash.
+        "deepseek-v4-flash": 1_000_000,
         "deepseek-chat": 1_000_000,
-        "deepseek-reasoner": 1_000_000,
-        "deepseek-chat-v3.2": 128_000,
     }
 
     def __init__(self, model: str, api_key: Optional[str] = None, **kwargs: Any):
@@ -46,7 +39,9 @@ class DeepSeekProvider(OpenAICompatibleCloudProvider):
             self.reasoning_effort = "none"
 
     def _resolve_model(self, model: str) -> str:
-        return self.SUPPORTED_MODELS.get(model.lower(), model.lower())
+        from coderAI.llm.registry import resolve_alias
+
+        return resolve_alias(model).lower()
 
     @property
     def _uses_v4_family(self) -> bool:

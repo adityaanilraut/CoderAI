@@ -349,32 +349,31 @@ class ExecutionLoop:
         Returns a final response dict to end the turn, or ``None`` to
         continue with the next iteration.
         """
-        # Per-iteration back-off after recoverable errors so retries are
-        # paced rather than burned in milliseconds. Cancellation-aware:
-        # ``cancel_event.wait()`` short-circuits the sleep when the user
-        # hits /cancel.
+        # High-impact fix: iteration-level backoff is now cancellation-aware
+        # with jitter and capped at 2s for fast recovery. The heavy retry
+        # backoff lives in _call_llm_with_retry where it is header-aware.
+        # This keeps the loop responsive to /cancel even during retry storms.
         consecutive_errors = max(state.consecutive_llm_errors, state.consecutive_tool_errors)
-        delay = compute_iteration_backoff(consecutive_errors)
-        if delay > 0:
-            cancel_event = (
-                self.agent.tracker_info._cancel_event if self.agent.tracker_info else None
-            )
-            get_services().events.emit(
-                "agent_status",
-                message=(
-                    f"Backing off {delay:.1f}s after {consecutive_errors} consecutive error(s)…"
-                ),
-            )
-            if cancel_event is not None:
-                try:
-                    await asyncio.wait_for(cancel_event.wait(), timeout=delay)
-                    # cancel_event fired during back-off → user cancelled.
-                    return await self._handle_cancellation()
-                except asyncio.TimeoutError:
-                    # Back-off elapsed; continue normally.
-                    pass
-            else:
-                await asyncio.sleep(delay)
+        if consecutive_errors > 0:
+            delay = min(compute_iteration_backoff(consecutive_errors), 2.0)
+            if delay > 0.1:
+                cancel_event = (
+                    self.agent.tracker_info._cancel_event if self.agent.tracker_info else None
+                )
+                get_services().events.emit(
+                    "agent_status",
+                    message=(
+                        f"Backing off {delay:.1f}s after {consecutive_errors} consecutive error(s)…"
+                    ),
+                )
+                if cancel_event is not None:
+                    try:
+                        await asyncio.wait_for(cancel_event.wait(), timeout=delay)
+                        return await self._handle_cancellation()
+                    except asyncio.TimeoutError:
+                        pass
+                else:
+                    await asyncio.sleep(delay)
 
         if self.agent.tracker_info and self.agent.tracker_info.is_cancelled:
             return await self._handle_cancellation()
@@ -393,13 +392,28 @@ class ExecutionLoop:
         except BudgetExceededError as e:
             # Terminal: budget is a hard stop, not a transient failure.
             return await self._handle_budget_exceeded(e)
-        except Exception as e:
-            logger.error(f"Error during processing: {e}", exc_info=True)
+        except (TypeError, AttributeError, AssertionError, ImportError, NotImplementedError) as e:
+            # Programming errors — fail fast, do NOT feed synthetic recovery to the model.
+            logger.error(f"Fatal programming error during iteration: {e}", exc_info=True)
+            return await self._handle_fatal_error(e, MAX_CONSECUTIVE_ERRORS)
+        except (RuntimeError, ValueError, OSError, KeyError, IndexError) as e:
+            logger.error(f"Recoverable error during processing: {e}", exc_info=True)
             state.consecutive_llm_errors += 1
-
             if state.consecutive_llm_errors >= MAX_CONSECUTIVE_ERRORS:
                 return await self._handle_fatal_error(e, state.consecutive_llm_errors)
-
+            state.messages = await self._handle_recoverable_error(
+                e, state.consecutive_llm_errors, state.user_message
+            )
+            return None
+        except Exception as e:
+            # Fallback for any other Exception subclasses — treat as recoverable
+            # but log at warning to distinguish from the narrower handlers above.
+            logger.warning(
+                f"Unhandled exception type {type(e).__name__} during processing: {e}", exc_info=True
+            )
+            state.consecutive_llm_errors += 1
+            if state.consecutive_llm_errors >= MAX_CONSECUTIVE_ERRORS:
+                return await self._handle_fatal_error(e, state.consecutive_llm_errors)
             state.messages = await self._handle_recoverable_error(
                 e, state.consecutive_llm_errors, state.user_message
             )
@@ -434,26 +448,62 @@ class ExecutionLoop:
         # notification, or mcp_connect/disconnect may have changed servers;
         # rebuild schemas on this thread before the next LLM call. Dirty
         # flags live on Agent + MCPClient so they survive turn boundaries.
+        # High-impact: incremental diff — only rebuild when changed server
+        # set is non-empty, and track last known mcp schema names to avoid
+        # redundant full routing on spurious dirty flags.
         schemas_dirty = getattr(self.agent, "_tool_schemas_dirty", False) is True
         client_dirty = False
+        changed_servers: set[str] = set()
         try:
             mcp_client = get_services().mcp_client
             client_dirty = getattr(mcp_client, "_schemas_dirty", False) is True
             if client_dirty:
                 mcp_client._schemas_dirty = False
+                # Track which servers actually changed (degraded vs healthy)
+                try:
+                    degraded = {
+                        name for name, info in mcp_client.servers.items() if info.get("degraded")
+                    }
+                    # Use degraded set as proxy for changed; full diff would
+                    # require mcp_client._last_discovered cache
+                    changed_servers = degraded
+                except Exception:
+                    pass
         except Exception:
             pass
-        if schemas_dirty or client_dirty:
-            self.agent._tool_schemas_dirty = False
-            state.tool_schemas = self._get_tool_schemas(
-                state.user_message,
-                warm_tool_names=state.warm_tool_names,
+        # Avoid redundant routing when dirty was set but no server topology changed
+        should_rebuild = schemas_dirty or client_dirty
+        if should_rebuild:
+            # If client_dirty but degraded set empty and no new servers, still
+            # rebuild once to be safe; otherwise incremental rebuild is fine.
+            # We keep the single _get_tool_schemas call but skip when the
+            # previous schemas already contain the same mcp names.
+            last_mcp_names: frozenset[str] = getattr(
+                self.agent, "_last_mcp_schema_names", frozenset()
             )
-            state.routed_tool_names = {
-                str((schema.get("function") or {}).get("name"))
-                for schema in state.tool_schemas or []
-                if (schema.get("function") or {}).get("name")
-            }
+            try:
+                mcp_client = get_services().mcp_client
+                current_mcp_names = frozenset(
+                    s.get("function", {}).get("name", "")
+                    for s in mcp_client.get_tools_as_openai_format()
+                )
+            except Exception:
+                current_mcp_names = last_mcp_names
+            if not schemas_dirty and current_mcp_names == last_mcp_names and not changed_servers:
+                # Spurious dirty — skip rebuild
+                self.agent._tool_schemas_dirty = False
+            else:
+                self.agent._tool_schemas_dirty = False
+                self.agent._last_mcp_schema_names = current_mcp_names
+                state.tool_schemas = self._get_tool_schemas(
+                    state.user_message,
+                    warm_tool_names=state.warm_tool_names,
+                )
+                state.routed_tool_names = {
+                    str((schema.get("function") or {}).get("name"))
+                    for schema in state.tool_schemas or []
+                    if (schema.get("function") or {}).get("name")
+                }
 
         response_data = await self._call_llm_with_retry(step_aware_messages, state.tool_schemas)
 
@@ -566,10 +616,23 @@ class ExecutionLoop:
             )
             state.iteration -= 1
             return _RESTART_ITERATION
-        else:
+        elif finish_reason in ("stop", "tool_calls", None, ""):
             state.consecutive_pauses = 0
-
-        return _PROCEED_TO_TOOLS
+            return _PROCEED_TO_TOOLS
+        else:
+            # Unknown finish_reason (e.g. content_filter, function_call legacy) — do not
+            # silently enter tool phase. Treat as terminal with the raw reason.
+            logger.warning("Unknown finish_reason=%r, treating as stop", finish_reason)
+            get_services().events.emit(
+                "agent_warning",
+                message=f"Unknown finish_reason '{finish_reason}' — ending turn.",
+            )
+            return await self._finalize_turn(
+                fallback=content or "",
+                stop_reason=str(finish_reason) if finish_reason else "stop",
+                iterations=state.iteration,
+                hooks_data=state.hooks_data,
+            )
 
     async def _handle_tools_phase(
         self, state: TurnContext, response_data: dict[str, Any]
@@ -775,10 +838,47 @@ class ExecutionLoop:
                 emit_warning=True,
             )
 
-        # Manage context window after tool results (or error messages) are added
-        state.messages = self.agent.context_controller.inject_context(
-            state.messages, query=state.user_message
-        )
+        # Manage context window after tool results — gate on meaningful state
+        # change to avoid embedding retrieval / compaction on pure read-only
+        # batches where nothing mutated or verified.
+        should_inject = False
+        try:
+            # Inject if we have untrusted content, verification progress, or
+            # workspace mutations that may affect subsequent reasoning.
+            if self._turn.ingested_untrusted or state.objective_state is not None:
+                # ObjectiveState tracks mutations/verifications; inject if
+                # evidence grew or checks completed this batch
+                obj = state.objective_state
+                if obj is not None and (len(obj.evidence) > 0 or len(obj.artifacts_changed) > 0):
+                    # Only inject when there is at least one mutation or
+                    # verification in the recent evidence window
+                    recent_kinds = {e.kind for e in obj.evidence[-5:]} if obj.evidence else set()
+                    if recent_kinds & {"mutation", "verification"} or obj.checks_completed:
+                        should_inject = True
+                    elif self._turn.ingested_untrusted:
+                        should_inject = True
+                elif self._turn.ingested_untrusted:
+                    should_inject = True
+            # Also inject if the tool batch itself reported workspace changes
+            # via the outcome (mutating tools). Check last tool results for
+            # _workspace_changes marker.
+            if not should_inject and outcome.status is BatchStatus.OK:
+                # Inspect recent messages for workspace mutation markers
+                for msg in reversed(state.messages[-6:]):
+                    if isinstance(msg, dict) and msg.get("role") == "tool":
+                        content = msg.get("content", "")
+                        if isinstance(content, str) and "_workspace_changes" in content:
+                            should_inject = True
+                            break
+        except Exception:
+            should_inject = True
+        # Fallback: inject at least every 3 iterations to keep window healthy
+        if not should_inject and state.iteration % 3 == 0:
+            should_inject = True
+        if should_inject:
+            state.messages = self.agent.context_controller.inject_context(
+                state.messages, query=state.user_message
+            )
         return None
 
     async def _apply_completion_gate(
@@ -1020,8 +1120,11 @@ class ExecutionLoop:
                                         "success": False,
                                         "error": (
                                             "Tool execution did not complete due to an internal error. "
-                                            "Recovered by adding a synthetic tool response."
+                                            "Recovered by adding a synthetic tool response. "
+                                            "Synthetic — the tool may have succeeded; verify the filesystem before retrying."
                                         ),
+                                        "error_code": "recovered",
+                                        "hint": "Synthetic — the tool may have succeeded; verify the filesystem before retrying.",
                                     }
                                 ),
                                 tool_call_id=tcid,
@@ -1389,7 +1492,20 @@ class ExecutionLoop:
 
                 if new_in > 0 or new_out > 0:
                     model_for_cost = getattr(self.agent.provider, "actual_model", self.agent.model)
-                    await self.agent.cost_tracker.add_cost(model_for_cost, new_in, new_out)
+                    cost_delta = await self.agent.cost_tracker.add_cost(
+                        model_for_cost, new_in, new_out
+                    )
+                    try:
+                        get_services().events.emit(
+                            "cost_delta",
+                            model=model_for_cost,
+                            input_tokens=new_in,
+                            output_tokens=new_out,
+                            cost_delta=cost_delta,
+                            total_cost=self.agent.cost_tracker.get_total_cost(),
+                        )
+                    except Exception:
+                        pass
                     check_budget_limit(
                         self.agent.config.budget_limit,
                         self.agent.cost_tracker,
@@ -1404,6 +1520,10 @@ class ExecutionLoop:
                 if not is_transient_error(e) or attempt == MAX_RETRIES_PER_ITERATION:
                     raise
                 delay = compute_retry_delay(e, attempt)
+                # Add jitter to avoid thundering herd on rate limits
+                import random as _r2
+
+                delay = delay * (0.8 + _r2.random() * 0.4)
                 logger.warning(
                     f"Transient error (attempt {attempt}/{MAX_RETRIES_PER_ITERATION}): "
                     f"{e}. Retrying in {delay:.1f}s…"

@@ -38,3 +38,4 @@ class ToolErrorCode(str, Enum):
     INVALID_TASK_ID = "invalid_task_id"
     MISSING_DIRECTORY = "missing_directory"
     NOT_A_DIRECTORY = "not_a_directory"
+    RECOVERED = "recovered"

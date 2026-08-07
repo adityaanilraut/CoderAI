@@ -71,14 +71,33 @@ def _coerce(key: str, value: Any) -> Any:
     the key. Keys outside the tables pass through unchanged (strings).
     """
     if key in _FLOAT_KEYS:
-        return float(value)
+        parsed = float(value)
+        if not (-1e12 < parsed < 1e12):
+            raise ValueError(f"{key} out of range: {value!r}")
+        return parsed
     if key in _INT_KEYS:
+        # bool is subclass of int — reject it explicitly.
+        if isinstance(value, bool):
+            raise TypeError(f"{key} must be an integer, got bool")
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped.lower() in {"true", "false", "yes", "no", "on", "off"}:
+                raise ValueError(f"{key} must be an integer, got boolean string {value!r}")
         return int(value)
     if key in _BOOL_KEYS:
         # bool("false") is True in Python; handle string booleans explicitly.
         if isinstance(value, str):
-            return value.strip().lower() in ("true", "1", "yes", "on")
-        return bool(value)
+            lowered = value.strip().lower()
+            if lowered in ("true", "1", "yes", "on"):
+                return True
+            if lowered in ("false", "0", "no", "off", ""):
+                return False
+            raise ValueError(f"{key} must be a boolean, got {value!r}")
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, int):
+            return bool(value)
+        raise TypeError(f"{key} must be a boolean, got {type(value).__name__}")
     return value
 
 
@@ -108,7 +127,7 @@ class Config(BaseModel):
     embedding_backend: Literal["auto", "openai", "local"] = Field(default="auto")
     embedding_model: Optional[str] = Field(default=None)
     embedding_device: Optional[str] = Field(default=None)
-    default_model: str = Field(default="claude-4-sonnet")
+    default_model: str = Field(default="claude-sonnet-5")
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: Optional[int] = Field(default=8192)
     lmstudio_endpoint: str = Field(default="http://localhost:1234/v1")
@@ -159,7 +178,9 @@ class Config(BaseModel):
     subagent_timeout_seconds: float = Field(default=600.0, gt=0.0)
     # Maximum concurrent mutating sub-agent delegations when using non-workspace
     # isolation domains (browser, desktop). Workspace/auto delegations stay serial.
-    max_concurrent_mutating_subagents: int = Field(default=3, ge=1, le=8)
+    # Auto-scaled at runtime from CPU count when not explicitly set (executor
+    # chooses min(8, cpu_count)), default here is just the documented fallback.
+    max_concurrent_mutating_subagents: int = Field(default=4, ge=1, le=10)
 
     # --- Tool execution: timeouts / retries / background jobs ---
     # Outer wall-clock cap the executor applies to a single tool call when the
@@ -172,9 +193,10 @@ class Config(BaseModel):
     # Default timeout for one-shot tool subprocesses (format/lint/grep/git…)
     # that previously hardcoded 60s.
     subprocess_timeout_seconds: float = Field(default=60.0, gt=0.0)
-    # Compatibility default: no OS confinement until explicitly enabled.
-    # best_effort warns and falls back; required fails closed.
-    sandbox_mode: Literal["off", "best_effort", "required"] = Field(default="off")
+    # Hardened default: best_effort gives confinement when available and
+    # degrades with an explicit warning; required fails closed. Users can
+    # still set off for compatibility via config/env.
+    sandbox_mode: Literal["off", "best_effort", "required"] = Field(default="best_effort")
     sandbox_allow_network: bool = Field(default=False)
     # Transient-failure retries for tools that opt in with ``retryable = True``
     # (0 disables). Delays follow exponential backoff from tool_retry_base_delay.

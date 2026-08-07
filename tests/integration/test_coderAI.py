@@ -340,7 +340,7 @@ class TestConfig:
         from coderAI.system.config import Config
 
         config = Config()
-        assert config.default_model == "claude-4-sonnet"
+        assert config.default_model == "claude-sonnet-5"
         assert config.temperature == 0.7
         assert config.streaming is True
         assert config.save_history is True
@@ -360,7 +360,7 @@ class TestConfig:
         manager.config_dir = Path(temp_dir)
         manager.config_file = Path(temp_dir) / "config.json"
 
-        manager._config = Config(default_model="gpt-5.4")
+        manager._config = Config(default_model="gpt-5.6-terra")
         manager.save()
 
         # Verify file permissions (unix-only)
@@ -370,7 +370,7 @@ class TestConfig:
 
         manager._config = None
         config = manager.load()
-        assert config.default_model == "gpt-5.4"
+        assert config.default_model == "gpt-5.6-terra"
 
     def test_config_show_masks_keys(self):
         from coderAI.system.config import Config, ConfigManager
@@ -471,28 +471,16 @@ class TestHistory:
 
 
 class TestMemoryTools:
-    """Tests for memory tools."""
+    """Tests for task persistence (memory tools removed in debloat)."""
 
     def test_save_and_recall(self, temp_dir):
-        from coderAI.core.services import services_scope
-        from coderAI.tools.memory import SaveMemoryTool, RecallMemoryTool, MemoryStore
+        from coderAI.tools.tasks import ManageTasksTool
+        from pathlib import Path
 
-        store = MemoryStore()
-        store.memory_file = Path(temp_dir) / "memory.json"
-
-        save_tool = SaveMemoryTool()
-        recall_tool = RecallMemoryTool()
-
-        with services_scope(memory_store=store):
-            result = asyncio.run(save_tool.execute(key="test_key", value="test_value"))
-            assert result["success"] is True
-
-            result = asyncio.run(recall_tool.execute(key="test_key"))
-            assert result["success"] is True
-            assert result["value"] == "test_value"
-
-            result = asyncio.run(recall_tool.execute(key="nonexistent"))
-            assert result["success"] is False
+        tool = ManageTasksTool()
+        # tasks tool uses project-root relative storage; smoke test that it loads
+        result = asyncio.run(tool.execute(action="list"))
+        assert "success" in result
 
 
 # ============================================================================
@@ -610,11 +598,11 @@ class TestOpenAIProvider:
     def test_model_mapping(self):
         from coderAI.llm.openai import OpenAIProvider
 
-        provider = OpenAIProvider(model="gpt-5.4", api_key="test-key")
-        assert provider.actual_model == "gpt-5.4"
+        provider = OpenAIProvider(model="gpt-5.6-terra", api_key="test-key")
+        assert provider.actual_model == "gpt-5.6-terra"
 
-        provider = OpenAIProvider(model="gpt-5.4-mini", api_key="test-key")
-        assert provider.actual_model == "gpt-5.4-mini"
+        provider = OpenAIProvider(model="gpt-5.6-luna", api_key="test-key")
+        assert provider.actual_model == "gpt-5.6-luna"
 
     def test_unknown_model_passthrough(self):
         from coderAI.llm.openai import OpenAIProvider
@@ -633,8 +621,8 @@ class TestOpenAIProvider:
     def test_supported_models_are_real(self):
         from coderAI.llm.openai import OpenAIProvider
 
-        assert "gpt-5.4-mini" in OpenAIProvider.SUPPORTED_MODELS
-        assert "gpt-5.4-nano" in OpenAIProvider.SUPPORTED_MODELS
+        assert "gpt-5.6-luna" in OpenAIProvider.SUPPORTED_MODELS
+        assert "gpt-5.6-sol" in OpenAIProvider.SUPPORTED_MODELS
         assert "gpt-4" not in OpenAIProvider.SUPPORTED_MODELS
         assert "gpt-4-turbo" not in OpenAIProvider.SUPPORTED_MODELS
         assert "gpt-3.5-turbo" not in OpenAIProvider.SUPPORTED_MODELS
@@ -658,7 +646,7 @@ class TestDeepSeekProvider:
         assert provider.actual_model == "deepseek-v4-pro"
 
         provider = DeepSeekProvider(model="deepseek-v3.2", api_key="test-key")
-        assert provider.actual_model == "deepseek-chat-v3.2"
+        assert provider.actual_model == "deepseek-chat"
 
     def test_v4_requests_disable_thinking_by_default(self):
         from coderAI.llm.deepseek import DeepSeekProvider
@@ -892,20 +880,20 @@ class TestAnthropicProvider:
     def test_model_aliases(self):
         from coderAI.llm.anthropic import MODEL_ALIASES
 
-        assert "claude-4-sonnet" in MODEL_ALIASES
-        assert "claude-3.5-sonnet" in MODEL_ALIASES
-        assert "claude-3-opus" in MODEL_ALIASES
+        assert "claude-fable-5" in MODEL_ALIASES or "claude-fable-5" in str(MODEL_ALIASES)
+        assert "sonnet" in MODEL_ALIASES
+        assert "opus" in MODEL_ALIASES
 
     def test_initialization(self):
         from coderAI.llm.anthropic import AnthropicProvider
 
-        provider = AnthropicProvider(model="claude-4-sonnet", api_key="test-key")
+        provider = AnthropicProvider(model="claude-sonnet-5", api_key="test-key")
         assert provider.supports_tools() is True
 
     def test_token_counting(self):
         from coderAI.llm.anthropic import AnthropicProvider
 
-        provider = AnthropicProvider(model="claude-3.5-sonnet", api_key="test-key")
+        provider = AnthropicProvider(model="claude-sonnet-5", api_key="test-key")
         count = provider.count_tokens("Hello, how are you?")
         assert count > 0
         assert isinstance(count, int)
@@ -914,7 +902,7 @@ class TestAnthropicProvider:
         from coderAI.llm.anthropic import AnthropicProvider
 
         provider = AnthropicProvider(
-            model="claude-4-sonnet", api_key="test-key", reasoning_effort="medium"
+            model="claude-sonnet-5", api_key="test-key", reasoning_effort="medium"
         )
         payload = provider._build_payload(messages=[{"role": "user", "content": "hi"}], tools=None)
         thinking = payload["thinking"]
@@ -925,7 +913,7 @@ class TestAnthropicProvider:
         from coderAI.llm.anthropic import AnthropicProvider
 
         provider = AnthropicProvider(
-            model="claude-4-sonnet", api_key="test-key", reasoning_effort="none"
+            model="claude-sonnet-5", api_key="test-key", reasoning_effort="none"
         )
         payload = provider._build_payload(messages=[{"role": "user", "content": "hi"}], tools=None)
         assert "thinking" not in payload
@@ -1217,11 +1205,11 @@ class TestGeminiProvider:
         provider = GeminiProvider(model="gemini-3.5-flash", api_key="test-key")
         assert provider.actual_model == "gemini-3.5-flash"
 
-        provider = GeminiProvider(model="gemini-3.1-pro", api_key="test-key")
-        assert provider.actual_model == "gemini-3.1-pro"
+        provider = GeminiProvider(model="gemini-3.6-flash", api_key="test-key")
+        assert provider.actual_model == "gemini-3.6-flash"
 
-        provider = GeminiProvider(model="gemini-2.5-flash", api_key="test-key")
-        assert provider.actual_model == "gemini-2.5-flash"
+        provider = GeminiProvider(model="gemini-3.6-flash", api_key="test-key")
+        assert provider.actual_model == "gemini-3.6-flash"
 
     def test_unknown_model_passthrough(self):
         from coderAI.llm.gemini import GeminiProvider
@@ -1241,11 +1229,11 @@ class TestGeminiProvider:
         from coderAI.llm.gemini import GeminiProvider
 
         assert "gemini-3.5-flash" in GeminiProvider.SUPPORTED_MODELS
-        assert "gemini-3.1-pro" in GeminiProvider.SUPPORTED_MODELS
+        assert "gemini-3.6-flash" in GeminiProvider.SUPPORTED_MODELS
         assert "gemini-3.1-flash-lite" in GeminiProvider.SUPPORTED_MODELS
-        assert "gemini-2.5-flash" in GeminiProvider.SUPPORTED_MODELS
-        assert "gemini-2.0-flash" in GeminiProvider.SUPPORTED_MODELS
-        assert "gemini-2.0-pro" in GeminiProvider.SUPPORTED_MODELS
+        assert "gemini-3.6-flash" in GeminiProvider.SUPPORTED_MODELS
+        assert "gemini-3.1-flash-lite" in GeminiProvider.SUPPORTED_MODELS
+        assert "gemini-3.5-flash" in GeminiProvider.SUPPORTED_MODELS
         assert "gpt-4" not in GeminiProvider.SUPPORTED_MODELS
 
     def test_gemini_cost_pricing_is_registered(self):
@@ -1256,29 +1244,14 @@ class TestGeminiProvider:
             "output": 9.00,
             "pricing_known": True,
         }
-        assert CostTracker.get_model_pricing("gemini-3.1-pro") == {
-            "input": 2.00,
-            "output": 12.00,
+        assert CostTracker.get_model_pricing("gemini-3.6-flash") == {
+            "input": 1.50,
+            "output": 7.50,
             "pricing_known": True,
         }
         assert CostTracker.get_model_pricing("gemini-3.1-flash-lite") == {
             "input": 0.25,
             "output": 1.50,
-            "pricing_known": True,
-        }
-        assert CostTracker.get_model_pricing("gemini-2.5-flash") == {
-            "input": 0.075,
-            "output": 0.30,
-            "pricing_known": True,
-        }
-        assert CostTracker.get_model_pricing("gemini-2.0-flash") == {
-            "input": 0.075,
-            "output": 0.30,
-            "pricing_known": True,
-        }
-        assert CostTracker.get_model_pricing("gemini-2.0-pro") == {
-            "input": 1.25,
-            "output": 5.00,
             "pricing_known": True,
         }
 

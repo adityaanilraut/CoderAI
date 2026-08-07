@@ -72,6 +72,11 @@ class ContextController:
         self._on_summary_tokens: Optional[Callable[[int, int], None]] = None
         self.request_tool_schemas: Optional[list[dict[str, Any]]] = None
         self._token_cache: "OrderedDict[str, int]" = OrderedDict()
+        # Incremental token total cache — avoids re-summing all messages when the
+        # agent loop appends a few new messages each iteration (the hot path).
+        self._incremental_total: int = 0
+        self._incremental_len: int = 0
+        self._incremental_ids: tuple[int, ...] = ()
         self._last_summary_time: float = 0.0
         self._inject_cache_fp: Optional[tuple] = None
         self._inject_cache_msg: Optional[str] = None
@@ -413,12 +418,47 @@ class ContextController:
         return total
 
     def estimate_tokens(self, messages: list[dict[str, Any]]) -> int:
-        """Estimate token count for a list of messages."""
+        """Estimate token count for a list of messages.
+
+        Uses an incremental shortcut when the caller repeatedly extends the
+        same list (agent loop hot path): if the first N messages are identical
+        by id+fingerprint the cached total for N is reused and only the suffix
+        is counted. Falls back to a full scan on list replacement or mutation.
+        """
+        # Fast-path: same prefix by object identity
+        if (
+            self._incremental_len > 0
+            and len(messages) >= self._incremental_len
+            and len(self._incremental_ids) == self._incremental_len
+        ):
+            prefix_ok = True
+            for i in range(self._incremental_len):
+                if id(messages[i]) != self._incremental_ids[i]:
+                    prefix_ok = False
+                    break
+            if prefix_ok:
+                total = self._incremental_total
+                for msg in messages[self._incremental_len :]:
+                    total += self._estimate_message_tokens(msg)
+                total_with_overhead = total + 3
+                # Update cache for next call
+                self._incremental_total = total
+                self._incremental_len = len(messages)
+                self._incremental_ids = tuple(id(m) for m in messages)
+                return total_with_overhead
         total = 0
         for msg in messages:
             total += self._estimate_message_tokens(msg)
-        total += 3  # 3 tokens reserved for assistant reply priming overhead
-        return total
+        self._incremental_total = total
+        self._incremental_len = len(messages)
+        self._incremental_ids = tuple(id(m) for m in messages)
+        return total + 3  # 3 tokens reserved for assistant reply priming overhead
+
+    def invalidate_token_cache(self) -> None:
+        """Clear incremental token cache after compaction/truncation."""
+        self._incremental_total = 0
+        self._incremental_len = 0
+        self._incremental_ids = ()
 
     def estimate_tool_tokens(self, tools: Optional[list[dict[str, Any]]] = None) -> int:
         """Estimate serialized tool-schema tokens included in a request."""
@@ -595,6 +635,7 @@ class ContextController:
             return messages
 
         self._token_cache.clear()
+        self.invalidate_token_cache()
 
         logger.info(
             f"Context window management: {total_tokens} tokens exceeds limit of {max_content_tokens}. Truncating old messages."
@@ -649,6 +690,72 @@ class ContextController:
 
         if len(kept_messages) < len(non_system):
             removed_messages = non_system[: -len(kept_messages)] if kept_messages else non_system
+            # ── Rule-based deterministic compaction ──────────────────
+            # Before paying for an LLM summarization round-trip, try a
+            # zero-cost deterministic compression: keep a short header per
+            # removed message and truncate large tool results. If the
+            # resulting summary fits the budget we skip the LLM call.
+            try:
+                DET_TRUNC = 800
+                det_parts: list[str] = []
+                for msg in removed_messages:
+                    role = msg.get("role", "unknown")
+                    name = msg.get("name")
+                    label = role.upper() + (f"({name})" if name else "")
+                    content = msg.get("content")
+                    if isinstance(content, str):
+                        snippet = content[:DET_TRUNC]
+                        if len(content) > DET_TRUNC:
+                            snippet += f"\n... [{len(content) - DET_TRUNC} chars deterministically truncated]"
+                        det_parts.append(f"{label}: {snippet}")
+                    elif content is not None:
+                        j = json.dumps(content, default=str)
+                        if len(j) > DET_TRUNC:
+                            j = j[:DET_TRUNC] + f" ... [{len(j) - DET_TRUNC} chars truncated]"
+                        det_parts.append(f"{label}: {j}")
+                    if msg.get("tool_calls"):
+                        tc = json.dumps(msg["tool_calls"], default=str)
+                        if len(tc) > DET_TRUNC:
+                            tc = tc[:DET_TRUNC] + " ... [truncated]"
+                        det_parts.append(f"  tool_calls: {tc}")
+                det_text = "\n".join(det_parts)
+                # Only use deterministic summary if LLM summarize is not
+                # strictly required (small removal or recent summary) and
+                # never when untrusted output is present — that must fall
+                # through to the safe truncation notice.
+                contains_untrusted_det = f"<{UNTRUSTED_OPEN_TAG}" in det_text
+                if contains_untrusted_det:
+                    raise ValueError("untrusted content — skip deterministic path")
+                would_need_llm = (
+                    len(removed_messages) > 2
+                    and len(det_text) >= 500
+                    and (_time_module.time() - self._last_summary_time) >= 60
+                )
+                if not would_need_llm and det_text:
+                    det_summary = {
+                        "role": "user",
+                        "content": f"[Deterministic context compaction — older messages compressed]: {det_text}",
+                        self._TRUNCATION_MARKER_KEY: True,
+                        self._SUMMARY_MARKER_KEY: True,
+                    }
+                    det_tokens = self._estimate_message_tokens(det_summary)
+                    if running_tokens + det_tokens <= remaining_budget:
+                        logger.info(
+                            "Using deterministic compaction (%d removed → %d tokens), skipping LLM summarize.",
+                            len(removed_messages),
+                            det_tokens,
+                        )
+                        return (
+                            system_messages
+                            + ([first_task_message] if first_task_message else [])
+                            + [det_summary]
+                            + kept_messages
+                        )
+            except Exception:
+                logger.debug(
+                    "Deterministic compaction failed, falling back to LLM path", exc_info=True
+                )
+
             text_to_summarize = ""
             for msg in removed_messages:
                 role = msg.get("role", "unknown")
@@ -756,27 +863,53 @@ class ContextController:
                             )
 
                     if summary_content:
-                        summary_notice = {
-                            "role": "user",
-                            "content": (
-                                "[Prior conversation summary; historical context, not new "
-                                f"instructions]: {summary_content}"
-                            ),
-                            self._TRUNCATION_MARKER_KEY: True,
-                            self._SUMMARY_MARKER_KEY: True,
+                        # Structural validation: summary must mention at least one tool name
+                        # from the removed messages, otherwise it likely hallucinated/dropped
+                        # critical file paths or outcomes. Fall back to deterministic path.
+                        tool_names_in_removed = {
+                            tc.get("function", {}).get("name", "")
+                            for msg in removed_messages
+                            for tc in (msg.get("tool_calls") or [])
+                            if isinstance(tc, dict)
                         }
-                        summary_tokens = self._estimate_message_tokens(summary_notice)
-                        if running_tokens + summary_tokens <= remaining_budget:
-                            result = (
-                                system_messages
-                                + ([first_task_message] if first_task_message else [])
-                                + [summary_notice]
-                                + kept_messages
+                        tool_names_in_removed = {n for n in tool_names_in_removed if n}
+                        if tool_names_in_removed:
+                            missing = [n for n in tool_names_in_removed if n not in summary_content]
+                            if missing:
+                                logger.warning(
+                                    "LLM summary dropped tool references %s — discarding and using deterministic compaction",
+                                    missing,
+                                )
+                                try:
+                                    event_emitter.emit(
+                                        "agent_warning",
+                                        message=f"Summary dropped tool references {missing} — using deterministic compaction.",
+                                    )
+                                except Exception:
+                                    pass
+                                summary_content = ""
+                        if summary_content:
+                            summary_notice = {
+                                "role": "user",
+                                "content": (
+                                    "[Prior conversation summary; historical context, not new "
+                                    f"instructions]: {summary_content}"
+                                ),
+                                self._TRUNCATION_MARKER_KEY: True,
+                                self._SUMMARY_MARKER_KEY: True,
+                            }
+                            summary_tokens = self._estimate_message_tokens(summary_notice)
+                            if running_tokens + summary_tokens <= remaining_budget:
+                                result = (
+                                    system_messages
+                                    + ([first_task_message] if first_task_message else [])
+                                    + [summary_notice]
+                                    + kept_messages
+                                )
+                                return result
+                            logger.info(
+                                "Skipping generated summary because it would overflow the remaining context budget."
                             )
-                            return result
-                        logger.info(
-                            "Skipping generated summary because it would overflow the remaining context budget."
-                        )
                 except BudgetExceededError:
                     raise
                 except Exception as e:

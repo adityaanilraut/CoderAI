@@ -68,7 +68,24 @@ def count_tokens_anthropic(text: str, model: str, api_key: Optional[str]) -> int
     except RuntimeError:
         pass
     else:
-        return estimate_chars(text)
+        # Inside event loop — avoid sync HTTP. Try tiktoken first (local, no IO
+        # if vocab already cached), else char/4 with a debug log so mis-estimation
+        # is observable in diagnostics.
+        try:
+            import tiktoken
+
+            try:
+                enc = tiktoken.encoding_for_model(model)
+            except KeyError:
+                enc = tiktoken.get_encoding("cl100k_base")
+            return len(enc.encode(text))
+        except Exception:
+            logger.debug(
+                "Anthropic in-loop token estimate fallback len/4 for model=%s text_len=%d",
+                model,
+                len(text),
+            )
+            return estimate_chars(text)
     try:
         n = _do_count_tokens_request(text, model, api_key)
         if n > 0:

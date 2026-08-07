@@ -18,7 +18,7 @@ def test_current_openai_alias_and_context_limit():
 
 def test_current_anthropic_alias_and_context_limit():
     provider = AnthropicProvider("opus", api_key="test")
-    assert provider.actual_model == "claude-opus-4-8"
+    assert provider.actual_model == "claude-opus-5"
     assert provider.model_context_window == 1_000_000
     assert AnthropicProvider("fable", api_key="test").actual_model == "claude-fable-5"
     assert AnthropicProvider("sonnet", api_key="test").actual_model == "claude-sonnet-5"
@@ -45,10 +45,12 @@ def test_every_anthropic_alias_has_a_context_limit():
 
 def test_current_models_are_user_visible():
     listings = {label: models for label, models, _requirement in get_models_by_provider()}
-    assert "gpt-5.6" in listings["OpenAI Provider"]
-    assert "claude-4.8-opus" in listings["Anthropic Provider"]
-    assert "claude-5-sonnet" in listings["Anthropic Provider"]
-    assert "claude-5-fable" in listings["Anthropic Provider"]
+    assert "gpt-5.6-sol" in listings["OpenAI Provider"]
+    assert "gpt-5.6-terra" in listings["OpenAI Provider"]
+    assert "gpt-5.6-luna" in listings["OpenAI Provider"]
+    assert "claude-fable-5" in listings["Anthropic Provider"]
+    assert "claude-opus-5" in listings["Anthropic Provider"]
+    assert "claude-sonnet-5" in listings["Anthropic Provider"]
 
 
 def test_unknown_context_limit_uses_safe_fallback():
@@ -85,7 +87,7 @@ def test_gpt56_forces_none_reasoning_effort_when_tools_present():
 
 
 def test_gpt54_mini_omits_reasoning_effort():
-    provider = OpenAIProvider("gpt-5.4-mini", api_key="test", reasoning_effort="high")
+    provider = OpenAIProvider("gpt-5.6-luna", api_key="test", reasoning_effort="high")
     params = provider._build_request_params(
         [{"role": "user", "content": "x"}],
         tools=[{"type": "function", "function": {"name": "ping", "parameters": {}}}],

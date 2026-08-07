@@ -987,6 +987,14 @@ class DelegateTaskTool(Tool):
                     await asyncio.to_thread(delegation_worktree.cleanup)
                 except Exception:
                     logger.warning("Failed to clean delegation worktree", exc_info=True)
+                # High-impact GC: opportunistic prune of leaked worktrees
+                try:
+                    from coderAI.core.delegation_worktree import DelegationWorktree
+
+                    storage = delegation_worktree.storage_root
+                    await asyncio.to_thread(DelegationWorktree.prune_expired, storage, 3600)
+                except Exception:
+                    pass
 
     async def _integrate_delegated_patch(
         self,

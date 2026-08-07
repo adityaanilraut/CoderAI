@@ -342,7 +342,22 @@ def _is_ambiguous_mutation(tokens: set[str], matched: Sequence[CapabilitySpec]) 
     if not (tokens & _BROAD_MUTATION_WORDS):
         return False
     informative = tokens - _BROAD_MUTATION_WORDS - _AMBIGUOUS_REFERENTS
-    return not informative
+    if informative:
+        # High-impact: require concrete file/path signal for bare "fix this"
+        # style queries. Without a path, extension, or explicit code target,
+        # keep the model on universal+code_search to avoid bloating mutating
+        # schemas on diagnose/explain intents.
+        has_path_signal = any(
+            ("/" in t or "." in t or t in {"file", "function", "class", "method", "module"})
+            for t in tokens
+        )
+        # also check for quoted or explicit target — if informative tokens
+        # include largely generic words, treat as ambiguous
+        if not has_path_signal and len(informative) <= 2:
+            # Check if normalized objective actually mentions a file-like token
+            return True
+        return False
+    return True
 
 
 def _identifier_tokens(name: str) -> set[str]:

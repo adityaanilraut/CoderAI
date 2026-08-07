@@ -21,6 +21,10 @@ from coderAI.system.fsperms import atomic_write_json
 from coderAI.system.proc import kill_process_group, new_session_kwargs
 from coderAI.system.sandbox import prepare_sandbox_launch
 from coderAI.tools.base import Tool
+from coderAI.tools.mcp_sanitize import (  # noqa: E402 — re-export sanitizers extracted to keep client focused
+    _sanitize_metadata_text as _sanitize_metadata_text,
+    _sanitize_model_metadata as _sanitize_model_metadata,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -89,44 +93,7 @@ def _launcher_kind(command: str) -> Optional[str]:
     return None
 
 
-def _sanitize_metadata_text(value: Any, limit: int = MCP_MAX_DESCRIPTION_LENGTH) -> str:
-    """Collapse control/formatting characters and clamp untrusted model metadata."""
-    if not isinstance(value, str):
-        return ""
-    cleaned = "".join(" " if ord(ch) < 32 or ord(ch) == 127 else ch for ch in value)
-    cleaned = " ".join(cleaned.split())
-    if len(cleaned) > limit:
-        return cleaned[: limit - 3] + "..."
-    return cleaned
-
-
-def _sanitize_model_metadata(value: Any, *, depth: int = 0) -> Any:
-    """Bound server-controlled structures returned to the model or used as schemas."""
-    if depth >= MCP_MAX_METADATA_DEPTH:
-        return None
-    if isinstance(value, dict):
-        out: dict[str, Any] = {}
-        for index, (key, item) in enumerate(value.items()):
-            if index >= MCP_MAX_METADATA_ITEMS:
-                break
-            safe_key = _sanitize_metadata_text(str(key), 128)
-            if not safe_key:
-                continue
-            if safe_key.lower() in {"description", "title", "$comment"}:
-                out[safe_key] = _sanitize_metadata_text(item)
-            else:
-                out[safe_key] = _sanitize_model_metadata(item, depth=depth + 1)
-        return out
-    if isinstance(value, list):
-        return [
-            _sanitize_model_metadata(item, depth=depth + 1)
-            for item in value[:MCP_MAX_METADATA_ITEMS]
-        ]
-    if isinstance(value, str):
-        return _sanitize_metadata_text(value, 4_096)
-    if value is None or isinstance(value, (bool, int, float)):
-        return value
-    return None
+# (sanitizers imported at top — kept here as comment for git history)
 
 
 def _validate_discovered_tools(

@@ -15,12 +15,14 @@ class MetaProvider(OpenAICompatibleCloudProvider):
     STREAM_INCLUDES_USAGE = True
 
     SUPPORTED_MODELS = {
+        "muse-spark-1.2": "muse-spark-1.2",
         "muse-spark-1.1": "muse-spark-1.1",
-        "muse-spark": "muse-spark-1.1",
-        "muse": "muse-spark-1.1",
+        "muse-spark-1.2-contributor": "muse-spark-1.2-contributor",
     }
     MODEL_CONTEXT_WINDOWS = {
+        "muse-spark-1.2": 1_048_576,
         "muse-spark-1.1": 1_048_576,
+        "muse-spark-1.2-contributor": 1_048_576,
     }
 
     def __init__(self, model: str, api_key: Optional[str] = None, **kwargs: Any):
@@ -33,7 +35,9 @@ class MetaProvider(OpenAICompatibleCloudProvider):
         )
 
     def _resolve_model(self, model: str) -> str:
-        return self.SUPPORTED_MODELS.get(model.lower(), model.lower())
+        from coderAI.llm.registry import resolve_alias
+
+        return resolve_alias(model).lower()
 
     def _build_request_params(
         self,

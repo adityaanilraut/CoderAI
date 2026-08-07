@@ -39,8 +39,14 @@ class OpenAICompatibleCloudProvider(LLMProvider):
         self.actual_model = self._resolve_model(model)
 
     def _resolve_model(self, model: str) -> str:
-        """Map a friendly model name to the concrete API model ID."""
-        return self.SUPPORTED_MODELS.get(model, model)
+        """Map a friendly model name to the concrete API model ID (registry-aware)."""
+        from coderAI.llm.registry import resolve_alias
+
+        # registry handles canonical + legacy aliases; fall back to class map
+        resolved = resolve_alias(model)
+        if resolved.lower() != model.lower():
+            return resolved.lower()
+        return self.SUPPORTED_MODELS.get(model, self.SUPPORTED_MODELS.get(model.lower(), model))
 
     def _build_request_params(
         self,

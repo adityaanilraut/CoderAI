@@ -38,4 +38,25 @@ def timeline_to_markdown(items: list[dict[str, Any]]) -> str:
             if item.get("details"):
                 md += f"\n```\n{item['details']}\n```\n"
             md += "\n---\n\n"
+        elif kind == "toast":
+            md += f"**Toast ({item.get('level', 'info')}):** {item.get('message', '')}\n\n---\n\n"
+        elif kind == "separator":
+            md += f"*{item.get('message', '')}*\n\n---\n\n"
+        elif kind == "welcome":
+            md += f"**Welcome:** model `{item.get('model', '')}` provider `{item.get('provider', '')}`\n\n"
+            if item.get("cwd"):
+                md += f"CWD: `{item.get('cwd')}`\n\n"
+            md += "---\n\n"
+        elif kind == "skill_card":
+            md += f"**Skill:** `{item.get('name', '')}`\n\n{item.get('description', '')}\n\n---\n\n"
+        elif kind == "plan_card":
+            md += f"**Plan:**\n\n{item.get('markdown', '')}\n\n---\n\n"
+        elif kind == "approval":
+            md += f"**Approval:** `{item.get('tool', '')}` — {item.get('decided', 'pending')}\n\n"
+            if item.get("risk"):
+                md += f"Risk: {item.get('risk')}\n\n"
+            md += "---\n\n"
+        else:
+            # Fallback for future kinds — preserve content rather than dropping
+            md += f"**{kind or 'unknown'}:**\n\n```json\n{item}\n```\n\n---\n\n"
     return md

@@ -41,6 +41,10 @@ from coderAI.tools.filesystem.edit import (
     SearchReplaceParams,
     SearchReplaceTool,
 )
+from coderAI.tools.filesystem.multi_edit import (
+    MultiEditParams,
+    MultiEditTool,
+)
 from coderAI.tools.filesystem.manage import (
     CopyFileParams,
     CopyFileTool,

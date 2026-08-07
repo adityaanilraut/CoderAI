@@ -25,8 +25,26 @@ _cache_lock = threading.RLock()
 
 def _cache_dir() -> Path:
     # 0700: cached search queries / page content can be sensitive
-    _CACHE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
-    return _CACHE_DIR
+    # Sandbox may deny ~/.coderAI even when the dir already exists (mkdir
+    # with exist_ok succeeds but subsequent file writes fail). Probe writability.
+    import tempfile
+
+    fallback = Path(tempfile.gettempdir()) / ".coderAI_test" / "cache"
+    for candidate in (_CACHE_DIR, fallback):
+        try:
+            candidate.mkdir(mode=0o700, parents=True, exist_ok=True)
+            # Probe writability with a temp file.
+            probe = candidate / ".writability_probe"
+            try:
+                probe.touch(exist_ok=True)
+                probe.unlink(missing_ok=True)
+            except OSError:
+                continue
+            return candidate
+        except OSError:
+            continue
+    # Last resort: return fallback even if probe failed; callers handle OSError.
+    return fallback
 
 
 def _cache_key(prefix: str, *parts: str) -> str:

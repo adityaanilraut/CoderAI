@@ -466,6 +466,7 @@ class EventReducer:
             dirty = True
             self._bump_refresh("chrome")
             self.session.available_models = data.get("models")
+            self.session.available_model_details = data.get("details")
         elif event == "available_personas":
             dirty = True
             self._bump_refresh("chrome")

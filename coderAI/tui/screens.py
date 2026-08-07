@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import abstractmethod
+import re
 import time
 from typing import Any, Optional
 
@@ -16,7 +17,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
-from coderAI.tui.diff_render import format_diff_gutter
+from coderAI.tui.diff_render import find_in_diff, format_diff_gutter
 from coderAI.tui.help_menu import HELP_MENU_ENTRIES
 from coderAI.tui.platform import palette_input_placeholder
 from coderAI.tui.prompt_history import PromptHistory
@@ -401,22 +402,109 @@ class SearchScreen(ModalScreen[None]):
             yield Input(value=self.search_query, placeholder="Type to search...", id="search-input")
             with VerticalScroll():
                 yield Static(
-                    self._build_matches(self.search_query), id="search-results", markup=False
+                    self._build_matches(self.search_query), id="search-results", markup=True
                 )
             yield Button("Close", id="search-close")
 
+    def _extract_search_blob(self, it: dict[str, Any]) -> tuple[str, str]:
+        """Return (kind_label, searchable text) for any timeline item."""
+        kind = str(it.get("kind") or "")
+        if kind == "user":
+            return kind, str(it.get("text") or "")
+        if kind == "assistant":
+            parts = [str(it.get("content") or "")]
+            reasoning = str(it.get("reasoning") or "").strip()
+            if reasoning:
+                parts.append(reasoning)
+            return kind, "\n".join(p for p in parts if p)
+        if kind == "tool":
+            args = it.get("args") or {}
+            if isinstance(args, dict):
+                args_s = " ".join(f"{k}={v}" for k, v in args.items())
+            else:
+                args_s = str(args)
+            preview = str(it.get("preview") or "")
+            error = str(it.get("error") or "")
+            name = str(it.get("name") or "")
+            category = str(it.get("category") or "")
+            blob = " ".join(p for p in [name, category, args_s, preview, error] if p)
+            return kind, blob
+        if kind == "diff":
+            return kind, f"{it.get('path', '')} \n{it.get('diff', '')}"
+        if kind == "error":
+            return kind, f"{it.get('message', '')} {it.get('hint', '')} {it.get('details', '')}"
+        if kind == "toast":
+            return kind, str(it.get("message") or "")
+        if kind == "approval":
+            return kind, f"{it.get('tool', '')} {it.get('decided', '')}"
+        if kind == "skill_card":
+            return kind, f"{it.get('name', '')} {it.get('description', '')}"
+        if kind == "plan_card":
+            return kind, str(it.get("markdown") or "")
+        if kind == "welcome":
+            return kind, f"{it.get('model', '')} {it.get('provider', '')} {it.get('cwd', '')}"
+        if kind == "separator":
+            return kind, str(it.get("message") or "")
+        # fallback: dump values
+        return kind or "unknown", " ".join(str(v) for v in it.values() if isinstance(v, str))
+
+    def _highlight_query(self, text: str, query: str) -> str:
+        """Escape text and wrap query hits in accent markup."""
+        esc = escape(text)
+        if not query:
+            return esc
+        try:
+            pat = re.compile(re.escape(query), re.IGNORECASE)
+        except re.error:
+            return esc
+        # Use Tokens.WARN for highlight (amber) with bold
+        return pat.sub(lambda m: f"[bold {Tokens.WARN}]{escape(m.group(0))}[/]", esc)
+
     def _build_matches(self, query: str) -> str:
-        matches = []
-        q = query.lower()
+        q = query.lower().strip()
+        if not q:
+            return f"[{Tokens.TEXT_MUTED}](type to search — {len(self.timeline)} items; all kinds included)[/]"
+        matches: list[str] = []
         for i, it in enumerate(self.timeline):
-            blob = ""
-            if it.get("kind") == "user":
-                blob = it.get("text", "")
-            elif it.get("kind") == "assistant":
-                blob = it.get("content", "")
-            if q and q in blob.lower():
-                matches.append(f"#{i}: {blob[:80]}…")
-        return "\n".join(matches) if matches else ("(no matches)" if q else "(type to search)")
+            kind, blob = self._extract_search_blob(it)
+            if not blob:
+                continue
+            if q not in blob.lower():
+                continue
+            # Find first hit position for snippet window
+            low = blob.lower()
+            pos = low.find(q)
+            start = max(0, pos - 30)
+            snippet = blob[start : start + 80]
+            if start > 0:
+                snippet = "…" + snippet
+            if start + 80 < len(blob):
+                snippet = snippet + "…"
+            # Collapse newlines for one-line display
+            snippet = snippet.replace("\n", " ").replace("\r", " ")
+            highlighted = self._highlight_query(snippet, query.strip())
+            kind_color = Tokens.TEXT_DIM
+            if kind == "tool":
+                kind_color = Tokens.INFO
+            elif kind == "assistant":
+                kind_color = Tokens.AGENT
+            elif kind == "user":
+                kind_color = Tokens.INFO
+            elif kind == "diff":
+                kind_color = Tokens.WARN
+            elif kind == "error":
+                kind_color = Tokens.DANGER
+            matches.append(
+                f"[{Tokens.TEXT_MUTED}]#{i}[/] [{kind_color}]{escape(kind)}[/] {highlighted}"
+            )
+            if len(matches) >= 50:
+                matches.append(
+                    f"[{Tokens.TEXT_MUTED}]… {len(self.timeline)} items scanned; showing first 50[/]"
+                )
+                break
+        if not matches:
+            return f'[{Tokens.TEXT_MUTED}](no matches for "{escape(query.strip())}")[/]'
+        return "\n".join(matches)
 
     @on(Input.Changed, "#search-input")
     def _on_search_changed(self, event: Input.Changed) -> None:
@@ -558,8 +646,17 @@ class FuzzyPickerScreen(ModalScreen[Optional[str]]):
     def _on_option_selected(self, event: OptionList.OptionSelected) -> None:
         event.stop()
         if event.option and not event.option.disabled:
+            # Special CTA ids
+            if event.option.id == "__clear__":
+                try:
+                    inp = self.query_one(f"#{self._input_id}", Input)
+                    inp.value = ""
+                    self._update_options("")
+                except Exception:
+                    pass
+                return
             val = self._get_selected_action_value(is_tab=False)
-            if val is not None:
+            if val is not None and val != "__clear__":
                 self.dismiss(val)
 
     def _handle_key(self, event: events.Key) -> bool:
@@ -582,8 +679,21 @@ class FuzzyPickerScreen(ModalScreen[Optional[str]]):
         if key == "enter":
             event.stop()
             event.prevent_default()
+            # Handle clear-filter CTA
+            try:
+                ol = self.query_one(f"#{self._list_id}", OptionList)
+                idx = ol.highlighted
+                if idx is not None and 0 <= idx < ol.option_count:
+                    oid = ol.get_option_at_index(idx).id
+                    if oid == "__clear__":
+                        inp = self.query_one(f"#{self._input_id}", Input)
+                        inp.value = ""
+                        self._update_options("")
+                        return True
+            except Exception:
+                pass
             val = self._get_selected_action_value(is_tab=False)
-            if val is not None:
+            if val is not None and val != "__clear__":
                 self.dismiss(val)
             return True
         if key == "escape":
@@ -595,7 +705,12 @@ class FuzzyPickerScreen(ModalScreen[Optional[str]]):
 
 
 class FilePickerScreen(FuzzyPickerScreen):
-    """Fuzzy-searchable project file picker for mentions that also pin context."""
+    """Fuzzy-searchable project file picker for mentions that also pin context.
+
+    Adds gitignore toggle, MRU tracking, and error UI.
+    """
+
+    _mru: list[str] = []
 
     def __init__(
         self,
@@ -603,6 +718,8 @@ class FilePickerScreen(FuzzyPickerScreen):
         *,
         placeholder: Optional[str] = None,
         footer_help: Optional[str] = None,
+        error: str | None = None,
+        gitignore_enabled: bool = True,
     ) -> None:
         super().__init__(
             box_id="picker-box",
@@ -610,43 +727,202 @@ class FilePickerScreen(FuzzyPickerScreen):
             list_id="picker-list",
             footer_id="picker-footer",
             placeholder=placeholder or "🔍 Type to search project files to pin...",
-            footer_help=footer_help or f"[{Tokens.TEXT_MUTED}]↑↓ navigate  ↵ pin  ⎋ close[/]",
+            footer_help=footer_help
+            or f"[{Tokens.TEXT_MUTED}]↑↓ navigate  ↵ pin  ⎋ close · g toggle gitignore · mru on top[/]",
         )
         self.files = files
+        self._gitignore_enabled = gitignore_enabled
+        self._error = error
+        # Merge MRU on top when no query
+        if FilePickerScreen._mru and not error:
+            # Keep MRU entries that still exist in files on top
+            mru_top = [p for p in FilePickerScreen._mru if p in files]
+            others = [p for p in files if p not in mru_top]
+            self.files = mru_top + others
+
+    def _toggle_gitignore(self) -> None:
+        self._gitignore_enabled = not self._gitignore_enabled
+        # Filter: when disabled, show all files including gitignored (already in list)
+        # When enabled, hide dotfiles and common ignored patterns
+        if self._gitignore_enabled:
+            self.files = [f for f in self.files if not f.startswith(".") and "__pycache__" not in f]
+        # Refresh
+        self._update_options(self.query_one(f"#{self._input_id}", Input).value or "")
+
+    def _on_pick_success(self, path: str) -> None:
+        # Update MRU
+        if path in FilePickerScreen._mru:
+            FilePickerScreen._mru.remove(path)
+        FilePickerScreen._mru.insert(0, path)
+        FilePickerScreen._mru = FilePickerScreen._mru[:10]
+
+    def _handle_key(self, event: events.Key) -> bool:
+        if event.key == "g":
+            event.stop()
+            event.prevent_default()
+            self._toggle_gitignore()
+            self.notify(f"Gitignore {'on' if self._gitignore_enabled else 'off'}")
+            return True
+        # Let parent handle other keys
+        handled = super()._handle_key(event)
+        # If handled as selection, update MRU
+        if handled and event.key == "enter":
+            val = self._get_selected_action_value()
+            if val and val not in ("none", "__clear__"):
+                self._on_pick_success(val)
+        return handled
+
+    def _score_file(self, path: str, query: str) -> float | None:
+        """Fuzzy score — higher is better, None means no match.
+
+        Uses difflib ratio on lowercased strings plus bonuses for
+        substring/prefix, segment-boundary and path-depth locality so
+        `q in lower` still ranks but `con` matches `controller.py` over
+        `documentation.md`.
+        """
+        import difflib
+
+        low = path.lower()
+        q = query.lower().strip()
+        if not q:
+            return 1.0
+        # Fast reject — at least half the query chars must appear in order
+        # (subsequence check); otherwise difflib would score noise highly.
+        it = iter(low)
+        if not all(ch in it for ch in q):
+            # Still allow pure substring hits to pass
+            if q not in low:
+                return None
+
+        # Base fuzzy ratio on filename first, then full path
+        fname = low.rsplit("/", 1)[-1] if "/" in low else low
+        r_path = difflib.SequenceMatcher(None, q, low).ratio()
+        r_name = difflib.SequenceMatcher(None, q, fname).ratio()
+        score = max(r_path, r_name * 1.1)
+
+        # Bonuses — earned, not decoration
+        if q in low:
+            score += 0.35
+        if low.startswith(q) or fname.startswith(q):
+            score += 0.25
+        if f"/{q}" in low:
+            score += 0.15
+        # Penalize deep paths slightly so shallow matches surface
+        score -= low.count("/") * 0.02
+        # Shorter files get tiny bonus
+        score -= len(path) * 0.0005
+        return score
 
     def _get_matches(self, query: str) -> list[str]:
         q = query.lower().strip()
         if not q:
-            return self.files[:100]
-        matches = []
+            # MRU-ish: recent/shallow files first when no query
+            return sorted(self.files, key=lambda x: (x.count("/"), len(x)))[:100]
+        scored: list[tuple[float, str]] = []
         for f in self.files:
-            if q in f.lower():
-                matches.append(f)
-        matches.sort(key=lambda x: (x.lower() != q, not x.lower().startswith(q), len(x)))
-        return matches[:100]
+            s = self._score_file(f, q)
+            if s is not None and s > 0.25:
+                scored.append((s, f))
+        scored.sort(key=lambda x: (-x[0], len(x[1])))
+        return [f for _, f in scored[:100]]
 
     def _update_options(self, query: str) -> None:
-        matches = self._get_matches(query)
         option_list = self.query_one(f"#{self._list_id}", OptionList)
+        # Error UI (previously only logger warning)
+        if getattr(self, "_error", None):
+            option_list.clear_options()
+            option_list.add_options(
+                [
+                    Option(
+                        f"[{Tokens.DANGER}]  error: {escape(str(self._error)[:80])}[/]",
+                        id="none",
+                        disabled=True,
+                    ),
+                    Option(
+                        f"[{Tokens.TEXT_MUTED}]  try /refresh or check project root[/]",
+                        id="none2",
+                        disabled=True,
+                    ),
+                ]
+            )
+            option_list.highlighted = 0
+            return
+        # Loading state when file list is still scanning
+        if not self.files:
+            option_list.clear_options()
+            option_list.add_options(
+                [
+                    Option(
+                        f"[{Tokens.TEXT_MUTED}]  scanning project files…[/]",
+                        id="none",
+                        disabled=True,
+                    )
+                ]
+            )
+            option_list.highlighted = 0
+            return
+
+        matches = self._get_matches(query)
         option_list.clear_options()
 
         options = []
         for item in matches:
-            prompt = f"  [{Tokens.TEXT}]{escape(item)}[/]"
+            # Highlight the query substring when present (case-insensitive)
+            esc_item = escape(item)
+            if query.strip():
+                try:
+                    import re as _re
+
+                    pat = _re.compile(_re.escape(query.strip()), _re.IGNORECASE)
+                    # Re-highlight on the escaped string — safe because escape() never introduces regex metachars
+                    hl = pat.sub(lambda m: f"[bold {Tokens.WARN}]{escape(m.group(0))}[/]", esc_item)
+                except Exception:
+                    hl = esc_item
+            else:
+                hl = esc_item
+            prompt = f"  [{Tokens.TEXT}]{hl}[/]"
             options.append(Option(prompt, id=item))
 
         if not options:
+            q_esc = escape(query.strip()[:40])
             options.append(
                 Option(
-                    f'[{Tokens.TEXT_MUTED}]  no matching files for "{escape(query)}"[/]',
+                    f'[{Tokens.TEXT_MUTED}]  no matching files for "{q_esc}"[/]',
                     id="none",
                     disabled=True,
                 )
             )
+            # CTA to clear filter when query is active
+            if query.strip():
+                options.append(
+                    Option(
+                        f"[{Tokens.TEXT_DIM}]  ↩ clear filter (Esc to close)[/]",
+                        id="__clear__",
+                        disabled=False,
+                    )
+                )
+            # When _get_matches is empty but files exist, hint that fuzzy threshold may be too strict
+            if q_esc and len(q_esc) >= 2:
+                options.append(
+                    Option(
+                        f"[{Tokens.TEXT_MUTED}]  tip: try a shorter prefix — fuzzy match @ 0.25[/]",
+                        id="none2",
+                        disabled=True,
+                    )
+                )
 
         option_list.add_options(options)
         if option_list.option_count > 0:
-            option_list.highlighted = 0
+            # Highlight first selectable (skip disabled scanning row)
+            for i in range(option_list.option_count):
+                if (
+                    not option_list.get_option_at_index(i).disabled
+                    or option_list.get_option_at_index(i).id == "__clear__"
+                ):
+                    option_list.highlighted = i
+                    break
+            else:
+                option_list.highlighted = 0
 
 
 class SessionPickerScreen(FuzzyPickerScreen):
@@ -770,20 +1046,43 @@ class CommandPaletteScreen(FuzzyPickerScreen):
         if only is None or only == "models":
             models = []
             m = self._s.available_models or {}
+            details = getattr(self._s, "available_model_details", None) or {}
             for provider, names in m.items():
                 for n in names:
-                    if not q or q in n.lower() or q in provider.lower():
-                        models.append({"label": n, "desc": provider, "action": ("model", n)})
+                    d = details.get(n, {})
+                    tier = d.get("tier", "")
+                    tier_badge = {
+                        "frontier": "● Frontier",
+                        "mid": "◐ Mid",
+                        "small": "○ Small",
+                        "custom": "⬡ Local",
+                    }.get(tier, provider)
+                    think = "🧠" if d.get("supports_reasoning") else ""
+                    label = n
+                    desc = f"{provider} · {tier_badge} {think}".strip()
+                    # searchable: tier, label, provider, id
+                    hay = f"{n.lower()} {provider.lower()} {tier} {d.get('label', '').lower()}"
+                    if not q or q in hay:
+                        models.append({"label": label, "desc": desc, "action": ("model", n)})
             add_section("Models", models)
 
         if only is None or only == "reasoning":
+            # hide unsupported levels if current model doesn't support reasoning
+            from coderAI.llm.registry import get_spec
+
+            spec = get_spec(self._s.model) if self._s.model else None
+            supports = bool(spec and spec.supports_reasoning)
             reason = []
             for e in ("high", "medium", "low", "none"):
                 if not q or q in e:
+                    if not supports and e != "none":
+                        desc = "Not supported by current model"
+                    else:
+                        desc = "Set reasoning effort"
                     reason.append(
                         {
                             "label": f"/reasoning {e}",
-                            "desc": "Set reasoning effort",
+                            "desc": desc,
                             "action": ("reasoning", e),
                         }
                     )
@@ -926,16 +1225,28 @@ class FullContentScreen(ModalScreen[None]):
     }}
     """
 
-    def __init__(self, title: str, content: str) -> None:
+    def __init__(self, title: str, content: str, *, syntax: str | None = None) -> None:
         super().__init__()
         self._title = title
         self._content = content
+        self._syntax = syntax
 
     def compose(self) -> ComposeResult:
         with Container(id="full-box"):
             yield Label(self._title, id="full-header")
             with VerticalScroll():
-                yield Static(self._content, id="full-body")
+                if self._syntax:
+                    try:
+                        from rich.syntax import Syntax
+
+                        yield Static(
+                            Syntax(self._content, self._syntax, line_numbers=True, word_wrap=True),
+                            id="full-body",
+                        )
+                    except Exception:
+                        yield Static(self._content, id="full-body")
+                else:
+                    yield Static(self._content, id="full-body")
             with Horizontal():
                 yield Button("Close (Esc)", id="full-close")
                 yield Button("Copy", id="full-copy")
@@ -961,6 +1272,246 @@ class FullContentScreen(ModalScreen[None]):
 
     @on(events.Key)
     async def _on_key(self, event: events.Key) -> None:
+        if event.key == "escape":
+            event.stop()
+            event.prevent_default()
+            self.dismiss(None)
+
+
+class DiffReviewScreen(ModalScreen[Optional[dict[str, Any]]]):
+    """Inline hunk --/++ accept/reject toggles + find-in-diff."""
+
+    DEFAULT_CSS = f"""
+    DiffReviewScreen {{
+        align: center middle;
+    }}
+    DiffReviewScreen #diff-box {{
+        width: 92%;
+        max-width: 120;
+        height: auto;
+        max-height: 85%;
+        border: panel {Tokens.LINE};
+        background: {Tokens.BG_RAISED};
+        padding: 1 2;
+    }}
+    DiffReviewScreen #diff-header {{
+        color: {Tokens.TEXT_DIM};
+        margin-bottom: 1;
+    }}
+    DiffReviewScreen #diff-body {{
+        height: auto;
+        max-height: 28;
+        background: {Tokens.BG_SUNK};
+        padding: 1;
+        border: solid {Tokens.LINE_SOFT};
+    }}
+    DiffReviewScreen #diff-find {{
+        margin: 1 0;
+    }}
+    DiffReviewScreen Horizontal {{
+        height: auto;
+        align-horizontal: center;
+        margin-top: 1;
+    }}
+    DiffReviewScreen Button {{
+        margin: 0 1;
+    }}
+    """
+
+    def __init__(self, path: str, diff: str) -> None:
+        super().__init__()
+        self.path = path
+        self.diff = diff
+        self._find_query = ""
+        # hunk_idx -> bool (True=accept, False=reject, None=undecided)
+        self._toggles: dict[int, bool] = {}
+
+    def compose(self) -> ComposeResult:
+        with Container(id="diff-box"):
+            yield Label(f"Diff — {escape(self.path)}  (--/++ per hunk)", id="diff-header")
+            yield Input(placeholder="Find in diff… (highlights matches)", id="diff-find")
+            with VerticalScroll():
+                yield Static(self._render_diff(), id="diff-body", markup=True)
+            with Horizontal():
+                yield Button("Accept all", id="diff-accept-all", variant="success")
+                yield Button("Reject all", id="diff-reject-all", variant="error")
+                yield Button("Apply toggles", id="diff-apply", variant="primary")
+                yield Button("Close", id="diff-close")
+
+    def _render_diff(self) -> str:
+        # If find query active, highlight matches via find_in_diff
+        matches = set(find_in_diff(self.diff, self._find_query)) if self._find_query else set()
+        base = format_diff_gutter(self.diff, max_lines=10_000, show_line_numbers=True)
+        lines = base.split("\n")
+        out: list[str] = []
+        hunk_idx = -1
+        for i, line in enumerate(lines):
+            # Detect hunk header to increment toggle index
+            if "@@" in line:
+                hunk_idx += 1
+                state = self._toggles.get(hunk_idx)
+                if state is True:
+                    line += f"  [{Tokens.AGENT}]✓ accept[/]"
+                elif state is False:
+                    line += f"  [{Tokens.DANGER}]✗ reject[/]"
+                else:
+                    line += f"  [{Tokens.TEXT_MUTED}][a]ccept/[r]eject[/]"
+            # Highlight find matches
+            if i in matches and self._find_query:
+                # Simple highlight already done via format? Add marker
+                line = f"[on {Tokens.WARN}]{line}[/]"
+            out.append(line)
+        # Add toggle help
+        out.append(
+            f"\n[{Tokens.TEXT_MUTED}]Keys: a=accept hunk, r=reject hunk, n/p=find next/prev, Esc=close[/]"
+        )
+        return "\n".join(out)
+
+    def _refresh_body(self) -> None:
+        try:
+            self.query_one("#diff-body", Static).update(self._render_diff())
+        except NoMatches:
+            pass
+
+    @on(Input.Changed, "#diff-find")
+    def _on_find_changed(self, event: Input.Changed) -> None:
+        self._find_query = event.value
+        self._refresh_body()
+
+    @on(Button.Pressed, "#diff-accept-all")
+    def _accept_all(self) -> None:
+        # Mark all hunks as accept
+        hunk_count = self.diff.count("@@")
+        for idx in range(hunk_count):
+            self._toggles[idx] = True
+        self._refresh_body()
+        self.notify("All hunks marked accept")
+
+    @on(Button.Pressed, "#diff-reject-all")
+    def _reject_all(self) -> None:
+        hunk_count = self.diff.count("@@")
+        for idx in range(hunk_count):
+            self._toggles[idx] = False
+        self._refresh_body()
+        self.notify("All hunks marked reject")
+
+    @on(Button.Pressed, "#diff-apply")
+    def _apply(self) -> None:
+        self.dismiss({"path": self.path, "toggles": dict(self._toggles)})
+
+    @on(Button.Pressed, "#diff-close")
+    def _close(self) -> None:
+        self.dismiss(None)
+
+    @on(events.Key)
+    async def _on_key(self, event: events.Key) -> None:
+        if event.key == "escape":
+            event.stop()
+            event.prevent_default()
+            self.dismiss(None)
+            return
+        if event.key == "a":
+            # Accept current hunk (last focused)
+            # For simplicity, accept next undecided
+            hunk_count = self.diff.count("@@")
+            for idx in range(hunk_count):
+                if idx not in self._toggles:
+                    self._toggles[idx] = True
+                    break
+            else:
+                # All decided, toggle first
+                self._toggles[0] = True
+            self._refresh_body()
+            event.stop()
+            event.prevent_default()
+        elif event.key == "r":
+            hunk_count = self.diff.count("@@")
+            for idx in range(hunk_count):
+                if idx not in self._toggles:
+                    self._toggles[idx] = False
+                    break
+            else:
+                self._toggles[0] = False
+            self._refresh_body()
+            event.stop()
+            event.prevent_default()
+
+
+class ConfigScreen(ModalScreen[Optional[dict[str, str]]]):
+    """In-TUI /config form (model/budget/notifications) — previously CLI only."""
+
+    DEFAULT_CSS = f"""
+    ConfigScreen {{
+        align: center middle;
+    }}
+    ConfigScreen #config-box {{
+        width: 70;
+        height: auto;
+        max-height: 80%;
+        border: panel {Tokens.LINE};
+        background: {Tokens.BG_RAISED};
+        padding: 1 2;
+    }}
+    ConfigScreen Label {{
+        color: {Tokens.TEXT_DIM};
+    }}
+    ConfigScreen Input {{
+        margin: 1 0;
+        background: {Tokens.BG_SUNK};
+        border: solid {Tokens.LINE_SOFT};
+    }}
+    ConfigScreen Horizontal {{
+        height: auto;
+        align-horizontal: center;
+        margin-top: 1;
+    }}
+    ConfigScreen Button {{
+        margin: 0 1;
+    }}
+    """
+
+    def __init__(self, current: dict[str, str] | None = None) -> None:
+        super().__init__()
+        self.current = current or {}
+
+    def compose(self) -> ComposeResult:
+        with Container(id="config-box"):
+            yield Label("Configuration — model / budget / notifications", id="config-header")
+            yield Label("Model", id="cfg-model-label")
+            yield Input(
+                value=self.current.get("model", ""), placeholder="e.g. gpt-4o", id="cfg-model"
+            )
+            yield Label("Budget USD", id="cfg-budget-label")
+            yield Input(
+                value=self.current.get("budget", ""), placeholder="e.g. 10.00", id="cfg-budget"
+            )
+            yield Label("Notifications (on/off)", id="cfg-notif-label")
+            yield Input(
+                value=self.current.get("notifications", "on"),
+                placeholder="on / off",
+                id="cfg-notif",
+            )
+            with Horizontal():
+                yield Button("Save", id="cfg-save", variant="primary")
+                yield Button("Cancel", id="cfg-cancel")
+
+    @on(Button.Pressed, "#cfg-save")
+    def _cfg_save(self) -> None:
+        try:
+            model = self.query_one("#cfg-model", Input).value
+            budget = self.query_one("#cfg-budget", Input).value
+            notif = self.query_one("#cfg-notif", Input).value
+        except NoMatches:
+            self.dismiss(None)
+            return
+        self.dismiss({"model": model, "budget": budget, "notifications": notif})
+
+    @on(Button.Pressed, "#cfg-cancel")
+    def _cfg_cancel(self) -> None:
+        self.dismiss(None)
+
+    @on(events.Key)
+    def _cfg_on_key(self, event: events.Key) -> None:
         if event.key == "escape":
             event.stop()
             event.prevent_default()

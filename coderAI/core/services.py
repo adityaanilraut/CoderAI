@@ -28,7 +28,6 @@ if TYPE_CHECKING:
     from coderAI.system.history import HistoryManager
     from coderAI.system.locks import ResourceManager
     from coderAI.tools.mcp import MCPClient
-    from coderAI.tools.memory import MemoryStore
     from coderAI.tools.undo import FileBackupStore
     from coderAI.tools.web._http import HttpClient
 
@@ -52,7 +51,6 @@ class ToolServices:
         events: Any = None,
         history: Optional["HistoryManager"] = None,
         http: Optional["HttpClient"] = None,
-        memory_store: Optional["MemoryStore"] = None,
         backup_store: Optional["FileBackupStore"] = None,
         lock_manager: Optional["ResourceManager"] = None,
         agent_tracker: Optional["AgentTracker"] = None,
@@ -64,7 +62,6 @@ class ToolServices:
         self._events = events
         self._history = history
         self._http = http
-        self._memory_store = memory_store
         self._backup_store = backup_store
         self._lock_manager = lock_manager
         self._agent_tracker = agent_tracker
@@ -146,15 +143,6 @@ class ToolServices:
         from coderAI.system.history import history_manager
 
         return history_manager
-
-    @property
-    def memory_store(self) -> "MemoryStore":
-        def _build() -> "MemoryStore":
-            from coderAI.tools.memory import MemoryStore
-
-            return MemoryStore()
-
-        return self._resolve("memory_store", _build)
 
     @property
     def backup_store(self) -> "FileBackupStore":

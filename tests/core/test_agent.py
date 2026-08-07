@@ -359,7 +359,7 @@ You are a planner."""
                     persona = load_agent_persona("planner")
                     assert persona is not None
                     assert persona.name == "Planner Agent"
-                    assert persona.model == "claude-3-5-sonnet-20241022"
+                    assert persona.model == "claude-sonnet-5"
                     assert "You are a planner." in persona.instructions
 
     def test_resolve_persona_name_alias(self):

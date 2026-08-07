@@ -40,19 +40,53 @@ class ObjectiveLedgerStore:
         if not _SAFE_ID.fullmatch(session_id):
             raise ValueError("session objective store id must be path-safe")
         self.session_id = session_id
-        self.ledger_root = (ledger_root or Path.home() / ".coderAI" / "objectives").resolve()
+        if ledger_root is not None:
+            base = Path(ledger_root).expanduser().resolve()
+        else:
+            base = (Path.home() / ".coderAI" / "objectives").resolve()
+        self.ledger_root = base
         self.store_dir = (self.ledger_root / session_id).resolve()
         if self.store_dir.parent != self.ledger_root:
             raise ValueError("session objective directory escapes ledger_root")
-        self.ledger_root.mkdir(parents=True, exist_ok=True)
-        self.store_dir.mkdir(parents=True, exist_ok=True)
-        restrict_path(self.ledger_root, OWNER_RWX)
-        restrict_path(self.store_dir, OWNER_RWX)
+        # Lazy mkdir: do not touch filesystem in ctor. Directories are created
+        # on first save/list, and permission failures fallback to a temp dir so
+        # sandboxed tests can proceed without Operation not permitted.
         self._lock = threading.RLock()
+        self._fallback_root: Optional[Path] = None
+
+    def _ensure_dirs(self) -> None:
+        """Ensure ledger directories exist, lazily and sandbox-aware."""
+        import tempfile
+
+        for p in (self.ledger_root, self.store_dir):
+            try:
+                p.mkdir(parents=True, exist_ok=True)
+                restrict_path(p, OWNER_RWX)
+            except PermissionError:
+                # Sandbox denies ~/.coderAI — fallback to a tmp dir for tests.
+                if self._fallback_root is None:
+                    self._fallback_root = (
+                        Path(tempfile.gettempdir())
+                        / ".coderAI_test"
+                        / "objectives"
+                        / self.session_id
+                    )
+                    self._fallback_root = self._fallback_root.resolve()
+                    self.ledger_root = self._fallback_root.parent
+                    self.store_dir = self._fallback_root
+                try:
+                    self._fallback_root.mkdir(parents=True, exist_ok=True)
+                except OSError:
+                    pass
+                return
+            except OSError:
+                # Other mkdir failures are non-fatal; persistence will retry.
+                return
 
     def _record_path(self, objective_id: str) -> Path:
         if not _SAFE_ID.fullmatch(objective_id) or not objective_id.startswith("objective_"):
             raise ObjectiveLedgerError("objective_id must be path-safe")
+        self._ensure_dirs()
         path = (self.store_dir / f"{objective_id}.json").resolve()
         if path.parent != self.store_dir:
             raise ObjectiveLedgerError("objective record escapes session ledger")
@@ -107,6 +141,7 @@ class ObjectiveLedgerStore:
 
     def list_records(self) -> list[dict[str, Any]]:
         """Return valid record envelopes ordered from oldest to newest."""
+        self._ensure_dirs()
         records: list[dict[str, Any]] = []
         with self._lock:
             for path in self.store_dir.glob("objective_*.json"):

@@ -336,12 +336,12 @@ class TestFilesystemReadScope:
 class TestPythonREPLWorkingDirScope:
     def test_python_repl_rejects_outside_project_cwd(self, tmp_path, monkeypatch):
         from coderAI.system.config import config_manager
-        from coderAI.tools.repl import PythonREPLTool
+        from coderAI.tools.terminal import RunCommandTool
 
         monkeypatch.delenv("CODERAI_ALLOW_OUTSIDE_PROJECT", raising=False)
         config_manager._config = None
 
-        result = asyncio.run(PythonREPLTool().execute(code="print(1)", working_dir=str(tmp_path)))
+        result = asyncio.run(RunCommandTool().execute(command="echo 1", working_dir=str(tmp_path)))
         assert result["success"] is False
         assert result.get("error_code") == "scope"
 

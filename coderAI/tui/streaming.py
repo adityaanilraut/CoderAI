@@ -20,6 +20,11 @@ if TYPE_CHECKING:
 # Match EventReducer.STREAM_FLUSH_S so IPC and UI batch at the same cadence.
 STREAM_EMIT_S = 0.120
 
+# Cap per-tool-call argument buffer to prevent OOM from a poisoned/malicious
+# SSE stream emitting an unbounded write_file.content payload.
+MAX_STREAM_ARG_BYTES = 2_000_000
+MAX_STREAM_ARG_TRUNCATION_NOTE = " …[stream argument truncated: exceeded 2MB cap]"
+
 
 def _partial_tag_suffix_len(buffer: str, tag: str) -> int:
     """Return the length of the longest suffix of ``buffer`` that is a strict
@@ -185,9 +190,24 @@ class BridgeStreamingHandler:
                         if "function" in tcd:
                             fn = tcd["function"]
                             if fn.get("name"):
-                                self.tool_calls[idx]["function"]["name"] += fn["name"]
+                                # Cap name accumulation as well (defensive)
+                                if (
+                                    len(self.tool_calls[idx]["function"]["name"])
+                                    < MAX_STREAM_ARG_BYTES
+                                ):
+                                    self.tool_calls[idx]["function"]["name"] += fn["name"]
                             if fn.get("arguments"):
-                                self.tool_calls[idx]["function"]["arguments"] += fn["arguments"]
+                                cur = self.tool_calls[idx]["function"]["arguments"]
+                                if len(cur) < MAX_STREAM_ARG_BYTES:
+                                    remaining = MAX_STREAM_ARG_BYTES - len(cur)
+                                    chunk = fn["arguments"]
+                                    if len(chunk) > remaining:
+                                        chunk = chunk[:remaining] + MAX_STREAM_ARG_TRUNCATION_NOTE
+                                        # Mark overflow so caller can surface length handling
+                                        self.tool_calls[idx].setdefault("_overflow", True)
+                                    self.tool_calls[idx]["function"]["arguments"] += chunk
+                                else:
+                                    self.tool_calls[idx].setdefault("_overflow", True)
                         for k, v in tcd.items():
                             if k not in ("index", "id", "function", "type") and v is not None:
                                 self.tool_calls[idx][k] = v

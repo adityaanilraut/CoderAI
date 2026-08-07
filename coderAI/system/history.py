@@ -386,11 +386,26 @@ class HistoryManager:
     # so it must not run on every save/load/list. Run it at most this often.
     _CLEANUP_INTERVAL_SECONDS = 3600.0
 
-    def __init__(self) -> None:
+    def __init__(self, history_dir: Optional[Path] = None) -> None:
         """Initialize the history manager."""
-        self.history_dir = Path.home() / ".coderAI" / "history"
-        self.history_dir.mkdir(parents=True, exist_ok=True)
-        restrict_path(self.history_dir, OWNER_RWX)
+        if history_dir is not None:
+            self.history_dir = Path(history_dir).expanduser().resolve()
+        else:
+            self.history_dir = Path.home() / ".coderAI" / "history"
+        try:
+            self.history_dir.mkdir(parents=True, exist_ok=True)
+            restrict_path(self.history_dir, OWNER_RWX)
+        except PermissionError:
+            import tempfile
+
+            self.history_dir = Path(tempfile.gettempdir()) / ".coderAI_test" / "history"
+            self.history_dir = self.history_dir.resolve()
+            try:
+                self.history_dir.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                pass
+        except OSError:
+            pass
         self.current_session: Optional[Session] = None
         self._index_lock = threading.Lock()
         # Throttle clock for ``_cleanup_expired_sessions``; ``-inf`` forces the
@@ -400,6 +415,7 @@ class HistoryManager:
 
     def create_session(self, model: Optional[str] = None) -> Session:
         """Create a new session, defaulting to the configured model."""
+        self._ensure_history_dir()
         self._cleanup_expired_sessions()
         session_id = f"session_{int(time.time())}_{uuid.uuid4().hex[:8]}"
         if model is None:
@@ -407,8 +423,24 @@ class HistoryManager:
         self.current_session = Session(session_id=session_id, model=model)
         return self.current_session
 
+    def _ensure_history_dir(self) -> None:
+        try:
+            self.history_dir.mkdir(parents=True, exist_ok=True)
+        except PermissionError:
+            import tempfile
+
+            self.history_dir = Path(tempfile.gettempdir()) / ".coderAI_test" / "history"
+            self.history_dir = self.history_dir.resolve()
+            try:
+                self.history_dir.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                pass
+        except OSError:
+            pass
+
     def load_session(self, session_id: str) -> Optional[Session]:
         """Load a session from disk."""
+        self._ensure_history_dir()
         self._cleanup_expired_sessions()
         if not _SESSION_ID_PATTERN.match(session_id):
             return None
@@ -441,6 +473,7 @@ class HistoryManager:
         leave a truncated/invalid JSON behind that breaks ``list_sessions()``
         on the next launch. Same atomicity pattern the index already uses.
         """
+        self._ensure_history_dir()
         self._cleanup_expired_sessions()
         if session is None:
             session = self.current_session
@@ -465,6 +498,7 @@ class HistoryManager:
         """
         if run_cleanup:
             self._cleanup_expired_sessions()
+        self._ensure_history_dir()
         data = dict(data)
         data["schema_version"] = SESSION_SCHEMA_VERSION
         session_id = data.get("session_id")
@@ -473,7 +507,11 @@ class HistoryManager:
             return
 
         session_file = self.history_dir / f"{session_id}.json"
-        _atomic_write_json(session_file, data)
+        try:
+            _atomic_write_json(session_file, data)
+        except (OSError, PermissionError) as exc:
+            logger.warning("Could not save session %s: %s", session_id, exc)
+            return
 
         self._update_index(data)
 

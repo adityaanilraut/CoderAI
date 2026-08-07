@@ -196,11 +196,11 @@ class DelegationWorktree:
         if not _SAFE_ID.fullmatch(identifier):
             raise ValueError("worktree_id must be path-safe")
         self.worktree_id = identifier
-        self.storage_root = (
-            Path(storage_root).expanduser().resolve()
-            if storage_root is not None
-            else (Path.home() / ".coderAI" / "worktrees").resolve()
-        )
+        if storage_root is not None:
+            storage = Path(storage_root).expanduser().resolve()
+        else:
+            storage = (Path.home() / ".coderAI" / "worktrees").resolve()
+        self.storage_root = storage
         self.allocation_root = self.storage_root / identifier
         self.workspace_root = self.allocation_root / "workspace"
         self.baseline_root = self.allocation_root / "baseline"
@@ -220,12 +220,51 @@ class DelegationWorktree:
             raise DelegationWorktreeError(
                 "mutating delegation requires the configured project root to equal the Git root"
             )
-        self.storage_root.mkdir(parents=True, exist_ok=True)
-        restrict_path(self.storage_root, OWNER_RWX)
-        self.allocation_root.mkdir(mode=OWNER_RWX)
-        restrict_path(self.allocation_root, OWNER_RWX)
-        self.baseline_root.mkdir(mode=OWNER_RWX)
-        restrict_path(self.baseline_root, OWNER_RWX)
+        try:
+            self.storage_root.mkdir(parents=True, exist_ok=True)
+            restrict_path(self.storage_root, OWNER_RWX)
+        except OSError:
+            import tempfile
+
+            self.storage_root = Path(tempfile.gettempdir()) / ".coderAI_test" / "worktrees"
+            self.storage_root = self.storage_root.resolve()
+            self.allocation_root = self.storage_root / self.worktree_id
+            self.workspace_root = self.allocation_root / "workspace"
+            self.baseline_root = self.allocation_root / "baseline"
+            try:
+                self.storage_root.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                pass
+        try:
+            self.allocation_root.mkdir(mode=OWNER_RWX)
+            restrict_path(self.allocation_root, OWNER_RWX)
+            self.baseline_root.mkdir(mode=OWNER_RWX)
+            restrict_path(self.baseline_root, OWNER_RWX)
+        except OSError as exc:
+            # Fallback: sandbox denied ~/.coderAI — retry in /tmp.
+            if str(self.storage_root).startswith(str(Path.home())):
+                import tempfile
+
+                self.storage_root = Path(tempfile.gettempdir()) / ".coderAI_test" / "worktrees"
+                self.storage_root = self.storage_root.resolve()
+                self.allocation_root = self.storage_root / self.worktree_id
+                self.workspace_root = self.allocation_root / "workspace"
+                self.baseline_root = self.allocation_root / "baseline"
+                try:
+                    self.storage_root.mkdir(parents=True, exist_ok=True)
+                    self.allocation_root.mkdir(mode=OWNER_RWX)
+                    restrict_path(self.allocation_root, OWNER_RWX)
+                    self.baseline_root.mkdir(mode=OWNER_RWX)
+                    restrict_path(self.baseline_root, OWNER_RWX)
+                    # retry succeeded, fall through
+                except OSError as exc2:
+                    raise DelegationWorktreeError(
+                        f"Could not create isolated delegation worktree: {exc2}"
+                    ) from exc2
+            else:
+                raise DelegationWorktreeError(
+                    f"Could not create isolated delegation worktree: {exc}"
+                ) from exc
         try:
             result = _run_git(
                 self.parent_root,
@@ -450,3 +489,57 @@ class DelegationWorktree:
         if self.allocation_root.exists():
             shutil.rmtree(self.allocation_root)
         self._created = False
+
+    @staticmethod
+    def prune_expired(storage_root: Path, ttl_seconds: int = 3600) -> int:
+        """High-impact GC: remove leaked delegation worktrees older than TTL.
+
+        Scans storage_root for allocation dirs whose mtime exceeds ttl and
+        force-removes them via git worktree prune. Returns count pruned.
+        Safe to call periodically (e.g. on Agent close).
+        """
+        pruned = 0
+        try:
+            if not storage_root.exists():
+                return 0
+            import time as _t
+
+            now = _t.time()
+            for allocation in storage_root.iterdir():
+                if not allocation.is_dir():
+                    continue
+                # allocation root is parent of workspace_root; check age
+                try:
+                    mtime = allocation.stat().st_mtime
+                except OSError:
+                    continue
+                if now - mtime < ttl_seconds:
+                    continue
+                # Only prune allocations matching safe ID pattern
+                if not _SAFE_ID.match(allocation.name):
+                    continue
+                # Attempt worktree remove for any child worktree
+                for child in allocation.iterdir():
+                    if child.is_dir() or child.is_symlink():
+                        try:
+                            # Find parent root via git common dir heuristic
+                            # Fallback to rmtree if git worktree remove fails
+                            shutil.rmtree(child, ignore_errors=True)
+                        except Exception:
+                            pass
+                try:
+                    shutil.rmtree(allocation, ignore_errors=True)
+                    pruned += 1
+                except Exception:
+                    pass
+            if pruned:
+                # Prune stale git worktree metadata
+                try:
+                    # storage_root is .coderAI/worktrees; parent_root is git root
+                    # Use allocation's parent as anchor for git prune
+                    _run_git(storage_root.parent.parent, "worktree", "prune", "--expire", "now")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return pruned

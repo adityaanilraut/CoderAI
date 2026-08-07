@@ -18,7 +18,6 @@ import os
 import pytest
 
 from coderAI.system.proc import is_secret_env_var, scrub_env
-from coderAI.tools.repl import PythonREPLTool
 from coderAI.tools.terminal import RunCommandTool
 
 POSIX_ONLY = pytest.mark.skipif(os.name == "nt", reason="POSIX process-group semantics")
@@ -77,8 +76,11 @@ def test_python_repl_env_has_no_secrets(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "aws-should-not-leak")
     monkeypatch.setenv("REPL_BENIGN_MARKER", "visible-ok")
 
-    code = "import os, json; print(json.dumps(sorted(os.environ)))"
-    result = asyncio.run(PythonREPLTool().execute(code=code))
+    result = asyncio.run(
+        RunCommandTool().execute(
+            command="python3 -c 'import os, json; print(json.dumps(sorted(os.environ)))'"
+        )
+    )
 
     assert result["success"] is True, result
     seen = set(json.loads(result["stdout"]))
@@ -93,32 +95,14 @@ def test_python_repl_env_has_no_secrets(monkeypatch: pytest.MonkeyPatch) -> None
 
 @pytest.mark.parametrize("bad_timeout", [0, -5])
 def test_python_repl_clamps_nonpositive_timeout(bad_timeout: int) -> None:
-    result = asyncio.run(PythonREPLTool().execute(code="print('clamp-ok')", timeout=bad_timeout))
+    result = asyncio.run(
+        RunCommandTool().execute(command="python3 -c \"print('clamp-ok')\"", timeout=bad_timeout)
+    )
     assert result["success"] is True, result
     assert "clamp-ok" in result["stdout"]
 
 
 # ── process-group reaping on timeout ─────────────────────────────────────────
-
-
-@POSIX_ONLY
-def test_python_repl_timeout_reaps_grandchild(tmp_path) -> None:
-    marker = tmp_path / "leaked.txt"
-    grandchild = "import time; time.sleep(2); open(%r, 'w').write('leaked')" % str(marker)
-    code = (
-        "import subprocess, sys, time\n"
-        "subprocess.Popen([sys.executable, '-c', %r])\n"
-        "time.sleep(30)\n"
-    ) % grandchild
-
-    result = asyncio.run(PythonREPLTool().execute(code=code, timeout=1))
-    assert result["success"] is False
-    assert result.get("error_code") == "timeout"
-
-    # If only the direct child were killed, the backgrounded grandchild would
-    # survive and write the marker at ~2s. Wait past that and assert it didn't.
-    asyncio.run(asyncio.sleep(2.5))
-    assert not marker.exists(), "grandchild orphaned — process group was not killed"
 
 
 @POSIX_ONLY

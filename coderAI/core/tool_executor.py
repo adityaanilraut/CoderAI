@@ -47,8 +47,23 @@ from coderAI.core.workspace_transactions import WorkspaceTransactionError
 
 logger = logging.getLogger(__name__)
 
-# Cap concurrent read-only tools to avoid OS resource exhaustion
-MAX_CONCURRENT_READ_ONLY = 20
+
+# Cap concurrent read-only tools — auto-scaled by CPU count so large
+# machines can fan out grep/read_file, small machines stay safe.
+# Throughput tuning: 32-64 concurrent reads saturates NVMe + network
+# without thread-pool starvation; 6× cores gives larger headroom on 8+
+# core hosts where concurrent grep/read_file fan-out is highly profitable.
+def _default_ro_cap() -> int:
+    try:
+        import os
+
+        cpus = os.cpu_count() or 4
+        return max(32, min(64, cpus * 6))
+    except Exception:
+        return 32
+
+
+MAX_CONCURRENT_READ_ONLY = _default_ro_cap()
 
 DEFAULT_TOOL_TIMEOUT_SECONDS = 120.0
 
@@ -118,12 +133,23 @@ def resolve_tool_timeout(tool: Any, tool_name: str, arguments: Any) -> float:
     return DEFAULT_TOOL_TIMEOUT_SECONDS
 
 
-# Cap concurrent read-only sub-agent delegations. Each sub-agent is a full
-# LLM session with its own tool loop, so we fan out far less aggressively
-# than for cheap read-only tools like read_file / grep.
-MAX_CONCURRENT_READ_ONLY_SUBAGENTS = 4
+# Cap concurrent read-only sub-agent delegations. Raised from 4 → 8 and
+# auto-scaled: each sub-agent is a full LLM session, but modern hosts
+# handle 6-8 concurrent fetch/research agents trivially (mirrors Claude
+# Code's 3-5× fan-out win). The semaphore is still bounded to avoid OOM.
+def _default_ro_subagent_cap() -> int:
+    try:
+        import os
 
-DEFAULT_MAX_CONCURRENT_MUTATING_SUBAGENTS = 3
+        cpus = os.cpu_count() or 4
+        return max(6, min(10, cpus * 2))
+    except Exception:
+        return 8
+
+
+MAX_CONCURRENT_READ_ONLY_SUBAGENTS = _default_ro_subagent_cap()
+
+DEFAULT_MAX_CONCURRENT_MUTATING_SUBAGENTS = 4
 
 # Maximum number of entries in the preview file cache. Beyond this limit, the
 # least-recently-used entry is evicted to bound memory usage.
@@ -217,6 +243,27 @@ class ToolExecutor:
 
     def _mutating_subagent_cap(self) -> int:
         cfg = getattr(self.agent, "config", None)
+        # If the user explicitly set the config key (project or user config),
+        # honour it. Otherwise auto-scale from CPU count so the default on an
+        # 8-core machine is higher than on a 2-core CI runner.
+        explicit = False
+        if cfg is not None:
+            if hasattr(cfg, "model_fields_set"):
+                explicit = "max_concurrent_mutating_subagents" in getattr(
+                    cfg, "model_fields_set", set()
+                )
+            else:
+                # Test helpers use SimpleNamespace without model_fields_set
+                explicit = hasattr(cfg, "max_concurrent_mutating_subagents")
+        if not explicit:
+            try:
+                import os
+
+                cpus = os.cpu_count() or 4
+                auto = max(4, min(8, cpus))
+                return auto
+            except Exception:
+                return DEFAULT_MAX_CONCURRENT_MUTATING_SUBAGENTS
         try:
             cap = int(
                 getattr(
@@ -225,7 +272,7 @@ class ToolExecutor:
                     DEFAULT_MAX_CONCURRENT_MUTATING_SUBAGENTS,
                 )
             )
-            return max(1, min(8, cap))
+            return max(1, min(10, cap))
         except (TypeError, ValueError):
             return DEFAULT_MAX_CONCURRENT_MUTATING_SUBAGENTS
 
@@ -578,6 +625,20 @@ class ToolExecutor:
         if bool(getattr(self.agent, "auto_approve", False)) and not force_confirm:
             return True
 
+        # Compute diff even for override path so headless logging has it
+        headless_diff = (
+            precomputed_diff
+            if precomputed_diff is not None
+            else await asyncio.to_thread(self._compute_preview_diff, tool_name, arguments)
+        )
+        # Headless diff logging: ensure diff is observable even when override decides
+        if headless_diff:
+            logger.info("Headless diff for '%s':\n%s", tool_name, headless_diff[:4000])
+            try:
+                get_services().events.emit("tool_diff", tool_name=tool_name, diff=headless_diff)
+            except Exception:
+                pass
+
         override = getattr(self.agent, "confirmation_override", None)
         if override is not None:
             override_allowed = bool(await override(tool_name, arguments))
@@ -598,11 +659,8 @@ class ToolExecutor:
                 )
                 return False
 
-        diff = (
-            precomputed_diff
-            if precomputed_diff is not None
-            else await asyncio.to_thread(self._compute_preview_diff, tool_name, arguments)
-        )
+        # Reuse headless_diff computed above to avoid double preview computation
+        diff = headless_diff
 
         async with self._confirm_lock:
             # Always (a) may have enabled YOLO while this call was queued
@@ -1500,11 +1558,18 @@ class ToolExecutor:
             return {"success": True, "result": raw}
 
         def _phase_kind(pc: dict[str, Any]) -> str:
+            if pc.get("tool_name") in ("manage_tasks", "request_plan_amendment") and _is_read_call(
+                pc
+            ):
+                # High-impact: control tools get priority lane even among reads
+                return "priority"
             if _is_read_call(pc):
                 return "read"
             if pc.get("tool_name") == "delegate_task" and isinstance(pc.get("arguments"), dict):
                 if resolve_delegation_isolation_domain(pc["arguments"]) == "browser":
                     return "browser"
+            if pc.get("tool_name") in ("manage_tasks", "request_plan_amendment"):
+                return "priority"
             return "mutation"
 
         async def _run_read(idx: int, caps: dict[str, asyncio.Semaphore]) -> dict[str, Any]:
@@ -1528,8 +1593,21 @@ class ToolExecutor:
 
         mutation_completed = False
         cursor = 0
+        # High-impact priority lane: run manage_tasks first so completion gate
+        # and objective ledger never stall behind file edits
+        # Reorder: priority phase first, then reads, then browser/mutations
+        priority_indices = [i for i, pc in enumerate(parsed_calls) if _phase_kind(pc) == "priority"]
+        if priority_indices:
+            for idx in priority_indices:
+                t0 = _time.time()
+                results[idx] = await _run(parsed_calls[idx], diff=None)
+                _emit_progress(idx, elapsed=round(_time.time() - t0, 2))
+            # Priority results already emitted — cursor loop skips them via kind check.
         while cursor < len(parsed_calls):
             kind = _phase_kind(parsed_calls[cursor])
+            if kind == "priority":
+                cursor += 1
+                continue
             if kind in {"read", "browser"}:
                 phase_indices: list[int] = []
                 while cursor < len(parsed_calls) and _phase_kind(parsed_calls[cursor]) == kind:

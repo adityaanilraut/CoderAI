@@ -38,7 +38,13 @@ class OpenAICompatibleLocalProvider(LLMProvider):
 
     def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession()
+            connector = aiohttp.TCPConnector(
+                limit=20,
+                limit_per_host=6,
+                enable_cleanup_closed=True,
+                ttl_dns_cache=300,
+            )
+            self._session = aiohttp.ClientSession(connector=connector)
         return self._session
 
     async def close(self) -> None:

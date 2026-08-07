@@ -2,8 +2,6 @@
 
 from typing import Any, Optional
 
-from groq import AsyncGroq
-
 from coderAI.llm.base import HTTP_TOTAL_TIMEOUT
 from coderAI.llm.cloud_base import OpenAICompatibleCloudProvider
 
@@ -15,23 +13,23 @@ class GroqProvider(OpenAICompatibleCloudProvider):
 
     SUPPORTED_MODELS = {
         "openai/gpt-oss-120b": "openai/gpt-oss-120b",
+        "meta-llama/llama-4-scout-17b-16e-instruct": "meta-llama/llama-4-scout-17b-16e-instruct",
         "openai/gpt-oss-20b": "openai/gpt-oss-20b",
-        "llama3-70b-8192": "llama3-70b-8192",
-        "llama3-8b-8192": "llama3-8b-8192",
-        "mixtral-8x7b-32768": "mixtral-8x7b-32768",
-        "gemma-7b-it": "gemma-7b-it",
     }
     MODEL_CONTEXT_WINDOWS = {
         "openai/gpt-oss-120b": 131_072,
+        "meta-llama/llama-4-scout-17b-16e-instruct": 131_072,
         "openai/gpt-oss-20b": 131_072,
-        "llama3-70b-8192": 8_192,
-        "llama3-8b-8192": 8_192,
-        "mixtral-8x7b-32768": 32_768,
-        "gemma-7b-it": 8_192,
     }
 
     def __init__(self, model: str, api_key: Optional[str] = None, **kwargs: Any):
         super().__init__(model, api_key, **kwargs)
+        try:
+            from groq import AsyncGroq
+        except ImportError as e:
+            raise ImportError(
+                "groq is not installed. Install with: pip install coderai-agent[groq]"
+            ) from e
         self.client = AsyncGroq(api_key=api_key, timeout=HTTP_TOTAL_TIMEOUT)
 
     def _extract_stream_usage(self, chunk_data: dict[str, Any]) -> Optional[dict[str, Any]]:

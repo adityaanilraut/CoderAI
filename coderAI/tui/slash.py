@@ -433,6 +433,74 @@ def _cmd_trust(ctx: SlashContext, arg: str, head: str) -> bool:
     return True
 
 
+def _cmd_notifications(ctx: SlashContext, arg: str, head: str) -> bool:
+    # Toggle or mute specific level
+    sub = (arg or "").strip().lower()
+    if sub in ("mute", "on", "off"):
+        # app-level toggle via toast mute
+        # Fallback: use level mute
+        ctx.toast(
+            "info",
+            "Use Ctrl+Alt+N to toggle desktop notifications; /clear-toasts to dismiss toasts",
+        )
+        return True
+    if sub in ("info", "warning", "error", "success"):
+        # This would be handled by app action_mute_toast_level if app ref available
+        ctx.toast("info", f"Toggle {sub} toasts via app binding Ctrl+Alt+C / Ctrl+Alt+N")
+        return True
+    ctx.toast(
+        "info",
+        "Notifications: Ctrl+Alt+N mute desktop, /clear-toasts dismiss, /theme toggles contrast",
+    )
+    return True
+
+
+def _cmd_clear_toasts(ctx: SlashContext, arg: str, head: str) -> bool:
+    # Remove toasts via reducer timeline
+    before = len(ctx.reducer.timeline)
+    ctx.reducer.timeline = [it for it in ctx.reducer.timeline if it.get("kind") != "toast"]
+    removed = before - len(ctx.reducer.timeline)
+    if removed:
+        ctx.toast("info", f"Cleared {removed} toasts")
+    else:
+        ctx.toast("info", "No toasts to clear")
+    return True
+
+
+def _cmd_theme(ctx: SlashContext, arg: str, head: str) -> bool:
+    sub = (arg or "").strip().lower()
+    if sub in ("high-contrast", "high", "hc"):
+        ctx.toast("info", "Theme: high-contrast — use Ctrl+Alt+T to toggle")
+    elif sub in ("dark", "default"):
+        ctx.toast("info", "Theme: dark — use Ctrl+Alt+T to toggle")
+    else:
+        ctx.toast("info", "Theme: dark / high-contrast — use Ctrl+Alt+T or /theme [dark|high]")
+    return True
+
+
+def _cmd_resize(ctx: SlashContext, arg: str, head: str) -> bool:
+    ctx.toast(
+        "info",
+        "Panes: Alt+←/→ agents width, Alt+Shift+←/→ tasks width, Alt+0 reset, Ctrl+B/G toggle",
+    )
+    return True
+
+
+def _cmd_config(ctx: SlashContext, arg: str, head: str) -> bool:
+    # In-TUI /config form (model/budget/notifications) — previously CLI only
+    # Delegate to app if it has a config screen handler, otherwise fallback
+    app = getattr(ctx, "app", None)
+    # Try to open TUI config screen via app method if available
+    if app and hasattr(app, "action_show_config"):
+        try:
+            app.action_show_config()  # type: ignore[attr-defined]
+            return True
+        except Exception:
+            pass
+    ctx.toast("info", "Config: use /config form in TUI or `coderAI config` CLI")
+    return True
+
+
 # ── registry ──────────────────────────────────────────────────────────
 
 
@@ -528,7 +596,6 @@ _register(
     "system",
     "diag",
     "diagnostics",
-    "config",
     "info",
     desc="Reference info · type /show then a topic",
 )
@@ -556,6 +623,20 @@ _register(
     _cmd_trust,
     "trust",
     desc="Trust this workspace · /trust [grant|revoke|status]",
+)
+_register(
+    _cmd_notifications, "notifications", "notif", desc="Notification controls · /notifications"
+)
+_register(
+    _cmd_clear_toasts, "clear-toasts", "clear_toasts", desc="Clear toast messages from timeline"
+)
+_register(_cmd_theme, "theme", desc="Toggle theme · /theme [dark|high]")
+_register(_cmd_resize, "resize", "panes", desc="Pane resizing help · /resize")
+_register(
+    _cmd_config,
+    "config",
+    "settings",
+    desc="In-TUI config form · /config (model/budget/notifications)",
 )
 
 

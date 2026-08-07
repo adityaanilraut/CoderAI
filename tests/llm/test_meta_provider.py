@@ -39,11 +39,11 @@ class TestModelMapping:
 
     def test_muse_alias(self):
         provider = MetaProvider(model="muse", api_key="test-key")
-        assert provider.actual_model == "muse-spark-1.1"
+        assert provider.actual_model == "muse-spark-1.2"
 
     def test_muse_spark_alias(self):
         provider = MetaProvider(model="muse-spark", api_key="test-key")
-        assert provider.actual_model == "muse-spark-1.1"
+        assert provider.actual_model == "muse-spark-1.2"
 
     def test_case_insensitive(self):
         provider = MetaProvider(model="Muse-Spark-1.1", api_key="test-key")
@@ -107,7 +107,7 @@ class TestFactoryRouting:
     def test_muse_alias(self):
         provider = create_provider("muse", _config())
         assert isinstance(provider, MetaProvider)
-        assert provider.actual_model == "muse-spark-1.1"
+        assert provider.actual_model == "muse-spark-1.2"
 
     def test_meta_prefix(self):
         provider = create_provider("meta/muse-spark-1.1", _config())

@@ -37,11 +37,29 @@ class SelectableRichLog(RichLog):
         ``Content``. RichLog stores pre-rendered ``Strip`` lines instead, so
         we rebuild plain text from ``self.lines`` and let ``Selection.extract``
         slice the range.
+
+        When ``_markdown_sources`` is populated (set by CoderAIApp from the
+        raw timeline items), selection is extracted from the raw markdown so
+        fences and original formatting are preserved rather than the
+        Rich-rendered plain text.
         """
+        # Prefer raw markdown sources for faithful copy (preserves fences)
+        raw_sources: list[str] | None = getattr(self, "_markdown_sources", None)
+        if raw_sources:
+            raw_text = "\n".join(raw_sources)
+            if raw_text:
+                try:
+                    return selection.extract(raw_text), "\n"
+                except Exception:
+                    pass
         if not self.lines:
             return None
         text = "\n".join(strip.text for strip in self.lines)
         return selection.extract(text), "\n"
+
+    def set_markdown_sources(self, sources: list[str]) -> None:
+        """Store raw markdown sources for selection copy that preserves fences."""
+        self._markdown_sources = sources  # type: ignore[attr-defined]
 
     def render_line(self, y: int) -> Strip:
         scroll_x, scroll_y = self.scroll_offset
@@ -72,13 +90,12 @@ class SelectableRichLog(RichLog):
         strip = Strip(new_segments)
         return strip
 
-    # ── Strip-blit fast path (relies on RichLog private internals) ──────
-    # The methods below read and mutate RichLog private state
-    # (``_size_known``, ``lines``, ``_widest_line_width``, ``virtual_size``)
-    # so the app can blit pre-rendered Strips straight into the log without
-    # re-rendering through Rich/Markdown — the cost the strip cache avoids.
-    # Verified against Textual 8.2.4 / 8.2.8; re-verify these internals on
-    # any Textual upgrade (see the pinned `textual>=8.0,<9` in pyproject).
+    # ── Strip-blit fast path (Textual-version resilient) ──────────────
+    # RichLog's fast path historically poked private state (``_size_known``,
+    # ``lines``, ``_widest_line_width``, ``virtual_size``).  Textual 9 may
+    # rename those.  Every method here probes multiple attribute names and
+    # degrades to a style-preserving public ``write`` fallback that keeps
+    # colors (unlike the old ``strip.text`` fallback which stripped styles).
 
     def sized_for_blit(self) -> bool:
         """True once the widget knows its width, so blitting strips is valid.
@@ -87,26 +104,91 @@ class SelectableRichLog(RichLog):
         them once sized, so ``lines`` is empty — blitting cached strips then
         would capture nothing.
         """
-        return bool(self._size_known)
+        # Probe known private flags then fall back to public mounted/size.
+        for attr in ("_size_known", "_is_size_known", "_size_known_flag"):
+            val = getattr(self, attr, None)
+            if val is not None:
+                return bool(val)
+        try:
+            if getattr(self, "is_mounted", False):
+                w = self.scrollable_content_region.width  # type: ignore[attr-defined]
+                if w and w > 0:
+                    return True
+                return self.size.width > 0  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        try:
+            return self.size.width > 0  # type: ignore[attr-defined]
+        except Exception:
+            return False
 
     def line_count(self) -> int:
         """Number of rendered strips currently in the log (blit start index)."""
-        return len(self.lines)
+        lines = getattr(self, "lines", None)
+        if lines is not None:
+            try:
+                return len(lines)  # type: ignore[arg-type]
+            except Exception:
+                return 0
+        try:
+            return int(getattr(self, "virtual_size").height)  # type: ignore[attr-defined]
+        except Exception:
+            return 0
 
     def blit_strips(self, strips: list[Strip]) -> None:
-        """Append pre-rendered ``strips`` and refresh the scroll extent.
+        """Append pre-rendered ``strips`` and refresh the scroll extent."""
+        if not strips:
+            return
+        has_private = hasattr(self, "lines") and hasattr(self, "_widest_line_width")
+        if has_private:
+            try:
+                self.lines.extend(strips)  # type: ignore[attr-defined]
+                current_width = getattr(self, "_widest_line_width", 0)
+                widest = current_width
+                for s in strips:
+                    try:
+                        widest = max(widest, s.cell_length)
+                    except Exception:
+                        widest = max(widest, len(s.text))
+                self._widest_line_width = widest  # type: ignore[attr-defined]
+                try:
+                    self.virtual_size = Size(widest, len(self.lines))  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+                try:
+                    cache = getattr(self, "_line_cache", None)
+                    if cache is not None:
+                        cache.clear()
+                except Exception:
+                    pass
+                self.refresh()
+                return
+            except Exception:
+                pass
+        from rich.text import Text as _RichText
 
-        Mirrors the tail of ``RichLog.write`` (widest-width bump +
-        ``virtual_size``) without going through Rich, since the strips are
-        already rendered.
-        """
-        self.lines.extend(strips)
-        if strips:
-            self._widest_line_width = max(
-                self._widest_line_width, max(s.cell_length for s in strips)
-            )
-        self.virtual_size = Size(self._widest_line_width, len(self.lines))
+        for strip in strips:
+            try:
+                txt = _RichText()
+                has_segments = False
+                for seg in strip:
+                    has_segments = True
+                    txt.append(seg.text, style=seg.style or None)
+                if not has_segments:
+                    txt.append(strip.text)
+                self.write(txt)  # type: ignore[attr-defined]
+            except Exception:
+                try:
+                    self.write(strip.text)  # type: ignore[attr-defined]
+                except Exception:
+                    pass
 
     def strips_since(self, start: int) -> list[Strip]:
         """Strips appended since index ``start`` (for render-cache capture)."""
-        return self.lines[start:]
+        lines = getattr(self, "lines", None)
+        if lines is not None:
+            try:
+                return list(lines[start:])  # type: ignore[return-value, no-any-return]
+            except Exception:
+                return []
+        return []

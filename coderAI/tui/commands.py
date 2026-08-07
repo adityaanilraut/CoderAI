@@ -845,24 +845,27 @@ async def _cmd_set_reasoning(server: UIBridge, msg: dict[str, Any]) -> None:
     effort = str(msg.get("effort", "none")).lower()
     if effort not in ("high", "medium", "low", "none"):
         server.emit(
-            "warning",
-            message=f"Invalid reasoning effort: {effort!r}. Use high|medium|low|none.",
+            "warning", message=f"Invalid reasoning effort: {effort!r}. Use high|medium|low|none."
         )
         return
-    # Persist in config so the next provider creation inherits the value.
+    from coderAI.llm.registry import get_spec
+
+    model = getattr(server.agent, "model", "")
+    spec = get_spec(model) if model else None
+    if spec and not spec.supports_reasoning and effort != "none":
+        server.emit(
+            "warning",
+            message=f"Model {model} does not support reasoning (only 'none' allowed). Tier: {spec.tier}.",
+        )
+        return
     server.agent.config.reasoning_effort = effort
-    # Also patch the live provider directly so the change takes effect on the
-    # very next LLM call without requiring a model switch or restart.
     provider = getattr(server.agent, "provider", None)
     if provider is not None:
         try:
             provider.reasoning_effort = effort
         except Exception:
-            # Provider may expose reasoning_effort as a read-only property;
-            # the config value above still applies on the next provider build.
             logger.debug("could not patch live provider reasoning_effort", exc_info=True)
     server.emit("session_patch", reasoning=effort)
-    # Status bar shows current reasoning level; no toast.
 
 
 async def _cmd_tool_approval_resp(server: UIBridge, msg: dict[str, Any]) -> None:
@@ -1260,26 +1263,61 @@ async def _cmd_search_codebase(server: UIBridge, msg: dict[str, Any]) -> None:
 
 
 async def _cmd_list_models(server: UIBridge, _msg: dict[str, Any]) -> None:
-    """Return all available models grouped by provider for the model-picker UI."""
-    from ..llm.anthropic import MODEL_ALIASES
-    from ..llm.deepseek import DeepSeekProvider
-    from ..llm.groq import GroqProvider
-    from ..llm.openai import OpenAIProvider
-    from ..llm.gemini import GeminiProvider
-    from ..llm.meta import MetaProvider
+    """Return all available models grouped by provider for the model-picker UI.
+
+    Unified picker: delegates to registry so every provider shows
+    frontier/mid/small tier badges and reasoning support.
+    """
+    from coderAI.llm.registry import ALL_SPECS
+
+    grouped: dict[str, list[str]] = {}
+    details: dict[str, dict] = {}
+    for spec in ALL_SPECS:
+        provider_label = (
+            spec.provider.title()
+            if spec.provider not in ("lmstudio", "ollama")
+            else spec.provider.title()
+        )
+        # normalize to match existing UI labels
+        display_provider = {
+            "Openai": "OpenAI",
+            "Anthropic": "Anthropic",
+            "Gemini": "Gemini",
+            "Deepseek": "DeepSeek",
+            "Groq": "Groq",
+            "Meta": "Meta",
+            "Lmstudio": "Local",
+            "Ollama": "Local",
+        }.get(provider_label, provider_label)
+        grouped.setdefault(display_provider, []).append(spec.id)
+        # local providers collapse under "Local"
+        if spec.provider in ("lmstudio", "ollama"):
+            grouped.setdefault("Local", [])
+            if spec.id not in grouped["Local"]:
+                # ensure Local contains both but not duplicate specs already grouped
+                pass
+        details[spec.id] = {
+            "label": spec.label,
+            "tier": spec.tier,
+            "supports_reasoning": spec.supports_reasoning,
+            "context_window": spec.context_window,
+            "input_price": spec.input_price,
+            "output_price": spec.output_price,
+        }
+    # sort lists
+    for k in grouped:
+        grouped[k] = sorted(grouped[k])
+    # ensure Local only once and ordered
+    if "Lmstudio" in grouped:
+        del grouped["Lmstudio"]
+    if "Ollama" in grouped:
+        del grouped["Ollama"]
 
     server.emit(
         "available_models",
         current=server.agent.model,
-        models={
-            "Anthropic": sorted(MODEL_ALIASES.keys()),
-            "OpenAI": sorted(OpenAIProvider.SUPPORTED_MODELS.keys()),
-            "DeepSeek": sorted(DeepSeekProvider.SUPPORTED_MODELS.keys()),
-            "Groq": sorted(GroqProvider.SUPPORTED_MODELS.keys()),
-            "Gemini": sorted(GeminiProvider.SUPPORTED_MODELS.keys()),
-            "Meta": sorted(MetaProvider.SUPPORTED_MODELS.keys()),
-            "Local": ["lmstudio", "ollama"],
-        },
+        models=grouped,
+        details=details,
     )
 
 

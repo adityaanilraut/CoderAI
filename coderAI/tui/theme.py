@@ -20,8 +20,10 @@ class Tokens:
     BG_SUNK = "#16161e"  # sunken panes — sidebars, scroll regions
     COMPOSER_BG = "#242528"  # neutral graphite — message composer
     COMPOSER_LINE = "#45474b"  # neutral composer outline
-    LINE = "#414868"  # borders, dividers, scrollbars (faint)
+    LINE = "#414868"  # borders, dividers
     LINE_SOFT = "#2f334d"  # quiet inner borders / rails at rest
+    SCROLLBAR = "#6b7280"  # scrollbars — 3.2:1 on BG (was LINE 1.8:1)
+    SCROLLBAR_HOVER = "#9ca3af"  # scrollbar hover
 
     # --- Foreground ---
     TEXT = "#c0caf5"  # primary foreground — lavender-white
@@ -128,4 +130,15 @@ class Styles:
     DIFF_REMOVE_EMPH = f"bold {Tokens.DANGER} on #5e3341"  # DANGER at 30% over BG
 
 
-__all__ = ["Tokens", "Categories", "Glyphs", "Styles"]
+class ThemeMode:
+    """Theme selection — default dark, optional high-contrast."""
+
+    DARK = "dark"
+    HIGH_CONTRAST = "high-contrast"
+
+    @classmethod
+    def scrollbar(cls, mode: str = DARK) -> str:
+        return Tokens.SCROLLBAR_HOVER if mode == cls.HIGH_CONTRAST else Tokens.SCROLLBAR
+
+
+__all__ = ["Tokens", "Categories", "Glyphs", "Styles", "ThemeMode"]

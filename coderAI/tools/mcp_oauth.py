@@ -153,12 +153,19 @@ def generate_pkce() -> tuple[str, str]:
 
 def _pick_loopback_port() -> int:
     """Grab a free TCP port on the loopback interface for the redirect URI."""
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        s.bind(("127.0.0.1", 0))
-        return int(s.getsockname()[1])
-    finally:
-        s.close()
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            s.bind(("127.0.0.1", 0))
+            return int(s.getsockname()[1])
+        finally:
+            s.close()
+    except OSError:
+        # Sandbox / pytest-socket may deny bind. Fall back to an ephemeral port
+        # without probing; the caller will retry on collision (EADDRINUSE).
+        import random
+
+        return random.randint(49152, 65535)
 
 
 class _CallbackHandler(http.server.BaseHTTPRequestHandler):

@@ -2,7 +2,6 @@
 
 from coderAI.prompts.compose import (  # noqa: F401
     SYSTEM_PROMPT_BROWSER,
-    SYSTEM_PROMPT_DESKTOP,
     SYSTEM_PROMPT_INTERACTION,
     SYSTEM_PROMPT_INTRO,
     SYSTEM_PROMPT_OUTPUT_STYLE,
@@ -14,7 +13,6 @@ from coderAI.prompts.compose import (  # noqa: F401
 
 __all__ = [
     "SYSTEM_PROMPT_BROWSER",
-    "SYSTEM_PROMPT_DESKTOP",
     "SYSTEM_PROMPT_INTERACTION",
     "SYSTEM_PROMPT_INTRO",
     "SYSTEM_PROMPT_OUTPUT_STYLE",

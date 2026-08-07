@@ -151,7 +151,9 @@ class TestExecutionConfigKeys:
 
     def test_sandbox_compatibility_default_is_off(self):
         cfg = Config()
-        assert cfg.sandbox_mode == "off"
+        # Hardened default is best_effort (was off for compatibility). The test
+        # name is kept for history but asserts the new secure default.
+        assert cfg.sandbox_mode == "best_effort"
         assert cfg.sandbox_allow_network is False
 
     def test_garbage_env_value_ignored(self, manager, monkeypatch):
