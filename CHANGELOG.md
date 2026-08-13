@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-08-13
+
+### Added
+- Native `multi_edit` filesystem tool supporting simultaneous non-contiguous text edits with atomic write safety.
+- Root `pythonpath` configuration in pytest configuration for deterministic test runner imports.
+
+### Fixed
+- Fixed MCP stdio launcher validation to fail fast with clean `FileNotFoundError` across OS sandboxes.
+- Fixed macOS sandboxed execution compatibility in subprocess environment scrubbing test assertions.
+- Fixed Document typing annotations in Textual TUI autocomplete component.
+- Fixed distribution integrity verification in `verify_wheel.py` to match current packaged personas and prompts.
+- Fixed token counter and loopback web tests to eliminate all network socket test warnings.
+
+### Changed
+- Cleaned up obsolete prompt dumps and archive files from workspace.
+- Updated documentation (`README.md`, `COMMANDS.md`, `ARCHITECTURE.md`, `CLAUDE.md`) to accurately reflect the 62 native tools, agent personas, and architecture.
+
 ## [0.3.3] - 2026-07-15
 
 ### Added
@@ -47,7 +64,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Pre-0.3 Beta line. See git history for details.
 
-[Unreleased]: https://github.com/adityaanilraut/CoderAI/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/adityaanilraut/CoderAI/compare/v0.3.4...HEAD
+[0.3.4]: https://github.com/adityaanilraut/CoderAI/releases/tag/v0.3.4
 [0.3.3]: https://github.com/adityaanilraut/CoderAI/releases/tag/v0.3.3
 [0.3.2]: https://github.com/adityaanilraut/CoderAI/releases/tag/v0.3.2
 [0.3.1]: https://github.com/adityaanilraut/CoderAI/releases/tag/v0.3.1

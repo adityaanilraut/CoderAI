@@ -800,11 +800,11 @@ def _entry_meta(value: Any) -> Optional[dict[str, Any]]:
 
 
 def _file_hash(path: Path) -> Optional[str]:
-    """SHA-256 of file contents, or None on failure."""
+    """Blake2b hash of file contents (faster than SHA-256), or None on failure."""
     import hashlib
 
     try:
-        return hashlib.sha256(path.read_bytes()).hexdigest()
+        return hashlib.blake2b(path.read_bytes(), digest_size=32).hexdigest()
     except Exception:
         return None
 

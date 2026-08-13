@@ -426,6 +426,7 @@ class TestReadURLFormat:
 
 
 class TestWebSearchDomainFilter:
+    @pytest.mark.enable_socket
     def test_allowed_domains_passed_to_filter(self, monkeypatch):
         async def fake_backend_search(self, query, n, allowed=None, blocked=None):
             return [

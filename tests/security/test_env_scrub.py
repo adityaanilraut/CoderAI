@@ -109,7 +109,7 @@ def test_git_command_env_has_no_secrets(
     result = asyncio.run(_run_git_command(["status"], str(tmp_path), validate_scope=False))
 
     assert result["success"] is True
-    assert spawn_spy["argv"][0] == "git"
+    assert any("git" in arg for arg in spawn_spy["argv"])
     env = spawn_spy["env"]
     assert env is not None
     assert "ANTHROPIC_API_KEY" not in env
@@ -149,7 +149,7 @@ def test_format_env_has_no_secrets(monkeypatch: pytest.MonkeyPatch, spawn_spy: d
     result = asyncio.run(FormatTool().execute(path=".", formatter="ruff"))
 
     assert result["success"] is True, result
-    assert spawn_spy["argv"][0] == "ruff"
+    assert any("ruff" in arg for arg in spawn_spy["argv"])
     env = spawn_spy["env"]
     assert env is not None
     assert "ANTHROPIC_API_KEY" not in env
@@ -166,7 +166,7 @@ def test_lint_env_has_no_secrets(monkeypatch: pytest.MonkeyPatch, spawn_spy: dic
     result = asyncio.run(LintTool().execute(path=".", linter="ruff"))
 
     assert result["success"] is True, result
-    assert spawn_spy["argv"][0] == "ruff"
+    assert any("ruff" in arg for arg in spawn_spy["argv"])
     env = spawn_spy["env"]
     assert env is not None
     assert "ANTHROPIC_API_KEY" not in env

@@ -309,6 +309,7 @@ class TestRecoverableErrorMarker:
         system_contents = [m.content for m in session.messages if m.role == "system"]
         assert any(RECOVERABLE_ERROR_MARKER in c for c in system_contents)
 
+    @pytest.mark.enable_socket
     def test_project_config_is_loaded(self):
         with patch("coderAI.core.agent.config_manager") as cm:
             from coderAI.system.config import Config

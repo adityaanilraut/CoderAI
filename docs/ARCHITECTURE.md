@@ -92,7 +92,7 @@ the ambient history compatibility surface remains.
 `core/capability_routing.py` owns a compact deterministic catalog. Ordinary
 unknown objectives see only eight universal schemas; recognized objective
 vocabulary adds relevant native families such as editing, execution, quality,
-Git, web, browser, desktop, package, memory, vision, or MCP. The router consumes
+Git, web, browser, package, vision, or MCP. The router consumes
 only schemas that survived registry construction, persona filtering,
 platform/optional-package/network gates, and delegated-agent domain ceilings.
 It therefore narrows capability exposure but never grants authority.
@@ -109,14 +109,6 @@ Every decision emits `capability_routing` telemetry with selected schema names,
 the deterministic reason, selection success/failure, Plan Mode state, and the
 provider-estimated serialized schema-token cost. `coderAI run --output ndjson`
 exposes this as `capability.routing`.
-
-`coderAI.evals.capability_routing` contains a deterministic offline corpus and
-checked scorer. Cases declare exact or required-subset selections plus forbidden
-tools/families, model upstream eligibility ceilings, and compare routed schema
-cost with each case's complete eligible-registry baseline. The gate requires
-100% case and conservative-fallback accuracy, zero false positives/negatives,
-and at least 50% aggregate token savings. Reports are grouped by capability and
-boundary type.
 
 Each `TurnContext` also starts a monotonic objective clock. The first real,
 successful tool action that remains in the objective's routed eligible surface

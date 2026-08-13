@@ -14,6 +14,7 @@ class TestReadURLToolSSRF:
     def setup(self):
         self.tool = ReadURLTool()
 
+    @pytest.mark.enable_socket
     def test_blocks_localhost(self):
         result = asyncio.run(self.tool.execute(url="http://localhost/secret"))
         assert not result["success"]

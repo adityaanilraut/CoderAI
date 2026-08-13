@@ -17,6 +17,8 @@ async def test_close_is_idempotent_and_flushes_final_save() -> None:
     agent.provider = MagicMock()
     agent.provider.close = AsyncMock()
     agent.tracker_info = None
+    agent._finish_tracker = MagicMock()
+    agent._mcp_health_task = None
 
     await agent.close()
     await agent.close()

@@ -1002,15 +1002,10 @@ class CoderAIApp(App[None]):
                             chosen = filtered[0]
                             # Replace @prefix with @chosen + space
                             new_line = line[: at_idx + 1] + chosen + " " + line[col:]
-                            prompt.text = (
-                                prompt.document.text[
-                                    : prompt.document.get_index_from_location((row, 0))
-                                ]
-                                + new_line
-                                + prompt.document.text[
-                                    prompt.document.get_index_from_location((row, col)) :
-                                ]
-                            )  # type: ignore
+                            doc = prompt.document
+                            start_idx = doc.get_index_from_location((row, 0))  # type: ignore[attr-defined]
+                            end_idx = doc.get_index_from_location((row, col))  # type: ignore[attr-defined]
+                            prompt.text = doc.text[:start_idx] + new_line + doc.text[end_idx:]
                             # Simpler: replace via insert
                             prompt.text = (
                                 prompt.text[:at_idx] + f"@{chosen} " + prompt.text[col:]

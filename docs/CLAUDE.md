@@ -112,7 +112,7 @@ Per-turn flow (`Agent.process_message()` → `agent_loop`):
 - `coderAI/tui/streaming.py` — `BridgeStreamingHandler`: emits one phased `turn` event per assistant turn so the Textual timeline streams incrementally.
 - `coderAI/tui/tool_metadata.py` — Tool category, risk level, and approval-preview helpers for the controller and modals.
 - `coderAI/llm/` — LLM providers (openai, anthropic, groq, deepseek, gemini, meta, lmstudio, ollama), all extending `base.LLMProvider`. Instantiation goes through `llm/factory.py::create_provider(model, config)` — do not construct providers directly from `agent.py`.
-- `coderAI/tools/` — Native tools extending `tools/base.Tool`. Registration is automatic via `tools/discovery.py::discover_tools()`, which walks the `coderAI.tools` package (including `filesystem/` and `web/` subpackages) and instantiates every `Tool` subclass whose `__init__` takes no required args. `git_extended` is skipped (served only via the bundled MCP server). Tools requiring constructor args (e.g. `ManageContextTool`) are registered manually in `AgentCapabilitiesMixin._create_tool_registry()`. Snapshot: `tests/test_tool_registry_snapshot.py`.
+- `coderAI/tools/` — Native tools extending `tools/base.Tool`. Registration is automatic via `tools/discovery.py::discover_tools()`, which walks the `coderAI.tools` package (including `filesystem/` and `web/` subpackages) and instantiates every `Tool` subclass whose `__init__` takes no required args. `git_extended` is skipped (served only via the bundled MCP server). Tools requiring constructor args (e.g. `ManageContextTool`) are registered manually in `AgentCapabilitiesMixin._create_tool_registry()`. Snapshot: `tests/core/test_tool_registry_snapshot.py`.
 - `coderAI/system/safeguards.py` — reusable validators that run before dangerous actions: interactive-command detection (blocks REPLs invoked via non-interactive pipes), project-directory validation, git-scope guards (prevent operations leaking to a parent repo), staging blocklist for junk files (`.DS_Store`, `__pycache__`, `.coderAI/`, …).
 - `coderAI/system/proc.py` — scrubbed subprocess runner used by lint/format/terminal (env scrub, timeout, process-group kill).
 - `coderAI/system/trust.py` — workspace trust gate for repo-supplied overlays/hooks.
@@ -135,28 +135,26 @@ Per-turn flow (`Agent.process_message()` → `agent_loop`):
 - `.github/workflows/release.yml` — On tagged releases (`v*`), builds the Python wheel + sdist with `python -m build`, attaches them to the GitHub Release, and publishes the wheel to PyPI via trusted publishing.
 
 **Tool categories** (`coderAI/tools/`):
-- `filesystem/` — package (`read_write.py`, `edit.py`, `manage.py`, `metadata.py`, `_guards.py`): read_file, write_file, search_replace (batch via `edits`), apply_diff, list_directory, glob_search, **move_file, copy_file, delete_file, create_directory**, file_stat/chmod/readlink
-- `terminal.py` — run_command (safety blocklist), run_background, **list_processes, kill_process, read_bg_output**
+- `filesystem/` — package (`read_write.py`, `edit.py`, `manage.py`, `metadata.py`, `multi_edit.py`, `_guards.py`): read_file, write_file, search_replace, multi_edit, apply_diff, list_directory, glob_search, move_file, copy_file, delete_file, create_directory, file_stat, file_chmod, file_readlink
+- `terminal.py` — run_command (safety blocklist), run_background, list_processes, kill_process, read_bg_output
 - `git.py` — native: git_add, git_status, git_diff, git_commit, git_log, git_branch
-- `git_extended.py` + `mcp_servers/git_extended.py` — rare git ops via bundled MCP (`mcp__git_extended__git_*`)
+- `git_extended.py` + `mcp_servers/git_extended.py` — extended git ops via bundled MCP (`mcp__git_extended__git_*`)
 - `search.py` — grep, symbol_search
 - `semantic_search.py` — semantic_search (natural-language code search via embeddings)
 - `web/` — package (`tools.py` + helpers): web_search, read_url, download_file, http_request
 - `browser.py` — browser_navigate … browser_close (requires Playwright extra)
-- `desktop.py` — run_applescript, get_accessibility_tree, click_ui_element, type_keystrokes (macOS only)
-- `memory.py` — save_memory, recall_memory, **delete_memory**
 - `subagent.py` — delegate_task (max depth 3, transient failures retried 2× with backoff on the same sub-agent)
 - `mcp.py` — mcp_connect, mcp_disconnect, mcp_list, mcp_list_resources, mcp_read_resource, mcp_list_prompts, mcp_get_prompt (connected servers expose functions as `mcp__<server>__<tool>`; static MCP relays set `mcp_source=True`)
 - `undo.py` — transaction-aware undo/undo_history with legacy file-backup fallback
 - `context_manage.py` — pin/unpin files into the pinned-context manager (takes `Agent` at construction → registered manually)
-- `tasks.py` — persistent task-list management
+- `tasks.py` — persistent task-list management (`manage_tasks`, `submit_plan`)
 - `use_skill.py` — `use_skill` loads a workflow from `.coderAI/skills/<name>/SKILLS.md` (or `SKILL.md` / user scope)
 - `cli/skills_cmd.py` — `coderAI skills install|list|remove` (GitHub or local path)
-- `format.py`, `lint.py`, `repl.py`, `vision.py` — code formatting, linting, Python REPL, and image/vision helpers (`lint`/`format` use `run_scrubbed()` from project root)
+- `format.py`, `lint.py`, `vision.py` — code formatting, linting, and image/vision helpers (`lint`/`format` use `run_scrubbed()` from project root)
 - `_detect.py` — shared `walk_up_detect()` used by lint/format/testing/package_manager
 - `package_manager.py`, `refactor.py`, `testing.py` — package install/remove, rename_symbol/find_references refactor (writes via `WriteFileTool`), test runner dispatch
 
-**Agent personas** are `.md` files in `.coderAI/agents/` with YAML frontmatter (`name`, `description`, `tools`, `model`). Built-in personas: planner, code-reviewer, architect, security-reviewer, tdd-guide, and others. The `delegate_task` tool spawns capability- and recovery-isolated sub-agents; mutating delegates still share the project worktree until the remaining Milestone 3 integration work lands.
+**Agent personas** are `.md` files with YAML frontmatter (`name`, `description`, `tools`, `model`). Built-in personas: `planner`, `code-reviewer`. Custom personas (`architect`, `security-reviewer`, `tdd-guide`, `build-error-resolver`) can be placed in `.coderAI/agents/` or `~/.coderAI/agents/`. The `delegate_task` tool spawns capability- and recovery-isolated sub-agents.
 
 **Workspace transactions** are session-owned records under
 `~/.coderAI/transactions/`. `core/workspace_transactions.py` snapshots before

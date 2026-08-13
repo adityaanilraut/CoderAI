@@ -235,40 +235,37 @@ The heart of CoderAI is the **agentic loop** in `coderAI/core/agent.py → proce
 ┌─────────────────────────────────────────────────────────────────┐
 │  1. User sends message                                          │
 │  2. Inject pinned context + project instructions                │
-│  3. Context compaction when the usable context budget is full    │
-│  4. ┌──────────────────── LOOP (max_iterations) ──────────────┐ │
-│     │  a. Check cancellation flag                              │ │
-│     │  b. Call LLM with messages + tool schemas                │ │
-│     │     (with retry: up to 3 attempts, exponential backoff)  │ │
-│     │  c. If NO tool calls → return final response → DONE      │ │
-│     │  d. If tool calls:                                       │ │
-│     │     • Parse all tool call arguments                      │ │
-│     │     • Run pre-tool hooks (from hooks.json)               │ │
-│     │     • Execute read-only tools in PARALLEL (asyncio)      │ │
-│     │     • Execute mutating tools SEQUENTIALLY                │ │
-│     │     • Run post-tool hooks                                │ │
-│     │     • Summarize/truncate large results                   │ │
-│     │     • Add tool results to session                        │ │
-│     │     • Re-inject context, re-manage context window        │ │
-│     │     • CONTINUE LOOP → back to (a)                        │ │
-│     └──────────────────────────────────────────────────────────┘ │
-│  5. Save session to disk                                        │
-└─────────────────────────────────────────────────────────────────┘
+                           ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                        Agent Core                                 │
+│                   coderAI/core/agent.py                           │
+│                                                                   │
+│   • Lifecycle & Session state (`history.py`)                      │
+│   • Capability & Tool Routing (`core/capability_routing.py`)     │
+│   • System Prompt Composer (`prompts/compose.py`)                 │
+│   • Personas (`core/personas.py`) & Skills (`skills/`)            │
+│   • Context Management (`context/context_controller.py`)          │
+│   • Sub-Agent Spawning & Worktree Isolation (`tools/subagent.py`) │
+│   • Workspace Transactions & Undo (`core/workspace_transactions`) │
+└──────────────────────────┬───────────────────────────────────────┘
+                           │
+                           ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                      Execution Loop                               │
+│                 coderAI/core/agent_loop.py                        │
+│                                                                   │
+│   • Provider Chat & Streaming (`coderAI/llm/`)                   │
+│   • Tool Execution (`core/tool_executor.py`)                      │
+│   • Loop Safeguards & Error Policies (`system/loop_guard.py`)     │
+│   • Cost & Budget Accounting (`system/cost.py`)                   │
+└──────────────────────────────────────────────────────────────────┘
 ```
-
-### Key Loop Features
-
-- **Retry with backoff** — Transient errors (429, 5xx, timeouts) are retried up to 3 times with exponential delay.
-- **Consecutive error guard** — After 5 consecutive errors the loop halts gracefully.
-- **Parallel tool execution** — Read-only tools run concurrently via `asyncio.gather()`; mutating tools run sequentially to prevent race conditions.
-- **Context auto-compaction** — When estimated tokens exceed the usable context budget (`context_window` minus response and tool overhead), older messages are summarized by the LLM and replaced with a condensed summary.
-- **Cooperative cancellation** — `AgentTracker` provides a cancel event; the loop checks it on every iteration.
 
 ---
 
 ## 🛠️ Tools Reference
 
-CoderAI discovers native tools at runtime and registers `manage_context` manually, plus rare git ops on the bundled `git_extended` MCP server. Each tool follows the `Tool` abstract base class. Browser, desktop, and some web tools are removed when optional dependencies, configuration, or the host OS make them unavailable. Batch edits use `search_replace` with an `edits` list (there is no separate `multi_edit` tool).
+CoderAI discovers 61 native tools automatically at runtime and registers `manage_context` dynamically with the context controller (total 62 native tools), plus rare git operations on the bundled `git_extended` MCP server. Each tool adheres to the `Tool` abstract base class with strict safety checks, permission gates, path sanitization, and transaction rollback.
 
 ### Filesystem
 
@@ -278,158 +275,129 @@ CoderAI discovers native tools at runtime and registers `manage_context` manuall
 | `write_file` | Create or overwrite files (protected paths blocked) |
 | `search_replace` | Find and replace text in a file with verification (batch via `edits`) |
 | `apply_diff` | Apply a unified diff patch for multi-line edits |
-| `list_directory` | List files and subdirectories |
-| `glob_search` | Find files by glob pattern (`**/*.py`) |
+| `multi_edit` | Apply multiple text replacements across a file in a single step |
+| `list_directory` | List files and subdirectories with sizes and metadata |
+| `glob_search` | Find files matching glob patterns (`**/*.py`) |
 | `move_file` | Move or rename a file or directory |
 | `copy_file` | Copy a file or directory tree |
 | `delete_file` | Delete a file or directory (recursive opt-in) |
 | `create_directory` | Create directories including parents (`mkdir -p`) |
-| `file_stat` | Get file metadata (size, permissions, timestamps) |
-| `file_chmod` | Change file permissions |
-| `file_readlink` | Read symlink targets | |
+| `file_stat` | Get detailed file metadata (size, permissions, timestamps) |
+| `file_chmod` | Modify POSIX file permissions |
+| `file_readlink` | Read symlink targets safely |
 
-### Terminal
+### Terminal & Process Management
 
 | Tool | Description |
 |---|---|
-| `run_command` | Execute shell commands (dangerous commands require confirmation) |
-| `run_background` | Start long-running processes (servers, watchers) |
-| `list_processes` | List background processes started by the agent |
+| `run_command` | Execute shell commands in a scrubbed environment |
+| `run_background` | Start long-running background processes (servers, test watchers) |
+| `list_processes` | List active background processes started by the agent |
 | `kill_process` | Terminate a background process by PID |
-| `read_bg_output` | Read buffered output from a `run_background` process |
+| `read_bg_output` | Read buffered standard output/error from background processes |
 
-### Git
+### Git (Native)
 
-Everyday git stays native. Rare ops auto-connect on the bundled `git_extended` MCP server as `mcp__git_extended__git_*` (disable with `coderAI mcp` / `disabled: true` in `mcp_servers.json`).
+Everyday Git operations remain native and sandboxed.
 
 | Tool | Description |
 |---|---|
-| `git_add` | Stage specific files for commit |
-| `git_status` | Show working tree status |
-| `git_diff` | View diffs (staged, unstaged, between refs) |
-| `git_commit` | Create commits |
-| `git_log` | View commit history |
+| `git_add` | Stage specific files or patterns for commit |
+| `git_status` | Show working tree status and untracked files |
+| `git_diff` | View diffs (staged, unstaged, between commits/refs) |
+| `git_commit` | Create commits with structured messages |
+| `git_log` | View commit history and graph |
 | `git_branch` | List, create, or delete branches |
 
-**Via MCP (`mcp__git_extended__…`):** `git_checkout`, `git_stash`, `git_push`, `git_pull`, `git_fetch`, `git_merge`, `git_rebase`, `git_revert`, `git_reset`, `git_show`, `git_remote`, `git_blame`, `git_cherry_pick`, `git_tag`.
+**Extended Git via MCP (`mcp__git_extended__…`):** `git_checkout`, `git_stash`, `git_push`, `git_pull`, `git_fetch`, `git_merge`, `git_rebase`, `git_revert`, `git_reset`, `git_show`, `git_remote`, `git_blame`, `git_cherry_pick`, `git_tag`.
 
-### Search & Analysis
+### Search & Intelligence
 
-*`semantic_search` requires `coderai-agent[semantic]`. It uses OpenAI when a key is
-configured, or install `coderai-agent[local-embeddings]` for private local embeddings.*
-
-| Tool | Description |
-|---|---|
-| `grep` | Regex pattern matching with context lines |
-| `symbol_search` | Find function/class/variable definitions by name |
-| `semantic_search` | Natural-language code search via OpenAI or local embeddings |
-
-### Web & HTTP
-
-*PDF extraction in `read_url` requires optional `pypdf` — install with `pip install 'coderai-agent[web]'`.*
+*`semantic_search` requires `coderai-agent[semantic]`. It uses OpenAI embeddings when configured, or `coderai-agent[local-embeddings]` for local sentence-transformers.*
 
 | Tool | Description |
 |---|---|
-| `web_search` | Web search (DuckDuckGo and other backends) with optional content fetching |
-| `read_url` | Fetch and extract text from any URL (HTML or PDF with `pypdf`) |
-| `download_file` | Download files (ZIP, images, etc.) from URLs |
-| `http_request` | Generic HTTP client — any method, headers, JSON body (SSRF-protected) |
+| `grep` | Fast regex pattern matching across project files with context |
+| `symbol_search` | Search AST symbol definitions (classes, functions, methods) |
+| `semantic_search` | Natural-language code search via vector embeddings |
 
-### Memory
+### Web & Network
 
-| Tool | Description |
-|---|---|
-| `save_memory` | Store key-value data persistently across sessions |
-| `recall_memory` | Retrieve or search saved memories |
-| `delete_memory` | Remove a memory entry by key |
-
-### Project & Context
+*PDF extraction in `read_url` requires `coderai-agent[web]` (`pypdf`).*
 
 | Tool | Description |
 |---|---|
-| `manage_context` | Pin/unpin files to the LLM context window |
+| `web_search` | Web search (DuckDuckGo, Tavily, Exa) with snippet retrieval |
+| `read_url` | Fetch, sanitize, and extract text/markdown from URLs (SSRF protected) |
+| `download_file` | Download files to project workspace with size limits |
+| `http_request` | Generic HTTP client with proxy and SSRF guards |
 
-### Tasks
-
-| Tool | Description |
-|---|---|
-| `manage_tasks` | Persistent TODO list with priorities |
-| `submit_plan` | Submit a structured versioned proposal (available only in Plan Mode) |
-
-### Multi-Agent
+### Project, Context & Planning
 
 | Tool | Description |
 |---|---|
-| `delegate_task` | Spawn an isolated sub-agent for complex tasks |
+| `manage_context` | Pin/unpin files to keep critical code inside prompt context |
+| `manage_tasks` | Manage persistent task list (`tasks.json`) with status and priorities |
+| `submit_plan` | Submit structured execution plan in Plan Mode |
+| `use_skill` | Activate a reusable skill workflow |
 
-
-### Code Quality
-
-| Tool | Description |
-|---|---|
-| `lint` | Auto-detect and run project linter (ruff, eslint, clippy, etc.) |
-| `format` | Auto-detect and run code formatter (ruff format, black, prettier, gofmt) |
-| `run_tests` | Auto-detect and run the project test runner (pytest, jest, cargo test, etc.) |
-
-### Refactoring
+### Multi-Agent Delegation
 
 | Tool | Description |
 |---|---|
-| `refactor` | Cross-file `rename_symbol` and `find_references` (Python AST-aware; JS/TS regex-based). Writes go through the full `write_file` pipeline (locks, guards, backup, atomic write); partial failures report `files_skipped`. Use `dry_run=true` first. |
+| `delegate_task` | Spawn isolated child agents with domain-scoped worktrees |
 
-### Package Management
-
-| Tool | Description |
-|---|---|
-| `package_manager` | Install, remove, or list packages (pip, npm, cargo, etc.) |
-
-### Code Execution
+### Code Quality & Refactoring
 
 | Tool | Description |
 |---|---|
-| `python_repl` | Execute Python code in an isolated subprocess |
+| `lint` | Auto-detect and run project linter (ruff, eslint, clippy, flake8) |
+| `format` | Auto-detect and run formatter (ruff, prettier, black, gofmt) |
+| `run_tests` | Auto-detect and execute test runners (pytest, jest, cargo test, go test) |
+| `refactor` | AST-aware multi-file symbol renaming and reference searching |
+| `package_manager` | Install, remove, and audit dependencies (pip, npm, cargo, etc.) |
 
-### Vision
-
-| Tool | Description |
-|---|---|
-| `read_image` | Read and base64-encode images for multimodal analysis |
-
-### Skills
+### Vision & Multimodal
 
 | Tool | Description |
 |---|---|
-| `use_skill` | Load predefined skill workflows from `.coderAI/skills/` |
+| `read_image` | Load, inspect, and encode local images for vision-capable models |
 
 ### Browser Automation
 
-*Requires `playwright` — install with `pip install 'coderai-agent[browser]' && playwright install chromium`.*
-
-Browser tools provide full control over a headless Chromium browser for form filling, shopping, data entry, and web scraping. They use an **accessibility snapshot** pattern: navigate → snapshot (get element refs like `[e12]`) → click/type by ref → repeat.
+*Requires `pip install 'coderai-agent[browser]'` and `playwright install chromium`.*
 
 | Tool | Description |
 |---|---|
-| `browser_navigate` | Navigate to a URL — returns page title and final URL |
-| `browser_snapshot` | Capture the accessibility tree with element refs (`[e0]`, `[e1]`, ...) |
-| `browser_click` | Click an element by its snapshot ref |
-| `browser_type` | Type text into an input field by ref (set `clear=true` to replace) |
-| `browser_select_option` | Select an option from a dropdown/combobox by ref |
-| `browser_get_content` | Extract page content as markdown, plain text, or raw HTML |
-| `browser_screenshot` | Take a PNG screenshot of the current page viewport |
-| `browser_evaluate` | Execute JavaScript in the page context and return the result |
-| `browser_wait` | Wait for text to appear or a timeout duration |
-| `browser_close` | Close the browser and free resources |
+| `browser_navigate` | Navigate to a URL and wait for load completion |
+| `browser_snapshot` | Capture accessibility tree with stable element references (`[e1]`, `[e2]`) |
+| `browser_click` | Click elements using accessibility snapshot references |
+| `browser_type` | Type text into inputs and forms with optional clearing |
+| `browser_select_option` | Select items from dropdowns and select elements |
+| `browser_get_content` | Extract clean markdown or text content from web pages |
+| `browser_screenshot` | Capture viewport or full-page PNG screenshots |
+| `browser_evaluate` | Run sandboxed JavaScript expressions within the page |
+| `browser_wait` | Wait for selector, text match, or timeout |
+| `browser_close` | Close active browser context and release resources |
 
-**Workflow example:**
-```
-1. browser_navigate("https://example.com/form")
-2. browser_snapshot()              → "textbox 'Email' [e5], button 'Submit' [e9]"
-3. browser_type(ref="e5", text="user@example.com")
-4. browser_click(ref="e9")
-5. browser_snapshot()              → "heading 'Thank you!' [e1]"
-6. browser_get_content()           → confirmation page text
-7. browser_close()
-```
+### MCP Integration
+
+| Tool | Description |
+|---|---|
+| `mcp_connect` | Connect to an external MCP server via stdio, SSE, or HTTP |
+| `mcp_disconnect` | Terminate connection to an MCP server |
+| `mcp_list` | List active MCP servers, tools, resources, and prompts |
+| `mcp_list_resources` | Discover resources exposed by connected MCP servers |
+| `mcp_read_resource` | Read resource contents from an MCP server URI |
+| `mcp_list_prompts` | Discover prompt templates exposed by MCP servers |
+| `mcp_get_prompt` | Retrieve and format prompt templates from an MCP server |
+
+### Undo & Transaction Rollback
+
+| Tool | Description |
+|---|---|
+| `undo` | Roll back the latest workspace transaction or a specific transaction ID |
+| `undo_history` | Inspect durable session transaction logs and snapshots |
 
 ### Desktop Automation (macOS only)
 
@@ -479,27 +447,23 @@ Milestone 3 work.
 
 ### Agent Personas
 
-CoderAI ships **6 specialist agent personas** as package resources, so they work
-from an installed wheel without a source checkout. Persona names resolve with
-explicit precedence: trusted project `.coderAI/agents/`, user
-`~/.coderAI/agents/`, then packaged `coderAI/assets/agents/`. Project personas
-are withheld until the workspace-trust snapshot is active; user and built-in
-personas remain available. Each persona has:
+CoderAI provides specialized agent personas with deterministic precedence: trusted project `.coderAI/agents/`, user `~/.coderAI/agents/`, then packaged `coderAI/assets/agents/`. Built-in personas (`planner`, `code-reviewer`) are packaged with the distribution, while custom personas (like `architect`, `security-reviewer`, `tdd-guide`, and `build-error-resolver`) can be placed in `.coderAI/agents/`. Project personas are withheld until workspace-trust is established.
 
-- **`name`** — Identifier used for `/agent` or delegated persona selection
+Each persona defines:
+- **`name`** — Identifier used for `/persona` or delegated persona selection
 - **`description`** — What the agent specializes in
 - **`tools`** — High-level tool labels (for example `Read`, `Edit`, `Bash`) that expand into concrete runtime tools; read-only tools remain available for codebase inspection
 - **`model`** — Preferred LLM model
 - **Instructions** — Full system prompt in markdown body
 
-| Persona | Specialty |
-|---|---|
-| `planner` | Implementation planning for complex features |
-| `code-reviewer` | Code quality, correctness, and conventions |
-| `architect` | Architecture analysis and design |
-| `security-reviewer` | Security vulnerability analysis |
-| `tdd-guide` | Test-driven development guidance |
-| `build-error-resolver` | Build error diagnosis and fixing |
+| Persona | Source | Specialty |
+|---|---|---|
+| `planner` | Built-in | Implementation planning for complex features |
+| `code-reviewer` | Built-in | Code quality, correctness, and conventions |
+| `architect` | Project / User | Architecture analysis and structural design |
+| `security-reviewer` | Project / User | Security vulnerability analysis and auditing |
+| `tdd-guide` | Project / User | Test-driven development workflows and test design |
+| `build-error-resolver` | Project / User | Build error diagnosis and fixing |
 
 ### Sub-Agent Delegation
 

@@ -1117,6 +1117,8 @@ class MCPClient:
                 resolved = shutil.which(command)
                 if resolved:
                     launch_command = resolved
+            if not shutil.which(launch_command) and not os.path.exists(launch_command):
+                raise FileNotFoundError(f"Command not found: {command}")
             full_args = [launch_command] + (args or [])
             launch = prepare_sandbox_launch(full_args, cwd=workdir)
             process = await asyncio.create_subprocess_exec(

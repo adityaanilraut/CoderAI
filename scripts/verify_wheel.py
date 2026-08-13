@@ -20,18 +20,13 @@ DIST_NAME = "coderai-agent"
 ENTRY_POINT = "coderAI = coderAI.cli:main"
 ADVERTISED_EXTRAS = ("semantic", "local-embeddings", "web", "browser")
 BUILTIN_PERSONAS = (
-    "architect",
-    "build-error-resolver",
     "code-reviewer",
     "planner",
-    "security-reviewer",
-    "tdd-guide",
 )
 BUILTIN_SKILLS = ("security-audit", "tdd-workflow")
 BUILTIN_RULES = ("001-common-principles", "101-python-standards")
 PROMPTS = (
     "browser.mdx",
-    "desktop.mdx",
     "interaction.mdx",
     "intro.mdx",
     "output_style.mdx",

@@ -546,7 +546,7 @@ in an active sandbox.
 
 ## Tool Quick Reference
 
-Native tools are discovered at runtime, with `manage_context` registered manually and rare git ops supplied by the bundled `git_extended` MCP server. Browser tools require `pip install 'coderai-agent[browser]'`; PDF extraction in `read_url` requires `pip install 'coderai-agent[web]'`; desktop tools are macOS-only. Batch edits use `search_replace` with an `edits` list. Confirmation required (`✓`) means the agent asks before running.
+CoderAI discovers 61 native tools at runtime, registers `manage_context` dynamically with the context controller (total 62 native tools), and provides extended git operations via the bundled `git_extended` MCP server. Browser tools require `pip install 'coderai-agent[browser]'`; PDF extraction in `read_url` requires `pip install 'coderai-agent[web]'`. Confirmation required (`✓`) means the agent asks before running.
 
 ### Filesystem
 
@@ -556,6 +556,7 @@ Native tools are discovered at runtime, with `manage_context` registered manuall
 | `write_file` | ✓ | Create or overwrite a file |
 | `search_replace` | ✓ | Find-and-replace with verification (batch via `edits`) |
 | `apply_diff` | ✓ | Apply a unified diff patch |
+| `multi_edit` | ✓ | Apply multiple non-contiguous text edits in a single step |
 | `list_directory` | — | List directory contents |
 | `glob_search` | — | Find files by glob pattern |
 | `move_file` | ✓ | Move or rename a file/directory |
@@ -566,17 +567,17 @@ Native tools are discovered at runtime, with `manage_context` registered manuall
 | `file_chmod` | ✓ | Change file permissions |
 | `file_readlink` | — | Read symlink targets |
 
-### Terminal
+### Terminal & Process Management
 
 | Tool | Confirm | Description |
 |---|---|---|
-| `run_command` | ✓ | Execute a shell command |
+| `run_command` | ✓ | Execute a shell command in a scrubbed environment |
 | `run_background` | ✓ | Start a background process |
 | `list_processes` | — | List tracked background processes |
-| `kill_process` | ✓ | Terminate a process by PID |
+| `kill_process` | ✓ | Terminate a background process by PID |
 | `read_bg_output` | — | Read buffered output from a `run_background` process |
 
-### Git
+### Git (Native)
 
 | Tool | Confirm | Description |
 |---|---|---|
@@ -592,90 +593,53 @@ Rare git ops auto-connect via the bundled `git_extended` MCP server as
 `…__git_merge`, `…__git_rebase`, `…__git_revert`, `…__git_reset`, `…__git_show`,
 `…__git_remote`, `…__git_blame`, `…__git_cherry_pick`, `…__git_stash`, `…__git_tag`.
 
-### Search
+### Search & Intelligence
 
 | Tool | Confirm | Description |
 |---|---|---|
-| `grep` | — | Regex search with context |
+| `grep` | — | Regex search with context lines |
 | `symbol_search` | — | Find function/class/variable definitions by name |
 | `semantic_search` | — | Natural-language code search via embeddings |
 
-### Web & HTTP
+### Web & Network
 
 | Tool | Confirm | Description |
 |---|---|---|
 | `web_search` | — | Web search (DuckDuckGo and other backends) |
-| `read_url` | — | Fetch a URL and return text (PDF with optional `pypdf`) |
-| `download_file` | ✓ | Download a file from a URL |
-| `http_request` | ✓ | Generic HTTP client (any method, headers, body) |
+| `read_url` | — | Fetch a URL and return text/markdown (PDF with optional `pypdf`) |
+| `download_file` | ✓ | Download a file from a URL to project workspace |
+| `http_request` | ✓ | Generic HTTP client (any method, headers, body) with SSRF guards |
 
-### Memory
-
-| Tool | Confirm | Description |
-|---|---|---|
-| `save_memory` | — | Store a key-value pair persistently |
-| `recall_memory` | — | Retrieve or search memories |
-| `delete_memory` | ✓ | Delete a memory entry |
-
-### Code Quality
-
-| Tool | Confirm | Description |
-|---|---|---|
-| `lint` | ✓ | Auto-detect and run linter |
-| `format` | ✓ | Auto-detect and run formatter |
-| `run_tests` | ✓ | Auto-detect and run project tests |
-
-### Refactoring
-
-| Tool | Confirm | Description |
-|---|---|---|
-| `refactor` | ✓ | Cross-file `rename_symbol` or `find_references` (writes via `write_file` pipeline; use `dry_run=true` first) |
-
-### Package Management
-
-| Tool | Confirm | Description |
-|---|---|---|
-| `package_manager` | ✓ | Install, remove, or list packages (pip, npm, cargo, …) |
-
-### Project, Context & Tasks
+### Project, Context & Planning
 
 | Tool | Confirm | Description |
 |---|---|---|
 | `manage_context` | — | Pin/unpin files from the context window |
-| `manage_tasks` | — | Persistent TODO list management |
+| `manage_tasks` | — | Persistent TODO list management (`tasks.json`) |
+| `submit_plan` | — | Submit structured proposal (Plan Mode only) |
+| `use_skill` | — | Load a predefined skill workflow |
 
-### Multi-Agent & Collaboration
-
-| Tool | Confirm | Description |
-|---|---|---|
-| `delegate_task` | ✓ | Spawn an isolated sub-agent |
-
-### Execution & Planning
+### Multi-Agent Delegation
 
 | Tool | Confirm | Description |
 |---|---|---|
-| `python_repl` | ✓ | Run Python code in an isolated subprocess |
-| `use_skill` | — | Load a skill workflow |
-| `submit_plan` | — | Submit the complete structured proposal (Plan Mode only) |
-| `request_plan_amendment` | — | Stop divergent execution and propose a replacement revision for reapproval |
+| `delegate_task` | ✓ | Spawn an isolated sub-agent with worktree isolation |
+
+### Code Quality & Refactoring
+
+| Tool | Confirm | Description |
+|---|---|---|
+| `lint` | ✓ | Auto-detect and run project linter |
+| `format` | ✓ | Auto-detect and run project formatter |
+| `run_tests` | ✓ | Auto-detect and run project tests |
+| `refactor` | ✓ | Cross-file `rename_symbol` or `find_references` (AST-aware) |
+| `package_manager` | ✓ | Install, remove, or list packages (pip, npm, cargo, etc.) |
 
 ### Vision
 
 | Tool | Confirm | Description |
 |---|---|---|
-| `read_image` | — | Read and encode an image for analysis |
-
-### MCP
-
-| Tool | Confirm | Description |
-|---|---|---|
-| `mcp_connect` | ✓ | Connect to an external MCP server |
-| `mcp_disconnect` | ✓ | Disconnect from an MCP server |
-| `mcp_list` | — | List connected servers, tools, resources, and prompts |
-| `mcp_list_resources` | — | List resources exposed by a connected server |
-| `mcp_read_resource` | — | Read a resource (by URI) from a connected server |
-| `mcp_list_prompts` | — | List prompt templates exposed by a connected server |
-| `mcp_get_prompt` | — | Fetch a prompt template (with arguments) from a server |
+| `read_image` | — | Read and encode an image for visual analysis |
 
 ### Browser Automation
 
@@ -694,18 +658,21 @@ Rare git ops auto-connect via the bundled `git_extended` MCP server as
 | `browser_wait` | — | Wait for text or a timeout |
 | `browser_close` | — | Close the browser session |
 
-### Desktop Automation (macOS only)
+### MCP Integration
 
 | Tool | Confirm | Description |
 |---|---|---|
-| `run_applescript` | ✓ | Execute AppleScript or JXA |
-| `get_accessibility_tree` | — | Retrieve the macOS accessibility UI tree |
-| `click_ui_element` | ✓ | Click a UI element via System Events |
-| `type_keystrokes` | ✓ | Simulate typing or key presses |
+| `mcp_connect` | ✓ | Connect to an external MCP server |
+| `mcp_disconnect` | ✓ | Disconnect from an MCP server |
+| `mcp_list` | — | List connected servers, tools, resources, and prompts |
+| `mcp_list_resources` | — | List resources exposed by a connected server |
+| `mcp_read_resource` | — | Read a resource (by URI) from a connected server |
+| `mcp_list_prompts` | — | List prompt templates exposed by a connected server |
+| `mcp_get_prompt` | — | Fetch a prompt template (with arguments) from a server |
 
-### Undo
+### Undo & Recovery
 
 | Tool | Confirm | Description |
 |---|---|---|
-| `undo` | ✓ | Roll back the latest durable workspace transaction; `transaction_id` selects an exact transaction, with legacy file-index fallback for older sessions |
-| `undo_history` | — | View session-owned transaction history and legacy file-backup history |
+| `undo` | ✓ | Roll back the latest durable workspace transaction or a specific transaction ID |
+| `undo_history` | — | View session-owned transaction history and file snapshots |

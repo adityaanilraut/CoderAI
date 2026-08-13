@@ -475,7 +475,6 @@ class TestMemoryTools:
 
     def test_save_and_recall(self, temp_dir):
         from coderAI.tools.tasks import ManageTasksTool
-        from pathlib import Path
 
         tool = ManageTasksTool()
         # tasks tool uses project-root relative storage; smoke test that it loads
@@ -890,12 +889,14 @@ class TestAnthropicProvider:
         provider = AnthropicProvider(model="claude-sonnet-5", api_key="test-key")
         assert provider.supports_tools() is True
 
-    def test_token_counting(self):
+    def test_token_counting(self, monkeypatch):
         from coderAI.llm.anthropic import AnthropicProvider
+        import coderAI.llm._token_counter as tc
 
+        monkeypatch.setattr(tc, "_do_count_tokens_request", lambda *args: 5)
         provider = AnthropicProvider(model="claude-sonnet-5", api_key="test-key")
         count = provider.count_tokens("Hello, how are you?")
-        assert count > 0
+        assert count == 5
         assert isinstance(count, int)
 
     def test_thinking_payload_uses_adaptive_effort_format(self):
