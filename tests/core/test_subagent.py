@@ -99,12 +99,12 @@ class TestDelegateTaskSchema:
 
 
 class TestDelegateTaskParentState:
-    def test_subagent_inherits_auto_approve_and_ipc_server(self):
+    def test_subagent_inherits_auto_approve_and_approval_port(self):
         tool = DelegateTaskTool()
-        ipc_server = object()
+        approval_port = object()
         tool.context = SubagentContext(
             parent_auto_approve=True,
-            parent_ipc_server=ipc_server,
+            parent_approval_port=approval_port,
         )
 
         mock_agent = MagicMock()
@@ -133,7 +133,7 @@ class TestDelegateTaskParentState:
         assert result["success"] is True
         agent_cls.assert_called_once()
         assert agent_cls.call_args.kwargs["auto_approve"] is True
-        assert mock_agent.ipc_server is ipc_server
+        assert mock_agent.approval_port is approval_port
 
     def test_subagent_session_creation_does_not_reset_parent_cost_tracker(self):
         tool = DelegateTaskTool()

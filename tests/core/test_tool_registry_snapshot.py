@@ -11,6 +11,8 @@ same commit.
 
 from coderAI.tools.base import ToolRegistry
 from coderAI.tools.discovery import discover_tools
+from coderAI.core.capability_routing import validate_catalog_against_registry
+from coderAI.tools.semantics import SEMANTICS_BY_NAME
 
 EXPECTED_TOOLS = {
     "apply_diff",
@@ -24,11 +26,14 @@ EXPECTED_TOOLS = {
     "browser_snapshot",
     "browser_type",
     "browser_wait",
+    "context_stats",
     "copy_file",
     "create_directory",
     "delegate_task",
     "delete_file",
+    "directory_tree",
     "download_file",
+    "export_session",
     "file_chmod",
     "file_readlink",
     "file_stat",
@@ -59,6 +64,7 @@ EXPECTED_TOOLS = {
     "package_manager",
     "read_bg_output",
     "read_file",
+    "read_file_slice",
     "read_image",
     "read_url",
     "refactor",
@@ -73,6 +79,8 @@ EXPECTED_TOOLS = {
     "undo_history",
     "use_skill",
     "web_search",
+    "workspace_status",
+    "write_bg_input",
     "write_file",
 }
 
@@ -93,4 +101,12 @@ def test_discovered_tool_names_match_snapshot():
 def test_discovered_tool_count():
     registry = ToolRegistry()
     discover_tools(registry)
-    assert len(registry.tools) == len(EXPECTED_TOOLS) == 61
+    assert len(registry.tools) == len(EXPECTED_TOOLS) == 67
+
+
+def test_every_discovered_tool_has_one_typed_semantics_row():
+    registry = ToolRegistry()
+    discover_tools(registry)
+
+    assert validate_catalog_against_registry(registry.tools) == ()
+    assert all(SEMANTICS_BY_NAME[name].capabilities for name in registry.tools)

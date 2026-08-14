@@ -20,10 +20,39 @@ from coderAI.system.fsperms import OWNER_RWX, restrict_path
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 _INTERNAL_ONLY_PATHS = frozenset({".coderAI/tasks.json"})
+_SKIP_NON_GIT_DIRS = frozenset(
+    {
+        ".git",
+        ".coderAI",
+        "__pycache__",
+        ".venv",
+        "node_modules",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".mypy_cache",
+    }
+)
 MAX_DELEGATION_FILE_BYTES = 25 * 1024 * 1024
 MAX_DELEGATION_SNAPSHOT_BYTES = 250 * 1024 * 1024
 MAX_DELEGATION_PATCH_BYTES = 1024 * 1024
 MAX_DELEGATION_PATCH_FILES = 250
+
+
+def _non_git_listed_paths(root: Path) -> set[str]:
+    """List repository-relative paths for non-Git workspace directories."""
+    paths: set[str] = set()
+    if not root.exists():
+        return paths
+    for entry in root.rglob("*"):
+        if entry.is_file() or entry.is_symlink():
+            try:
+                rel = entry.relative_to(root).as_posix()
+            except ValueError:
+                continue
+            if any(part in _SKIP_NON_GIT_DIRS for part in Path(rel).parts):
+                continue
+            paths.add(_validate_relative_path(rel))
+    return paths
 
 
 class DelegationWorktreeError(RuntimeError):
@@ -190,8 +219,10 @@ class DelegationWorktree:
         parent_root: str | Path,
         storage_root: Optional[str | Path] = None,
         worktree_id: Optional[str] = None,
+        allow_non_git: bool = False,
     ) -> None:
         self.parent_root = Path(parent_root).expanduser().resolve()
+        self.allow_non_git = allow_non_git
         identifier = worktree_id or f"delegation_{uuid.uuid4().hex}"
         if not _SAFE_ID.fullmatch(identifier):
             raise ValueError("worktree_id must be path-safe")
@@ -206,17 +237,24 @@ class DelegationWorktree:
         self.baseline_root = self.allocation_root / "baseline"
         self._baseline: dict[str, FileSnapshot] = {}
         self._created = False
+        self._is_git = self._check_is_git()
+
+    def _check_is_git(self) -> bool:
+        try:
+            top_level = Path(
+                _git_output(self.parent_root, "rev-parse", "--show-toplevel")
+                .decode("utf-8", errors="strict")
+                .strip()
+            ).resolve()
+            return top_level == self.parent_root
+        except Exception:
+            return False
 
     def create(self) -> Path:
         """Create and seed a detached worktree from the parent's live files."""
         if self._created or self.allocation_root.exists():
             raise DelegationWorktreeError("delegation worktree already exists")
-        top_level = Path(
-            _git_output(self.parent_root, "rev-parse", "--show-toplevel")
-            .decode("utf-8", errors="strict")
-            .strip()
-        ).resolve()
-        if top_level != self.parent_root:
+        if not self._is_git and not self.allow_non_git:
             raise DelegationWorktreeError(
                 "mutating delegation requires the configured project root to equal the Git root"
             )
@@ -266,17 +304,21 @@ class DelegationWorktree:
                     f"Could not create isolated delegation worktree: {exc}"
                 ) from exc
         try:
-            result = _run_git(
-                self.parent_root,
-                "worktree",
-                "add",
-                "--detach",
-                str(self.workspace_root),
-                "HEAD",
-            )
-            if result.returncode != 0:
-                detail = result.stderr.decode("utf-8", errors="replace").strip()[:1000]
-                raise DelegationWorktreeError(detail or "git worktree add failed")
+            if self._is_git:
+                result = _run_git(
+                    self.parent_root,
+                    "worktree",
+                    "add",
+                    "--detach",
+                    str(self.workspace_root),
+                    "HEAD",
+                )
+                if result.returncode != 0:
+                    detail = result.stderr.decode("utf-8", errors="replace").strip()[:1000]
+                    raise DelegationWorktreeError(detail or "git worktree add failed")
+            else:
+                self.workspace_root.mkdir(mode=OWNER_RWX, parents=True, exist_ok=True)
+                restrict_path(self.workspace_root, OWNER_RWX)
             self._created = True
             self._seed_parent_state()
             return self.workspace_root
@@ -285,26 +327,33 @@ class DelegationWorktree:
             raise
 
     def _listed_paths(self, root: Path) -> set[str]:
-        raw = _git_output(
-            root,
-            "ls-files",
-            "-z",
-            "--cached",
-            "--others",
-            "--exclude-standard",
-        )
-        paths: set[str] = set()
-        for item in raw.split(b"\0"):
-            if not item:
-                continue
+        if self._is_git and (
+            root == self.parent_root or (root / ".git").exists() or root == self.workspace_root
+        ):
             try:
-                decoded = item.decode("utf-8", errors="strict")
-            except UnicodeDecodeError as exc:
-                raise DelegationWorktreeError(
-                    "delegated worktrees require UTF-8 repository paths"
-                ) from exc
-            paths.add(_validate_relative_path(decoded))
-        return paths
+                raw = _git_output(
+                    root,
+                    "ls-files",
+                    "-z",
+                    "--cached",
+                    "--others",
+                    "--exclude-standard",
+                )
+                paths: set[str] = set()
+                for item in raw.split(b"\0"):
+                    if not item:
+                        continue
+                    try:
+                        decoded = item.decode("utf-8", errors="strict")
+                    except UnicodeDecodeError as exc:
+                        raise DelegationWorktreeError(
+                            "delegated worktrees require UTF-8 repository paths"
+                        ) from exc
+                    paths.add(_validate_relative_path(decoded))
+                return paths
+            except Exception:
+                pass
+        return _non_git_listed_paths(root)
 
     def _seed_parent_state(self) -> None:
         total = 0
@@ -475,7 +524,7 @@ class DelegationWorktree:
         """Remove only this manager's validated generated worktree allocation."""
         if self.allocation_root.parent != self.storage_root:
             raise DelegationWorktreeError("refusing unsafe delegation worktree cleanup")
-        if self.workspace_root.exists() or self.workspace_root.is_symlink():
+        if self._is_git and (self.workspace_root.exists() or self.workspace_root.is_symlink()):
             result = _run_git(
                 self.parent_root,
                 "worktree",
@@ -486,8 +535,10 @@ class DelegationWorktree:
             if result.returncode != 0:
                 shutil.rmtree(self.workspace_root, ignore_errors=True)
                 _run_git(self.parent_root, "worktree", "prune", "--expire", "now")
+        if self.workspace_root.exists():
+            shutil.rmtree(self.workspace_root, ignore_errors=True)
         if self.allocation_root.exists():
-            shutil.rmtree(self.allocation_root)
+            shutil.rmtree(self.allocation_root, ignore_errors=True)
         self._created = False
 
     @staticmethod

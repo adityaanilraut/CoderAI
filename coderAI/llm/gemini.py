@@ -17,18 +17,10 @@ logger = logging.getLogger(__name__)
 class GeminiProvider(OpenAICompatibleCloudProvider):
     """Gemini LLM provider using the OpenAI-compatible API."""
 
+    PROVIDER_ID = "gemini"
+    CONFIG_API_KEY = "gemini_api_key"
+    MODEL_PREFIX = "gemini"
     PROVIDER_LABEL = "Gemini"
-
-    SUPPORTED_MODELS = {
-        "gemini-3.5-flash": "gemini-3.5-flash",
-        "gemini-3.6-flash": "gemini-3.6-flash",
-        "gemini-3.1-flash-lite": "gemini-3.1-flash-lite",
-    }
-    MODEL_CONTEXT_WINDOWS = {
-        "gemini-3.5-flash": 1_048_576,
-        "gemini-3.6-flash": 1_048_576,
-        "gemini-3.1-flash-lite": 1_048_576,
-    }
 
     def __init__(self, model: str, api_key: Optional[str] = None, **kwargs: Any):
         super().__init__(model, api_key, **kwargs)

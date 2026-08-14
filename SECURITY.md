@@ -221,8 +221,8 @@ confinement.
 ### Supply chain (Phase 9)
 
 - Dependencies resolve to a pinned, hashed `requirements.lock` (regenerate with
-  `make lock`). `make audit` and a (non-blocking) CI step run
-  `pip-audit --strict` against it; Dependabot is configured for update PRs.
+  `make lock`). `make audit` and CI run `pip-audit --strict` against it
+  (blocking). Dependabot is configured for update PRs.
 - `pre-commit` runs ruff/mypy locally; CI runs format, lint, strict-per-module
   mypy, the coverage-gated test suite, and the blocking security suite.
 - Release versions have one source in `coderAI/_version.py`; publishing requires

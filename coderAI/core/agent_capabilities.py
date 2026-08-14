@@ -17,7 +17,7 @@ import sys
 import time as _time
 import importlib.util as _importlib_util
 from pathlib import Path
-from typing import Any, Optional, TYPE_CHECKING
+from typing import Any, Optional, TYPE_CHECKING, cast
 
 from coderAI.system.history import Message, Session
 from coderAI.tools import ToolRegistry
@@ -31,7 +31,7 @@ from coderAI.core.personas import (
     persona_allowed_in_context,
 )
 from coderAI.types.provenance import fence_project_context
-from coderAI.skills import SkillManager, LocalSkillSource
+from coderAI.skills import Skill, SkillManager, LocalSkillSource
 from coderAI.prompts.compose import (
     SYSTEM_PROMPT_INTERACTION,
     SYSTEM_PROMPT_INTRO,
@@ -44,12 +44,23 @@ from coderAI.prompts.compose import (
 )
 from coderAI.llm.factory import create_provider
 from coderAI.core.services import get_services
+from coderAI.core.ports import (
+    AgentRuntime,
+    ApprovalPort,
+    ConfirmationOverride,
+    RuntimeView,
+    await_approval,
+)
 
 if TYPE_CHECKING:
     from coderAI.context.context_controller import ContextController
     from coderAI.core.agent_tracker import AgentInfo
+    from coderAI.core.execution_context import RunContext
+    from coderAI.llm.base import LLMProvider
     from coderAI.system.config import Config
     from coderAI.system.cost import CostTracker
+    from coderAI.system.hooks_manager import HooksManager
+    from coderAI.system.read_cache import FileReadCache
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +72,7 @@ class AgentCapabilitiesMixin:
     config: Config
     model: str
     persona: Optional[AgentPersona]
-    provider: Any
+    provider: LLMProvider
     auto_approve: bool
     is_subagent: bool
     session: Optional[Session]
@@ -76,6 +87,12 @@ class AgentCapabilitiesMixin:
     _active_skill_context: list[str]
     plan_mode: bool
     active_plan_id: Optional[str]
+    approval_port: Optional[ApprovalPort]
+    confirmation_override: Optional[ConfirmationOverride]
+    hooks_manager: HooksManager
+    delegation_depth: int
+    read_cache: FileReadCache
+    run_context: RunContext
 
     if TYPE_CHECKING:
 
@@ -120,27 +137,22 @@ class AgentCapabilitiesMixin:
                 loaded = None
             self.persona = loaded
 
-    def _create_provider(self) -> Any:
-        return create_provider(self.model, self.config)
+    def _create_provider(self) -> LLMProvider:
+        return cast("LLMProvider", create_provider(self.model, self.config))
 
     def _replace_provider(self) -> None:
         old_provider = self.provider
         new_provider = self._create_provider()
         self.provider = new_provider
         self._context_controller.provider = new_provider
-        skill_manager = getattr(self, "skill_manager", None)
-        if skill_manager is not None:
-            skill_manager.provider = new_provider
+        self.skill_manager.provider = new_provider
         self._close_replaced_provider(old_provider)
 
     @staticmethod
-    def _close_replaced_provider(provider: Any) -> None:
+    def _close_replaced_provider(provider: LLMProvider) -> None:
         """Close a retired provider from either sync or async switch paths."""
-        close = getattr(provider, "close", None)
-        if close is None:
-            return
         try:
-            result = close()
+            result = provider.close()
         except Exception:
             logger.warning("Failed to close replaced provider", exc_info=True)
             return
@@ -180,6 +192,14 @@ class AgentCapabilitiesMixin:
         # project overlays while still exposing ~/.coderAI/skills.
         self._filter_gated_tools(registry)
         registry.validate_classifications()
+        from coderAI.core.capability_routing import validate_catalog_against_registry
+
+        missing_semantics = validate_catalog_against_registry(registry.tools)
+        if missing_semantics:
+            raise RuntimeError(
+                "Registered tools require ToolSemantics rows: "
+                + ", ".join(missing_semantics)
+            )
         return registry
 
     def _filter_gated_tools(self, registry: ToolRegistry) -> None:
@@ -196,17 +216,17 @@ class AgentCapabilitiesMixin:
         removed_network: list[str] = []
 
         for name, tool in list(registry.tools.items()):
-            platforms = getattr(tool, "platforms", None)
+            platforms = tool.platforms
             if platforms is not None and current_platform not in platforms:
                 del registry.tools[name]
                 removed_platform.append(name)
                 continue
-            package = getattr(tool, "requires_package", None)
+            package = tool.requires_package
             if package is not None and not _package_available(package):
                 del registry.tools[name]
                 removed_package.append(name)
                 continue
-            if drop_network and getattr(tool, "network_gate", False):
+            if drop_network and tool.network_gate:
                 del registry.tools[name]
                 removed_network.append(name)
 
@@ -236,23 +256,25 @@ class AgentCapabilitiesMixin:
         from coderAI.tools.subagent import DelegateTaskTool, SubagentContext
 
         if isinstance(delegate_tool, DelegateTaskTool):
-            tracker_info = getattr(self, "tracker_info", None)
+            runtime = RuntimeView(cast(AgentRuntime, self))
+            tracker_info = runtime.tracker_info
             delegate_tool.context = SubagentContext(
                 parent_agent_id=tracker_info.agent_id if tracker_info else None,
                 parent_model=self.model,
                 parent_context_controller=self._context_controller,
                 parent_cost_tracker=self.cost_tracker,
                 parent_auto_approve=self.auto_approve,
-                parent_ipc_server=getattr(self, "ipc_server", None),
-                parent_session=getattr(self, "session", None),
-                delegation_depth=getattr(self, "delegation_depth", 0),
+                parent_approval_port=runtime.approval_port,
+                parent_session=runtime.session,
+                delegation_depth=runtime.delegation_depth,
                 parent_config=self.config,
-                parent_read_cache=getattr(self, "read_cache", None),
+                parent_read_cache=runtime.read_cache,
                 parent_tool_names=frozenset(self.tools.tools.keys()),
-                parent_confirmation_override=getattr(self, "confirmation_override", None),
-                parent_run_context=getattr(self, "run_context", None),
-                parent_workspace_trusted=bool(getattr(self, "_workspace_trusted", False)),
+                parent_confirmation_override=runtime.confirmation_override,
+                parent_run_context=runtime.run_context,
+                parent_workspace_trusted=runtime.workspace_trusted,
                 parent_patch_approval=self._approve_subagent_patch,
+                parent_hooks_manager=runtime.hooks_manager,
                 workspace_isolation=True,
             )
 
@@ -264,27 +286,19 @@ class AgentCapabilitiesMixin:
         """Route a completed child patch through the parent's approval surface."""
         if self.auto_approve:
             return True
-        override = getattr(self, "confirmation_override", None)
+        override = self.confirmation_override
         if override is not None:
             return bool(await override("integrate_subagent_patch", arguments))
-        ipc_server = getattr(self, "ipc_server", None)
-        if ipc_server is not None:
-            approval = ipc_server.request_tool_approval(
-                tool_id=f"subagent-patch-{_time.time_ns()}",
-                tool_name="integrate_subagent_patch",
-                arguments=arguments,
-                diff=diff,
+        port = self.approval_port
+        if port is not None:
+            timeout = self.config.approval_timeout_seconds
+            return await await_approval(
+                port,
+                "integrate_subagent_patch",
+                arguments,
+                preview=diff,
+                timeout_s=timeout,
             )
-            timeout = int(getattr(self.config, "approval_timeout_seconds", 300) or 0)
-            try:
-                return bool(
-                    await asyncio.wait_for(approval, timeout=timeout)
-                    if timeout > 0
-                    else await approval
-                )
-            except asyncio.TimeoutError:
-                logger.warning("Sub-agent patch review timed out; integration denied.")
-                return False
         import sys
 
         if not sys.stdin.isatty():
@@ -295,7 +309,9 @@ class AgentCapabilitiesMixin:
             "agent_status",
             message=(f"\n⚠ A sub-agent patch is ready for integration.\n{diff}\n"),
         )
-        answer = await PromptSession().prompt_async("Integrate this sub-agent patch? (y/n) > ")
+        answer: str = str(
+            await PromptSession().prompt_async("Integrate this sub-agent patch? (y/n) > ")
+        )
         return answer.strip().lower() in {"y", "yes"}
 
     def _rebuild_tool_registry(self) -> None:
@@ -306,12 +322,12 @@ class AgentCapabilitiesMixin:
         self._configure_delegate_tool_context()
         self._wire_read_cache()
         self._cached_system_prompt = None
-        if hasattr(self, "run_context"):
+        if RuntimeView(cast(AgentRuntime, self)).run_context is not None:
             self._refresh_run_permission_policy()
 
     def _wire_read_cache(self) -> None:
         """Attach the per-session FileReadCache to the read_file tool."""
-        cache = getattr(self, "read_cache", None)
+        cache = RuntimeView(cast(AgentRuntime, self)).read_cache
         if cache is None:
             return
         read_tool = self.tools.get("read_file")
@@ -393,7 +409,7 @@ class AgentCapabilitiesMixin:
         self.apply_persona(persona, update_model=update_model)
         return persona
 
-    def _filter_tools_for_persona(self, allowed_tools: list) -> None:
+    def _filter_tools_for_persona(self, allowed_tools: list[str]) -> None:
         """Apply the persona's tool policy.
 
         Persona frontmatter uses high-level tool labels like `Read` and `Edit`.
@@ -475,7 +491,7 @@ class AgentCapabilitiesMixin:
 
         import platform as _platform
 
-        project_root = getattr(self.config, "project_root", os.getcwd())
+        project_root = self.config.project_root or os.getcwd()
         is_git = os.path.isdir(os.path.join(project_root, ".git"))
 
         env_section = build_environment_section(
@@ -564,7 +580,7 @@ class AgentCapabilitiesMixin:
         self._system_prompt_cache_key = cache_key
         return result
 
-    def _inject_skill_context(self, skills: list) -> None:
+    def _inject_skill_context(self, skills: list[Skill]) -> None:
         """Replace the ephemeral auto-selected skill guidance for this turn.
 
         User-scoped skills (``source == "user"``) are always injectable.
@@ -573,7 +589,7 @@ class AgentCapabilitiesMixin:
         contexts: list[str] = []
         seen: set[str] = set()
         for skill in skills:
-            source = getattr(skill, "source", "local") or "local"
+            source = skill.source or "local"
             if source != "user" and not self._workspace_trusted:
                 continue
             instructions = skill.instructions if skill.instructions else skill.description

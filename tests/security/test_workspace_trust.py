@@ -37,7 +37,7 @@ from coderAI.system.trust import WorkspaceTrust, workspace_trust
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 
-def _fake_agent(project_root, *, ipc_server=None, workspace_trusted=False):
+def _fake_agent(project_root, *, approval_port=None, workspace_trusted=False):
     """Minimal object satisfying the attributes HooksManager reads.
 
     ``os.fspath`` (not ``str``) so a ``MaliciousRepo`` resolves to its root, not
@@ -48,7 +48,7 @@ def _fake_agent(project_root, *, ipc_server=None, workspace_trusted=False):
         auto_approve=True,
         _hooks_approved={},
         tracker_info=None,
-        ipc_server=ipc_server,
+        approval_port=approval_port,
         _workspace_trusted=workspace_trusted,
     )
 
@@ -264,9 +264,11 @@ async def test_hook_subprocess_has_no_secret_env(
 async def test_hook_approval_prompt_shows_full_command(isolated_home):
     from coderAI.system.events import event_emitter
 
-    class _IPC:
-        async def request_tool_approval(self, **kw):
-            return True
+    class _Port:
+        async def request(self, tool, args, preview=None):
+            from coderAI.core.ports import Approval
+
+            return Approval(allowed=True)
 
     captured: list = []
 
@@ -275,7 +277,7 @@ async def test_hook_approval_prompt_shows_full_command(isolated_home):
 
     event_emitter.on("agent_status", _cap)
     try:
-        hm = HooksManager(_fake_agent(".", ipc_server=_IPC()))
+        hm = HooksManager(_fake_agent(".", approval_port=_Port()))
         long_cmd = "echo " + "A" * 120
         approved = await hm.request_hooks_approval([{"command": long_cmd}])
         assert approved is True

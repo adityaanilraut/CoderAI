@@ -301,6 +301,7 @@ class TestRecoverableErrorMarker:
             session=session,
             context_controller=context_controller,
             hooks_manager=None,
+            config=SimpleNamespace(),
         )
         loop = ExecutionLoop(agent)
 
@@ -522,6 +523,9 @@ class TestPerCallUsageAccounting:
         from coderAI.core.agent_loop import ExecutionLoop
         from coderAI.system.cost import CostTracker
 
+        async def _manage_context(messages):
+            return messages
+
         agent = SimpleNamespace(
             provider=provider,
             streaming=False,
@@ -533,7 +537,14 @@ class TestPerCallUsageAccounting:
             total_cache_read_tokens=0,
             cost_tracker=CostTracker(),
             config=SimpleNamespace(budget_limit=0.0),
-            context_controller=SimpleNamespace(strip_internal_markers=lambda msgs: msgs),
+            context_controller=SimpleNamespace(
+                request_tool_schemas=None,
+                _SUMMARY_MARKER_KEY="_summary",
+                manage_context_window=_manage_context,
+                strip_internal_markers=lambda msgs: msgs,
+            ),
+            session=None,
+            tracker_info=None,
         )
         # Bypass __init__ so we don't need the full hooks/executor machinery;
         # _call_llm_with_retry only touches ``self.agent``.
@@ -604,17 +615,17 @@ class TestDelegateToolContext:
                     auto_approve=auto_approve,
                 )
 
-    def test_delegate_tool_tracks_auto_approve_and_ipc_server(self):
+    def test_delegate_tool_tracks_auto_approve_and_approval_port(self):
         agent = self._make_agent(auto_approve=True)
-        ipc_server = MagicMock()
+        approval_port = MagicMock()
 
-        agent.ipc_server = ipc_server
+        agent.approval_port = approval_port
         agent._configure_delegate_tool_context()
 
         delegate_tool = agent.tools.get("delegate_task")
         assert delegate_tool is not None
         assert delegate_tool.context.parent_auto_approve is True
-        assert delegate_tool.context.parent_ipc_server is ipc_server
+        assert delegate_tool.context.parent_approval_port is approval_port
 
 
 class TestAgentProjectRules:

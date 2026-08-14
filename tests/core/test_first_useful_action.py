@@ -121,7 +121,7 @@ async def test_executor_emits_first_useful_action_after_real_success_only() -> N
     events = MagicMock()
     agent = SimpleNamespace(
         auto_approve=True,
-        ipc_server=None,
+        approval_port=None,
         tools=registry,
         tracker_info=None,
         session=session,

@@ -41,7 +41,7 @@ def create_agent_session(
         warn=lambda message: on_event("warning", {"message": message}),
     )
     controller = UIBridge(agent=agent, on_event=on_event)
-    agent.ipc_server = controller
+    agent.approval_port = controller
 
     agent.tracker_info = agent_tracker.register(
         name=agent.persona.name if agent.persona else "main",

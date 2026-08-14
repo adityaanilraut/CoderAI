@@ -11,19 +11,12 @@ from coderAI.llm.cloud_base import OpenAICompatibleCloudProvider
 class MetaProvider(OpenAICompatibleCloudProvider):
     """Meta Model API provider for Muse Spark models."""
 
+    PROVIDER_ID = "meta"
+    CONFIG_API_KEY = "meta_api_key"
+    MODEL_PREFIX = "meta"
+    USES_REASONING_CONFIG = True
     PROVIDER_LABEL = "Meta"
     STREAM_INCLUDES_USAGE = True
-
-    SUPPORTED_MODELS = {
-        "muse-spark-1.2": "muse-spark-1.2",
-        "muse-spark-1.1": "muse-spark-1.1",
-        "muse-spark-1.2-contributor": "muse-spark-1.2-contributor",
-    }
-    MODEL_CONTEXT_WINDOWS = {
-        "muse-spark-1.2": 1_048_576,
-        "muse-spark-1.1": 1_048_576,
-        "muse-spark-1.2-contributor": 1_048_576,
-    }
 
     def __init__(self, model: str, api_key: Optional[str] = None, **kwargs: Any):
         super().__init__(model, api_key, **kwargs)

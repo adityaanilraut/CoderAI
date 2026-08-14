@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Native tools: `directory_tree`, `read_file_slice`, `write_bg_input`, `workspace_status`, `context_stats`, `export_session`.
+
+### Fixed
+- `export_session` now requires confirmation (it writes a file; `safe` is reserved for internal state).
+- `context_stats` reads the live agent context controller instead of constructing a new provider.
+- `workspace_status` runs git through `run_scrubbed` and caps the recent-file walk.
+- Completion-gate mutation catalogs now match the live registry (`multi_edit`; dropped stale `edit_file` / `replace_file_content` names).
+- `/show models` renders from the unified `ALL_SPECS` registry.
+
+### Changed
+- Session HTML/Markdown renderers live in `coderAI/system/session_render.py` so tools do not import the TUI.
+- Documentation tool count: 67 auto-discovered native tools, plus `manage_context` and `request_plan_amendment`.
+
 ## [0.3.4] - 2026-08-13
 
 ### Added

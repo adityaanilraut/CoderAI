@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from coderAI.core.execution_context import RunContext
 from coderAI.core.tool_executor import ToolExecutor
 
 
@@ -17,13 +18,24 @@ from coderAI.core.tool_executor import ToolExecutor
 def _make_agent(tool_registry, auto_approve=True):
     agent = SimpleNamespace(
         auto_approve=auto_approve,
-        ipc_server=None,
+        approval_port=None,
         tools=tool_registry,
         tracker_info=None,
         config=SimpleNamespace(max_concurrent_mutating_subagents=3),
         _sync_tracker=MagicMock(),
         _tool_approval_allowlist=set(),
         max_retries_per_tool=0,
+        confirmation_override=None,
+        active_plan_id=None,
+        active_plan_revision=None,
+        _plan_execution_ready=False,
+        plan_mode=False,
+        _allowed_native_tool_names=None,
+        _capability_domain=None,
+        run_context=RunContext(),
+        _workspace_trusted=False,
+        context_controller=SimpleNamespace(summarize_tool_result=lambda result: result),
+        session=None,
     )
     return agent
 

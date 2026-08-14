@@ -34,7 +34,7 @@ def test_create_fresh_session():
     with _agent_env():
         agent, controller = create_agent_session(on_event=lambda t, d: events.append((t, d)))
     assert agent.session is not None
-    assert agent.ipc_server is controller
+    assert agent.approval_port is controller
     assert agent.streaming_handler is not None
     assert agent.tracker_info.status == AgentStatus.IDLE
     assert agent.tracker_info is not None
@@ -51,7 +51,7 @@ def test_continue_resolves_latest_session():
             agent, controller = create_agent_session(continue_=True, on_event=lambda *a: None)
             hm.get_latest_session_id.assert_called_once()
             Agent.load_session.assert_called_once_with("sess-123")
-    assert controller is agent.ipc_server
+    assert controller is agent.approval_port
 
 
 def test_resume_load_failure_starts_fresh():
@@ -90,5 +90,5 @@ def test_resume_success_activates_session_model():
             agent, controller = create_agent_session(
                 resume="good-id", model="gpt-5.4-mini", on_event=lambda *a: None
             )
-    assert agent.ipc_server is controller
+    assert agent.approval_port is controller
     assert agent.tracker_info.status == AgentStatus.IDLE

@@ -7,6 +7,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from coderAI.system.constants import SKIP_DIRS
+from coderAI.system.proc import run_scrubbed, subprocess_timeout
 from coderAI.types.tool_error_codes import ToolErrorCode
 from coderAI.tools.base import Tool
 from coderAI.tools.undo import get_backup_store
@@ -477,6 +479,228 @@ class CreateDirectoryTool(Tool):
                 "success": True,
                 "path": str(target.resolve()),
                 "message": f"Directory created: '{target}'",
+            }
+        except ProjectPathError as e:
+            return e.as_result()
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
+
+
+class DirectoryTreeParams(BaseModel):
+    path: str = Field(
+        ".", description="Path to the directory to render (default: current directory)"
+    )
+    max_depth: int = Field(
+        3, ge=1, le=10, description="Maximum directory depth to traverse (default: 3)"
+    )
+    include_hidden: bool = Field(
+        False, description="Whether to include hidden files and dot-directories (default: false)"
+    )
+
+
+class DirectoryTreeTool(Tool):
+    """Tool for displaying a visual tree structure of a directory."""
+
+    name = "directory_tree"
+    description = (
+        "Display a visual hierarchy/tree of files and subdirectories up to max_depth. "
+        "Useful for getting a high-level overview of project structure."
+    )
+    category = "filesystem"
+    parameters_model = DirectoryTreeParams
+    is_read_only = True
+
+    async def execute(  # type: ignore[override]
+        self, path: str = ".", max_depth: int = 3, include_hidden: bool = False
+    ) -> dict[str, Any]:
+        try:
+            target = resolve_under_project(path, operation="list")
+            scope_err = _enforce_project_scope(target, "list")
+            if scope_err:
+                return scope_err
+
+            if not target.exists():
+                return {
+                    "success": False,
+                    "error": f"Directory not found: {path}",
+                    "error_code": ToolErrorCode.NOT_FOUND,
+                }
+
+            if not target.is_dir():
+                return {
+                    "success": False,
+                    "error": f"Not a directory: {path}",
+                    "error_code": ToolErrorCode.NOT_A_DIRECTORY,
+                }
+
+            def _generate_tree() -> tuple[list[str], int, int]:
+                lines: list[str] = [target.name or str(target)]
+                dir_count = 0
+                file_count = 0
+                skip_set = set(SKIP_DIRS)
+
+                def _walk(current: Path, prefix: str, depth: int) -> None:
+                    nonlocal dir_count, file_count
+                    if depth > max_depth:
+                        return
+
+                    try:
+                        raw_entries = sorted(
+                            current.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())
+                        )
+                    except OSError:
+                        return
+
+                    entries = []
+                    for e in raw_entries:
+                        if not include_hidden and e.name.startswith("."):
+                            continue
+                        if e.name in skip_set:
+                            continue
+                        entries.append(e)
+
+                    for idx, entry in enumerate(entries):
+                        is_last = idx == len(entries) - 1
+                        connector = "└── " if is_last else "├── "
+                        extension = "    " if is_last else "│   "
+
+                        if entry.is_dir():
+                            dir_count += 1
+                            lines.append(f"{prefix}{connector}{entry.name}/")
+                            _walk(entry, prefix + extension, depth + 1)
+                        else:
+                            file_count += 1
+                            lines.append(f"{prefix}{connector}{entry.name}")
+
+                _walk(target, "", 1)
+                return lines, dir_count, file_count
+
+            lines, total_dirs, total_files = await asyncio.to_thread(_generate_tree)
+
+            return {
+                "success": True,
+                "path": str(target.resolve()),
+                "tree": "\n".join(lines),
+                "total_directories": total_dirs,
+                "total_files": total_files,
+                "max_depth": max_depth,
+            }
+        except ProjectPathError as e:
+            return e.as_result()
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
+
+
+class WorkspaceStatusParams(BaseModel):
+    path: str = Field(".", description="Project directory path (default: current directory)")
+    include_recent_minutes: int = Field(
+        15, ge=1, le=1440, description="Include files modified in the last N minutes (default: 15)"
+    )
+
+
+class WorkspaceStatusTool(Tool):
+    """Inspect workspace state, active git changes, and recently modified files."""
+
+    name = "workspace_status"
+    description = (
+        "Check workspace status: active git changes (modified, untracked, staged files, active branch) "
+        "and list files recently modified by external editors or agents."
+    )
+    category = "filesystem"
+    parameters_model = WorkspaceStatusParams
+    is_read_only = True
+
+    async def execute(  # type: ignore[override]
+        self, path: str = ".", include_recent_minutes: int = 15
+    ) -> dict[str, Any]:
+        try:
+            target = resolve_under_project(path, operation="list")
+            scope_err = _enforce_project_scope(target, "list")
+            if scope_err:
+                return scope_err
+
+            if not target.exists() or not target.is_dir():
+                return {
+                    "success": False,
+                    "error": f"Directory not found: {path}",
+                    "error_code": ToolErrorCode.NOT_FOUND,
+                }
+
+            import time
+
+            cutoff = time.time() - (include_recent_minutes * 60)
+            scan_cap = max(50, _get_max_glob_results())
+            recent_files: list[dict[str, Any]] = []
+            scanned = 0
+            truncated_scan = False
+
+            def _scan_recent() -> None:
+                nonlocal scanned, truncated_scan
+                skip_set = set(SKIP_DIRS)
+                for item in target.rglob("*"):
+                    scanned += 1
+                    if scanned > scan_cap:
+                        truncated_scan = True
+                        return
+                    if item.is_file() and not any(p in skip_set for p in item.parts):
+                        try:
+                            mtime = item.stat().st_mtime
+                            if mtime >= cutoff:
+                                recent_files.append(
+                                    {
+                                        "path": str(item.relative_to(target)),
+                                        "modified_seconds_ago": int(time.time() - mtime),
+                                        "size_bytes": item.stat().st_size,
+                                    }
+                                )
+                        except OSError:
+                            continue
+
+            await asyncio.to_thread(_scan_recent)
+
+            is_git = False
+            branch = None
+            git_changes: list[dict[str, str]] = []
+
+            git_timeout = min(5.0, float(subprocess_timeout()))
+            returncode, stdout, _stderr, timed_out = await run_scrubbed(
+                ["git", "status", "--porcelain=v1", "-b"],
+                cwd=str(target),
+                shell=False,
+                timeout=git_timeout,
+            )
+            if not timed_out and returncode == 0:
+                is_git = True
+                lines = stdout.decode("utf-8", errors="replace").splitlines()
+                if lines and lines[0].startswith("## "):
+                    branch = lines[0][3:].split("...")[0].strip()
+                    lines = lines[1:]
+                for line in lines:
+                    if len(line) >= 3:
+                        st = line[:2].strip()
+                        fn = line[3:].strip()
+                        git_changes.append({"status": st, "file": fn})
+
+            return {
+                "success": True,
+                "path": str(target.resolve()),
+                "is_git_repository": is_git,
+                "active_branch": branch,
+                "git_changed_files_count": len(git_changes),
+                "git_changes": git_changes[:50],
+                "recent_modified_files_count": len(recent_files),
+                "recent_modified_files": sorted(
+                    recent_files, key=lambda x: x["modified_seconds_ago"]
+                )[:30],
+                "scan_truncated": truncated_scan,
             }
         except ProjectPathError as e:
             return e.as_result()

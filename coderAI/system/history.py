@@ -63,7 +63,7 @@ def _default_session_model() -> str:
         try:
             from coderAI.system.config import Config
 
-            return str(Config.model_fields["default_model"].default)
+            return Config().default_model
         except Exception:
             # Last resort if even the Config class can't be imported/inspected.
             return "claude-4-sonnet"
@@ -99,6 +99,7 @@ class Session(BaseModel):
 
     schema_version: int = Field(default=SESSION_SCHEMA_VERSION)
     session_id: str
+    parent_session_id: Optional[str] = None
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
     name: Optional[str] = None
@@ -422,6 +423,50 @@ class HistoryManager:
             model = _default_session_model()
         self.current_session = Session(session_id=session_id, model=model)
         return self.current_session
+
+    def fork_session(
+        self,
+        source_session_id: Optional[str] = None,
+        up_to_turn: Optional[int] = None,
+        new_model: Optional[str] = None,
+    ) -> Session:
+        """Create a new session branched from an existing session.
+
+        Copies all messages and metadata up to *up_to_turn* (or the whole history
+        if omitted) into a newly generated session ID.
+        """
+        source: Optional[Session] = None
+        if source_session_id:
+            source = self.load_session(source_session_id)
+        else:
+            source = self.current_session
+
+        if source is None:
+            return self.create_session(model=new_model)
+
+        new_session = self.create_session(model=new_model or source.model)
+        new_session.parent_session_id = source.session_id
+
+        if up_to_turn is not None and up_to_turn > 0:
+            target_cp = next((cp for cp in source.checkpoints if cp.turn == up_to_turn), None)
+            if target_cp is not None:
+                new_session.messages = [
+                    m.model_copy(deep=True) for m in source.messages[: target_cp.message_index]
+                ]
+                new_session.checkpoints = [
+                    cp.model_copy(deep=True) for cp in source.checkpoints if cp.turn < up_to_turn
+                ]
+            else:
+                new_session.messages = [m.model_copy(deep=True) for m in source.messages]
+                new_session.checkpoints = [cp.model_copy(deep=True) for cp in source.checkpoints]
+        else:
+            new_session.messages = [m.model_copy(deep=True) for m in source.messages]
+            new_session.checkpoints = [cp.model_copy(deep=True) for cp in source.checkpoints]
+
+        new_session.name = f"Fork of {source.name or source.session_id}"
+        self.save_session(new_session)
+        self.current_session = new_session
+        return new_session
 
     def _ensure_history_dir(self) -> None:
         try:

@@ -7,6 +7,7 @@ import re
 import shlex
 import shutil
 import signal
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional, Union
@@ -417,6 +418,7 @@ class RunBackgroundTool(Tool):
             launch = prepare_sandbox_launch(argv, cwd=prep.working_dir)
             process = await asyncio.create_subprocess_exec(
                 *launch.argv,
+                stdin=asyncio.subprocess.PIPE,
                 stdout=stdout_target,
                 stderr=stderr_target,
                 cwd=prep.working_dir,
@@ -671,6 +673,82 @@ class ReadBgOutputTool(Tool):
                 "returncode": info.process.returncode,
                 "stdout": stdout_text,
                 "stderr": stderr_text,
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
+
+
+# ---------------------------------------------------------------------------
+# Write to background process standard input (stdin)
+# ---------------------------------------------------------------------------
+
+
+class WriteBgInputParams(BaseModel):
+    pid: int = Field(..., description="Process ID (PID) of the background process")
+    input: str = Field(..., description="Text/input to send to the process stdin")
+    eof: bool = Field(
+        False, description="Whether to close stdin after sending input (default: false)"
+    )
+
+
+class WriteBgInputTool(Tool):
+    """Send text/input to the standard input (stdin) of a running background process."""
+
+    name = "write_bg_input"
+    description = (
+        "Send text or input to the standard input (stdin) of a running background process "
+        "started with run_background."
+    )
+    category = "terminal"
+    parameters_model = WriteBgInputParams
+    requires_confirmation = True
+
+    async def execute(self, pid: int, input: str, eof: bool = False) -> dict[str, Any]:  # type: ignore[override]
+        try:
+            info = _tracked_bg_processes.get(pid)
+            if info is None:
+                return {
+                    "success": False,
+                    "error": (
+                        f"No tracked background process with PID {pid}. "
+                        "Only processes started by run_background can receive input."
+                    ),
+                    "error_code": ToolErrorCode.TOOL_ERROR,
+                }
+
+            if info.process.returncode is not None:
+                return {
+                    "success": False,
+                    "error": f"Process {pid} has already exited (returncode={info.process.returncode}).",
+                    "error_code": ToolErrorCode.TOOL_ERROR,
+                }
+
+            if info.process.stdin is None:
+                return {
+                    "success": False,
+                    "error": f"Process {pid} does not have an open stdin stream.",
+                    "error_code": ToolErrorCode.TOOL_ERROR,
+                }
+
+            data = input.encode("utf-8", errors="replace")
+            info.process.stdin.write(data)
+            await info.process.stdin.drain()
+
+            if eof:
+                info.process.stdin.close()
+                with suppress(Exception):
+                    await info.process.stdin.wait_closed()
+
+            return {
+                "success": True,
+                "pid": pid,
+                "bytes_written": len(data),
+                "closed_stdin": eof,
+                "message": f"Sent {len(data)} bytes to process {pid} stdin.",
             }
         except Exception as e:
             return {

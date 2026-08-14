@@ -15,47 +15,35 @@ from os.path import normpath
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal, Optional, cast
 
+from coderAI.tools.semantics import EvidenceKind, TOOL_SEMANTICS, semantics_for
+
 
 CompletionStatus = Literal["reasoned", "verified", "incomplete", "unverified"]
 CriterionStatus = Literal["unverified", "verified", "reasoned", "blocked"]
-EvidenceKind = Literal["read", "mutation", "verification", "internal"]
 _COMPLETION_STATUSES = frozenset({"reasoned", "verified", "incomplete", "unverified"})
 _CRITERION_STATUSES = frozenset({"unverified", "verified", "reasoned", "blocked"})
 _EVIDENCE_KINDS = frozenset({"read", "mutation", "verification", "internal"})
 
+# Compatibility exports for callers/tests that inspected the old constants.
+# Their contents are now derived from the single typed semantics catalog.
 _WORKSPACE_MUTATION_TOOLS = frozenset(
-    {
-        "apply_diff",
-        "copy_file",
-        "create_directory",
-        "delete_file",
-        "file_chmod",
-        "move_file",
-        "package_manager",
-        "refactor",
-        "search_replace",
-        "write_file",
-    }
+    row.name for row in TOOL_SEMANTICS if row.workspace_mutation
 )
 _REQUIRES_POST_EDIT_INSPECTION = frozenset(
-    {"apply_diff", "copy_file", "move_file", "refactor", "search_replace", "write_file"}
+    row.name for row in TOOL_SEMANTICS if row.inspect_after_mutation
 )
 _INTERNAL_STATE_TOOLS = frozenset(
-    {
-        "manage_tasks",
-        "memory_delete",
-        "memory_save",
-        "memory_update",
-    }
+    row.name for row in TOOL_SEMANTICS if row.evidence_kind == "internal"
 )
 _PATH_ARGUMENTS = ("path", "file_path", "target", "destination", "dest")
 _CHECK_COMMAND = re.compile(
     r"(?:^|[;&|]\s*)(?:"
     r"pytest|python\s+-m\s+(?:pytest|unittest)|"
-    r"ruff\s+(?:check|format\s+--check)|mypy|pyright|"
+    r"ruff\s+(?:check|format\s+--check)|mypy|pyright|tsc|"
     r"npm\s+(?:test|run\s+(?:test|lint|build|check))|"
     r"pnpm\s+(?:test|run\s+(?:test|lint|build|check))|"
-    r"yarn\s+(?:test|lint|build)|cargo\s+(?:test|check)|go\s+test"
+    r"yarn\s+(?:test|lint|build)|cargo\s+(?:test|check|clippy)|"
+    r"go\s+(?:test|vet)|golangci-lint|shellcheck|biome"
     r")\b",
     re.IGNORECASE,
 )
@@ -188,6 +176,7 @@ class ObjectiveState:
         observed_changes = bool(isinstance(result, dict) and result.get("_workspace_changes"))
         mutation = observed_changes or self._is_workspace_mutation(tool_name, args, tool)
 
+        semantics = semantics_for(tool_name)
         if tool_name == "manage_tasks":
             kind: Literal["read", "mutation", "verification", "internal"] = "internal"
             self._record_task_state(args, result)
@@ -203,8 +192,8 @@ class ObjectiveState:
             if success or observed_changes:
                 self._record_mutation_evidence(tool_name, artifacts)
         else:
-            kind = "internal" if tool_name in _INTERNAL_STATE_TOOLS else "read"
-            if success and tool_name == "read_file":
+            kind = semantics.evidence_kind
+            if success and semantics.records_inspection:
                 for artifact in artifacts:
                     self._artifact_inspections[artifact] = self._sequence
 
@@ -410,7 +399,7 @@ class ObjectiveState:
         for artifact in artifacts:
             if artifact not in self.artifacts_changed:
                 self.artifacts_changed.append(artifact)
-            if tool_name in _REQUIRES_POST_EDIT_INSPECTION or tool_name == "run_command":
+            if semantics_for(tool_name).inspect_after_mutation or tool_name == "run_command":
                 self._artifact_mutations[artifact] = self._sequence
 
     @staticmethod
@@ -437,13 +426,14 @@ class ObjectiveState:
 
     @staticmethod
     def _verification_label(tool_name: str, arguments: dict[str, Any]) -> Optional[str]:
-        if tool_name == "run_tests":
+        verification = semantics_for(tool_name).verification
+        if verification == "tests":
             return "tests"
-        if tool_name == "lint" and not bool(arguments.get("fix")):
+        if verification == "lint" and not bool(arguments.get("fix")):
             return "lint"
-        if tool_name == "format" and bool(arguments.get("check")):
+        if verification == "format" and bool(arguments.get("check")):
             return "format check"
-        if tool_name == "run_command":
+        if verification == "command":
             command = arguments.get("command")
             if isinstance(command, str) and _CHECK_COMMAND.search(command):
                 return f"command: {command[:160]}"
@@ -451,15 +441,16 @@ class ObjectiveState:
 
     @staticmethod
     def _is_workspace_mutation(tool_name: str, arguments: dict[str, Any], tool: Any) -> bool:
-        if tool_name in _INTERNAL_STATE_TOOLS or tool_name == "run_tests":
+        semantics = semantics_for(tool_name)
+        if semantics.evidence_kind in {"internal", "verification"}:
             return False
-        if tool_name == "lint":
+        if semantics.verification == "lint":
             return bool(arguments.get("fix"))
-        if tool_name == "format":
+        if semantics.verification == "format":
             return not bool(arguments.get("check"))
-        if tool_name in _WORKSPACE_MUTATION_TOOLS:
+        if semantics.workspace_mutation:
             return True
-        if tool_name == "run_command":
+        if semantics.verification == "command":
             return ObjectiveState._verification_label(tool_name, arguments) is None
         if tool_name == "delegate_task":
             return not bool(arguments.get("read_only_task"))

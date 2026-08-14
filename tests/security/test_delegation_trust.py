@@ -377,8 +377,7 @@ class TestConfirmationPolicyPropagation:
         assert child.confirmation_override is None
 
     def test_configure_delegate_context_snapshots_confirmation_override(self):
-        """Mirrors the headless run path: override installed post-build, then
-        the delegate context is re-snapshotted so children inherit it."""
+        """Legacy override still snapshots so existing tests/callers keep working."""
         agent = _build_real_agent()
 
         async def deny(_name, _args):
@@ -390,6 +389,19 @@ class TestConfirmationPolicyPropagation:
         delegate = agent.tools.get("delegate_task")
         assert delegate is not None
         assert delegate.context.parent_confirmation_override is deny
+
+    def test_configure_delegate_context_snapshots_approval_port(self):
+        """Headless run installs the deny port post-build, then re-snapshots."""
+        from coderAI.core.ports import DenyByDefaultApprovalPort
+
+        agent = _build_real_agent()
+        port = DenyByDefaultApprovalPort()
+        agent.approval_port = port
+        agent._configure_delegate_tool_context()
+
+        delegate = agent.tools.get("delegate_task")
+        assert delegate is not None
+        assert delegate.context.parent_approval_port is port
 
     def test_headless_run_refreshes_delegate_context_after_deny_guard(self):
         """`coderAI run` installs deny-on-mutate then must re-wire the delegate
@@ -405,10 +417,11 @@ class TestConfirmationPolicyPropagation:
         asyncio.run(run_cmd._run_agent(agent, "hi", blocked))
 
         delegate = agent.tools.get("delegate_task")
-        override = delegate.context.parent_confirmation_override
-        assert override is not None
-        # Driving the shared override appends to the run's blocked_tools list.
-        assert asyncio.run(override("write_file", {})) is False
+        port = delegate.context.parent_approval_port
+        assert port is not None
+        # Driving the shared deny-by-default port appends to the run's list.
+        result = asyncio.run(port.request("write_file", {}))
+        assert result.allowed is False
         assert "write_file" in blocked
 
 

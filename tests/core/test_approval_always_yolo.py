@@ -14,8 +14,35 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from coderAI.core.execution_context import RunContext
 from coderAI.core.tool_executor import ToolExecutor
 from coderAI.tui.commands import _cmd_set_auto_approve, _cmd_tool_approval_resp
+
+
+def _executor_agent(**overrides):
+    values = {
+        "auto_approve": False,
+        "approval_port": None,
+        "confirmation_override": None,
+        "tracker_info": None,
+        "tracker_update": MagicMock(),
+        "_sync_tracker": MagicMock(),
+        "config": SimpleNamespace(approval_timeout_seconds=300),
+        "tools": SimpleNamespace(get=MagicMock(return_value=None)),
+        "_tool_approval_allowlist": set(),
+        "session": None,
+        "context_controller": SimpleNamespace(summarize_tool_result=lambda result: result),
+        "active_plan_id": None,
+        "active_plan_revision": None,
+        "_plan_execution_ready": False,
+        "plan_mode": False,
+        "_allowed_native_tool_names": None,
+        "_capability_domain": None,
+        "run_context": RunContext(),
+        "_workspace_trusted": False,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
 
 
 @pytest.mark.asyncio
@@ -44,15 +71,17 @@ async def test_confirmation_skips_prompt_when_yolo_enabled_while_queued() -> Non
     """A tool queued behind _confirm_lock must honour Always without re-prompting."""
     prompted = False
 
-    class FakeIPC:
-        async def request_tool_approval(self, **kwargs):
+    class FakePort:
+        async def request(self, tool, args, preview=None):
+            from coderAI.core.ports import Approval
+
             nonlocal prompted
             prompted = True
-            return True
+            return Approval(allowed=True)
 
-    agent = SimpleNamespace(
+    agent = _executor_agent(
         auto_approve=False,
-        ipc_server=FakeIPC(),
+        approval_port=FakePort(),
         tracker_info=None,
         _sync_tracker=MagicMock(),
         config=SimpleNamespace(approval_timeout_seconds=300),
@@ -79,15 +108,17 @@ async def test_force_confirm_still_prompts_under_yolo() -> None:
     """MCP mutation gate passes force_confirm=True and must still prompt."""
     prompted = False
 
-    class FakeIPC:
-        async def request_tool_approval(self, **kwargs):
+    class FakePort:
+        async def request(self, tool, args, preview=None):
+            from coderAI.core.ports import Approval
+
             nonlocal prompted
             prompted = True
-            return True
+            return Approval(allowed=True)
 
-    agent = SimpleNamespace(
+    agent = _executor_agent(
         auto_approve=True,  # YOLO on
-        ipc_server=FakeIPC(),
+        approval_port=FakePort(),
         tracker_info=None,
         _sync_tracker=MagicMock(),
         config=SimpleNamespace(approval_timeout_seconds=300),
@@ -133,9 +164,9 @@ async def test_execute_skips_confirm_after_yolo_mid_batch() -> None:
         ),
         execute=AsyncMock(return_value={"success": True}),
     )
-    agent = SimpleNamespace(
+    agent = _executor_agent(
         auto_approve=False,
-        ipc_server=None,
+        approval_port=None,
         tools=registry,
         tracker_info=None,
         _sync_tracker=MagicMock(),
@@ -143,7 +174,7 @@ async def test_execute_skips_confirm_after_yolo_mid_batch() -> None:
         confirmation_override=None,
         session=None,
         context_controller=SimpleNamespace(summarize_tool_result=lambda r: r),
-        config=None,
+        config=SimpleNamespace(),
     )
     hooks_manager = SimpleNamespace(
         run_hooks=AsyncMock(return_value=[]),

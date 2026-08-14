@@ -10,6 +10,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from coderAI.llm.anthropic import AnthropicProvider
+from coderAI.llm.base import LLMProvider
+from coderAI.llm.deepseek import DeepSeekProvider
+from coderAI.llm.gemini import GeminiProvider
+from coderAI.llm.groq import GroqProvider
+from coderAI.llm.lmstudio import LMStudioProvider
+from coderAI.llm.meta import MetaProvider
+from coderAI.llm.ollama import OllamaProvider
+from coderAI.llm.openai import OpenAIProvider
+
 Tier = Literal["frontier", "mid", "small", "custom"]
 ReasoningMode = Literal[
     "none", "openai-effort", "anthropic-adaptive", "deepseek-thinking", "meta-effort"
@@ -18,7 +28,7 @@ ReasoningMode = Literal[
 
 @dataclass(frozen=True)
 class ModelSpec:
-    provider: str  # openai | anthropic | gemini | deepseek | groq | meta | lmstudio | ollama
+    provider_cls: type[LLMProvider]
     id: str  # canonical API ID (lower-case)
     label: str  # human short label (Sol, Terra…)
     tier: Tier
@@ -30,6 +40,11 @@ class ModelSpec:
     aliases: tuple[str, ...] = ()
     requirement: str = ""  # credential hint for UI
 
+    @property
+    def provider(self) -> str:
+        """Stable provider identifier derived from the construction class."""
+        return self.provider_cls.PROVIDER_ID
+
 
 # ---------------------------------------------------------------------------
 # Strict Option-A catalog — verified July 2026
@@ -38,7 +53,7 @@ class ModelSpec:
 ALL_SPECS: list[ModelSpec] = [
     # OpenAI — GPT-5.6 Sol/Terra/Luna — platform.openai.com/docs/pricing
     ModelSpec(
-        provider="openai",
+        provider_cls=OpenAIProvider,
         id="gpt-5.6-sol",
         label="Sol",
         tier="frontier",
@@ -51,7 +66,7 @@ ALL_SPECS: list[ModelSpec] = [
         requirement="OpenAI API key",
     ),
     ModelSpec(
-        provider="openai",
+        provider_cls=OpenAIProvider,
         id="gpt-5.6-terra",
         label="Terra",
         tier="mid",
@@ -64,7 +79,7 @@ ALL_SPECS: list[ModelSpec] = [
         requirement="OpenAI API key",
     ),
     ModelSpec(
-        provider="openai",
+        provider_cls=OpenAIProvider,
         id="gpt-5.6-luna",
         label="Luna",
         tier="small",
@@ -78,7 +93,7 @@ ALL_SPECS: list[ModelSpec] = [
     ),
     # Anthropic — Fable 5 / Opus 5 / Sonnet 5
     ModelSpec(
-        provider="anthropic",
+        provider_cls=AnthropicProvider,
         id="claude-fable-5",
         label="Fable 5",
         tier="frontier",
@@ -91,7 +106,7 @@ ALL_SPECS: list[ModelSpec] = [
         requirement="Anthropic API key",
     ),
     ModelSpec(
-        provider="anthropic",
+        provider_cls=AnthropicProvider,
         id="claude-opus-5",
         label="Opus 5",
         tier="mid",
@@ -104,7 +119,7 @@ ALL_SPECS: list[ModelSpec] = [
         requirement="Anthropic API key",
     ),
     ModelSpec(
-        provider="anthropic",
+        provider_cls=AnthropicProvider,
         id="claude-sonnet-5",
         label="Sonnet 5",
         tier="small",
@@ -118,7 +133,7 @@ ALL_SPECS: list[ModelSpec] = [
     ),
     # Gemini — 3.5 Flash / 3.6 Flash / 3.1 Flash-Lite
     ModelSpec(
-        provider="gemini",
+        provider_cls=GeminiProvider,
         id="gemini-3.5-flash",
         label="3.5 Flash",
         tier="frontier",
@@ -130,7 +145,7 @@ ALL_SPECS: list[ModelSpec] = [
         requirement="Gemini API key",
     ),
     ModelSpec(
-        provider="gemini",
+        provider_cls=GeminiProvider,
         id="gemini-3.6-flash",
         label="3.6 Flash",
         tier="mid",
@@ -142,7 +157,7 @@ ALL_SPECS: list[ModelSpec] = [
         requirement="Gemini API key",
     ),
     ModelSpec(
-        provider="gemini",
+        provider_cls=GeminiProvider,
         id="gemini-3.1-flash-lite",
         label="3.1 Flash-Lite",
         tier="small",
@@ -155,7 +170,7 @@ ALL_SPECS: list[ModelSpec] = [
     ),
     # DeepSeek — V4 Pro / V4 Flash / V3-chat (compat alias to Flash)
     ModelSpec(
-        provider="deepseek",
+        provider_cls=DeepSeekProvider,
         id="deepseek-v4-pro",
         label="V4 Pro",
         tier="frontier",
@@ -167,7 +182,7 @@ ALL_SPECS: list[ModelSpec] = [
         requirement="DeepSeek API key",
     ),
     ModelSpec(
-        provider="deepseek",
+        provider_cls=DeepSeekProvider,
         id="deepseek-v4-flash",
         label="V4 Flash",
         tier="mid",
@@ -180,7 +195,7 @@ ALL_SPECS: list[ModelSpec] = [
         requirement="DeepSeek API key",
     ),
     ModelSpec(
-        provider="deepseek",
+        provider_cls=DeepSeekProvider,
         id="deepseek-chat",
         label="Chat",
         tier="small",
@@ -194,7 +209,7 @@ ALL_SPECS: list[ModelSpec] = [
     ),
     # Groq — GPT-OSS 120B / Llama 4 Scout / GPT-OSS 20B
     ModelSpec(
-        provider="groq",
+        provider_cls=GroqProvider,
         id="openai/gpt-oss-120b",
         label="GPT-OSS 120B",
         tier="frontier",
@@ -207,7 +222,7 @@ ALL_SPECS: list[ModelSpec] = [
         requirement="Groq API key",
     ),
     ModelSpec(
-        provider="groq",
+        provider_cls=GroqProvider,
         id="meta-llama/llama-4-scout-17b-16e-instruct",
         label="Llama 4 Scout",
         tier="mid",
@@ -220,7 +235,7 @@ ALL_SPECS: list[ModelSpec] = [
         requirement="Groq API key",
     ),
     ModelSpec(
-        provider="groq",
+        provider_cls=GroqProvider,
         id="openai/gpt-oss-20b",
         label="GPT-OSS 20B",
         tier="small",
@@ -234,7 +249,7 @@ ALL_SPECS: list[ModelSpec] = [
     ),
     # Meta — Muse Spark 1.2 family
     ModelSpec(
-        provider="meta",
+        provider_cls=MetaProvider,
         id="muse-spark-1.2",
         label="Spark 1.2",
         tier="frontier",
@@ -247,7 +262,7 @@ ALL_SPECS: list[ModelSpec] = [
         requirement="Meta Model API key",
     ),
     ModelSpec(
-        provider="meta",
+        provider_cls=MetaProvider,
         id="muse-spark-1.1",
         label="Spark 1.1",
         tier="mid",
@@ -259,7 +274,7 @@ ALL_SPECS: list[ModelSpec] = [
         requirement="Meta Model API key",
     ),
     ModelSpec(
-        provider="meta",
+        provider_cls=MetaProvider,
         id="muse-spark-1.2-contributor",
         label="Spark 1.2 Contributor",
         tier="small",
@@ -273,7 +288,7 @@ ALL_SPECS: list[ModelSpec] = [
     ),
     # Local — not tiered, custom
     ModelSpec(
-        provider="lmstudio",
+        provider_cls=LMStudioProvider,
         id="lmstudio",
         label="LM Studio",
         tier="custom",
@@ -285,7 +300,7 @@ ALL_SPECS: list[ModelSpec] = [
         requirement="LM Studio running locally",
     ),
     ModelSpec(
-        provider="ollama",
+        provider_cls=OllamaProvider,
         id="ollama",
         label="Ollama",
         tier="custom",

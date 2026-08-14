@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from coderAI.types.tool_error_codes import ToolErrorCode
 from coderAI.system.locks import get_lock_manager
+from coderAI.system.read_cache import FileReadCache
 from coderAI.tools.base import Tool, ToolPreview
 from coderAI.tools.undo import get_backup_store
 
@@ -47,7 +48,7 @@ class ReadFileTool(Tool):
     category = "filesystem"
 
     # Optional per-session FileReadCache; wired by Agent after registry build.
-    read_cache = None
+    read_cache: Optional[FileReadCache] = None
 
     async def execute(  # type: ignore[override]
         self, path: str, start_line: Optional[int] = None, end_line: Optional[int] = None
@@ -166,6 +167,129 @@ class ReadFileTool(Tool):
                 "success": False,
                 "error": f"Cannot read binary file: {path}",
                 "hint": "This appears to be a binary file. Use run_command with appropriate tools like 'file', 'hexdump', etc.",
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": ToolErrorCode.TOOL_ERROR,
+            }
+
+
+class ReadFileSliceParams(BaseModel):
+    path: str = Field(..., description="Path to the file to read")
+    offset: int = Field(1, ge=1, description="Starting line number (1-indexed, default: 1)")
+    limit: int = Field(
+        100, ge=1, le=1000, description="Maximum number of lines to return (default: 100)"
+    )
+    with_line_numbers: bool = Field(
+        False,
+        description="Format lines with line numbers prefix (e.g. ' 1: content') (default: false)",
+    )
+
+
+class ReadFileSliceTool(Tool):
+    """Tool for paginated, line-range reading of files with line numbering and continuation offset."""
+
+    name = "read_file_slice"
+    description = (
+        "Read a slice of a file starting from a line offset with a maximum line limit. "
+        "Useful for inspecting large files in chunks and viewing line numbers."
+    )
+    parameters_model = ReadFileSliceParams
+    is_read_only = True
+    category = "filesystem"
+
+    async def execute(  # type: ignore[override]
+        self,
+        path: str,
+        offset: int = 1,
+        limit: int = 100,
+        with_line_numbers: bool = False,
+    ) -> dict[str, Any]:
+        try:
+            if offset < 1:
+                return {
+                    "success": False,
+                    "error": "offset must be at least 1.",
+                    "error_code": ToolErrorCode.VALIDATION,
+                }
+            if limit < 1:
+                return {
+                    "success": False,
+                    "error": "limit must be at least 1.",
+                    "error_code": ToolErrorCode.VALIDATION,
+                }
+
+            path_obj = resolve_under_project(path, operation="read", reject_symlink=True)
+            scope_err = _enforce_project_scope(path_obj, "read")
+            if scope_err:
+                return scope_err
+
+            if not path_obj.exists():
+                return {
+                    "success": False,
+                    "error": f"File not found: {path}",
+                    "error_code": ToolErrorCode.NOT_FOUND,
+                }
+
+            if not path_obj.is_file():
+                return {
+                    "success": False,
+                    "error": f"Not a file: {path}",
+                    "error_code": ToolErrorCode.VALIDATION,
+                }
+
+            symlink_err = _reject_symlink_leaf(path_obj, "read")
+            if symlink_err:
+                return symlink_err
+
+            stat = path_obj.stat()
+            file_size = stat.st_size
+
+            def _read_slice() -> tuple[list[str], int, bool]:
+                lines: list[str] = []
+                total_lines = 0
+                has_more = False
+
+                with _safe_open_no_symlink(path_obj, "r") as f:
+                    for line_idx, line in enumerate(f, start=1):
+                        total_lines = line_idx
+                        if offset <= line_idx < offset + limit:
+                            clean_line = line.rstrip("\r\n")
+                            if with_line_numbers:
+                                lines.append(f"{line_idx:4d}: {clean_line}")
+                            else:
+                                lines.append(clean_line)
+                        elif line_idx >= offset + limit:
+                            has_more = True
+                            if file_size > 5_000_000 and line_idx > offset + limit + 1000:
+                                break
+
+                return lines, total_lines, has_more
+
+            sliced_lines, total_lines, has_more = await asyncio.to_thread(_read_slice)
+            end_line = min(offset + len(sliced_lines) - 1, total_lines) if sliced_lines else offset
+
+            return {
+                "success": True,
+                "path": str(path_obj),
+                "content": "\n".join(sliced_lines),
+                "start_line": offset,
+                "end_line": end_line,
+                "line_count": len(sliced_lines),
+                "total_lines": total_lines,
+                "has_more": has_more,
+                "next_offset": (offset + limit) if has_more else None,
+                "size_bytes": file_size,
+            }
+        except ProjectPathError as e:
+            return e.as_result()
+        except UnicodeDecodeError:
+            return {
+                "success": False,
+                "error": f"Cannot read binary file: {path}",
+                "hint": "This appears to be a binary file. Use run_command with tools like 'hexdump' or 'file'.",
             }
         except Exception as e:
             return {

@@ -67,7 +67,7 @@ class TestExecutorSeesScopedEmitter:
         session = Session(session_id="session_events_scope")
         agent = SimpleNamespace(
             auto_approve=True,
-            ipc_server=None,
+            approval_port=None,
             tools=registry,
             tracker_info=None,
             session=session,
@@ -154,6 +154,15 @@ class TestConfigReadUnification:
     bug where tools read the global ``config_manager.load()`` and missed
     overrides the Agent had resolved via ``load_project_config``.
     """
+
+    def test_context_controller_inherits_and_defaults_unbound(self):
+        from types import SimpleNamespace
+
+        fake = SimpleNamespace(pinned_files={"a.py": "x"})
+        assert ToolServices().context_controller is None
+        with services_scope(inherit=True, context_controller=fake):
+            assert get_services().context_controller is fake
+        assert get_services().context_controller is None
 
     def test_filesystem_guard_honors_project_override_via_scope(self, tmp_path):
         from coderAI.system.config import config_manager

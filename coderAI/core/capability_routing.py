@@ -1,8 +1,9 @@
 """Deterministic, objective-scoped tool-schema routing.
 
-The registry remains the authority for which tools exist and the executor remains
-the authority for whether a call may run.  This module only narrows the schemas
-shown to a model for one objective; it can never manufacture or re-enable a tool.
+The live registry remains authoritative for availability and the executor for
+permission. Capability membership comes exclusively from the typed tool
+semantics catalog; the router can only intersect declared tags with schemas
+that are already eligible.
 """
 
 from __future__ import annotations
@@ -12,37 +13,41 @@ from dataclasses import dataclass
 import re
 from typing import Any
 
-
-# These are the only schemas shown on an otherwise unclassified ordinary turn.
-# Keep this list deliberately small: objective-specific families are added below.
-UNIVERSAL_TOOL_NAMES: tuple[str, ...] = (
-    "read_file",
-    "grep",
-    "glob_search",
-    "list_directory",
-    "git_status",
-    "manage_tasks",
-    "delegate_task",
-    "use_skill",
+from coderAI.tools.semantics import (
+    SEMANTICS_BY_NAME,
+    CapabilityTag,
+    UNIVERSAL_TOOL_NAMES,
+    tools_for_capabilities,
 )
+
+
 UNIVERSAL_SCHEMA_LIMIT = 9
 MAX_DYNAMIC_MCP_SCHEMAS = 8
 
 
 @dataclass(frozen=True)
 class CapabilitySpec:
-    """One compact native capability family and its objective vocabulary."""
+    """A capability tag and its legacy objective-inference vocabulary.
 
-    name: str
-    tools: tuple[str, ...]
+    ``tools`` is a derived compatibility view. Tool membership is declared in
+    :mod:`coderAI.tools.semantics`, never in this prompt inference boundary.
+    """
+
+    name: CapabilityTag
     keywords: frozenset[str]
     phrases: tuple[str, ...] = ()
 
+    @property
+    def tools(self) -> tuple[str, ...]:
+        return tuple(sorted(tools_for_capabilities(frozenset({self.name}))))
 
+
+# Existing free-form prompts have no structured intent field. Keep their
+# vocabulary compatibility in one explicit boundary, then pass typed tags to
+# the router. New callers should declare ``capability_tags`` directly.
 CAPABILITY_CATALOG: tuple[CapabilitySpec, ...] = (
     CapabilitySpec(
         "code_search",
-        ("symbol_search", "semantic_search", "file_stat", "file_readlink"),
         frozenset(
             {
                 "analyze",
@@ -59,23 +64,18 @@ CAPABILITY_CATALOG: tuple[CapabilitySpec, ...] = (
                 "search",
                 "symbol",
                 "trace",
+                "tree",
             }
         ),
-        ("code search", "where is", "call site"),
+        ("code search", "where is", "call site", "directory tree"),
+    ),
+    CapabilitySpec(
+        "session_context",
+        frozenset({"compact", "context", "export", "pins", "transcript", "tokens"}),
+        ("context window", "export session", "token usage"),
     ),
     CapabilitySpec(
         "workspace_edit",
-        (
-            "apply_diff",
-            "write_file",
-            "search_replace",
-            "create_directory",
-            "move_file",
-            "copy_file",
-            "delete_file",
-            "file_chmod",
-            "refactor",
-        ),
         frozenset(
             {
                 "add",
@@ -99,34 +99,27 @@ CAPABILITY_CATALOG: tuple[CapabilitySpec, ...] = (
     ),
     CapabilitySpec(
         "execution",
-        (
-            "run_command",
-            "run_background",
-            "read_bg_output",
-            "list_processes",
-            "kill_process",
-            "python_repl",
-        ),
         frozenset(
             {
                 "build",
                 "command",
                 "debug",
                 "execute",
+                "input",
                 "logs",
                 "process",
                 "reproduce",
                 "run",
                 "server",
                 "shell",
+                "stdin",
                 "terminal",
             }
         ),
-        ("start the server", "run it"),
+        ("start the server", "run it", "send input"),
     ),
     CapabilitySpec(
         "quality",
-        ("run_tests", "lint", "format"),
         frozenset(
             {
                 "check",
@@ -148,52 +141,18 @@ CAPABILITY_CATALOG: tuple[CapabilitySpec, ...] = (
     ),
     CapabilitySpec(
         "git",
-        ("git_diff", "git_log", "git_add", "git_commit", "git_branch"),
         frozenset(
-            {
-                "branch",
-                "commit",
-                "diff",
-                "git",
-                "history",
-                "merge",
-                "rebase",
-                "stage",
-                "tag",
-            }
+            {"branch", "commit", "diff", "git", "history", "merge", "rebase", "stage", "tag"}
         ),
         ("cherry pick", "pull request"),
     ),
     CapabilitySpec(
         "web",
-        ("web_search", "read_url", "download_file", "http_request"),
-        frozenset(
-            {
-                "download",
-                "fetch",
-                "http",
-                "internet",
-                "online",
-                "url",
-                "web",
-            }
-        ),
+        frozenset({"download", "fetch", "http", "internet", "online", "url", "web"}),
         ("look online", "search the web"),
     ),
     CapabilitySpec(
         "browser",
-        (
-            "browser_navigate",
-            "browser_snapshot",
-            "browser_click",
-            "browser_type",
-            "browser_select_option",
-            "browser_get_content",
-            "browser_screenshot",
-            "browser_evaluate",
-            "browser_wait",
-            "browser_close",
-        ),
         frozenset(
             {
                 "browser",
@@ -211,72 +170,34 @@ CAPABILITY_CATALOG: tuple[CapabilitySpec, ...] = (
     ),
     CapabilitySpec(
         "desktop",
-        (
-            "run_applescript",
-            "get_accessibility_tree",
-            "click_ui_element",
-            "type_keystrokes",
-        ),
         frozenset(
-            {
-                "accessibility",
-                "applescript",
-                "desktop",
-                "keystroke",
-                "macos",
-                "ui",
-            }
+            {"accessibility", "applescript", "desktop", "keystroke", "macos", "ui"}
         ),
         ("user interface", "desktop app"),
     ),
     CapabilitySpec(
         "packages",
-        ("package_manager",),
         frozenset(
-            {
-                "dependency",
-                "dependencies",
-                "install",
-                "package",
-                "pip",
-                "poetry",
-                "upgrade",
-            }
+            {"dependency", "dependencies", "install", "package", "pip", "poetry", "upgrade"}
         ),
     ),
     CapabilitySpec(
         "memory",
-        ("save_memory", "recall_memory", "delete_memory"),
         frozenset({"forget", "memory", "recall", "remember"}),
     ),
-    CapabilitySpec(
-        "undo",
-        ("undo", "undo_history"),
-        frozenset({"revert", "rollback", "undo", "rewind"}),
-    ),
+    CapabilitySpec("undo", frozenset({"revert", "rollback", "undo", "rewind"})),
     CapabilitySpec(
         "vision",
-        ("read_image",),
         frozenset({"diagram", "image", "photo", "picture", "visual"}),
         ("look at this image",),
     ),
     CapabilitySpec(
         "context",
-        ("manage_context",),
         frozenset({"context", "pin", "unpin"}),
         ("pinned file",),
     ),
     CapabilitySpec(
         "mcp_control",
-        (
-            "mcp_connect",
-            "mcp_disconnect",
-            "mcp_list",
-            "mcp_list_resources",
-            "mcp_read_resource",
-            "mcp_list_prompts",
-            "mcp_get_prompt",
-        ),
         frozenset({"mcp"}),
         ("model context protocol",),
     ),
@@ -285,7 +206,18 @@ CAPABILITY_CATALOG: tuple[CapabilitySpec, ...] = (
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 _BROAD_MUTATION_WORDS = frozenset(
-    {"add", "change", "create", "delete", "edit", "fix", "implement", "modify", "patch", "update"}
+    {
+        "add",
+        "change",
+        "create",
+        "delete",
+        "edit",
+        "fix",
+        "implement",
+        "modify",
+        "patch",
+        "update",
+    }
 )
 _AMBIGUOUS_REFERENTS = frozenset(
     {
@@ -302,6 +234,14 @@ _AMBIGUOUS_REFERENTS = frozenset(
         "this",
     }
 )
+
+
+@dataclass(frozen=True)
+class InferredCapabilities:
+    """Compatibility result for a legacy free-form objective."""
+
+    tags: frozenset[CapabilityTag]
+    ambiguous: bool = False
 
 
 @dataclass(frozen=True)
@@ -343,21 +283,31 @@ def _is_ambiguous_mutation(tokens: set[str], matched: Sequence[CapabilitySpec]) 
         return False
     informative = tokens - _BROAD_MUTATION_WORDS - _AMBIGUOUS_REFERENTS
     if informative:
-        # High-impact: require concrete file/path signal for bare "fix this"
-        # style queries. Without a path, extension, or explicit code target,
-        # keep the model on universal+code_search to avoid bloating mutating
-        # schemas on diagnose/explain intents.
         has_path_signal = any(
-            ("/" in t or "." in t or t in {"file", "function", "class", "method", "module"})
-            for t in tokens
+            (
+                "/" in token
+                or "." in token
+                or token in {"file", "function", "class", "method", "module"}
+            )
+            for token in tokens
         )
-        # also check for quoted or explicit target — if informative tokens
-        # include largely generic words, treat as ambiguous
         if not has_path_signal and len(informative) <= 2:
-            # Check if normalized objective actually mentions a file-like token
             return True
         return False
     return True
+
+
+def infer_capability_tags(objective: str) -> InferredCapabilities:
+    """Migrate a legacy free-form objective to declared capability tags."""
+    normalized = " ".join(_TOKEN_RE.findall((objective or "").lower()))
+    tokens = set(normalized.split())
+    matched = [spec for spec in CAPABILITY_CATALOG if _matches(spec, normalized, tokens)]
+    if any(spec.name == "undo" for spec in matched):
+        matched = [spec for spec in matched if spec.name != "workspace_edit"]
+    ambiguous = _is_ambiguous_mutation(tokens, matched)
+    if ambiguous:
+        matched = []
+    return InferredCapabilities(frozenset(spec.name for spec in matched), ambiguous)
 
 
 def _identifier_tokens(name: str) -> set[str]:
@@ -393,16 +343,17 @@ def route_capabilities(
     *,
     objective: str,
     native_schemas: Iterable[dict[str, Any]],
+    capability_tags: Iterable[CapabilityTag] | None = None,
     mcp_schemas: Iterable[dict[str, Any]] = (),
     warm_tool_names: Iterable[str] = (),
     plan_mode: bool = False,
     active_plan: bool = False,
 ) -> RoutingDecision:
-    """Return the deterministic schema subset for one objective.
+    """Return the eligible schema subset selected by declared capability tags.
 
-    Inputs must already be filtered by registry, persona, dependency, platform,
-    permission-domain, and Plan Mode boundaries.  Warm names are intersected
-    with those eligible inputs, so warmth cannot widen authority.
+    ``capability_tags`` is the typed route. Omitting it retains compatibility
+    for callers that only have a free-form objective by using the isolated
+    :func:`infer_capability_tags` migration boundary.
     """
     if len(UNIVERSAL_TOOL_NAMES) >= 10 or len(UNIVERSAL_TOOL_NAMES) > UNIVERSAL_SCHEMA_LIMIT:
         raise RuntimeError("Universal capability catalog must remain below ten schemas")
@@ -410,22 +361,17 @@ def route_capabilities(
     native = _dedupe_schemas(native_schemas)
     dynamic = _dedupe_schemas(mcp_schemas)
     warm = set(warm_tool_names)
-    normalized = " ".join(_TOKEN_RE.findall((objective or "").lower()))
-    tokens = set(normalized.split())
-    matched = [spec for spec in CAPABILITY_CATALOG if _matches(spec, normalized, tokens)]
-    # Undo objectives commonly contain nouns such as "change" or "edit" to
-    # describe the state being reversed.  Loading the editing family for those
-    # objectives is a corpus-measured false positive and expands mutation
-    # choices in exactly the wrong direction, so undo deterministically wins.
-    if any(spec.name == "undo" for spec in matched):
-        matched = [spec for spec in matched if spec.name != "workspace_edit"]
-    ambiguous = _is_ambiguous_mutation(tokens, matched)
-    if ambiguous:
-        matched = []
+    objective_tokens = set(_TOKEN_RE.findall((objective or "").lower()))
+    if capability_tags is None:
+        inferred = infer_capability_tags(objective)
+        tags = inferred.tags
+        ambiguous = inferred.ambiguous
+    else:
+        tags = frozenset(capability_tags)
+        ambiguous = False
 
     selected: set[str] = {name for name in UNIVERSAL_TOOL_NAMES if name in native}
-    for spec in matched:
-        selected.update(name for name in spec.tools if name in native)
+    selected.update(name for name in tools_for_capabilities(tags) if name in native)
 
     context_reasons: list[str] = []
     if plan_mode and "submit_plan" in native:
@@ -440,7 +386,7 @@ def route_capabilities(
 
     selected_dynamic: list[str] = []
     if not plan_mode:
-        selected_dynamic = _select_dynamic_mcp(objective, tokens, dynamic, warm)
+        selected_dynamic = _select_dynamic_mcp(objective, objective_tokens, dynamic, warm)
 
     native_names = [name for name in native if name in selected]
     dynamic_names = [name for name in dynamic if name in selected_dynamic]
@@ -449,10 +395,11 @@ def route_capabilities(
     )
     selected_names = tuple(native_names + dynamic_names)
 
-    matched_names = tuple(spec.name for spec in matched)
+    matched_names = tuple(sorted(tags))
     reasons: list[str] = []
     if matched_names:
-        reasons.append("objective:" + ",".join(matched_names))
+        source = "declared" if capability_tags is not None else "objective"
+        reasons.append(source + ":" + ",".join(matched_names))
     elif ambiguous:
         reasons.append("conservative_ambiguous")
     else:
@@ -471,3 +418,8 @@ def route_capabilities(
         routing_reason=";".join(reasons),
         selection_success=success,
     )
+
+
+def validate_catalog_against_registry(tool_names: Iterable[str]) -> tuple[str, ...]:
+    """Return registered native tools missing an explicit semantics row."""
+    return tuple(sorted(name for name in tool_names if name not in SEMANTICS_BY_NAME))

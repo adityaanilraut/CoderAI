@@ -222,7 +222,7 @@ def _delegated_child(workspace_holder: dict[str, Path]) -> MagicMock:
     child.provider = SimpleNamespace(actual_model="test-model")
     child.session = Session(session_id="session_child_12345678", model="test-model")
     child.tracker_info = None
-    child.ipc_server = None
+    child.approval_port = None
     child.context_controller = MagicMock()
     child.context_controller.project_instructions = None
     child.context_controller._instructions_loaded = True
@@ -363,7 +363,7 @@ def test_approved_patch_integration_is_recorded_in_parent_transaction_ledger(
             tracker_info=None,
             tools=registry,
             auto_approve=True,
-            ipc_server=None,
+            approval_port=None,
             config=SimpleNamespace(project_root=str(root)),
             active_plan_id=None,
             active_plan_revision=None,

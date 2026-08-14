@@ -546,7 +546,7 @@ in an active sandbox.
 
 ## Tool Quick Reference
 
-CoderAI discovers 61 native tools at runtime, registers `manage_context` dynamically with the context controller (total 62 native tools), and provides extended git operations via the bundled `git_extended` MCP server. Browser tools require `pip install 'coderai-agent[browser]'`; PDF extraction in `read_url` requires `pip install 'coderai-agent[web]'`. Confirmation required (`✓`) means the agent asks before running.
+CoderAI discovers 67 native tools at runtime, registers `manage_context` and `request_plan_amendment` with the agent (69 native tools), and provides extended git operations via the bundled `git_extended` MCP server. Browser tools require `pip install 'coderai-agent[browser]'`; PDF extraction in `read_url` requires `pip install 'coderai-agent[web]'`. Confirmation required (`✓`) means the agent asks before running.
 
 ### Filesystem
 
@@ -566,6 +566,9 @@ CoderAI discovers 61 native tools at runtime, registers `manage_context` dynamic
 | `file_stat` | — | Get file metadata (size, permissions, mtime) |
 | `file_chmod` | ✓ | Change file permissions |
 | `file_readlink` | — | Read symlink targets |
+| `directory_tree` | — | Visual directory tree up to max depth |
+| `read_file_slice` | — | Read a line range from a file |
+| `workspace_status` | — | Git changes plus recently modified files |
 
 ### Terminal & Process Management
 
@@ -576,6 +579,7 @@ CoderAI discovers 61 native tools at runtime, registers `manage_context` dynamic
 | `list_processes` | — | List tracked background processes |
 | `kill_process` | ✓ | Terminate a background process by PID |
 | `read_bg_output` | — | Read buffered output from a `run_background` process |
+| `write_bg_input` | — | Write to a tracked background process stdin |
 
 ### Git (Native)
 
@@ -618,6 +622,8 @@ Rare git ops auto-connect via the bundled `git_extended` MCP server as
 | `manage_tasks` | — | Persistent TODO list management (`tasks.json`) |
 | `submit_plan` | — | Submit structured proposal (Plan Mode only) |
 | `use_skill` | — | Load a predefined skill workflow |
+| `context_stats` | — | Token-budget breakdown of the live context window |
+| `export_session` | ✓ | Write the session transcript as HTML or Markdown |
 
 ### Multi-Agent Delegation
 

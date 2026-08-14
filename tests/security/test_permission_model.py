@@ -187,7 +187,7 @@ class _RunCommandStub(Tool):
 def _make_agent(session: Session, registry: ToolRegistry, rules: ApprovalRules) -> Any:
     return SimpleNamespace(
         auto_approve=False,
-        ipc_server=None,
+        approval_port=None,
         tools=registry,
         tracker_info=None,
         session=session,

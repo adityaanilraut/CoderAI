@@ -30,7 +30,7 @@ class TestSaveMinimal:
     def test_set_persists_only_that_key(self, manager):
         manager.set("temperature", 0.3)
         data = json.loads(manager.config_file.read_text())
-        assert data == {"temperature": 0.3}
+        assert data == {"providers": {"temperature": 0.3}}
 
     def test_defaults_are_not_frozen(self, manager):
         """The web_tools_in_main bug class: defaults must follow code changes."""
@@ -45,15 +45,15 @@ class TestSaveMinimal:
         manager.load()
         manager.set("default_model", "m")
         data = json.loads(manager.config_file.read_text())
-        assert data["temperature"] == 0.2
-        assert data["default_model"] == "m"
+        assert data["providers"]["temperature"] == 0.2
+        assert data["providers"]["default_model"] == "m"
 
     def test_direct_mutation_still_persists(self, manager):
         """Covers callers that mutate _config and call save() directly."""
         manager._config = Config(default_model="gpt-x")
         manager.save()
         data = json.loads(manager.config_file.read_text())
-        assert data["default_model"] == "gpt-x"
+        assert data["providers"]["default_model"] == "gpt-x"
 
     def test_env_values_not_frozen_to_disk(self, manager, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-from-env-0123456789")
@@ -84,6 +84,54 @@ class TestDefaultWins:
         # Defaults still come from code, not from a frozen file snapshot
         assert cfg.web_tools_in_main is Config().web_tools_in_main
         assert cfg.temperature == 0.3
+
+
+class TestNestedMigration:
+    def test_nested_model_is_authoritative_with_flat_attribute_compatibility(self):
+        cfg = Config(
+            providers={"temperature": 0.2},
+            tools={"tool_timeout_seconds": 45},
+            session={"max_iterations": 9},
+            ui={"log_level": "INFO"},
+        )
+
+        assert cfg.temperature == cfg.providers.temperature == 0.2
+        assert cfg.tool_timeout_seconds == cfg.tools.tool_timeout_seconds == 45
+        assert cfg.max_iterations == cfg.session.max_iterations == 9
+        assert cfg.log_level == cfg.ui.log_level == "INFO"
+        assert set(cfg.model_dump()) == {"providers", "tools", "session", "ui"}
+
+    def test_nested_value_wins_when_flat_and_nested_forms_coexist(self):
+        cfg = Config(temperature=0.9, providers={"temperature": 0.1})
+
+        assert cfg.temperature == 0.1
+
+    def test_flat_file_loads_and_is_migrated_on_next_save(self, manager):
+        manager.config_file.write_text(json.dumps({"temperature": 0.25, "max_iterations": 7}))
+
+        cfg = manager.load()
+        assert cfg.providers.temperature == 0.25
+        assert cfg.session.max_iterations == 7
+
+        manager.set("default_model", "gpt-5.6-terra")
+        assert json.loads(manager.config_file.read_text()) == {
+            "providers": {"temperature": 0.25, "default_model": "gpt-5.6-terra"},
+            "session": {"max_iterations": 7},
+        }
+
+    def test_environment_overrides_nested_file_without_being_persisted(
+        self, manager, monkeypatch
+    ):
+        manager.config_file.write_text(json.dumps({"providers": {"temperature": 0.2}}))
+        monkeypatch.setenv("CODERAI_TEMPERATURE", "0.8")
+
+        assert manager.load().temperature == 0.8
+        manager.set("max_iterations", 12)
+
+        assert json.loads(manager.config_file.read_text()) == {
+            "providers": {"temperature": 0.2},
+            "session": {"max_iterations": 12},
+        }
 
 
 class TestInvalidConfigRecovery:

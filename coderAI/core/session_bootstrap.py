@@ -4,7 +4,7 @@ Phase 4.5 of the architecture remediation. ``--resume``/``--continue``
 resolution, load-vs-create session, and delegate-tool wiring were implemented
 three times (``tui/session_setup``, ``cli/run_cmd``, ``cli/main``); this module
 is the single owner. The TUI layers bridge/streaming wiring on top of the
-returned agent; the headless path adds its ``confirmation_override``.
+returned agent; the headless path adds its deny-by-default ``approval_port``.
 """
 
 from __future__ import annotations

@@ -14,6 +14,7 @@ from coderAI.types.tool_error_codes import ToolErrorCode
 from coderAI.tools.base import Tool
 from coderAI.core.agent_tracker import AgentStatus
 from coderAI.core.execution_context import resolve_delegation_isolation_domain
+from coderAI.core.ports import ApprovalPort
 from coderAI.system.error_policy import BudgetExceededError, is_transient_error
 from coderAI.system.events import event_emitter
 from coderAI.system.retry import backoff_delay
@@ -143,7 +144,7 @@ class SubagentContext:
     parent_context_controller: Optional[Any] = None  # ContextController
     parent_cost_tracker: Optional[Any] = None  # CostTracker (shared)
     parent_auto_approve: bool = False
-    parent_ipc_server: Optional[Any] = None
+    parent_approval_port: Optional[ApprovalPort] = None
     parent_session: Optional[Any] = None  # Session
     delegation_depth: int = 0
     parent_config: Optional[Any] = None  # Config — drives subagent_timeout_seconds
@@ -164,6 +165,7 @@ class SubagentContext:
     parent_run_context: Optional[Any] = None
     parent_workspace_trusted: bool = False
     parent_patch_approval: Optional[Any] = None
+    parent_hooks_manager: Optional[Any] = None
 
 
 # Number of recent parent tool calls to summarise for the sub-agent so it
@@ -542,7 +544,7 @@ class DelegateTaskTool(Tool):
                     project_root=str(child_workspace_root),
                     workspace_trusted=ctx.parent_workspace_trusted,
                 )
-                sub_agent.ipc_server = ctx.parent_ipc_server
+                sub_agent.approval_port = ctx.parent_approval_port
 
                 # Phase 5.2: inherit the parent's confirmation policy (e.g. the
                 # headless deny-on-mutate guard) so a child's mutating tools face
@@ -914,16 +916,9 @@ class DelegateTaskTool(Tool):
                 else:
                     patch_metadata = {"patch_status": "no_changes", "_workspace_changes": []}
 
-            # Run on_subagent_stop hooks on the parent agent. The whole chain
-            # (parent_ipc_server → agent → hooks_manager) is optional in
-            # headless / test setups, so guard each hop instead of letting an
-            # AttributeError get caught as a generic delegation failure.
-            parent_hooks_manager = None
-            parent_ipc = self.context.parent_ipc_server
-            parent_for_hooks = getattr(parent_ipc, "agent", None) if parent_ipc else None
-            if parent_for_hooks is not None:
-                parent_hooks_manager = getattr(parent_for_hooks, "hooks_manager", None)
-
+            # Run on_subagent_stop hooks on the explicitly supplied parent
+            # manager. ApprovalPort intentionally exposes no TUI/Agent backdoor.
+            parent_hooks_manager = self.context.parent_hooks_manager
             hooks_data = parent_hooks_manager.load_hooks() if parent_hooks_manager else None
             if parent_hooks_manager is not None and hooks_data:
                 await parent_hooks_manager.run_hooks(

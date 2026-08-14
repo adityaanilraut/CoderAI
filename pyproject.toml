@@ -100,7 +100,16 @@ line-length = 100
 target-version = "py310"
 
 [tool.ruff.lint]
-extend-select = ["UP006", "UP035"]
+select = [
+    "E",
+    "F",
+    "W",
+    "UP006",
+    "UP035",
+]
+ignore = [
+    "E501",
+]
 
 [tool.ruff.lint.per-file-ignores]
 # load_dotenv() must run before package imports read env vars
@@ -146,11 +155,24 @@ module = [
   "coderAI.core.tool_executor",
   "coderAI.core.turn",
   "coderAI.core.tool_routing",
+  "coderAI.core.ports",
+  "coderAI.core.agent",
+  "coderAI.core.agent_loop",
+  "coderAI.core.agent_capabilities",
+  "coderAI.core.agent_session",
+  "coderAI.core.agent_llm_phase",
+  "coderAI.core.agent_tools_phase",
+  "coderAI.core.agent_finish_reason",
+  "coderAI.core.agent_recovery",
+  "coderAI.core.agent_loop_outcomes",
+  "coderAI.core.capability_routing",
+  "coderAI.core.objective",
   "coderAI.core.agents",
   "coderAI.core.personas",
   "coderAI.core.session_bootstrap",
   "coderAI.cli.*",
   "coderAI.prompts.compose",
+  "coderAI.tools.semantics",
   "coderAI.tui.commands",
   "coderAI.tui.controller",
   "coderAI.tui.streaming",

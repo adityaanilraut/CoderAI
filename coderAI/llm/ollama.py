@@ -8,6 +8,11 @@ from coderAI.llm.local_base import OpenAICompatibleLocalProvider
 class OllamaProvider(OpenAICompatibleLocalProvider):
     """Ollama local LLM provider using OpenAI-compatible API."""
 
+    PROVIDER_ID = "ollama"
+    MODEL_PREFIX = "ollama"
+    CONFIG_MODEL = "ollama_model"
+    CONFIG_ENDPOINT = "ollama_endpoint"
+
     def __init__(
         self, model: str = "llama3", endpoint: str = "http://localhost:11434/v1", **kwargs: Any
     ):

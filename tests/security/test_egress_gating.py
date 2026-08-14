@@ -34,7 +34,7 @@ def _make_agent(
 ) -> Any:
     return SimpleNamespace(
         auto_approve=auto_approve,
-        ipc_server=None,
+        approval_port=None,
         tools=registry,
         tracker_info=None,
         session=session,

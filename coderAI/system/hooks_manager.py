@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from coderAI.system.events import event_emitter
 from coderAI.system.proc import build_hook_env, run_scrubbed
+from coderAI.core.ports import await_approval
 
 if TYPE_CHECKING:
     from coderAI.core.agent import Agent
@@ -253,7 +254,7 @@ class HooksManager:
             message=f"\n⚠ Project hooks detected\nCommands: {cmds_preview}",
         )
 
-        info = getattr(self.agent, "tracker_info", None)
+        info = self.agent.tracker_info
         previous = None
         if info is not None:
             from coderAI.core.agent_tracker import AgentStatus
@@ -263,17 +264,14 @@ class HooksManager:
             info.current_tool = "project_hooks"
             self.agent._sync_tracker()
 
-        ipc_server = getattr(self.agent, "ipc_server", None)
+        port = self.agent.approval_port
         try:
-            if ipc_server:
-                import uuid
-
-                approved = await ipc_server.request_tool_approval(
-                    tool_id=str(uuid.uuid4()),
-                    tool_name="project_hooks",
-                    arguments={"commands": [h.get("command") for h in matching_hooks]},
+            if port is not None:
+                return await await_approval(
+                    port,
+                    "project_hooks",
+                    {"commands": [h.get("command") for h in matching_hooks]},
                 )
-                return bool(approved)
 
             try:
                 from prompt_toolkit import PromptSession

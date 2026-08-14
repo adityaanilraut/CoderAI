@@ -20,7 +20,7 @@ def _make_agent(tool_registry, *, max_mutating: int = 3, auto_approve=True):
     config = SimpleNamespace(max_concurrent_mutating_subagents=max_mutating)
     agent = SimpleNamespace(
         auto_approve=auto_approve,
-        ipc_server=None,
+        approval_port=None,
         tools=tool_registry,
         tracker_info=None,
         config=config,

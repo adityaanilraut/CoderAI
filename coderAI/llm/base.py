@@ -2,7 +2,7 @@
 
 import math
 from abc import ABC, abstractmethod
-from typing import Any, Optional
+from typing import Any, ClassVar, Optional
 from collections.abc import AsyncIterator
 
 # Shared reasoning-effort → budget-tokens mapping used by Anthropic and DeepSeek.
@@ -16,6 +16,32 @@ HTTP_CONNECT_TIMEOUT = 10
 HTTP_SOCK_READ_TIMEOUT = 120
 HTTP_TOTAL_TIMEOUT = 180
 DEFAULT_CONTEXT_WINDOW = 128000
+
+
+class SupportedModelsView:
+    """Descriptor deriving the legacy class attribute from ``ALL_SPECS``."""
+
+    def __get__(self, instance: object, owner: type["LLMProvider"]) -> dict[str, str]:
+        from coderAI.llm.registry import ALL_SPECS
+
+        return {
+            spec.id: spec.id
+            for spec in ALL_SPECS
+            if spec.provider_cls is owner
+        }
+
+
+class ModelContextWindowsView:
+    """Descriptor deriving provider context limits from ``ALL_SPECS``."""
+
+    def __get__(self, instance: object, owner: type["LLMProvider"]) -> dict[str, int]:
+        from coderAI.llm.registry import ALL_SPECS
+
+        return {
+            spec.id: spec.context_window
+            for spec in ALL_SPECS
+            if spec.provider_cls is owner
+        }
 
 # ── Token estimation helpers ───────────────────────────────────────────────
 
@@ -74,7 +100,15 @@ class LLMProvider(ABC):
     # Anthropic does (it expects the paused tool_use blocks replayed); OpenAI-
     # compatible providers do not, so the loop strips them before resuming.
     preserves_tool_calls_on_pause: bool = False
-    MODEL_CONTEXT_WINDOWS: dict[str, int] = {}
+    PROVIDER_ID: ClassVar[str] = ""
+    CONFIG_API_KEY: ClassVar[str | None] = None
+    MODEL_PREFIX: ClassVar[str | None] = None
+    CONFIG_MODEL: ClassVar[str | None] = None
+    CONFIG_ENDPOINT: ClassVar[str | None] = None
+    USES_REASONING_CONFIG: ClassVar[bool] = False
+
+    SUPPORTED_MODELS = SupportedModelsView()
+    MODEL_CONTEXT_WINDOWS = ModelContextWindowsView()
 
     def __init__(self, model: str, api_key: Optional[str] = None, **kwargs: Any):
         """Initialize the LLM provider.
@@ -94,6 +128,28 @@ class LLMProvider(ABC):
         self.total_input_tokens = 0
         self.total_output_tokens = 0
         self._stream_enabled = kwargs.get("stream", True)
+
+    @classmethod
+    def from_config(cls, model: str, config: Any) -> "LLMProvider":
+        """Construct this provider from the shared Config compatibility surface."""
+        normalized = model.strip()
+        prefix = cls.MODEL_PREFIX
+        if prefix and normalized.lower().startswith(prefix + "/"):
+            normalized = normalized.split("/", 1)[1]
+        elif cls.CONFIG_MODEL is not None:
+            normalized = str(getattr(config, cls.CONFIG_MODEL))
+
+        kwargs: dict[str, Any] = {
+            "temperature": config.temperature,
+            "max_tokens": config.max_tokens,
+        }
+        if cls.CONFIG_API_KEY is not None:
+            kwargs["api_key"] = getattr(config, cls.CONFIG_API_KEY)
+        if cls.CONFIG_ENDPOINT is not None:
+            kwargs["endpoint"] = getattr(config, cls.CONFIG_ENDPOINT)
+        if cls.USES_REASONING_CONFIG:
+            kwargs["reasoning_effort"] = config.reasoning_effort
+        return cls(model=normalized, **kwargs)
 
     @property
     def actual_model(self) -> str:

@@ -133,12 +133,9 @@ async def _execute(
         max_iterations=max_iterations,
     )
     if not agent.auto_approve:
+        from coderAI.core.ports import DenyByDefaultApprovalPort
 
-        async def _deny_mutations(tool_name: str, _arguments: dict[str, Any]) -> bool:
-            blocked_tools.append(tool_name)
-            return False
-
-        agent.confirmation_override = _deny_mutations
+        agent.approval_port = DenyByDefaultApprovalPort(on_denied=blocked_tools.append)
         agent._configure_delegate_tool_context()
 
     try:

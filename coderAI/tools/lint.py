@@ -1,5 +1,4 @@
-"""Linter integration tool for auto-detecting and running project linters."""
-
+import json
 import logging
 import shutil
 from pathlib import Path
@@ -38,6 +37,13 @@ LINTERS: dict[str, dict[str, Any]] = {
         "extensions": {".js", ".jsx", ".ts", ".tsx"},
         "detect_files": {"package.json", ".eslintrc.json", ".eslintrc.js", ".eslintrc.yml"},
     },
+    "biome": {
+        "cmd": "npx",
+        "check_args": ["biome", "lint"],
+        "fix_args": ["biome", "lint", "--write"],
+        "extensions": {".js", ".jsx", ".ts", ".tsx", ".json"},
+        "detect_files": {"biome.json", "biome.jsonc"},
+    },
     "clippy": {
         "cmd": "cargo",
         "check_args": ["clippy", "--message-format=json"],
@@ -51,6 +57,13 @@ LINTERS: dict[str, dict[str, Any]] = {
         "fix_args": ["run", "--fix"],
         "extensions": {".go"},
         "detect_files": {"go.mod"},
+    },
+    "shellcheck": {
+        "cmd": "shellcheck",
+        "check_args": ["--format=json"],
+        "fix_args": ["--format=json"],
+        "extensions": {".sh", ".bash"},
+        "detect_files": {".shellcheckrc"},
     },
 }
 
@@ -161,7 +174,7 @@ class LintTool(Tool):
             # Parse results
             has_issues = returncode != 0
 
-            result = {
+            result: dict[str, Any] = {
                 "success": True,
                 "linter": linter_name,
                 "mode": "fix" if fix else "check",
@@ -169,6 +182,15 @@ class LintTool(Tool):
                 "output": stdout_str or stderr_str,
                 "returncode": returncode,
             }
+
+            if not fix and has_issues:
+                issue_count, parsed_issues, affected_files = _parse_lint_issues(
+                    linter_name, stdout.decode("utf-8", errors="replace")
+                )
+                if issue_count > 0:
+                    result["issues_count"] = issue_count
+                    result["issues"] = parsed_issues
+                    result["files_affected"] = affected_files
 
             if fix:
                 result["message"] = (
@@ -189,3 +211,81 @@ class LintTool(Tool):
             return e.as_result()
         except Exception as e:
             return {"success": False, "error": str(e), "error_code": ToolErrorCode.TOOL_ERROR}
+
+
+def _parse_lint_issues(
+    linter_name: str, stdout_str: str
+) -> tuple[int, list[dict[str, Any]], list[str]]:
+    """Extract structured issues from JSON linter output when available."""
+    issues: list[dict[str, Any]] = []
+    files: set[str] = set()
+
+    try:
+        data = json.loads(stdout_str)
+        if linter_name == "ruff" and isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict):
+                    fn = item.get("filename", "")
+                    if fn:
+                        files.add(fn)
+                    loc = item.get("location") or {}
+                    issues.append(
+                        {
+                            "file": fn,
+                            "line": loc.get("row", 1),
+                            "column": loc.get("column", 1),
+                            "code": item.get("code", ""),
+                            "message": item.get("message", ""),
+                            "fixable": item.get("fix") is not None,
+                        }
+                    )
+        elif linter_name == "eslint" and isinstance(data, list):
+            for entry in data:
+                if isinstance(entry, dict):
+                    fn = entry.get("filePath", "")
+                    for msg in entry.get("messages", []):
+                        if fn:
+                            files.add(fn)
+                        issues.append(
+                            {
+                                "file": fn,
+                                "line": msg.get("line", 1),
+                                "column": msg.get("column", 1),
+                                "code": msg.get("ruleId", ""),
+                                "message": msg.get("message", ""),
+                                "severity": msg.get("severity", 1),
+                            }
+                        )
+        elif linter_name == "golangci-lint" and isinstance(data, dict):
+            for item in data.get("Issues", []):
+                pos = item.get("Pos") or {}
+                fn = pos.get("Filename", "")
+                if fn:
+                    files.add(fn)
+                issues.append(
+                    {
+                        "file": fn,
+                        "line": pos.get("Line", 1),
+                        "column": pos.get("Column", 1),
+                        "code": item.get("FromLinter", ""),
+                        "message": item.get("Text", ""),
+                    }
+                )
+        elif linter_name == "shellcheck" and isinstance(data, list):
+            for item in data:
+                fn = item.get("file", "")
+                if fn:
+                    files.add(fn)
+                issues.append(
+                    {
+                        "file": fn,
+                        "line": item.get("line", 1),
+                        "column": item.get("column", 1),
+                        "code": f"SC{item.get('code', '')}",
+                        "message": item.get("message", ""),
+                    }
+                )
+    except Exception:
+        pass
+
+    return len(issues), issues[:50], sorted(files)

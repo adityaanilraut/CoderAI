@@ -24,6 +24,8 @@ async def test_mcp_topology_call_refreshes_prompt_and_schemas_before_next_iterat
         session=session,
         config=SimpleNamespace(budget_limit=0, continue_loop_on_deny=True),
         context_controller=context_controller,
+        provider=SimpleNamespace(supports_tools=lambda: True),
+        tools=SimpleNamespace(get_schemas=lambda: [], get_all=lambda: []),
         tracker_info=None,
         _cached_system_prompt="old prompt",
         _tool_schemas_dirty=False,

@@ -8,6 +8,11 @@ from coderAI.llm.local_base import OpenAICompatibleLocalProvider
 class LMStudioProvider(OpenAICompatibleLocalProvider):
     """LM Studio local LLM provider using OpenAI-compatible API."""
 
+    PROVIDER_ID = "lmstudio"
+    MODEL_PREFIX = "lmstudio"
+    CONFIG_MODEL = "lmstudio_model"
+    CONFIG_ENDPOINT = "lmstudio_endpoint"
+
     def __init__(
         self, model: str = "local-model", endpoint: str = "http://localhost:1234/v1", **kwargs: Any
     ):

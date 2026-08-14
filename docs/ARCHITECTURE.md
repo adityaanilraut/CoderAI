@@ -157,7 +157,7 @@ sequenceDiagram
 
     opt Gated tool (requires_confirmation, not auto-approved)
         Agent->>Exec: execute_single_tool
-        Exec->>IPC: request_tool_approval(...)
+        Exec->>IPC: ApprovalPort.request(tool, args, preview)
         IPC->>TUI: emit("tool", phase=awaiting_approval)
         TUI-->>User: Approval modal
         User->>TUI: Allow once / Deny / Remember reviewed scope
@@ -182,13 +182,15 @@ sequenceDiagram
 | Path | Mechanism | Examples |
 |------|-----------|----------|
 | Streaming | `agent.streaming_handler` (`BridgeStreamingHandler`) calls `UIBridge.emit` | `turn` (start / reasoning / text / end) |
-| Direct IPC | `UIBridge.request_tool_approval`, command handlers, `emit_*` helpers | `tool` awaiting_approval, `hello`, `ready`, `session_patch` |
+| Direct IPC | `UIBridge.request` (`ApprovalPort`), command handlers, `emit_*` helpers | `tool` awaiting_approval, `hello`, `ready`, `session_patch` |
 | event_emitter → IPC | `UIBridge._wire_event_listeners` forwards module events | `tool` running/ok/err, `file_diff`, `agent`, `progress` |
 
 **Inbound path (timeline → agent):** `CoderAIApp` →
 `enqueue_command` / `submit_command` → `_COMMAND_HANDLERS` (e.g.
 `send_message` → `agent.process_message`, `tool_approval_resp` →
-unblocks the approval `Future` awaited by `ToolExecutor`).
+unblocks the approval `Future` awaited by `ToolExecutor`). The command table is
+a compatibility/dispatch adapter; application behavior lives in
+`coderAI/application/tui_*_service.py`.
 
 **UI rendering:** `on_event` is `_emit_bridge`, which posts
 `AgentEventMsg` to the Textual message queue. `EventReducer` owns
@@ -219,9 +221,10 @@ timeline/session state; `timeline_render.py` writes rows to the
 │   │   └── mcp_cmd.py       # `coderAI mcp` server management
 │   ├── prompts/             # MDX templates + compose.py (system prompt)
 │   ├── assets/              # Wheel-owned personas, skills, rules, /init starters
+│   ├── application/         # TUI-facing application services
 │   ├── core/                # Agent orchestration
 │   │   ├── agent.py         # Agent lifecycle, sessions, sub-agents
-│   │   ├── agent_loop.py    # Per-turn LLM ↔ tool loop
+│   │   ├── agent_loop.py    # Per-turn facade; LLM/tool/finish/recovery phases split by job
 │   │   ├── personas.py      # Scoped loader (project → user → builtin)
 │   │   ├── session_bootstrap.py  # Shared TUI/headless session bootstrap
 │   │   ├── permissions.py / services.py / tool_executor.py / …
@@ -297,8 +300,10 @@ entry point resolves to `main()` in `coderAI/cli/__init__.py` → `cli/main.py`.
 - `mcp` (`cli/mcp_cmd.py`) — MCP host management across user
   (`~/.coderAI/mcp_servers.json`), project (`.mcp.json`), and local scopes
   (`list`/`add`/`remove`/`login`/`logout`/`approve`/`import`/`catalog`/
-  `debug`/`resources`/`prompts`). Client implementation: `tools/mcp.py` +
-  `tools/mcp_config.py` + `tools/mcp_catalog.py`.
+  `debug`/`resources`/`prompts`). `tools/mcp.py` remains the compatibility
+  facade; session, stdio/remote transport, catalog discovery, and native proxy
+  tools live in focused `tools/mcp_*` modules and reuse `mcp_config.py`,
+  `mcp_oauth.py`, and `mcp_sanitize.py`.
 
 ### 2. Agent Layer (`coderAI/core/`, `coderAI/context/`)
 
@@ -308,13 +313,16 @@ entry point resolves to `main()` in `coderAI/cli/__init__.py` → `cli/main.py`.
 - `Agent` (`core/agent.py`) — Lifecycle, persona loading, provider wiring,
   session state, sub-agent spawning, tool registry filtering. Split across
   `AgentCapabilitiesMixin` and `AgentSessionMixin` for testability.
-- The per-turn loop (`core/agent_loop.py`) — Retry/backoff for transient LLM
-  errors, JSON-arg coercion, iteration cap. Constants
+- The per-turn loop (`core/agent_loop.py`) — Compatibility facade coordinating
+  focused LLM, tools, finish-reason, and recovery phases. Retry/backoff for
+  transient LLM errors, JSON-arg coercion, and iteration-cap constants
   (`MAX_RETRIES_PER_ITERATION`, `MAX_CONSECUTIVE_ERRORS`,
   transient-error regex) live in `system/error_policy.py`.
-- `ToolExecutor` (`core/tool_executor.py`) — User confirmation for gated
-  tools. Routes through `UIBridge.request_tool_approval` when the
-  Textual UI is attached; otherwise falls back to a terminal prompt.
+- `ToolExecutor` (`core/tool_executor.py`) — Compatibility facade coordinating
+  the confirmation gate, batch scheduler, and transaction bracket. Gated tools
+  route through `ApprovalPort.request` when a host port is attached
+  (`UIBridge` in the TUI; `DenyByDefaultApprovalPort` for `coderAI run`);
+  otherwise falls back to a terminal prompt.
 - `tool_routing.py` — Dispatches `function.name` to either the
   `ToolRegistry` or an MCP server (`mcp__<server>__<tool>` wire format).
 - `capability_routing.py` — Narrows already-permitted native and dynamic MCP

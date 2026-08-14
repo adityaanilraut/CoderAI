@@ -11,19 +11,11 @@ from coderAI.llm.cloud_base import OpenAICompatibleCloudProvider
 class DeepSeekProvider(OpenAICompatibleCloudProvider):
     """DeepSeek LLM provider (OpenAI-compatible API)."""
 
+    PROVIDER_ID = "deepseek"
+    CONFIG_API_KEY = "deepseek_api_key"
+    MODEL_PREFIX = "deepseek"
     PROVIDER_LABEL = "DeepSeek"
     STREAM_INCLUDES_USAGE = True
-
-    SUPPORTED_MODELS = {
-        "deepseek-v4-pro": "deepseek-v4-pro",
-        "deepseek-v4-flash": "deepseek-v4-flash",
-        "deepseek-chat": "deepseek-chat",
-    }
-    MODEL_CONTEXT_WINDOWS = {
-        "deepseek-v4-pro": 1_000_000,
-        "deepseek-v4-flash": 1_000_000,
-        "deepseek-chat": 1_000_000,
-    }
 
     def __init__(self, model: str, api_key: Optional[str] = None, **kwargs: Any):
         super().__init__(model, api_key, **kwargs)

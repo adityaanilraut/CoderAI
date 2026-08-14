@@ -157,10 +157,20 @@ def chunk_file(file_path: Path, project_root: Path) -> ChunkResult:
     suffix = file_path.suffix.lower()
     language = _CODE_SUFFIXES.get(suffix, "unknown")
 
-    if suffix == ".py" or suffix == ".pyi":
+    if suffix in {".py", ".pyi"}:
         chunks = _chunk_python(text, rel, language)
     elif suffix in {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}:
-        chunks = _chunk_jsts(text, rel, language)
+        chunks = _chunk_by_patterns(text, rel, language, _JS_PATTERNS)
+    elif suffix == ".go":
+        chunks = _chunk_by_patterns(text, rel, language, _GO_PATTERNS)
+    elif suffix == ".rs":
+        chunks = _chunk_by_patterns(text, rel, language, _RUST_PATTERNS)
+    elif suffix in {".c", ".h", ".cpp", ".cc", ".cxx", ".hpp"}:
+        chunks = _chunk_by_patterns(text, rel, language, _C_CPP_PATTERNS)
+    elif suffix in {".java", ".kt", ".kts"}:
+        chunks = _chunk_by_patterns(text, rel, language, _JAVA_PATTERNS)
+    elif suffix == ".rb":
+        chunks = _chunk_by_patterns(text, rel, language, _RUBY_PATTERNS)
     else:
         chunks = _chunk_generic(text, rel, language)
 
@@ -293,7 +303,6 @@ def _func_type(name: str) -> str:
 # ---------------------------------------------------------------------------
 
 _JS_PATTERNS: list[tuple[str, str]] = [
-    # (regex, chunk_type)
     (r"export\s+(?:async\s+)?function\s+(\w+)", "function"),
     (r"export\s+(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s*)?\(", "function"),
     (r"export\s+(?:default\s+)?class\s+(\w+)", "class"),
@@ -301,14 +310,50 @@ _JS_PATTERNS: list[tuple[str, str]] = [
     (r"class\s+(\w+)", "class"),
 ]
 
+_GO_PATTERNS: list[tuple[str, str]] = [
+    (r"^type\s+(\w+)\s+(?:struct|interface)\b", "class"),
+    (r"^func\s+(?:\([^)]+\)\s+)?(\w+)\s*\(", "function"),
+]
 
-def _chunk_jsts(source: str, rel_path: str, language: str) -> list[Chunk]:
-    """Regex-based chunking for JavaScript-family languages."""
+_RUST_PATTERNS: list[tuple[str, str]] = [
+    (r"^(?:pub(?:\([^)]+\))?\s+)?(?:struct|enum|trait)\s+(\w+)\b", "class"),
+    (r"^(?:pub(?:\([^)]+\))?\s+)?(?:async\s+)?fn\s+(\w+)\s*[\(<]", "function"),
+    (r"^(?:pub(?:\([^)]+\))?\s+)?impl(?:\s*<[^>]+>)?(?:\s+\w+\s+for)?\s+(\w+)", "class"),
+]
+
+_C_CPP_PATTERNS: list[tuple[str, str]] = [
+    (r"^(?:class|struct|enum(?:\s+class)?)\s+(\w+)\b", "class"),
+    (r"^(?:[A-Za-z_][A-Za-z0-9_<>:*&]*\s+)+(\w+)\s*\([^;]*\)\s*\{?", "function"),
+]
+
+_JAVA_PATTERNS: list[tuple[str, str]] = [
+    (
+        r"^(?:(?:public|private|protected|internal|abstract|final|sealed|static)\s+)*(?:class|interface|enum|record)\s+(\w+)\b",
+        "class",
+    ),
+    (
+        r"^(?:(?:public|private|protected|internal|static|final|abstract|override|open)\s+)*(?:<[^>]+>\s+)?(?:[A-Za-z_][A-Za-z0-9_<>[\]]*\s+)?(?:fun\s+)?(\w+)\s*\(",
+        "function",
+    ),
+]
+
+_RUBY_PATTERNS: list[tuple[str, str]] = [
+    (r"^(?:class|module)\s+(\w+)\b", "class"),
+    (r"^\s*def\s+(?:self\.)?(\w+)\b", "function"),
+]
+
+
+def _chunk_by_patterns(
+    source: str,
+    rel_path: str,
+    language: str,
+    patterns: list[tuple[str, str]],
+) -> list[Chunk]:
+    """Pattern-based chunking for structured code languages."""
     lines = source.splitlines()
 
-    # Collect candidate boundaries
     boundaries: list[tuple[int, str, str]] = []  # (line_no, name, chunk_type)
-    for pattern, chunk_type in _JS_PATTERNS:
+    for pattern, chunk_type in patterns:
         for m in re.finditer(pattern, source, re.MULTILINE):
             line_no = source[: m.start()].count("\n") + 1
             name = m.group(1) if m.lastindex and m.lastindex >= 1 else "anonymous"
@@ -318,7 +363,6 @@ def _chunk_jsts(source: str, rel_path: str, language: str) -> list[Chunk]:
         return _chunk_generic(source, rel_path, language)
 
     boundaries.sort()
-    # Deduplicate by line
     seen: set[int] = set()
     unique: list[tuple[int, str, str]] = []
     for b in boundaries:
@@ -361,6 +405,10 @@ def _chunk_jsts(source: str, rel_path: str, language: str) -> list[Chunk]:
             )
 
     return _merge_short_chunks(chunks)
+
+
+def _chunk_jsts(source: str, rel_path: str, language: str) -> list[Chunk]:
+    return _chunk_by_patterns(source, rel_path, language, _JS_PATTERNS)
 
 
 # ---------------------------------------------------------------------------

@@ -2,9 +2,9 @@
 
 Runs a single prompt through the agent and exits — for CI, scripting, git
 hooks, piping, and evals — without launching the Textual TUI. Drives the same
-``Agent``/``ExecutionLoop`` core as ``chat``, but with no UIBridge and no
-interactive prompts. Stdout is reserved for the selected text, JSON, or NDJSON
-output format.
+``Agent``/``ExecutionLoop`` core as ``chat``, but with a deny-by-default
+``ApprovalPort`` instead of the Textual UI. Stdout is reserved for the selected
+text, JSON, or NDJSON output format.
 
 Safety: with no TTY to confirm mutations, the default is deny-on-mutate. A run
 that needs a mutating tool is blocked cleanly (non-zero exit, stderr hint).
@@ -222,16 +222,13 @@ async def _run_agent(agent: Any, prompt: str, blocked_tools: list[str]) -> dict[
     tools denied by the deny-on-mutate guard installed for non-yolo runs.
     """
     if not agent.auto_approve:
+        from coderAI.core.ports import DenyByDefaultApprovalPort
 
-        async def _deny_mutations(tool_name: str, _arguments: dict[str, Any]) -> bool:
-            blocked_tools.append(tool_name)
-            return False
-
-        agent.confirmation_override = _deny_mutations
-        # Phase 5.2: the delegate tool snapshots the confirmation policy when its
-        # context is configured (at build time, before this override existed).
-        # Re-snapshot now so delegated sub-agents inherit the deny-on-mutate
-        # guard and their denied mutations land in ``blocked_tools`` too.
+        agent.approval_port = DenyByDefaultApprovalPort(on_denied=blocked_tools.append)
+        # The delegate tool snapshots the approval port when its context is
+        # configured (at build time, before this port existed). Re-snapshot
+        # now so delegated sub-agents inherit deny-on-mutate and their denied
+        # mutations land in ``blocked_tools`` too.
         if hasattr(agent, "_configure_delegate_tool_context"):
             agent._configure_delegate_tool_context()
 

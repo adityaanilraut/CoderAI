@@ -9,18 +9,10 @@ from coderAI.llm.cloud_base import OpenAICompatibleCloudProvider
 class GroqProvider(OpenAICompatibleCloudProvider):
     """Groq LLM provider."""
 
+    PROVIDER_ID = "groq"
+    CONFIG_API_KEY = "groq_api_key"
+    MODEL_PREFIX = "groq"
     PROVIDER_LABEL = "Groq"
-
-    SUPPORTED_MODELS = {
-        "openai/gpt-oss-120b": "openai/gpt-oss-120b",
-        "meta-llama/llama-4-scout-17b-16e-instruct": "meta-llama/llama-4-scout-17b-16e-instruct",
-        "openai/gpt-oss-20b": "openai/gpt-oss-20b",
-    }
-    MODEL_CONTEXT_WINDOWS = {
-        "openai/gpt-oss-120b": 131_072,
-        "meta-llama/llama-4-scout-17b-16e-instruct": 131_072,
-        "openai/gpt-oss-20b": 131_072,
-    }
 
     def __init__(self, model: str, api_key: Optional[str] = None, **kwargs: Any):
         super().__init__(model, api_key, **kwargs)

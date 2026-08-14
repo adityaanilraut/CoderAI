@@ -103,6 +103,7 @@ def mock_agent():
     ``loop_backoff`` tests.
     """
     from coderAI.system.history import Session
+    from coderAI.core.execution_context import RunContext
 
     agent = MagicMock()
     agent.session = Session(session_id="test")
@@ -127,7 +128,7 @@ def mock_agent():
     agent._sync_tracker = MagicMock()
     agent._finish_tracker = MagicMock()
     agent.save_session = MagicMock()
-    agent.read_cache = None
+    agent.read_cache = MagicMock()
     agent.hooks_manager = MagicMock()
     agent.hooks_manager.load_hooks.return_value = None
     agent.hooks_manager.run_hooks = AsyncMock(return_value=[])
@@ -136,6 +137,20 @@ def mock_agent():
     agent._mcp_health_check_counter = 0
     agent._tool_schemas_dirty = False
     agent._mcp_health_task = None
+    agent.plan_mode = False
+    agent.active_plan_id = None
+    agent.active_plan_revision = None
+    agent._plan_execution_ready = False
+    agent._allow_dynamic_mcp = True
+    agent._allowed_native_tool_names = None
+    agent._capability_domain = None
+    agent.approval_port = None
+    agent.confirmation_override = None
+    agent.run_context = RunContext()
+    agent._workspace_trusted = True
+    agent._active_skill_context = []
+    agent._last_mcp_schema_names = frozenset()
+    agent._tool_approval_allowlist = set()
     return agent
 
 

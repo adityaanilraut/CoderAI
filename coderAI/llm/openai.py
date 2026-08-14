@@ -12,26 +12,12 @@ from coderAI.llm.cloud_base import OpenAICompatibleCloudProvider
 class OpenAIProvider(OpenAICompatibleCloudProvider):
     """OpenAI LLM provider for GPT models."""
 
+    PROVIDER_ID = "openai"
+    CONFIG_API_KEY = "openai_api_key"
+    MODEL_PREFIX = "openai"
+    USES_REASONING_CONFIG = True
     PROVIDER_LABEL = "OpenAI"
     STREAM_INCLUDES_USAGE = True
-
-    # Canonical registry → SUPPORTED_MODELS derived single-source.
-    @staticmethod
-    def _registry_specs() -> list[Any]:
-        from coderAI.llm.registry import ALL_SPECS
-
-        return [s for s in ALL_SPECS if s.provider == "openai"]
-
-    SUPPORTED_MODELS = {
-        "gpt-5.6-sol": "gpt-5.6-sol",
-        "gpt-5.6-terra": "gpt-5.6-terra",
-        "gpt-5.6-luna": "gpt-5.6-luna",
-    }
-    MODEL_CONTEXT_WINDOWS = {
-        "gpt-5.6-sol": 1_050_000,
-        "gpt-5.6-terra": 1_050_000,
-        "gpt-5.6-luna": 400_000,
-    }
 
     def __init__(self, model: str, api_key: Optional[str] = None, **kwargs: Any):
         super().__init__(model, api_key, **kwargs)

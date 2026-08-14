@@ -3,6 +3,8 @@
 from typing import Any
 
 from coderAI.llm.registry import (
+    ALL_SPECS,
+    get_spec,
     resolve_alias,
     provider_for_model as _provider_for_model,
     get_models_by_provider as _registry_models_by_provider,
@@ -65,92 +67,13 @@ def get_models_by_provider() -> list[tuple[str, list[str], str]]:
 
 
 def create_provider(model: str, config: Any) -> Any:
-    """Create provider (registry-aware, no hard-coded model tables)."""
-    # Lazy imports to avoid circular at module load
-    from coderAI.llm.anthropic import AnthropicProvider
-    from coderAI.llm.deepseek import DeepSeekProvider
-    from coderAI.llm.gemini import GeminiProvider
-    from coderAI.llm.groq import GroqProvider
-    from coderAI.llm.lmstudio import LMStudioProvider
-    from coderAI.llm.meta import MetaProvider
-    from coderAI.llm.ollama import OllamaProvider
-    from coderAI.llm.openai import OpenAIProvider
-
-    model = model.strip()
-    low = model.lower()
-
-    prov = provider_id_for_model(model)
-
-    if prov == "ollama":
-        actual = model.split("/", 1)[1] if "/" in model else config.ollama_model
-        return OllamaProvider(
-            model=actual,
-            endpoint=config.ollama_endpoint,
-            temperature=config.temperature,
-            max_tokens=config.max_tokens,
-        )
-    if prov == "lmstudio":
-        actual = model.split("/", 1)[1] if "/" in model else config.lmstudio_model
-        return LMStudioProvider(
-            model=actual,
-            endpoint=config.lmstudio_endpoint,
-            temperature=config.temperature,
-            max_tokens=config.max_tokens,
-        )
-    if prov == "anthropic":
-        actual = model.split("/", 1)[1] if low.startswith("anthropic/") else model
-        return AnthropicProvider(
-            model=actual,
-            api_key=config.anthropic_api_key,
-            temperature=config.temperature,
-            max_tokens=config.max_tokens,
-            reasoning_effort=config.reasoning_effort,
-        )
-    if prov == "groq":
-        actual = low.split("groq/", 1)[1] if low.startswith("groq/") else model
-        return GroqProvider(
-            model=actual,
-            api_key=config.groq_api_key,
-            temperature=config.temperature,
-            max_tokens=config.max_tokens,
-        )
-    if prov == "deepseek":
-        actual = low.split("deepseek/", 1)[1] if low.startswith("deepseek/") else model
-        actual = resolve_alias(actual)
-        return DeepSeekProvider(
-            model=actual,
-            api_key=config.deepseek_api_key,
-            temperature=config.temperature,
-            max_tokens=config.max_tokens,
-        )
-    if prov == "gemini":
-        actual = low.split("gemini/", 1)[1] if low.startswith("gemini/") else model
-        actual = resolve_alias(actual)
-        return GeminiProvider(
-            model=actual,
-            api_key=config.gemini_api_key,
-            temperature=config.temperature,
-            max_tokens=config.max_tokens,
-        )
-    if prov == "meta":
-        actual = low.split("meta/", 1)[1] if low.startswith("meta/") else model
-        actual = resolve_alias(actual)
-        return MetaProvider(
-            model=actual,
-            api_key=config.meta_api_key,
-            temperature=config.temperature,
-            max_tokens=config.max_tokens,
-            reasoning_effort=config.reasoning_effort,
-        )
-    if prov == "openai":
-        actual = low.split("openai/", 1)[1] if low.startswith("openai/") else model
-        actual = resolve_alias(actual)
-        return OpenAIProvider(
-            model=actual,
-            api_key=config.openai_api_key,
-            temperature=config.temperature,
-            max_tokens=config.max_tokens,
-            reasoning_effort=config.reasoning_effort,
-        )
-
-    raise ValueError(f"Unknown model: {model!r}. Run `coderAI models` to see valid models.")
+    """Create a provider through the class declared by the model catalog."""
+    normalized = model.strip()
+    spec = get_spec(normalized)
+    if spec is not None:
+        provider_cls = spec.provider_cls
+    else:
+        provider_id = provider_id_for_model(normalized)
+        provider_classes = {item.provider: item.provider_cls for item in ALL_SPECS}
+        provider_cls = provider_classes[provider_id]
+    return provider_cls.from_config(normalized, config)

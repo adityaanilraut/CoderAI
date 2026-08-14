@@ -2,6 +2,7 @@
 
 import logging
 import os
+import asyncio
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Optional
@@ -23,6 +24,13 @@ from coderAI.system.read_cache import FileReadCache
 from coderAI.core.objective import ObjectiveState
 from coderAI.core.agent_session import AgentSessionMixin
 from coderAI.core.agent_capabilities import AgentCapabilitiesMixin
+from coderAI.core.ports import (
+    ApprovalPort,
+    AsyncClosePort,
+    ConfirmationOverride,
+    ProgressCallback,
+    StreamingHandler,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +54,7 @@ class Agent(AgentCapabilitiesMixin, AgentSessionMixin):
         delegation_depth: int = 0,
         project_root: Optional[str] = None,
         workspace_trusted: Optional[bool] = None,
-    ):
+    ) -> None:
         """Initialize the agent.
 
         Args:
@@ -140,20 +148,27 @@ class Agent(AgentCapabilitiesMixin, AgentSessionMixin):
         self._tracker_start_tokens = 0
         self._tracker_start_cost = 0.0
 
-        # Streaming handler is provided by the surrounding UI (the IPC entry
-        # point injects one that emits protocol events). When absent,
+        # Streaming handler is provided by the surrounding UI (the TUI
+        # injects one that emits protocol events). When absent,
         # ``_stream_response`` falls back to a non-streaming call.
-        self.streaming_handler: Optional[Any] = None
+        self.streaming_handler: Optional[StreamingHandler] = None
 
-        # IPC server is set by UIBridge / controller setup
-        self.ipc_server: Optional[Any] = None
+        # Host approval seam (TUI UIBridge, headless DenyByDefault, or tests).
+        self.approval_port: Optional[ApprovalPort] = None
 
-        # Optional confirmation override for headless / non-interactive entry
-        # points (e.g. `coderAI run`). When set, the tool executor consults
-        # this callable — `async (tool_name, arguments) -> bool` — instead of
-        # prompting; returning False denies the tool. Ignored when
-        # auto_approve is on (no confirmation is requested in that case).
-        self.confirmation_override: Optional[Any] = None
+        # Optional confirmation override for tests and force-confirm fallthrough.
+        # Headless ``coderAI run`` / ``plan`` use ``approval_port`` instead.
+        # When set, the tool executor consults this callable —
+        # ``async (tool_name, arguments) -> bool`` — before the approval port;
+        # returning False denies the tool. An override allow is not a human
+        # confirmation: ``force_confirm`` still falls through to the port.
+        self.confirmation_override: Optional[ConfirmationOverride] = None
+
+        # Sub-agent capability ceiling. Root agents leave these at defaults;
+        # ``DelegateTaskTool`` pins them on isolated children.
+        self._allow_dynamic_mcp: bool = True
+        self._allowed_native_tool_names: Optional[frozenset[str]] = None
+        self._capability_domain: Optional[str] = None
 
         # Session management
         self.session: Optional[Session] = None
@@ -192,7 +207,8 @@ class Agent(AgentCapabilitiesMixin, AgentSessionMixin):
         # turn ends never rebuilds tool schemas on the next turn.
         self._mcp_health_check_counter: int = 0
         self._tool_schemas_dirty: bool = False
-        self._mcp_health_task: Optional[Any] = None
+        self._mcp_health_task: Optional[asyncio.Task[None]] = None
+        self._last_mcp_schema_names: frozenset[str] = frozenset()
 
         # Per-command approval cache for project hooks. Keyed by command string
         # so new or changed hooks re-prompt instead of inheriting an approval.
@@ -229,7 +245,7 @@ class Agent(AgentCapabilitiesMixin, AgentSessionMixin):
         env) lets file tools escape the project root, so its being active should
         never be silent (Phase 2.5).
         """
-        active = bool(getattr(self.config, "allow_outside_project", False)) or (
+        active = self.config.allow_outside_project or (
             os.environ.get("CODERAI_ALLOW_OUTSIDE_PROJECT") == "1"
         )
         if active:
@@ -262,10 +278,14 @@ class Agent(AgentCapabilitiesMixin, AgentSessionMixin):
         return self._context_controller
 
     @context_controller.setter
-    def context_controller(self, value: ContextController):
+    def context_controller(self, value: ContextController) -> None:
         self._context_controller = value
 
-    async def process_message(self, user_message: str, progress_callback=None) -> dict[str, Any]:
+    async def process_message(
+        self,
+        user_message: str,
+        progress_callback: Optional[ProgressCallback] = None,
+    ) -> dict[str, Any]:
         """Process a user message using ExecutionLoop.
 
         Before running the main loop, auto-detects and injects relevant
@@ -295,7 +315,11 @@ class Agent(AgentCapabilitiesMixin, AgentSessionMixin):
 
         return await ExecutionLoop(self, progress_callback=progress_callback).run(user_message)
 
-    async def process_single_shot(self, user_message: str, progress_callback=None) -> str:
+    async def process_single_shot(
+        self,
+        user_message: str,
+        progress_callback: Optional[ProgressCallback] = None,
+    ) -> str:
         """Process a single message and return the assistant's text response."""
         result = await self.process_message(user_message, progress_callback=progress_callback)
         return str(result.get("content", "") or "")
@@ -307,8 +331,6 @@ class Agent(AgentCapabilitiesMixin, AgentSessionMixin):
         self._closed = True
         self.save_session()
         await super().close()
-        if hasattr(self, "streaming_handler") and self.streaming_handler is not None:
-            if hasattr(self.streaming_handler, "close"):
-                await self.streaming_handler.close()
-        if hasattr(self.provider, "close"):
-            await self.provider.close()
+        if isinstance(self.streaming_handler, AsyncClosePort):
+            await self.streaming_handler.close()
+        await self.provider.close()

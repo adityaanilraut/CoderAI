@@ -33,6 +33,8 @@ EXPECTED_COMMANDS = {
     "tool_approval_resp",
     "clear_context",
     "rewind",
+    "fork_session",
+    "export_session",
     "compact_context",
     "manage_context",
     "get_state",

@@ -103,6 +103,25 @@ def test_objective_routes_edit_quality_execution_and_git_families() -> None:
     assert decision.selection_success is True
 
 
+def test_declared_capability_tags_route_without_prompt_vocabulary() -> None:
+    schemas = [
+        _schema("read_file"),
+        _schema("write_file"),
+        _schema("run_tests"),
+        _schema("browser_navigate"),
+    ]
+
+    decision = route_capabilities(
+        objective="opaque structured objective",
+        capability_tags={"workspace_edit", "quality"},
+        native_schemas=schemas,
+    )
+
+    assert _names(decision) == {"read_file", "write_file", "run_tests"}
+    assert decision.matched_capabilities == ("quality", "workspace_edit")
+    assert decision.routing_reason == "declared:quality,workspace_edit"
+
+
 def test_warm_retention_is_objective_local_and_cannot_restore_missing_tool() -> None:
     schemas = [_schema("read_file"), _schema("run_command")]
     first = route_capabilities(objective="run the build", native_schemas=schemas)
@@ -134,6 +153,7 @@ def test_plan_and_amendment_schema_boundaries_remain_read_only() -> None:
         active_plan_id=None,
         context_controller=SimpleNamespace(estimate_tool_tokens=lambda schemas: len(schemas)),
         hooks_manager=None,
+        config=SimpleNamespace(),
     )
     services = SimpleNamespace(
         mcp_client=SimpleNamespace(get_tools_as_openai_format=lambda: [], servers={}),
@@ -230,6 +250,7 @@ def test_routing_event_reports_schema_cost_reason_and_selection_result() -> None
         active_plan_id=None,
         context_controller=SimpleNamespace(estimate_tool_tokens=lambda schemas: 123),
         hooks_manager=None,
+        config=SimpleNamespace(),
     )
     services = SimpleNamespace(
         mcp_client=SimpleNamespace(get_tools_as_openai_format=lambda: [], servers={}),

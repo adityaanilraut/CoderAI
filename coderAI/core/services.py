@@ -23,6 +23,7 @@ from collections.abc import Callable, Iterator
 T = TypeVar("T")
 
 if TYPE_CHECKING:
+    from coderAI.context.context_controller import ContextController
     from coderAI.core.agent_tracker import AgentTracker
     from coderAI.system.config import Config
     from coderAI.system.history import HistoryManager
@@ -56,6 +57,7 @@ class ToolServices:
         agent_tracker: Optional["AgentTracker"] = None,
         mcp_client: Optional["MCPClient"] = None,
         workspace_trusted: Optional[bool] = None,
+        context_controller: Optional["ContextController"] = None,
     ) -> None:
         self._parent = parent
         self._config = config
@@ -69,6 +71,10 @@ class ToolServices:
         # Optional Agent-lifetime trust pin. ``False`` is a real value, so this
         # uses an explicit Optional rather than falling through ``_resolve``.
         self._workspace_trusted = workspace_trusted
+        # Live context controller for the owning agent (pins, token budget).
+        # Unbound on the process default so tools outside a tool batch do not
+        # invent a second controller.
+        self._context_controller = context_controller
         # Guards lazy builds; tool batches may resolve services from worker
         # threads (e.g. asyncio.to_thread bodies).
         self._build_lock = threading.Lock()
@@ -126,6 +132,20 @@ class ToolServices:
             return self._workspace_trusted
         if self._parent is not None:
             return self._parent.workspace_trusted
+        return None
+
+    @property
+    def context_controller(self) -> Optional["ContextController"]:
+        """Agent-owned context controller, when bound for a tool batch.
+
+        ``None`` means no live controller (tests, CLI helpers). Tools that
+        need pins or the running turn's token budget must not construct a
+        replacement — they should report empty/unbound state instead.
+        """
+        if self._context_controller is not None:
+            return self._context_controller
+        if self._parent is not None:
+            return self._parent.context_controller
         return None
 
     @property

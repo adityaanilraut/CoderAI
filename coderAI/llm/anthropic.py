@@ -92,17 +92,15 @@ def _is_anthropic_retryable(exc: Exception) -> bool:
 class AnthropicProvider(LLMProvider):
     """Anthropic Claude LLM provider using the Messages API."""
 
+    PROVIDER_ID = "anthropic"
+    CONFIG_API_KEY = "anthropic_api_key"
+    MODEL_PREFIX = "anthropic"
+    USES_REASONING_CONFIG = True
     API_URL = "https://api.anthropic.com/v1/messages"
     API_VERSION = "2023-06-01"
-    SUPPORTED_MODELS = list(MODEL_ALIASES.keys())
     # Anthropic replays the paused assistant tool_use blocks on the resumed
     # request, so the loop must keep them (see ExecutionLoop pause_turn path).
     preserves_tool_calls_on_pause = True
-    MODEL_CONTEXT_WINDOWS = {
-        "claude-fable-5": 1_000_000,
-        "claude-opus-5": 1_000_000,
-        "claude-sonnet-5": 1_000_000,
-    }
 
     def __init__(self, model: str, api_key: Optional[str] = None, **kwargs: Any):
         """Initialize Anthropic provider.

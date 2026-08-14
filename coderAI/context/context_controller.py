@@ -336,6 +336,60 @@ class ContextController:
         text = self.get_system_message() or ""
         return self.provider.count_tokens(text)
 
+    def get_context_breakdown(
+        self, messages: Optional[list[dict[str, Any]]] = None
+    ) -> dict[str, Any]:
+        """Compute detailed token breakdown across prompt layers."""
+        sys_msg = self.get_system_message() or ""
+        system_tokens = self.provider.count_tokens(sys_msg) if sys_msg else 0
+
+        pinned_tokens = 0
+        for path, content in self.pinned_files.items():
+            pinned_tokens += self.provider.count_tokens(f"File {path}:\n{content}")
+
+        history_msgs = messages or []
+        user_tokens = 0
+        assistant_tokens = 0
+        tool_result_tokens = 0
+
+        for msg in history_msgs:
+            role = msg.get("role")
+            cnt = self._estimate_message_tokens(msg)
+            if role == "user":
+                user_tokens += cnt
+            elif role == "assistant":
+                assistant_tokens += cnt
+            elif role == "tool":
+                tool_result_tokens += cnt
+
+        total_tokens = (
+            system_tokens + pinned_tokens + user_tokens + assistant_tokens + tool_result_tokens
+        )
+        limit = self._effective_context_limit(None)
+        pct = (total_tokens / limit * 100) if limit > 0 else 0.0
+
+        recommendation = "Context is within optimal limits."
+        if pct > 85:
+            recommendation = "Context utilization is high (>85%). Consider using /compact or unpinning large files."
+        elif pct > 70:
+            recommendation = "Context utilization is moderate (>70%)."
+
+        return {
+            "total_tokens": total_tokens,
+            "context_limit": limit,
+            "utilization_pct": round(pct, 1),
+            "layers": {
+                "system_prompt": system_tokens,
+                "pinned_files": pinned_tokens,
+                "user_messages": user_tokens,
+                "assistant_messages": assistant_tokens,
+                "tool_results": tool_result_tokens,
+            },
+            "pinned_file_count": len(self.pinned_files),
+            "message_count": len(history_msgs),
+            "recommendation": recommendation,
+        }
+
     def copy_pinned_state_from(self, other: "ContextController") -> None:
         self.pinned_files = dict(other.pinned_files)
         self._pinned_mtimes = dict(other._pinned_mtimes)

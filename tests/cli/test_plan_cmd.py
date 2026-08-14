@@ -67,6 +67,7 @@ class ExecutionAgent:
         self.config = Config(project_root=str(root), save_history=False)
         self.session = SimpleNamespace(session_id="session-execute", metadata={})
         self.auto_approve = False
+        self.approval_port = None
         self.confirmation_override = None
         self.plan_mode = False
         self.active_plan_id = None
@@ -95,8 +96,8 @@ class ExecutionAgent:
         assert f"plan {self.active_plan_id} revision {self.active_plan_revision}" in prompt
         if self.fail:
             raise RuntimeError("provider failed")
-        if self.mutate and self.confirmation_override:
-            await self.confirmation_override("write_file", {"path": "parser.py"})
+        if self.mutate and self.approval_port:
+            await self.approval_port.request("write_file", {"path": "parser.py"})
         return {"success": True, "content": "implemented", "stop_reason": "stop"}
 
     async def close(self):

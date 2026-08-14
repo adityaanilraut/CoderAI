@@ -14,14 +14,19 @@ import logging
 import time as _time
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
-from typing import Any, Optional, TYPE_CHECKING
+from typing import Any, Optional, TYPE_CHECKING, cast
 
 from coderAI.context.context_controller import RESPONSE_TOKEN_RESERVE, TOOL_OVERHEAD_TOKENS
 from coderAI.core.agent_tracker import AgentStatus, AgentInfo
+from coderAI.core.execution_context import IsolationDomain, RunContext
+from coderAI.core.objective import ObjectiveState
+from coderAI.core.permissions import ApprovalRules
+from coderAI.core.ports import AgentRuntime, RuntimeView
 from coderAI.core.services import get_services
-from coderAI.llm.base import normalize_usage
+from coderAI.llm.base import LLMProvider, normalize_usage
 from coderAI.system.error_policy import check_budget_limit
 from coderAI.system.read_cache import FileReadCache
+from coderAI.tools import ToolRegistry
 from coderAI.system.history import (
     SESSION_SCHEMA_VERSION,
     Message,
@@ -48,9 +53,9 @@ class AgentSessionMixin:
     config: Config
     model: str
     auto_approve: bool
-    tools: Any
+    tools: ToolRegistry
     persona: Optional[AgentPersona]
-    provider: Any
+    provider: LLMProvider
     is_subagent: bool
     session: Optional[Session]
     cost_tracker: CostTracker
@@ -72,8 +77,11 @@ class AgentSessionMixin:
     active_plan_id: Optional[str]
     active_plan_revision: Optional[int]
     _plan_execution_ready: bool
-    last_objective_state: Any
-    run_context: Any
+    last_objective_state: Optional[ObjectiveState]
+    run_context: RunContext
+    _tool_approval_allowlist: ApprovalRules
+    _workspace_trusted: bool
+    _mcp_health_task: Optional[asyncio.Task[None]]
 
     if TYPE_CHECKING:
         # Provided by AgentCapabilitiesMixin on the composed Agent class.
@@ -98,13 +106,14 @@ class AgentSessionMixin:
         self.total_cache_creation_tokens = 0
         self.total_cache_read_tokens = 0
         self._hooks_approved.clear()
-        allowlist = getattr(self, "_tool_approval_allowlist", None)
+        runtime = RuntimeView(cast(AgentRuntime, self))
+        allowlist = runtime.tool_approval_allowlist
         if allowlist is not None:
             allowlist.clear()
-        if hasattr(self, "read_cache") and self.read_cache is not None:
+        if runtime.read_cache is not None:
             self.read_cache = FileReadCache()
             self._wire_read_cache()
-        provider = getattr(self, "provider", None)
+        provider = runtime.provider
         if provider is not None:
             provider.reset_usage()
 
@@ -178,30 +187,28 @@ class AgentSessionMixin:
         from coderAI.core.objective_store import ObjectiveLedgerStore
         from coderAI.tools.undo import FileBackupStore
 
+        checkpoint_store = FileBackupStore(session_id=session.session_id)
+        transaction_store = WorkspaceTransactionStore(
+            session_id=session.session_id,
+            workspace_root=str(self.run_context.workspace_root or self.config.project_root),
+        )
+        objective_store = ObjectiveLedgerStore(session_id=session.session_id)
         self.run_context = replace(
             self.run_context,
             session_id=session.session_id,
-            checkpoint_store=FileBackupStore(session_id=session.session_id),
-            transaction_store=WorkspaceTransactionStore(
-                session_id=session.session_id,
-                workspace_root=str(self.run_context.workspace_root or self.config.project_root),
-            ),
-            objective_store=ObjectiveLedgerStore(session_id=session.session_id),
+            checkpoint_store=checkpoint_store,
+            transaction_store=transaction_store,
+            objective_store=objective_store,
         )
-        recovered = self.run_context.transaction_store.recover_incomplete(
-            run_context=self.run_context
-        )
+        recovered = transaction_store.recover_incomplete(run_context=self.run_context)
         session.metadata["workspace_transactions"] = {
             "schema_version": 1,
             "store_id": session.session_id,
             "workspace_id": self.run_context.workspace_id,
             "recovered_transactions": recovered,
         }
-        self.last_objective_state = self.run_context.objective_store.load_latest(
-            run_context=self.run_context
-        )
+        self.last_objective_state = objective_store.load_latest(run_context=self.run_context)
         if self.last_objective_state is not None:
-            objective_store = self.run_context.objective_store
             run_context = self.run_context
             self.last_objective_state.bind_persistence(
                 lambda current: objective_store.save(current, run_context=run_context),
@@ -213,12 +220,12 @@ class AgentSessionMixin:
         policy = replace(
             self.run_context.permission_policy,
             auto_approve=bool(self.auto_approve),
-            workspace_trusted=bool(getattr(self, "_workspace_trusted", False)),
+            workspace_trusted=self._workspace_trusted,
             allowed_tools=frozenset(self.tools.tools),
         )
         self.run_context = replace(self.run_context, permission_policy=policy)
 
-    def _bind_isolation_domain(self, isolation_domain: Any) -> None:
+    def _bind_isolation_domain(self, isolation_domain: IsolationDomain) -> None:
         """Pin a delegation domain on the child run context."""
         self.run_context = replace(self.run_context, isolation_domain=isolation_domain)
 
@@ -333,7 +340,7 @@ class AgentSessionMixin:
         self.total_cache_creation_tokens += usage["cache_creation_tokens"]
         self.total_cache_read_tokens += usage["cache_read_tokens"]
         if input_tokens or output_tokens:
-            model = getattr(self.provider, "actual_model", self.model)
+            model = self.provider.actual_model
             await self.cost_tracker.add_cost(model, input_tokens, output_tokens)
             check_budget_limit(self.config.budget_limit, self.cost_tracker, emit_warning=True)
 
@@ -342,7 +349,7 @@ class AgentSessionMixin:
         if not self.session:
             return False
         get_services().events.emit("agent_status", message="Force compacting context...")
-        output_reserve = int(getattr(self.config, "max_tokens", 0) or RESPONSE_TOKEN_RESERVE)
+        output_reserve = self.config.max_tokens or RESPONSE_TOKEN_RESERVE
         compact_limit = output_reserve + TOOL_OVERHEAD_TOKENS + 1500
         try:
             self._context_controller.request_tool_schemas = None
@@ -549,8 +556,10 @@ class AgentSessionMixin:
                     cutoff,
                     run_context=self.run_context,
                 )
-            else:
+            elif checkpoint_store is not None:
                 result = checkpoint_store.restore_after(cutoff)
+            else:
+                raise RuntimeError("Active session recovery store disappeared")
             restored_files = list(result.get("restored", [])) + list(result.get("deleted", []))
             file_errors = list(result.get("errors", []))
         self.save_session()
@@ -582,8 +591,8 @@ class AgentSessionMixin:
 
     async def close(self) -> None:
         """Flush pending session saves and finish the tracker."""
-        task = getattr(self, "_mcp_health_task", None)
-        if task is not None and not getattr(task, "done", lambda: True)():
+        task = RuntimeView(cast(AgentRuntime, self)).mcp_health_task
+        if task is not None and not task.done():
             task.cancel()
             self._mcp_health_task = None
         if self._pending_saves or self._save_executor is not None:

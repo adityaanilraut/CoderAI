@@ -22,8 +22,6 @@ class OpenAICompatibleCloudProvider(LLMProvider):
     # constructors after ``super().__init__`` validates the API key.
     client: Any
 
-    SUPPORTED_MODELS: dict[str, str] = {}
-
     # Human-readable name used in error messages and retry logs.
     PROVIDER_LABEL = "LLM"
 
@@ -42,11 +40,12 @@ class OpenAICompatibleCloudProvider(LLMProvider):
         """Map a friendly model name to the concrete API model ID (registry-aware)."""
         from coderAI.llm.registry import resolve_alias
 
-        # registry handles canonical + legacy aliases; fall back to class map
+        # The registry handles canonical and legacy aliases. Unknown model IDs
+        # continue to pass through for forward-compatible prefixed models.
         resolved = resolve_alias(model)
         if resolved.lower() != model.lower():
             return resolved.lower()
-        return self.SUPPORTED_MODELS.get(model, self.SUPPORTED_MODELS.get(model.lower(), model))
+        return model
 
     def _build_request_params(
         self,

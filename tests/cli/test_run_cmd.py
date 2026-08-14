@@ -15,6 +15,7 @@ class FakeAgent:
 
     def __init__(self, content="done", *, mutate=False, auto_approve=False):
         self.auto_approve = auto_approve
+        self.approval_port = None
         self.confirmation_override = None
         self.model = "test-model"
         self.session = SimpleNamespace(session_id="session_abc123")
@@ -26,9 +27,9 @@ class FakeAgent:
 
     async def process_message(self, prompt):
         # Simulate a mutating tool call so the deny-on-mutate guard fires.
-        if self._mutate and self.confirmation_override is not None:
+        if self._mutate and self.approval_port is not None:
             self.saw_override = True
-            await self.confirmation_override("delete_file", {"path": "README.md"})
+            await self.approval_port.request("delete_file", {"path": "README.md"})
         return {"content": self._content}
 
     async def close(self):
@@ -286,7 +287,7 @@ def test_run_yolo_allows_mutation(runner):
     agent = FakeAgent(content="deleted", mutate=True, auto_approve=True)
     result = _invoke(runner, ["--yolo", "delete README.md"], agent)
     assert result.exit_code == 0
-    assert agent.confirmation_override is None
+    assert agent.approval_port is None
     assert "deleted" in result.output
 
 

@@ -88,6 +88,7 @@ from coderAI.tui.tool_metadata import (
     tool_risk_factors,
 )
 from coderAI.tui.rendering import strip_rich_markup
+from coderAI.core.ports import Approval
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +98,8 @@ logger = logging.getLogger(__name__)
 class UIBridge:
     """In-process controller for the Textual chat UI.
 
-    Usage:
+    Implements :class:`~coderAI.core.ports.ApprovalPort` so core never
+    imports this module. Usage:
 
         server = UIBridge(agent=agent, on_event=ui_callback)
         await server.start()   # returns when ``request_shutdown`` is called
@@ -202,6 +204,21 @@ class UIBridge:
 
     def _emit_tool_error(self, tool_name: str, error: Any) -> None:
         self._emit_error("tool", strip_rich_markup(f"{tool_name}: {error}"))
+
+    async def request(
+        self,
+        tool: str,
+        args: dict[str, Any],
+        preview: Optional[str] = None,
+    ) -> Approval:
+        """ApprovalPort: block until the UI resolves this gated tool call."""
+        allowed = await self.request_tool_approval(
+            tool_id="",
+            tool_name=tool,
+            arguments=args,
+            diff=preview,
+        )
+        return Approval(allowed=allowed)
 
     async def request_tool_approval(
         self,

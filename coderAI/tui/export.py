@@ -1,9 +1,13 @@
-"""Session export utilities."""
+"""TUI timeline export, plus re-exports of session transcript renderers."""
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any
+
+from coderAI.system.session_render import session_to_html, session_to_markdown
+
+__all__ = ["timeline_to_markdown", "session_to_html", "session_to_markdown"]
 
 
 def timeline_to_markdown(items: list[dict[str, Any]]) -> str:
@@ -57,6 +61,5 @@ def timeline_to_markdown(items: list[dict[str, Any]]) -> str:
                 md += f"Risk: {item.get('risk')}\n\n"
             md += "---\n\n"
         else:
-            # Fallback for future kinds — preserve content rather than dropping
             md += f"**{kind or 'unknown'}:**\n\n```json\n{item}\n```\n\n---\n\n"
     return md

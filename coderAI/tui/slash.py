@@ -161,6 +161,34 @@ def _cmd_rewind(ctx: SlashContext, arg: str, head: str) -> bool:
     return True
 
 
+def _cmd_fork(ctx: SlashContext, arg: str, head: str) -> bool:
+    """Fork current session into a new branch · /fork [turn]"""
+    turn_val: Optional[int] = None
+    if arg.strip():
+        try:
+            turn_val = int(arg.strip().split()[0])
+        except ValueError:
+            ctx.toast("warning", "Usage: /fork [turn_number]")
+            return True
+    ctx.controller.enqueue_command("fork_session", turn=turn_val)
+    ctx.toast("info", f"Forking session{' at turn ' + str(turn_val) if turn_val else ''}…")
+    return True
+
+
+def _cmd_export(ctx: SlashContext, arg: str, head: str) -> bool:
+    """Export current session to markdown · /export [path]"""
+    default_name = f"coderAI-session-{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H-%M-%S')}.md"
+    target = arg.strip() or str(Path.cwd() / default_name)
+    try:
+        dest = Path(target)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(timeline_to_markdown(ctx.reducer.timeline), encoding="utf-8")
+        ctx.toast("success", f"Exported to {target}")
+    except OSError as e:
+        ctx.toast("warning", f"Export failed: {e}")
+    return True
+
+
 def _cmd_persona(ctx: SlashContext, arg: str, head: str) -> bool:
     if not arg or arg == "list":
         ctx.controller.enqueue_command("list_personas")
@@ -335,18 +363,6 @@ def _cmd_plan(ctx: SlashContext, arg: str, head: str) -> bool:
 def _cmd_exit(ctx: SlashContext, arg: str, head: str) -> bool:
     if not ctx.confirm_exit():
         ctx.toast("warning", "Type /exit again to confirm shutdown (resets in 5s)")
-    return True
-
-
-def _cmd_export(ctx: SlashContext, arg: str, head: str) -> bool:
-    default_name = f"coderAI-session-{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H-%M-%S')}.md"
-    target = arg or str(Path.cwd() / default_name)
-    try:
-        Path(target).parent.mkdir(parents=True, exist_ok=True)
-        Path(target).write_text(timeline_to_markdown(ctx.reducer.timeline), encoding="utf-8")
-        ctx.toast("success", f"Exported to {target}")
-    except OSError as e:
-        ctx.toast("warning", f"Export failed: {e}")
     return True
 
 
@@ -569,6 +585,12 @@ _register(
     "rewind",
     desc="Rewind conversation to a past turn · /rewind <n> [--files]",
 )
+_register(_cmd_fork, "fork", "branch", desc="Fork conversation into a new branch · /fork [turn]")
+_register(
+    _cmd_export,
+    "export",
+    desc="Export session transcript to HTML or Markdown · /export [html|md] [path]",
+)
 _register(_cmd_persona, "persona", desc="List or switch persona")
 _register(_cmd_mcp, "mcp", desc="List MCP servers · toggle one on/off · /mcp <name>")
 _register(_cmd_skills, "skills", desc="List workflows under .coderAI/skills/")
@@ -605,7 +627,6 @@ _register(
     desc="Plan read-only · review/edit · answer · approve/resume",
 )
 _register(_cmd_exit, "exit", "quit", desc="Shut down the agent")
-_register(_cmd_export, "export", "save", desc="Export session to markdown")
 _register(_cmd_search, "search", "find", desc="Show matching transcript snippets")
 _register(_cmd_pin, "pin", desc="Pin a file to context · /pin <path>")
 _register(_cmd_unpin, "unpin", desc="Unpin a file from context · /unpin <path>")

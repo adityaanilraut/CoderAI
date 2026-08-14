@@ -7,6 +7,7 @@ import pytest
 
 from coderAI.core.agent_loop import ExecutionLoop
 from coderAI.core.agent_tracker import AgentInfo, AgentStatus
+from coderAI.core.execution_context import RunContext
 from coderAI.system.history import Session
 from coderAI.core.tool_executor import (
     DOOM_LOOP_HARD_THRESHOLD,
@@ -17,6 +18,33 @@ from coderAI.core.tool_executor import (
 from coderAI.core.loop_guard import READ_ONLY_DOOM_LOOP_HARD_THRESHOLD
 
 _UNSET = object()
+
+
+def _runtime_agent(**overrides: Any) -> SimpleNamespace:
+    """Build a minimal fake that conforms to the executor's AgentRuntime seam."""
+    values: dict[str, Any] = {
+        "config": SimpleNamespace(),
+        "auto_approve": True,
+        "approval_port": None,
+        "confirmation_override": None,
+        "tracker_info": None,
+        "tracker_update": MagicMock(),
+        "_sync_tracker": MagicMock(),
+        "tools": SimpleNamespace(get=MagicMock(return_value=None)),
+        "session": None,
+        "active_plan_id": None,
+        "active_plan_revision": None,
+        "_plan_execution_ready": False,
+        "plan_mode": False,
+        "_allowed_native_tool_names": None,
+        "_capability_domain": None,
+        "run_context": RunContext(),
+        "_workspace_trusted": False,
+        "context_controller": None,
+        "_tool_approval_allowlist": set(),
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
 
 
 def _make_tracker_update(info):
@@ -43,9 +71,9 @@ async def test_denied_tool_skips_pre_hooks() -> None:
         get=MagicMock(return_value=SimpleNamespace(requires_confirmation=True)),
         execute=AsyncMock(),
     )
-    agent = SimpleNamespace(
+    agent = _runtime_agent(
         auto_approve=False,
-        ipc_server=None,
+        approval_port=None,
         tools=registry,
         tracker_info=None,
         _sync_tracker=MagicMock(),
@@ -82,17 +110,20 @@ async def test_confirmation_sets_waiting_for_user_status() -> None:
     )
     seen_statuses = []
 
-    class FakeIPC:
-        async def request_tool_approval(self, **kwargs):
-            seen_statuses.append(info.status)
-            return True
+    class FakePort:
+        async def request(self, tool, args, preview=None):
+            from coderAI.core.ports import Approval
 
-    agent = SimpleNamespace(
-        ipc_server=FakeIPC(),
+            seen_statuses.append(info.status)
+            return Approval(allowed=True)
+
+    agent = _runtime_agent(
+        approval_port=FakePort(),
         tracker_info=info,
         _sync_tracker=MagicMock(),
         tracker_update=_make_tracker_update(info),
         config=SimpleNamespace(approval_timeout_seconds=300),
+        auto_approve=False,
     )
     executor = ToolExecutor(agent)
 
@@ -132,9 +163,9 @@ async def test_all_failed_tool_calls_request_retry() -> None:
             }
         ],
     )
-    agent = SimpleNamespace(
+    agent = _runtime_agent(
         auto_approve=True,
-        ipc_server=None,
+        approval_port=None,
         tools=registry,
         tracker_info=None,
         session=session,
@@ -167,9 +198,9 @@ async def test_tool_result_normalization_wraps_strings() -> None:
         get=MagicMock(return_value=SimpleNamespace(requires_confirmation=False)),
         execute=AsyncMock(return_value="boom"),
     )
-    agent = SimpleNamespace(
+    agent = _runtime_agent(
         auto_approve=True,
-        ipc_server=None,
+        approval_port=None,
         tools=registry,
         tracker_info=None,
         _sync_tracker=MagicMock(),
@@ -198,9 +229,9 @@ async def test_pre_hook_errors_block_tool_execution() -> None:
         get=MagicMock(return_value=SimpleNamespace(requires_confirmation=False)),
         execute=AsyncMock(return_value={"success": True}),
     )
-    agent = SimpleNamespace(
+    agent = _runtime_agent(
         auto_approve=True,
-        ipc_server=None,
+        approval_port=None,
         tools=registry,
         tracker_info=None,
         _sync_tracker=MagicMock(),
@@ -254,9 +285,9 @@ async def test_orchestrate_signals_doom_loop_after_hard_threshold() -> None:
         execute=AsyncMock(return_value={"success": True, "result": "ok"}),
     )
     session = Session(session_id="session_1234567890_deadbeef")
-    agent = SimpleNamespace(
+    agent = _runtime_agent(
         auto_approve=True,
-        ipc_server=None,
+        approval_port=None,
         tools=registry,
         tracker_info=None,
         session=session,
@@ -315,9 +346,9 @@ async def test_cached_repeats_trip_general_doom_loop_hard_threshold(
         execute=AsyncMock(return_value={"success": True, "result": "contents"}),
     )
     session = Session(session_id="session_1234567890_deadbeef")
-    agent = SimpleNamespace(
+    agent = _runtime_agent(
         auto_approve=True,
-        ipc_server=None,
+        approval_port=None,
         tools=registry,
         tracker_info=None,
         session=session,
@@ -372,7 +403,7 @@ async def test_recoverable_error_repairs_mid_turn_unpaired_tool_calls() -> None:
         inject_context=lambda messages, query=None: messages,
         manage_context_window=AsyncMock(side_effect=lambda messages: messages),
     )
-    agent = SimpleNamespace(
+    agent = _runtime_agent(
         session=session,
         context_controller=context_controller,
         hooks_manager=None,
@@ -477,9 +508,9 @@ async def test_denied_calls_do_not_count_toward_doom_loop_hard_threshold() -> No
         execute=AsyncMock(),
     )
     session = Session(session_id="session_1234567890_denyloop")
-    agent = SimpleNamespace(
+    agent = _runtime_agent(
         auto_approve=False,
-        ipc_server=None,
+        approval_port=None,
         tools=registry,
         tracker_info=None,
         session=session,
@@ -534,9 +565,9 @@ async def test_identical_mutating_calls_are_not_deduplicated() -> None:
         execute=AsyncMock(return_value={"success": True, "result": "ok"}),
     )
     session = Session(session_id="session_1234567890_deadbeef")
-    agent = SimpleNamespace(
+    agent = _runtime_agent(
         auto_approve=True,
-        ipc_server=None,
+        approval_port=None,
         tools=registry,
         tracker_info=None,
         session=session,
@@ -615,9 +646,9 @@ async def test_identical_reads_are_not_reused_across_mutation_barrier() -> None:
         },
     ]
     session.add_message("assistant", None, tool_calls=tool_calls)
-    agent = SimpleNamespace(
+    agent = _runtime_agent(
         auto_approve=True,
-        ipc_server=None,
+        approval_port=None,
         tools=registry,
         tracker_info=None,
         session=session,

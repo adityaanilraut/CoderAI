@@ -287,10 +287,22 @@ class SymbolSearchTool(Tool):
             if any(part in _GREP_SKIP_DIRS for part in rel_parts):
                 continue
             suffix = file_path.suffix.lower()
-            if suffix == ".py":
+            if suffix in {".py", ".pyi"}:
                 matches = self._search_python(file_path, symbol, kind)
-            elif suffix in {".ts", ".tsx", ".js", ".jsx"}:
+            elif suffix in {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}:
                 matches = self._search_jsts(file_path, symbol, kind)
+            elif suffix == ".go":
+                matches = self._search_golang(file_path, symbol, kind)
+            elif suffix == ".rs":
+                matches = self._search_rust(file_path, symbol, kind)
+            elif suffix in {".c", ".h", ".cpp", ".cc", ".cxx", ".hpp"}:
+                matches = self._search_c_cpp(file_path, symbol, kind)
+            elif suffix in {".java", ".kt", ".kts"}:
+                matches = self._search_java_kotlin(file_path, symbol, kind)
+            elif suffix == ".rb":
+                matches = self._search_ruby(file_path, symbol, kind)
+            elif suffix == ".php":
+                matches = self._search_php(file_path, symbol, kind)
             else:
                 continue
             for match in matches:
@@ -361,6 +373,111 @@ class SymbolSearchTool(Tool):
             ),
             ("variable", rf"^\s*(export\s+)?(const|let|var)\s+{re.escape(symbol)}\b"),
         ]
+        return self._match_patterns(file_path, source, patterns, symbol, kind)
+
+    def _search_golang(self, file_path: Path, symbol: str, kind: str) -> list[dict[str, Any]]:
+        try:
+            source = file_path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            return []
+        patterns = [
+            ("class", rf"^\s*type\s+{re.escape(symbol)}\s+(struct|interface)\b"),
+            (
+                "function",
+                rf"^\s*func\s+(?:\([^)]+\)\s+)?{re.escape(symbol)}\s*\(",
+            ),
+            ("variable", rf"^\s*(?:var|const)\s+{re.escape(symbol)}\b"),
+        ]
+        return self._match_patterns(file_path, source, patterns, symbol, kind)
+
+    def _search_rust(self, file_path: Path, symbol: str, kind: str) -> list[dict[str, Any]]:
+        try:
+            source = file_path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            return []
+        patterns = [
+            (
+                "class",
+                rf"^\s*(?:pub(?:\([^)]+\))?\s+)?(?:struct|enum|trait)\s+{re.escape(symbol)}\b",
+            ),
+            (
+                "function",
+                rf"^\s*(?:pub(?:\([^)]+\))?\s+)?(?:async\s+)?fn\s+{re.escape(symbol)}\s*[\(<]",
+            ),
+            (
+                "variable",
+                rf"^\s*(?:pub(?:\([^)]+\))?\s+)?(?:const|static|let)\s+(?:mut\s+)?{re.escape(symbol)}\b",
+            ),
+        ]
+        return self._match_patterns(file_path, source, patterns, symbol, kind)
+
+    def _search_c_cpp(self, file_path: Path, symbol: str, kind: str) -> list[dict[str, Any]]:
+        try:
+            source = file_path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            return []
+        patterns = [
+            ("class", rf"^\s*(?:class|struct|enum(?:\s+class)?)\s+{re.escape(symbol)}\b"),
+            (
+                "function",
+                rf"^\s*(?:[A-Za-z_][A-Za-z0-9_<>:*&]*\s+)+{re.escape(symbol)}\s*\(",
+            ),
+        ]
+        return self._match_patterns(file_path, source, patterns, symbol, kind)
+
+    def _search_java_kotlin(self, file_path: Path, symbol: str, kind: str) -> list[dict[str, Any]]:
+        try:
+            source = file_path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            return []
+        patterns = [
+            (
+                "class",
+                rf"^\s*(?:(?:public|private|protected|internal|abstract|final|sealed|static)\s+)*(?:class|interface|enum|record)\s+{re.escape(symbol)}\b",
+            ),
+            (
+                "function",
+                rf"^\s*(?:(?:public|private|protected|internal|static|final|abstract|override|open)\s+)*(?:<[^>]+>\s+)?(?:[A-Za-z_][A-Za-z0-9_<>[\]]*\s+)?(?:fun\s+)?{re.escape(symbol)}\s*\(",
+            ),
+        ]
+        return self._match_patterns(file_path, source, patterns, symbol, kind)
+
+    def _search_ruby(self, file_path: Path, symbol: str, kind: str) -> list[dict[str, Any]]:
+        try:
+            source = file_path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            return []
+        patterns = [
+            ("class", rf"^\s*(?:class|module)\s+{re.escape(symbol)}\b"),
+            ("function", rf"^\s*def\s+(?:self\.)?{re.escape(symbol)}\b"),
+        ]
+        return self._match_patterns(file_path, source, patterns, symbol, kind)
+
+    def _search_php(self, file_path: Path, symbol: str, kind: str) -> list[dict[str, Any]]:
+        try:
+            source = file_path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            return []
+        patterns = [
+            (
+                "class",
+                rf"^\s*(?:abstract|final\s+)*(?:class|interface|trait|enum)\s+{re.escape(symbol)}\b",
+            ),
+            (
+                "function",
+                rf"^\s*(?:public|private|protected|static\s+)*function\s+{re.escape(symbol)}\s*\(",
+            ),
+        ]
+        return self._match_patterns(file_path, source, patterns, symbol, kind)
+
+    def _match_patterns(
+        self,
+        file_path: Path,
+        source: str,
+        patterns: list[tuple[str, str]],
+        symbol: str,
+        kind: str,
+    ) -> list[dict[str, Any]]:
         wanted = kind.lower()
         results: list[dict[str, Any]] = []
         for line_no, line in enumerate(source.splitlines(), 1):

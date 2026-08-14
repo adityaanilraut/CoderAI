@@ -4,9 +4,9 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from coderAI.system.fsperms import OWNER_RWX, atomic_write_json, restrict_path
 from coderAI.system.redaction import redact_secrets
@@ -101,16 +101,10 @@ def _coerce(key: str, value: Any) -> Any:
     return value
 
 
-class Config(BaseModel):
-    """Configuration model for CoderAI.
-
-    Unknown keys are silently ignored (with a warning log) so that stale
-    keys in a user's ``~/.coderAI/config.json`` don't break loading after
-    a schema change.
-    """
+class ProvidersConfig(BaseModel):
+    """Model, credential, search, and embedding provider settings."""
 
     model_config = ConfigDict(extra="ignore", validate_assignment=True)
-
     openai_api_key: Optional[str] = Field(default=None)
     anthropic_api_key: Optional[str] = Field(default=None)
     groq_api_key: Optional[str] = Field(default=None)
@@ -136,6 +130,12 @@ class Config(BaseModel):
     ollama_model: str = Field(default="llama3")
     streaming: bool = Field(default=True)
     reasoning_effort: str = Field(default="medium")  # high, medium, low, none
+
+
+class SessionConfig(BaseModel):
+    """Conversation lifetime, objective, context, and budget settings."""
+
+    model_config = ConfigDict(extra="ignore", validate_assignment=True)
     budget_limit: float = Field(default=0.0)  # max USD per session, 0 = unlimited
     save_history: bool = Field(default=True)
     # Set to 0 to retain sessions indefinitely.
@@ -153,8 +153,16 @@ class Config(BaseModel):
     # successful check before the runtime reports success.
     completion_gate_enabled: bool = Field(default=True)
     completion_gate_max_retries: int = Field(default=1, ge=0, le=3)
+    # Automatically verify modified files with lint/syntax checks post-mutation
+    auto_verify: bool = Field(default=False)
+    project_root: str = Field(default=".")
+
+
+class ToolsConfig(BaseModel):
+    """Native tool availability, execution, safety, and browser settings."""
+
+    model_config = ConfigDict(extra="ignore", validate_assignment=True)
     max_tool_output: int = Field(default=8000)
-    log_level: str = Field(default="WARNING")  # DEBUG, INFO, WARNING, ERROR
     project_instruction_file: str = Field(default="CODERAI.md")
     max_file_size: int = Field(default=1_048_576)  # 1 MB
     max_glob_results: int = Field(default=200)
@@ -164,7 +172,6 @@ class Config(BaseModel):
     page_cache_ttl_seconds: int = Field(default=3600)  # Page content cache TTL
     rate_limit_delay_seconds: float = Field(default=1.0, ge=0.0)  # Domain rate limit
     concurrent_search: bool = Field(default=True)  # Run DDG+SearXNG in parallel
-    project_root: str = Field(default=".")
     allow_outside_project: bool = Field(default=False)
     approval_timeout_seconds: int = Field(default=300)  # 0 = wait forever
     # When True, a denied tool request does NOT stop the agent loop — the model
@@ -211,12 +218,6 @@ class Config(BaseModel):
     skill_confidence_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
     skill_top_n: int = Field(default=3, ge=1, le=10)
 
-    # --- TUI ---
-    # Ring the terminal bell + emit an OSC 9 desktop notification when the
-    # agent needs attention (tool approval, turn finished) while the terminal
-    # window is unfocused.
-    tui_notifications: bool = Field(default=True)
-
     # --- Browser automation (Playwright) ---
     browser_headless: bool = Field(default=True)
     browser_timeout: float = Field(default=30.0, ge=5.0, le=120.0)
@@ -227,6 +228,298 @@ class Config(BaseModel):
     )
 
 
+class UIConfig(BaseModel):
+    """Human-interface and diagnostic presentation settings."""
+
+    model_config = ConfigDict(extra="ignore", validate_assignment=True)
+    log_level: str = Field(default="WARNING")  # DEBUG, INFO, WARNING, ERROR
+    tui_notifications: bool = Field(default=True)
+
+
+ConfigPath = tuple[Literal["providers", "tools", "session", "ui"], str]
+
+
+FLAT_CONFIG_PATHS: dict[str, ConfigPath] = {
+    **{
+        key: ("providers", key)
+        for key in (
+            "openai_api_key",
+            "anthropic_api_key",
+            "groq_api_key",
+            "deepseek_api_key",
+            "gemini_api_key",
+            "meta_api_key",
+            "tavily_api_key",
+            "exa_api_key",
+            "search_backend",
+            "searxng_url",
+            "embedding_backend",
+            "embedding_model",
+            "embedding_device",
+            "default_model",
+            "temperature",
+            "max_tokens",
+            "lmstudio_endpoint",
+            "lmstudio_model",
+            "ollama_endpoint",
+            "ollama_model",
+            "streaming",
+            "reasoning_effort",
+        )
+    },
+    **{
+        key: ("session", key)
+        for key in (
+            "budget_limit",
+            "save_history",
+            "session_retention_days",
+            "enable_checkpoints",
+            "context_window",
+            "max_iterations",
+            "max_iterations_hard_cap",
+            "completion_gate_enabled",
+            "completion_gate_max_retries",
+            "auto_verify",
+            "project_root",
+        )
+    },
+    **{
+        key: ("tools", key)
+        for key in (
+            "max_tool_output",
+            "project_instruction_file",
+            "max_file_size",
+            "max_glob_results",
+            "max_command_output",
+            "web_tools_in_main",
+            "search_cache_ttl_seconds",
+            "page_cache_ttl_seconds",
+            "rate_limit_delay_seconds",
+            "concurrent_search",
+            "allow_outside_project",
+            "approval_timeout_seconds",
+            "continue_loop_on_deny",
+            "subagent_timeout_seconds",
+            "max_concurrent_mutating_subagents",
+            "tool_timeout_seconds",
+            "tool_timeout_overrides",
+            "subprocess_timeout_seconds",
+            "sandbox_mode",
+            "sandbox_allow_network",
+            "tool_retry_max_attempts",
+            "tool_retry_base_delay",
+            "max_background_processes",
+            "auto_detect_skills",
+            "skill_confidence_threshold",
+            "skill_top_n",
+            "browser_headless",
+            "browser_timeout",
+            "browser_allowed_domains",
+        )
+    },
+    "log_level": ("ui", "log_level"),
+    "tui_notifications": ("ui", "tui_notifications"),
+}
+
+
+def canonical_config_key(key: str) -> str:
+    """Return the stable dotted key for a flat or nested config key."""
+    path = FLAT_CONFIG_PATHS.get(key)
+    if path is not None:
+        return ".".join(path)
+    if "." in key:
+        section, leaf = key.split(".", 1)
+        if FLAT_CONFIG_PATHS.get(leaf) == (section, leaf):
+            return key
+    raise KeyError(key)
+
+
+def _nested_input(data: dict[str, Any]) -> dict[str, Any]:
+    """Migrate flat input into nested sections; explicit nested leaves win."""
+    migrated: dict[str, Any] = {}
+    for section in ("providers", "tools", "session", "ui"):
+        if section not in data:
+            continue
+        value = data.get(section)
+        migrated[section] = dict(value) if isinstance(value, dict) else value
+    for key, value in data.items():
+        path = FLAT_CONFIG_PATHS.get(key)
+        if path is None:
+            if key not in migrated:
+                migrated[key] = value
+            continue
+        section, leaf = path
+        section_data = migrated.get(section)
+        if not isinstance(section_data, dict):
+            section_data = {}
+            migrated[section] = section_data
+        section_data.setdefault(leaf, value)
+    return migrated
+
+
+def _set_path(data: dict[str, Any], path: ConfigPath, value: Any) -> None:
+    section, leaf = path
+    section_data = data.setdefault(section, {})
+    if not isinstance(section_data, dict):
+        section_data = {}
+        data[section] = section_data
+    section_data[leaf] = value
+
+
+def _known_input(data: dict[str, Any]) -> tuple[dict[str, Any], set[str], set[str]]:
+    """Return nested data, explicitly supplied dotted keys, and unknown keys."""
+    nested = _nested_input(data)
+    explicit: set[str] = set()
+    unknown: set[str] = set()
+    for key in data:
+        if key in FLAT_CONFIG_PATHS:
+            explicit.add(canonical_config_key(key))
+        elif key not in {"providers", "tools", "session", "ui"}:
+            unknown.add(key)
+    for section in ("providers", "tools", "session", "ui"):
+        section_data = data.get(section)
+        if section_data is None:
+            continue
+        if not isinstance(section_data, dict):
+            unknown.add(section)
+            continue
+        for leaf in section_data:
+            dotted = f"{section}.{leaf}"
+            if FLAT_CONFIG_PATHS.get(leaf) == (section, leaf):
+                explicit.add(dotted)
+            else:
+                unknown.add(dotted)
+    return nested, explicit, unknown
+
+
+class _FlatConfigCompatibility:
+    """Static view of legacy flat attributes; contains no runtime fields."""
+
+    if TYPE_CHECKING:
+        openai_api_key: Optional[str]
+        anthropic_api_key: Optional[str]
+        groq_api_key: Optional[str]
+        deepseek_api_key: Optional[str]
+        gemini_api_key: Optional[str]
+        meta_api_key: Optional[str]
+        tavily_api_key: Optional[str]
+        exa_api_key: Optional[str]
+        search_backend: Optional[str]
+        searxng_url: Optional[str]
+        embedding_backend: Literal["auto", "openai", "local"]
+        embedding_model: Optional[str]
+        embedding_device: Optional[str]
+        default_model: str
+        temperature: float
+        max_tokens: Optional[int]
+        lmstudio_endpoint: str
+        lmstudio_model: str
+        ollama_endpoint: str
+        ollama_model: str
+        streaming: bool
+        reasoning_effort: str
+        budget_limit: float
+        save_history: bool
+        session_retention_days: int
+        enable_checkpoints: bool
+        context_window: int
+        max_iterations: int
+        max_iterations_hard_cap: int
+        completion_gate_enabled: bool
+        completion_gate_max_retries: int
+        auto_verify: bool
+        project_root: str
+        max_tool_output: int
+        project_instruction_file: str
+        max_file_size: int
+        max_glob_results: int
+        max_command_output: int
+        web_tools_in_main: bool
+        search_cache_ttl_seconds: int
+        page_cache_ttl_seconds: int
+        rate_limit_delay_seconds: float
+        concurrent_search: bool
+        allow_outside_project: bool
+        approval_timeout_seconds: int
+        continue_loop_on_deny: bool
+        subagent_timeout_seconds: float
+        max_concurrent_mutating_subagents: int
+        tool_timeout_seconds: float
+        tool_timeout_overrides: dict[str, float]
+        subprocess_timeout_seconds: float
+        sandbox_mode: Literal["off", "best_effort", "required"]
+        sandbox_allow_network: bool
+        tool_retry_max_attempts: int
+        tool_retry_base_delay: float
+        max_background_processes: int
+        auto_detect_skills: bool
+        skill_confidence_threshold: float
+        skill_top_n: int
+        browser_headless: bool
+        browser_timeout: float
+        browser_allowed_domains: Optional[str]
+        log_level: str
+        tui_notifications: bool
+
+
+class Config(_FlatConfigCompatibility, BaseModel):
+    """Nested configuration with a flat compatibility/migration boundary.
+
+    New code can use ``config.providers`` / ``tools`` / ``session`` / ``ui``.
+    Existing flat constructors and attributes remain valid and are translated
+    only here, so callers do not need to migrate in lockstep.
+    """
+
+    model_config = ConfigDict(extra="ignore", validate_assignment=True)
+    _flat_paths: ClassVar[dict[str, ConfigPath]] = FLAT_CONFIG_PATHS
+
+    providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
+    tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    session: SessionConfig = Field(default_factory=SessionConfig)
+    ui: UIConfig = Field(default_factory=UIConfig)
+
+    def __init__(self, **data: Any) -> None:
+        """Accept both nested fields and legacy flat keyword arguments."""
+        super().__init__(**data)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_flat_input(cls, value: Any) -> Any:
+        return _nested_input(value) if isinstance(value, dict) else value
+
+    def __getattr__(self, name: str) -> Any:
+        path = self._flat_paths.get(name)
+        if path is not None:
+            section, leaf = path
+            return getattr(object.__getattribute__(self, section), leaf)
+        raise AttributeError(name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        path = self._flat_paths.get(name)
+        if path is not None:
+            section, leaf = path
+            setattr(getattr(self, section), leaf, value)
+            return
+        super().__setattr__(name, value)
+
+    def flat_dump(self, *, exclude_none: bool = False) -> dict[str, Any]:
+        """Return the legacy flat public view used by compatible CLI output."""
+        result: dict[str, Any] = {}
+        for key, (section, leaf) in self._flat_paths.items():
+            value = getattr(getattr(self, section), leaf)
+            if value is not None or not exclude_none:
+                result[key] = value
+        return result
+
+    @property
+    def model_fields_set(self) -> set[str]:
+        """Expose explicitly supplied nested leaves through legacy flat names."""
+        fields = set(self.__pydantic_fields_set__)
+        for key, (section, leaf) in self._flat_paths.items():
+            if leaf in getattr(self, section).model_fields_set:
+                fields.add(key)
+        return fields
+
 class ConfigManager:
     """Manages configuration for CoderAI."""
 
@@ -234,7 +527,7 @@ class ConfigManager:
     # when set explicitly (Phase 2.5). They must be re-supplied per session
     # (env / CLI flag) so a stale on-disk ``true`` cannot silently keep a
     # sandbox-escape / auto-approve posture enabled across future sessions.
-    _NEVER_PERSIST_KEYS = frozenset({"allow_outside_project"})
+    _NEVER_PERSIST_KEYS = frozenset({"tools.allow_outside_project"})
 
     def __init__(self) -> None:
         """Initialize the configuration manager."""
@@ -251,10 +544,14 @@ class ConfigManager:
         # these are persisted by ``save()``. Persisting every field froze all
         # defaults into config.json, so later default changes in code never
         # took effect for existing users.
-        self._explicit_keys: set = set()
+        self._explicit_keys: set[str] = set()
         # Keys whose values came from environment variables this run. These
         # are runtime overrides and must never be frozen to disk by ``save()``.
-        self._env_keys: set = set()
+        self._env_keys: set[str] = set()
+        # Original on-disk values retained when an environment override shadows
+        # the same key; saving another key must not freeze the env value or erase
+        # the user's persisted fallback.
+        self._file_values: dict[str, Any] = {}
 
     def load(self) -> Config:
         """Load configuration from file and environment variables."""
@@ -262,13 +559,13 @@ class ConfigManager:
             return self._config
 
         # Load from file if exists
-        config_data: dict[str, Any] = {}
+        raw_config_data: dict[str, Any] = {}
         if self.config_file.exists():
             try:
                 with open(self.config_file, "r") as f:
                     loaded = json.load(f)
                 if isinstance(loaded, dict):
-                    config_data = loaded
+                    raw_config_data = loaded
                 else:
                     logger.warning(
                         "Config file %s must contain a JSON object, got %s. "
@@ -283,7 +580,13 @@ class ConfigManager:
                     self.config_file,
                     e,
                 )
-        self._explicit_keys = set(config_data) & set(Config.model_fields.keys())
+        config_data, self._explicit_keys, unknown = _known_input(raw_config_data)
+        self._file_values = {}
+        for dotted in self._explicit_keys:
+            section, leaf = dotted.split(".", 1)
+            section_data = config_data.get(section)
+            if isinstance(section_data, dict) and leaf in section_data:
+                self._file_values[dotted] = section_data[leaf]
 
         # Override with environment variables
         env_mappings = {
@@ -356,12 +659,11 @@ class ConfigManager:
                         env_var,
                     )
                     continue
-                config_data[config_key] = value
-                self._env_keys.add(config_key)
+                path = FLAT_CONFIG_PATHS[config_key]
+                _set_path(config_data, path, value)
+                self._env_keys.add(".".join(path))
 
         # Warn about unknown keys (they'll be dropped by extra="ignore")
-        known_keys = set(Config.model_fields.keys())
-        unknown = set(config_data) - known_keys
         if unknown:
             logger.warning(
                 "Ignoring unknown config keys (schema drift?): %s",
@@ -371,18 +673,25 @@ class ConfigManager:
         # Preserve valid settings when one persisted or environment-supplied
         # field no longer matches the schema.  Loading must never brick every
         # command, and recovery must not rewrite the user's source file.
-        validated_data = dict(config_data)
+        validated_data = {
+            key: dict(value) if isinstance(value, dict) else value
+            for key, value in config_data.items()
+        }
         while True:
             try:
-                self._config = Config(**validated_data)
+                self._config = Config.model_validate(validated_data)
                 break
             except ValidationError as exc:
-                invalid_fields = {
-                    str(error["loc"][0])
-                    for error in exc.errors()
-                    if error.get("loc") and str(error["loc"][0]) in validated_data
-                }
-                if not invalid_fields:
+                invalid_paths: set[str] = set()
+                for error in exc.errors():
+                    location = error.get("loc")
+                    if not location or len(location) < 2:
+                        continue
+                    section, leaf = str(location[0]), str(location[1])
+                    dotted = f"{section}.{leaf}"
+                    if FLAT_CONFIG_PATHS.get(leaf) == (section, leaf):
+                        invalid_paths.add(dotted)
+                if not invalid_paths:
                     logger.warning("Config validation failed; using schema defaults: %s", exc)
                     validated_data.clear()
                     self._explicit_keys.clear()
@@ -390,12 +699,15 @@ class ConfigManager:
                     continue
                 logger.warning(
                     "Ignoring invalid config fields: %s",
-                    ", ".join(sorted(invalid_fields)),
+                    ", ".join(sorted(invalid_paths)),
                 )
-                for field in invalid_fields:
-                    validated_data.pop(field, None)
-                    self._explicit_keys.discard(field)
-                    self._env_keys.discard(field)
+                for dotted in invalid_paths:
+                    section, leaf = dotted.split(".", 1)
+                    section_data = validated_data.get(section)
+                    if isinstance(section_data, dict):
+                        section_data.pop(leaf, None)
+                    self._explicit_keys.discard(dotted)
+                    self._env_keys.discard(dotted)
         return self._config
 
     def _data_to_persist(self, config: Config) -> dict[str, Any]:
@@ -408,17 +720,21 @@ class ConfigManager:
         unless the user also set them explicitly.
         """
         defaults = Config()
-        data = config.model_dump(exclude_none=True)
         persist: dict[str, Any] = {}
-        for key, value in data.items():
-            if key in self._NEVER_PERSIST_KEYS:
+        for key, path in FLAT_CONFIG_PATHS.items():
+            dotted = ".".join(path)
+            value = getattr(config, key)
+            default_value = getattr(defaults, key)
+            if dotted in self._NEVER_PERSIST_KEYS or value is None:
                 continue
-            if key in self._explicit_keys:
-                persist[key] = value
-            elif key in self._env_keys:
+            if dotted in self._env_keys:
+                if dotted in self._explicit_keys and dotted in self._file_values:
+                    _set_path(persist, path, self._file_values[dotted])
                 continue
-            elif value != getattr(defaults, key, None):
-                persist[key] = value
+            if dotted in self._explicit_keys:
+                _set_path(persist, path, value)
+            elif value != default_value:
+                _set_path(persist, path, value)
         return persist
 
     def save(self, config: Optional[Config] = None) -> None:
@@ -434,22 +750,34 @@ class ConfigManager:
         """Set a configuration value."""
         config = self.load()
         try:
-            setattr(config, key, value)
+            dotted = canonical_config_key(key)
+        except KeyError as exc:
+            raise ValueError(f"Unknown configuration key: {key}") from exc
+        section, leaf = dotted.split(".", 1)
+        try:
+            setattr(getattr(config, section), leaf, value)
         except ValidationError as e:
             raise ValueError(f"Invalid value for '{key}': {e}") from e
         self._config = config
-        self._explicit_keys.add(key)
+        self._explicit_keys.add(dotted)
+        self._env_keys.discard(dotted)
+        self._file_values[dotted] = value
         self.save()
 
     def get(self, key: str, default: Any = None) -> Any:
         """Get a configuration value."""
         config = self.load()
-        return getattr(config, key, default)
+        try:
+            dotted = canonical_config_key(key)
+        except KeyError:
+            return default
+        section, leaf = dotted.split(".", 1)
+        return getattr(getattr(config, section), leaf, default)
 
     def show(self) -> dict[str, Any]:
         """Get all configuration with credentials fully redacted."""
         config = self.load()
-        data = config.model_dump(exclude_none=True)
+        data = config.flat_dump(exclude_none=True)
         redacted = redact_secrets(data)
         assert isinstance(redacted, dict)
         return redacted
@@ -459,6 +787,7 @@ class ConfigManager:
         self._config = Config()
         self._explicit_keys = set()
         self._env_keys = set()
+        self._file_values = {}
         if self.config_file.exists():
             self.config_file.unlink()
 
@@ -553,9 +882,22 @@ class ConfigManager:
             )
             return config
 
-        for key, value in project_data.items():
+        if not isinstance(project_data, dict):
+            logger.warning(
+                "Project config file %s must contain a JSON object. Using global defaults.",
+                project_config_path,
+            )
+            return config
+
+        nested_project, explicit_paths, _unknown = _known_input(project_data)
+        for dotted in sorted(explicit_paths):
+            section, key = dotted.split(".", 1)
             if key not in ALLOWED_PROJECT_KEYS:
                 continue
+            section_data = nested_project.get(section)
+            if not isinstance(section_data, dict) or key not in section_data:
+                continue
+            value = section_data[key]
             try:
                 value = _coerce(key, value)
             except (ValueError, TypeError) as e:
@@ -575,7 +917,10 @@ class ConfigManager:
                         base.budget_limit,
                     )
                     continue
-            setattr(config, key, value)
+            try:
+                setattr(getattr(config, section), key, value)
+            except ValidationError as e:
+                logger.warning("Invalid project config value for '%s': %s", key, e)
 
         return config
 

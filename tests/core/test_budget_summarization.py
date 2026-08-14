@@ -154,6 +154,7 @@ async def test_loop_persists_summary_and_request_tools_across_refresh():
         total_tokens=0,
         total_cache_creation_tokens=0,
         total_cache_read_tokens=0,
+        tracker_info=None,
     )
     loop = ExecutionLoop.__new__(ExecutionLoop)
     loop.agent = agent

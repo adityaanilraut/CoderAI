@@ -211,7 +211,6 @@ def _verify_sdist(sdist: Path, *, wheel_version: str) -> None:
             "docs/ARCHITECTURE.md",
             "docs/CHAT_EVENTS.md",
             "docs/COMMANDS.md",
-            "docs/COMPETITIVE_AUDIT_REMEDIATION_PLAN.md",
             *_runtime_members(),
         }
         missing = sorted(f"{root}/{name}" for name in required if f"{root}/{name}" not in members)

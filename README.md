@@ -265,7 +265,7 @@ The heart of CoderAI is the **agentic loop** in `coderAI/core/agent.py → proce
 
 ## 🛠️ Tools Reference
 
-CoderAI discovers 61 native tools automatically at runtime and registers `manage_context` dynamically with the context controller (total 62 native tools), plus rare git operations on the bundled `git_extended` MCP server. Each tool adheres to the `Tool` abstract base class with strict safety checks, permission gates, path sanitization, and transaction rollback.
+CoderAI discovers 67 native tools automatically at runtime and registers `manage_context` and `request_plan_amendment` with the agent (69 native tools), plus rare git operations on the bundled `git_extended` MCP server. Each tool adheres to the `Tool` abstract base class with strict safety checks, permission gates, path sanitization, and transaction rollback.
 
 ### Filesystem
 
@@ -285,6 +285,9 @@ CoderAI discovers 61 native tools automatically at runtime and registers `manage
 | `file_stat` | Get detailed file metadata (size, permissions, timestamps) |
 | `file_chmod` | Modify POSIX file permissions |
 | `file_readlink` | Read symlink targets safely |
+| `directory_tree` | Visual directory tree up to a max depth |
+| `read_file_slice` | Read a line range from a file |
+| `workspace_status` | Git changes plus recently modified files |
 
 ### Terminal & Process Management
 
@@ -295,6 +298,7 @@ CoderAI discovers 61 native tools automatically at runtime and registers `manage
 | `list_processes` | List active background processes started by the agent |
 | `kill_process` | Terminate a background process by PID |
 | `read_bg_output` | Read buffered standard output/error from background processes |
+| `write_bg_input` | Write to a tracked background process stdin |
 
 ### Git (Native)
 
@@ -340,6 +344,8 @@ Everyday Git operations remain native and sandboxed.
 | `manage_tasks` | Manage persistent task list (`tasks.json`) with status and priorities |
 | `submit_plan` | Submit structured execution plan in Plan Mode |
 | `use_skill` | Activate a reusable skill workflow |
+| `context_stats` | Token-budget breakdown of the live context window |
+| `export_session` | Write the session transcript as HTML or Markdown |
 
 ### Multi-Agent Delegation
 

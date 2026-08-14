@@ -58,6 +58,8 @@ def test_build_models_text():
     assert "OpenAI" in text
     assert "Meta" in text
     assert "muse-spark-1.1" in text
+    assert "gpt-5.6-sol" in text
+    assert "gpt-5.4-mini" not in text
     assert "Saved default model" in text
 
 

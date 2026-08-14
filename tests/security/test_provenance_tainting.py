@@ -57,7 +57,7 @@ class _InternalTool(Tool):
 def _make_agent(session: Session, registry: ToolRegistry, *, auto_approve: bool = True) -> Any:
     return SimpleNamespace(
         auto_approve=auto_approve,
-        ipc_server=None,
+        approval_port=None,
         tools=registry,
         tracker_info=None,
         session=session,

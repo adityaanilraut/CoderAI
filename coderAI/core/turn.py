@@ -16,20 +16,7 @@ import time
 from typing import Any, Optional
 
 from coderAI.core.objective import ObjectiveState
-
-
-# These operations manage or route the task but are not useful engineering
-# work by themselves.  They can enable a later action, but must not stop the
-# time-to-first-useful-action clock.
-_NON_USEFUL_CONTROL_TOOLS = frozenset(
-    {
-        "internal_recovery",
-        "manage_tasks",
-        "request_plan_amendment",
-        "submit_plan",
-        "use_skill",
-    }
-)
+from coderAI.tools.semantics import semantics_for
 
 
 @dataclass
@@ -101,7 +88,7 @@ class TurnContext:
         """
         if self.first_useful_action_elapsed_ms is not None or not executed:
             return None
-        if tool_name in _NON_USEFUL_CONTROL_TOOLS or tool_name not in self.routed_tool_names:
+        if not semantics_for(tool_name).useful_action or tool_name not in self.routed_tool_names:
             return None
         if not (isinstance(result, dict) and result.get("success") is True):
             return None
