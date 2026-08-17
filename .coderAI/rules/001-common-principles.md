@@ -21,5 +21,6 @@ Apply these principles when they are relevant to the current task and available 
 - **Cite Sources:** Reference specific file paths and line numbers when discussing code changes.
 
 ## 5. Task Workflow
-- **Track multi-step work:** When `manage_tasks` is available, use it for substantial work with three or more meaningful steps.
+- **Track multi-step work:** When `manage_tasks` is available, call it first with `action='add'` and `titles=[...]` for substantial work with three or more meaningful steps. Then inspect only what the current step needs.
 - **Skip task tracking only for trivial asks:** Single-file reads, greetings, one-line answers, and simple lookups do not need a checklist.
+- **Do not dump-read the repository:** Prefer grep/glob to find paths, then read those files. Range-read only when a file is huge or a previous read was truncated.

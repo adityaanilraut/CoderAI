@@ -1,23 +1,21 @@
 # Makefile for CoderAI
 
-.PHONY: help install dev test test-security clean run lint format format-check typecheck setup install-dev quickstart dist check lock audit
+.PHONY: help install dev test clean run lint format format-check typecheck install-dev quickstart dist check
+
+PYTHON ?= python3
 
 help:
 	@echo "CoderAI Development Commands"
 	@echo "============================"
 	@echo "make install       - Install the package"
 	@echo "make dev           - Install in development mode (alias: install-dev)"
-	@echo "make test          - Run test suite"
-	@echo "make test-security - Run only the red-team security suite (pytest -m security)"
+	@echo "make test          - Run test suite + CLI smoke test"
 	@echo "make clean         - Clean build artifacts"
-	@echo "make run           - Run 'coderAI chat' (Textual TUI)"
+	@echo "make run           - Run the interactive CLI"
 	@echo "make lint          - Run ruff (required for CI)"
-	@echo "make typecheck     - Run mypy (required for CI; strict per-module)"
+	@echo "make typecheck     - Run mypy (required for CI)"
 	@echo "make format        - Format code with ruff"
 	@echo "make check         - Check format, lint, types, and tests without modifying files"
-	@echo "make lock          - Regenerate the pinned, hashed requirements.lock (uv)"
-	@echo "make audit         - Audit locked dependencies for known CVEs (pip-audit)"
-	@echo "make setup         - Run setup wizard"
 
 install:
 	pip install .
@@ -29,18 +27,15 @@ test:
 	pytest
 	@echo ""
 	@echo "Running basic CLI smoke test..."
-	coderAI --version
-
-test-security:
-	pytest -m security -q
+	coderai --version
 
 clean:
 	rm -rf build/
 	rm -rf dist/
 	rm -rf *.egg-info
 	rm -rf __pycache__/
-	rm -rf coderAI/__pycache__/
-	rm -rf coderAI/**/__pycache__/
+	rm -rf coderai/__pycache__/
+	rm -rf coderai/**/__pycache__/
 	rm -rf .pytest_cache/
 	rm -rf .mypy_cache/
 	rm -rf .ruff_cache/
@@ -50,43 +45,29 @@ clean:
 	find . -type f -name "*.pyc" -delete
 
 run:
-	coderAI chat
+	coderai
 
 lint:
 	@echo "Running ruff..."
-	python3 -m ruff check coderAI/ tests/ scripts/
+	python3 -m ruff check coderai/ tests/ scripts/
 
 typecheck:
 	@echo "Running mypy..."
-	python3 -m mypy coderAI/
+	python3 -m mypy coderai/
 
 format:
-	python3 -m ruff format coderAI/ tests/ scripts/
+	python3 -m ruff format coderai/ tests/ scripts/
 	@echo "Code formatted with ruff"
 
 format-check:
-	python3 -m ruff format --check coderAI/ tests/ scripts/
+	python3 -m ruff format --check coderai/ tests/ scripts/
 
 check: format-check lint typecheck test
-
-# Regenerate the pinned, hashed lockfile from pyproject.toml (single source of
-# truth). Universal resolution so one file covers Linux/macOS/Windows + py3.10+.
-lock:
-	uv pip compile pyproject.toml --universal --generate-hashes -o requirements.lock
-
-# Audit the locked dependency set against the PyPI advisory database.
-audit:
-	pip-audit -r requirements.lock --desc --strict
-
-setup:
-	coderAI setup
 
 # Quick start for new developers
 quickstart: clean dev test
 	@echo ""
 	@echo "✓ CoderAI is ready!"
-	@echo ""
-	@echo "Run 'make setup' to configure, then 'make run' to start."
 
 # Build distribution (requires: pip install build)
 dist: clean

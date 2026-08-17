@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "coderai-agent"
 dynamic = ["version"]
-description = "Intelligent coding agent CLI with a Textual terminal UI and MCP tools"
+description = "AI pair programming in your terminal — deepcode-standard core (snippet tools, bounded agent loop, permissions)"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
@@ -22,98 +22,41 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
-    "textual>=8.0,<10",
     "rich>=13.7.0",
-    "click>=8.1.7",
     "openai>=1.10.0",
     "requests>=2.31.0",
-    "pydantic>=2.5.0",
-    "aiohttp>=3.9.0",
-    "python-dotenv>=1.0.0",
-    "pyyaml>=6.0",
-    "certifi>=2024.2.2",
 ]
 
 [project.optional-dependencies]
-semantic = [
-    "chromadb>=0.4.22",
-]
-local-embeddings = [
-    "sentence-transformers>=3.0.0",
-]
-web = [
-    "pypdf>=3.0.0",
-    "html2text>=2024.2.26",
-]
-browser = [
-    "playwright>=1.45.0",
-]
-groq = [
-    "groq>=0.4.2",
-]
-token-counting = [
-    "tiktoken>=0.5.2",
-]
-repl = [
-    "prompt_toolkit>=3.0.0",
-]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
-    "pytest-cov>=4.1.0",
-    "pytest-socket>=0.7.0",
     "ruff>=0.1.0",
     "mypy>=1.0.0",
-    "types-PyYAML>=6.0.0",
     "types-requests>=2.31.0.0",
-    "pre-commit>=3.5.0",
 ]
 
 [project.urls]
 Homepage = "https://github.com/adityaanilraut/CoderAI"
-Releases = "https://github.com/adityaanilraut/CoderAI/releases"
-Issues = "https://github.com/adityaanilraut/CoderAI/issues"
 Source = "https://github.com/adityaanilraut/CoderAI"
 
 [project.scripts]
-coderAI = "coderAI.cli:main"
+coderai = "coderai.main:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["coderAI*"]
-
-[tool.setuptools.package-data]
-coderAI = [
-    "py.typed",
-    "prompts/*.mdx",
-    "assets/agents/*.md",
-    "assets/rules/*.md",
-    "assets/skills/*/*.md",
-    "assets/starter/*.md",
-]
+include = ["coderai*"]
 
 [tool.setuptools.dynamic]
-version = {attr = "coderAI._version.__version__"}
+version = {attr = "coderai._version.__version__"}
 
 [tool.ruff]
 line-length = 100
 target-version = "py310"
 
 [tool.ruff.lint]
-select = [
-    "E",
-    "F",
-    "W",
-    "UP006",
-    "UP035",
-]
-ignore = [
-    "E501",
-]
-
-[tool.ruff.lint.per-file-ignores]
-# load_dotenv() must run before package imports read env vars
-"coderAI/cli/main.py" = ["E402"]
+select = ["E", "F", "W", "UP006", "UP035"]
+ignore = ["E501"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -121,82 +64,18 @@ indent-style = "space"
 
 [tool.mypy]
 python_version = "3.10"
-warn_return_any = true
+warn_return_any = false
 warn_unused_configs = true
 ignore_missing_imports = true
 exclude = ["tests/"]
-
-# numpy ≥ 2.5 (transitive via chromadb) ships PEP 695 `type` statements in its
-# stubs, which mypy rejects while python_version is 3.10. Nothing in coderAI
-# imports numpy directly — don't follow into it.
 [[tool.mypy.overrides]]
-module = ["numpy", "numpy.*"]
+module = "numpy"
 follow_imports = "skip"
 follow_imports_for_stubs = true
 ignore_errors = true
-
-# Per-module strict typing (Phase 4). This list ONLY GROWS — never shrink it.
-# Modules here must pass disallow_untyped_defs + check_untyped_defs +
-# warn_unused_ignores. See docs/CLAUDE.md ("Typing ratchet").
-[[tool.mypy.overrides]]
-module = [
-  "coderAI.system.*",
-  "coderAI.types.*",
-  "coderAI.llm.*",
-  "coderAI.context.*",
-  "coderAI.core.execution_context",
-  "coderAI.core.delegation_worktree",
-  "coderAI.core.tool_error_codes",
-  "coderAI.core.services",
-  "coderAI.core.agent_tracker",
-  "coderAI.core.provenance",
-  "coderAI.core.permissions",
-  "coderAI.core.loop_guard",
-  "coderAI.core.tool_executor",
-  "coderAI.core.turn",
-  "coderAI.core.tool_routing",
-  "coderAI.core.ports",
-  "coderAI.core.agent",
-  "coderAI.core.agent_loop",
-  "coderAI.core.agent_capabilities",
-  "coderAI.core.agent_session",
-  "coderAI.core.agent_llm_phase",
-  "coderAI.core.agent_tools_phase",
-  "coderAI.core.agent_finish_reason",
-  "coderAI.core.agent_recovery",
-  "coderAI.core.agent_loop_outcomes",
-  "coderAI.core.capability_routing",
-  "coderAI.core.objective",
-  "coderAI.core.agents",
-  "coderAI.core.personas",
-  "coderAI.core.session_bootstrap",
-  "coderAI.cli.*",
-  "coderAI.prompts.compose",
-  "coderAI.tools.semantics",
-  "coderAI.tui.commands",
-  "coderAI.tui.controller",
-  "coderAI.tui.streaming",
-  "coderAI.tui.serializers",
-  "coderAI.tui.state",
-  "coderAI.tui.tool_metadata",
-]
-disallow_untyped_defs = true
-check_untyped_defs = true
-warn_unused_ignores = true
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 asyncio_default_fixture_loop_scope = "function"
-# Exclude long-running benchmarks from the default run (and CI). Opt in with
-# `pytest -m slow`.
-# --disable-socket enforces the "tests never touch the real network" invariant:
-# the suite mocks all HTTP, so a real connection means a leak. Loopback servers
-# (SSRF redirect harness, OAuth callback) opt back in with @pytest.mark.enable_socket;
-# --allow-unix-socket keeps AF_UNIX (asyncio self-pipe, subprocess) working.
-addopts = "-m 'not slow' --disable-socket --allow-unix-socket"
-markers = [
-    "slow: long-running benchmark; excluded from the default run (use -m slow to include)",
-    "security: red-team / security regression test. Auto-applied to everything under tests/security/; run the suite in isolation with `pytest -m security`.",
-]

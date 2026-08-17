@@ -47,8 +47,6 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# (legacy ui/ package removed — Textual TUI lives in coderAI/tui/)
-
 # Misc
 *.log
 .cache/

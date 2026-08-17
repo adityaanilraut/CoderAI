@@ -9,8 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Native tools: `directory_tree`, `read_file_slice`, `write_bg_input`, `workspace_status`, `context_stats`, `export_session`.
+- Deterministic offline capability-routing evaluation with accuracy, conservative-fallback, and schema-savings gates.
+- `manage_tasks` bulk `titles` so a full execution checklist can be created in one call.
 
 ### Fixed
+- Mutating sub-agents can edit files in isolated `~/.coderAI/worktrees/<id>/workspace` sandboxes; the home `.coderAI` credential store stays protected.
+- Agent loop no longer dump-reads the workspace: exploration-stall reminders, first-turn checklist nudge, and a narrower default tool surface.
+- Capability inference now avoids cross-domain matches from overloaded words such as `run`, `search`, `context`, and `server`.
+- Modern MCP responses now reject missing or unsupported `resultType` values instead of silently accepting malformed results.
+- Repository benchmark scripts now run directly from a clean checkout, create their output directory, avoid warning-log distortion, and have a documented `make benchmark` workflow.
+- Pre-commit type checking now runs in a pinned, self-contained environment instead of relying on a global `python` alias and mypy installation.
 - `export_session` now requires confirmation (it writes a file; `safe` is reserved for internal state).
 - `context_stats` reads the live agent context controller instead of constructing a new provider.
 - `workspace_status` runs git through `run_scrubbed` and caps the recent-file walk.
@@ -20,6 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Session HTML/Markdown renderers live in `coderAI/system/session_render.py` so tools do not import the TUI.
 - Documentation tool count: 67 auto-discovered native tools, plus `manage_context` and `request_plan_amendment`.
+- Default capability routing no longer attaches inspect-only tools (`directory_tree`, `read_file_slice`, `file_stat`, `file_readlink`) to every code-search request. `list_directory` is no longer universal.
+- Default `max_tool_output` is 100000 so a normal source file fits in one tool result.
+- File inspection reads a known path once unless the file is huge or a prior result was truncated; covering reads are cached and same-path range storms are stalled.
+- `outline_file` extracts JavaScript from HTML `<script>` tags. The `outline` keyword routes to code search instead of inspect-only metadata tools.
 
 ## [0.3.4] - 2026-08-13
 

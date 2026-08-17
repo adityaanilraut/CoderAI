@@ -7,19 +7,25 @@ repos:
     hooks:
       # Lint (check-only, matching `make lint` — no autofix so it fails like CI).
       - id: ruff
-        files: ^(coderAI|tests|scripts)/
+        files: ^(coderai|tests|scripts)/
       # Format check + apply.
       - id: ruff-format
-        files: ^(coderAI|tests|scripts)/
+        files: ^(coderai|tests|scripts)/
 
   # mypy runs over the whole package because the per-module strict config needs
   # the full import graph, so it ignores the changed-file list and runs the same
-  # command as CI (`make typecheck`).
+  # target as CI (`make typecheck`). Keep it self-contained so the hook does not
+  # depend on an activated development environment or a `python` shell alias.
   - repo: local
     hooks:
       - id: mypy
         name: mypy (strict per-module)
-        entry: python -m mypy coderAI/
-        language: system
+        entry: mypy coderai/
+        language: python
+        additional_dependencies:
+          - mypy==2.1.0
+          - pydantic==2.13.4
+          - types-PyYAML==6.0.12.20260518
+          - types-requests==2.33.0.20260518
         types: [python]
         pass_filenames: false

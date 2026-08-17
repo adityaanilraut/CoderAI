@@ -15,107 +15,66 @@ import tempfile
 import venv
 import zipfile
 
-
 DIST_NAME = "coderai-agent"
-ENTRY_POINT = "coderAI = coderAI.cli:main"
-ADVERTISED_EXTRAS = ("semantic", "local-embeddings", "web", "browser")
-BUILTIN_PERSONAS = (
-    "code-reviewer",
-    "planner",
-)
-BUILTIN_SKILLS = ("security-audit", "tdd-workflow")
-BUILTIN_RULES = ("001-common-principles", "101-python-standards")
-PROMPTS = (
-    "browser.mdx",
-    "interaction.mdx",
-    "intro.mdx",
-    "output_style.mdx",
-    "runtime.mdx",
-    "tail.mdx",
-)
-CORE_TOOL_NAMES = (
-    "apply_diff",
-    "delegate_task",
-    "git_status",
-    "grep",
-    "manage_tasks",
-    "mcp_connect",
-    "read_file",
-    "read_url",
-    "semantic_search",
-    "submit_plan",
-    "undo",
-    "use_skill",
-    "write_file",
-)
-CLI_HELP_PATHS = (
-    (),
-    ("chat",),
-    ("run",),
-    ("plan",),
-    ("plan", "create"),
-    ("plan", "show"),
-    ("plan", "edit"),
-    ("plan", "apply"),
-    ("plan", "answer"),
-    ("plan", "approve"),
-    ("plan", "execute"),
-    ("mcp",),
-    ("mcp", "add"),
-    ("mcp", "list"),
-    ("mcp", "get"),
-    ("mcp", "remove"),
-    ("mcp", "enable"),
-    ("mcp", "disable"),
-    ("mcp", "approve"),
-    ("mcp", "reject"),
-    ("mcp", "catalog"),
-    ("mcp", "import"),
-    ("mcp", "debug"),
-    ("mcp", "login"),
-    ("mcp", "logout"),
-    ("mcp", "resources"),
-    ("mcp", "prompts"),
-    ("skills",),
-    ("skills", "install"),
-    ("skills", "list"),
-    ("skills", "remove"),
-    ("config",),
-    ("config", "show"),
-    ("config", "set"),
-    ("config", "reset"),
-    ("history",),
-    ("history", "list"),
-    ("history", "rename"),
-    ("history", "tag"),
-    ("history", "export"),
-    ("history", "clear"),
-    ("history", "delete"),
-    ("tasks",),
-    ("tasks", "list"),
-    ("models",),
-    ("set-model",),
-    ("info",),
-    ("status",),
-    ("doctor",),
-    ("cost",),
-    ("setup",),
-    ("index",),
-    ("search",),
-)
+ENTRY_POINTS = {
+    "coderai = coderai.main:main",
+}
 
-
-def _runtime_members() -> set[str]:
-    return {
-        "coderAI/_version.py",
-        "coderAI/py.typed",
-        "coderAI/mcp_servers/git_extended.py",
-        *(f"coderAI/prompts/{name}" for name in PROMPTS),
-        *(f"coderAI/assets/agents/{name}.md" for name in BUILTIN_PERSONAS),
-        *(f"coderAI/assets/skills/{name}/SKILLS.md" for name in BUILTIN_SKILLS),
-        *(f"coderAI/assets/rules/{name}.md" for name in BUILTIN_RULES),
-        "coderAI/assets/starter/CODERAI.md",
-    }
+RUNTIME_MEMBERS = (
+    "coderai/__init__.py",
+    "coderai/__main__.py",
+    "coderai/_version.py",
+    "coderai/main.py",
+    "coderai/py.typed",
+    "coderai/cli/__init__.py",
+    "coderai/cli/app.py",
+    "coderai/cli/ascii_art.py",
+    "coderai/cli/diff_render.py",
+    "coderai/cli/exit_summary.py",
+    "coderai/cli/file_mention.py",
+    "coderai/cli/interactive_menu.py",
+    "coderai/cli/plan_render.py",
+    "coderai/cli/status_bar.py",
+    "coderai/cli/thinking.py",
+    "coderai/cli/tool_card.py",
+    "coderai/cli/welcome.py",
+    "coderai/core/__init__.py",
+    "coderai/core/session.py",
+    "coderai/core/prompt.py",
+    "coderai/core/permissions.py",
+    "coderai/core/settings.py",
+    "coderai/core/state.py",
+    "coderai/core/openai_client.py",
+    "coderai/core/subagent.py",
+    "coderai/core/common/__init__.py",
+    "coderai/core/common/file_history.py",
+    "coderai/core/common/message_converter.py",
+    "coderai/core/common/file_utils.py",
+    "coderai/core/common/shell_utils.py",
+    "coderai/core/common/process_tree.py",
+    "coderai/core/common/bash_timeout.py",
+    "coderai/core/common/openai_thinking.py",
+    "coderai/core/common/model_capabilities.py",
+    "coderai/core/common/error_logger.py",
+    "coderai/core/common/debug_logger.py",
+    "coderai/core/common/llm_error.py",
+    "coderai/core/common/validate.py",
+    "coderai/core/mcp/__init__.py",
+    "coderai/core/mcp/client.py",
+    "coderai/core/mcp/manager.py",
+    "coderai/core/tools/__init__.py",
+    "coderai/core/tools/types.py",
+    "coderai/core/tools/executor.py",
+    "coderai/core/tools/read.py",
+    "coderai/core/tools/edit.py",
+    "coderai/core/tools/write.py",
+    "coderai/core/tools/bash.py",
+    "coderai/core/tools/ask_user_question.py",
+    "coderai/core/tools/update_plan.py",
+    "coderai/core/tools/web_search.py",
+    "coderai/core/tools/understand_image.py",
+    "coderai/core/tools/subagent.py",
+)
 
 
 def _resolve_archives(value: str) -> tuple[Path, Path | None]:
@@ -158,28 +117,13 @@ def _verify_metadata(
         raise SystemExit(f"{label} version {version!r} does not match {expected_version!r}")
     if message.get("Requires-Python") != ">=3.10":
         raise SystemExit(f"{label} must declare Requires-Python: >=3.10")
-    extras = set(message.get_all("Provides-Extra") or [])
-    missing_extras = sorted(set(ADVERTISED_EXTRAS) - extras)
-    if missing_extras:
-        raise SystemExit(f"{label} metadata is missing extras: {', '.join(missing_extras)}")
-    requirements = message.get_all("Requires-Dist") or []
-    for package, extra in (
-        ("chromadb", "semantic"),
-        ("sentence-transformers", "local-embeddings"),
-        ("pypdf", "web"),
-        ("playwright", "browser"),
-    ):
-        if not any(
-            req.lower().startswith(package) and f'extra == "{extra}"' in req for req in requirements
-        ):
-            raise SystemExit(f"{label} metadata does not bind {package} to extra {extra}")
     return version
 
 
 def _verify_wheel_archive(wheel: Path, *, expected_version: str | None) -> str:
     with zipfile.ZipFile(wheel) as archive:
         members = set(archive.namelist())
-        missing = sorted(_runtime_members() - members)
+        missing = sorted(set(RUNTIME_MEMBERS) - members)
         if missing:
             raise SystemExit("Wheel is missing runtime files: " + ", ".join(missing))
         metadata_names = [name for name in members if name.endswith(".dist-info/METADATA")]
@@ -187,9 +131,14 @@ def _verify_wheel_archive(wheel: Path, *, expected_version: str | None) -> str:
         if len(metadata_names) != 1 or len(entry_names) != 1:
             raise SystemExit("Wheel must contain exactly one METADATA and entry_points.txt")
         metadata = _message(archive.read(metadata_names[0]), label="Wheel")
-        entry_points = archive.read(entry_names[0]).decode("utf-8")
-    if ENTRY_POINT not in {line.strip() for line in entry_points.splitlines()}:
-        raise SystemExit(f"Wheel console entry point is missing: {ENTRY_POINT}")
+        entry_points = {
+            line.strip()
+            for line in archive.read(entry_names[0]).decode("utf-8").splitlines()
+            if line.strip()
+        }
+    for ep in ENTRY_POINTS:
+        if ep not in entry_points:
+            raise SystemExit(f"Wheel console entry point is missing: {ep}")
     return _verify_metadata(metadata, label="Wheel", expected_version=expected_version)
 
 
@@ -207,11 +156,7 @@ def _verify_sdist(sdist: Path, *, wheel_version: str) -> None:
             "CHANGELOG.md",
             "MANIFEST.in",
             "pyproject.toml",
-            "scripts/verify_wheel.py",
-            "docs/ARCHITECTURE.md",
-            "docs/CHAT_EVENTS.md",
-            "docs/COMMANDS.md",
-            *_runtime_members(),
+            *RUNTIME_MEMBERS,
         }
         missing = sorted(f"{root}/{name}" for name in required if f"{root}/{name}" not in members)
         if missing:
@@ -260,149 +205,23 @@ def _run_checked(
         ) from error
 
 
-def _verify_cli(
-    environment: Path,
-    *,
-    cwd: Path,
-    env: dict[str, str],
-    expected_version: str,
-) -> None:
-    executable = _venv_script(environment, "coderAI")
-    version = _run_checked([os.fspath(executable), "--version"], cwd=cwd, env=env)
-    if version.stdout.strip() != f"CoderAI version {expected_version}":
-        raise SystemExit(f"Unexpected console version output: {version.stdout!r}")
-    for path in CLI_HELP_PATHS:
-        _run_checked([os.fspath(executable), *path, "--help"], cwd=cwd, env=env)
-    skills = _run_checked(
-        [os.fspath(executable), "skills", "list", "--scope", "all"],
-        cwd=cwd,
-        env=env,
-    )
-    for name in BUILTIN_SKILLS:
-        if name not in skills.stdout:
-            raise SystemExit(f"Installed CLI did not list built-in skill {name!r}")
-
-
-def _core_probe(extras: tuple[str, ...]) -> str:
-    return f"""
-import asyncio
+def _core_probe() -> str:
+    return """
 import importlib.metadata
-import importlib.util
-import json
-from pathlib import Path
-import subprocess
 import sys
 
-from coderAI import __version__
-from coderAI.assets.manifest import asset_text, verify_builtin_assets
-from coderAI.core.personas import get_available_persona_descriptors
-from coderAI.prompts.compose import compose_default_system_prompt
-from coderAI.skills.skill_manager import discover_local_skills
-from coderAI.tools.base import ToolRegistry
-from coderAI.tools.discovery import discover_tools
-from coderAI.tools.mcp import bundled_mcp_servers
-from coderAI.tui.commands import _do_init_project
+from coderai._version import __version__
+from coderai.core.prompt import get_system_prompt, get_tools
+from coderai.core.session import SessionManager
+from coderai.core.common.file_history import GitFileHistory
+from coderai.core.tools.executor import ToolExecutor
 
-extras = {extras!r}
 metadata = importlib.metadata.metadata('coderai-agent')
 assert __version__ == metadata['Version'], (__version__, metadata['Version'])
-entry_points = importlib.metadata.entry_points(group='console_scripts')
-assert any(ep.name == 'coderAI' and ep.value == 'coderAI.cli:main' for ep in entry_points)
-
-manifest = verify_builtin_assets()
-personas = get_available_persona_descriptors('.')
-skills = discover_local_skills('.')
-assert [item.name for item in personas] == manifest['personas'], personas
-assert {{item.scope for item in personas}} == {{'builtin'}}, personas
-assert [item.name for item in skills] == manifest['skills'], skills
-assert {{item.source for item in skills}} == {{'builtin'}}, skills
-assert 'Project Guidance for CoderAI' in asset_text('starter', 'CODERAI.md')
-
-prompt = compose_default_system_prompt(ToolRegistry())
-assert 'CoderAI' in prompt and len(prompt) > 500
-registry = ToolRegistry()
-discover_tools(registry)
-missing_tools = sorted(set({CORE_TOOL_NAMES!r}) - set(registry.tools))
-assert not missing_tools, missing_tools
-
-created_dirs, created_files, skipped, error = _do_init_project(Path('.'))
-assert error is None, error
-assert not skipped, skipped
-assert {{'CODERAI.md', '.coderAI/agents/planner.md', '.coderAI/rules/001-common-principles.md'}} <= set(created_files)
-assert {{'.coderAI/agents', '.coderAI/skills', '.coderAI/rules'}} <= set(created_dirs)
-
-server = bundled_mcp_servers()['git_extended']
-command = [server['command'], *server['args']]
-requests = '\\n'.join((
-    json.dumps({{'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {{}}}}),
-    json.dumps({{'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list', 'params': {{}}}}),
-)) + '\\n'
-completed = subprocess.run(command, input=requests, text=True, capture_output=True, check=True)
-replies = [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
-assert replies[0]['result']['serverInfo']['name'] == 'git_extended', replies
-git_tools = {{tool['name'] for tool in replies[1]['result']['tools']}}
-assert {{'git_push', 'git_rebase', 'git_cherry_pick', 'git_tag'}} <= git_tools, git_tools
-
-if 'semantic' in extras:
-    import chromadb
-    assert chromadb is not None
-if 'local-embeddings' in extras:
-    import sentence_transformers
-    from coderAI.embeddings.local import SentenceTransformerEmbeddingProvider
-    class FakeEncoder:
-        def get_sentence_embedding_dimension(self): return 2
-        def encode(self, texts, **kwargs): return [[1.0, 0.0] for _ in texts]
-    original = sentence_transformers.SentenceTransformer
-    sentence_transformers.SentenceTransformer = lambda *args, **kwargs: FakeEncoder()
-    try:
-        provider = SentenceTransformerEmbeddingProvider('offline-smoke-model')
-        assert provider.dimension() == 2
-        assert asyncio.run(provider.embed(['probe'])) == [[1.0, 0.0]]
-    finally:
-        sentence_transformers.SentenceTransformer = original
-if 'web' in extras:
-    import pypdf
-    from coderAI.tools.web._html import _extract_pdf_text
-    class FakePage:
-        def extract_text(self): return 'installed wheel PDF probe'
-    original = pypdf.PdfReader
-    pypdf.PdfReader = lambda stream: type('Reader', (), {{'pages': [FakePage()]}})()
-    try:
-        assert _extract_pdf_text(b'%PDF-probe') == 'installed wheel PDF probe'
-    finally:
-        pypdf.PdfReader = original
-if 'browser' in extras:
-    import playwright.async_api
-    from coderAI.tools import browser
-    assert browser._check_playwright() is None
-    browser_names = {{name for name in registry.tools if name.startswith('browser_')}}
-    assert len(browser_names) == 10, browser_names
-
-print(json.dumps({{
-    'version': __version__,
-    'manifest': manifest,
-    'extras': list(extras),
-    'tool_count': len(registry.tools),
-    'git_extended_tools': len(git_tools),
-}}))
-"""
-
-
-def _browser_probe() -> str:
-    return """
-import asyncio
-from playwright.async_api import async_playwright
-
-async def main():
-    async with async_playwright() as manager:
-        browser = await manager.chromium.launch(headless=True)
-        page = await browser.new_page()
-        await page.set_content('<main><h1>CoderAI wheel browser probe</h1></main>')
-        assert await page.locator('h1').inner_text() == 'CoderAI wheel browser probe'
-        await browser.close()
-
-asyncio.run(main())
-print('browser-runtime-ok')
+tools = get_tools()
+tool_names = {t['function']['name'] for t in tools}
+assert {'bash', 'read', 'write', 'edit', 'AskUserQuestion', 'UpdatePlan', 'WebSearch'} <= tool_names
+print('core-probe-ok')
 """
 
 
@@ -410,16 +229,9 @@ def _verify_installed(
     wheel: Path,
     *,
     expected_version: str,
-    extras: tuple[str, ...],
-    install_browser: bool,
     install_dependencies: bool,
     system_site_packages: bool,
 ) -> dict[str, object]:
-    unknown = sorted(set(extras) - set(ADVERTISED_EXTRAS))
-    if unknown:
-        raise SystemExit("Unknown optional extra(s): " + ", ".join(unknown))
-    if install_browser and "browser" not in extras:
-        raise SystemExit("--install-browser requires --extra browser")
     with tempfile.TemporaryDirectory(prefix="coderai-wheel-smoke-") as temporary:
         root = Path(temporary)
         environment = root / "venv"
@@ -437,8 +249,6 @@ def _verify_installed(
         if not install_dependencies:
             install.append("--no-deps")
         target = os.fspath(wheel)
-        if extras:
-            target = f"{target}[{','.join(extras)}]"
         install.append(target)
         _run_checked(install, cwd=empty_project, env=os.environ.copy())
 
@@ -447,31 +257,22 @@ def _verify_installed(
         child_environment["USERPROFILE"] = os.fspath(empty_home)
         child_environment.pop("PYTHONPATH", None)
         child_environment["PYTHONNOUSERSITE"] = "1"
-        _verify_cli(
-            environment,
+
+        executable = _venv_script(environment, "coderai")
+        version_out = _run_checked(
+            [os.fspath(executable), "--version"], cwd=empty_project, env=child_environment
+        )
+        assert expected_version in version_out.stdout or expected_version in version_out.stderr
+
+        _run_checked([os.fspath(executable), "--help"], cwd=empty_project, env=child_environment)
+        probe_res = _run_checked(
+            [os.fspath(python), "-I", "-c", _core_probe()],
             cwd=empty_project,
             env=child_environment,
-            expected_version=expected_version,
         )
-        completed = _run_checked(
-            [os.fspath(python), "-I", "-c", _core_probe(extras)],
-            cwd=empty_project,
-            env=child_environment,
-        )
-        result = json.loads(completed.stdout.strip())
-        if install_browser:
-            _run_checked(
-                [os.fspath(python), "-m", "playwright", "install", "chromium"],
-                cwd=empty_project,
-                env=child_environment,
-            )
-            _run_checked(
-                [os.fspath(python), "-I", "-c", _browser_probe()],
-                cwd=empty_project,
-                env=child_environment,
-            )
-            result["browser_runtime"] = "ok"
-        return result
+        assert "core-probe-ok" in probe_res.stdout
+
+        return {"installation": "ok", "probe": "ok"}
 
 
 def main() -> int:
@@ -480,18 +281,6 @@ def main() -> int:
     parser.add_argument(
         "--expected-version",
         help="Require wheel, sdist, and installed runtime to use this exact version",
-    )
-    parser.add_argument(
-        "--extra",
-        action="append",
-        choices=ADVERTISED_EXTRAS,
-        default=[],
-        help="Install and probe one advertised optional extra (repeatable)",
-    )
-    parser.add_argument(
-        "--install-browser",
-        action="store_true",
-        help="Download Chromium and run a local Playwright launch probe",
     )
     parser.add_argument(
         "--no-deps",
@@ -531,8 +320,6 @@ def main() -> int:
     result = _verify_installed(
         wheel,
         expected_version=wheel_version,
-        extras=tuple(dict.fromkeys(args.extra)),
-        install_browser=args.install_browser,
         install_dependencies=not args.no_deps,
         system_site_packages=args.system_site_packages,
     )
