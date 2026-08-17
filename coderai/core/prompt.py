@@ -7,6 +7,8 @@ current turn) is appended after it, so provider prompt caches hit on every turn.
 
 from __future__ import annotations
 
+import datetime
+import json
 import pathlib
 import platform
 import re
@@ -111,9 +113,7 @@ The summary should include:
 
 
 def get_extension_root() -> str:
-    import coderai
-
-    return coderai.__file__.rsplit("/", 1)[0] if coderai.__file__ else "."
+    return str(pathlib.Path(__file__).resolve().parent.parent)
 
 
 def get_plan_mode_prompt() -> str:
@@ -395,6 +395,8 @@ Analyze a local image (JPEG/PNG/WebP)."""
 def get_system_prompt(options: dict[str, Any] | None = None) -> str:
     options = options or {}
     docs = TOOL_DOCS
+    if options.get("nonInteractive") is True:
+        docs = re.sub(r"\n## AskUserQuestion\n.*?(?=\n## |\Z)", "", docs, flags=re.S)
     return f"{SYSTEM_PROMPT_BASE}\n\n{docs}"
 
 
@@ -416,51 +418,56 @@ def get_compact_prompt(session_messages: list[Any]) -> str:
 
 
 def json_dumps(obj: Any) -> str:
-    import json
-
     return json.dumps(obj, ensure_ascii=False)
 
 
 def get_runtime_context(project_root: str, model: str | None = None) -> str:
-    parts = [
-        f"root path: {project_root}",
-        f"pwd: {project_root}",
-        f"system info: {platform.system()} {platform.release()} {platform.machine()}",
-        f"shell path: {_shell_path()}",
-    ]
+    """Stable workspace env prefix (no git status / project docs — those are volatile)."""
+    today = datetime.date.today().isoformat()
+    header = f"Today is {today}."
+    if model:
+        header = f"Current LLM model: {model}. {header}"
+    env: dict[str, Any] = {
+        "root path": project_root,
+        "pwd": project_root,
+        "homedir": str(pathlib.Path.home()),
+        "system info": f"{platform.system()} {platform.release()} {platform.machine()}",
+        "shell path": _shell_path(),
+    }
     py = _version("python3", ["--version"])
     if py:
-        parts.append(f"python3 version: {py}")
-    git = _git_status(project_root)
-    if git:
-        parts.append(git)
-    if model:
-        parts.insert(0, f"Current LLM model: {model}.")
+        env["python3 version"] = py
+    return f"{header}\n\n# Local Workspace Environment\n\n```json\n{json.dumps(env, indent=2)}\n```"
 
-    guidance = _project_guidance(project_root)
-    if guidance:
-        parts.append(guidance)
 
-    return "\n".join(parts)
+def load_agent_instructions(project_root: str) -> str | None:
+    """Load AGENTS.md / CODERAI.md / CLAUDE.md as a separate (still-prefix) system message."""
+    root = pathlib.Path(project_root)
+    home = pathlib.Path.home()
+    candidates = [
+        root / ".coderai" / "AGENTS.md",
+        root / ".coderAI" / "AGENTS.md",
+        root / "AGENTS.md",
+        root / ".coderai" / "CODERAI.md",
+        root / ".coderAI" / "CODERAI.md",
+        root / "CODERAI.md",
+        root / "CLAUDE.md",
+        home / ".coderai" / "AGENTS.md",
+    ]
+    for path in candidates:
+        if not path.is_file():
+            continue
+        try:
+            content = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if content:
+            return f"--- Project Instructions ({path.name}) ---\n{content[:8000]}"
+    return None
 
 
 def _project_guidance(project_root: str) -> str | None:
-    for fname in (
-        "AGENTS.md",
-        ".coderai/AGENTS.md",
-        "CODERAI.md",
-        ".coderai/CODERAI.md",
-        "CLAUDE.md",
-    ):
-        p = pathlib.Path(project_root) / fname
-        if p.is_file():
-            try:
-                content = p.read_text(encoding="utf-8").strip()
-                if content:
-                    return f"\n--- Project Instructions ({fname}) ---\n{content[:8000]}"
-            except Exception:
-                pass
-    return None
+    return load_agent_instructions(project_root)
 
 
 def _shell_path() -> str:
@@ -478,22 +485,6 @@ def _version(command: str, args: list[str]) -> str | None:
     except Exception:
         return None
     return None
-
-
-def _git_status(project_root: str) -> str | None:
-    try:
-        out = subprocess.run(
-            ["git", "status", "--porcelain"],
-            cwd=project_root,
-            capture_output=True,
-            text=True,
-            timeout=3,
-        )
-        if out.returncode != 0:
-            return None
-        return "git status:\n" + (out.stdout.strip()[:2000] or "clean")
-    except Exception:
-        return None
 
 
 # --- skills (lazily-loaded context) ---
@@ -559,7 +550,7 @@ def list_skill_resource_files(
         if any(p in SKILL_RESOURCE_EXCLUDED_DIRS or p.startswith(".") for p in parts):
             continue
         rel = "/".join(parts)
-        if rel == "SKILL.md":
+        if rel in ("SKILL.md", "SKILLS.md"):
             continue
         if len(files) >= limit:
             truncated = True
@@ -599,64 +590,172 @@ def build_skill_documents_prompt(skills: list[dict[str, Any]]) -> str:
     return "Use the skill documents below to assist the user:\n" + "\n\n".join(blocks)
 
 
-def list_skills(project_root: str | None = None) -> list[dict[str, str]]:
-    """List bundled + project skills. Each is {"name", "path", "description"}."""
-    roots: list[str] = []
-    bundled = pathlib.Path(__file__).parent.parent / "skills"
-    if bundled.is_dir():
-        roots.append(str(bundled))
+def get_bundled_skills_root() -> str:
+    return str(pathlib.Path(get_extension_root()) / "skills")
+
+
+def get_skill_scan_roots(project_root: str | None = None) -> list[tuple[str, str]]:
+    """Return (filesystem_root, display_root) pairs. First match wins by skill name."""
+    home = pathlib.Path.home()
+    roots: list[tuple[str, str]] = []
     if project_root:
-        roots.append(str(pathlib.Path(project_root) / ".coderai" / "skills"))
-    skills: list[dict[str, str]] = []
-    seen: set[str] = set()
-    for root in roots:
-        p = pathlib.Path(root)
-        if not p.is_dir():
+        root = pathlib.Path(project_root)
+        roots.extend(
+            [
+                (str(root / ".coderai" / "skills"), "./.coderai/skills"),
+                (str(root / ".coderAI" / "skills"), "./.coderAI/skills"),
+                (str(root / ".agents" / "skills"), "./.agents/skills"),
+            ]
+        )
+    roots.extend(
+        [
+            (str(home / ".coderai" / "skills"), "~/.coderai/skills"),
+            (str(home / ".agents" / "skills"), "~/.agents/skills"),
+            (get_bundled_skills_root(), "bundled:"),
+        ]
+    )
+    return roots
+
+
+def get_skill_read_exempt_paths(project_root: str | None = None) -> list[str]:
+    return [root for root, _ in get_skill_scan_roots(project_root)]
+
+
+def _skill_markdown_path(skill_dir: pathlib.Path) -> pathlib.Path | None:
+    for filename in ("SKILL.md", "SKILLS.md"):
+        candidate = skill_dir / filename
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _implicit_invocation_allowed(meta: dict[str, str]) -> bool:
+    raw = meta.get("allow-implicit-invocation") or meta.get("allow_implicit_invocation") or ""
+    if not raw:
+        return True
+    return raw.strip().lower() not in ("false", "0", "no")
+
+
+def list_skills(
+    project_root: str | None = None,
+    enabled_skills: dict[str, bool] | None = None,
+) -> list[dict[str, Any]]:
+    """List bundled + project + user skills. First-wins by name."""
+    enabled = enabled_skills or {}
+    skills_by_name: dict[str, dict[str, Any]] = {}
+    for root, display_root in get_skill_scan_roots(project_root):
+        path = pathlib.Path(root)
+        if not path.is_dir():
             continue
-        for skill_dir in sorted(p.iterdir()):
-            skill_file = skill_dir / "SKILL.md"
-            if skill_file.is_file():
-                name = skill_dir.name
-                if name not in seen:
-                    seen.add(name)
-                    raw_content = skill_file.read_text(encoding="utf-8", errors="replace")
-                    meta = extract_skill_frontmatter(raw_content)
-                    desc = meta.get("description", "")
-                    skills.append({"name": name, "path": str(skill_file), "description": desc})
-    return skills
+        try:
+            entries = sorted(path.iterdir(), key=lambda p: p.name.lower())
+        except OSError:
+            continue
+        for skill_dir in entries:
+            if not skill_dir.is_dir():
+                continue
+            skill_file = _skill_markdown_path(skill_dir)
+            if skill_file is None:
+                continue
+            try:
+                raw_content = skill_file.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            meta = extract_skill_frontmatter(raw_content)
+            name = (meta.get("name") or "").strip() or skill_dir.name.replace("_", "-")
+            if name in skills_by_name:
+                continue
+            if enabled.get(name) is False:
+                continue
+            location = (
+                f"bundled:{skill_dir.name}/{skill_file.name}"
+                if display_root == "bundled:"
+                else f"{display_root}/{skill_dir.name}/{skill_file.name}"
+            )
+            skills_by_name[name] = {
+                "name": name,
+                "path": str(skill_file),
+                "location": location,
+                "description": meta.get("description", ""),
+                "allowImplicitInvocation": _implicit_invocation_allowed(meta),
+            }
+    return sorted(skills_by_name.values(), key=lambda s: str(s["name"]))
 
 
 def load_skill(name: str, project_root: str | None = None) -> dict[str, Any] | None:
+    needle = name.strip().lower()
     for skill in list_skills(project_root):
-        if skill["name"] == name:
+        if skill["name"].lower() == needle:
             try:
                 content = _read(skill["path"])
                 return {
-                    "name": name,
+                    "name": skill["name"],
                     "content": content,
                     "path": skill["path"],
                     "skillFilePath": skill["path"],
+                    "location": skill.get("location", ""),
                     "description": skill.get("description", ""),
+                    "allowImplicitInvocation": skill.get("allowImplicitInvocation", True),
                 }
-            except Exception:
+            except OSError:
                 return None
     return None
 
 
 def match_skills_for_prompt(
-    user_prompt: str, project_root: str | None = None
-) -> list[dict[str, str]]:
+    user_prompt: str,
+    project_root: str | None = None,
+    enabled_skills: dict[str, bool] | None = None,
+    loaded_names: set[str] | None = None,
+) -> list[dict[str, Any]]:
     """Match skills automatically based on user prompt query terms and skill descriptions."""
     if not user_prompt.strip():
         return []
+    loaded = {n.lower() for n in (loaded_names or set())}
     prompt_tokens = set(re.findall(r"\w+", user_prompt.lower()))
-    matched: list[dict[str, str]] = []
-    for skill in list_skills(project_root):
+    matched: list[dict[str, Any]] = []
+    for skill in list_skills(project_root, enabled_skills=enabled_skills):
+        if skill["name"].lower() in loaded:
+            continue
+        if skill.get("allowImplicitInvocation") is False:
+            continue
         name_tokens = set(re.findall(r"\w+", skill["name"].lower()))
-        desc_tokens = set(re.findall(r"\w+", skill.get("description", "").lower()))
-        if (name_tokens & prompt_tokens) or (desc_tokens & prompt_tokens):
+        desc_tokens = {
+            t for t in re.findall(r"\w+", skill.get("description", "").lower()) if len(t) >= 4
+        }
+        significant = {t for t in prompt_tokens if len(t) >= 4}
+        if (name_tokens & prompt_tokens) or (desc_tokens & significant):
             matched.append(skill)
     return matched
+
+
+def parse_skill_match_response(raw: str, candidate_names: set[str]) -> list[str]:
+    """Parse an LLM skill-match JSON object into known candidate names."""
+    if not raw.strip():
+        return []
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start < 0 or end <= start:
+            return []
+        try:
+            parsed = json.loads(raw[start : end + 1])
+        except (ValueError, TypeError):
+            return []
+    names = parsed.get("skillNames") if isinstance(parsed, dict) else None
+    if not isinstance(names, list):
+        return []
+    allowed = {n.lower(): n for n in candidate_names}
+    result: list[str] = []
+    for item in names:
+        if not isinstance(item, str):
+            continue
+        canonical = allowed.get(item.strip().lower())
+        if canonical and canonical not in result:
+            result.append(canonical)
+    return result
 
 
 def _read(path: str) -> str:

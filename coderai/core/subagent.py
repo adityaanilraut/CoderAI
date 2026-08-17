@@ -211,7 +211,7 @@ class SubAgentManager:
         """Run the isolated agentic loop for the sub-agent."""
         client_info = self.create_openai_client()
         client = client_info.get("client")
-        model = str(client_info.get("model") or "gpt-4o")
+        model = str(client_info.get("model") or "gpt-5.6-luna")
         base_url = client_info.get("baseURL")
         temperature = client_info.get("temperature")
         thinking_enabled = bool(client_info.get("thinkingEnabled"))

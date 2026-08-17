@@ -30,6 +30,7 @@ from coderai.cli.tool_card import render_tool_card
 from coderai.cli.welcome import render_welcome_screen
 from coderai.core.openai_client import create_openai_client as _core_client
 from coderai.core.permissions import append_project_permission_allows
+from coderai.core.prompt import load_skill
 from coderai.core.session import SessionManager, SessionMessage
 
 try:
@@ -402,6 +403,7 @@ def _render_help_menu() -> None:
         table.add_row("/resume <id>", "Resume an existing session by ID directly")
         table.add_row("/new", "Start a fresh session")
         table.add_row("/skills", "Explore active and discovered skills")
+        table.add_row("/skill <name>", "Load a skill into the current session")
         table.add_row("/help", "Show this command help menu")
         table.add_row("/exit, /quit", "Exit session with summary card")
         console.print(table)
@@ -416,6 +418,7 @@ def _render_help_menu() -> None:
         print("  /resume <id>   Resume an existing session by ID")
         print("  /new           Start a fresh session")
         print("  /skills        List active and workspace skills")
+        print("  /skill <name>  Load a skill into the current session")
         print("  /help          Show this help menu")
         print("  /exit, /quit   Quit CoderAI\n")
 
@@ -451,12 +454,39 @@ def _show_diff(mgr: SessionManager, session_id: str | None) -> None:
     render_diff_preview(console, diff_output, title="Session File Diffs")
 
 
+def _queue_skill(
+    mgr: SessionManager,
+    ui_console: Any,
+    name: str,
+    pending_skills: list[str],
+    *,
+    quiet_unknown: bool = False,
+) -> bool:
+    if not name.strip():
+        print("Usage: /skill <name>")
+        return False
+    skill = load_skill(name, mgr.project_root)
+    if not skill:
+        if not quiet_unknown:
+            print(f"Unknown skill: {name}")
+        return False
+    if skill["name"] not in pending_skills:
+        pending_skills.append(skill["name"])
+    loaded_msg = f"Skill '{skill['name']}' ready."
+    if ui_console is not None and _RICH:
+        ui_console.print(f"[bold green]{loaded_msg}[/]")
+    else:
+        print(loaded_msg)
+    return True
+
+
 async def _run_interactive(
     mgr: SessionManager, yes: bool, resume: str | None, plan_mode: bool = False
 ) -> int:
     """Interactive REPL with rich welcome screen, dynamic status bar, and command selectors."""
     session_id = resume
     active_plan_mode = plan_mode
+    pending_skills: list[str] = []
     if session_id and mgr.get_session(session_id) is None:
         print(f"No saved session with id '{session_id}'.")
         return 1
@@ -575,6 +605,13 @@ async def _run_interactive(
                     render_skills_interactive(console, mgr.project_root)
                     continue
 
+                if cmd == "/skill":
+                    if _queue_skill(mgr, console, cmd_arg, pending_skills):
+                        if session_id:
+                            mgr.inject_skills(session_id, pending_skills)
+                            pending_skills.clear()
+                    continue
+
                 if cmd == "/undo":
                     if session_id and mgr.undo(session_id):
                         if console is not None and _RICH:
@@ -609,6 +646,13 @@ async def _run_interactive(
                         print(f"Resumed session {session_id}.")
                     continue
 
+                skill_alias = cmd.lstrip("/")
+                if _queue_skill(mgr, console, skill_alias, pending_skills, quiet_unknown=True):
+                    if session_id:
+                        mgr.inject_skills(session_id, pending_skills)
+                        pending_skills.clear()
+                    continue
+
                 print(f"Unknown command: {raw}. Type /help for available commands.")
                 continue
 
@@ -624,9 +668,17 @@ async def _run_interactive(
 
             _STREAM_STATE.reset()
             if session_id is None:
-                session_id = await mgr.create_session(effective_prompt, plan_mode=active_plan_mode)
+                session_id = await mgr.create_session(
+                    effective_prompt, plan_mode=active_plan_mode, skills=pending_skills or None
+                )
             else:
-                await mgr.reply_session(session_id, effective_prompt, plan_mode=active_plan_mode)
+                await mgr.reply_session(
+                    session_id,
+                    effective_prompt,
+                    plan_mode=active_plan_mode,
+                    skills=pending_skills or None,
+                )
+            pending_skills.clear()
 
             await _drain_pending_interactions(mgr, session_id, yes)
     finally:

@@ -490,7 +490,7 @@ def _correct_escaped_strings_with_llm(
         client = info.get("client")
         if not client:
             return None
-        model = info.get("model", "gpt-4o")
+        model = info.get("model", "gpt-5.6-luna")
         problem = _describe_correction_problems(old_string, matched_text)
 
         response = _call_completions(
@@ -595,7 +595,7 @@ def _infer_old_string_not_found_reason_with_llm(
         client = info.get("client")
         if not client:
             return None
-        model = info.get("model", "gpt-4o")
+        model = info.get("model", "gpt-5.6-luna")
         lines = raw.splitlines()
         before = "\n".join(
             lines[max(0, scope["start_line"] - 1 - 20) : max(0, scope["start_line"] - 1)]

@@ -575,6 +575,51 @@ async def test_tool_executor_cancellation(tmp_path: pathlib.Path):
     assert len(results) == 0
 
 
+@pytest.mark.asyncio
+async def test_tool_executor_dispatches_mcp_tools(tmp_path: pathlib.Path):
+    class FakeMcp:
+        def is_mcp_tool(self, name: str) -> bool:
+            return name.startswith("mcp__")
+
+        async def execute_mcp_tool(self, name: str, args: dict[str, Any]) -> ToolResult:
+            return ToolResult(ok=True, name=name, output=f"mcp:{args.get('q')}")
+
+    executor = ToolExecutor(project_root=str(tmp_path), mcp_manager=FakeMcp())
+    results = await executor.execute_tool_calls(
+        "mcp-sess",
+        [
+            {
+                "id": "call_mcp",
+                "type": "function",
+                "function": {
+                    "name": "mcp__memory__search",
+                    "arguments": json.dumps({"q": "hello"}),
+                },
+            }
+        ],
+    )
+    assert len(results) == 1
+    assert results[0]["result"]["ok"] is True
+    assert results[0]["result"]["output"] == "mcp:hello"
+
+    missing = ToolExecutor(project_root=str(tmp_path))
+    unknown = await missing.execute_tool_calls(
+        "mcp-sess",
+        [
+            {
+                "id": "call_mcp",
+                "type": "function",
+                "function": {
+                    "name": "mcp__memory__search",
+                    "arguments": "{}",
+                },
+            }
+        ],
+    )
+    assert unknown[0]["result"]["ok"] is False
+    assert "Unknown tool" in (unknown[0]["result"]["error"] or "")
+
+
 # ==========================================
 # 8. MCP Client & Manager
 # ==========================================

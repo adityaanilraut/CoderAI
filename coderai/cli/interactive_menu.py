@@ -27,10 +27,10 @@ CURATED_MODELS: list[tuple[str, str, str]] = [
     # OpenAI GPT-5.6 Tiered Series & Reasoning
     ("gpt-5.6-sol", "Flagship Tier: Deep reasoning, complex agentic coding", "OpenAI GPT-5.6"),
     ("gpt-5.6-terra", "Balanced Tier: Everyday coding, cost/speed balanced", "OpenAI GPT-5.6"),
-    ("gpt-5.6-luna", "Fast Tier: Ultra-low latency, inline edits & suggestions", "OpenAI GPT-5.6"),
+    ("gpt-5.6-luna", "Fast Tier: Ultra-low latency, inline edits & suggestions (Default)", "OpenAI GPT-5.6"),
     ("o3-mini", "Deep multi-step reasoning with thinking traces", "OpenAI Reasoning"),
     ("o1", "Deep reasoning for complex algorithms", "OpenAI Reasoning"),
-    ("gpt-4o", "Standard multimodal legacy tier (Default)", "OpenAI Legacy"),
+    ("gpt-4o", "Standard multimodal legacy tier", "OpenAI Legacy"),
     ("gpt-4o-mini", "Fast, lightweight multimodal legacy tier", "OpenAI Legacy"),
     # Anthropic Claude (Hybrid Reasoning)
     ("claude-3-7-sonnet", "Flagship hybrid reasoning with extended thinking", "Anthropic Claude"),

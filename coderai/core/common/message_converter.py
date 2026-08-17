@@ -32,7 +32,7 @@ class OpenAIMessageConverter:
         active_messages = [m for m in messages if not getattr(m, "compacted", False)]
         tool_pairings = self._pair_tool_messages(active_messages)
 
-        target_model = model or "gpt-4o"
+        target_model = model or "gpt-5.6-luna"
         openai_messages: list[dict[str, Any]] = []
 
         for index, message in enumerate(active_messages):

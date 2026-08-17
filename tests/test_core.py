@@ -13,14 +13,21 @@ from coderai.core.permissions import (
     PLAN_MODE_FORCE_ASK_SCOPES,
     compute_tool_call_permissions,
     evaluate_permission_scopes,
+    resolve_snippet_file_path,
 )
 from coderai.core.prompt import (
     build_skill_documents_prompt,
     extract_skill_frontmatter,
     get_plan_mode_prompt,
     get_runtime_context,
+    get_system_prompt,
     get_tools,
     list_skill_resource_files,
+    list_skills,
+    load_agent_instructions,
+    load_skill,
+    match_skills_for_prompt,
+    parse_skill_match_response,
     strip_skill_prompt_metadata,
 )
 from coderai.core.session import SessionManager, SessionMessage
@@ -561,11 +568,20 @@ def test_plan_mode_prompt_and_runtime_guidance(tmp_path: pathlib.Path):
     assert "<proposed_plan>" in plan_prompt
     assert "Plan Mode" in plan_prompt
 
-    # Test AGENTS.md scanning
     agents_file = tmp_path / "AGENTS.md"
     agents_file.write_text("Project specific coding instructions.")
     ctx = get_runtime_context(str(tmp_path), "gpt-4o")
-    assert "Project specific coding instructions" in ctx
+    assert "gpt-4o" in ctx
+    assert "Local Workspace Environment" in ctx
+    assert "Project specific coding instructions" not in ctx
+    instructions = load_agent_instructions(str(tmp_path))
+    assert instructions is not None
+    assert "Project specific coding instructions" in instructions
+
+    interactive_prompt = get_system_prompt()
+    assert "## AskUserQuestion" in interactive_prompt
+    non_interactive_prompt = get_system_prompt({"nonInteractive": True})
+    assert "## AskUserQuestion" not in non_interactive_prompt
 
 
 def test_mcp_manager_basics():
@@ -1056,3 +1072,276 @@ async def test_session_interruption_control(
     assert mgr.is_interrupted(sid) is True
     entry = mgr.get_session(sid)
     assert entry is None or entry.status == "interrupted"
+
+
+def test_skill_discovery_paths_and_enabled_filter(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+
+    canonical = tmp_path / ".coderai" / "skills" / "tdd-workflow"
+    canonical.mkdir(parents=True)
+    (canonical / "SKILL.md").write_text(
+        "---\nname: tdd-workflow\ndescription: Drive changes with tests first\n"
+        "allow-implicit-invocation: true\n---\n# TDD\n"
+    )
+    legacy = tmp_path / ".coderAI" / "skills" / "security-audit"
+    legacy.mkdir(parents=True)
+    (legacy / "SKILLS.md").write_text(
+        "---\nname: security-audit\ndescription: Audit code for security issues\n---\n# Audit\n"
+    )
+    manual = tmp_path / ".coderai" / "skills" / "manual-only"
+    manual.mkdir()
+    (manual / "SKILL.md").write_text(
+        "---\nname: manual-only\ndescription: Manual skill\n"
+        "allow-implicit-invocation: false\n---\n# Manual\n"
+    )
+
+    skills = list_skills(str(tmp_path))
+    names = {s["name"] for s in skills}
+    assert {"tdd-workflow", "security-audit", "manual-only"} <= names
+    locations = {s["name"]: s["location"] for s in skills}
+    assert locations["tdd-workflow"].endswith("SKILL.md")
+    assert locations["security-audit"].endswith("SKILLS.md")
+
+    filtered = list_skills(str(tmp_path), enabled_skills={"manual-only": False})
+    assert "manual-only" not in {s["name"] for s in filtered}
+
+    matched = match_skills_for_prompt("please use tdd-workflow on this repo", str(tmp_path))
+    assert any(s["name"] == "tdd-workflow" for s in matched)
+    assert all(s["name"] != "manual-only" for s in matched)
+
+    parsed = parse_skill_match_response(
+        '{"skillNames": ["tdd-workflow", "missing"]}',
+        {"tdd-workflow", "security-audit"},
+    )
+    assert parsed == ["tdd-workflow"]
+
+
+def test_edit_permission_resolves_snippet_path(tmp_path: pathlib.Path):
+    sid = "perm_snip"
+    clear_session_state(sid)
+    target = tmp_path / "inside.py"
+    target.write_text("x = 1\n")
+    sn = create_snippet(sid, str(target), 1, 1, "x = 1")
+    assert sn is not None
+
+    plan = compute_tool_call_permissions(
+        session_id=sid,
+        project_root=str(tmp_path),
+        tool_calls=[
+            {
+                "id": "call_edit",
+                "type": "function",
+                "function": {
+                    "name": "edit",
+                    "arguments": json.dumps(
+                        {
+                            "snippet_id": sn.id,
+                            "old_string": "x = 1",
+                            "new_string": "x = 2",
+                        }
+                    ),
+                },
+            }
+        ],
+        settings={"allow": [], "deny": [], "ask": ["write-in-cwd"], "defaultMode": "allowAll"},
+        resolve_snippet_path=resolve_snippet_file_path,
+    )
+    assert plan["askPermissions"]
+    assert plan["askPermissions"][0]["toolCallId"] == "call_edit"
+    assert plan["askPermissions"][0]["scopes"] == ["write-in-cwd"]
+
+
+def test_task_general_forced_ask_in_plan_mode():
+    plan = compute_tool_call_permissions(
+        session_id="s",
+        project_root="/tmp",
+        tool_calls=[
+            {
+                "id": "call_task",
+                "type": "function",
+                "function": {
+                    "name": "Task",
+                    "arguments": json.dumps(
+                        {
+                            "description": "edit files",
+                            "prompt": "change code",
+                            "mode": "general",
+                        }
+                    ),
+                },
+            }
+        ],
+        settings={"allow": [], "deny": [], "ask": [], "defaultMode": "allowAll"},
+        force_ask_scopes=PLAN_MODE_FORCE_ASK_SCOPES,
+    )
+    assert plan["askPermissions"]
+    assert plan["askPermissions"][0]["toolCallId"] == "call_task"
+
+
+def test_settings_enabled_skills_and_mcp_env(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+):
+    from coderai.core.settings import resolve_current_settings
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    (home / ".coderai").mkdir()
+    (home / ".coderai" / "settings.json").write_text(
+        json.dumps(
+            {
+                "enabledSkills": {"alpha": True, "beta": False},
+                "mcpServers": {"echo": {"command": "echo", "env": {"USER_KEY": "u"}}},
+            }
+        )
+    )
+    project = tmp_path / "proj"
+    (project / ".coderai").mkdir(parents=True)
+    (project / ".coderai" / "settings.json").write_text(
+        json.dumps(
+            {
+                "enabledSkills": {"beta": True, "gamma": False},
+                "mcpServers": {"echo": {"command": "echo", "env": {"PROJ_KEY": "p"}}},
+            }
+        )
+    )
+    from coderai.core.settings import DEFAULT_MODEL
+
+    assert DEFAULT_MODEL == "gpt-5.6-luna"
+    settings = resolve_current_settings(str(project))
+    assert settings["model"] == "gpt-5.6-luna"
+    assert settings["enabledSkills"]["alpha"] is True
+    assert settings["enabledSkills"]["beta"] is True
+    assert settings["enabledSkills"]["gamma"] is False
+    assert settings["mcpServers"]["echo"]["env"]["USER_KEY"] == "u"
+    assert settings["mcpServers"]["echo"]["env"]["PROJ_KEY"] == "p"
+
+
+@pytest.mark.asyncio
+async def test_session_injects_matched_skills_after_user_turn(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+
+    skill_dir = tmp_path / ".coderai" / "skills" / "tdd-workflow"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: tdd-workflow\ndescription: Drive changes with tests first\n---\n# TDD body\n"
+    )
+
+    class Completions:
+        def create(self, **kwargs):
+            return _resp("Done.")
+
+    class Chat:
+        completions = Completions()
+
+    class Client:
+        chat = Chat()
+
+    mgr = SessionManager(
+        project_root=str(tmp_path),
+        create_openai_client=lambda: {
+            "client": Client(),
+            "model": "gpt-4o",
+            "thinkingEnabled": False,
+        },
+        get_resolved_settings=lambda: {
+            "model": "gpt-4o",
+            "permissions": {
+                "allow": [],
+                "deny": [],
+                "ask": [],
+                "defaultMode": "allowAll",
+            },
+            "enabledSkills": {},
+        },
+    )
+    assert mgr.tool_executor.mcp_manager is mgr.mcp_manager
+
+    sid = await mgr.create_session("please follow tdd-workflow for this change")
+    messages = mgr.list_session_messages(sid)
+    roles = [m.role for m in messages]
+    assert roles[:2] == ["system", "system"]
+    skill_msgs = [m for m in messages if m.role == "system" and (m.meta or {}).get("skill")]
+    assert skill_msgs
+    assert skill_msgs[0].meta["skill"]["name"] == "tdd-workflow"
+    assert "<tdd-workflow-skill" in skill_msgs[0].content
+    user_idx = next(i for i, m in enumerate(messages) if m.role == "user")
+    skill_idx = next(
+        i for i, m in enumerate(messages) if m.role == "system" and (m.meta or {}).get("skill")
+    )
+    assert skill_idx > user_idx
+
+    loaded = load_skill("tdd-workflow", str(tmp_path))
+    assert loaded is not None
+    mgr.inject_skills(sid, ["tdd-workflow"])
+    assert sum(1 for m in mgr.list_session_messages(sid) if (m.meta or {}).get("skill")) == 1
+
+
+@pytest.mark.asyncio
+async def test_compaction_preserves_prefix_and_records_tokens(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+
+    calls = {"n": 0}
+
+    def script(_calls, kwargs):
+        _calls["n"] += 1
+        messages = kwargs.get("messages") or []
+        if messages and "Primary Request" in str(messages[0].get("content", "")):
+            return _resp("<analysis>skip</analysis>\nCompact summary here.")
+        return _resp("Done.")
+
+    class Completions:
+        def create(self, **kwargs):
+            return script(calls, kwargs)
+
+    class Chat:
+        completions = Completions()
+
+    class Client:
+        chat = Chat()
+
+    mgr = SessionManager(
+        project_root=str(tmp_path),
+        create_openai_client=lambda: {
+            "client": Client(),
+            "model": "gpt-4o",
+            "thinkingEnabled": False,
+        },
+        get_resolved_settings=lambda: {
+            "model": "gpt-4o",
+            "permissions": {
+                "allow": [],
+                "deny": [],
+                "ask": [],
+                "defaultMode": "allowAll",
+            },
+        },
+    )
+    sid = await mgr.create_session("start")
+    for i in range(6):
+        mgr._append_message(mgr._build_message(sid, "user", f"turn {i}"))
+        mgr._append_message(mgr._build_assistant(sid, f"ack {i}", None))
+
+    before = mgr.list_session_messages(sid)
+    prefix_ids = [m.id for m in before if m.role == "system"][:2]
+    await mgr._compact_session(sid)
+    after = mgr.list_session_messages(sid)
+    assert [m.id for m in after[:2]] == prefix_ids
+    assert any((m.meta or {}).get("isSummary") for m in after)
+    compacted = [m for m in after if m.compacted]
+    assert compacted
+    entry = mgr.get_session(sid)
+    assert entry is not None
+    assert entry.active_tokens == 2

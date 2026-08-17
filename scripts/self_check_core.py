@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import pathlib
 import sys
 import tempfile
@@ -26,6 +27,7 @@ from coderai.core.prompt import (
     get_runtime_context,
     get_tools,
     list_skill_resource_files,
+    load_agent_instructions,
     strip_skill_prompt_metadata,
 )
 from coderai.core.session import SessionManager, SessionMessage
@@ -237,7 +239,10 @@ async def main() -> None:
 
         (pathlib.Path(tmp) / "AGENTS.md").write_text("Test AGENTS guidance")
         runtime_ctx = get_runtime_context(tmp, "gpt-4o")
-        assert "Test AGENTS guidance" in runtime_ctx
+        assert "Local Workspace Environment" in runtime_ctx
+        assert "Test AGENTS guidance" not in runtime_ctx
+        instructions = load_agent_instructions(tmp)
+        assert instructions is not None and "Test AGENTS guidance" in instructions
         print("✓ skills frontmatter + resources + project guidance")
 
     # 8. MessageConverter tool pairing & synthetic interrupted tool recovery
@@ -272,47 +277,62 @@ async def main() -> None:
 
     # 9. SessionManager bounded loop with mock client + undo
     with tempfile.TemporaryDirectory() as tmp:
-        target = pathlib.Path(tmp, "new_app.py")
+        previous_home = os.environ.get("HOME")
+        os.environ["HOME"] = tmp
+        try:
+            target = pathlib.Path(tmp, "new_app.py")
 
-        def script(calls: dict[str, int], kwargs: Any) -> Any:
-            if calls["n"] == 1:
-                return resp(
-                    "I'll write it.",
-                    [tc("call_1", "write", {"file_path": str(target), "content": "print(99)\n"})],
-                )
-            return resp("Done.", [])
+            def script(calls: dict[str, int], kwargs: Any) -> Any:
+                if calls["n"] == 1:
+                    return resp(
+                        "I'll write it.",
+                        [
+                            tc(
+                                "call_1",
+                                "write",
+                                {"file_path": str(target), "content": "print(99)\n"},
+                            )
+                        ],
+                    )
+                return resp("Done.", [])
 
-        client, _ = make_mock_client(script)
-        mgr = SessionManager(
-            project_root=tmp,
-            create_openai_client=lambda: {
-                "client": client,
-                "model": "gpt-4o",
-                "thinkingEnabled": False,
-                "reasoningEffort": "max",
-            },
-            get_resolved_settings=lambda: {
-                "model": "gpt-4o",
-                "permissions": {
-                    "allow": ["read-in-cwd", "write-in-cwd"],
-                    "deny": [],
-                    "ask": [],
-                    "defaultMode": "allowAll",
+            client, _ = make_mock_client(script)
+            mgr = SessionManager(
+                project_root=tmp,
+                create_openai_client=lambda: {
+                    "client": client,
+                    "model": "gpt-4o",
+                    "thinkingEnabled": False,
+                    "reasoningEffort": "max",
                 },
-            },
-        )
-        session_id = await mgr.create_session("write it")
-        assert (pathlib.Path.home() / ".coderai" / "projects").exists()
-        messages = mgr.list_session_messages(session_id)
-        assert any(m.role == "tool" for m in messages), "expected a tool result in the transcript"
-        assert messages[-1].content == "Done."
-        assert target.read_text() == "print(99)\n"
+                get_resolved_settings=lambda: {
+                    "model": "gpt-4o",
+                    "permissions": {
+                        "allow": ["read-in-cwd", "write-in-cwd"],
+                        "deny": [],
+                        "ask": [],
+                        "defaultMode": "allowAll",
+                    },
+                },
+            )
+            session_id = await mgr.create_session("write it")
+            assert (pathlib.Path.home() / ".coderai" / "projects").exists()
+            messages = mgr.list_session_messages(session_id)
+            assert any(m.role == "tool" for m in messages), (
+                "expected a tool result in the transcript"
+            )
+            assert messages[-1].content == "Done."
+            assert target.read_text() == "print(99)\n"
 
-        # Test session undo
-        undone = mgr.undo(session_id)
-        assert undone
-        assert not target.exists()
-        print("✓ bounded loop + JSONL persistence + undo")
+            undone = mgr.undo(session_id)
+            assert undone
+            assert not target.exists()
+            print("✓ bounded loop + JSONL persistence + undo")
+        finally:
+            if previous_home is None:
+                os.environ.pop("HOME", None)
+            else:
+                os.environ["HOME"] = previous_home
 
     # 10. AskUserQuestion & UpdatePlan & UnderstandImage tools
     with tempfile.TemporaryDirectory() as tmp:

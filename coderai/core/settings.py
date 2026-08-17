@@ -14,7 +14,7 @@ from typing import Any, Literal
 
 from coderai.core.common.model_capabilities import defaults_to_thinking_mode
 
-DEFAULT_MODEL = "gpt-4o"
+DEFAULT_MODEL = "gpt-5.6-luna"
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_CONTEXT_WINDOW = 256 * 1024
 
@@ -47,10 +47,6 @@ VALID_PERMISSION_SCOPES = {
 }
 
 ReasoningEffort = Literal["high", "max"]
-
-
-class Settings(dict):
-    """Typed settings bag. Field access is attribute-like via .get()."""
 
 
 def _home() -> pathlib.Path:
@@ -324,7 +320,24 @@ def resolve_current_settings(project_root: str = ".") -> dict[str, Any]:
         ),
         "mcpServers": _merge_mcp_servers(user, project, user_env, project_env, system_env),
         "permissions": _merge_permissions(user, project),
-        "enabledSkills": {},
+        "enabledSkills": _merge_enabled_skills(user, project),
+    }
+
+
+def _normalize_enabled_skills(value: Any) -> dict[str, bool]:
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, bool] = {}
+    for name, enabled in value.items():
+        if isinstance(name, str) and name and isinstance(enabled, bool):
+            result[name] = enabled
+    return result
+
+
+def _merge_enabled_skills(user: dict | None, project: dict | None) -> dict[str, bool]:
+    return {
+        **_normalize_enabled_skills((user or {}).get("enabledSkills")),
+        **_normalize_enabled_skills((project or {}).get("enabledSkills")),
     }
 
 
@@ -351,5 +364,9 @@ def _merge_mcp_servers(
         args = pc.get("args") or uc.get("args")
         if args is not None:
             cfg["args"] = args
+        env_cfg = {**(uc.get("env") or {}), **(pc.get("env") or {})}
+        env_cfg = {k: v for k, v in env_cfg.items() if isinstance(k, str) and isinstance(v, str)}
+        if env_cfg:
+            cfg["env"] = env_cfg
         merged[name] = cfg
     return merged or None

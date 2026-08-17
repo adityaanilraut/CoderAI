@@ -22,6 +22,8 @@ from dataclasses import dataclass
 from typing import Any
 from collections.abc import Callable
 
+from coderai.core.common.debug_logger import log_openai_chat_completion_debug
+from coderai.core.common.error_logger import log_api_error
 from coderai.core.common.file_history import GitFileHistory
 from coderai.core.common.llm_error import describe_llm_error
 from coderai.core.common.message_converter import OpenAIMessageConverter
@@ -34,12 +36,19 @@ from coderai.core.permissions import (
     resolve_snippet_file_path,
 )
 from coderai.core.prompt import (
+    build_skill_documents_prompt,
     get_compact_prompt,
     get_compact_prompt_token_threshold,
     get_plan_mode_prompt,
     get_runtime_context,
+    get_skill_read_exempt_paths,
     get_system_prompt,
     get_tools,
+    list_skills,
+    load_agent_instructions,
+    load_skill,
+    match_skills_for_prompt,
+    parse_skill_match_response,
 )
 from coderai.core.state import clear_session_state, rebuild_session_state_from_history
 from coderai.core.tools.executor import ToolExecutor
@@ -119,9 +128,12 @@ class SessionManager:
         self.on_stream_chunk = on_stream_chunk
         self.on_llm_stream_progress = on_llm_stream_progress
         self.non_interactive = non_interactive
-        self.tool_executor = ToolExecutor(self.project_root, create_openai_client)
         self.mcp_manager = McpManager()
         self.mcp_manager.prepare(self.get_resolved_settings().get("mcpServers"))
+        self.mcp_manager.set_on_tools_list_changed(self._refresh_mcp_tool_definitions)
+        self.tool_executor = ToolExecutor(
+            self.project_root, create_openai_client, mcp_manager=self.mcp_manager
+        )
         self.mcp_tool_definitions: list[dict[str, Any]] = []
         self.message_converter = OpenAIMessageConverter()
         self._active_session_id: str | None = None
@@ -137,7 +149,7 @@ class SessionManager:
     def get_active_model(self) -> str:
         if self._override_model:
             return self._override_model
-        return str(self.get_resolved_settings().get("model") or "gpt-4o")
+        return str(self.get_resolved_settings().get("model") or "gpt-5.6-luna")
 
     def get_diff(self, session_id: str | None = None, from_checkpoint: str | None = None) -> str:
         sid = session_id or self._active_session_id
@@ -336,7 +348,12 @@ class SessionManager:
         entry = self._get_entry(session_id)
         return bool(entry and entry.get("status") in ("interrupted", "failed"))
 
-    async def create_session(self, user_prompt: str, plan_mode: bool = False) -> str:
+    async def create_session(
+        self,
+        user_prompt: str,
+        plan_mode: bool = False,
+        skills: list[str] | None = None,
+    ) -> str:
         session_id = uuid.uuid4().hex
         summary = (user_prompt or "[Image Prompt]")[:100]
         now = _now()
@@ -370,10 +387,16 @@ class SessionManager:
         )
 
         model = self.get_active_model()
-        self._append_message(self._build_message(session_id, "system", get_system_prompt()))
+        prompt_options = {"model": model, "nonInteractive": self.non_interactive}
+        self._append_message(
+            self._build_message(session_id, "system", get_system_prompt(prompt_options))
+        )
         self._append_message(
             self._build_message(session_id, "system", get_runtime_context(self.project_root, model))
         )
+        instructions = load_agent_instructions(self.project_root)
+        if instructions:
+            self._append_message(self._build_message(session_id, "system", instructions))
         if plan_mode:
             self._append_message(
                 self._build_message(
@@ -394,6 +417,7 @@ class SessionManager:
                 },
             )
         )
+        await self._inject_matched_skills(session_id, user_prompt, skills)
         self._active_session_id = session_id
         await self._activate(session_id)
         return session_id
@@ -404,10 +428,11 @@ class SessionManager:
         user_prompt: str | None = None,
         permission_replies: list[dict[str, Any]] | None = None,
         plan_mode: bool | None = None,
+        skills: list[str] | None = None,
     ) -> None:
         entry = self._get_entry(session_id)
         if not entry:
-            await self.create_session(user_prompt or "", plan_mode=bool(plan_mode))
+            await self.create_session(user_prompt or "", plan_mode=bool(plan_mode), skills=skills)
             return
 
         if plan_mode is not None:
@@ -465,9 +490,144 @@ class SessionManager:
                     },
                 )
             )
+            await self._inject_matched_skills(session_id, user_prompt, skills)
+        elif skills:
+            self._append_skill_messages(session_id, skills)
 
         self._active_session_id = session_id
         await self._activate(session_id)
+
+    def list_available_skills(self, session_id: str | None = None) -> list[dict[str, Any]]:
+        """Discover skills with enabledSkills filtering and loaded flags."""
+        enabled = self.get_resolved_settings().get("enabledSkills") or {}
+        skills = list_skills(self.project_root, enabled_skills=enabled)
+        loaded = self._loaded_skill_names(session_id) if session_id else set()
+        for skill in skills:
+            skill["isLoaded"] = skill["name"] in loaded
+        return skills
+
+    def _loaded_skill_names(self, session_id: str) -> set[str]:
+        names: set[str] = set()
+        for message in self.list_session_messages(session_id):
+            skill_meta = (message.meta or {}).get("skill")
+            if isinstance(skill_meta, dict) and isinstance(skill_meta.get("name"), str):
+                names.add(skill_meta["name"])
+        return names
+
+    def _append_skill_messages(self, session_id: str, skill_names: list[str]) -> None:
+        loaded = self._loaded_skill_names(session_id)
+        for name in skill_names:
+            if not name or name in loaded:
+                continue
+            skill = load_skill(name, self.project_root)
+            if not skill:
+                continue
+            prompt = build_skill_documents_prompt([skill])
+            if not prompt:
+                continue
+            message = self._build_message(
+                session_id,
+                "system",
+                prompt,
+                meta={"skill": {"name": skill["name"], "path": skill.get("path")}},
+            )
+            self._append_message(message)
+            loaded.add(skill["name"])
+
+    async def _inject_matched_skills(
+        self,
+        session_id: str,
+        user_prompt: str | None,
+        explicit_names: list[str] | None = None,
+    ) -> None:
+        names: list[str] = []
+        for name in explicit_names or []:
+            if name and name not in names:
+                names.append(name)
+
+        if user_prompt and user_prompt.strip() and user_prompt.strip() != "/continue":
+            enabled = self.get_resolved_settings().get("enabledSkills") or {}
+            loaded = self._loaded_skill_names(session_id)
+            matched = match_skills_for_prompt(
+                user_prompt,
+                self.project_root,
+                enabled_skills=enabled,
+                loaded_names=loaded,
+            )
+            if not matched:
+                llm_names = await self._identify_matching_skill_names(
+                    user_prompt, loaded_names=loaded
+                )
+                matched = [
+                    skill
+                    for skill in list_skills(self.project_root, enabled_skills=enabled)
+                    if skill["name"] in llm_names
+                ]
+            for skill in matched:
+                if skill["name"] not in names:
+                    names.append(skill["name"])
+
+        self._append_skill_messages(session_id, names)
+
+    def inject_skills(self, session_id: str, skill_names: list[str]) -> None:
+        """Append skill documents to a session without starting a new agent turn."""
+        self._append_skill_messages(session_id, skill_names)
+
+    async def _identify_matching_skill_names(
+        self, user_prompt: str, loaded_names: set[str] | None = None
+    ) -> list[str]:
+        enabled = self.get_resolved_settings().get("enabledSkills") or {}
+        loaded = loaded_names or set()
+        candidates = [
+            skill
+            for skill in list_skills(self.project_root, enabled_skills=enabled)
+            if skill["name"] not in loaded and skill.get("allowImplicitInvocation") is not False
+        ]
+        if not candidates:
+            return []
+        client_info = self.create_openai_client()
+        client = client_info.get("client")
+        if client is None:
+            return []
+        candidate_payload = [
+            {"name": skill["name"], "description": skill.get("description", "")}
+            for skill in candidates
+        ]
+        system_prompt = (
+            "When users ask you to perform tasks, check if any of the available skills match "
+            "the goal and situation. Skills provide specialized capabilities and domain knowledge.\n\n"
+            "Respond in JSON format:\n"
+            '```\n{\n  "skillNames": ["", ...]\n}\n```\n\n'
+            'If none of the available skills match, respond with an empty array, i.e. {"skillNames": []}.\n'
+        )
+        instructions = load_agent_instructions(self.project_root)
+        if instructions:
+            system_prompt += (
+                "Use the current agent instructions as additional context when deciding "
+                "which skills match:\n\n"
+                f"<agent-instructions>\n{instructions}\n</agent-instructions>\n\n"
+            )
+        system_prompt += "The candidate skills are as follows:\n\n```\n"
+        system_prompt += json.dumps(candidate_payload, indent=2)
+        system_prompt += "\n```"
+        try:
+            response = await self._create_completion(
+                client,
+                {
+                    "model": self.get_active_model(),
+                    "temperature": 0.1,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "response_format": {"type": "json_object"},
+                },
+                emit_stream=False,
+            )
+        except Exception:
+            return []
+        raw = str(((response.get("choices") or [{}])[0].get("message") or {}).get("content") or "")
+        return parse_skill_match_response(raw, {skill["name"] for skill in candidates})
 
     async def _activate(
         self,
@@ -628,6 +788,7 @@ class SessionManager:
                     if self.is_interrupted(session_id):
                         return
                     err_str = describe_llm_error(err)
+                    log_api_error(err, {"sessionId": session_id, "model": model})
                     self._update_entry(
                         session_id,
                         lambda entry: {
@@ -675,6 +836,8 @@ class SessionManager:
                         tool_calls=tool_calls,
                         settings=settings.get("permissions") or {},
                         force_ask_scopes=forced_scopes,
+                        read_permission_exempt_paths=get_skill_read_exempt_paths(self.project_root),
+                        resolve_snippet_path=resolve_snippet_file_path,
                     )
                     if tool_calls
                     else None
@@ -931,10 +1094,24 @@ class SessionManager:
 
         return waiting
 
-    async def _create_completion(self, client: Any, request: dict[str, Any]) -> dict[str, Any]:
-        return await asyncio.to_thread(
-            _call_stream_or_sync, client, request, self.on_stream_chunk, self.on_llm_stream_progress
+    async def _create_completion(
+        self, client: Any, request: dict[str, Any], *, emit_stream: bool = True
+    ) -> dict[str, Any]:
+        on_chunk = self.on_stream_chunk if emit_stream else None
+        result = await asyncio.to_thread(
+            _call_stream_or_sync, client, request, on_chunk, self.on_llm_stream_progress
         )
+        if self.get_resolved_settings().get("debugLogEnabled"):
+            log_openai_chat_completion_debug(
+                {
+                    "projectRoot": self.project_root,
+                    "model": request.get("model"),
+                    "location": "SessionManager._create_completion",
+                    "hasTools": bool(request.get("tools")),
+                    "usage": result.get("usage"),
+                }
+            )
+        return result
 
     async def _compact_session(self, session_id: str) -> None:
         client_info = self.create_openai_client()
@@ -956,7 +1133,9 @@ class SessionManager:
         prompt = get_compact_prompt(messages[start:end])
         model = self.get_active_model()
         response = await self._create_completion(
-            client, {"model": model, "messages": [{"role": "user", "content": prompt}]}
+            client,
+            {"model": model, "messages": [{"role": "user", "content": prompt}]},
+            emit_stream=False,
         )
         raw = (response.get("choices") or [{}])[0].get("message") or {}
         raw_summary = str(raw.get("content") or "").strip()
@@ -964,6 +1143,17 @@ class SessionManager:
             r"<analysis>[\s\S]*?</analysis>", "", raw_summary, flags=re.IGNORECASE
         ).strip()
         now = _now()
+        usage = response.get("usage")
+        self._update_entry(
+            session_id,
+            lambda e: {
+                **e,
+                "usage": _accumulate_usage(e.get("usage"), usage),
+                "usagePerModel": _accumulate_usage_per_model(e.get("usagePerModel"), model, usage),
+                "activeTokens": _total_tokens(usage) or e.get("activeTokens", 0),
+                "updateTime": now,
+            },
+        )
         for i in range(start, end):
             messages[i] = _copy_with(messages[i], compacted=True, update_time=now)
         summary_message = self._build_message(
@@ -1099,6 +1289,9 @@ class SessionManager:
 
     async def init_mcp_servers(self) -> None:
         await self.mcp_manager.initialize(self.get_resolved_settings().get("mcpServers"))
+        self._refresh_mcp_tool_definitions()
+
+    def _refresh_mcp_tool_definitions(self) -> None:
         self.mcp_tool_definitions = self.mcp_manager.get_mcp_tool_definitions()
 
     def dispose(self) -> None:

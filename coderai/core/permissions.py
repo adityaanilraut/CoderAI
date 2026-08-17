@@ -221,6 +221,17 @@ def describe_tool_permission_request(
     if name.startswith("mcp__"):
         return {"toolCallId": tool_call["id"], "name": name, "command": name, "scopes": ["mcp"]}
 
+    if name in ("Task", "task", "subagent", "SubAgent"):
+        mode = args.get("mode") if isinstance(args.get("mode"), str) else "read_only"
+        description = args.get("description") if isinstance(args.get("description"), str) else name
+        scopes = [] if mode == "read_only" else ["write-in-cwd"]
+        return {
+            "toolCallId": tool_call["id"],
+            "name": name,
+            "command": description or name,
+            "scopes": scopes,
+        }
+
     return {"toolCallId": tool_call["id"], "name": name, "command": name, "scopes": []}
 
 
