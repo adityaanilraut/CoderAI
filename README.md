@@ -112,23 +112,39 @@ When running `coderai`, you enter an interactive REPL featuring an ASCII banner,
 | `/undo` | Revert workspace files and history to the previous turn checkpoint |
 | `/diff` | Show syntax-highlighted unified diff of changes made since session start |
 | `/model [name]` | Open interactive model selector or switch directly to a named model |
-| `/sessions` | Open interactive session browser with quick resume |
+| `/sessions` | Open interactive session browser (resume, delete, fork) |
 | `/resume <id>` | Resume a saved session directly by session ID |
+| `/fork [id]` | Fork current or specified session into a new branch/session |
+| `/delete <id>` | Delete a saved session from workspace storage |
 | `/new` | Start a fresh session in the current project |
 | `/skills` | Browse active and workspace-discovered skills |
 | `/skill <name>` | Load a skill into the active session |
-| `/help`, `/?` | Display the interactive command help menu |
+| `/mcp` | Inspect connected Model Context Protocol (MCP) servers and tools |
+| `/tokens`, `/cost` | Display detailed token usage breakdown and active context analytics |
+| `/compact` | Compress conversation history to reclaim context window tokens |
+| `/config` | View resolved workspace and user settings |
+| `/history` | View turn-by-turn conversation timeline |
+| `/export [file]` | Export session conversation to Markdown or JSON |
+| `/thinking [mode]` | Toggle reasoning traces between full trace and concise summary |
+| `/clear` | Clear terminal screen and refresh prompt status |
+| `/help`, `/?` | Display categorized interactive command help menu |
 | `/exit`, `/quit` | Exit session and display the exit summary card |
+
+### Tab Autocompletion & Command History
+
+CoderAI comes with full `readline` integration:
+- **Tab autocompletion**: Press `Tab` on `/` commands, `/model` targets, and `@` file paths.
+- **Persistent history**: Arrow `Up` / `Down` to cycle through previous prompts across sessions (persisted at `~/.coderai/history`).
 
 ### Context Expansion (`@file` Mentions)
 
-You can mention files directly in your prompts:
+You can mention files directly anywhere in your prompts:
 
 ```text
 coderai> Explain the architecture in @coderai/core/session.py and how it connects to @coderai/core/permissions.py
 ```
 
-CoderAI automatically detects the files, reads their contents, and injects them into the prompt context.
+CoderAI automatically detects the files, reads their contents, and injects them into the prompt context. Specific line ranges can also be targeted with `@file.py:10-30` or `@file.py:L25`.
 
 ---
 

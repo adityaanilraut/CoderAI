@@ -154,6 +154,9 @@ def create_openai_client(
             "thinkingEnabled": thinking_enabled,
             "reasoningEffort": settings.get("reasoningEffort", "max"),
             "debugLogEnabled": settings.get("debugLogEnabled", False),
+            "telemetryEnabled": settings.get("telemetryEnabled", False),
+            "notify": settings.get("notify"),
+            "webSearchTool": settings.get("webSearchTool"),
             "env": env,
         }
 
@@ -171,9 +174,21 @@ def create_openai_client(
 
         client_instance = OpenAI(api_key=api_key, base_url=base_url or None)
         _client_pool[cache_key] = client_instance
+
+        # Fire-and-forget warmup: pre-establish TCP+TLS connection in background
+        import threading
+
+        def _warmup() -> None:
+            try:
+                client_instance.models.list(timeout=3.0)
+            except Exception:
+                pass
+
+        threading.Thread(target=_warmup, daemon=True).start()
     except Exception:
         client_instance = None
 
     result = base()
     result["client"] = client_instance
     return result
+

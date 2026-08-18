@@ -15,8 +15,11 @@ import asyncio
 import datetime
 import hashlib
 import json
+import os
 import pathlib
 import re
+import shutil
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -25,6 +28,7 @@ from collections.abc import Callable
 from coderai.core.common.debug_logger import log_openai_chat_completion_debug
 from coderai.core.common.error_logger import log_api_error
 from coderai.core.common.file_history import GitFileHistory
+from coderai.core.common.file_utils import read_text_file_tail
 from coderai.core.common.llm_error import describe_llm_error
 from coderai.core.common.message_converter import OpenAIMessageConverter
 from coderai.core.common.openai_thinking import build_thinking_request_options
@@ -52,10 +56,24 @@ from coderai.core.prompt import (
 )
 from coderai.core.state import clear_session_state, rebuild_session_state_from_history
 from coderai.core.tools.executor import ToolExecutor
-from coderai.core.tools.types import ToolExecutionHooks
+from coderai.core.tools.types import BackgroundProcessCompletion, ToolExecutionHooks
 
-MAX_ITERATIONS = 50
+MAX_ITERATIONS = 80_000
 MAX_SESSION_ENTRIES = 50
+BACKGROUND_FAILURE_LOG_TAIL_CHARS = 4000
+
+
+def sanitize_repetition_loops(text: str) -> str:
+    """Detect and collapse pathological token repetition loops in model output."""
+    if not text or len(text) < 40:
+        return text
+    pattern = re.compile(r"(.{6,150}?)(?:\s*\1){3,}", re.DOTALL)
+
+    def _replace(match: re.Match) -> str:
+        unit = match.group(1).strip()
+        return f"{unit} [truncated repetition loop]"
+
+    return pattern.sub(_replace, text)
 
 
 def get_project_code(project_root: str) -> str:
@@ -63,6 +81,39 @@ def get_project_code(project_root: str) -> str:
     h = hashlib.sha256(norm.encode()).hexdigest()[:16]
     base = pathlib.Path(norm).name[:32].replace(" ", "-") or "project"
     return f"{base}-{h}"
+
+
+def _migrate_storage(src_dir: pathlib.Path, dst_dir: pathlib.Path) -> None:
+    """Migrate session files from global project storage to project-local storage."""
+    if not src_dir.exists() or not src_dir.is_dir():
+        return
+    try:
+        dst_dir.mkdir(parents=True, exist_ok=True)
+        # Migrate sessions-index.json
+        src_index = src_dir / "sessions-index.json"
+        dst_index = dst_dir / "sessions-index.json"
+        if src_index.exists() and not dst_index.exists():
+            shutil.copy2(src_index, dst_index)
+
+        # Migrate *.jsonl message logs
+        for jsonl_file in src_dir.glob("*.jsonl"):
+            dst_file = dst_dir / jsonl_file.name
+            if not dst_file.exists():
+                shutil.copy2(jsonl_file, dst_file)
+
+        # Migrate file-history
+        src_fh = src_dir / "file-history"
+        dst_fh = dst_dir / "file-history"
+        if src_fh.exists() and not dst_fh.exists():
+            shutil.copytree(src_fh, dst_fh)
+
+        # Migrate images
+        src_img = src_dir / "images"
+        dst_img = dst_dir / "images"
+        if src_img.exists() and not dst_img.exists():
+            shutil.copytree(src_img, dst_img)
+    except Exception:
+        pass
 
 
 @dataclass
@@ -92,6 +143,7 @@ class SessionEntry:
     status: str = "pending"
     fail_reason: str | None = None
     ask_permissions: list[dict[str, Any]] | None = None
+    processes: dict[str, Any] | None = None
     usage: dict[str, Any] | None = None
     usage_per_model: dict[str, Any] | None = None
     active_tokens: int = 0
@@ -118,6 +170,7 @@ class SessionManager:
         on_stream_chunk: Callable[[str], None] | None = None,
         on_llm_stream_progress: Callable[[dict[str, Any]], None] | None = None,
         non_interactive: bool = False,
+        max_iterations: int = MAX_ITERATIONS,
     ) -> None:
         self.project_root = str(pathlib.Path(project_root).resolve())
         self.create_openai_client = create_openai_client
@@ -128,6 +181,7 @@ class SessionManager:
         self.on_stream_chunk = on_stream_chunk
         self.on_llm_stream_progress = on_llm_stream_progress
         self.non_interactive = non_interactive
+        self.max_iterations = max_iterations
         self.mcp_manager = McpManager()
         self.mcp_manager.prepare(self.get_resolved_settings().get("mcpServers"))
         self.mcp_manager.set_on_tools_list_changed(self._refresh_mcp_tool_definitions)
@@ -160,12 +214,30 @@ class SessionManager:
     # ---- storage ----
 
     def _storage(self) -> dict[str, pathlib.Path]:
-        code = get_project_code(self.project_root)
-        project_dir = pathlib.Path.home() / ".coderai" / "projects" / code
-        return {
-            "project_dir": project_dir,
-            "index_path": project_dir / "sessions-index.json",
-        }
+        local_dir = pathlib.Path(self.project_root) / ".coderai" / "sessions"
+        global_code = get_project_code(self.project_root)
+        global_dir = pathlib.Path.home() / ".coderai" / "projects" / global_code
+
+        # Attempt project-local storage first
+        try:
+            # Check if migration is needed from global to local
+            if (
+                not (local_dir / "sessions-index.json").exists()
+                and (global_dir / "sessions-index.json").exists()
+            ):
+                _migrate_storage(global_dir, local_dir)
+            local_dir.mkdir(parents=True, exist_ok=True)
+            return {
+                "project_dir": local_dir,
+                "index_path": local_dir / "sessions-index.json",
+            }
+        except (OSError, PermissionError):
+            # Fallback to global user directory if project root is not writable
+            global_dir.mkdir(parents=True, exist_ok=True)
+            return {
+                "project_dir": global_dir,
+                "index_path": global_dir / "sessions-index.json",
+            }
 
     def _messages_path(self, session_id: str) -> pathlib.Path:
         return self._storage()["project_dir"] / f"{session_id}.jsonl"
@@ -191,6 +263,30 @@ class SessionManager:
 
     def _save_index(self, index: dict[str, Any]) -> None:
         self._ensure_dir()
+        entries = index.get("entries") or []
+        if len(entries) > MAX_SESSION_ENTRIES:
+            # Sort by updateTime descending, keep the most recent MAX_SESSION_ENTRIES
+            sorted_entries = sorted(
+                entries,
+                key=lambda e: e.get("updateTime") or e.get("createTime") or "",
+                reverse=True,
+            )
+            keep_entries = sorted_entries[:MAX_SESSION_ENTRIES]
+            pruned_entries = sorted_entries[MAX_SESSION_ENTRIES:]
+            index["entries"] = keep_entries
+
+            # Clean up message files and state for pruned sessions
+            for pruned in pruned_entries:
+                pruned_id = pruned.get("id")
+                if pruned_id:
+                    msg_file = self._messages_path(pruned_id)
+                    if msg_file.exists():
+                        try:
+                            msg_file.unlink()
+                        except Exception:
+                            pass
+                    clear_session_state(pruned_id)
+
         self._storage()["index_path"].write_text(json.dumps(index, indent=2), encoding="utf-8")
 
     def _append_message(self, message: SessionMessage) -> None:
@@ -331,6 +427,8 @@ class SessionManager:
             event = asyncio.Event()
             event.set()
             self.session_controllers[session_id] = event
+        self.kill_live_processes(session_id)
+        clear_session_state(session_id)
         self._update_entry(
             session_id,
             lambda e: {
@@ -347,6 +445,160 @@ class SessionManager:
             return True
         entry = self._get_entry(session_id)
         return bool(entry and entry.get("status") in ("interrupted", "failed"))
+
+    def build_background_failure_log_tail_slice(self, output_path: str | None) -> str | None:
+        """Read and format trailing failure log slice for background process diagnostics."""
+        if not output_path:
+            return None
+        tail = read_text_file_tail(output_path, max_chars=BACKGROUND_FAILURE_LOG_TAIL_CHARS)
+        if not tail or not tail.get("content"):
+            return None
+        prefix = (
+            f"... (last {len(tail['content'])} of {tail['total_bytes']} bytes)\n"
+            if tail.get("truncated")
+            else ""
+        )
+        return (
+            f'<background_task_failure_log path="{output_path}">\n'
+            f"{prefix}{tail['content']}\n"
+            "</background_task_failure_log>"
+        )
+
+    def add_background_process_completion_message(
+        self, session_id: str, completion: BackgroundProcessCompletion
+    ) -> None:
+        """Append completion or failure notification message with log tail slice to session."""
+        status = "completed" if completion.ok else "failed"
+        exit_text = (
+            f"exit code {completion.exit_code}"
+            if completion.exit_code is not None
+            else (
+                f"signal {completion.signal}"
+                if completion.signal
+                else "exit code 0"
+                if completion.ok
+                else "unknown exit status"
+            )
+        )
+        duration_s = max(0, completion.completed_at_ms - completion.started_at_ms) / 1000.0
+        duration_text = (
+            f"{duration_s:.1f}s"
+            if duration_s < 60
+            else f"{int(duration_s // 60)}m {int(duration_s % 60)}s"
+        )
+
+        base_content = (
+            f'Background command "{completion.command}" (pid {completion.process_id}) '
+            f"{status} with {exit_text} after {duration_text}."
+        )
+        log_tail = (
+            None
+            if completion.ok
+            else self.build_background_failure_log_tail_slice(completion.output_path)
+        )
+        content = f"{base_content}\n{log_tail}" if log_tail else base_content
+
+        msg = self._build_message(
+            session_id,
+            "system",
+            content,
+            meta={
+                "isBackgroundCompletion": True,
+                "taskId": completion.task_id,
+                "processId": completion.process_id,
+                "exitCode": completion.exit_code,
+                "signal": completion.signal,
+                "ok": completion.ok,
+                "outputPath": completion.output_path,
+            },
+        )
+        self._append_message(msg)
+
+    def _track_process_start(self, session_id: str, pid: int | str, command: str) -> None:
+        pid_key = str(pid)
+        self._update_entry(
+            session_id,
+            lambda e: {
+                **e,
+                "processes": {
+                    **(e.get("processes") or {}),
+                    pid_key: {
+                        "pid": pid,
+                        "command": command,
+                        "startedAt": _now(),
+                    },
+                },
+            },
+        )
+
+    def _track_process_exit(self, session_id: str, pid: int | str) -> None:
+        pid_key = str(pid)
+
+        def mutate(e: dict[str, Any]) -> dict[str, Any]:
+            procs = dict(e.get("processes") or {})
+            procs.pop(pid_key, None)
+            return {**e, "processes": procs}
+
+        self._update_entry(session_id, mutate)
+
+    def kill_live_processes(self, session_id: str | None = None) -> None:
+        """Kill all tracked live processes for a session."""
+        from coderai.core.tools.bash import kill_process_tree
+
+        entry = self._get_entry(session_id) if session_id else None
+        if entry and entry.get("processes"):
+            for pid_str in list(entry["processes"].keys()):
+                try:
+                    pid = int(pid_str)
+                    kill_process_tree(pid)
+                except Exception:
+                    pass
+            self._update_entry(
+                session_id,
+                lambda e: {**e, "processes": {}, "updateTime": _now()},
+            )
+
+    def maybe_notify_task_completion(self, session_id: str, started_at_ms: int) -> None:
+        """Trigger configured notification command when session finishes."""
+        from coderai.core.common.notify import launch_notify_script
+
+        settings = self.get_resolved_settings()
+        notify_command = (
+            settings.get("notifyCommand")
+            or os.environ.get("CODERAI_NOTIFY_COMMAND")
+            or os.environ.get("DEEPCODE_NOTIFY_COMMAND")
+        )
+        if not notify_command:
+            return
+
+        entry = self._get_entry(session_id)
+        status = entry.get("status", "completed") if entry else "completed"
+        fail_reason = entry.get("failReason") if entry else None
+        duration_ms = max(0, int(time.time() * 1000) - started_at_ms)
+
+        messages = self.list_session_messages(session_id)
+        last_assistant = next(
+            (m for m in reversed(messages) if m.role == "assistant" and m.content), None
+        )
+        body = (
+            (last_assistant.content if last_assistant else entry.get("summary")) or "Task finished"
+        )[:200]
+
+        launch_notify_script(
+            notify_command,
+            duration_ms=duration_ms,
+            working_directory=self.project_root,
+            context={
+                "status": status,
+                "failReason": fail_reason or "",
+                "body": body,
+                "title": (
+                    f"CoderAI: {(entry.get('summary') or 'Task')[:50]}"
+                    if entry
+                    else "CoderAI: Task"
+                ),
+            },
+        )
 
     async def create_session(
         self,
@@ -370,6 +622,7 @@ class SessionManager:
             "usage": None,
             "usagePerModel": None,
             "activeTokens": 0,
+            "processes": {},
             "createTime": now,
             "updateTime": now,
             "planMode": plan_mode,
@@ -422,6 +675,24 @@ class SessionManager:
         await self._activate(session_id)
         return session_id
 
+    def is_continue_prompt(self, user_prompt: Any) -> bool:
+        """Check if a prompt is an affirmative continuation request."""
+        if not user_prompt:
+            return False
+        if isinstance(user_prompt, str):
+            text = user_prompt.strip().lower()
+            return text in ("/continue", "continue", "go on", "proceed")
+        if isinstance(user_prompt, dict):
+            text = str(user_prompt.get("text", "")).strip().lower()
+            has_images = bool(user_prompt.get("imageUrls") or user_prompt.get("images"))
+            has_skills = bool(user_prompt.get("skills"))
+            return (
+                text in ("/continue", "continue", "go on", "proceed")
+                and not has_images
+                and not has_skills
+            )
+        return False
+
     async def reply_session(
         self,
         session_id: str,
@@ -462,7 +733,7 @@ class SessionManager:
                     )
 
         # Handle /continue without appending redundant user message
-        is_continue = user_prompt and user_prompt.strip() == "/continue"
+        is_continue = self.is_continue_prompt(user_prompt)
 
         if permission_replies is not None:
             # If user provided a message alongside permission replies, queue it as deferred prompt
@@ -498,9 +769,13 @@ class SessionManager:
         await self._activate(session_id)
 
     def list_available_skills(self, session_id: str | None = None) -> list[dict[str, Any]]:
-        """Discover skills with enabledSkills filtering and loaded flags."""
-        enabled = self.get_resolved_settings().get("enabledSkills") or {}
-        skills = list_skills(self.project_root, enabled_skills=enabled)
+        """Discover skills with enabledSkills filtering, custom scan paths, and loaded flags."""
+        settings = self.get_resolved_settings()
+        enabled = settings.get("enabledSkills") or {}
+        custom_paths = settings.get("skillScanPaths") or []
+        skills = list_skills(
+            self.project_root, enabled_skills=enabled, custom_scan_paths=custom_paths
+        )
         loaded = self._loaded_skill_names(session_id) if session_id else set()
         for skill in skills:
             skill["isLoaded"] = skill["name"] in loaded
@@ -516,10 +791,12 @@ class SessionManager:
 
     def _append_skill_messages(self, session_id: str, skill_names: list[str]) -> None:
         loaded = self._loaded_skill_names(session_id)
+        settings = self.get_resolved_settings()
+        custom_paths = settings.get("skillScanPaths") or []
         for name in skill_names:
             if not name or name in loaded:
                 continue
-            skill = load_skill(name, self.project_root)
+            skill = load_skill(name, self.project_root, custom_scan_paths=custom_paths)
             if not skill:
                 continue
             prompt = build_skill_documents_prompt([skill])
@@ -546,13 +823,16 @@ class SessionManager:
                 names.append(name)
 
         if user_prompt and user_prompt.strip() and user_prompt.strip() != "/continue":
-            enabled = self.get_resolved_settings().get("enabledSkills") or {}
+            settings = self.get_resolved_settings()
+            enabled = settings.get("enabledSkills") or {}
+            custom_paths = settings.get("skillScanPaths") or []
             loaded = self._loaded_skill_names(session_id)
             matched = match_skills_for_prompt(
                 user_prompt,
                 self.project_root,
                 enabled_skills=enabled,
                 loaded_names=loaded,
+                custom_scan_paths=custom_paths,
             )
             if not matched:
                 llm_names = await self._identify_matching_skill_names(
@@ -560,7 +840,9 @@ class SessionManager:
                 )
                 matched = [
                     skill
-                    for skill in list_skills(self.project_root, enabled_skills=enabled)
+                    for skill in list_skills(
+                        self.project_root, enabled_skills=enabled, custom_scan_paths=custom_paths
+                    )
                     if skill["name"] in llm_names
                 ]
             for skill in matched:
@@ -635,6 +917,7 @@ class SessionManager:
         permission_replies: list[dict[str, Any]] | None = None,
         deferred_prompt: str | None = None,
     ) -> None:
+        started_at_ms = int(time.time() * 1000)
         client_info = self.create_openai_client()
         client = client_info.get("client")
         model = self.get_active_model()
@@ -679,7 +962,7 @@ class SessionManager:
             return
 
         try:
-            for iteration in range(MAX_ITERATIONS):
+            for iteration in range(self.max_iterations):
                 if self.is_interrupted(session_id):
                     return
 
@@ -813,7 +1096,10 @@ class SessionManager:
 
                 choice = (response.get("choices") or [{}])[0]
                 msg = choice.get("message") or {}
-                content = msg.get("content") or ""
+                raw_content = msg.get("content") or ""
+                content = (
+                    sanitize_repetition_loops(raw_content) if isinstance(raw_content, str) else ""
+                )
                 raw_tool_calls = msg.get("tool_calls")
                 thinking = msg.get("reasoning_content")
                 refusal = msg.get("refusal")
@@ -829,6 +1115,7 @@ class SessionManager:
                 is_plan = bool(curr_entry.get("planMode"))
                 forced_scopes = PLAN_MODE_FORCE_ASK_SCOPES if is_plan else None
 
+                custom_paths = settings.get("skillScanPaths") or []
                 perm_plan = (
                     compute_tool_call_permissions(
                         session_id=session_id,
@@ -836,7 +1123,9 @@ class SessionManager:
                         tool_calls=tool_calls,
                         settings=settings.get("permissions") or {},
                         force_ask_scopes=forced_scopes,
-                        read_permission_exempt_paths=get_skill_read_exempt_paths(self.project_root),
+                        read_permission_exempt_paths=get_skill_read_exempt_paths(
+                            self.project_root, custom_scan_paths=custom_paths
+                        ),
                         resolve_snippet_path=resolve_snippet_file_path,
                     )
                     if tool_calls
@@ -953,6 +1242,7 @@ class SessionManager:
             )
         finally:
             self.session_controllers.pop(session_id, None)
+            self.maybe_notify_task_completion(session_id, started_at_ms)
 
     async def _append_tool_messages(
         self,
@@ -1028,10 +1318,21 @@ class SessionManager:
                     except Exception:
                         pass
 
+            def _on_process_start(pid: int | str, cmd: str) -> None:
+                self._track_process_start(session_id, pid, cmd)
+
+            def _on_process_exit(pid: int | str) -> None:
+                self._track_process_exit(session_id, pid)
+
             hooks = ToolExecutionHooks(
                 on_before_file_mutation=_on_before_file_mutation,
                 on_after_file_mutation=_on_after_file_mutation,
                 should_stop=lambda: self.is_interrupted(session_id),
+                on_process_start=_on_process_start,
+                on_process_exit=_on_process_exit,
+                on_background_process_complete=lambda completion: (
+                    self.add_background_process_completion_message(session_id, completion)
+                ),
             )
 
             executions = await self.tool_executor.execute_tool_calls(session_id, [tc], hooks=hooks)
@@ -1166,6 +1467,10 @@ class SessionManager:
         messages.insert(end, summary_message)
         self._save_messages(session_id, messages)
 
+    async def compact_session(self, session_id: str) -> None:
+        """Public method to compact long session context history."""
+        await self._compact_session(session_id)
+
     # ---- queries, delete, fork & undo ----
 
     def delete_session(self, session_id: str) -> bool:
@@ -1185,7 +1490,15 @@ class SessionManager:
                 pass
 
         clear_session_state(session_id)
-        self.session_controllers.pop(session_id, None)
+        ctrl = self.session_controllers.pop(session_id, None)
+        if ctrl and not ctrl.is_set():
+            ctrl.set()
+        images_dir = self._storage()["project_dir"] / "images" / session_id
+        if images_dir.exists():
+            try:
+                shutil.rmtree(images_dir)
+            except Exception:
+                pass
         return True
 
     def fork_session(self, source_session_id: str) -> str | None:
@@ -1245,30 +1558,86 @@ class SessionManager:
         self.file_history.ensure_session(forked_id)
         return forked_id
 
-    def undo(self, session_id: str) -> bool:
-        """Revert files and message history back to previous user prompt checkpoint."""
+    def list_undo_targets(self, session_id: str) -> list[dict[str, Any]]:
+        """Return all undoable user turns with checkpoint hashes and prompt previews in chronological order."""
+        messages = self.list_session_messages(session_id)
+        user_messages = [m for m in messages if m.role == "user" and not m.compacted and m.visible]
+        if not user_messages:
+            return []
+
+        targets: list[dict[str, Any]] = []
+        for idx, m in enumerate(user_messages, 1):
+            ckpt_hash = (m.meta or {}).get("checkpointHash")
+            if not ckpt_hash:
+                ckpt_hash = self.file_history.get_current_checkpoint_hash(session_id)
+
+            can_restore_code = bool(
+                ckpt_hash and self.file_history.can_restore(session_id, ckpt_hash)
+            )
+            prompt_preview = m.content.strip().splitlines()[0] if m.content else "(empty prompt)"
+            targets.append(
+                {
+                    "index": idx,
+                    "turn_index": idx,
+                    "message_id": m.id,
+                    "prompt": prompt_preview,
+                    "full_prompt": m.content,
+                    "create_time": m.create_time,
+                    "checkpoint_hash": ckpt_hash,
+                    "can_restore_code": can_restore_code,
+                }
+            )
+        return targets
+
+    def undo(
+        self,
+        session_id: str,
+        target_message_id: str | None = None,
+        mode: str = "restore_both",
+    ) -> bool:
+        """Revert files and/or message history back to a previous user prompt checkpoint.
+
+        Modes:
+          - "restore_both" (default): Reverts disk files and truncates message history.
+          - "restore_conversation_only": Truncates message history without modifying disk files.
+          - "restore_code_only": Reverts disk files without truncating message history.
+        """
         messages = self.list_session_messages(session_id)
         user_messages = [m for m in messages if m.role == "user" and not m.compacted and m.visible]
         if not user_messages:
             return False
 
-        latest_user = user_messages[-1]
-        checkpoint_hash = (latest_user.meta or {}).get("checkpointHash")
+        if target_message_id:
+            target_user = next((m for m in user_messages if m.id == target_message_id), None)
+            if not target_user:
+                return False
+        else:
+            target_user = user_messages[-1]
+
+        checkpoint_hash = (target_user.meta or {}).get("checkpointHash")
         if not checkpoint_hash:
             checkpoint_hash = self.file_history.get_current_checkpoint_hash(session_id)
 
-        if not checkpoint_hash or not self.file_history.can_restore(session_id, checkpoint_hash):
-            return False
+        # Restore code if requested
+        if mode in ("restore_both", "restore_code_only"):
+            if not checkpoint_hash or not self.file_history.can_restore(
+                session_id, checkpoint_hash
+            ):
+                if mode == "restore_code_only":
+                    return False
+            else:
+                self.file_history.restore(session_id, checkpoint_hash)
 
-        self.file_history.restore(session_id, checkpoint_hash)
-
-        cutoff_idx = next((i for i, m in enumerate(messages) if m.id == latest_user.id), -1)
-        if cutoff_idx >= 0:
-            retained_messages = messages[:cutoff_idx]
-            self._save_messages(session_id, retained_messages)
-            rebuild_session_state_from_history(
-                session_id, [self._serialize_message(m) for m in retained_messages]
-            )
+        # Restore conversation if requested
+        if mode in ("restore_both", "restore_conversation_only"):
+            cutoff_idx = next((i for i, m in enumerate(messages) if m.id == target_user.id), -1)
+            if cutoff_idx >= 0:
+                retained_messages = messages[:cutoff_idx]
+                self._save_messages(session_id, retained_messages)
+                clear_session_state(session_id)
+                rebuild_session_state_from_history(
+                    session_id, [self._serialize_message(m) for m in retained_messages]
+                )
 
         self._update_entry(
             session_id,
@@ -1289,6 +1658,12 @@ class SessionManager:
 
     async def init_mcp_servers(self) -> None:
         await self.mcp_manager.initialize(self.get_resolved_settings().get("mcpServers"))
+        self._refresh_mcp_tool_definitions()
+
+    async def sync_mcp_servers(self) -> None:
+        """Sync MCP servers with current resolved settings at runtime."""
+        settings = self.get_resolved_settings()
+        await self.mcp_manager.sync_servers(settings.get("mcpServers"))
         self._refresh_mcp_tool_definitions()
 
     def _refresh_mcp_tool_definitions(self) -> None:
@@ -1317,6 +1692,7 @@ def _entry_from_dict(d: dict[str, Any]) -> SessionEntry:
         status=d.get("status", "pending"),
         fail_reason=d.get("failReason"),
         ask_permissions=d.get("askPermissions"),
+        processes=d.get("processes"),
         usage=d.get("usage"),
         usage_per_model=d.get("usagePerModel"),
         active_tokens=d.get("activeTokens", 0),
@@ -1366,25 +1742,35 @@ def _call_stream_or_sync(
     on_chunk: Callable[[str], None] | None = None,
     on_progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
-    stream_req = {**request, "stream": True}
+    stream_req = {
+        **request,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+    }
     try:
         try:
             resp = client.chat.completions.create(**stream_req)
         except Exception as err:
             err_msg = str(err).lower()
-            if "reasoning_effort" in err_msg:
+            if "reasoning_effort" in err_msg or "stream_options" in err_msg:
                 retry_req = dict(stream_req)
-                if "none" in err_msg:
-                    retry_req["reasoning_effort"] = "none"
-                else:
-                    retry_req.pop("reasoning_effort", None)
-                    if isinstance(retry_req.get("extra_body"), dict):
-                        retry_req["extra_body"].pop("reasoning_effort", None)
-                        if not retry_req["extra_body"]:
-                            retry_req.pop("extra_body", None)
+                if "stream_options" in err_msg:
+                    retry_req.pop("stream_options", None)
+                if "reasoning_effort" in err_msg:
+                    if "none" in err_msg:
+                        retry_req["reasoning_effort"] = "none"
+                    else:
+                        retry_req.pop("reasoning_effort", None)
+                        if isinstance(retry_req.get("extra_body"), dict):
+                            retry_req["extra_body"].pop("reasoning_effort", None)
+                            if not retry_req["extra_body"]:
+                                retry_req.pop("extra_body", None)
                 resp = client.chat.completions.create(**retry_req)
             else:
                 raise
+
+        if isinstance(resp, dict):
+            return resp
 
         if hasattr(resp, "choices"):
             return _format_completion_response(resp)
@@ -1456,6 +1842,14 @@ def _call_stream_or_sync(
             if on_progress:
                 on_progress({"estimatedTokens": estimated_tokens, "type": "end"})
 
+            # Fallback to estimated token counts if upstream API did not return usage in stream
+            if not usage_dict and estimated_tokens > 0:
+                usage_dict = {
+                    "prompt_tokens": 0,
+                    "completion_tokens": estimated_tokens,
+                    "total_tokens": estimated_tokens,
+                }
+
             tool_calls = [tool_calls_dict[i] for i in sorted(tool_calls_dict.keys())] or None
             res: dict[str, Any] = {
                 "choices": [
@@ -1479,6 +1873,8 @@ def _call_stream_or_sync(
 
 
 def _format_completion_response(resp: Any) -> dict[str, Any]:
+    if isinstance(resp, dict):
+        return resp
     message = getattr(resp.choices[0], "message", None)
     result: dict[str, Any] = {
         "choices": [

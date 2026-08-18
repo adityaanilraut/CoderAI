@@ -2,7 +2,7 @@
 
 Presentation layer: argparse, interactive REPL, markdown rendering, tool execution cards,
 diff previews, thinking mode summaries, dynamic status bar, interactive menus, permission
-flows, and slash commands. All engine logic resides in coderai.core.
+flows, autocompletion, session management, and slash commands.
 """
 
 from __future__ import annotations
@@ -10,26 +10,41 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import pathlib
 import subprocess
 import sys
 from typing import Any
 
 from coderai._version import __version__
+from coderai.cli.completer import setup_readline
 from coderai.cli.diff_render import render_diff_preview
 from coderai.cli.exit_summary import render_exit_summary
+from coderai.cli.export_render import export_session_to_json, export_session_to_markdown
 from coderai.cli.file_mention import expand_file_mentions
+from coderai.cli.input_engine import read_user_turn
 from coderai.cli.interactive_menu import (
+    prompt_plan_implementation,
+    render_config_interactive,
+    render_mcp_interactive,
+    render_mcp_prompts,
+    render_mcp_resources_async,
+    render_session_history,
     render_skills_interactive,
+    render_token_breakdown,
     select_model_interactive,
     select_session_interactive,
+    select_undo_interactive,
 )
 from coderai.cli.status_bar import render_status_bar
 from coderai.cli.thinking import render_thinking_block
 from coderai.cli.tool_card import render_tool_card
 from coderai.cli.welcome import render_welcome_screen
 from coderai.core.openai_client import create_openai_client as _core_client
-from coderai.core.permissions import append_project_permission_allows
+from coderai.core.permissions import (
+    PLAN_MODE_FORCE_ASK_SCOPES,
+    append_project_permission_allows,
+)
 from coderai.core.prompt import load_skill
 from coderai.core.session import SessionManager, SessionMessage
 
@@ -64,6 +79,8 @@ ALWAYS_ALLOWED_SCOPES = {
     "network",
     "mcp",
 }
+
+_THINKING_EXPANDED: bool = False
 
 
 def describe_scope(scope: str) -> str:
@@ -103,21 +120,72 @@ def _render_markdown(text: str) -> None:
 def _build_parser() -> argparse.ArgumentParser:
     """Build the command-line argument parser."""
     parser = argparse.ArgumentParser(
-        prog="coderai", description="coderai — AI pair programming in your terminal."
+        prog="coderai", description="coderai — Autonomous AI pair programming in your terminal."
     )
     parser.add_argument("prompt", nargs="*", help="initial prompt (non-interactive when provided)")
+    parser.add_argument(
+        "--prompt",
+        "-p",
+        dest="prompt_flag",
+        type=str,
+        help="Submit a prompt on launch",
+    )
     parser.add_argument("--model", "-m", help="LLM model to use")
     parser.add_argument("--message", dest="message", help="send a single message and exit")
-    parser.add_argument("--resume", help="resume an existing session by id")
+    parser.add_argument(
+        "--exec",
+        "-x",
+        "-e",
+        dest="exec_prompt",
+        nargs="?",
+        const=True,
+        default=None,
+        help="Run one prompt non-interactively (requires --prompt / -p or positional prompt)",
+    )
+
+    parser.add_argument(
+        "--resume",
+        "-r",
+        nargs="?",
+        const=True,
+        default=None,
+        dest="resume",
+        help="Resume a specific session by its ID. Use without an ID to show session picker.",
+    )
+    parser.add_argument(
+        "--fork",
+        "-f",
+        nargs="?",
+        const=True,
+        default=None,
+        dest="fork",
+        help="Fork a specific session by its ID. Use without an ID to fork the most recent session.",
+    )
+    parser.add_argument(
+        "--last",
+        "-l",
+        action="store_true",
+        default=False,
+        dest="last",
+        help="Resume the most recent session for the current project directory.",
+    )
     parser.add_argument("--plan", action="store_true", help="start session in Plan Mode")
+    parser.add_argument(
+        "--server",
+        "--serve",
+        dest="server",
+        action="store_true",
+        help="run in JSON-RPC 2.0 headless server mode for IDE integration",
+    )
     parser.add_argument("--yes", "-y", action="store_true", help="auto-approve all permissions")
     parser.add_argument("--verbose", "-v", action="store_true", help="print debug information")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser
 
 
+
 def _prompt_permissions(
-    requests: list[dict[str, Any]], yes: bool
+    requests: list[dict[str, Any]], yes: bool, plan_mode: bool = False
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Prompt user for confirmation when tool execution requires permission."""
     replies: list[dict[str, Any]] = []
@@ -130,7 +198,10 @@ def _prompt_permissions(
         description = req.get("description", "")
         scopes: list[str] = req.get("scopes") or []
 
-        if yes:
+        # In Plan Mode, mutating scopes are strictly forced to prompt even with --yes
+        is_forced_plan_scope = plan_mode and any(s in PLAN_MODE_FORCE_ASK_SCOPES for s in scopes)
+
+        if yes and not is_forced_plan_scope:
             replies.append({"toolCallId": tool_call_id, "permission": "allow"})
             always_allows.extend(scopes)
             continue
@@ -145,6 +216,8 @@ def _prompt_permissions(
             body = f"[bold]{name}[/]: {command}"
             if description:
                 body += f"\n[dim]{description}[/]"
+            if is_forced_plan_scope:
+                body += "\n[bold red]⚠️ Mutating action requested while in Plan Mode.[/]"
             body += f"\n[dim]Scopes:[/] {scopes_str}"
 
             panel = Panel(
@@ -158,16 +231,18 @@ def _prompt_permissions(
             print(f"[{name}] {command}")
             if description:
                 print(f"  Description: {description}")
+            if is_forced_plan_scope:
+                print("  ⚠️ Mutating action requested while in Plan Mode.")
             if scopes:
                 print(f"  Scopes: {', '.join(scopes)}")
 
         options: list[tuple[str, str, str]] = [("allow", "1", "Yes")]
         always_target = next((s for s in scopes if s in ALWAYS_ALLOWED_SCOPES), None)
-        if always_target:
+        if always_target and not plan_mode:
             options.append(
                 ("always", "2", f"Yes, and always allow {describe_scope(always_target)}")
             )
-        options.append(("deny", "3" if always_target else "2", "No"))
+        options.append(("deny", "3" if (always_target and not plan_mode) else "2", "No"))
 
         print("  Options:")
         for _, key, label in options:
@@ -179,10 +254,12 @@ def _prompt_permissions(
         except (EOFError, KeyboardInterrupt):
             raw_choice = "n"
 
-        if raw_choice in ("2", "a", "always") and always_target:
+        if raw_choice in ("2", "a", "always") and always_target and not plan_mode:
             replies.append({"toolCallId": tool_call_id, "permission": "allow"})
             always_allows.append(always_target)
-        elif raw_choice in ("3", "n", "no", "deny") or (raw_choice == "2" and not always_target):
+        elif raw_choice in ("3", "n", "no", "deny") or (
+            raw_choice == "2" and (not always_target or plan_mode)
+        ):
             replies.append({"toolCallId": tool_call_id, "permission": "deny"})
         else:
             replies.append({"toolCallId": tool_call_id, "permission": "allow"})
@@ -272,15 +349,27 @@ class _StreamState:
     def had_streamed(self) -> bool:
         return bool(self.streamed_content)
 
+    def ensure_newline(self) -> bool:
+        """Ensure stream cursor is on a fresh line before printing banners or cards."""
+        if self.had_streamed():
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            self.reset()
+            return True
+        return False
+
 
 _STREAM_STATE = _StreamState()
 
 
 def _on_assistant_message(message: SessionMessage, should_connect: bool) -> None:
     """Format and render assistant messages, thinking blocks, and tool executions."""
+    # Ensure any active stream is properly closed with a newline before rendering any cards/banners
+    was_streamed = _STREAM_STATE.ensure_newline()
+
     meta = message.meta or {}
     if meta.get("asThinking"):
-        render_thinking_block(console, message.content)
+        render_thinking_block(console, message.content, expanded=_THINKING_EXPANDED)
         return
 
     if message.role == "tool":
@@ -288,16 +377,10 @@ def _on_assistant_message(message: SessionMessage, should_connect: bool) -> None
         return
 
     if message.thinking:
-        render_thinking_block(console, message.thinking)
+        render_thinking_block(console, message.thinking, expanded=_THINKING_EXPANDED)
 
-    if message.content:
-        # If content was already live-streamed, just append final newline
-        if _STREAM_STATE.had_streamed():
-            sys.stdout.write("\n")
-            sys.stdout.flush()
-            _STREAM_STATE.reset()
-        else:
-            _render_markdown(message.content)
+    if message.content and not was_streamed:
+        _render_markdown(message.content)
 
     if message.tool_calls:
         for tc in message.tool_calls:
@@ -353,7 +436,9 @@ async def _drain_pending_interactions(mgr: SessionManager, session_id: str, yes:
             return
 
         if entry.status == "ask_permission":
-            replies, always = _prompt_permissions(entry.ask_permissions or [], yes)
+            replies, always = _prompt_permissions(
+                entry.ask_permissions or [], yes, plan_mode=bool(entry.plan_mode)
+            )
             if always:
                 append_project_permission_allows(mgr.project_root, always)
             _STREAM_STATE.reset()
@@ -389,38 +474,110 @@ async def _drain_pending_interactions(mgr: SessionManager, session_id: str, yes:
 
 
 def _render_help_menu() -> None:
-    """Display interactive command help table."""
+    """Display interactive command help table grouped by category."""
     if console is not None and _RICH and Table is not None:
-        table = Table(title="CoderAI Interactive Slash Commands", border_style="cyan")
-        table.add_column("Command", style="bold cyan", width=16)
+        table = Table(
+            title="CoderAI Interactive Slash Commands",
+            border_style="cyan",
+            header_style="bold cyan",
+        )
+        table.add_column("Category", style="dim cyan", width=18)
+        table.add_column("Command", style="bold white", width=22)
         table.add_column("Description", style="white")
-        table.add_row("/continue", "Continue bounded multi-step agent execution")
-        table.add_row("/plan", "Toggle Plan Mode on/off with visual indicator")
-        table.add_row("/undo", "Revert files and turn to previous checkpoint via GitFileHistory")
-        table.add_row("/diff", "Show unified diff of changes made since session start")
-        table.add_row("/model [name]", "Interactive model selector or switch to named model")
-        table.add_row("/sessions", "Interactive sessions menu with quick-resume")
-        table.add_row("/resume <id>", "Resume an existing session by ID directly")
-        table.add_row("/new", "Start a fresh session")
-        table.add_row("/skills", "Explore active and discovered skills")
-        table.add_row("/skill <name>", "Load a skill into the current session")
-        table.add_row("/help", "Show this command help menu")
-        table.add_row("/exit, /quit", "Exit session with summary card")
+
+        table.add_row("Session Management", "/new", "Start a fresh session in the workspace")
+        table.add_row(
+            "Session Management", "/sessions", "Interactive session browser (resume, delete, fork)"
+        )
+        table.add_row("Session Management", "/resume <id>", "Resume a saved session by ID directly")
+        table.add_row(
+            "Session Management", "/fork [id]", "Fork current or target session into new branch"
+        )
+        table.add_row("Session Management", "/delete <id>", "Delete a saved session from workspace")
+        table.add_row(
+            "Session Management", "/export [file]", "Export session history to Markdown or JSON"
+        )
+
+        table.add_section()
+        table.add_row(
+            "Planning & Rollback", "/plan", "Toggle Plan Mode (strict read-only safety boundary)"
+        )
+        table.add_row(
+            "Planning & Rollback",
+            "/undo",
+            "Interactive turn & checkpoint rollback (code, conversation, or both)",
+        )
+        table.add_row("Planning & Rollback", "/diff", "Show syntax-highlighted diff of changes")
+        table.add_row(
+            "Planning & Rollback", "/continue", "Continue bounded multi-step agent execution"
+        )
+
+        table.add_section()
+        table.add_row(
+            "Models & Skills", "/model [name]", "Interactive model selector or switch directly"
+        )
+        table.add_row(
+            "Models & Skills", "/skills", "Explore active and discovered workspace skills"
+        )
+        table.add_row("Models & Skills", "/skill <name>", "Load a skill into the current session")
+        table.add_row(
+            "Models & Skills", "/thinking [mode]", "Toggle full reasoning trace or summary"
+        )
+
+        table.add_section()
+        table.add_row(
+            "Tools & Analytics",
+            "/mcp [subcommand]",
+            "Inspect MCP servers/tools, /mcp prompts, /mcp resources, /mcp reconnect",
+        )
+        table.add_row(
+            "Tools & Analytics", "/tokens, /cost", "View detailed token usage and context analytics"
+        )
+        table.add_row(
+            "Tools & Analytics", "/compact", "Compress history to free up active context tokens"
+        )
+        table.add_row("Tools & Analytics", "/history", "View turn-by-turn conversation timeline")
+        table.add_row("Tools & Analytics", "/config", "Inspect resolved workspace & user settings")
+
+        table.add_section()
+        table.add_row("Utilities", "/clear", "Clear terminal screen and redraw status")
+        table.add_row("Utilities", "/help, /?", "Show this command help menu")
+        table.add_row("Utilities", "/exit, /quit", "Exit CoderAI session with summary card")
+
+        console.print()
         console.print(table)
+        console.print(
+            "[dim]Tip: You can mention workspace files anywhere with [bold cyan]@file.py[/] or [bold cyan]@file.py:10-30[/][/]\n"
+        )
     else:
-        print("\nCommands:")
-        print("  /continue      Continue bounded multi-step agent execution")
-        print("  /plan          Toggle Plan Mode on/off")
-        print("  /undo          Revert files and turn to previous checkpoint")
-        print("  /diff          Show diff of changes made since session start")
-        print("  /model [name]  Interactive model selector or switch model")
-        print("  /sessions      Interactive sessions list & quick resume")
-        print("  /resume <id>   Resume an existing session by ID")
-        print("  /new           Start a fresh session")
-        print("  /skills        List active and workspace skills")
-        print("  /skill <name>  Load a skill into the current session")
-        print("  /help          Show this help menu")
-        print("  /exit, /quit   Quit CoderAI\n")
+        print("\n--- CoderAI Slash Commands ---")
+        print("Session Management:")
+        print("  /new               Start a fresh session")
+        print("  /sessions          Interactive sessions menu (resume, delete, fork)")
+        print("  /resume <id>       Resume session by ID directly")
+        print("  /fork [id]         Fork session into a new branch")
+        print("  /delete <id>       Delete a saved session")
+        print("  /export [file]     Export session to Markdown/JSON")
+        print("\nPlanning & Rollback:")
+        print("  /plan              Toggle Plan Mode on/off")
+        print("  /undo              Revert to previous checkpoint")
+        print("  /diff              Show unified diff of changes")
+        print("  /continue          Continue agent execution")
+        print("\nModels & Skills:")
+        print("  /model [name]      Select or switch active model")
+        print("  /skills            List available workspace skills")
+        print("  /skill <name>      Load skill into current session")
+        print("  /thinking [mode]   Toggle reasoning trace (full/summary)")
+        print("\nTools & Analytics:")
+        print("  /mcp               Inspect MCP servers and tools")
+        print("  /tokens            Show token usage breakdown")
+        print("  /compact           Compress conversation context")
+        print("  /history           View session timeline")
+        print("  /config            View active configuration")
+        print("\nUtilities:")
+        print("  /clear             Clear terminal screen")
+        print("  /help              Show this help menu")
+        print("  /exit, /quit       Quit CoderAI\n")
 
 
 def _show_diff(mgr: SessionManager, session_id: str | None) -> None:
@@ -481,15 +638,79 @@ def _queue_skill(
 
 
 async def _run_interactive(
-    mgr: SessionManager, yes: bool, resume: str | None, plan_mode: bool = False
+    mgr: SessionManager,
+    yes: bool,
+    resume: str | bool | None = None,
+    fork: str | bool | None = None,
+    last: bool = False,
+    plan_mode: bool = False,
+    initial_prompt: str | None = None,
 ) -> int:
     """Interactive REPL with rich welcome screen, dynamic status bar, and command selectors."""
-    session_id = resume
+    global _THINKING_EXPANDED
+
+    session_id: str | None = None
     active_plan_mode = plan_mode
     pending_skills: list[str] = []
-    if session_id and mgr.get_session(session_id) is None:
-        print(f"No saved session with id '{session_id}'.")
-        return 1
+
+    # 1. Handle --last
+    if last:
+        sessions = mgr.list_sessions()
+        if sessions:
+            session_id = sessions[0].id
+        else:
+            if console is not None and _RICH:
+                console.print("[yellow]No previous sessions found for this project. Starting a new session.[/]")
+            else:
+                print("No previous sessions found for this project. Starting a new session.")
+
+    # 2. Handle --fork
+    elif fork is not None:
+        if isinstance(fork, str) and fork.strip():
+            target_id = fork.strip()
+        else:
+            sessions = mgr.list_sessions()
+            if not sessions:
+                print("No previous session found to fork.")
+                return 1
+            target_id = sessions[0].id
+        forked_id = mgr.fork_session(target_id)
+        if not forked_id:
+            print(f"Failed to fork session '{target_id}'.")
+            return 1
+        session_id = forked_id
+
+    # 3. Handle --resume
+    elif resume is not None:
+        if resume is True:
+            sessions = mgr.list_sessions()[:15]
+            if not sessions:
+                print("No saved sessions found.")
+            else:
+                chosen_action = select_session_interactive(console, sessions)
+                if chosen_action:
+                    if chosen_action.startswith("fork:"):
+                        fork_target = chosen_action.split(":", 1)[1]
+                        session_id = mgr.fork_session(fork_target)
+                    elif chosen_action.startswith("delete:"):
+                        del_target = chosen_action.split(":", 1)[1]
+                        mgr.delete_session(del_target)
+                        session_id = None
+                    else:
+                        session_id = chosen_action
+        elif isinstance(resume, str) and resume.strip():
+            session_id = resume.strip()
+            if mgr.get_session(session_id) is None:
+                print(f"No saved session with id '{session_id}'.")
+                return 1
+
+    if session_id:
+        resumed_entry = mgr.get_session(session_id)
+        if resumed_entry:
+            active_plan_mode = resumed_entry.plan_mode
+
+    # Setup Readline Persistent History and Autocompletion
+    setup_readline(mgr.project_root, mgr.get_active_model)
 
     # Render Welcome Screen & Brand Identity
     mcp_count = len(getattr(mgr.mcp_manager, "clients", {}) or {})
@@ -501,23 +722,57 @@ async def _run_interactive(
         mcp_servers_count=mcp_count,
     )
 
+    # If an initial prompt was provided alongside interactive launch
+    if initial_prompt and initial_prompt.strip():
+        effective_prompt, attached_files = expand_file_mentions(
+            initial_prompt.strip(), mgr.project_root
+        )
+        if attached_files:
+            if console is not None and _RICH:
+                console.print(
+                    f"  [dim]📎 Attached files:[/] [bold cyan]{', '.join(attached_files)}[/]"
+                )
+            else:
+                print(f"  Attached files: {', '.join(attached_files)}")
+        _STREAM_STATE.reset()
+        if session_id is None:
+            session_id = await mgr.create_session(
+                effective_prompt, plan_mode=active_plan_mode
+            )
+        else:
+            await mgr.reply_session(
+                session_id, effective_prompt, plan_mode=active_plan_mode
+            )
+        await _drain_pending_interactions(mgr, session_id, yes)
+
+
     try:
         while True:
             # Render Dynamic Status Bar
             cur_entry = mgr.get_session(session_id) if session_id else None
             tokens_count = cur_entry.active_tokens if cur_entry else 0
+            messages_list = mgr.list_session_messages(session_id) if session_id else []
+            turns_count = sum(1 for m in messages_list if m.role == "user")
+            active_mcp_count = len(getattr(mgr.mcp_manager, "clients", {}) or {})
+
             render_status_bar(
                 console,
                 mgr.get_active_model(),
                 tokens_count,
                 active_plan_mode,
                 mgr.project_root,
+                turns=turns_count,
+                mcp_count=active_mcp_count,
+                settings=mgr.get_resolved_settings(),
             )
 
             try:
                 prompt_label = "coderai [plan]> " if active_plan_mode else "coderai> "
-                raw = input(prompt_label).strip()
-            except (EOFError, KeyboardInterrupt):
+                raw = read_user_turn(prompt_label).strip()
+            except KeyboardInterrupt:
+                print()
+                continue
+            except EOFError:
                 break
 
             if not raw:
@@ -533,6 +788,169 @@ async def _run_interactive(
 
                 if cmd in ("/help", "/?"):
                     _render_help_menu()
+                    continue
+
+                if cmd == "/clear":
+                    os.system("cls" if os.name == "nt" else "clear")
+                    continue
+
+                if cmd == "/tokens" or cmd == "/cost":
+                    render_token_breakdown(console, mgr, session_id)
+                    continue
+
+                if cmd in ("/config", "/settings"):
+                    render_config_interactive(console, mgr.project_root)
+                    continue
+
+                if cmd == "/history":
+                    render_session_history(console, mgr, session_id)
+                    continue
+
+                if cmd == "/mcp":
+                    if cmd_arg.startswith("reconnect"):
+                        server_name = cmd_arg.replace("reconnect", "", 1).strip()
+                        if not server_name:
+                            print("Usage: /mcp reconnect <server_name>")
+                            continue
+                        reconnected = await mgr.mcp_manager.reconnect(server_name)
+                        mgr._refresh_mcp_tool_definitions()
+                        if reconnected:
+                            if console is not None and _RICH:
+                                console.print(
+                                    f"[bold green]✓ Reconnected MCP server '[cyan]{server_name}[/]'.[/]"
+                                )
+                            else:
+                                print(f"✓ Reconnected MCP server '{server_name}'.")
+                        else:
+                            status = next(
+                                (
+                                    s
+                                    for s in mgr.mcp_manager.server_statuses
+                                    if s.name == server_name
+                                ),
+                                None,
+                            )
+                            err_msg = f": {status.error}" if status and status.error else ""
+                            if console is not None and _RICH:
+                                console.print(
+                                    f"[bold red]Failed to reconnect MCP server '{server_name}'{err_msg}[/]"
+                                )
+                            else:
+                                print(f"Failed to reconnect MCP server '{server_name}'{err_msg}")
+                        continue
+                    elif cmd_arg.startswith("prompts"):
+                        render_mcp_prompts(console, mgr)
+                        continue
+                    elif cmd_arg.startswith("resources"):
+                        uri_arg = cmd_arg.replace("resources", "", 1).strip() or None
+                        await render_mcp_resources_async(console, mgr, uri=uri_arg)
+                        continue
+                    else:
+                        render_mcp_interactive(console, mgr)
+                        continue
+
+                if cmd == "/thinking":
+                    arg = cmd_arg.lower()
+                    if arg in ("full", "on", "expand", "expanded"):
+                        _THINKING_EXPANDED = True
+                        if console is not None and _RICH:
+                            console.print(
+                                "[bold magenta]Reasoning traces:[/] Full expanded view enabled."
+                            )
+                        else:
+                            print("Reasoning traces: Full expanded view enabled.")
+                    elif arg in ("summary", "off", "collapse", "collapsed"):
+                        _THINKING_EXPANDED = False
+                        if console is not None and _RICH:
+                            console.print(
+                                "[bold magenta]Reasoning traces:[/] Concise summary view enabled."
+                            )
+                        else:
+                            print("Reasoning traces: Concise summary view enabled.")
+                    else:
+                        _THINKING_EXPANDED = not _THINKING_EXPANDED
+                        mode_str = "Full expanded" if _THINKING_EXPANDED else "Concise summary"
+                        if console is not None and _RICH:
+                            console.print(
+                                f"[bold magenta]Reasoning traces:[/] Switched to {mode_str}."
+                            )
+                        else:
+                            print(f"Reasoning traces: Switched to {mode_str}.")
+                    continue
+
+                if cmd == "/export":
+                    if not session_id:
+                        print("No active session to export.")
+                        continue
+                    if cmd_arg.endswith(".json"):
+                        exported_file = export_session_to_json(mgr, session_id, cmd_arg)
+                    else:
+                        exported_file = export_session_to_markdown(
+                            mgr, session_id, cmd_arg if cmd_arg else None
+                        )
+                    if console is not None and _RICH:
+                        console.print(
+                            f"[bold green]✓ Session successfully exported to:[/] [cyan]{exported_file}[/]"
+                        )
+                    else:
+                        print(f"✓ Session successfully exported to: {exported_file}")
+                    continue
+
+                if cmd == "/fork":
+                    target_id = cmd_arg if cmd_arg else session_id
+                    if not target_id:
+                        print("Usage: /fork [session_id]")
+                        continue
+                    forked_id = mgr.fork_session(target_id)
+                    if forked_id:
+                        session_id = forked_id
+                        f_entry = mgr.get_session(session_id)
+                        if f_entry:
+                            active_plan_mode = f_entry.plan_mode
+                        if console is not None and _RICH:
+                            console.print(
+                                f"[bold green]✓ Forked session to new session:[/] [cyan]{session_id}[/]"
+                            )
+                        else:
+                            print(f"✓ Forked session to new session: {session_id}")
+                    else:
+                        print(f"Failed to fork session '{target_id}'.")
+                    continue
+
+                if cmd in ("/delete", "/rm"):
+                    target_id = cmd_arg if cmd_arg else session_id
+                    if not target_id:
+                        print("Usage: /delete <session_id>")
+                        continue
+                    if mgr.delete_session(target_id):
+                        if session_id == target_id:
+                            session_id = None
+                        if console is not None and _RICH:
+                            console.print(f"[bold green]✓ Deleted session:[/] [red]{target_id}[/]")
+                        else:
+                            print(f"✓ Deleted session: {target_id}")
+                    else:
+                        print(f"No saved session with id '{target_id}'.")
+                    continue
+
+                if cmd == "/compact":
+                    if not session_id:
+                        print("No active session to compact.")
+                        continue
+                    _STREAM_STATE.reset()
+                    if console is not None and _RICH:
+                        with console.status("[bold cyan]Compacting session context...[/]"):
+                            await mgr.compact_session(session_id)
+                    else:
+                        await mgr.compact_session(session_id)
+                    entry = mgr.get_session(session_id)
+                    active_tokens = entry.active_tokens if entry else 0
+                    if console is not None and _RICH:
+                        console.print(
+                            f"[bold green]✓[/] Session context compacted. Active tokens: [bold cyan]{active_tokens}[/]"
+                        )
+                    else:
+                        print(f"✓ Session context compacted. Active tokens: {active_tokens}")
                     continue
 
                 if cmd == "/continue":
@@ -589,16 +1007,40 @@ async def _run_interactive(
 
                 if cmd == "/sessions":
                     sessions = mgr.list_sessions()[:15]
-                    chosen_session = select_session_interactive(console, sessions)
-                    if chosen_session:
-                        session_id = chosen_session
-                        resumed_entry = mgr.get_session(session_id)
-                        if resumed_entry:
-                            active_plan_mode = resumed_entry.plan_mode
-                        if console is not None and _RICH:
-                            console.print(f"[bold green]Resumed session:[/] {session_id}")
+                    chosen_action = select_session_interactive(console, sessions)
+                    if chosen_action:
+                        if chosen_action.startswith("delete:"):
+                            del_target = chosen_action.split(":", 1)[1]
+                            if mgr.delete_session(del_target):
+                                if session_id == del_target:
+                                    session_id = None
+                                if console is not None and _RICH:
+                                    console.print(f"[bold green]✓ Deleted session:[/] {del_target}")
+                                else:
+                                    print(f"Deleted session: {del_target}")
+                        elif chosen_action.startswith("fork:"):
+                            fork_target = chosen_action.split(":", 1)[1]
+                            forked_id = mgr.fork_session(fork_target)
+                            if forked_id:
+                                session_id = forked_id
+                                resumed_entry = mgr.get_session(session_id)
+                                if resumed_entry:
+                                    active_plan_mode = resumed_entry.plan_mode
+                                if console is not None and _RICH:
+                                    console.print(
+                                        f"[bold green]✓ Forked and switched to session:[/] {session_id}"
+                                    )
+                                else:
+                                    print(f"Forked and switched to session: {session_id}")
                         else:
-                            print(f"Resumed session: {session_id}")
+                            session_id = chosen_action
+                            resumed_entry = mgr.get_session(session_id)
+                            if resumed_entry:
+                                active_plan_mode = resumed_entry.plan_mode
+                            if console is not None and _RICH:
+                                console.print(f"[bold green]Resumed session:[/] {session_id}")
+                            else:
+                                print(f"Resumed session: {session_id}")
                     continue
 
                 if cmd == "/skills":
@@ -613,15 +1055,34 @@ async def _run_interactive(
                     continue
 
                 if cmd == "/undo":
-                    if session_id and mgr.undo(session_id):
-                        if console is not None and _RICH:
-                            console.print(
-                                "[bold green]✓ Reverted files and history to previous checkpoint.[/]"
-                            )
-                        else:
-                            print("Reverted files and history to previous checkpoint.")
-                    else:
+                    if not session_id:
+                        print("No active session to undo.")
+                        continue
+                    targets = mgr.list_undo_targets(session_id)
+                    if not targets:
                         print("Nothing to undo in the active session.")
+                        continue
+                    target, mode = select_undo_interactive(console, targets)
+                    if target:
+                        success = mgr.undo(
+                            session_id, target_message_id=target["message_id"], mode=mode
+                        )
+                        if success:
+                            mode_desc = {
+                                "restore_both": "reverted files and history",
+                                "restore_conversation_only": "rolled back conversation history",
+                                "restore_code_only": "reverted files on disk",
+                            }.get(mode, "reverted")
+                            if console is not None and _RICH:
+                                console.print(
+                                    f"[bold green]✓ Successfully {mode_desc} to Turn #{target['turn_index']}.[/]"
+                                )
+                            else:
+                                print(
+                                    f"✓ Successfully {mode_desc} to Turn #{target['turn_index']}."
+                                )
+                        else:
+                            print(f"Failed to undo to Turn #{target['turn_index']}.")
                     continue
 
                 if cmd == "/new":
@@ -667,20 +1128,77 @@ async def _run_interactive(
                     print(f"  Attached files: {', '.join(attached_files)}")
 
             _STREAM_STATE.reset()
-            if session_id is None:
-                session_id = await mgr.create_session(
-                    effective_prompt, plan_mode=active_plan_mode, skills=pending_skills or None
-                )
-            else:
-                await mgr.reply_session(
-                    session_id,
-                    effective_prompt,
-                    plan_mode=active_plan_mode,
-                    skills=pending_skills or None,
-                )
-            pending_skills.clear()
+            try:
+                if session_id is None:
+                    session_id = await mgr.create_session(
+                        effective_prompt, plan_mode=active_plan_mode, skills=pending_skills or None
+                    )
+                else:
+                    await mgr.reply_session(
+                        session_id,
+                        effective_prompt,
+                        plan_mode=active_plan_mode,
+                        skills=pending_skills or None,
+                    )
+                pending_skills.clear()
+                await _drain_pending_interactions(mgr, session_id, yes)
 
-            await _drain_pending_interactions(mgr, session_id, yes)
+                # Post-plan decision prompt when a plan is proposed during plan mode
+                if active_plan_mode and session_id:
+                    entry = mgr.get_session(session_id)
+                    reply = (entry.assistant_reply or "") if entry else ""
+                    if not reply:
+                        msgs = mgr.list_session_messages(session_id)
+                        last_asst = next(
+                            (
+                                m
+                                for m in reversed(msgs)
+                                if m.role == "assistant" and not m.compacted
+                            ),
+                            None,
+                        )
+                        reply = last_asst.content if last_asst else ""
+
+                    if "<proposed_plan>" in reply:
+                        action = prompt_plan_implementation(console)
+                        if action == "execute":
+                            active_plan_mode = False
+                            if console is not None and _RICH:
+                                console.print(
+                                    "[bold green]✓ Plan approved! Exiting Plan Mode and beginning implementation...[/]"
+                                )
+                            else:
+                                print(
+                                    "✓ Plan approved! Exiting Plan Mode and beginning implementation..."
+                                )
+                            _STREAM_STATE.reset()
+                            await mgr.reply_session(
+                                session_id,
+                                "Proceed with the implementation of the approved plan.",
+                                plan_mode=False,
+                            )
+                            await _drain_pending_interactions(mgr, session_id, yes)
+                        elif action == "refine":
+                            try:
+                                refine_input = input("Enter plan refinements: ").strip()
+                            except (EOFError, KeyboardInterrupt):
+                                refine_input = ""
+                            if refine_input:
+                                _STREAM_STATE.reset()
+                                await mgr.reply_session(
+                                    session_id,
+                                    refine_input,
+                                    plan_mode=True,
+                                )
+                                await _drain_pending_interactions(mgr, session_id, yes)
+            except (KeyboardInterrupt, asyncio.CancelledError):
+                if session_id:
+                    mgr.interrupt_session(session_id)
+                if console is not None and _RICH:
+                    console.print("\n[bold yellow]⚡ Turn interrupted by user.[/]")
+                else:
+                    print("\n⚡ Turn interrupted by user.")
+                continue
     finally:
         render_exit_summary(console, mgr, session_id)
 
@@ -701,17 +1219,111 @@ def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     project_root = str(pathlib.Path.cwd().resolve())
 
+    # Check mutual exclusions & argument validity
+    has_positional = bool(args.prompt)
+    has_prompt_flag = bool(args.prompt_flag and args.prompt_flag.strip())
+    has_exec = args.exec_prompt is not None and args.exec_prompt is not False
+    exec_str = (
+        args.exec_prompt
+        if isinstance(args.exec_prompt, str) and args.exec_prompt.strip()
+        else None
+    )
+    prompt_value = (
+        args.prompt_flag
+        if has_prompt_flag
+        else (
+            exec_str
+            if exec_str
+            else (" ".join(args.prompt) if has_positional else (args.message or None))
+        )
+    )
+
+    if has_positional and has_prompt_flag:
+        print(
+            "Cannot use both a positional prompt and the --prompt (-p) flag together",
+            file=sys.stderr,
+        )
+        return 1
+
+    if args.last and args.resume is not None:
+        print(
+            "Cannot use --last together with --resume. Use --last to resume the most recent session, or --resume <sessionId> for a specific session.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if args.fork is not None and args.resume is not None:
+        print("Cannot use --fork together with --resume.", file=sys.stderr)
+        return 1
+
+    if args.last and args.fork is not None:
+        print("Cannot use --last together with --fork.", file=sys.stderr)
+        return 1
+
+    if args.resume is True and prompt_value:
+        print(
+            "Cannot use --resume without a session ID together with --prompt.\nUse --resume <sessionId> -p <prompt> to resume a session and send a prompt.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if has_exec and not prompt_value:
+        print("--exec / -x requires a non-empty --prompt / -p value.", file=sys.stderr)
+        return 1
+
+    if has_exec and args.resume is True:
+        print(
+            "--exec cannot use --resume without a session ID.\nUse --exec --resume <sessionId> --prompt <prompt>.",
+            file=sys.stderr,
+        )
+        return 1
+
     mgr = _build_manager(project_root, args.model)
 
     async def _main() -> int:
+        is_server_mode = bool(getattr(args, "server", False)) or (
+            bool(args.prompt)
+            and len(args.prompt) == 1
+            and args.prompt[0].lower() in ("serve", "server")
+        )
+        if is_server_mode:
+            from coderai.core.server import CoderAIServer
+
+            server = CoderAIServer(
+                project_root=project_root,
+                model=args.model,
+                session_manager=mgr,
+            )
+            await server.run_stdio()
+            return 0
+
         await mgr.init_mcp_servers()
         try:
-            if args.message:
-                return await _run_once(mgr, args.message, args.yes, plan_mode=args.plan)
-            if args.prompt:
-                prompt = " ".join(args.prompt)
-                return await _run_once(mgr, prompt, args.yes, plan_mode=args.plan)
-            return await _run_interactive(mgr, args.yes, args.resume, plan_mode=args.plan)
+            if has_exec and prompt_value:
+                from coderai.cli.exec_runner import run_exec_session
+
+                resume_id = args.resume if isinstance(args.resume, str) else None
+                return await run_exec_session(
+                    prompt_value,
+                    project_root=project_root,
+                    model=args.model,
+                    resume_session_id=resume_id,
+                    plan_mode=args.plan,
+                    auto_approve=args.yes,
+                    verbose=args.verbose,
+                )
+
+            if prompt_value and not (args.resume or args.fork or args.last):
+                return await _run_once(mgr, prompt_value, args.yes, plan_mode=args.plan)
+            return await _run_interactive(
+                mgr,
+                args.yes,
+                resume=args.resume,
+                fork=args.fork,
+                last=args.last,
+                plan_mode=args.plan,
+                initial_prompt=prompt_value,
+            )
         finally:
             mgr.dispose()
 
@@ -720,3 +1332,4 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+

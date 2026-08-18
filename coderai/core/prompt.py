@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import os
 import pathlib
 import platform
 import re
@@ -306,6 +307,28 @@ def get_tools(
         )
     )
 
+    tools.append(
+        _fn(
+            "WebFetch",
+            "Fetch content from an external web URL, sanitize against prompt injection, and return clean Markdown or JSON.",
+            {
+                "url": {
+                    "type": "string",
+                    "description": "The HTTP or HTTPS URL to fetch content from.",
+                },
+                "raw": {
+                    "type": "boolean",
+                    "description": "If true, return raw plain text instead of parsed Markdown.",
+                },
+                "max_length": {
+                    "type": "number",
+                    "description": "Maximum characters to return (default: 30,000).",
+                },
+            },
+            ["url"],
+        )
+    )
+
     if not supports_multimodal(options.get("model", "")):
         tools.append(
             _fn(
@@ -360,6 +383,38 @@ def _fn(
             },
         },
     }
+
+
+def format_tool_definitions(
+    tools: list[dict[str, Any]],
+    model: str = "",
+    strict: bool = False,
+) -> list[dict[str, Any]]:
+    """Format tool definitions for specific model families (e.g. strict schemas vs standard function calling)."""
+    formatted: list[dict[str, Any]] = []
+    is_strict_model = strict or any(
+        k in model.lower() for k in ("gpt-4o", "gpt-4.5", "o1", "o3", "deepseek-v4")
+    )
+
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        if tool.get("type") == "function" and "function" in tool:
+            func = dict(tool["function"])
+            params = dict(func.get("parameters") or {})
+            if is_strict_model:
+                func["strict"] = True
+                params["additionalProperties"] = False
+            func["parameters"] = params
+            formatted.append(
+                {
+                    "type": "function",
+                    "function": func,
+                }
+            )
+        else:
+            formatted.append(tool)
+    return formatted
 
 
 TOOL_DOCS = """# Available Tools
@@ -516,14 +571,34 @@ def strip_skill_prompt_metadata(content: str) -> str:
     return content
 
 
-def extract_skill_frontmatter(content: str) -> dict[str, str]:
-    """Extract metadata (name, description) from SKILL.md YAML frontmatter."""
+def extract_skill_frontmatter(content: str) -> dict[str, Any]:
+    """Extract metadata (name, description, etc.) from SKILL.md YAML frontmatter."""
     pattern = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
     match = pattern.match(content)
     if not match:
         return {}
-    meta: dict[str, str] = {}
-    for line in match.group(1).splitlines():
+    yaml_text = match.group(1)
+    try:
+        import yaml
+
+        parsed = yaml.safe_load(yaml_text)
+        if isinstance(parsed, dict):
+            meta: dict[str, Any] = {}
+            for k, v in parsed.items():
+                key = str(k).strip().lower()
+                if isinstance(v, str):
+                    meta[key] = v.strip()
+                elif isinstance(v, (bool, int, float, dict, list)):
+                    meta[key] = v
+                else:
+                    meta[key] = str(v)
+            return meta
+    except Exception:
+        pass
+
+    # Fallback to simple line-based parsing if yaml is unavailable or fails
+    meta = {}
+    for line in yaml_text.splitlines():
         line = line.strip()
         if not line or line.startswith("#") or ":" not in line:
             continue
@@ -594,7 +669,9 @@ def get_bundled_skills_root() -> str:
     return str(pathlib.Path(get_extension_root()) / "skills")
 
 
-def get_skill_scan_roots(project_root: str | None = None) -> list[tuple[str, str]]:
+def get_skill_scan_roots(
+    project_root: str | None = None, custom_scan_paths: list[str] | None = None
+) -> list[tuple[str, str]]:
     """Return (filesystem_root, display_root) pairs. First match wins by skill name."""
     home = pathlib.Path.home()
     roots: list[tuple[str, str]] = []
@@ -605,20 +682,34 @@ def get_skill_scan_roots(project_root: str | None = None) -> list[tuple[str, str
                 (str(root / ".coderai" / "skills"), "./.coderai/skills"),
                 (str(root / ".coderAI" / "skills"), "./.coderAI/skills"),
                 (str(root / ".agents" / "skills"), "./.agents/skills"),
+                (str(root / ".claude" / "skills"), "./.claude/skills"),
             ]
         )
     roots.extend(
         [
             (str(home / ".coderai" / "skills"), "~/.coderai/skills"),
             (str(home / ".agents" / "skills"), "~/.agents/skills"),
-            (get_bundled_skills_root(), "bundled:"),
+            (str(home / ".claude" / "skills"), "~/.claude/skills"),
         ]
     )
+    if custom_scan_paths:
+        for custom_path in custom_scan_paths:
+            if not custom_path:
+                continue
+            expanded = str(pathlib.Path(os.path.expanduser(custom_path)).resolve())
+            display = custom_path if not project_root else f"custom:{custom_path}"
+            if (expanded, display) not in roots and (expanded, custom_path) not in roots:
+                roots.append((expanded, display))
+    roots.append((get_bundled_skills_root(), "bundled:"))
     return roots
 
 
-def get_skill_read_exempt_paths(project_root: str | None = None) -> list[str]:
-    return [root for root, _ in get_skill_scan_roots(project_root)]
+def get_skill_read_exempt_paths(
+    project_root: str | None = None, custom_scan_paths: list[str] | None = None
+) -> list[str]:
+    return [
+        root for root, _ in get_skill_scan_roots(project_root, custom_scan_paths=custom_scan_paths)
+    ]
 
 
 def _skill_markdown_path(skill_dir: pathlib.Path) -> pathlib.Path | None:
@@ -629,21 +720,36 @@ def _skill_markdown_path(skill_dir: pathlib.Path) -> pathlib.Path | None:
     return None
 
 
-def _implicit_invocation_allowed(meta: dict[str, str]) -> bool:
-    raw = meta.get("allow-implicit-invocation") or meta.get("allow_implicit_invocation") or ""
-    if not raw:
+def _implicit_invocation_allowed(meta: dict[str, Any]) -> bool:
+    raw = (
+        meta.get("allow-implicit-invocation")
+        if meta.get("allow-implicit-invocation") is not None
+        else meta.get("allow_implicit_invocation")
+    )
+    if raw is None:
+        metadata = meta.get("metadata")
+        if isinstance(metadata, dict):
+            raw = metadata.get("allow-implicit-invocation") or metadata.get(
+                "allow_implicit_invocation"
+            )
+    if raw is None:
         return True
-    return raw.strip().lower() not in ("false", "0", "no")
+    if isinstance(raw, bool):
+        return raw
+    return str(raw).strip().lower() not in ("false", "0", "no")
 
 
 def list_skills(
     project_root: str | None = None,
     enabled_skills: dict[str, bool] | None = None,
+    custom_scan_paths: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """List bundled + project + user skills. First-wins by name."""
+    """List bundled + project + user + external compatibility skills. First-wins by name."""
     enabled = enabled_skills or {}
     skills_by_name: dict[str, dict[str, Any]] = {}
-    for root, display_root in get_skill_scan_roots(project_root):
+    for root, display_root in get_skill_scan_roots(
+        project_root, custom_scan_paths=custom_scan_paths
+    ):
         path = pathlib.Path(root)
         if not path.is_dir():
             continue
@@ -682,15 +788,20 @@ def list_skills(
     return sorted(skills_by_name.values(), key=lambda s: str(s["name"]))
 
 
-def load_skill(name: str, project_root: str | None = None) -> dict[str, Any] | None:
+def load_skill(
+    name: str,
+    project_root: str | None = None,
+    custom_scan_paths: list[str] | None = None,
+) -> dict[str, Any] | None:
     needle = name.strip().lower()
-    for skill in list_skills(project_root):
+    for skill in list_skills(project_root, custom_scan_paths=custom_scan_paths):
         if skill["name"].lower() == needle:
             try:
                 content = _read(skill["path"])
                 return {
                     "name": skill["name"],
                     "content": content,
+                    "instructions": content,
                     "path": skill["path"],
                     "skillFilePath": skill["path"],
                     "location": skill.get("location", ""),
@@ -702,29 +813,89 @@ def load_skill(name: str, project_root: str | None = None) -> dict[str, Any] | N
     return None
 
 
+STOP_WORDS = {
+    "this",
+    "that",
+    "with",
+    "from",
+    "make",
+    "change",
+    "have",
+    "file",
+    "please",
+    "code",
+    "user",
+    "what",
+    "when",
+    "where",
+    "which",
+    "your",
+    "about",
+    "their",
+    "there",
+    "would",
+    "could",
+    "should",
+    "follow",
+    "using",
+    "into",
+    "some",
+    "only",
+    "then",
+    "also",
+    "more",
+    "most",
+    "than",
+    "other",
+    "such",
+    "just",
+    "like",
+    "will",
+}
+
+
 def match_skills_for_prompt(
     user_prompt: str,
     project_root: str | None = None,
     enabled_skills: dict[str, bool] | None = None,
     loaded_names: set[str] | None = None,
+    custom_scan_paths: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Match skills automatically based on user prompt query terms and skill descriptions."""
     if not user_prompt.strip():
         return []
     loaded = {n.lower() for n in (loaded_names or set())}
-    prompt_tokens = set(re.findall(r"\w+", user_prompt.lower()))
+    prompt_lower = user_prompt.lower()
+    prompt_tokens = set(re.findall(r"\w+", prompt_lower))
+    prompt_sig = {t for t in prompt_tokens if len(t) >= 4 and t not in STOP_WORDS}
+
     matched: list[dict[str, Any]] = []
-    for skill in list_skills(project_root, enabled_skills=enabled_skills):
-        if skill["name"].lower() in loaded:
+    for skill in list_skills(
+        project_root, enabled_skills=enabled_skills, custom_scan_paths=custom_scan_paths
+    ):
+        name_lower = skill["name"].lower()
+        if name_lower in loaded:
             continue
         if skill.get("allowImplicitInvocation") is False:
             continue
-        name_tokens = set(re.findall(r"\w+", skill["name"].lower()))
+
+        # Exact skill name mentioned in prompt
+        if name_lower in prompt_lower:
+            matched.append(skill)
+            continue
+
+        name_tokens = {t for t in re.findall(r"\w+", name_lower) if t not in STOP_WORDS}
+        if name_tokens and name_tokens.issubset(prompt_tokens):
+            matched.append(skill)
+            continue
+
         desc_tokens = {
-            t for t in re.findall(r"\w+", skill.get("description", "").lower()) if len(t) >= 4
+            t
+            for t in re.findall(r"\w+", skill.get("description", "").lower())
+            if len(t) >= 4 and t not in STOP_WORDS
         }
-        significant = {t for t in prompt_tokens if len(t) >= 4}
-        if (name_tokens & prompt_tokens) or (desc_tokens & significant):
+        # Require at least 2 significant keyword matches for description matching
+        if len(desc_tokens & prompt_sig) >= 2:
             matched.append(skill)
     return matched
 

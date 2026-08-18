@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "coderai-agent"
 dynamic = ["version"]
-description = "AI pair programming in your terminal — deepcode-standard core (snippet tools, bounded agent loop, permissions)"
+description = "AI pair programming in your terminal — modular core (snippet tools, bounded agent loop, permissions)"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
@@ -25,6 +25,7 @@ dependencies = [
     "rich>=13.7.0",
     "openai>=1.10.0",
     "requests>=2.31.0",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -42,6 +43,7 @@ Source = "https://github.com/adityaanilraut/CoderAI"
 
 [project.scripts]
 coderai = "coderai.main:main"
+cai = "coderai.main:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

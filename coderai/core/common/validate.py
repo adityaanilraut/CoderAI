@@ -17,6 +17,20 @@ class ValidationResult:
     error: str | None = None
 
 
+def clean_json_string(raw: str) -> str:
+    """Clean markdown fences and surrounding whitespace from raw JSON strings."""
+    if not raw or not isinstance(raw, str):
+        return ""
+    cleaned = raw.strip()
+    if cleaned.startswith("```json"):
+        cleaned = cleaned[7:]
+    elif cleaned.startswith("```"):
+        cleaned = cleaned[3:]
+    if cleaned.endswith("```"):
+        cleaned = cleaned[:-3]
+    return cleaned.strip()
+
+
 def semantic_boolean(value: Any, default: bool = False) -> bool:
     """Coerce boolean-like inputs ("true", "false", bool) to a boolean."""
     if value is None:

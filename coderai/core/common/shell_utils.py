@@ -120,4 +120,6 @@ def build_shell_env(shell_path: str | None, configured_env: dict | None = None) 
     if shell_path:
         env["SHELL"] = shell_path
     env["GIT_EDITOR"] = "true"
+    env["PAGER"] = "cat"
+    env["NO_COLOR"] = "1"
     return env

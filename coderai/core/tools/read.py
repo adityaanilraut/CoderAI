@@ -173,6 +173,164 @@ def _format_notebook_output(output: dict[str, Any]) -> list[str]:
     return lines
 
 
+class GitignoreMatcher:
+    """Evaluates relative file and directory paths against gitignore rules."""
+
+    def __init__(self, patterns: list[str]) -> None:
+        self.rules: list[tuple[bool, bool, re.Pattern]] = []  # (is_negation, is_dir_only, regex)
+        for pat in patterns:
+            self._add_pattern(pat)
+
+    def _add_pattern(self, pattern: str) -> None:
+        pat = pattern.strip()
+        if not pat or pat.startswith("#"):
+            return
+        is_negation = pat.startswith("!")
+        if is_negation:
+            pat = pat[1:].strip()
+        is_dir_only = pat.endswith("/")
+        if is_dir_only:
+            pat = pat[:-1]
+
+        rooted = pat.startswith("/")
+        if rooted:
+            pat = pat[1:]
+
+        regex_parts: list[str] = []
+        i = 0
+        while i < len(pat):
+            c = pat[i]
+            if c == "*":
+                if i + 1 < len(pat) and pat[i + 1] == "*":
+                    if i + 2 < len(pat) and pat[i + 2] == "/":
+                        regex_parts.append("(?:.+/)?")
+                        i += 3
+                        continue
+                    else:
+                        regex_parts.append(".*")
+                        i += 2
+                        continue
+                else:
+                    regex_parts.append("[^/]*")
+                    i += 1
+                    continue
+            elif c == "?":
+                regex_parts.append("[^/]")
+            elif c in r"\.+^${}()|[]":
+                regex_parts.append(re.escape(c))
+            else:
+                regex_parts.append(c)
+            i += 1
+
+        pattern_str = "".join(regex_parts)
+        if rooted:
+            regex = re.compile(rf"^{pattern_str}(?:/.*)?$", re.IGNORECASE)
+        else:
+            regex = re.compile(rf"(?:^|/){pattern_str}(?:/.*)?$", re.IGNORECASE)
+
+        self.rules.append((is_negation, is_dir_only, regex))
+
+    def is_ignored(self, rel_path: str, is_dir: bool = False) -> bool:
+        normalized = rel_path.replace("\\", "/").strip("/")
+        if not normalized:
+            return False
+
+        parts = normalized.split("/")
+        ancestor_dirs = ["/".join(parts[:i]) for i in range(1, len(parts))]
+
+        ignored = False
+        for is_negation, is_dir_only, regex in self.rules:
+            if not is_dir_only or is_dir:
+                if regex.search(normalized):
+                    ignored = not is_negation
+                    continue
+            if is_dir_only and not is_dir:
+                if any(regex.search(ancestor) for ancestor in ancestor_dirs):
+                    ignored = not is_negation
+                    continue
+        return ignored
+
+
+def load_gitignore_matcher(project_root: str) -> GitignoreMatcher:
+    """Load GitignoreMatcher using default ignore rules and project .gitignore if present."""
+    patterns = list(DEFAULT_GITIGNORE)
+    gitignore_path = pathlib.Path(project_root) / ".gitignore"
+    if gitignore_path.is_file():
+        try:
+            content = gitignore_path.read_text(encoding="utf-8", errors="replace")
+            patterns.extend(content.splitlines())
+        except Exception:
+            pass
+    return GitignoreMatcher(patterns)
+
+
+def _read_directory(dir_path: str, project_root: str, max_entries: int = 150) -> str:
+    """Read directory contents respecting .gitignore and format as a structured tree."""
+    p = pathlib.Path(dir_path)
+    matcher = load_gitignore_matcher(project_root)
+    lines: list[str] = [f"Directory listing for `{dir_path}`:\n"]
+
+    entries: list[tuple[str, bool, int]] = []
+    try:
+        for root, dirs, files in os.walk(dir_path):
+            rel_root = os.path.relpath(root, project_root).replace("\\", "/")
+            if rel_root == ".":
+                rel_root = ""
+
+            filtered_dirs = []
+            for d in dirs:
+                rel_dir = f"{rel_root}/{d}".lstrip("/")
+                if not matcher.is_ignored(rel_dir, is_dir=True):
+                    filtered_dirs.append(d)
+            dirs[:] = filtered_dirs
+
+            for d in sorted(dirs):
+                full_dir = os.path.join(root, d)
+                rel_to_target = os.path.relpath(full_dir, dir_path).replace("\\", "/")
+                entries.append((rel_to_target, True, 0))
+
+            for f in sorted(files):
+                rel_file = f"{rel_root}/{f}".lstrip("/")
+                if matcher.is_ignored(rel_file, is_dir=False):
+                    continue
+                full_file = os.path.join(root, f)
+                try:
+                    size = os.path.getsize(full_file)
+                except Exception:
+                    size = 0
+                rel_to_target = os.path.relpath(full_file, dir_path).replace("\\", "/")
+                entries.append((rel_to_target, False, size))
+
+            # Limit deep nested search
+            depth = len(pathlib.Path(root).relative_to(p).parts)
+            if depth >= 3:
+                dirs[:] = []
+    except Exception as e:
+        return f"Error reading directory: {e}"
+
+    if not entries:
+        return f"Directory `{dir_path}` is empty (or all contents are ignored)."
+
+    total_count = len(entries)
+    showing = entries[:max_entries]
+    for rel_path, is_directory, size in showing:
+        if is_directory:
+            lines.append(f"  [DIR]  {rel_path}/")
+        else:
+            if size < 1024:
+                size_str = f"{size} B"
+            elif size < 1024 * 1024:
+                size_str = f"{size / 1024:.1f} KB"
+            else:
+                size_str = f"{size / (1024 * 1024):.1f} MB"
+            lines.append(f"  [FILE] {rel_path} ({size_str})")
+
+    if total_count > max_entries:
+        lines.append(f"\n...and {total_count - max_entries} more items.")
+
+    return "\n".join(lines)
+
+
 def _normalize_relative_suffix(file_path: str) -> str:
     normalized = file_path.replace("\\", "/").strip().lstrip("./")
     return normalized
@@ -181,15 +339,25 @@ def _normalize_relative_suffix(file_path: str) -> str:
 def _find_suffix_matches(project_root: str, suffix: str) -> list[str]:
     matches: list[str] = []
     normalized_suffix = suffix.replace("\\", "/").lower()
+    matcher = load_gitignore_matcher(project_root)
 
     for root, dirs, files in os.walk(project_root):
-        # Exclude ignored directories
-        dirs[:] = [
-            d
-            for d in dirs
-            if d not in {".git", "node_modules", ".venv", "venv", "__pycache__", "build", "dist"}
-        ]
+        rel_root = os.path.relpath(root, project_root).replace("\\", "/")
+        if rel_root == ".":
+            rel_root = ""
+
+        # Filter directories in-place respecting gitignore
+        filtered_dirs = []
+        for d in dirs:
+            rel_dir = f"{rel_root}/{d}".lstrip("/")
+            if not matcher.is_ignored(rel_dir, is_dir=True):
+                filtered_dirs.append(d)
+        dirs[:] = filtered_dirs
+
         for f in files:
+            rel_file = f"{rel_root}/{f}".lstrip("/")
+            if matcher.is_ignored(rel_file, is_dir=False):
+                continue
             full_path = os.path.join(root, f)
             rel_path = os.path.relpath(full_path, project_root).replace("\\", "/").lower()
             if rel_path == normalized_suffix or rel_path.endswith(f"/{normalized_suffix}"):
@@ -299,10 +467,17 @@ def handle_read_tool(args: dict[str, Any], context: Any) -> ToolResult:
         return ToolResult(ok=False, name="read", error=f"Failed to stat file: {e}")
 
     if p.is_dir():
+        listing = _read_directory(file_path, project_root)
+        mark_file_read(
+            session_id,
+            file_path,
+            {"content": "", "timestamp": int(st.st_mtime * 1000), "is_partial_view": True},
+        )
         return ToolResult(
-            ok=False,
+            ok=True,
             name="read",
-            error="file_path points to a directory. Use bash ls for directories.",
+            output=listing,
+            metadata={"isDirectory": True, "filePath": file_path},
         )
 
     ext = p.suffix.lower()

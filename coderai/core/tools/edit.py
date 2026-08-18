@@ -433,23 +433,114 @@ def _call_completions(client: Any, **kwargs) -> Any:
     return res
 
 
-def _normalize_loose_text(val: str) -> str:
-    v = val.replace("\r\n", "\n").replace("\r", "\n")
-    v = re.sub(r"\\+(?=[\"'`\\“”‘’])", "", v)
-    v = v.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
-    v = re.sub(r"[ \t]+", " ", v)
-    return v.strip()
+def _normalize_quotes(val: str) -> str:
+    return val.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
 
 
 def _normalize_escaping(val: str) -> str:
     return re.sub(r"\\+(?=[\"'`\\“”‘’])", "", val)
 
 
-def _normalize_quotes(val: str) -> str:
-    return val.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
+def _normalize_loose_text(val: str) -> str:
+    v = val.replace("\r\n", "\n").replace("\r", "\n")
+    v = _normalize_escaping(v)
+    v = _normalize_quotes(v)
+    v = re.sub(r"[ \t]+", " ", v)
+    return v.strip()
+
+
+def to_bigrams(value: str) -> list[str]:
+    """Extract 2-character overlapping shingles for similarity scoring."""
+    if len(value) < 2:
+        return [value] if value else []
+    return [value[i : i + 2] for i in range(len(value) - 1)]
+
+
+def similarity_score(left: str, right: str) -> float:
+    """Calculate Sorensen-Dice bigram similarity coefficient (0.0 to 1.0)."""
+    if not left or not right:
+        return 1.0 if left == right else 0.0
+    if left == right:
+        return 1.0
+    left_bigrams = to_bigrams(left)
+    right_bigrams = to_bigrams(right)
+    if not left_bigrams or not right_bigrams:
+        return 1.0 if left == right else 0.0
+
+    from collections import Counter
+
+    right_counts = Counter(right_bigrams)
+    overlap = 0
+    for bg in left_bigrams:
+        if right_counts[bg] > 0:
+            overlap += 1
+            right_counts[bg] -= 1
+
+    return (2.0 * overlap) / (len(left_bigrams) + len(right_bigrams))
+
+
+def build_loose_character_pattern(character: str) -> str:
+    """Match quotes and typographic variants interchangeably, allowing optional escaping."""
+    if character in ('"', "“", "”"):
+        return r'\\*["“”]'
+    if character in ("'", "‘", "’"):
+        return r"\\*['‘’]"
+    return re.escape(character)
+
+
+def build_loose_escape_regex(source: str) -> re.Pattern | None:
+    """Build a regex pattern that matches escaping and quote variations."""
+    if not source:
+        return None
+    pattern = ""
+    index = 0
+    n = len(source)
+    while index < n:
+        if source[index] == "\\":
+            slash_end = index
+            while slash_end < n and source[slash_end] == "\\":
+                slash_end += 1
+            if slash_end < n:
+                pattern += r"\\*"
+                pattern += build_loose_character_pattern(source[slash_end])
+                index = slash_end + 1
+                continue
+            pattern += re.escape(source[index:slash_end])
+            index = slash_end
+            continue
+        pattern += build_loose_character_pattern(source[index])
+        index += 1
+    try:
+        return re.compile(pattern)
+    except re.error:
+        return None
+
+
+def find_loose_escape_matches(scope_text: str, needle: str) -> list[dict[str, Any]]:
+    """Find loose character matches scored by bigram similarity."""
+    regex = build_loose_escape_regex(needle)
+    if not regex:
+        return []
+    normalized_needle = _normalize_loose_text(needle)
+    matches: list[dict[str, Any]] = []
+    for match in regex.finditer(scope_text):
+        text = match.group(0)
+        score = similarity_score(normalized_needle, _normalize_loose_text(text))
+        matches.append(
+            {
+                "text": text,
+                "score": score,
+                "start_offset": match.start(),
+                "end_offset": match.end(),
+            }
+        )
+    return matches
 
 
 def _find_loose_candidate(scope_text: str, old: str) -> str | None:
+    loose_matches = find_loose_escape_matches(scope_text, old)
+    if loose_matches and loose_matches[0]["score"] == 1.0:
+        return loose_matches[0]["text"]
     norm_old = _normalize_loose_text(old)
     if not norm_old:
         return None

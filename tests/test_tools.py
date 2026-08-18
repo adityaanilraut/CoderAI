@@ -649,3 +649,228 @@ def test_mcp_spawn_spec():
     assert spec["command"] == "npx"
     assert spec["args"] == ["-y", "@modelcontextprotocol/server-memory"]
     assert spec["shell"] is False
+
+
+# ==========================================
+# 9. UnderstandImage Vision Tool
+# ==========================================
+
+
+def test_understand_image_vision_payload(tmp_path: pathlib.Path):
+    from coderai.core.tools.understand_image import handle as img_handle
+
+    img = tmp_path / "chart.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR" + b"\x00" * 32)
+
+    captured_requests: list[dict[str, Any]] = []
+
+    class MockMsg:
+        content = "Bar chart showing Q3 revenue growth of 25%."
+
+    class MockChoice:
+        message = MockMsg()
+
+    class MockResp:
+        choices = [MockChoice()]
+
+    class MockComp:
+        def create(self, **kwargs):
+            captured_requests.append(kwargs)
+            return MockResp()
+
+    class MockChat:
+        completions = MockComp()
+
+    class MockClient:
+        chat = MockChat()
+
+    ctx = {
+        "session_id": "test-vision-session",
+        "project_root": str(tmp_path),
+        "create_openai_client": lambda: {"client": MockClient(), "model": "gpt-4o"},
+    }
+
+    res = img_handle({"prompt": "Analyze this revenue chart", "image_path": str(img)}, ctx)
+    assert res.ok is True
+    assert "revenue growth" in res.output
+    assert res.metadata["imagePath"] == str(img.resolve())
+
+    assert len(captured_requests) == 1
+    req = captured_requests[0]
+    assert req["model"] == "gpt-4o"
+    assert len(req["messages"]) == 1
+    msg_content = req["messages"][0]["content"]
+    assert len(msg_content) == 2
+    assert msg_content[0]["type"] == "text"
+    assert msg_content[0]["text"] == "Analyze this revenue chart"
+    assert msg_content[1]["type"] == "image_url"
+    assert msg_content[1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+def test_understand_image_unconfigured_error(tmp_path: pathlib.Path):
+    from coderai.core.tools.understand_image import handle as img_handle
+
+    img = tmp_path / "chart.jpg"
+    img.write_bytes(b"\xff\xd8\xff\xe0\x00\x10JFIF" + b"\x00" * 32)
+
+    ctx = {
+        "session_id": "test-vision-no-client",
+        "project_root": str(tmp_path),
+        "create_openai_client": lambda: {"client": None},
+    }
+
+    res = img_handle({"prompt": "Describe image", "image_path": str(img)}, ctx)
+    assert res.ok is False
+    assert "vision capabilities" in res.error.lower()
+
+
+# ==========================================
+# 10. Phase 2 Tools & Utilities Tests
+# ==========================================
+
+
+def test_read_text_file_tail(tmp_path: pathlib.Path):
+    from coderai.core.common.file_utils import read_text_file_tail
+
+    missing = read_text_file_tail(str(tmp_path / "non_existent.log"))
+    assert missing is None
+
+    empty = tmp_path / "empty.log"
+    empty.write_text("")
+    res_empty = read_text_file_tail(str(empty))
+    assert res_empty is not None and res_empty["content"] == ""
+
+    log = tmp_path / "app.log"
+    content = "Line 1\nLine 2\nLine 3\nFinal line: Error detected."
+    log.write_text(content)
+    tail = read_text_file_tail(str(log), max_chars=30)
+    assert tail is not None
+    assert "Error detected." in tail["content"]
+    assert tail["truncated"] is True
+
+
+def test_notify_env_and_duration():
+    from coderai.core.common.notify import (
+        format_duration_seconds,
+        build_notify_env,
+        launch_notify_script,
+    )
+
+    assert format_duration_seconds(4500) == "4"
+    assert format_duration_seconds(120000) == "120"
+    assert format_duration_seconds(-500) == "0"
+
+    env = build_notify_env(
+        5000,
+        base_env={"FOO": "BAR"},
+        context={"status": "completed", "failReason": "", "body": "All done", "title": "Build"},
+    )
+    assert env["FOO"] == "BAR"
+    assert env["DURATION"] == "5"
+    assert env["STATUS"] == "completed"
+    assert env["BODY"] == "All done"
+    assert env["TITLE"] == "Build"
+
+    # Verify launch_notify_script handles empty / non-existent script gracefully without exception
+    launch_notify_script(None, 1000)
+    launch_notify_script("", 1000)
+
+
+@pytest.mark.asyncio
+async def test_web_search_custom_tool_execution(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+):
+    from coderai.core.tools.web_search import handle as web_search_handle
+
+    # Create dummy custom search script
+    script_path = tmp_path / "search_tool.sh"
+    script_path.write_text('#!/bin/sh\necho "Search results for: $1"\n')
+    script_path.chmod(0o755)
+
+    monkeypatch.setenv("CODERAI_WEB_SEARCH_TOOL", str(script_path))
+
+    ctx = {"session_id": "test_search", "project_root": str(tmp_path)}
+    res = await web_search_handle({"query": "python asyncio"}, ctx)
+    assert res.ok is True
+    assert "Search results for: python asyncio" in res.output
+
+
+def test_edit_loose_character_pattern_and_bigram_similarity():
+    from coderai.core.tools.edit import (
+        to_bigrams,
+        similarity_score,
+        build_loose_character_pattern,
+        find_loose_escape_matches,
+    )
+
+    # Bigrams & Similarity
+    assert to_bigrams("abc") == ["ab", "bc"]
+    assert similarity_score("hello", "hello") == 1.0
+    assert 0.0 < similarity_score("hello", "hella") < 1.0
+    assert similarity_score("abc", "xyz") == 0.0
+
+    # Loose character pattern
+    assert build_loose_character_pattern('"') == r'\\*["“”]'
+    assert build_loose_character_pattern("'") == r"\\*['‘’]"
+    assert build_loose_character_pattern("x") == "x"
+
+    # Loose escape regex matching
+    scope = 'const msg = "Hello “World” \\"test\\"";'
+    needle = 'const msg = "Hello "World" "test"";'
+    matches = find_loose_escape_matches(scope, needle)
+    assert len(matches) >= 1
+    assert matches[0]["text"] == scope
+
+
+def test_read_gitignore_suffix_matching(tmp_path: pathlib.Path):
+    from coderai.core.tools.read import (
+        _find_suffix_matches,
+        handle_read_tool,
+        load_gitignore_matcher,
+    )
+
+    # Create directory structure
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("print('app')")
+    (tmp_path / "build").mkdir()
+    (tmp_path / "build" / "app.py").write_text("print('build')")
+    (tmp_path / "ignored_dir").mkdir()
+    (tmp_path / "ignored_dir" / "app.py").write_text("print('ignored')")
+    (tmp_path / ".gitignore").write_text("ignored_dir/\n*.log\n")
+
+    matcher = load_gitignore_matcher(str(tmp_path))
+    assert matcher.is_ignored("ignored_dir", is_dir=True) is True
+    assert matcher.is_ignored("ignored_dir/app.py", is_dir=False) is True
+    assert matcher.is_ignored("build", is_dir=True) is True  # default gitignore
+    assert matcher.is_ignored("src/app.py", is_dir=False) is False
+
+    # Suffix search should only find the unignored src/app.py
+    matches = _find_suffix_matches(str(tmp_path), "app.py")
+    assert len(matches) == 1
+    assert matches[0] == str(tmp_path / "src" / "app.py")
+
+    ctx = {"session_id": "test_suffix", "project_root": str(tmp_path)}
+    res = handle_read_tool({"file_path": "src/app.py"}, ctx)
+    assert res.ok is True
+    assert "print('app')" in res.output
+
+
+def test_read_directory_tree_listing(tmp_path: pathlib.Path):
+    from coderai.core.tools.read import handle_read_tool
+
+    (tmp_path / "subdir").mkdir()
+    (tmp_path / "subdir" / "file1.txt").write_text("hello world")
+    (tmp_path / "file2.py").write_text("x = 1")
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "node_modules" / "pkg.json").write_text("{}")
+
+    ctx = {"session_id": "test_dir", "project_root": str(tmp_path)}
+    res = handle_read_tool({"file_path": str(tmp_path)}, ctx)
+    assert res.ok is True
+    assert "[DIR]" in res.output
+    assert "subdir/" in res.output
+    assert "[FILE]" in res.output
+    assert "file2.py" in res.output
+    # node_modules should be ignored by default gitignore
+    assert "node_modules" not in res.output
+    assert res.metadata.get("isDirectory") is True

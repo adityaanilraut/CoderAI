@@ -1,136 +1,157 @@
-"""McpClient — JSON-RPC 2.0 stdio client for Model Context Protocol (deepcode mcp-client.ts)."""
+"""McpClient — JSON-RPC 2.0 client for Model Context Protocol supporting Stdio and SSE (deepcode mcp-client.ts)."""
 
 from __future__ import annotations
 
 import asyncio
-import json
-import os
-import re
-import subprocess
-import sys
 from typing import Any
 from collections.abc import Callable
 
-from coderai.core.common.process_tree import kill_process_tree
+from coderai.core.mcp.transport import (
+    McpTransport,
+    SseMcpTransport,
+    StdioMcpTransport,
+    create_mcp_spawn_spec,
+)
 
-CMD_METACHARS_PATTERN = re.compile(r'[\s&<>()|^"%]')
-
-
-def create_mcp_spawn_spec(
-    command: str, args: list[str] | None = None, platform: str = sys.platform
-) -> dict[str, Any]:
-    args = args or []
-    if platform != "win32":
-        return {
-            "command": command,
-            "args": args,
-            "shell": False,
-        }
-
-    # Windows command building
-    def quote_windows_arg(arg: str) -> str:
-        if not arg:
-            return '""'
-        if not CMD_METACHARS_PATTERN.search(arg):
-            return arg
-        escaped = arg.replace('"', '\\"')
-        return f'"{escaped}"'
-
-    quoted_cmd = quote_windows_arg(command) if CMD_METACHARS_PATTERN.search(command) else command
-    quoted_args = [quote_windows_arg(a) for a in args]
-    cmd_line = f"{quoted_cmd} {' '.join(quoted_args)}".strip()
-
-    return {
-        "command": cmd_line,
-        "args": [],
-        "shell": True,
-        "windowsHide": True,
-    }
+__all__ = ["McpClient", "create_mcp_spawn_spec"]
 
 
 class McpClient:
+    """Client for Model Context Protocol servers over stdio or SSE transports."""
+
     def __init__(
         self,
         server_name: str,
         command_or_config: str | dict[str, Any],
         args: list[str] | None = None,
         env: dict[str, str] | None = None,
+        cwd: str | None = None,
     ) -> None:
         self.server_name = server_name
-        if isinstance(command_or_config, dict):
-            self.command = command_or_config.get("command", "")
-            self.args = list(command_or_config.get("args") or [])
-            self.env = command_or_config.get("env")
-        else:
-            self.command = command_or_config
-            self.args = list(args or [])
-            self.env = env
+        self.config: dict[str, Any] = (
+            command_or_config
+            if isinstance(command_or_config, dict)
+            else {"command": command_or_config}
+        )
+        if not isinstance(command_or_config, dict):
+            if args:
+                self.config["args"] = args
+            if env:
+                self.config["env"] = env
+            if cwd:
+                self.config["cwd"] = cwd
 
-        self._proc: subprocess.Popen[str] | None = None
+        # Initialize transport based on config
+        self.transport: McpTransport = self._create_transport()
+
         self._next_id = 0
         self._pending: dict[int, asyncio.Future[Any]] = {}
-        self._reader_task: asyncio.Task[None] | None = None
         self._tools: list[dict[str, Any]] = []
         self._prompts: list[dict[str, Any]] = []
         self._resources: list[dict[str, Any]] = []
         self._disconnected = False
         self._disconnect_handler: Callable[[str], None] | None = None
+        self._notification_handler: Callable[[str, dict[str, Any]], None] | None = None
+        self.server_capabilities: dict[str, Any] = {}
+
+    def _create_transport(self) -> McpTransport:
+        if "url" in self.config:
+            from coderai.core.network.security import NetworkPolicy
+
+            policy = self.config.get("policy")
+            if policy is None and self.config.get("allowPrivateIps"):
+                policy = NetworkPolicy(allow_private_ips=True)
+            return SseMcpTransport(
+                server_name=self.server_name,
+                url=self.config["url"],
+                headers=self.config.get("headers"),
+                policy=policy,
+            )
+        return StdioMcpTransport(
+            server_name=self.server_name,
+            command=self.config.get("command", ""),
+            args=self.config.get("args"),
+            env=self.config.get("env"),
+            cwd=self.config.get("cwd"),
+        )
 
     def is_connected(self) -> bool:
-        return self._proc is not None and self._proc.poll() is None and not self._disconnected
+        return self.transport.is_connected() and not self._disconnected
 
     def set_on_disconnect(self, handler: Callable[[str], None]) -> None:
         self._disconnect_handler = handler
 
+    def set_notification_handler(self, handler: Callable[[str, dict[str, Any]], None]) -> None:
+        self._notification_handler = handler
+
+    def _on_transport_message(self, message: dict[str, Any]) -> None:
+        if not isinstance(message, dict):
+            return
+
+        msg_id = message.get("id")
+        if isinstance(msg_id, int):
+            future = self._pending.get(msg_id)
+            if future and not future.done():
+                loop = future.get_loop()
+                if "error" in message:
+                    err_obj = message["error"]
+                    err_msg = (
+                        err_obj.get("message", "MCP error")
+                        if isinstance(err_obj, dict)
+                        else str(err_obj)
+                    )
+                    loop.call_soon_threadsafe(future.set_exception, RuntimeError(err_msg))
+                else:
+                    loop.call_soon_threadsafe(future.set_result, message.get("result"))
+        elif "method" in message:
+            # JSON-RPC Notification from server
+            method = message.get("method", "")
+            params = message.get("params") or {}
+            if self._notification_handler:
+                self._notification_handler(method, params)
+
+    def _on_transport_disconnect(self, reason: str) -> None:
+        self._disconnected = True
+        for fut in list(self._pending.values()):
+            if not fut.done():
+                fut.set_exception(RuntimeError(f"MCP server '{self.server_name}' disconnected."))
+        self._pending.clear()
+        if self._disconnect_handler:
+            self._disconnect_handler(reason)
+
     async def connect(self, timeout_s: float = 30.0) -> None:
-        if not self.command:
-            raise RuntimeError(f"MCP server '{self.server_name}' has no command specified.")
-
-        spawn_spec = create_mcp_spawn_spec(self.command, self.args)
-        merged_env = dict(os.environ)
-        if self.env:
-            merged_env.update(self.env)
-
-        if spawn_spec["shell"]:
-            self._proc = subprocess.Popen(
-                spawn_spec["command"],
-                shell=True,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                text=True,
-                errors="replace",
-                bufsize=1,
-                env=merged_env,
-            )
-        else:
-            self._proc = subprocess.Popen(
-                [spawn_spec["command"], *spawn_spec["args"]],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                text=True,
-                errors="replace",
-                bufsize=1,
-                env=merged_env,
-            )
-
-        self._disconnected = False
-        self._reader_task = asyncio.create_task(self._read_loop())
+        self.transport.set_handlers(
+            on_message=self._on_transport_message,
+            on_disconnect=self._on_transport_disconnect,
+        )
 
         try:
-            await asyncio.wait_for(
+            await self.transport.connect(timeout_s=timeout_s)
+            self._disconnected = False
+
+            # Protocol Handshake: initialize
+            init_res = await asyncio.wait_for(
                 self._request(
                     "initialize",
                     {
                         "protocolVersion": "2024-11-05",
-                        "capabilities": {},
+                        "capabilities": {
+                            "roots": {"listChanged": True},
+                            "sampling": {},
+                        },
                         "clientInfo": {"name": "coderai", "version": "0.0.0"},
                     },
+                    timeout_s=timeout_s,
                 ),
                 timeout=timeout_s,
             )
+            if isinstance(init_res, dict):
+                self.server_capabilities = init_res.get("capabilities") or {}
+
+            # Notification: initialized
             await self._notify("notifications/initialized", {})
+
+            # Fetch initial tools list
             tools_res = await self.list_tools(timeout_s=timeout_s)
             self._tools = tools_res
         except Exception as e:
@@ -139,32 +160,19 @@ class McpClient:
 
     async def disconnect(self) -> None:
         self._disconnected = True
-        if self._reader_task:
-            self._reader_task.cancel()
-            self._reader_task = None
-
-        if self._proc:
-            pid = self._proc.pid
-            try:
-                if self._proc.stdin:
-                    self._proc.stdin.close()
-            except Exception:
-                pass
-
-            try:
-                kill_process_tree(pid)
-            except Exception:
-                pass
-            self._proc = None
-
-        # Fail any pending requests
+        await self.transport.disconnect()
         for fut in list(self._pending.values()):
             if not fut.done():
                 fut.set_exception(RuntimeError(f"MCP server '{self.server_name}' disconnected."))
         self._pending.clear()
 
-    async def list_tools(self, timeout_s: float = 30.0) -> list[dict[str, Any]]:
-        result = await self._request("tools/list", {}, timeout_s=timeout_s)
+    async def list_tools(
+        self, cursor: str | None = None, timeout_s: float = 30.0
+    ) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {}
+        if cursor:
+            params["cursor"] = cursor
+        result = await self._request("tools/list", params, timeout_s=timeout_s)
         tools = (result or {}).get("tools", []) if isinstance(result, dict) else []
         self._tools = tools
         return tools
@@ -179,8 +187,13 @@ class McpClient:
             return result
         return {"content": [{"type": "text", "text": str(result)}], "isError": False}
 
-    async def list_prompts(self, timeout_s: float = 30.0) -> list[dict[str, Any]]:
-        result = await self._request("prompts/list", {}, timeout_s=timeout_s)
+    async def list_prompts(
+        self, cursor: str | None = None, timeout_s: float = 30.0
+    ) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {}
+        if cursor:
+            params["cursor"] = cursor
+        result = await self._request("prompts/list", params, timeout_s=timeout_s)
         prompts = (result or {}).get("prompts", []) if isinstance(result, dict) else []
         self._prompts = prompts
         return prompts
@@ -193,8 +206,13 @@ class McpClient:
         )
         return result if isinstance(result, dict) else {"messages": []}
 
-    async def list_resources(self, timeout_s: float = 30.0) -> list[dict[str, Any]]:
-        result = await self._request("resources/list", {}, timeout_s=timeout_s)
+    async def list_resources(
+        self, cursor: str | None = None, timeout_s: float = 30.0
+    ) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {}
+        if cursor:
+            params["cursor"] = cursor
+        result = await self._request("resources/list", params, timeout_s=timeout_s)
         resources = (result or {}).get("resources", []) if isinstance(result, dict) else []
         self._resources = resources
         return resources
@@ -204,7 +222,7 @@ class McpClient:
         return result if isinstance(result, dict) else {"contents": []}
 
     async def _request(self, method: str, params: dict[str, Any], timeout_s: float = 30.0) -> Any:
-        if self._disconnected or not self._proc:
+        if self._disconnected or not self.transport.is_connected():
             raise RuntimeError(f"MCP server '{self.server_name}' is not connected.")
 
         self._next_id += 1
@@ -212,57 +230,11 @@ class McpClient:
         future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
         self._pending[msg_id] = future
 
-        self._send({"jsonrpc": "2.0", "id": msg_id, "method": method, "params": params})
+        self.transport.send({"jsonrpc": "2.0", "id": msg_id, "method": method, "params": params})
         try:
             return await asyncio.wait_for(future, timeout=timeout_s)
         finally:
             self._pending.pop(msg_id, None)
 
     async def _notify(self, method: str, params: dict[str, Any]) -> None:
-        self._send({"jsonrpc": "2.0", "method": method, "params": params})
-
-    def _send(self, message: dict[str, Any]) -> None:
-        if self._proc and self._proc.stdin and not self._disconnected:
-            try:
-                line = json.dumps(message) + "\n"
-                self._proc.stdin.write(line)
-                self._proc.stdin.flush()
-            except Exception:
-                pass
-
-    async def _read_loop(self) -> None:
-        if not self._proc or not self._proc.stdout:
-            return
-        loop = asyncio.get_running_loop()
-        while not self._disconnected and self._proc and self._proc.stdout:
-            try:
-                line = await loop.run_in_executor(None, self._proc.stdout.readline)
-            except Exception:
-                break
-            if not line:
-                break
-            try:
-                message = json.loads(line.strip())
-            except Exception:
-                continue
-
-            if not isinstance(message, dict):
-                continue
-
-            msg_id = message.get("id")
-            if isinstance(msg_id, int):
-                future = self._pending.get(msg_id)
-                if future and not future.done():
-                    if "error" in message:
-                        err_obj = message["error"]
-                        err_msg = (
-                            err_obj.get("message", "MCP error")
-                            if isinstance(err_obj, dict)
-                            else str(err_obj)
-                        )
-                        future.set_exception(RuntimeError(err_msg))
-                    else:
-                        future.set_result(message.get("result"))
-
-        if not self._disconnected and self._disconnect_handler:
-            self._disconnect_handler(f"MCP server '{self.server_name}' process exited.")
+        self.transport.send({"jsonrpc": "2.0", "method": method, "params": params})

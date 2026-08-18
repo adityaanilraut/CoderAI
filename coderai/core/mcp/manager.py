@@ -168,14 +168,56 @@ class McpManager:
                 break
             await self._connect_server(name, config)
 
-    async def reconnect(self, name: str, config: dict[str, Any] | None = None) -> None:
+    async def sync_servers(self, servers: dict[str, dict[str, Any]] | None) -> None:
+        """Dynamically sync MCP servers with updated configuration during runtime."""
         if self.disposed:
             return
+        new_servers = servers or {}
+        new_names = set(new_servers.keys())
+        current_names = set(self.configured_server_names)
+
+        # Disconnect and remove deleted servers
+        removed_names = current_names - new_names
+        for name in removed_names:
+            client = next((c for c in self.clients if c.server_name == name), None)
+            if client:
+                await client.disconnect()
+            self.clients = [c for c in self.clients if c.server_name != name]
+            self.tools = [t for t in self.tools if t.server_name != name]
+            self.prompts = [p for p in self.prompts if p.get("server_name") != name]
+            self.resources = [r for r in self.resources if r.get("server_name") != name]
+            self.server_statuses = [s for s in self.server_statuses if s.name != name]
+            if name in self.configured_server_names:
+                self.configured_server_names.remove(name)
+            self.server_configs.pop(name, None)
+
+        # Connect new or updated servers
+        for name, config in new_servers.items():
+            old_config = self.server_configs.get(name)
+            if name not in self.configured_server_names or old_config != config:
+                if name not in self.configured_server_names:
+                    self.configured_server_names.append(name)
+                self.server_configs[name] = config
+                await self._connect_server(name, config)
+
+        if self.on_tools_list_changed:
+            self.on_tools_list_changed()
+
+    async def reconnect(self, name: str, config: dict[str, Any] | None = None) -> bool:
+        if self.disposed:
+            return False
         effective_config = config or self.server_configs.get(name)
         if not effective_config:
-            return
+            return False
         if config:
             self.server_configs[name] = config
+
+        existing_client = next((c for c in self.clients if c.server_name == name), None)
+        if existing_client:
+            try:
+                await existing_client.disconnect()
+            except Exception:
+                pass
 
         self._set_status(
             McpServerStatus(
@@ -186,6 +228,36 @@ class McpManager:
             )
         )
         await self._connect_server(name, effective_config)
+        status = next((s for s in self.server_statuses if s.name == name), None)
+        return status.connected if status else False
+
+    def list_tools(self) -> list[McpToolEntry]:
+        return list(self.tools)
+
+    def get_prompts(self) -> list[dict[str, Any]]:
+        return list(self.prompts)
+
+    def get_resources(self) -> list[dict[str, Any]]:
+        return list(self.resources)
+
+    async def read_resource(self, uri: str) -> dict[str, Any]:
+        target = next(
+            (
+                r
+                for r in self.resources
+                if r.get("definition", {}).get("uri") == uri
+                or r.get("original_name") == uri
+                or r.get("namespaced_name") == uri
+            ),
+            None,
+        )
+        if not target:
+            if self.clients:
+                return await self.clients[0].read_resource(uri)
+            return {"contents": [], "error": f"No client available to read resource '{uri}'"}
+        client: McpClient = target["client"]
+        target_uri = target.get("definition", {}).get("uri") or uri
+        return await client.read_resource(target_uri)
 
     async def _connect_server(self, name: str, config: dict[str, Any]) -> None:
         if self.disposed:
@@ -204,7 +276,7 @@ class McpManager:
             await client.connect()
             self.clients.append(client)
 
-            server_tools = await client.list_tools()
+            server_tools = client._tools or await client.list_tools(timeout_s=10.0)
             tool_names: list[str] = []
             used_names = {t.namespaced_name for t in self.tools}
 
@@ -223,9 +295,9 @@ class McpManager:
                     )
                 )
 
-            # Prompts
+            # Prompts (if supported)
             try:
-                server_prompts = await client.list_prompts()
+                server_prompts = await client.list_prompts(timeout_s=5.0)
             except Exception:
                 server_prompts = []
             prompt_names: list[str] = []
@@ -243,9 +315,9 @@ class McpManager:
                     }
                 )
 
-            # Resources
+            # Resources (if supported)
             try:
-                server_resources = await client.list_resources()
+                server_resources = await client.list_resources(timeout_s=5.0)
             except Exception:
                 server_resources = []
             resource_names: list[str] = []

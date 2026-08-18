@@ -1,69 +1,79 @@
-"""ToolExecutor — dispatches built-in tools with MCP fallback (deepcode executor.ts)."""
+"""ToolExecutor — dispatches built-in tools with schema validation and MCP fallback (deepcode executor.ts)."""
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 from typing import Any
 from collections.abc import Callable
 
-from coderai.core.tools import ask_user_question as _ask
-from coderai.core.tools import bash as _bash
-from coderai.core.tools import edit as _edit
-from coderai.core.tools import read as _read
-from coderai.core.tools import subagent as _subagent
-from coderai.core.tools import understand_image as _image
-from coderai.core.tools import update_plan as _plan
-from coderai.core.tools import web_search as _search
-from coderai.core.tools import write as _write
+from coderai.core.common.validate import clean_json_string
+from coderai.core.tools.registry import ToolRegistry, get_tool_registry
 from coderai.core.tools.types import (
+    BackgroundProcessCompletion,
+    ProcessTimeoutControl,
+    ProcessTimeoutInfo,
+    ToolCall,
+    ToolCallExecution,
     ToolExecutionContext,
+    ToolExecutionFollowUpMessage,
     ToolExecutionHooks,
+    ToolExecutionResult,
     ToolResult,
+    ValidationError,
 )
 
-BUILT_IN_TOOL_NAME_ALIASES: dict[str, str] = {
-    "Bash": "bash",
-    "Read": "read",
-    "Write": "write",
-    "Edit": "edit",
-    "task": "Task",
-    "Task": "Task",
-    "subagent": "Task",
-    "SubAgent": "Task",
-}
-
-_HANDLERS: dict[str, Callable[..., Any]] = {
-    "bash": _bash.handle_bash_tool,
-    "read": _read.handle_read_tool,
-    "write": _write.handle_write_tool,
-    "edit": _edit.handle_edit_tool,
-    "AskUserQuestion": _ask.handle_ask_user_question_tool,
-    "UpdatePlan": _plan.handle_update_plan_tool,
-    "UnderstandImage": _image.handle_understand_image_tool,
-    "WebSearch": _search.handle_web_search_tool,
-    "Task": _subagent.handle_subagent_tool,
-}
+# Export aliases for compatibility with deepcode
+__all__ = [
+    "BackgroundProcessCompletion",
+    "ProcessTimeoutControl",
+    "ProcessTimeoutInfo",
+    "ToolCall",
+    "ToolCallExecution",
+    "ToolExecutionContext",
+    "ToolExecutionFollowUpMessage",
+    "ToolExecutionHooks",
+    "ToolExecutionResult",
+    "ToolExecutor",
+    "ToolResult",
+]
 
 
 class ToolExecutor:
+    """Standardized Tool Execution Engine: Validation -> Permission -> Execution -> Truncation -> Context Injection."""
+
     def __init__(
         self,
         project_root: str,
         create_openai_client: Callable[[], dict[str, Any]] | None = None,
         mcp_manager: Any = None,
+        registry: ToolRegistry | None = None,
     ) -> None:
         self.project_root = project_root
         self.create_openai_client = create_openai_client
         self.mcp_manager = mcp_manager
-        self.tool_handlers = dict(_HANDLERS)
+        self.registry = registry or get_tool_registry()
+
+    @property
+    def tool_handlers(self) -> dict[str, Callable[..., Any]]:
+        """Backward compatibility dictionary of tool handlers."""
+        handlers: dict[str, Callable[..., Any]] = {}
+        for tool_def in self.registry.list_tools():
+            if tool_def.handler:
+                handlers[tool_def.name] = tool_def.handler
+                for alias in tool_def.aliases:
+                    handlers[alias] = tool_def.handler
+        return handlers
 
     async def execute_tool_calls(
         self,
         session_id: str,
         tool_calls: list[Any],
         hooks: ToolExecutionHooks | dict[str, Any] | None = None,
+        parallel: bool = False,
     ) -> list[dict[str, Any]]:
+        """Execute a list of tool calls sequentially or in parallel, returning formatted execution payloads."""
         parsed_calls: list[dict[str, Any]] = []
         for tc in tool_calls:
             parsed = self._parse_tool_call(tc)
@@ -76,13 +86,44 @@ class ToolExecutor:
                 hooks.get("should_stop") if isinstance(hooks, dict) else None
             )
 
-        executions: list[dict[str, Any]] = []
+        if parallel and len(parsed_calls) > 1:
+            # Parallel execution path
+            async def _run_single(tc: dict[str, Any]) -> dict[str, Any]:
+                if should_stop and should_stop():
+                    return {
+                        "toolCallId": tc["id"],
+                        "content": json.dumps(
+                            {
+                                "ok": False,
+                                "name": tc["function"]["name"],
+                                "error": "Execution interrupted",
+                            }
+                        ),
+                        "result": {
+                            "ok": False,
+                            "name": tc["function"]["name"],
+                            "error": "Execution interrupted",
+                        },
+                    }
+                res = await self.execute_tool_call(session_id, tc, hooks)
+                return {
+                    "toolCallId": tc["id"],
+                    "content": self.format_tool_result(res),
+                    "result": _result_as_dict(res),
+                }
+
+            tasks = [_run_single(tc) for tc in parsed_calls]
+            executions = await asyncio.gather(*tasks, return_exceptions=False)
+            return list(executions)
+
+        # Sequential execution path
+        executions_list: list[dict[str, Any]] = []
         for tool_call in parsed_calls:
             if should_stop and should_stop():
                 break
 
             result = await self.execute_tool_call(session_id, tool_call, hooks)
-            executions.append(
+            executions_list.append(
                 {
                     "toolCallId": tool_call["id"],
                     "content": self.format_tool_result(result),
@@ -93,11 +134,11 @@ class ToolExecutor:
             if should_stop and should_stop():
                 break
 
-        return executions
+        return executions_list
 
     def _parse_tool_call(self, raw: Any) -> dict[str, Any] | None:
+        """Parse raw tool call structure from LLM output into normalized dict."""
         if not isinstance(raw, dict):
-            # Also handle object with id and function attributes
             tc_id = getattr(raw, "id", None)
             func = getattr(raw, "function", None)
             if isinstance(tc_id, str) and func:
@@ -142,46 +183,85 @@ class ToolExecutor:
         tool_call: dict[str, Any],
         hooks: ToolExecutionHooks | dict[str, Any] | None = None,
     ) -> ToolResult:
+        """Execute a single tool call through the 7-stage lifecycle with structured error recovery."""
         tool_name = tool_call["function"]["name"]
-        handler_name = BUILT_IN_TOOL_NAME_ALIASES.get(tool_name, tool_name)
-        handler = self.tool_handlers.get(handler_name)
+        raw_args_str = tool_call["function"].get("arguments", "")
 
-        if handler is None:
-            if self.mcp_manager is not None and self.mcp_manager.is_mcp_tool(tool_name):
-                parsed = self._parse_tool_arguments(tool_call["function"]["arguments"])
-                args = parsed["args"] if parsed["ok"] else {}
-                try:
-                    res = await self.mcp_manager.execute_mcp_tool(tool_name, args)
-                    if isinstance(res, ToolResult):
-                        return res
-                    if isinstance(res, dict):
-                        return ToolResult(
-                            ok=res.get("ok", True),
-                            name=tool_name,
-                            output=res.get("output"),
-                            error=res.get("error"),
-                            metadata=res.get("metadata"),
-                        )
-                    return ToolResult(ok=True, name=tool_name, output=str(res))
-                except Exception as e:
-                    return ToolResult(ok=False, name=tool_name, error=str(e))
-            return ToolResult(ok=False, name=tool_name, error=f"Unknown tool: {tool_name}")
+        # 1. Parse JSON arguments
+        parsed = self._parse_tool_arguments(raw_args_str)
+        if not parsed["ok"]:
+            return ToolResult(ok=False, name=tool_name, error=parsed["error"])
+        raw_args = parsed["args"]
 
-        parsed_args = self._parse_tool_arguments(tool_call["function"]["arguments"])
-        if not parsed_args["ok"]:
-            return ToolResult(ok=False, name=tool_name, error=parsed_args["error"])
+        # 2. Check built-in ToolRegistry
+        tool_def = self.registry.get(tool_name)
+        if tool_def is not None:
+            # Strict schema validation
+            try:
+                validated_args = self.registry.validate_arguments(tool_def.name, raw_args)
+            except ValidationError as val_err:
+                return ToolResult(
+                    ok=False,
+                    name=tool_name,
+                    error=f"ValidationError: {val_err}",
+                )
 
-        context = self._build_execution_context(session_id, tool_call, hooks)
+            # Build execution context
+            context = self._build_execution_context(session_id, tool_call, hooks)
 
-        try:
-            if inspect.iscoroutinefunction(handler):
-                return await handler(parsed_args["args"], context)
-            res = handler(parsed_args["args"], context)
-            if inspect.iscoroutine(res):
-                return await res
-            return res
-        except Exception as e:
-            return ToolResult(ok=False, name=tool_name, error=str(e))
+            # Execute handler
+            try:
+                handler = tool_def.handler
+                if handler is None:
+                    return ToolResult(
+                        ok=False,
+                        name=tool_name,
+                        error=f"Tool '{tool_name}' has no registered handler.",
+                    )
+
+                if inspect.iscoroutinefunction(handler):
+                    res = await handler(validated_args, context)
+                else:
+                    res = handler(validated_args, context)
+                    if inspect.iscoroutine(res):
+                        res = await res
+
+                if isinstance(res, ToolResult):
+                    return res
+                if isinstance(res, dict):
+                    return ToolResult(
+                        ok=res.get("ok", True),
+                        name=tool_name,
+                        output=res.get("output"),
+                        error=res.get("error"),
+                        metadata=res.get("metadata"),
+                        await_user_response=bool(res.get("awaitUserResponse", False)),
+                    )
+                return ToolResult(ok=True, name=tool_name, output=str(res))
+
+            except Exception as e:
+                return ToolResult(ok=False, name=tool_name, error=f"ToolExecutionError: {e}")
+
+        # 3. Check MCP Manager fallback
+        if self.mcp_manager is not None and self.mcp_manager.is_mcp_tool(tool_name):
+            try:
+                res = await self.mcp_manager.execute_mcp_tool(tool_name, raw_args)
+                if isinstance(res, ToolResult):
+                    return res
+                if isinstance(res, dict):
+                    return ToolResult(
+                        ok=res.get("ok", True),
+                        name=tool_name,
+                        output=res.get("output"),
+                        error=res.get("error"),
+                        metadata=res.get("metadata"),
+                    )
+                return ToolResult(ok=True, name=tool_name, output=str(res))
+            except Exception as e:
+                return ToolResult(ok=False, name=tool_name, error=f"McpToolExecutionError: {e}")
+
+        # 4. Unknown tool fallback
+        return ToolResult(ok=False, name=tool_name, error=f"Unknown tool: {tool_name}")
 
     def _build_execution_context(
         self,
@@ -214,11 +294,15 @@ class ToolExecutor:
         )
 
     def _parse_tool_arguments(self, raw_arguments: str) -> dict[str, Any]:
+        """Parse raw arguments string into JSON object with clean error messaging."""
         if not raw_arguments:
             return {"ok": True, "args": {}}
 
+        cleaned = (
+            clean_json_string(raw_arguments) if isinstance(raw_arguments, str) else raw_arguments
+        )
         try:
-            parsed = json.loads(raw_arguments)
+            parsed = json.loads(cleaned)
         except Exception as e:
             return {
                 "ok": False,
@@ -234,6 +318,7 @@ class ToolExecutor:
         return {"ok": True, "args": parsed}
 
     def format_tool_result(self, result: ToolResult) -> str:
+        """Format ToolResult into structured JSON string payload for model context injection."""
         payload: dict[str, Any] = {
             "ok": result.ok,
             "name": result.name,

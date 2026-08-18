@@ -79,6 +79,7 @@ def _build_shell_command(command: str) -> tuple[str, list[str], str]:
         wrapped_parts.append(init_command)
     if disable_extglob_command:
         wrapped_parts.append(disable_extglob_command)
+    wrapped_parts.append("export PAGER=cat NO_COLOR=1 2>/dev/null || true")
     wrapped_parts.extend(
         [
             normalized_command,

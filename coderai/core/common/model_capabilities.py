@@ -100,3 +100,39 @@ def format_capability_badges(model: str) -> str:
     if not badges:
         return ""
     return " ".join(f"[{b}]" for b in badges)
+
+
+CURATED_MODELS: list[tuple[str, str, str]] = [
+    # OpenAI GPT-5.6 Tiered Series & Reasoning
+    ("gpt-5.6-sol", "Flagship Tier: Deep reasoning, complex agentic coding", "OpenAI GPT-5.6"),
+    ("gpt-5.6-terra", "Balanced Tier: Everyday coding, cost/speed balanced", "OpenAI GPT-5.6"),
+    (
+        "gpt-5.6-luna",
+        "Fast Tier: Ultra-low latency, inline edits & suggestions (Default)",
+        "OpenAI GPT-5.6",
+    ),
+    ("o3-mini", "Deep multi-step reasoning with thinking traces", "OpenAI Reasoning"),
+    ("o1", "Deep reasoning for complex algorithms", "OpenAI Reasoning"),
+    ("gpt-4o", "Standard multimodal legacy tier", "OpenAI Legacy"),
+    ("gpt-4o-mini", "Fast, lightweight multimodal legacy tier", "OpenAI Legacy"),
+    # Anthropic Claude (Hybrid Reasoning)
+    ("claude-3-7-sonnet", "Flagship hybrid reasoning with extended thinking", "Anthropic Claude"),
+    ("claude-3-5-sonnet", "Industry-standard coding benchmark leader", "Anthropic Claude"),
+    ("claude-3-5-haiku", "High-speed, lightweight sub-agent worker", "Anthropic Claude"),
+    # Google Gemini (2.5 Lineup)
+    ("gemini-2.5-pro", "2M+ context window, deep logic & repo ingestion", "Google Gemini 2.5"),
+    ("gemini-2.5-flash", "Sub-second response with built-in visible thinking", "Google Gemini 2.5"),
+    (
+        "gemini-2.5-flash-lite",
+        "Ultra-efficient lightweight model for high-frequency tooling",
+        "Google Gemini 2.5",
+    ),
+    # DeepSeek (V4 & R1 Reasoning)
+    (
+        "deepseek-v4-pro",
+        "Flagship agentic coding & deep reasoning (1M context)",
+        "DeepSeek V4 & R1",
+    ),
+    ("deepseek-v4-flash", "High-throughput coding & tool-calling engine", "DeepSeek V4 & R1"),
+    ("deepseek-r1", "Open reasoning with detailed chain-of-thought", "DeepSeek V4 & R1"),
+]

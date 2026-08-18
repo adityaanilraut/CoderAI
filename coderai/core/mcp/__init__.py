@@ -1,6 +1,13 @@
-"""MCP support — dynamic tool registry over stdio servers."""
+"""MCP support — dynamic tool registry over stdio and SSE servers."""
 
-from coderai.core.mcp.client import McpClient  # noqa: F401
-from coderai.core.mcp.manager import McpManager  # noqa: F401
+from coderai.core.mcp.client import McpClient
+from coderai.core.mcp.manager import McpManager
+from coderai.core.mcp.transport import McpTransport, SseMcpTransport, StdioMcpTransport
 
-__all__ = ["McpClient", "McpManager"]
+__all__ = [
+    "McpClient",
+    "McpManager",
+    "McpTransport",
+    "SseMcpTransport",
+    "StdioMcpTransport",
+]

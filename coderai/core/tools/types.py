@@ -6,7 +6,16 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 from collections.abc import Callable
 
-PluginRateLimitedTool = Literal["UnderstandImage", "WebSearch"]
+PluginRateLimitedTool = Literal["UnderstandImage", "WebSearch", "WebFetch"]
+ToolCategory = Literal["filesystem", "shell", "web", "interactive", "meta", "mcp", "subagent"]
+
+
+class ValidationError(Exception):
+    """Raised when tool arguments fail schema or type validation."""
+
+
+class ToolExecutionError(Exception):
+    """Raised when an unhandled execution error occurs in a tool handler."""
 
 
 @dataclass
@@ -116,6 +125,38 @@ class ToolCallExecution:
     tool_call_id: str
     content: str
     result: ToolResult
+
+
+@dataclass
+class ToolDefinition:
+    """Type-safe specification and metadata for a registered tool."""
+
+    name: str
+    description: str = ""
+    parameters: dict[str, Any] = field(default_factory=dict)
+    required: list[str] = field(default_factory=list)
+    handler: Callable[..., Any] | None = None
+    aliases: list[str] = field(default_factory=list)
+    category: ToolCategory = "meta"
+    rate_limited_id: PluginRateLimitedTool | None = None
+    is_mutating: bool = False
+
+    def to_openai_schema(self) -> dict[str, Any]:
+        """Generate OpenAI function calling JSON schema definition."""
+        schema: dict[str, Any] = {
+            "type": "object",
+            "properties": self.parameters,
+        }
+        if self.required:
+            schema["required"] = self.required
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": schema,
+            },
+        }
 
 
 def as_str(value: Any, default: str = "") -> str:

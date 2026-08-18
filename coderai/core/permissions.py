@@ -12,6 +12,7 @@ import pathlib
 from typing import Any
 from collections.abc import Callable
 
+from coderai.core.common.validate import clean_json_string
 from coderai.core.state import get_snippet, is_absolute_file_path, normalize_file_path
 
 # Scopes (matching settings.PermissionScope). "unknown" is a bash-only sentinel.
@@ -75,8 +76,9 @@ def parse_tool_call_for_permissions(tool_call: Any) -> dict[str, Any] | None:
 def parse_tool_arguments(raw: str) -> dict[str, Any]:
     if not raw:
         return {}
+    cleaned = clean_json_string(raw) if isinstance(raw, str) else raw
     try:
-        parsed = json.loads(raw)
+        parsed = json.loads(cleaned)
         return parsed if isinstance(parsed, dict) else {}
     except (ValueError, TypeError):
         return {}
@@ -195,16 +197,25 @@ def describe_tool_permission_request(
             "scopes": parse_bash_side_effects(args.get("sideEffects")),
         }
 
-    if name == "WebSearch":
+    if name in ("WebSearch", "web_search"):
         query = args.get("query") if isinstance(args.get("query"), str) else "WebSearch"
         return {
             "toolCallId": tool_call["id"],
-            "name": name,
+            "name": "WebSearch",
             "command": query,
             "scopes": ["network"],
         }
 
-    if name == "UnderstandImage":
+    if name in ("WebFetch", "web_fetch"):
+        url = args.get("url") if isinstance(args.get("url"), str) else "WebFetch"
+        return {
+            "toolCallId": tool_call["id"],
+            "name": "WebFetch",
+            "command": url,
+            "scopes": ["network"],
+        }
+
+    if name in ("UnderstandImage", "understand_image"):
         image_path = args.get("image_path") if isinstance(args.get("image_path"), str) else ""
         img_scopes: list[str] = ["network"]
         if image_path and not _in_directories(
@@ -213,7 +224,7 @@ def describe_tool_permission_request(
             img_scopes.insert(0, _read_scope(project_root, image_path))
         return {
             "toolCallId": tool_call["id"],
-            "name": name,
+            "name": "UnderstandImage",
             "command": f"understand-image {image_path}" if image_path else "understand-image",
             "scopes": img_scopes,
         }

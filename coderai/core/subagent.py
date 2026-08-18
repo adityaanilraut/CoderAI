@@ -118,18 +118,18 @@ class SubAgentManager:
 
     async def spawn_subagent(self, spec: SubAgentSpec) -> SubAgentResult:
         """Spawn and execute a single isolated sub-agent with timeout and error recovery."""
+        session_id = (
+            f"sub_{spec.parent_session_id[:8] if spec.parent_session_id else 'root'}_{spec.task_id}"
+        )
         if spec.depth > MAX_SUBAGENT_DEPTH:
             return SubAgentResult(
                 task_id=spec.task_id,
-                session_id=f"sub_{spec.task_id}",
+                session_id=session_id,
                 status="failed",
                 summary="Maximum sub-agent nesting depth exceeded.",
                 error="RecursionLimitError: Sub-agents cannot spawn additional sub-agents.",
             )
 
-        session_id = (
-            f"sub_{spec.parent_session_id[:8] if spec.parent_session_id else 'root'}_{spec.task_id}"
-        )
         abort_event = asyncio.Event()
         self._active_controllers[session_id] = abort_event
 

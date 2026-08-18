@@ -2,7 +2,6 @@
 
 import json
 import pathlib
-import time
 
 import pytest
 
@@ -186,6 +185,10 @@ async def test_session_loop(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPa
     calls = {"n": 0}
 
     def script(calls, kwargs):
+        # Handle skill matching queries during session creation
+        msgs = kwargs.get("messages", [])
+        if any("skillNames" in str(m.get("content", "")) for m in msgs):
+            return _resp('{"skillNames": []}')
         calls["n"] += 1
         if calls["n"] == 1:
             return _resp(
@@ -236,6 +239,9 @@ async def test_permission_ask_then_allow(tmp_path: pathlib.Path, monkeypatch: py
     calls = {"n": 0}
 
     def script(calls, kwargs):
+        msgs = kwargs.get("messages", [])
+        if any("skillNames" in str(m.get("content", "")) for m in msgs):
+            return _resp('{"skillNames": []}')
         calls["n"] += 1
         if calls["n"] == 1:
             return _resp(
@@ -300,6 +306,9 @@ async def test_permission_deny(tmp_path: pathlib.Path, monkeypatch: pytest.Monke
     calls = {"n": 0}
 
     def script(calls, kwargs):
+        msgs = kwargs.get("messages", [])
+        if any("skillNames" in str(m.get("content", "")) for m in msgs):
+            return _resp('{"skillNames": []}')
         calls["n"] += 1
         if calls["n"] == 1:
             return _resp(
@@ -364,8 +373,7 @@ def test_bash_background_execution(tmp_path: pathlib.Path, monkeypatch: pytest.M
     assert "backgroundTaskId" in res.metadata
     assert "stopCommand" in res.metadata
     out_path = pathlib.Path(res.metadata["outputPath"])
-    time.sleep(0.3)
-    assert out_path.exists()
+    assert out_path.is_file()
 
 
 def test_git_file_history_lifecycle(tmp_path: pathlib.Path):
@@ -409,6 +417,9 @@ async def test_session_undo(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPa
     calls = {"n": 0}
 
     def script(calls, kwargs):
+        msgs = kwargs.get("messages", [])
+        if any("skillNames" in str(m.get("content", "")) for m in msgs):
+            return _resp('{"skillNames": []}')
         calls["n"] += 1
         if calls["n"] == 1:
             return _resp(
@@ -680,12 +691,38 @@ def test_understand_image_tool(tmp_path: pathlib.Path):
         {"prompt": "describe", "image_path": str(tmp_path / "missing.png")}, ctx
     ).ok
 
-    # Valid image file
+    # Valid image file with vision client
     png_file = tmp_path / "sample.png"
     png_file.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 20)
-    r = img_handle({"prompt": "what is this", "image_path": str(png_file)}, ctx)
+
+    class MockMsg:
+        content = "Vision analysis of sample.png showing image details."
+
+    class MockChoice:
+        message = MockMsg()
+
+    class MockResp:
+        choices = [MockChoice()]
+
+    class MockComp:
+        def create(self, **kwargs):
+            return MockResp()
+
+    class MockChat:
+        completions = MockComp()
+
+    class MockClient:
+        chat = MockChat()
+
+    ctx_with_client = {
+        "session_id": "test_img",
+        "project_root": str(tmp_path),
+        "create_openai_client": lambda: {"client": MockClient(), "model": "gpt-4o"},
+    }
+    r = img_handle({"prompt": "what is this", "image_path": str(png_file)}, ctx_with_client)
     assert r.ok
-    assert "sample.png" in r.output
+    assert "Vision analysis" in r.output
+    assert r.metadata["imagePath"] == str(png_file.resolve())
 
 
 def test_git_file_history_diff_and_checkpoints(tmp_path: pathlib.Path):
@@ -949,6 +986,7 @@ async def test_session_max_iterations_bounded_termination(
             },
         },
         on_assistant_message=lambda m, c: assistant_messages.append(m),
+        max_iterations=10,
     )
 
     sid = await mgr.create_session("Endless task")
@@ -1345,3 +1383,132 @@ async def test_compaction_preserves_prefix_and_records_tokens(
     entry = mgr.get_session(sid)
     assert entry is not None
     assert entry.active_tokens == 2
+
+
+def test_multiline_yaml_frontmatter_parsing():
+    from coderai.core.prompt import extract_skill_frontmatter, _implicit_invocation_allowed
+
+    content = """---
+name: advanced-skill
+description: >
+  This is a multiline folded description
+  that spans multiple lines and provides
+  extensive details about the skill.
+allow-implicit-invocation: false
+metadata:
+  version: 2.1
+---
+# Advanced Skill Body
+"""
+    meta = extract_skill_frontmatter(content)
+    assert meta["name"] == "advanced-skill"
+    assert "multiline folded description" in meta["description"]
+    assert meta["allow-implicit-invocation"] is False
+    assert _implicit_invocation_allowed(meta) is False
+
+
+def test_bundled_skills_discovery_and_content():
+    from coderai.core.prompt import list_skills, load_skill, get_bundled_skills_root
+
+    bundled_root = get_bundled_skills_root()
+    assert pathlib.Path(bundled_root).is_dir()
+
+    skills = list_skills()
+    skill_names = {s["name"] for s in skills}
+    expected_bundled = {"coderai-self-refer", "image-generator", "skill-digester", "skill-writer"}
+    assert expected_bundled.issubset(skill_names)
+
+    self_refer = load_skill("coderai-self-refer")
+    assert self_refer is not None
+    assert "Answers questions about" in self_refer["description"]
+    assert len(self_refer["content"]) > 100
+
+    writer = load_skill("skill-writer")
+    assert writer is not None
+    assert "Guide users through creating" in writer["description"]
+
+
+def test_session_is_continue_prompt():
+    mgr = SessionManager(
+        project_root=".",
+        create_openai_client=lambda: {"client": None},
+        get_resolved_settings=lambda: {},
+    )
+    assert mgr.is_continue_prompt("/continue") is True
+    assert mgr.is_continue_prompt("continue") is True
+    assert mgr.is_continue_prompt("Continue") is True
+    assert mgr.is_continue_prompt("proceed") is True
+    assert mgr.is_continue_prompt("go on") is True
+    assert mgr.is_continue_prompt({"text": "/continue"}) is True
+    assert mgr.is_continue_prompt("please write code") is False
+    assert mgr.is_continue_prompt({"text": "/continue", "imageUrls": ["data:..."]}) is False
+    assert mgr.is_continue_prompt(None) is False
+
+
+def test_background_process_completion_and_failure_log_tail(tmp_path: pathlib.Path):
+    from coderai.core.tools.types import BackgroundProcessCompletion
+
+    mgr = SessionManager(
+        project_root=str(tmp_path),
+        create_openai_client=lambda: {"client": None},
+        get_resolved_settings=lambda: {},
+    )
+
+    sid = "test-bg-completion-sess"
+    log_file = tmp_path / "failing_task.log"
+    log_file.write_text(
+        "Traceback (most recent call last):\n  File 'app.py', line 10\nZeroDivisionError\n"
+    )
+
+    failure = BackgroundProcessCompletion(
+        task_id="task-123",
+        process_id=9999,
+        command="python app.py",
+        output_path=str(log_file),
+        ok=False,
+        exit_code=1,
+        signal=None,
+        error="exit code 1",
+        cwd=str(tmp_path),
+        shell_path="/bin/sh",
+        started_at_ms=1000,
+        completed_at_ms=3500,
+    )
+
+    mgr.add_background_process_completion_message(sid, failure)
+    messages = mgr.list_session_messages(sid)
+    assert len(messages) == 1
+    msg = messages[0]
+    assert msg.role == "system"
+    assert 'Background command "python app.py"' in msg.content
+    assert "failed with exit code 1" in msg.content
+    assert "<background_task_failure_log" in msg.content
+    assert "ZeroDivisionError" in msg.content
+
+
+def test_session_process_tracking_and_kill(tmp_path: pathlib.Path):
+    home = tmp_path / "home"
+    home.mkdir()
+
+    mgr = SessionManager(
+        project_root=str(tmp_path),
+        create_openai_client=lambda: {"client": None},
+        get_resolved_settings=lambda: {},
+    )
+
+    sid = "test-process-tracking-sess"
+    # Ensure session entry exists
+    index = mgr._load_index()
+    index["entries"].append({"id": sid, "summary": "test", "processes": {}, "status": "pending"})
+    mgr._save_index(index)
+
+    mgr._track_process_start(sid, 12345, "npm run dev")
+    entry = mgr.get_session(sid)
+    assert entry is not None
+    assert entry.processes and "12345" in entry.processes
+    assert entry.processes["12345"]["command"] == "npm run dev"
+
+    mgr._track_process_exit(sid, 12345)
+    entry2 = mgr.get_session(sid)
+    assert entry2 is not None
+    assert "12345" not in (entry2.processes or {})

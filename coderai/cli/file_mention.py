@@ -111,18 +111,18 @@ def expand_file_mentions(prompt: str, project_root: str) -> tuple[str, list[str]
 
 
 def suggest_workspace_files(query: str, project_root: str, limit: int = 15) -> list[str]:
-    """Search workspace files for autocompletion."""
+    """Search and fuzzy rank workspace files for autocompletion."""
     root = pathlib.Path(project_root).resolve()
-    query_clean = query.lstrip("@").lower()
-    matches: list[str] = []
+    query_clean = query.lstrip("@")
+    all_files: list[str] = []
 
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in IGNORED_DIRS]
         for f in filenames:
             full = pathlib.Path(dirpath) / f
             rel = str(full.relative_to(root))
-            if query_clean in rel.lower() or query_clean in f.lower():
-                matches.append(rel)
-                if len(matches) >= limit:
-                    return matches
-    return matches
+            all_files.append(rel)
+
+    from coderai.cli.fuzzy import fuzzy_filter
+
+    return fuzzy_filter(query_clean, all_files, limit=limit)

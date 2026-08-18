@@ -11,11 +11,15 @@ from coderai.core.session import SessionMessage
 
 try:
     from rich.panel import Panel
+    from rich.syntax import Syntax
+    from rich.table import Table
     from rich.text import Text
 
     _RICH = True
 except ImportError:  # pragma: no cover
     Panel = None  # type: ignore[assignment,misc]
+    Syntax = None  # type: ignore[assignment,misc]
+    Table = None  # type: ignore[assignment,misc]
     Text = None  # type: ignore[assignment,misc]
     _RICH = False
 
@@ -44,10 +48,80 @@ def parse_tool_message(message: SessionMessage) -> tuple[str, str, bool, dict[st
         return "tool", content[:120], True, metadata
 
 
+def _render_bash_card(
+    console: Any,
+    output_text: str | None,
+    error_text: str | None,
+    metadata: dict[str, Any],
+    ok: bool,
+) -> None:
+    """Render a dedicated terminal command output card."""
+    cmd = metadata.get("command") or ""
+    exit_code = metadata.get("exit_code") if "exit_code" in metadata else (0 if ok else 1)
+    status_style = "bold green" if ok else "bold red"
+    status_text = f"exit {exit_code}" if exit_code is not None else ("ok" if ok else "failed")
+
+    title = (
+        f"[bold cyan]$ {cmd}[/] [{status_style}]({status_text})[/]"
+        if cmd
+        else f"[{status_style}]Shell Output ({status_text})[/]"
+    )
+    content_lines: list[str] = []
+    if output_text and output_text.strip():
+        content_lines.append(output_text.strip())
+    if error_text and error_text.strip():
+        content_lines.append(f"[bold red]Error:[/] {error_text.strip()}")
+
+    body = "\n".join(content_lines)
+    if body and len(body.splitlines()) > 1:
+        if Panel is not None:
+            panel = Panel(
+                body[:1500] + ("\n... [dim](output truncated)[/]" if len(body) > 1500 else ""),
+                title=title,
+                border_style="cyan" if ok else "red",
+                padding=(0, 1),
+            )
+            console.print(panel)
+        else:
+            console.print(f"  {title}\n{body}")
+
+
+def _render_search_card(console: Any, output_text: str | None, metadata: dict[str, Any]) -> None:
+    """Render formatted web search results."""
+    query = metadata.get("query") or ""
+    results = metadata.get("results") or []
+
+    if results and Table is not None:
+        table = Table(title=f"🔍 Web Search: {query}", border_style="cyan", padding=(0, 1))
+        table.add_column("#", style="bold cyan", width=3)
+        table.add_column("Title & URL", style="white")
+        table.add_column("Snippet", style="dim")
+
+        for idx, res in enumerate(results[:5], 1):
+            title = res.get("title", "")
+            url = res.get("url", "")
+            snippet = res.get("snippet", "")
+            table.add_row(
+                str(idx),
+                f"[bold]{title}[/]\n[dim cyan]{url}[/]",
+                snippet[:120] + "..." if len(snippet) > 120 else snippet,
+            )
+        console.print(table)
+
+
 def render_tool_card(console: Any | None, message: SessionMessage) -> None:
-    """Render a formatted tool result card with status, diffs, and checklists."""
+    """Render a formatted tool result card with status, diffs, terminal outputs, and checklists."""
     name, summary_text, ok, metadata = parse_tool_message(message)
     bullet = "[bold green]✓[/]" if ok else "[bold red]✗[/]"
+
+    raw_output: str | None = None
+    raw_error: str | None = None
+    try:
+        parsed_payload = json.loads(message.content or "{}")
+        raw_output = parsed_payload.get("output")
+        raw_error = parsed_payload.get("error")
+    except Exception:
+        pass
 
     if console is not None and _RICH:
         # Display main tool status line
@@ -64,6 +138,23 @@ def render_tool_card(console: Any | None, message: SessionMessage) -> None:
             plan_text = metadata.get("plan")
             if name == "UpdatePlan" and isinstance(plan_text, str) and plan_text.strip():
                 render_plan_preview(console, plan_text, title="Updated Plan")
+
+            # Bash tool card
+            if name == "bash":
+                _render_bash_card(console, raw_output, raw_error, metadata, ok)
+
+            # WebSearch tool card
+            if name == "WebSearch":
+                _render_search_card(console, raw_output, metadata)
+
+            # Read tool snippet info
+            if name == "read" and metadata.get("snippet_id"):
+                snip_id = metadata.get("snippet_id")
+                lines_cnt = metadata.get("line_count")
+                if snip_id and lines_cnt:
+                    console.print(
+                        f"    [dim]↳ anchored [bold cyan]snippet:{snip_id}[/] ({lines_cnt} lines)[/]"
+                    )
     else:
         mark = "✓" if ok else "✗"
         print(f"  {mark} {name}: {summary_text}")

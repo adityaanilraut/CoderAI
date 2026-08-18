@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import re
 from typing import Any, Literal
 
 from coderai.core.common.model_capabilities import defaults_to_thinking_mode
@@ -222,6 +223,50 @@ def _normalize_env(env: Any) -> dict[str, str]:
     return {k: v for k, v in env.items() if isinstance(k, str) and isinstance(v, str)}
 
 
+def parse_token_window(value: Any) -> int | None:
+    """Parse numeric token window or shorthand string like '128k', '1m', '256000'."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        val = int(value)
+        return val if val > 0 else None
+    if not isinstance(value, str):
+        return None
+    s = value.strip().lower()
+    if not s:
+        return None
+    if s.isdigit():
+        val = int(s)
+        return val if val > 0 else None
+    m = re.match(r"^(\d+)\s*([km])$", s)
+    if m:
+        amount = int(m.group(1))
+        unit = m.group(2)
+        multiplier = (1024 * 1024) if unit == "m" else 1024
+        res = amount * multiplier
+        return res if res > 0 else None
+    return None
+
+
+def first_token_window(*values: Any) -> int | None:
+    for v in values:
+        parsed = parse_token_window(v)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def get_default_context_window(model: str = "") -> int:
+    m = (model or "").strip().lower()
+    if "deepseek" in m or "v4" in m:
+        return 1024 * 1024
+    if any(k in m for k in ("gpt-5", "claude-3-7", "gemini-2.5")):
+        return 512 * 1024
+    return DEFAULT_CONTEXT_WINDOW
+
+
+def get_default_auto_compact_window(model: str = "") -> int:
+    return max(1, get_default_context_window(model) // 2)
+
+
 def resolve_current_settings(project_root: str = ".") -> dict[str, Any]:
     """Resolve user + project + env into a single settings dict."""
     load_dotenv(project_root)
@@ -273,8 +318,23 @@ def resolve_current_settings(project_root: str = ".") -> dict[str, Any]:
     if base_url == DEFAULT_BASE_URL and os.getenv("OPENAI_BASE_URL"):
         base_url = os.getenv("OPENAI_BASE_URL") or DEFAULT_BASE_URL
 
-    context_window = DEFAULT_CONTEXT_WINDOW
-    auto_compact_window = max(1, context_window // 2)
+    configured_context_window = first_token_window(
+        system_env.get("CONTEXT_WINDOW"),
+        project.get("contextWindow"),
+        user.get("contextWindow"),
+    )
+    context_window = configured_context_window or get_default_context_window(model)
+
+    configured_auto_compact_window = first_token_window(
+        system_env.get("AUTO_COMPACT_WINDOW"),
+        project.get("autoCompactWindow"),
+        user.get("autoCompactWindow"),
+    )
+    default_auto_compact_window = max(1, context_window // 2)
+    auto_compact_window = min(
+        configured_auto_compact_window or default_auto_compact_window,
+        context_window,
+    )
 
     thinking_enabled = (
         _parse_bool(system_env.get("THINKING_ENABLED"))
@@ -321,7 +381,26 @@ def resolve_current_settings(project_root: str = ".") -> dict[str, Any]:
         "mcpServers": _merge_mcp_servers(user, project, user_env, project_env, system_env),
         "permissions": _merge_permissions(user, project),
         "enabledSkills": _merge_enabled_skills(user, project),
+        "skillScanPaths": _merge_skill_scan_paths(user, project),
+        "statusline": _merge_statusline(user, project),
     }
+
+
+
+def _normalize_skill_scan_paths(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(p).strip() for p in value if isinstance(p, (str, pathlib.Path)) and str(p).strip()]
+
+
+def _merge_skill_scan_paths(user: dict | None, project: dict | None) -> list[str]:
+    u_paths = _normalize_skill_scan_paths((user or {}).get("skillScanPaths"))
+    p_paths = _normalize_skill_scan_paths((project or {}).get("skillScanPaths"))
+    combined: list[str] = []
+    for p in u_paths + p_paths:
+        if p not in combined:
+            combined.append(p)
+    return combined
 
 
 def _normalize_enabled_skills(value: Any) -> dict[str, bool]:
@@ -370,3 +449,99 @@ def _merge_mcp_servers(
             cfg["env"] = env_cfg
         merged[name] = cfg
     return merged or None
+
+
+DEFAULT_STATUSLINE_REFRESH_MS = 3000
+DEFAULT_STATUSLINE_SEPARATOR = " | "
+
+
+def _normalize_statusline_provider(provider: Any) -> dict[str, Any] | None:
+    if not isinstance(provider, dict):
+        return None
+    ptype = provider.get("type")
+    if ptype not in ("command", "module"):
+        return None
+    result: dict[str, Any] = {"type": ptype}
+    for key in ("id", "command", "path", "cwd", "color"):
+        val = provider.get(key)
+        if isinstance(val, str) and val.strip():
+            result[key] = val.strip()
+    if ptype == "command" and "command" not in result:
+        return None
+    if ptype == "module" and "path" not in result:
+        return None
+
+    if "timeoutMs" in provider:
+        try:
+            t = int(provider["timeoutMs"])
+            if t > 0:
+                result["timeoutMs"] = t
+        except (ValueError, TypeError):
+            pass
+
+    if "maxLength" in provider:
+        try:
+            m = int(provider["maxLength"])
+            if m > 0:
+                result["maxLength"] = m
+        except (ValueError, TypeError):
+            pass
+
+    if "newLine" in provider:
+        result["newLine"] = bool(provider["newLine"])
+
+    return result
+
+
+def _normalize_statusline(config: Any) -> dict[str, Any]:
+    if not isinstance(config, dict):
+        return {}
+    result: dict[str, Any] = {}
+    if "enabled" in config:
+        result["enabled"] = bool(config["enabled"])
+    if "refreshMs" in config:
+        try:
+            r = int(config["refreshMs"])
+            if r > 0:
+                result["refreshMs"] = r
+        except (ValueError, TypeError):
+            pass
+    if "separator" in config and isinstance(config["separator"], str):
+        result["separator"] = config["separator"]
+
+    if "providers" in config and isinstance(config["providers"], list):
+        providers: list[dict[str, Any]] = []
+        for p in config["providers"]:
+            norm = _normalize_statusline_provider(p)
+            if norm:
+                providers.append(norm)
+        result["providers"] = providers
+    return result
+
+
+def _merge_statusline(user: dict | None, project: dict | None) -> dict[str, Any]:
+    user_cfg = _normalize_statusline((user or {}).get("statusline"))
+    proj_cfg = _normalize_statusline((project or {}).get("statusline"))
+
+    user_providers = user_cfg.get("providers") or []
+    proj_providers = proj_cfg.get("providers") or []
+    proj_ids = {p.get("id") for p in proj_providers if p.get("id")}
+    merged_providers = [
+        p for p in user_providers if not (p.get("id") and p["id"] in proj_ids)
+    ] + proj_providers
+
+    enabled = proj_cfg.get("enabled", user_cfg.get("enabled", len(merged_providers) > 0))
+    refresh_ms = proj_cfg.get(
+        "refreshMs", user_cfg.get("refreshMs", DEFAULT_STATUSLINE_REFRESH_MS)
+    )
+    separator = proj_cfg.get(
+        "separator", user_cfg.get("separator", DEFAULT_STATUSLINE_SEPARATOR)
+    )
+
+    return {
+        "enabled": enabled,
+        "refreshMs": refresh_ms,
+        "separator": separator,
+        "providers": merged_providers,
+    }
+

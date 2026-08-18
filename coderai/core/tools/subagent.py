@@ -49,10 +49,16 @@ async def handle_subagent_tool(args: dict[str, Any], context: ToolExecutionConte
         create_openai_client=context.create_openai_client,
     )
 
+    try:
+        depth = int(args.get("depth", 0))
+    except (ValueError, TypeError):
+        depth = 0
+
     spec = SubAgentSpec(
         description=description,
         prompt=prompt,
         mode=mode,
+        depth=depth,
         timeout_seconds=timeout_seconds,
         parent_session_id=context.session_id,
         extra_context=as_str(args.get("context", "")).strip() or None,

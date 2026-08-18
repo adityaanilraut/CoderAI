@@ -69,3 +69,30 @@ def build_diff_preview(file_path: str, old_content: str | None, new_content: str
         )
     )
     return "\n".join(diff[:200])
+
+
+def read_text_file_tail(path: str, max_chars: int = 4000) -> dict[str, Any] | None:
+    """Read the trailing character slice of a file safely."""
+    p = pathlib.Path(path)
+    if not p.is_file():
+        return None
+    try:
+        size = p.stat().st_size
+        if size == 0:
+            return {"content": "", "total_bytes": 0, "truncated": False}
+        with open(p, "rb") as f:
+            chunk_size = min(size, max_chars * 4)
+            if size > chunk_size:
+                f.seek(size - chunk_size)
+            raw = f.read()
+        text = raw.decode("utf-8", errors="replace")
+        truncated = len(text) > max_chars or size > chunk_size
+        if len(text) > max_chars:
+            text = text[-max_chars:]
+        return {
+            "content": text.strip(),
+            "total_bytes": size,
+            "truncated": truncated,
+        }
+    except Exception:
+        return None
