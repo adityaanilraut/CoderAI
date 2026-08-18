@@ -8,7 +8,10 @@ import subprocess
 import sys
 
 
-def kill_process_tree(pid: int, sig: int = signal.SIGKILL) -> bool:
+_SIGKILL = getattr(signal, "SIGKILL", signal.SIGTERM)
+
+
+def kill_process_tree(pid: int, sig: int = _SIGKILL) -> bool:
     if not isinstance(pid, int) or pid <= 0:
         return False
     try:

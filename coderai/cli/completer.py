@@ -47,7 +47,8 @@ class CoderAICompleter:
         try:
             import readline
 
-            raw_buf = readline.get_line_buffer()
+            get_buf = getattr(readline, "get_line_buffer", None)
+            raw_buf = get_buf() if callable(get_buf) else ""
             line_buffer = raw_buf if raw_buf else text
         except Exception:
             line_buffer = text
@@ -131,33 +132,45 @@ def setup_readline(project_root: str, get_active_model: Any = None) -> bool:
     try:
         import readline
 
-        # Configure completion key
-        if "libedit" in getattr(readline, "__doc__", ""):
-            readline.parse_and_bind("bind ^I rl_complete")
-        else:
-            readline.parse_and_bind("tab: complete")
+        parse_and_bind = getattr(readline, "parse_and_bind", None)
+        if callable(parse_and_bind):
+            # Configure completion key
+            if "libedit" in getattr(readline, "__doc__", ""):
+                parse_and_bind("bind ^I rl_complete")
+            else:
+                parse_and_bind("tab: complete")
 
         # Set delimiter characters so @ is recognized
-        readline.set_completer_delims(" \t\n`!@#$%^&*()=+[{]}\\|;:'\",<>?")
+        set_delims = getattr(readline, "set_completer_delims", None)
+        if callable(set_delims):
+            set_delims(" \t\n`!@#$%^&*()=+[{]}\\|;:'\",<>?")
 
         completer = CoderAICompleter(project_root, get_active_model)
-        readline.set_completer(completer.complete)
+        set_comp = getattr(readline, "set_completer", None)
+        if callable(set_comp):
+            set_comp(completer.complete)
 
         # Load history
         hist_file = get_history_file_path()
-        if hist_file.is_file():
+        read_hist = getattr(readline, "read_history_file", None)
+        set_hist_len = getattr(readline, "set_history_length", None)
+        if hist_file.is_file() and callable(read_hist):
             try:
-                readline.read_history_file(str(hist_file))
-                readline.set_history_length(1000)
+                read_hist(str(hist_file))
+                if callable(set_hist_len):
+                    set_hist_len(1000)
             except Exception:
                 pass
 
         # Save history on exit
+        write_hist = getattr(readline, "write_history_file", None)
+
         def _save_history() -> None:
-            try:
-                readline.write_history_file(str(get_history_file_path()))
-            except Exception:
-                pass
+            if callable(write_hist):
+                try:
+                    write_hist(str(get_history_file_path()))
+                except Exception:
+                    pass
 
         atexit.register(_save_history)
         return True

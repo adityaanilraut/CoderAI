@@ -9,11 +9,10 @@ import pathlib
 import sys
 from typing import Any
 
-yaml: Any = None
 try:
     import yaml
 except ImportError:
-    yaml = None
+    yaml = None  # type: ignore[assignment]
 
 
 def parse_frontmatter(content: str) -> dict[str, Any]:
