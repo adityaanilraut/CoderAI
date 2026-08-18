@@ -311,6 +311,20 @@ make clean
 
 ---
 
+## Acknowledgements
+
+CoderAI builds upon and adapts architectural concepts, protocol designs, and patterns from **[Deep Code CLI](https://github.com/vegamo/deepcode)** (created by [Vegamo](https://vegamo.cn/)), released under the MIT License.
+
+We gratefully acknowledge the Deep Code project and its contributors for pioneering:
+- **Snippet-Anchored Precision Editing**: The robust `read` (anchored `snippet_id`) to `edit` pattern with whitespace tolerance and staleness detection.
+- **Bounded Agent Loop & Token Compaction**: Deterministic turn cycles, multi-turn loop guards, and intelligent context compaction.
+- **Side-Effect Permission Scopes**: The 10-scope fail-closed security architecture (`read-in-cwd`, `mutate-git-log`, `mcp`, etc.).
+- **Interactive Terminal Workflow**: Advanced input buffering, dynamic status bar, and interactive menu patterns.
+
+In compliance with the MIT License terms, original copyright notices and attribution are maintained across adapted core modules.
+
+---
+
 ## License
 
 MIT License. See [LICENSE](LICENSE) for details.
