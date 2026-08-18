@@ -11,9 +11,10 @@ This document outlines the CoderAI security model, side-effect permission scopes
 If you discover a security vulnerability in CoderAI, please report it **privately**:
 
 - Open a private security advisory via GitHub under the repository's **Security** tab, or
-- Contact the maintainers directly at **security@coderai.dev**.
+- Contact the maintainers directly at **[EMAIL_ADDRESS]**.
 
 Please include:
+
 1. Description of the issue and affected version(s).
 2. Step-by-step reproduction steps or proof-of-concept.
 3. Impact assessment.
@@ -43,20 +44,21 @@ CoderAI implements the following core security principles:
 
 CoderAI classifies all operations into granular side-effect scopes:
 
-| Scope | Description | Risk Level |
-|---|---|---|
-| `read-in-cwd` | Reading files within the workspace root | Low |
-| `read-out-cwd` | Reading files outside the workspace root | Medium |
-| `write-in-cwd` | Creating or modifying files within the workspace root | Medium |
-| `write-out-cwd` | Creating or modifying files outside the workspace root | High |
-| `delete-in-cwd` | Deleting files within the workspace root | High |
-| `delete-out-cwd` | Deleting files outside the workspace root | Critical |
-| `query-git-log` | Inspecting git status, diffs, or logs | Low |
-| `mutate-git-log` | Altering git history (commit, branch, reset, checkout, rebase) | High |
-| `network` | Outbound HTTP requests and web searches | Medium |
-| `mcp` | Calling tools exposed by external MCP servers | Medium |
+| Scope            | Description                                                    | Risk Level |
+| ---------------- | -------------------------------------------------------------- | ---------- |
+| `read-in-cwd`    | Reading files within the workspace root                        | Low        |
+| `read-out-cwd`   | Reading files outside the workspace root                       | Medium     |
+| `write-in-cwd`   | Creating or modifying files within the workspace root          | Medium     |
+| `write-out-cwd`  | Creating or modifying files outside the workspace root         | High       |
+| `delete-in-cwd`  | Deleting files within the workspace root                       | High       |
+| `delete-out-cwd` | Deleting files outside the workspace root                      | Critical   |
+| `query-git-log`  | Inspecting git status, diffs, or logs                          | Low        |
+| `mutate-git-log` | Altering git history (commit, branch, reset, checkout, rebase) | High       |
+| `network`        | Outbound HTTP requests and web searches                        | Medium     |
+| `mcp`            | Calling tools exposed by external MCP servers                  | Medium     |
 
 #### Permission Policies
+
 Permissions are configured in `~/.coderai/settings.json` (user-level) or `.coderai/settings.json` (project-level):
 
 ```json
@@ -64,16 +66,23 @@ Permissions are configured in `~/.coderai/settings.json` (user-level) or `.coder
   "permissions": {
     "defaultMode": "allowAll",
     "allow": ["read-in-cwd", "query-git-log"],
-    "ask": ["write-in-cwd", "write-out-cwd", "delete-in-cwd", "mutate-git-log", "network", "mcp"],
+    "ask": [
+      "write-in-cwd",
+      "write-out-cwd",
+      "delete-in-cwd",
+      "mutate-git-log",
+      "network",
+      "mcp"
+    ],
     "deny": ["delete-out-cwd"]
   }
 }
 ```
 
-* **`allow`**: Automatically approve tool execution matching these scopes.
-* **`ask`**: Display a rich confirmation card detailing command, arguments, and affected paths before running.
-* **`deny`**: Block execution unconditionally with a security denial message.
-* **CLI Override**: Passing `--yes` or `-y` runs in auto-approval mode for trusted, automated workflows.
+- **`allow`**: Automatically approve tool execution matching these scopes.
+- **`ask`**: Display a rich confirmation card detailing command, arguments, and affected paths before running.
+- **`deny`**: Block execution unconditionally with a security denial message.
+- **CLI Override**: Passing `--yes` or `-y` runs in auto-approval mode for trusted, automated workflows.
 
 ---
 
@@ -136,11 +145,11 @@ Shell execution is guarded by multiple defense layers:
 
 ## Supported Environments
 
-| Platform | Support Tier |
-|---|---|
+| Platform                          | Support Tier                        |
+| --------------------------------- | ----------------------------------- |
 | **macOS (Apple Silicon & Intel)** | Tier 1 (Fully Supported & Verified) |
-| **Linux (x86_64, aarch64)** | Tier 1 (Fully Supported & Verified) |
-| **Windows (WSL2 / PowerShell)** | Tier 2 (Supported) |
+| **Linux (x86_64, aarch64)**       | Tier 1 (Fully Supported & Verified) |
+| **Windows (WSL2 / PowerShell)**   | Tier 2 (Supported)                  |
 
 ---
 

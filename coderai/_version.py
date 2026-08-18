@@ -1,3 +1,3 @@
 """Single source of truth for the CoderAI distribution version."""
 
-__version__ = "0.3.5"
+__version__ = "0.4.0"

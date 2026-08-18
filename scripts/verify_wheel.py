@@ -18,6 +18,7 @@ import zipfile
 DIST_NAME = "coderai-agent"
 ENTRY_POINTS = {
     "coderai = coderai.main:main",
+    "cai = coderai.main:main",
 }
 
 RUNTIME_MEMBERS = (

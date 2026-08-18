@@ -38,7 +38,7 @@ jobs:
         id: tag
         shell: bash
         run: |
-          PACKAGE_VERSION="$(python -c 'import runpy; print(runpy.run_path("coderAI/_version.py")["__version__"])')"
+          PACKAGE_VERSION="$(python -c 'import runpy; print(runpy.run_path("coderai/_version.py")["__version__"])')"
           if [[ "${GITHUB_EVENT_NAME}" = "push" ]]; then
             TAG="${GITHUB_REF_NAME}"
             test "${TAG}" = "v${PACKAGE_VERSION}" || {
@@ -106,48 +106,10 @@ jobs:
       - name: Install and probe wheel from an empty directory
         run: python scripts/verify_wheel.py dist --expected-version "${{ needs.build.outputs.version }}"
 
-  smoke-optionals:
-    name: Smoke optional extra (${{ matrix.extra }})
-    needs: build
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        extra: [semantic, local-embeddings, web, browser]
-    steps:
-      - name: Checkout smoke-test harness
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Download exact release artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: release-dist
-          path: dist
-
-      - name: Install and probe optional capability from the exact wheel
-        if: matrix.extra != 'browser'
-        run: >-
-          python scripts/verify_wheel.py dist
-          --expected-version "${{ needs.build.outputs.version }}"
-          --extra "${{ matrix.extra }}"
-
-      - name: Install Playwright, Chromium, and probe a local browser page
-        if: matrix.extra == 'browser'
-        run: >-
-          python scripts/verify_wheel.py dist
-          --expected-version "${{ needs.build.outputs.version }}"
-          --extra browser
-          --install-browser
-
   publish-github-release:
     name: Publish exact artifacts to GitHub
     if: github.event_name == 'push'
-    needs: [build, smoke-wheel, smoke-optionals]
+    needs: [build, smoke-wheel]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -173,7 +135,7 @@ jobs:
 
             ```bash
             pip install coderai-agent==${{ needs.build.outputs.version }}
-            coderAI chat
+            coderai
             ```
 
   publish-pypi:

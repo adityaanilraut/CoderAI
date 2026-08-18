@@ -5,6 +5,14 @@ All notable changes to CoderAI are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-08-18
+
+### Fixed
+- **Process Tree & Subprocess Isolation**: Hardened `kill_process_tree` to isolate subprocess process groups and prevent signal leakage to parent runners on POSIX.
+- **MCP Lifecycle & Disabled Server Handling**: Added strict verification for `disabled: true` MCP server configurations in `prepare` and `initialize`, preventing unwanted connections.
+- **Session Serialization & IDE Protocol Parity**: Added native `to_dict()` methods to `SessionEntry` and `SessionMessage`, empty session creation, and direct permission resolution helpers.
+- **Type Safety & Code Quality**: Fully resolved static type checks across core modules with strict Mypy and Ruff validation.
+
 ## [0.3.5] - 2026-08-17
 
 ### Added
