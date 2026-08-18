@@ -11,7 +11,7 @@ This document outlines the CoderAI security model, side-effect permission scopes
 If you discover a security vulnerability in CoderAI, please report it **privately**:
 
 - Open a private security advisory via GitHub under the repository's **Security** tab, or
-- Contact the maintainers directly at **[EMAIL_ADDRESS]**.
+- Contact the maintainers directly at **adityaanilraut@gmail.com**.
 
 Please include:
 
