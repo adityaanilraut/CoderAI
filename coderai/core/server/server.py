@@ -307,7 +307,7 @@ class CoderAIServer:
         if method in ("session/prompt", "session.prompt"):
             session_id = str(params.get("sessionId", ""))
             prompt = str(params.get("prompt", ""))
-            plan_mode = params.get("planMode")
+            plan_mode_val = bool(params["planMode"]) if "planMode" in params else None
             skills = params.get("skills")
 
             if not session_id or self.session_manager.get_session(session_id) is None:
@@ -321,7 +321,7 @@ class CoderAIServer:
             await self.session_manager.reply_session(
                 session_id,
                 user_prompt=prompt,
-                plan_mode=plan_mode,
+                plan_mode=plan_mode_val,
                 skills=skills,
             )
 
@@ -349,7 +349,7 @@ class CoderAIServer:
             session_id = str(params.get("sessionId", ""))
             prompt = params.get("prompt")
             permission_replies = params.get("permissionReplies")
-            plan_mode = params.get("planMode")
+            plan_mode_val = bool(params["planMode"]) if "planMode" in params else None
 
             if not session_id or self.session_manager.get_session(session_id) is None:
                 return format_error(req_id, INVALID_PARAMS, f"Session '{session_id}' not found")
@@ -359,7 +359,7 @@ class CoderAIServer:
                 session_id,
                 user_prompt=prompt,
                 permission_replies=permission_replies,
-                plan_mode=plan_mode,
+                plan_mode=plan_mode_val,
             )
 
             entry = self.session_manager.get_session(session_id)

@@ -217,7 +217,7 @@ async def handle_web_search_tool(args: dict[str, Any], context: Any) -> ToolResu
     )
     client_info = client_factory() if callable(client_factory) else {}
     client = client_info.get("client") if isinstance(client_info, dict) else None
-    model = (
+    model = str(
         client_info.get("model")
         if isinstance(client_info, dict) and client_info.get("model")
         else (getattr(context, "model", None) or "gpt-4o")

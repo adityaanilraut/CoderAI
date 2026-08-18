@@ -135,6 +135,11 @@ class StdioMcpTransport(McpTransport):
         if self.cwd:
             kwargs["cwd"] = self.cwd
 
+        if sys.platform == "win32":
+            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            kwargs["start_new_session"] = True
+
         if spawn_spec["shell"]:
             self._proc = subprocess.Popen(spawn_spec["command"], shell=True, **kwargs)
         else:

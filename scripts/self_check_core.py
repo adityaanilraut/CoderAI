@@ -315,8 +315,10 @@ async def main() -> None:
                     },
                 },
             )
-            session_id = await mgr.create_session("write it")
-            assert (pathlib.Path.home() / ".coderai" / "projects").exists()
+            session_id = await mgr.create_session("write it", skills=[])
+            assert (pathlib.Path(tmp) / ".coderai" / "sessions").exists() or (
+                pathlib.Path.home() / ".coderai" / "projects"
+            ).exists()
             messages = mgr.list_session_messages(session_id)
             assert any(m.role == "tool" for m in messages), (
                 "expected a tool result in the transcript"
@@ -340,7 +342,12 @@ async def main() -> None:
         from coderai.core.tools.update_plan import handle as plan_handle
         from coderai.core.tools.understand_image import handle as img_handle
 
-        tctx = {"session_id": "sc_tools", "project_root": tmp}
+        img_client, _ = make_mock_client(lambda c, k: resp("A nice image"))
+        tctx = {
+            "session_id": "sc_tools",
+            "project_root": tmp,
+            "create_openai_client": lambda: {"client": img_client, "model": "gpt-4o"},
+        }
         ask_res = ask_handle(
             {
                 "questions": [

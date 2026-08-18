@@ -81,3 +81,6 @@ pythonpath = ["."]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "security: security and permissions regression tests",
+]

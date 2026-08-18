@@ -1,5 +1,7 @@
 """Unit and policy tests for Network Security, SSRF Rails, and Permissions Gating."""
 
+import pytest
+
 from coderai.core.network.security import (
     NetworkPolicy,
     is_domain_matching,
@@ -11,6 +13,8 @@ from coderai.core.permissions import (
     describe_tool_permission_request,
     evaluate_permission_scopes,
 )
+
+pytestmark = pytest.mark.security
 
 
 def test_private_and_loopback_ip_detection():

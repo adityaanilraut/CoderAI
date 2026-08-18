@@ -195,6 +195,7 @@ async def test_mcp_sse_transport_lifecycle():
         await client.disconnect()
         server.running = False
         try:
+            server.shutdown()
             server.server_close()
         except Exception:
             pass

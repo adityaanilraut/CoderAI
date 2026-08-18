@@ -9,8 +9,14 @@ MAX_MESSAGE_LENGTH = 500
 MAX_CAUSE_DEPTH = 5
 
 SENSITIVE_PATTERNS = [
-    (re.compile(r"(Authorization\s*[:=]\s*(?:Bearer\s+)?)[^\s,;]+", re.IGNORECASE), r"\1***MASKED***"),
-    (re.compile(r"([?&](?:api[_-]?key|access[_-]?token|token)=)[^&\s]+", re.IGNORECASE), r"\1***MASKED***"),
+    (
+        re.compile(r"(Authorization\s*[:=]\s*(?:Bearer\s+)?)[^\s,;]+", re.IGNORECASE),
+        r"\1***MASKED***",
+    ),
+    (
+        re.compile(r"([?&](?:api[_-]?key|access[_-]?token|token)=)[^&\s]+", re.IGNORECASE),
+        r"\1***MASKED***",
+    ),
     (
         re.compile(
             r"""(["']?(?:api[_-]?key|access[_-]?token|secret)["']?\s*[:=]\s*["']?)[^",}&;\s]+""",
@@ -20,7 +26,6 @@ SENSITIVE_PATTERNS = [
     ),
     (re.compile(r"\bsk-[A-Za-z0-9_-]{8,}\b"), "***MASKED***"),
 ]
-
 
 
 def mask_sensitive(text: str) -> str:

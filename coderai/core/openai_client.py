@@ -191,4 +191,3 @@ def create_openai_client(
     result = base()
     result["client"] = client_instance
     return result
-

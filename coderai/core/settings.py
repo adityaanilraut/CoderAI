@@ -386,7 +386,6 @@ def resolve_current_settings(project_root: str = ".") -> dict[str, Any]:
     }
 
 
-
 def _normalize_skill_scan_paths(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -531,12 +530,8 @@ def _merge_statusline(user: dict | None, project: dict | None) -> dict[str, Any]
     ] + proj_providers
 
     enabled = proj_cfg.get("enabled", user_cfg.get("enabled", len(merged_providers) > 0))
-    refresh_ms = proj_cfg.get(
-        "refreshMs", user_cfg.get("refreshMs", DEFAULT_STATUSLINE_REFRESH_MS)
-    )
-    separator = proj_cfg.get(
-        "separator", user_cfg.get("separator", DEFAULT_STATUSLINE_SEPARATOR)
-    )
+    refresh_ms = proj_cfg.get("refreshMs", user_cfg.get("refreshMs", DEFAULT_STATUSLINE_REFRESH_MS))
+    separator = proj_cfg.get("separator", user_cfg.get("separator", DEFAULT_STATUSLINE_SEPARATOR))
 
     return {
         "enabled": enabled,
@@ -544,4 +539,3 @@ def _merge_statusline(user: dict | None, project: dict | None) -> dict[str, Any]
         "separator": separator,
         "providers": merged_providers,
     }
-

@@ -140,15 +140,16 @@ class McpManager:
         if not servers:
             return
         self.disposed = False
-        for name in servers:
+        for name, cfg in servers.items():
             if name not in self.configured_server_names:
                 self.configured_server_names.append(name)
             if any(s.name == name for s in self.server_statuses):
                 continue
+            is_disabled = bool(cfg.get("disabled")) or cfg.get("enabled") is False
             self._set_status(
                 McpServerStatus(
                     name=name,
-                    status="starting",
+                    status="disabled" if is_disabled else "starting",
                     connected=False,
                 )
             )
@@ -263,6 +264,16 @@ class McpManager:
         if self.disposed:
             return
 
+        if bool(config.get("disabled")) or config.get("enabled") is False:
+            self._set_status(
+                McpServerStatus(
+                    name=name,
+                    status="disabled",
+                    connected=False,
+                )
+            )
+            return
+
         # Filter out disconnected clients for this server
         self.clients = [c for c in self.clients if c.server_name != name and c.is_connected()]
         self.tools = [t for t in self.tools if t.server_name != name]
@@ -276,7 +287,11 @@ class McpManager:
             await client.connect()
             self.clients.append(client)
 
-            server_tools = client._tools or await client.list_tools(timeout_s=10.0)
+            server_tools = (
+                client._tools
+                if (isinstance(getattr(client, "_tools", None), list) and client._tools)
+                else await client.list_tools(timeout_s=10.0)
+            )
             tool_names: list[str] = []
             used_names = {t.namespaced_name for t in self.tools}
 

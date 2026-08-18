@@ -116,7 +116,7 @@ def validate_outbound_url(url: str, policy: NetworkPolicy | None = None) -> tupl
             )
             for item in addr_info:
                 sockaddr = item[4]
-                ip_addr = sockaddr[0]
+                ip_addr = str(sockaddr[0])
                 if is_private_or_loopback_ip(ip_addr):
                     return (
                         False,

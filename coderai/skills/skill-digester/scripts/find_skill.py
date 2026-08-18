@@ -9,6 +9,7 @@ import pathlib
 import sys
 from typing import Any
 
+yaml: Any = None
 try:
     import yaml
 except ImportError:

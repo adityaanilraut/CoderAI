@@ -131,6 +131,22 @@ class SessionMessage:
     update_time: str = ""
     meta: dict[str, Any] | None = None
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "sessionId": self.session_id,
+            "role": self.role,
+            "content": self.content,
+            "toolCalls": self.tool_calls,
+            "toolCallId": self.tool_call_id,
+            "thinking": self.thinking,
+            "compacted": self.compacted,
+            "visible": self.visible,
+            "createTime": self.create_time,
+            "updateTime": self.update_time,
+            "meta": self.meta,
+        }
+
 
 @dataclass
 class SessionEntry:
@@ -151,6 +167,27 @@ class SessionEntry:
     update_time: str = ""
     plan_mode: bool = False
     fork_of: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "summary": self.summary,
+            "assistantReply": self.assistant_reply,
+            "assistantThinking": self.assistant_thinking,
+            "assistantRefusal": self.assistant_refusal,
+            "toolCalls": self.tool_calls,
+            "status": self.status,
+            "failReason": self.fail_reason,
+            "askPermissions": self.ask_permissions,
+            "processes": self.processes,
+            "usage": self.usage,
+            "usagePerModel": self.usage_per_model,
+            "activeTokens": self.active_tokens,
+            "createTime": self.create_time,
+            "updateTime": self.update_time,
+            "planMode": self.plan_mode,
+            "forkOf": self.fork_of,
+        }
 
 
 def _now() -> str:
@@ -545,7 +582,9 @@ class SessionManager:
         """Kill all tracked live processes for a session."""
         from coderai.core.tools.bash import kill_process_tree
 
-        entry = self._get_entry(session_id) if session_id else None
+        if not session_id:
+            return
+        entry = self._get_entry(session_id)
         if entry and entry.get("processes"):
             for pid_str in list(entry["processes"].keys()):
                 try:
@@ -580,8 +619,9 @@ class SessionManager:
         last_assistant = next(
             (m for m in reversed(messages) if m.role == "assistant" and m.content), None
         )
+        fallback_summary = entry.get("summary") if entry else "Task finished"
         body = (
-            (last_assistant.content if last_assistant else entry.get("summary")) or "Task finished"
+            (last_assistant.content if last_assistant else fallback_summary) or "Task finished"
         )[:200]
 
         launch_notify_script(
@@ -600,6 +640,42 @@ class SessionManager:
             },
         )
 
+    def _create_empty_session(self, plan_mode: bool = False) -> str:
+        session_id = uuid.uuid4().hex
+        now = _now()
+        index = self._load_index()
+        entry: dict[str, Any] = {
+            "id": session_id,
+            "summary": "New Session",
+            "assistantReply": None,
+            "assistantThinking": None,
+            "assistantRefusal": None,
+            "toolCalls": None,
+            "status": "ready",
+            "failReason": None,
+            "usage": None,
+            "usagePerModel": None,
+            "activeTokens": 0,
+            "processes": {},
+            "createTime": now,
+            "updateTime": now,
+            "planMode": plan_mode,
+        }
+        index["entries"].append(entry)
+        index["entries"] = sorted(
+            index["entries"], key=lambda e: e.get("updateTime", ""), reverse=True
+        )[:MAX_SESSION_ENTRIES]
+        self._save_index(index)
+        self.file_history.ensure_session(session_id)
+        self._active_session_id = session_id
+        return session_id
+
+    async def respond_permissions(
+        self, session_id: str, replies: list[dict[str, Any]], plan_mode: bool | None = None
+    ) -> None:
+        """Respond to pending permission requests in a session."""
+        await self.reply_session(session_id, permission_replies=replies, plan_mode=plan_mode)
+
     async def create_session(
         self,
         user_prompt: str,
@@ -610,7 +686,7 @@ class SessionManager:
         summary = (user_prompt or "[Image Prompt]")[:100]
         now = _now()
         index = self._load_index()
-        entry = {
+        entry: dict[str, Any] = {
             "id": session_id,
             "summary": summary,
             "assistantReply": None,
@@ -822,7 +898,12 @@ class SessionManager:
             if name and name not in names:
                 names.append(name)
 
-        if user_prompt and user_prompt.strip() and user_prompt.strip() != "/continue":
+        if (
+            explicit_names is None
+            and user_prompt
+            and user_prompt.strip()
+            and user_prompt.strip() != "/continue"
+        ):
             settings = self.get_resolved_settings()
             enabled = settings.get("enabledSkills") or {}
             custom_paths = settings.get("skillScanPaths") or []

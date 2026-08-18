@@ -1,12 +1,10 @@
 """Comprehensive parity test suite verifying all final hardening and parity enhancements."""
 
-import pytest
 from coderai.core.common.llm_error import (
     describe_llm_error,
-    get_llm_error_details,
     mask_sensitive,
 )
-from coderai.core.settings import resolve_current_settings, _merge_statusline, _normalize_statusline
+from coderai.core.settings import resolve_current_settings, _merge_statusline
 from coderai.cli.app import _build_parser, main
 
 
@@ -81,7 +79,6 @@ def test_cli_parser_flags():
     args2 = parser.parse_args(["-x", "-p", "run task"])
     assert args2.exec_prompt is True
     assert args2.prompt_flag == "run task"
-
 
     # --fork / -f
     args3 = parser.parse_args(["-f", "sess-123"])

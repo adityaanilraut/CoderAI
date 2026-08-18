@@ -183,7 +183,6 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-
 def _prompt_permissions(
     requests: list[dict[str, Any]], yes: bool, plan_mode: bool = False
 ) -> tuple[list[dict[str, Any]], list[str]]:
@@ -660,7 +659,9 @@ async def _run_interactive(
             session_id = sessions[0].id
         else:
             if console is not None and _RICH:
-                console.print("[yellow]No previous sessions found for this project. Starting a new session.[/]")
+                console.print(
+                    "[yellow]No previous sessions found for this project. Starting a new session.[/]"
+                )
             else:
                 print("No previous sessions found for this project. Starting a new session.")
 
@@ -736,15 +737,10 @@ async def _run_interactive(
                 print(f"  Attached files: {', '.join(attached_files)}")
         _STREAM_STATE.reset()
         if session_id is None:
-            session_id = await mgr.create_session(
-                effective_prompt, plan_mode=active_plan_mode
-            )
+            session_id = await mgr.create_session(effective_prompt, plan_mode=active_plan_mode)
         else:
-            await mgr.reply_session(
-                session_id, effective_prompt, plan_mode=active_plan_mode
-            )
+            await mgr.reply_session(session_id, effective_prompt, plan_mode=active_plan_mode)
         await _drain_pending_interactions(mgr, session_id, yes)
-
 
     try:
         while True:
@@ -897,11 +893,11 @@ async def _run_interactive(
                     continue
 
                 if cmd == "/fork":
-                    target_id = cmd_arg if cmd_arg else session_id
-                    if not target_id:
+                    fork_target_id = cmd_arg if cmd_arg else session_id
+                    if not fork_target_id:
                         print("Usage: /fork [session_id]")
                         continue
-                    forked_id = mgr.fork_session(target_id)
+                    forked_id = mgr.fork_session(fork_target_id)
                     if forked_id:
                         session_id = forked_id
                         f_entry = mgr.get_session(session_id)
@@ -914,23 +910,25 @@ async def _run_interactive(
                         else:
                             print(f"✓ Forked session to new session: {session_id}")
                     else:
-                        print(f"Failed to fork session '{target_id}'.")
+                        print(f"Failed to fork session '{fork_target_id}'.")
                     continue
 
                 if cmd in ("/delete", "/rm"):
-                    target_id = cmd_arg if cmd_arg else session_id
-                    if not target_id:
+                    del_target_id = cmd_arg if cmd_arg else session_id
+                    if not del_target_id:
                         print("Usage: /delete <session_id>")
                         continue
-                    if mgr.delete_session(target_id):
-                        if session_id == target_id:
+                    if mgr.delete_session(del_target_id):
+                        if session_id == del_target_id:
                             session_id = None
                         if console is not None and _RICH:
-                            console.print(f"[bold green]✓ Deleted session:[/] [red]{target_id}[/]")
+                            console.print(
+                                f"[bold green]✓ Deleted session:[/] [red]{del_target_id}[/]"
+                            )
                         else:
-                            print(f"✓ Deleted session: {target_id}")
+                            print(f"✓ Deleted session: {del_target_id}")
                     else:
-                        print(f"No saved session with id '{target_id}'.")
+                        print(f"No saved session with id '{del_target_id}'.")
                     continue
 
                 if cmd == "/compact":
@@ -964,11 +962,11 @@ async def _run_interactive(
 
                 if cmd == "/plan":
                     active_plan_mode = not active_plan_mode
-                    status = "enabled" if active_plan_mode else "disabled"
+                    plan_status = "enabled" if active_plan_mode else "disabled"
                     if console is not None and _RICH:
-                        console.print(f"[bold yellow]Plan Mode {status}.[/]")
+                        console.print(f"[bold yellow]Plan Mode {plan_status}.[/]")
                     else:
-                        print(f"Plan Mode {status}.")
+                        print(f"Plan Mode {plan_status}.")
                     if session_id:
                         await mgr.reply_session(session_id, plan_mode=active_plan_mode)
                     continue
@@ -1224,9 +1222,7 @@ def main(argv: list[str] | None = None) -> int:
     has_prompt_flag = bool(args.prompt_flag and args.prompt_flag.strip())
     has_exec = args.exec_prompt is not None and args.exec_prompt is not False
     exec_str = (
-        args.exec_prompt
-        if isinstance(args.exec_prompt, str) and args.exec_prompt.strip()
-        else None
+        args.exec_prompt if isinstance(args.exec_prompt, str) and args.exec_prompt.strip() else None
     )
     prompt_value = (
         args.prompt_flag
@@ -1332,4 +1328,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-

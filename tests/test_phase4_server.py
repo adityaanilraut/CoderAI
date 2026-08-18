@@ -344,6 +344,9 @@ async def test_server_models_mcp_and_skills_endpoints(tmp_path: pathlib.Path):
     )
     assert "skills" in res_skills["result"]
 
+    # Clean shutdown
+    await server.handle_request({"jsonrpc": "2.0", "id": 7, "method": "shutdown"})
+
 
 # ============================================================================
 # 5. CLI Server Mode Flag Parsing (app.py)

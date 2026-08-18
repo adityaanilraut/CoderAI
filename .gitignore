@@ -58,7 +58,8 @@ yarn-error.log*
 .coderAI/skills/workday-autofill/
 .coderAI/index/
 .ruff_cache/
-session-*.md
+/session-*.md
+session-export-*.md
 
 # Scratch files
 scratch.py
