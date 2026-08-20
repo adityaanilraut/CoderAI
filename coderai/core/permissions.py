@@ -139,6 +139,16 @@ def describe_tool_permission_request(
     name = tool_call["function"]["name"]
     args = parse_tool_arguments(tool_call["function"]["arguments"])
 
+    if name in ("glob", "Glob", "grep", "Grep"):
+        fp = args.get("path") if isinstance(args.get("path"), str) else ""
+        scopes = [_read_scope(project_root, fp)] if fp else ["read-in-cwd"]
+        return {
+            "toolCallId": tool_call["id"],
+            "name": name,
+            "command": _path_cmd(name, fp) if fp else name,
+            "scopes": scopes,
+        }
+
     if name in ("read", "Read"):
         fp = args.get("file_path") if isinstance(args.get("file_path"), str) else ""
         scopes = (
@@ -229,10 +239,71 @@ def describe_tool_permission_request(
             "scopes": img_scopes,
         }
 
+    if name in ("str_replace_editor", "StrReplaceEditor"):
+        cmd = args.get("command") if isinstance(args.get("command"), str) else "view"
+        fp = args.get("path") if isinstance(args.get("path"), str) else ""
+        if cmd == "view":
+            scopes = [_read_scope(project_root, fp)] if fp else ["read-in-cwd"]
+        else:
+            scopes = (
+                [("write-in-cwd" if is_path_in_project(project_root, fp) else "write-out-cwd")]
+                if fp
+                else ["write-in-cwd"]
+            )
+        return {
+            "toolCallId": tool_call["id"],
+            "name": "str_replace_editor",
+            "command": f"str_replace_editor {cmd} {fp}".strip(),
+            "scopes": scopes,
+        }
+
+    if name in ("terminal_open", "terminal_send", "terminal_signal", "terminal_close"):
+        return {
+            "toolCallId": tool_call["id"],
+            "name": name,
+            "command": name,
+            "scopes": ["write-in-cwd"],
+        }
+
+    if name in ("terminal_read", "terminal_list"):
+        return {
+            "toolCallId": tool_call["id"],
+            "name": name,
+            "command": name,
+            "scopes": [],
+        }
+
+    if name == "lsp":
+        fp = args.get("file_path") if isinstance(args.get("file_path"), str) else ""
+        op = args.get("operation") if isinstance(args.get("operation"), str) else "lsp"
+        scopes = [_read_scope(project_root, fp)] if fp else ["read-in-cwd"]
+        return {
+            "toolCallId": tool_call["id"],
+            "name": "lsp",
+            "command": f"lsp {op} {fp}".strip(),
+            "scopes": scopes,
+        }
+
+    if name in ("schedule_create", "schedule_delete"):
+        return {
+            "toolCallId": tool_call["id"],
+            "name": name,
+            "command": name,
+            "scopes": ["write-in-cwd"],
+        }
+
+    if name == "schedule_list":
+        return {
+            "toolCallId": tool_call["id"],
+            "name": name,
+            "command": name,
+            "scopes": [],
+        }
+
     if name.startswith("mcp__"):
         return {"toolCallId": tool_call["id"], "name": name, "command": name, "scopes": ["mcp"]}
 
-    if name in ("Task", "task", "subagent", "SubAgent"):
+    if name in ("Task", "task", "subagent", "SubAgent", "subagent_fork", "SubAgentFork"):
         mode = args.get("mode") if isinstance(args.get("mode"), str) else "read_only"
         description = args.get("description") if isinstance(args.get("description"), str) else name
         scopes = [] if mode == "read_only" else ["write-in-cwd"]
@@ -241,6 +312,94 @@ def describe_tool_permission_request(
             "name": name,
             "command": description or name,
             "scopes": scopes,
+        }
+
+    if name in ("workflow", "Workflow"):
+        meta_obj = args.get("meta")
+        meta = meta_obj if isinstance(meta_obj, dict) else {}
+        wf_name_val = meta.get("name")
+        wf_name = wf_name_val if isinstance(wf_name_val, str) else "workflow"
+        return {
+            "toolCallId": tool_call["id"],
+            "name": "workflow",
+            "command": f"workflow {wf_name}",
+            "scopes": ["write-in-cwd"],
+        }
+
+    if name in ("ralph", "Ralph"):
+        mode = args.get("mode") if isinstance(args.get("mode"), str) else "general"
+        obj_val = args.get("objective")
+        obj = obj_val if isinstance(obj_val, str) else "verify"
+        scopes = [] if mode == "read_only" else ["write-in-cwd"]
+        return {
+            "toolCallId": tool_call["id"],
+            "name": "ralph",
+            "command": f"ralph {obj[:30]}",
+            "scopes": scopes,
+        }
+
+    if name in ("spawn_teammate", "SpawnTeammate"):
+        tm_name = args.get("name") if isinstance(args.get("name"), str) else "teammate"
+        mode = args.get("mode") if isinstance(args.get("mode"), str) else "general"
+        scopes = [] if mode == "read_only" else ["write-in-cwd"]
+        return {
+            "toolCallId": tool_call["id"],
+            "name": "spawn_teammate",
+            "command": f"spawn_teammate {tm_name}",
+            "scopes": scopes,
+        }
+
+    if name in ("team_task_create", "team_task_update", "TeamTaskCreate", "TeamTaskUpdate"):
+        task_title = args.get("title") or args.get("task_id") or "task"
+        return {
+            "toolCallId": tool_call["id"],
+            "name": name,
+            "command": f"{name} {task_title}",
+            "scopes": ["write-in-cwd"],
+        }
+
+    if name in (
+        "team_task_get",
+        "team_task_list",
+        "wait_agent",
+        "TeamTaskGet",
+        "TeamTaskList",
+        "WaitAgent",
+    ):
+        return {
+            "toolCallId": tool_call["id"],
+            "name": name,
+            "command": name,
+            "scopes": [],
+        }
+
+    if name in ("code_mode", "CodeMode", "python_exec"):
+        return {
+            "toolCallId": tool_call["id"],
+            "name": "code_mode",
+            "command": "code_mode",
+            "scopes": ["write-in-cwd"],
+        }
+
+    if name in ("session_query", "SessionQuery", "session_search", "SessionSearch"):
+        query_val = args.get("query")
+        query = query_val if isinstance(query_val, str) else "session_query"
+        return {
+            "toolCallId": tool_call["id"],
+            "name": "session_query",
+            "command": f"session_query {query[:30]}",
+            "scopes": ["read-in-cwd"],
+        }
+
+    if name in ("pwsh", "PowerShell", "powershell"):
+        command = args.get("command") if isinstance(args.get("command"), str) else "pwsh"
+        description = args.get("description") if isinstance(args.get("description"), str) else ""
+        return {
+            "toolCallId": tool_call["id"],
+            "name": "pwsh",
+            "command": command,
+            "description": description,
+            "scopes": parse_bash_side_effects(args.get("sideEffects")),
         }
 
     return {"toolCallId": tool_call["id"], "name": name, "command": name, "scopes": []}

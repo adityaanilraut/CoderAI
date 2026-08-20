@@ -213,8 +213,10 @@ async def test_active_token_calculation_and_auto_compaction(
 
     # Verify messages list has summary message inserted and earlier messages compacted
     messages = mgr.list_session_messages(session_id)
-    compacted_messages = [m for m in messages if m.compacted]
-    assert len(compacted_messages) > 0
+    from coderai.core.session_log import derive_messages
+
+    derived = derive_messages(messages)
+    assert len(derived) < len(messages)
     summary_messages = [
         m for m in messages if m.role == "system" and "There are earlier parts" in m.content
     ]

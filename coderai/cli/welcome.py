@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import pathlib
+import platform
 import subprocess
+import sys
 from typing import Any
 
 from coderai._version import __version__
@@ -27,8 +29,10 @@ except ImportError:  # pragma: no cover
     _RICH = False
 
 
-def get_git_branch(project_root: str) -> str | None:
-    """Retrieve the current active git branch name if available."""
+def get_git_status(project_root: str) -> tuple[str | None, bool]:
+    """Retrieve the current active git branch and dirty status."""
+    branch: str | None = None
+    is_dirty = False
     try:
         res = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
@@ -38,11 +42,29 @@ def get_git_branch(project_root: str) -> str | None:
             timeout=2,
         )
         if res.returncode == 0:
-            branch = res.stdout.strip()
-            if branch:
-                return branch
+            b = res.stdout.strip()
+            if b:
+                branch = b
+        if branch:
+            res_dirty = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=project_root,
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            if res_dirty.returncode == 0 and res_dirty.stdout.strip():
+                is_dirty = True
     except Exception:
         pass
+    return branch, is_dirty
+
+
+def get_git_branch(project_root: str) -> str | None:
+    """Retrieve the current active git branch name if available (backward compatible)."""
+    branch, is_dirty = get_git_status(project_root)
+    if branch:
+        return f"{branch}*" if is_dirty else branch
     return None
 
 
@@ -59,13 +81,15 @@ def render_welcome_screen(
     active_model: str,
     plan_mode: bool = False,
     mcp_servers_count: int = 0,
+    skills_count: int = 0,
 ) -> None:
     """Render the stylish CoderAI welcome screen."""
-    branch = get_git_branch(project_root)
+    branch, is_dirty = get_git_status(project_root)
     workspace_str = _format_workspace_path(project_root)
-    branch_str = f" [bold cyan]({branch})[/]" if branch else ""
     thinking_str = "Enabled (Adaptive)" if defaults_to_thinking_mode(active_model) else "Adaptive"
-    plan_status = "[bold yellow]ON[/]" if plan_mode else "[dim]OFF[/]"
+    plan_status = "ON" if plan_mode else "OFF"
+    py_ver = f"{sys.version_info.major}.{sys.version_info.minor}"
+    sys_tag = platform.system()
 
     if (
         console is not None
@@ -74,7 +98,7 @@ def render_welcome_screen(
         and Table is not None
         and Text is not None
     ):
-        # ASCII Logo
+        # ASCII Logo or Compact Badge
         logo = get_gradient_ascii_logo()
         console.print()
         if isinstance(logo, Text):
@@ -88,42 +112,44 @@ def render_welcome_screen(
         grid.add_column(justify="right", ratio=1)
 
         col1 = Text()
-        col1.append("  ✦ ", style="bold magenta")
-        col1.append("Version: ", style="dim")
-        col1.append(f"v{__version__}  ", style="bold white")
+        col1.append("  Engine: ", style="dim")
+        col1.append(f"v{__version__} ", style="bold white")
+        col1.append(f"(Py {py_ver} • {sys_tag})  ", style="dim")
         col1.append("•  Model: ", style="dim")
         col1.append(f"{active_model}\n", style="bold cyan")
-        col1.append("  ✦ ", style="bold magenta")
-        col1.append("Thinking: ", style="dim")
+
+        col1.append("  Reasoning: ", style="dim")
         col1.append(f"{thinking_str}  ", style="white")
         col1.append("•  Plan Mode: ", style="dim")
-        col1.append(f"{'ON' if plan_mode else 'OFF'}", style="bold yellow" if plan_mode else "dim")
+        col1.append(f"{plan_status}", style="bold yellow" if plan_mode else "dim white")
 
         col2 = Text()
         col2.append("Workspace: ", style="dim")
         col2.append(f"{workspace_str}", style="bold white")
         if branch:
-            col2.append(f" ({branch})", style="bold cyan")
-        col2.append("\nTools: ", style="dim")
-        col2.append("Snippet Read/Edit/Write • Bash • Web", style="white")
+            col2.append(f" ({branch}{'*' if is_dirty else ''})", style="bold magenta")
+        col2.append("\nCapabilities: ", style="dim")
+        col2.append("Scoped Snippets • Bash • Web", style="white")
         if mcp_servers_count > 0:
-            col2.append(f" • MCP ({mcp_servers_count})", style="green")
+            col2.append(f" • MCP ({mcp_servers_count})", style="bold green")
+        if skills_count > 0:
+            col2.append(f" • Skills ({skills_count})", style="bold yellow")
 
         grid.add_row(col1, col2)
 
         panel = Panel(
             grid,
-            title="[bold cyan]CoderAI[/] [dim]• AI Pair Programming in your Terminal[/]",
+            title="[bold cyan]CoderAI[/] [dim]• Autonomous AI Pair Programming in your Terminal[/]",
             border_style="bright_blue",
             padding=(0, 1),
         )
         console.print(panel)
 
-        # Quick Actions Bar
+        # Quick Actions Bar & Cheat Sheet
         actions = Text()
-        actions.append("  Quick Actions:  ", style="bold white")
+        actions.append("  Shortcuts:  ", style="bold white")
         actions.append("/help", style="bold cyan")
-        actions.append(" commands  ", style="dim")
+        actions.append(" manual  ", style="dim")
         actions.append("•  ", style="dim")
         actions.append("/plan", style="bold yellow")
         actions.append(" toggle  ", style="dim")
@@ -131,19 +157,26 @@ def render_welcome_screen(
         actions.append("/model", style="bold magenta")
         actions.append(" switch  ", style="dim")
         actions.append("•  ", style="dim")
-        actions.append("/sessions", style="bold green")
-        actions.append(" resume  ", style="dim")
+        actions.append("/tokens", style="bold green")
+        actions.append(" cost  ", style="dim")
+        actions.append("•  ", style="dim")
+        actions.append("/undo", style="bold red")
+        actions.append(" revert  ", style="dim")
         actions.append("•  ", style="dim")
         actions.append("@file", style="bold blue")
-        actions.append(" mention", style="dim")
+        actions.append(" context  ", style="dim")
+        actions.append("•  ", style="dim")
+        actions.append("Tab", style="bold white")
+        actions.append(" autocomplete", style="dim")
         console.print(actions)
         console.print()
     else:
         print("\n" + str(get_gradient_ascii_logo()))
+        branch_str = f" ({branch}{'*' if is_dirty else ''})" if branch else ""
         print(f"CoderAI v{__version__} — AI Pair Programming in your Terminal")
         print(
-            f"Workspace: {workspace_str}{branch_str} | Model: {active_model} | Thinking: {thinking_str} | Plan: {plan_status}"
+            f"Workspace: {workspace_str}{branch_str} | Model: {active_model} | Reasoning: {thinking_str} | Plan: {plan_status}"
         )
         print(
-            "Quick Actions: /help commands • /plan toggle • /model switch • /sessions resume • @file mention\n"
+            "Shortcuts: /help commands • /plan toggle • /model switch • /tokens cost • /undo revert • @file context\n"
         )

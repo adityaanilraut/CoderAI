@@ -92,7 +92,7 @@ def _render_search_card(console: Any, output_text: str | None, metadata: dict[st
     results = metadata.get("results") or []
 
     if results and Table is not None:
-        table = Table(title=f"🔍 Web Search: {query}", border_style="cyan", padding=(0, 1))
+        table = Table(title=f"Web Search: {query}", border_style="cyan", padding=(0, 1))
         table.add_column("#", style="bold cyan", width=3)
         table.add_column("Title & URL", style="white")
         table.add_column("Snippet", style="dim")
@@ -129,10 +129,13 @@ def render_tool_card(console: Any | None, message: SessionMessage) -> None:
 
         # Tool-specific rich cards
         if metadata:
+            file_path = metadata.get("file_path") or metadata.get("target_path") or ""
+
             # Diff preview for Edit / Write
             diff_text = metadata.get("diff_preview")
             if isinstance(diff_text, str) and diff_text.strip():
-                render_diff_preview(console, diff_text, title=f"{name} Changes")
+                card_title = f"{name}: {file_path}" if file_path else f"{name} Changes"
+                render_diff_preview(console, diff_text, title=card_title)
 
             # Plan preview for UpdatePlan
             plan_text = metadata.get("plan")
@@ -148,13 +151,21 @@ def render_tool_card(console: Any | None, message: SessionMessage) -> None:
                 _render_search_card(console, raw_output, metadata)
 
             # Read tool snippet info
-            if name == "read" and metadata.get("snippet_id"):
+            if name == "read":
                 snip_id = metadata.get("snippet_id")
                 lines_cnt = metadata.get("line_count")
-                if snip_id and lines_cnt:
-                    console.print(
-                        f"    [dim]↳ anchored [bold cyan]snippet:{snip_id}[/] ({lines_cnt} lines)[/]"
-                    )
+                offset = metadata.get("offset", 1)
+                range_str = f"L{offset}-L{offset + lines_cnt - 1}" if lines_cnt else ""
+                target_str = f" [cyan]{file_path}[/]" if file_path else ""
+                details = []
+                if range_str:
+                    details.append(range_str)
+                if lines_cnt:
+                    details.append(f"{lines_cnt} lines")
+                if snip_id:
+                    details.append(f"anchored [bold cyan]snippet:{snip_id}[/]")
+                if details:
+                    console.print(f"    [dim]↳{target_str} ({', '.join(details)})[/]")
     else:
         mark = "✓" if ok else "✗"
         print(f"  {mark} {name}: {summary_text}")

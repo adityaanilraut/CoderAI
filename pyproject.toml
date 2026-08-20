@@ -51,6 +51,9 @@ cai = "coderai.main:main"
 where = ["."]
 include = ["coderai*"]
 
+[tool.setuptools.package-data]
+coderai = ["vendor/rg", "vendor/rg-*", "vendor/rg.exe"]
+
 [tool.setuptools.dynamic]
 version = {attr = "coderai._version.__version__"}
 

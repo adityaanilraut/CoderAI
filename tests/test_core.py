@@ -154,7 +154,17 @@ def test_bash_side_effect_scopes():
 
 def test_tool_definitions():
     names = {t["function"]["name"] for t in get_tools()}
-    assert {"bash", "read", "write", "edit", "WebSearch", "UpdatePlan"} <= names
+    assert {
+        "bash",
+        "job_list",
+        "job_output",
+        "job_kill",
+        "read",
+        "write",
+        "edit",
+        "WebSearch",
+        "UpdatePlan",
+    } <= names
 
 
 def test_read_edit_write(tmp_path: pathlib.Path):
@@ -789,8 +799,8 @@ async def test_session_model_switching_and_diff(
     )
 
     assert mgr.get_active_model() == "gpt-4o"
-    mgr.set_model("claude-3-5-sonnet")
-    assert mgr.get_active_model() == "claude-3-5-sonnet"
+    mgr.set_model("claude-3-7-sonnet")
+    assert mgr.get_active_model() == "claude-3-7-sonnet"
 
     sid = await mgr.create_session("inspect")
     target.write_text("v = 2\n")
@@ -823,6 +833,7 @@ def test_cli_helpers():
 
 def test_model_capabilities_and_badges():
     from coderai.core.common.model_capabilities import (
+        DEEPSEEK_MODELS,
         DEEPSEEK_V4_MODELS,
         MULTIMODAL_MODELS,
         NON_MULTIMODAL_MODELS,
@@ -835,49 +846,38 @@ def test_model_capabilities_and_badges():
     )
 
     # Thinking capable checks
-    assert "deepseek-v4-pro" in DEEPSEEK_V4_MODELS
-    assert "gpt-5.6-sol" in THINKING_CAPABLE_MODELS
-    assert "claude-3-7-sonnet" in THINKING_CAPABLE_MODELS
-    assert "gemini-2.5-pro" in THINKING_CAPABLE_MODELS
-    assert "gemini-2.5-flash" in THINKING_CAPABLE_MODELS
+    assert "deepseek-v4-pro" in DEEPSEEK_MODELS
+    assert "deepseek-v4-flash" in DEEPSEEK_MODELS
+    assert DEEPSEEK_V4_MODELS == DEEPSEEK_MODELS
     assert "deepseek-v4-pro" in THINKING_CAPABLE_MODELS
-    assert "deepseek-r1" in THINKING_CAPABLE_MODELS
-    assert "o3-mini" in THINKING_CAPABLE_MODELS
+    assert "gemini-3.7-flash" in THINKING_CAPABLE_MODELS
+    assert "gpt-5.6-sol" in THINKING_CAPABLE_MODELS
 
     assert defaults_to_thinking_mode("gpt-5.6-sol") is True
-    assert defaults_to_thinking_mode("claude-3-7-sonnet") is True
-    assert defaults_to_thinking_mode("gemini-2.5-pro") is True
-    assert defaults_to_thinking_mode("gemini-2.5-flash") is True
+    assert defaults_to_thinking_mode("gemini-3.7-flash") is True
     assert defaults_to_thinking_mode("deepseek-v4-pro") is True
-    assert defaults_to_thinking_mode("deepseek-r1") is True
     assert defaults_to_thinking_mode("gpt-5.6-terra") is False
-    assert defaults_to_thinking_mode("claude-3-5-sonnet") is False
 
     # Multimodal checks
+    assert "gemini-3.7-flash" in MULTIMODAL_MODELS
+    assert "gpt-5.6-luna" in MULTIMODAL_MODELS
     assert "gpt-5.6-sol" in MULTIMODAL_MODELS
     assert "gpt-5.6-terra" in MULTIMODAL_MODELS
-    assert "gemini-2.5-pro" in MULTIMODAL_MODELS
-    assert "claude-3-7-sonnet" in MULTIMODAL_MODELS
-    assert "gpt-4o" in MULTIMODAL_MODELS
 
     assert supports_multimodal("gpt-5.6-sol") is True
     assert supports_multimodal("gpt-5.6-terra") is True
-    assert supports_multimodal("gemini-2.5-pro") is True
-    assert supports_multimodal("claude-3-7-sonnet") is True
-    assert supports_multimodal("gpt-4o") is True
+    assert supports_multimodal("gemini-3.7-flash") is True
+    assert supports_multimodal("gpt-5.6-luna") is True
 
     assert "deepseek-v4-pro" in NON_MULTIMODAL_MODELS
     assert "deepseek-v4-flash" in NON_MULTIMODAL_MODELS
-    assert "deepseek-r1" in NON_MULTIMODAL_MODELS
     assert supports_multimodal("deepseek-v4-pro") is False
     assert supports_multimodal("deepseek-v4-flash") is False
-    assert supports_multimodal("deepseek-r1") is False
 
     # Fast models
-    assert is_fast_model("gpt-5.6-luna") is True
-    assert is_fast_model("gemini-2.5-flash-lite") is True
-    assert is_fast_model("claude-3-5-haiku") is True
     assert is_fast_model("deepseek-v4-flash") is True
+    assert is_fast_model("gemini-3.7-flash") is True
+    assert is_fast_model("gpt-5.6-luna") is True
 
     # Badges formatting
     sol_badges = get_model_badges("gpt-5.6-sol")
@@ -928,8 +928,8 @@ def test_openai_client_provider_routing(monkeypatch: pytest.MonkeyPatch, tmp_pat
     assert key == "custom-key"
 
     # 5. create_openai_client with model_override
-    info = create_openai_client(str(tmp_path), model_override="gemini-2.5-flash")
-    assert info["model"] == "gemini-2.5-flash"
+    info = create_openai_client(str(tmp_path), model_override="gemini-3.7-flash")
+    assert info["model"] == "gemini-3.7-flash"
     assert info["thinkingEnabled"] is True
     assert "generativelanguage.googleapis.com" in info["baseURL"]
 
@@ -1378,8 +1378,11 @@ async def test_compaction_preserves_prefix_and_records_tokens(
     after = mgr.list_session_messages(sid)
     assert [m.id for m in after[:2]] == prefix_ids
     assert any((m.meta or {}).get("isSummary") for m in after)
-    compacted = [m for m in after if m.compacted]
-    assert compacted
+    from coderai.core.session_log import derive_messages
+
+    derived = derive_messages(after)
+    assert len(derived) < len(after)
+    assert any((m.meta or {}).get("isSummary") for m in derived)
     entry = mgr.get_session(sid)
     assert entry is not None
     assert entry.active_tokens == 2

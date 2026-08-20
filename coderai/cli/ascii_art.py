@@ -12,6 +12,8 @@ except ImportError:  # pragma: no cover
     Text = None  # type: ignore[assignment,misc]
     _RICH = False
 
+import shutil
+
 CODERAI_ASCII_LOGO = [
     " ██████╗  ██████╗ ██████╗ ███████╗██████╗  █████╗ ██╗",
     "██╔════╝ ██╔═══██╗██╔══██╗██╔════╝██╔══██╗██╔══██╗██║",
@@ -42,8 +44,33 @@ def _interpolate_color(
     )
 
 
-def get_gradient_ascii_logo() -> Text | str:
-    """Return the stylized CoderAI ASCII logo with smooth gradient interpolation."""
+def get_compact_gradient_badge() -> Text | str:
+    """Return a sleek single-line gradient badge for compact or narrow terminal displays."""
+    title = "CoderAI"
+    if not _RICH or Text is None or Style is None:
+        return title
+
+    text = Text()
+    for idx, char in enumerate(title):
+        factor = idx / max(1, len(title) - 1)
+        segment_pos = factor * (len(GRADIENT_COLORS) - 1)
+        seg_idx = min(int(segment_pos), len(GRADIENT_COLORS) - 2)
+        seg_factor = segment_pos - seg_idx
+        r, g, b = _interpolate_color(
+            GRADIENT_COLORS[seg_idx], GRADIENT_COLORS[seg_idx + 1], seg_factor
+        )
+        hex_color = f"#{r:02x}{g:02x}{b:02x}"
+        text.append(char, style=f"bold {hex_color}")
+    return text
+
+
+def get_gradient_ascii_logo(force_full: bool = False) -> Text | str:
+    """Return the stylized CoderAI ASCII logo with smooth gradient interpolation or compact banner if narrow."""
+    # Check terminal width
+    columns, _ = shutil.get_terminal_size(fallback=(80, 24))
+    if not force_full and columns < 58:
+        return get_compact_gradient_badge()
+
     if not _RICH or Text is None or Style is None:
         return "\n".join(CODERAI_ASCII_LOGO)
 

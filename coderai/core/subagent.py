@@ -24,7 +24,7 @@ from coderai.core.tools.types import ToolExecutionHooks
 logger = logging.getLogger(__name__)
 
 MAX_SUBAGENT_ITERATIONS = 20
-MAX_SUBAGENT_DEPTH = 1
+MAX_SUBAGENT_DEPTH = 3
 DEFAULT_SUBAGENT_TIMEOUT = 90.0
 
 
@@ -431,7 +431,7 @@ class SubAgentManager:
 
     def _get_sandboxed_tools(self, spec: SubAgentSpec, model: str) -> list[dict[str, Any]]:
         """Filter tools for subagent execution."""
-        all_tools = get_tools({"model": model, "nonInteractive": True})
+        all_tools = get_tools({"model": model, "nonInteractive": True, "childAgent": True})
 
         filtered: list[dict[str, Any]] = []
         for tool in all_tools:
@@ -442,7 +442,7 @@ class SubAgentManager:
                 continue
 
             # Limit sub-agent recursion
-            if name == "Task" and spec.depth >= MAX_SUBAGENT_DEPTH:
+            if name in ("Task", "subagent", "subagent_fork") and spec.depth >= MAX_SUBAGENT_DEPTH:
                 continue
 
             # Read-only mode disallows mutating tools

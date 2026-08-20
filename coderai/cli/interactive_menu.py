@@ -43,7 +43,7 @@ def select_model_interactive(console: Any | None, current_model: str) -> str:
     """Prompt the user with an interactive model selection menu."""
     if console is not None and _RICH and Table is not None:
         table = Table(
-            title="✨ Select Active Model (Frontier Coding & Reasoning)",
+            title="Select Active Model (Frontier Coding & Reasoning)",
             border_style="magenta",
             header_style="bold magenta",
         )
@@ -223,7 +223,7 @@ def prompt_plan_implementation(console: Any | None) -> str:
         )
         panel = Panel(
             body,
-            title="[bold yellow]✨ Plan Ready — Next Action[/]",
+            title="[bold yellow]Plan Ready — Next Action[/]",
             border_style="yellow",
         )
         console.print()
@@ -338,7 +338,7 @@ def render_skills_interactive(console: Any | None, project_root: str) -> None:
 
         for sk in skills:
             table.add_row(
-                f"⚡ {sk.get('name', '')}",
+                sk.get("name", ""),
                 sk.get("description", "(no description)"),
                 sk.get("location", ""),
             )
@@ -349,9 +349,7 @@ def render_skills_interactive(console: Any | None, project_root: str) -> None:
     else:
         print(f"\n--- Discovered Skills ({len(skills)}) ---")
         for sk in skills:
-            print(
-                f"  ⚡ {sk.get('name', '')}: {sk.get('description', '')} [{sk.get('location', '')}]"
-            )
+            print(f"  {sk.get('name', '')}: {sk.get('description', '')} [{sk.get('location', '')}]")
         print("Use /skill <name> to load a skill.\n")
 
 
@@ -572,10 +570,45 @@ def render_config_interactive(console: Any | None, project_root: str) -> None:
         print(f"  Project Config: {proj_path}\n")
 
 
+MODEL_PRICING_PER_M: dict[str, tuple[float, float, float]] = {
+    # $/million tokens: (prompt, completion, cached)
+    "gpt-5.6-sol": (2.50, 10.00, 1.25),
+    "gpt-5.6-terra": (1.75, 7.00, 0.875),
+    "gpt-5.6-luna": (1.25, 5.00, 0.625),
+    "gemini-3.7-flash": (0.10, 0.40, 0.025),
+    "deepseek-v4-pro": (0.55, 2.19, 0.14),
+    "deepseek-v4-flash": (0.14, 0.28, 0.014),
+    "default": (2.00, 8.00, 1.00),
+}
+
+
+def estimate_model_cost(
+    model_name: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+    cached_tokens: int = 0,
+) -> float:
+    """Calculate estimated cost in USD based on model pricing table."""
+    rates = MODEL_PRICING_PER_M.get(model_name.lower())
+    if not rates:
+        # Check prefix match
+        matched_key = next((k for k in MODEL_PRICING_PER_M if k in model_name.lower()), "default")
+        rates = MODEL_PRICING_PER_M[matched_key]
+
+    p_rate, c_rate, cached_rate = rates
+    effective_prompt = max(0, prompt_tokens - cached_tokens)
+    cost = (
+        (effective_prompt * p_rate / 1_000_000)
+        + (cached_tokens * cached_rate / 1_000_000)
+        + (completion_tokens * c_rate / 1_000_000)
+    )
+    return cost
+
+
 def render_token_breakdown(
     console: Any | None, mgr: SessionManager, session_id: str | None
 ) -> None:
-    """Display session token analytics and context window usage."""
+    """Display session token analytics, estimated cost in USD, and context window usage."""
     if not session_id:
         if console is not None and _RICH:
             console.print("[dim]No active session to display token analytics.[/]")
@@ -589,6 +622,7 @@ def render_token_breakdown(
             console.print("[dim]Session not found.[/]")
         return
 
+    active_model = mgr.get_active_model()
     usage = entry.usage or {}
     prompt_tokens = usage.get("prompt_tokens", 0)
     completion_tokens = usage.get("completion_tokens", 0)
@@ -596,15 +630,21 @@ def render_token_breakdown(
     cached_tokens = usage.get("cached_tokens", 0)
     active_tokens = entry.active_tokens
 
+    # Estimate session cost
+    total_cost = estimate_model_cost(active_model, prompt_tokens, completion_tokens, cached_tokens)
+
     # Default context window ~256k
-    max_context = 256 * 1024
-    pct_used = (active_tokens / max_context) * 100
+    from coderai.core.settings import get_default_context_window
+
+    max_context = get_default_context_window(active_model)
+    pct_used = (active_tokens / max_context) * 100 if max_context > 0 else 0.0
 
     if console is not None and _RICH and Panel is not None and Table is not None:
         table = Table.grid(padding=(0, 2))
         table.add_column("Metric", style="dim cyan", width=22)
-        table.add_column("Tokens", style="bold white")
+        table.add_column("Tokens / Value", style="bold white")
 
+        table.add_row("Active Model:", f"[bold cyan]{active_model}[/]")
         table.add_row("Prompt Tokens:", f"{prompt_tokens:,}")
         table.add_row("Completion Tokens:", f"{completion_tokens:,}")
         if cached_tokens > 0:
@@ -614,27 +654,33 @@ def render_token_breakdown(
             "Active Working Context:",
             f"[bold green]{active_tokens:,}[/] / {max_context:,} ({pct_used:.1f}%)",
         )
+        table.add_row("Estimated Session Cost:", f"[bold green]${total_cost:.4f} USD[/]")
 
         if entry.usage_per_model:
             table.add_row("Usage by Model:", "")
             for model_name, m_usage in entry.usage_per_model.items():
                 m_total = m_usage.get("total_tokens", 0) if isinstance(m_usage, dict) else 0
-                table.add_row(f"  • {model_name}:", f"{m_total:,} tokens")
+                m_prompt = m_usage.get("prompt_tokens", 0) if isinstance(m_usage, dict) else 0
+                m_comp = m_usage.get("completion_tokens", 0) if isinstance(m_usage, dict) else 0
+                m_cost = estimate_model_cost(model_name, m_prompt, m_comp)
+                table.add_row(f"  • {model_name}:", f"{m_total:,} tokens (${m_cost:.4f})")
 
         panel = Panel(
             table,
-            title=f"[bold green]Token Usage & Context Analytics[/] [dim]({session_id[:12]})[/]",
+            title=f"[bold green]Token Usage & Cost Analytics[/] [dim]({session_id[:12]})[/]",
             border_style="green",
             padding=(0, 1),
         )
         console.print()
         console.print(panel)
     else:
-        print(f"\n--- Token Usage: {session_id[:12]} ---")
+        print(f"\n--- Token Usage & Cost: {session_id[:12]} ---")
+        print(f"  Active Model:      {active_model}")
         print(f"  Prompt Tokens:     {prompt_tokens:,}")
         print(f"  Completion Tokens: {completion_tokens:,}")
         print(f"  Total Tokens:      {total_tokens:,}")
-        print(f"  Active Context:    {active_tokens:,} ({pct_used:.1f}%)\n")
+        print(f"  Active Context:    {active_tokens:,} ({pct_used:.1f}%)")
+        print(f"  Estimated Cost:    ${total_cost:.4f} USD\n")
 
 
 def render_session_history(

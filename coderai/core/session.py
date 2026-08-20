@@ -30,8 +30,15 @@ from coderai.core.common.error_logger import log_api_error
 from coderai.core.common.file_history import GitFileHistory
 from coderai.core.common.file_utils import read_text_file_tail
 from coderai.core.common.llm_error import describe_llm_error
+from coderai.core.common.llm_retry import (
+    DEFAULT_MAX_RETRIES,
+    classify_llm_failure,
+    is_empty_llm_response,
+    retry_delay_ms,
+)
 from coderai.core.common.message_converter import OpenAIMessageConverter
 from coderai.core.common.openai_thinking import build_thinking_request_options
+from coderai.core.common.repeat_tool_reminder import RepeatToolReminder
 from coderai.core.mcp import McpManager
 from coderai.core.permissions import (
     PLAN_MODE_FORCE_ASK_SCOPES,
@@ -43,6 +50,7 @@ from coderai.core.prompt import (
     build_skill_documents_prompt,
     get_compact_prompt,
     get_compact_prompt_token_threshold,
+    get_init_command_prompt,
     get_plan_mode_prompt,
     get_runtime_context,
     get_skill_read_exempt_paths,
@@ -56,7 +64,12 @@ from coderai.core.prompt import (
 )
 from coderai.core.state import clear_session_state, rebuild_session_state_from_history
 from coderai.core.tools.executor import ToolExecutor
-from coderai.core.tools.types import BackgroundProcessCompletion, ToolExecutionHooks
+from coderai.core.tools.types import (
+    BackgroundProcessCompletion,
+    ToolExecutionFollowUpMessage,
+    ToolExecutionHooks,
+    ToolResult,
+)
 
 MAX_ITERATIONS = 80_000
 MAX_SESSION_ENTRIES = 50
@@ -226,13 +239,16 @@ class SessionManager:
             self.project_root, create_openai_client, mcp_manager=self.mcp_manager
         )
         self.mcp_tool_definitions: list[dict[str, Any]] = []
-        self.message_converter = OpenAIMessageConverter()
+        self.message_converter = OpenAIMessageConverter(
+            render_init_prompt=lambda: get_init_command_prompt(self.project_root)
+        )
         self._active_session_id: str | None = None
         self._override_model: str | None = None
         self.session_controllers: dict[str, asyncio.Event] = {}
         self.file_history = GitFileHistory(
             self.project_root, str(self._storage()["project_dir"] / "file-history" / ".git")
         )
+        self._repeat_reminders: dict[str, RepeatToolReminder] = {}
 
     def set_model(self, model_name: str) -> None:
         self._override_model = model_name.strip() if model_name else None
@@ -327,9 +343,11 @@ class SessionManager:
         self._storage()["index_path"].write_text(json.dumps(index, indent=2), encoding="utf-8")
 
     def _append_message(self, message: SessionMessage) -> None:
-        messages = self.list_session_messages(message.session_id)
-        messages.append(message)
-        self._save_messages(message.session_id, messages)
+        """Append one event to the session JSONL log without rewriting prior rows."""
+        self._ensure_dir()
+        path = self._messages_path(message.session_id)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(self._serialize_message(message), ensure_ascii=False) + "\n")
 
     def _save_messages(self, session_id: str, messages: list[SessionMessage]) -> None:
         self._ensure_dir()
@@ -716,7 +734,14 @@ class SessionManager:
         )
 
         model = self.get_active_model()
-        prompt_options = {"model": model, "nonInteractive": self.non_interactive}
+        settings = self.get_resolved_settings()
+        sandbox_mode = (settings.get("permissions") or {}).get("sandbox")
+        prompt_options = {
+            "model": model,
+            "nonInteractive": self.non_interactive,
+            "sandboxMode": sandbox_mode,
+            "workspaceRoot": self.project_root,
+        }
         self._append_message(
             self._build_message(session_id, "system", get_system_prompt(prompt_options))
         )
@@ -936,6 +961,30 @@ class SessionManager:
         """Append skill documents to a session without starting a new agent turn."""
         self._append_skill_messages(session_id, skill_names)
 
+    def load_skill_by_name(self, session_id: str, skill_name: str) -> ToolResult:
+        """Dynamically load and inject a skill by exact name into the active session."""
+        skills = self.list_available_skills(session_id)
+        skill = next((c for c in skills if c.get("name") == skill_name), None)
+        if not skill:
+            return ToolResult(
+                ok=False,
+                name="skill",
+                error=f"Unknown skill: {skill_name}. Check the available skills catalog for exact skill names.",
+            )
+        loaded = self._loaded_skill_names(session_id)
+        if skill_name in loaded:
+            return ToolResult(
+                ok=True,
+                name="skill",
+                output=f"Skill already loaded: {skill_name}.",
+            )
+        self._append_skill_messages(session_id, [skill_name])
+        return ToolResult(
+            ok=True,
+            name="skill",
+            output=f"Loaded skill: {skill_name}.",
+        )
+
     async def _identify_matching_skill_names(
         self, user_prompt: str, loaded_names: set[str] | None = None
     ) -> list[str]:
@@ -1116,10 +1165,12 @@ class SessionManager:
                     messages = self.list_session_messages(session_id)
 
                 # Prepare tools and messages for LLM request
+                multimodal_mode = settings.get("multimodal", "default")
                 tools = get_tools(
                     {
                         "model": model,
                         "nonInteractive": self.non_interactive,
+                        "multimodal": multimodal_mode,
                     },
                     external_tools=self.mcp_tool_definitions,
                 )
@@ -1145,9 +1196,9 @@ class SessionManager:
                 if not request.get("tools"):
                     request.pop("tools", None)
 
-                # Execute LLM completion with stream tracking
+                # Execute LLM completion with retry-as-new-turn (failed chunks are not persisted)
                 try:
-                    response = await self._create_completion(client, request)
+                    response = await self._create_completion_with_retry(session_id, client, request)
                 except Exception as err:
                     if self.is_interrupted(session_id):
                         return
@@ -1405,15 +1456,30 @@ class SessionManager:
             def _on_process_exit(pid: int | str) -> None:
                 self._track_process_exit(session_id, pid)
 
+            def _post_execute(
+                name: str, args: dict[str, Any], result: ToolResult, _ctx: Any
+            ) -> ToolResult:
+                reminder = self._repeat_reminders.setdefault(session_id, RepeatToolReminder())
+                text = reminder.observe(name, args)
+                if text:
+                    result.follow_up_messages.append(
+                        ToolExecutionFollowUpMessage(role="system", content=text)
+                    )
+                return result
+
             hooks = ToolExecutionHooks(
                 on_before_file_mutation=_on_before_file_mutation,
                 on_after_file_mutation=_on_after_file_mutation,
                 should_stop=lambda: self.is_interrupted(session_id),
                 on_process_start=_on_process_start,
                 on_process_exit=_on_process_exit,
+                on_load_skill=lambda skill_name: self.load_skill_by_name(session_id, skill_name),
                 on_background_process_complete=lambda completion: (
                     self.add_background_process_completion_message(session_id, completion)
                 ),
+                permission_decision="allow",
+                post_execute=_post_execute,
+                sandbox_mode=(self.get_resolved_settings().get("permissions") or {}).get("sandbox"),
             )
 
             executions = await self.tool_executor.execute_tool_calls(session_id, [tc], hooks=hooks)
@@ -1423,6 +1489,12 @@ class SessionManager:
                 result = execution["result"]
                 if result.get("awaitUserResponse") is True:
                     waiting = True
+                result_meta = result.get("metadata") if isinstance(result, dict) else None
+                if isinstance(result_meta, dict) and result_meta.get("exitPlanMode"):
+                    self._update_entry(
+                        session_id,
+                        lambda e: {**e, "planMode": False, "updateTime": _now()},
+                    )
 
                 tool_fn = self.message_converter.find_tool_function(
                     tool_calls, execution["toolCallId"]
@@ -1476,6 +1548,33 @@ class SessionManager:
 
         return waiting
 
+    async def _create_completion_with_retry(
+        self, session_id: str, client: Any, request: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Retry retryable LLM failures as new requests; do not persist failed chunks."""
+        last_error: Exception | None = None
+        for attempt in range(DEFAULT_MAX_RETRIES + 1):
+            if self.is_interrupted(session_id):
+                raise asyncio.CancelledError()
+            try:
+                response = await self._create_completion(client, request)
+            except Exception as err:
+                last_error = err
+                code = classify_llm_failure(err)
+                if code is None or attempt >= DEFAULT_MAX_RETRIES:
+                    raise
+                delay_s = retry_delay_ms(attempt + 1) / 1000.0
+                await asyncio.sleep(delay_s)
+                continue
+            if is_empty_llm_response(response) and attempt < DEFAULT_MAX_RETRIES:
+                delay_s = retry_delay_ms(attempt + 1) / 1000.0
+                await asyncio.sleep(delay_s)
+                continue
+            return response
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("EMPTY_RESPONSE: model returned no content after retries")
+
     async def _create_completion(
         self, client: Any, request: dict[str, Any], *, emit_stream: bool = True
     ) -> dict[str, Any]:
@@ -1500,7 +1599,7 @@ class SessionManager:
         client = client_info.get("client")
         if client is None:
             return
-        messages = [m for m in self.list_session_messages(session_id) if not m.compacted]
+        messages = self.list_session_messages(session_id)
         start = next((i for i, m in enumerate(messages) if m.role != "system"), -1)
         if start == -1:
             return
@@ -1536,17 +1635,15 @@ class SessionManager:
                 "updateTime": now,
             },
         )
-        for i in range(start, end):
-            messages[i] = _copy_with(messages[i], compacted=True, update_time=now)
+        replaced_ids = [m.id for m in messages[start:end]]
         summary_message = self._build_message(
             session_id,
             "system",
             f"There are earlier parts of the conversation. Here is a summary:\n\n{summary}",
-            meta={"isSummary": True},
+            meta={"isSummary": True, "kind": "compact/summary", "replacedIds": replaced_ids},
         )
         summary_message.visible = False
-        messages.insert(end, summary_message)
-        self._save_messages(session_id, messages)
+        self._append_message(summary_message)
 
     async def compact_session(self, session_id: str) -> None:
         """Public method to compact long session context history."""

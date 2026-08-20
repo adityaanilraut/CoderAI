@@ -85,7 +85,7 @@ def handle_understand_image_tool(args: dict[str, Any], context: Any) -> ToolResu
         model = (
             client_info.get("model")
             if isinstance(client_info, dict) and client_info.get("model")
-            else (getattr(context, "model", None) or "gpt-4o-mini")
+            else (getattr(context, "model", None) or "gpt-5.6-luna")
         )
 
         # 1. First attempt: Use the OpenAI-compatible client with multimodal message format

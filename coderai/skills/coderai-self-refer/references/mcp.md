@@ -41,11 +41,17 @@ MCP 工具在 Deep Code 中的命名格式为 `mcp__<服务名>__<工具名>`，
 
 ### 配置项说明
 
-| 字段      | 类型     | 必填 | 说明                                                                                                                   |
-| --------- | -------- | ---- | ---------------------------------------------------------------------------------------------------------------------- |
-| `command` | string   | 是   | MCP 服务器的可执行文件路径或命令（如 `npx`、`node`、`python`）。当命令是 `npx` 时，Deep Code 会自动在参数前补充 `-y`。 |
-| `args`    | string[] | 否   | 传递给命令的参数列表                                                                                                   |
-| `env`     | object   | 否   | 传递给 MCP 服务器进程的环境变量（如 API Key）                                                                          |
+| 字段              | 类型     | 必填 | 说明 |
+| ----------------- | -------- | ---- | ---- |
+| `command`         | string   | `command` 或 `url` 其一 | Stdio 可执行文件（如 `npx`、`node`、`python`）。当命令是 `npx` 时，CoderAI 会自动在参数前补充 `-y`。 |
+| `url`             | string   | `command` 或 `url` 其一 | 远程 MCP 服务器的 SSE 地址。 |
+| `args`            | string[] | 否 | 传递给 stdio 命令的参数列表。 |
+| `env`             | object   | 否 | 传递给 MCP 服务器进程的环境变量。 |
+| `cwd`             | string   | 否 | stdio 进程工作目录。 |
+| `headers`         | object   | 否 | SSE 请求的额外 HTTP 头。 |
+| `disabled`        | boolean  | 否 | 为 `true` 时跳过连接。 |
+| `enabled`         | boolean  | 否 | 为 `false` 时跳过连接。 |
+| `allowPrivateIps` | boolean  | 否 | 允许 SSE URL 解析到私有/回环地址。 |
 
 ## 常用 MCP 示例
 

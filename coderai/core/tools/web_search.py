@@ -220,9 +220,19 @@ async def handle_web_search_tool(args: dict[str, Any], context: Any) -> ToolResu
     model = str(
         client_info.get("model")
         if isinstance(client_info, dict) and client_info.get("model")
-        else (getattr(context, "model", None) or "gpt-4o")
+        else (getattr(context, "model", None) or "gpt-5.6-luna")
     )
     configured_env = (client_info.get("env") or {}) if isinstance(client_info, dict) else {}
+
+    from coderai.core.web_providers import resolve_web_search_provider
+
+    provider = resolve_web_search_provider(
+        configured_env.get("CODERAI_WEB_SEARCH_PROVIDER")
+        if isinstance(configured_env, dict)
+        else None
+    )
+    if provider is not None:
+        return await provider(raw_query, {"context": context, "client_info": client_info})
 
     # Check for custom search tool configured in environment or settings
     web_search_tool = (

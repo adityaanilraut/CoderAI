@@ -10,6 +10,7 @@ from coderai.core.mcp.transport import (
     McpTransport,
     SseMcpTransport,
     StdioMcpTransport,
+    StreamableHttpMcpTransport,
     create_mcp_spawn_spec,
 )
 
@@ -61,6 +62,16 @@ class McpClient:
             policy = self.config.get("policy")
             if policy is None and self.config.get("allowPrivateIps"):
                 policy = NetworkPolicy(allow_private_ips=True)
+            transport = str(
+                self.config.get("transport") or self.config.get("type") or "sse"
+            ).lower()
+            if transport in ("http", "streamable-http", "streamable_http"):
+                return StreamableHttpMcpTransport(
+                    server_name=self.server_name,
+                    url=self.config["url"],
+                    headers=self.config.get("headers"),
+                    policy=policy,
+                )
             return SseMcpTransport(
                 server_name=self.server_name,
                 url=self.config["url"],

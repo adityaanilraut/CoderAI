@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import urllib.parse
 from dataclasses import dataclass
 from typing import Any
 
@@ -12,7 +13,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from coderai.core.network.cache import ResponseCache, get_fetch_cache
-from coderai.core.network.security import NetworkPolicy, check_outbound_url
+from coderai.core.network.security import NetworkPolicy, check_outbound_url, is_same_origin
 
 DEFAULT_USER_AGENT = "CoderAI/1.0 (+https://github.com/adityaanilraut/CoderAI; AI Pair Programmer)"
 DEFAULT_CONNECT_TIMEOUT = 10.0
@@ -95,7 +96,38 @@ class HttpClient:
             req_headers.update(headers)
 
         try:
-            resp = self._session.get(url, params=params, headers=req_headers, timeout=timeout)
+            current = url
+            resp = None
+            for _ in range(10):
+                check_outbound_url(current, self.policy)
+                resp = self._session.get(
+                    current,
+                    params=params,
+                    headers=req_headers,
+                    timeout=timeout,
+                    allow_redirects=False,
+                )
+                if resp.is_redirect or resp.is_permanent_redirect:
+                    location = resp.headers.get("Location") or resp.headers.get("location")
+                    if not location:
+                        break
+                    nxt = urllib.parse.urljoin(current, location)
+                    if not is_same_origin(current, nxt):
+                        return HttpResponse(
+                            status_code=resp.status_code,
+                            text="",
+                            content=b"",
+                            headers={k.lower(): v for k, v in resp.headers.items()},
+                            url=current,
+                            elapsed_ms=(time.perf_counter() - start_time) * 1000.0,
+                            ok=False,
+                            error=f"Redirect to different origin blocked: {nxt}",
+                        )
+                    current = nxt
+                    params = None
+                    continue
+                break
+            assert resp is not None
             elapsed_ms = (time.perf_counter() - start_time) * 1000.0
             resp_headers = {k.lower(): v for k, v in resp.headers.items()}
 

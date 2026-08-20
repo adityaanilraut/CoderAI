@@ -15,6 +15,7 @@ import json
 from typing import Any
 
 from coderai.core.common.model_capabilities import supports_multimodal
+from coderai.core.session_log import derive_messages
 
 
 class OpenAIMessageConverter:
@@ -29,7 +30,7 @@ class OpenAIMessageConverter:
         model: str | None = None,
         thinking_enabled: bool = False,
     ) -> list[dict[str, Any]]:
-        active_messages = [m for m in messages if not getattr(m, "compacted", False)]
+        active_messages = derive_messages(messages)
         tool_pairings = self._pair_tool_messages(active_messages)
 
         target_model = model or "gpt-5.6-luna"
@@ -94,7 +95,7 @@ class OpenAIMessageConverter:
 
     def get_trailing_pending_tool_call_message(self, messages: list[Any]) -> dict[str, Any]:
         """Return trailing assistant message and its pending tool calls."""
-        active = [m for m in messages if not getattr(m, "compacted", False)]
+        active = derive_messages(messages)
         if not active:
             return {"message": None, "toolCalls": []}
         latest = active[-1]

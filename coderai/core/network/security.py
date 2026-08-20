@@ -74,6 +74,24 @@ def is_domain_matching(domain: str, pattern: str) -> bool:
     return fnmatch.fnmatch(domain, pattern)
 
 
+def _origin_port(parsed: urllib.parse.ParseResult | urllib.parse.SplitResult | Any) -> int:
+    port = getattr(parsed, "port", None)
+    if isinstance(port, int):
+        return port
+    return 443 if parsed.scheme == "https" else 80
+
+
+def is_same_origin(left: str, right: str) -> bool:
+    """True when two URLs share scheme, host, and port."""
+    a = urllib.parse.urlsplit(left)
+    b = urllib.parse.urlsplit(right)
+    return (
+        a.scheme == b.scheme
+        and (a.hostname or "").lower() == (b.hostname or "").lower()
+        and _origin_port(a) == _origin_port(b)
+    )
+
+
 def validate_outbound_url(url: str, policy: NetworkPolicy | None = None) -> tuple[bool, str | None]:
     """Validate an outbound URL against network security policies (SSRF, allowlist/blocklist).
 

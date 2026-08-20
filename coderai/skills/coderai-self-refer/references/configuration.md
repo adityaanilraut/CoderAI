@@ -31,7 +31,7 @@ Deep Code 使用 `settings.json` 设置文件进行持久化配置，支持两�
 | `autoCompactWindow` | number/string | 自动压缩阈值，默认取最终上下文窗口的 50%              |
 | `model`            | string  | 模型名称。优先级高于 `env.MODEL`                        |
 | `thinkingEnabled`  | boolean | 是否启用思考模式（DeepSeek V4 系列默认启用）            |
-| `reasoningEffort`  | string  | 推理强度，可选 `"high"` 或 `"max"`（默认 `"max"`）      |
+| `reasoningEffort`  | string  | 推理强度，可选 `"off"`、`"low"`、`"medium"`、`"high"` 或 `"max"`（默认 `"max"`） |
 | `debugLogEnabled`  | boolean | 是否启用调试日志输出（默认 `false`）                    |
 | `telemetryEnabled` | boolean | 是否启用匿名使用数据上报（默认 `true`）                 |
 | `notify`           | string  | 任务完成通知脚本的完整路径（如 Slack 通知脚本）         |
@@ -78,10 +78,13 @@ Deep Code 使用 `settings.json` 设置文件进行持久化配置，支持两�
 
 当思考模式启用时，控制模型思考的深度：
 
-| 值     | 说明                            |
-| ------ | ------------------------------- |
-| `max`  | 最大推理深度（默认值）          |
-| `high` | 较高推理深度，token消耗相对较小 |
+| 值       | 说明                            |
+| -------- | ------------------------------- |
+| `max`    | 最大推理深度（默认值）          |
+| `high`   | 较高推理深度，token消耗相对较小 |
+| `medium` | 均衡推理深度                    |
+| `low`    | 轻度推理                        |
+| `off`    | 关闭思考 / 发送 `reasoning_effort: none` |
 
 #### `notify` — 任务完成通知
 

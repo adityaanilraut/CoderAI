@@ -12,6 +12,7 @@ import asyncio
 import json
 import os
 import pathlib
+import signal
 import subprocess
 import sys
 from typing import Any
@@ -45,7 +46,7 @@ from coderai.core.permissions import (
     PLAN_MODE_FORCE_ASK_SCOPES,
     append_project_permission_allows,
 )
-from coderai.core.prompt import load_skill
+from coderai.core.prompt import list_skills, load_skill
 from coderai.core.session import SessionManager, SessionMessage
 
 try:
@@ -65,6 +66,19 @@ except ImportError:  # pragma: no cover
     Text = None  # type: ignore[assignment,misc]
     _RICH = False
     console = None
+
+
+def _clear_task_cancellation() -> None:
+    """Clear any pending task cancellation counter in Python 3.11+ asyncio."""
+    try:
+        task = asyncio.current_task()
+        if task is not None and hasattr(task, "uncancel"):
+            cancelling_fn = getattr(task, "cancelling", None)
+            if callable(cancelling_fn):
+                while cancelling_fn() > 0:
+                    task.uncancel()
+    except Exception:
+        pass
 
 
 ALWAYS_ALLOWED_SCOPES = {
@@ -216,13 +230,14 @@ def _prompt_permissions(
             if description:
                 body += f"\n[dim]{description}[/]"
             if is_forced_plan_scope:
-                body += "\n[bold red]⚠️ Mutating action requested while in Plan Mode.[/]"
+                body += "\n[bold red][WARNING] Mutating action requested while in Plan Mode.[/]"
             body += f"\n[dim]Scopes:[/] {scopes_str}"
 
             panel = Panel(
                 body,
                 title=f"[bold yellow]Permission Required ({idx}/{len(requests)})[/]",
                 border_style="yellow",
+                padding=(0, 1),
             )
             console.print(panel)
         else:
@@ -231,7 +246,7 @@ def _prompt_permissions(
             if description:
                 print(f"  Description: {description}")
             if is_forced_plan_scope:
-                print("  ⚠️ Mutating action requested while in Plan Mode.")
+                print("  [WARNING] Mutating action requested while in Plan Mode.")
             if scopes:
                 print(f"  Scopes: {', '.join(scopes)}")
 
@@ -251,6 +266,7 @@ def _prompt_permissions(
         try:
             raw_choice = input(prompt_str).strip().lower()
         except (EOFError, KeyboardInterrupt):
+            _clear_task_cancellation()
             raw_choice = "n"
 
         if raw_choice in ("2", "a", "always") and always_target and not plan_mode:
@@ -304,6 +320,7 @@ def _prompt_user_questions(questions: list[dict[str, Any]]) -> str:
         try:
             raw_ans = input("\nYour answer (choose number or type text): ").strip()
         except (EOFError, KeyboardInterrupt):
+            _clear_task_cancellation()
             raw_ans = ""
 
         # Map number back to option label if numerical
@@ -486,6 +503,9 @@ def _render_help_menu() -> None:
 
         table.add_row("Session Management", "/new", "Start a fresh session in the workspace")
         table.add_row(
+            "Session Management", "/init", "Initialize or update AGENTS.md contributor guidelines"
+        )
+        table.add_row(
             "Session Management", "/sessions", "Interactive session browser (resume, delete, fork)"
         )
         table.add_row("Session Management", "/resume <id>", "Resume a saved session by ID directly")
@@ -520,7 +540,9 @@ def _render_help_menu() -> None:
         )
         table.add_row("Models & Skills", "/skill <name>", "Load a skill into the current session")
         table.add_row(
-            "Models & Skills", "/thinking [mode]", "Toggle full reasoning trace or summary"
+            "Models & Skills",
+            "/thinking, /raw",
+            "Toggle full reasoning trace or summary (lite/normal)",
         )
 
         table.add_section()
@@ -537,6 +559,12 @@ def _render_help_menu() -> None:
         )
         table.add_row("Tools & Analytics", "/history", "View turn-by-turn conversation timeline")
         table.add_row("Tools & Analytics", "/config", "Inspect resolved workspace & user settings")
+        table.add_row(
+            "Tools & Analytics",
+            "/permission [preset]",
+            "Show or set permission preset: read-only, workspace-write, danger-full-access",
+        )
+        table.add_row("Tools & Analytics", "/goal [add|done] ...", "List or update session goals")
 
         table.add_section()
         table.add_row("Utilities", "/clear", "Clear terminal screen and redraw status")
@@ -552,6 +580,7 @@ def _render_help_menu() -> None:
         print("\n--- CoderAI Slash Commands ---")
         print("Session Management:")
         print("  /new               Start a fresh session")
+        print("  /init              Initialize or update AGENTS.md guidelines")
         print("  /sessions          Interactive sessions menu (resume, delete, fork)")
         print("  /resume <id>       Resume session by ID directly")
         print("  /fork [id]         Fork session into a new branch")
@@ -566,7 +595,7 @@ def _render_help_menu() -> None:
         print("  /model [name]      Select or switch active model")
         print("  /skills            List available workspace skills")
         print("  /skill <name>      Load skill into current session")
-        print("  /thinking [mode]   Toggle reasoning trace (full/summary)")
+        print("  /thinking, /raw    Toggle reasoning trace (full/summary)")
         print("\nTools & Analytics:")
         print("  /mcp               Inspect MCP servers and tools")
         print("  /tokens            Show token usage breakdown")
@@ -713,14 +742,32 @@ async def _run_interactive(
     # Setup Readline Persistent History and Autocompletion
     setup_readline(mgr.project_root, mgr.get_active_model)
 
+    # Setup Custom SIGINT Handler for Interactive REPL
+    active_turn_task: asyncio.Task[Any] | None = None
+
+    def _sigint_handler(signum: int, frame: Any) -> None:
+        nonlocal active_turn_task
+        if active_turn_task is not None and not active_turn_task.done():
+            active_turn_task.cancel()
+        else:
+            raise KeyboardInterrupt()
+
+    old_sigint_handler = None
+    try:
+        old_sigint_handler = signal.signal(signal.SIGINT, _sigint_handler)
+    except (ValueError, AttributeError):
+        pass
+
     # Render Welcome Screen & Brand Identity
     mcp_count = len(getattr(mgr.mcp_manager, "clients", {}) or {})
+    discovered_skills = list_skills(mgr.project_root)
     render_welcome_screen(
         console,
         mgr.project_root,
         mgr.get_active_model(),
         plan_mode=active_plan_mode,
         mcp_servers_count=mcp_count,
+        skills_count=len(discovered_skills),
     )
 
     # If an initial prompt was provided alongside interactive launch
@@ -736,11 +783,32 @@ async def _run_interactive(
             else:
                 print(f"  Attached files: {', '.join(attached_files)}")
         _STREAM_STATE.reset()
-        if session_id is None:
-            session_id = await mgr.create_session(effective_prompt, plan_mode=active_plan_mode)
-        else:
-            await mgr.reply_session(session_id, effective_prompt, plan_mode=active_plan_mode)
-        await _drain_pending_interactions(mgr, session_id, yes)
+
+        async def _run_initial() -> str | None:
+            nonlocal session_id
+            if session_id is None:
+                s_id = await mgr.create_session(effective_prompt, plan_mode=active_plan_mode)
+            else:
+                s_id = session_id
+                await mgr.reply_session(session_id, effective_prompt, plan_mode=active_plan_mode)
+            await _drain_pending_interactions(mgr, s_id, yes)
+            return s_id
+
+        active_turn_task = asyncio.create_task(_run_initial())
+        try:
+            res_id = await active_turn_task
+            if session_id is None and res_id:
+                session_id = res_id
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            _clear_task_cancellation()
+            if session_id:
+                mgr.interrupt_session(session_id)
+            if console is not None and _RICH:
+                console.print("\n[bold yellow]Turn interrupted by user.[/]")
+            else:
+                print("\nTurn interrupted by user.")
+        finally:
+            active_turn_task = None
 
     try:
         while True:
@@ -763,9 +831,10 @@ async def _run_interactive(
             )
 
             try:
-                prompt_label = "coderai [plan]> " if active_plan_mode else "coderai> "
+                prompt_label = "coderai [plan] ❯ " if active_plan_mode else "coderai ❯ "
                 raw = read_user_turn(prompt_label).strip()
             except KeyboardInterrupt:
+                _clear_task_cancellation()
                 print()
                 continue
             except EOFError:
@@ -796,6 +865,75 @@ async def _run_interactive(
 
                 if cmd in ("/config", "/settings"):
                     render_config_interactive(console, mgr.project_root)
+                    continue
+
+                if cmd in ("/permission", "/permissions"):
+                    from coderai.core.sandbox import (
+                        SANDBOX_MODES,
+                        parse_sandbox_mode,
+                        preset_permissions,
+                    )
+                    from coderai.core.settings import read_project_settings, write_project_settings
+
+                    arg = cmd_arg.strip().lower()
+                    if not arg:
+                        perms = mgr.get_resolved_settings().get("permissions") or {}
+                        msg = (
+                            f"Permission preset: {perms.get('preset') or 'unset (danger-full-access default)'}\n"
+                            f"Sandbox: {perms.get('sandbox')}\n"
+                            f"allow={perms.get('allow')}\n"
+                            f"deny={perms.get('deny')}\n"
+                            f"ask={perms.get('ask')}\n"
+                            f"Usage: /permission {' | '.join(SANDBOX_MODES)}"
+                        )
+                        print(msg)
+                        continue
+                    parsed = parse_sandbox_mode(arg)
+                    if not parsed:
+                        print(f"Unknown preset '{cmd_arg}'. Use: {', '.join(SANDBOX_MODES)}")
+                        continue
+                    settings = read_project_settings(mgr.project_root) or {}
+                    permissions = dict(settings.get("permissions") or {})
+                    mapped = preset_permissions(parsed)
+                    permissions.update(
+                        {
+                            "preset": parsed,
+                            "allow": mapped["allow"],
+                            "deny": mapped["deny"],
+                            "ask": mapped["ask"],
+                            "defaultMode": mapped["defaultMode"],
+                        }
+                    )
+                    settings["permissions"] = permissions
+                    settings["permissionPreset"] = parsed
+                    write_project_settings(settings, mgr.project_root)
+                    print(f"Permission preset set to {parsed}. New sessions will use this preset.")
+                    continue
+
+                if cmd == "/goal":
+                    from coderai.core.goals import get_goal_store
+
+                    store = get_goal_store(mgr.project_root)
+                    sid = session_id or "default"
+                    tokens = cmd_arg.split(None, 1)
+                    action = tokens[0].lower() if tokens else "list"
+                    rest = tokens[1].strip() if len(tokens) > 1 else ""
+                    if action in ("", "list"):
+                        print(store.format(sid))
+                    elif action == "add" and rest:
+                        goal = store.add(sid, rest)
+                        print(f"Added goal {goal.id}: {goal.title}")
+                    elif action in ("done", "cancel", "start") and rest:
+                        updated = store.update(
+                            sid,
+                            rest,
+                            status={"done": "done", "cancel": "cancelled", "start": "in_progress"}[
+                                action
+                            ],
+                        )
+                        print(f"Updated {updated.id}" if updated else f"Unknown goal '{rest}'")
+                    else:
+                        print("Usage: /goal [list|add <title>|done <id>|cancel <id>]")
                     continue
 
                 if cmd == "/history":
@@ -845,9 +983,9 @@ async def _run_interactive(
                         render_mcp_interactive(console, mgr)
                         continue
 
-                if cmd == "/thinking":
+                if cmd in ("/thinking", "/raw"):
                     arg = cmd_arg.lower()
-                    if arg in ("full", "on", "expand", "expanded"):
+                    if arg in ("full", "on", "expand", "expanded", "normal", "raw-scrollback"):
                         _THINKING_EXPANDED = True
                         if console is not None and _RICH:
                             console.print(
@@ -855,7 +993,7 @@ async def _run_interactive(
                             )
                         else:
                             print("Reasoning traces: Full expanded view enabled.")
-                    elif arg in ("summary", "off", "collapse", "collapsed"):
+                    elif arg in ("summary", "off", "collapse", "collapsed", "lite"):
                         _THINKING_EXPANDED = False
                         if console is not None and _RICH:
                             console.print(
@@ -893,24 +1031,24 @@ async def _run_interactive(
                     continue
 
                 if cmd == "/fork":
-                    fork_target_id = cmd_arg if cmd_arg else session_id
-                    if not fork_target_id:
-                        print("Usage: /fork [session_id]")
+                    target_to_fork = cmd_arg.strip() if cmd_arg else session_id
+                    if not target_to_fork:
+                        print("No active session to fork. Usage: /fork <session_id>")
                         continue
-                    forked_id = mgr.fork_session(fork_target_id)
+                    forked_id = mgr.fork_session(target_to_fork)
                     if forked_id:
                         session_id = forked_id
-                        f_entry = mgr.get_session(session_id)
-                        if f_entry:
-                            active_plan_mode = f_entry.plan_mode
+                        resumed_entry = mgr.get_session(session_id)
+                        if resumed_entry:
+                            active_plan_mode = resumed_entry.plan_mode
                         if console is not None and _RICH:
                             console.print(
-                                f"[bold green]✓ Forked session to new session:[/] [cyan]{session_id}[/]"
+                                f"[bold green]✓ Forked and switched to session:[/] {session_id}"
                             )
                         else:
-                            print(f"✓ Forked session to new session: {session_id}")
+                            print(f"Forked and switched to session: {session_id}")
                     else:
-                        print(f"Failed to fork session '{fork_target_id}'.")
+                        print(f"Failed to fork session '{target_to_fork}'.")
                     continue
 
                 if cmd in ("/delete", "/rm"):
@@ -961,14 +1099,73 @@ async def _run_interactive(
                     continue
 
                 if cmd == "/plan":
-                    active_plan_mode = not active_plan_mode
-                    plan_status = "enabled" if active_plan_mode else "disabled"
-                    if console is not None and _RICH:
-                        console.print(f"[bold yellow]Plan Mode {plan_status}.[/]")
+                    sub = cmd_arg.lower()
+                    if sub == "on":
+                        active_plan_mode = True
+                    elif sub == "off":
+                        active_plan_mode = False
+                    elif sub == "reset":
+                        active_plan_mode = False
+                        if session_id:
+                            entry = mgr.get_session(session_id)
+                            if entry:
+                                entry.plan_mode = False
+                        if console is not None and _RICH:
+                            console.print("[bold cyan]Plan mode state reset to default.[/]")
+                        else:
+                            print("Plan mode state reset to default.")
+                        continue
+                    elif sub == "apply":
+                        if not session_id:
+                            print("No active session to apply plan for.")
+                            continue
+                        active_plan_mode = False
+                        if console is not None and _RICH:
+                            console.print(
+                                "[bold green]Applying approved plan! Exiting Plan Mode and beginning implementation...[/]"
+                            )
+                        else:
+                            print(
+                                "Applying approved plan! Exiting Plan Mode and beginning implementation..."
+                            )
+                        _STREAM_STATE.reset()
+                        current_session_id = session_id
+
+                        async def _run_apply() -> None:
+                            await mgr.reply_session(
+                                current_session_id,
+                                "Proceed with the implementation of the approved plan.",
+                                plan_mode=False,
+                            )
+                            await _drain_pending_interactions(mgr, current_session_id, yes)
+
+                        active_turn_task = asyncio.create_task(_run_apply())
+                        try:
+                            await active_turn_task
+                        except (KeyboardInterrupt, asyncio.CancelledError):
+                            _clear_task_cancellation()
+                            if session_id:
+                                mgr.interrupt_session(session_id)
+                            if console is not None and _RICH:
+                                console.print("\n[bold yellow]Turn interrupted by user.[/]")
+                            else:
+                                print("\nTurn interrupted by user.")
+                        finally:
+                            active_turn_task = None
+                        continue
+                    elif not sub:
+                        active_plan_mode = not active_plan_mode
                     else:
-                        print(f"Plan Mode {plan_status}.")
-                    if session_id:
-                        await mgr.reply_session(session_id, plan_mode=active_plan_mode)
+                        print("Usage: /plan [on|off|apply|reset]")
+                        continue
+
+                    mode_str = (
+                        "ON (read-only architectural planning)" if active_plan_mode else "OFF"
+                    )
+                    if console is not None and _RICH:
+                        console.print(f"[bold cyan]Plan mode:[/] {mode_str}")
+                    else:
+                        print(f"Plan mode: {mode_str}")
                     continue
 
                 if cmd == "/diff":
@@ -1091,6 +1288,36 @@ async def _run_interactive(
                         print("Started a fresh session.")
                     continue
 
+                if cmd == "/init":
+                    _STREAM_STATE.reset()
+
+                    async def _run_init() -> str | None:
+                        nonlocal session_id
+                        if session_id is None:
+                            s_id = await mgr.create_session("/init", plan_mode=active_plan_mode)
+                        else:
+                            s_id = session_id
+                            await mgr.reply_session(session_id, "/init", plan_mode=active_plan_mode)
+                        await _drain_pending_interactions(mgr, s_id, yes)
+                        return s_id
+
+                    active_turn_task = asyncio.create_task(_run_init())
+                    try:
+                        res_id = await active_turn_task
+                        if session_id is None and res_id:
+                            session_id = res_id
+                    except (KeyboardInterrupt, asyncio.CancelledError):
+                        _clear_task_cancellation()
+                        if session_id:
+                            mgr.interrupt_session(session_id)
+                        if console is not None and _RICH:
+                            console.print("\n[bold yellow]Turn interrupted by user.[/]")
+                        else:
+                            print("\nTurn interrupted by user.")
+                    finally:
+                        active_turn_task = None
+                    continue
+
                 if cmd == "/resume":
                     if not cmd_arg:
                         print("Usage: /resume <session_id>")
@@ -1127,19 +1354,34 @@ async def _run_interactive(
 
             _STREAM_STATE.reset()
             try:
-                if session_id is None:
-                    session_id = await mgr.create_session(
-                        effective_prompt, plan_mode=active_plan_mode, skills=pending_skills or None
-                    )
-                else:
-                    await mgr.reply_session(
-                        session_id,
-                        effective_prompt,
-                        plan_mode=active_plan_mode,
-                        skills=pending_skills or None,
-                    )
-                pending_skills.clear()
-                await _drain_pending_interactions(mgr, session_id, yes)
+
+                async def _run_user_turn() -> str | None:
+                    nonlocal session_id
+                    if session_id is None:
+                        s_id = await mgr.create_session(
+                            effective_prompt,
+                            plan_mode=active_plan_mode,
+                            skills=pending_skills or None,
+                        )
+                    else:
+                        s_id = session_id
+                        await mgr.reply_session(
+                            session_id,
+                            effective_prompt,
+                            plan_mode=active_plan_mode,
+                            skills=pending_skills or None,
+                        )
+                    pending_skills.clear()
+                    await _drain_pending_interactions(mgr, s_id, yes)
+                    return s_id
+
+                active_turn_task = asyncio.create_task(_run_user_turn())
+                try:
+                    res_id = await active_turn_task
+                    if session_id is None and res_id:
+                        session_id = res_id
+                finally:
+                    active_turn_task = None
 
                 # Post-plan decision prompt when a plan is proposed during plan mode
                 if active_plan_mode and session_id:
@@ -1170,34 +1412,57 @@ async def _run_interactive(
                                     "✓ Plan approved! Exiting Plan Mode and beginning implementation..."
                                 )
                             _STREAM_STATE.reset()
-                            await mgr.reply_session(
-                                session_id,
-                                "Proceed with the implementation of the approved plan.",
-                                plan_mode=False,
-                            )
-                            await _drain_pending_interactions(mgr, session_id, yes)
+
+                            async def _run_plan_execution() -> None:
+                                await mgr.reply_session(
+                                    session_id,
+                                    "Proceed with the implementation of the approved plan.",
+                                    plan_mode=False,
+                                )
+                                await _drain_pending_interactions(mgr, session_id, yes)
+
+                            active_turn_task = asyncio.create_task(_run_plan_execution())
+                            try:
+                                await active_turn_task
+                            finally:
+                                active_turn_task = None
                         elif action == "refine":
                             try:
                                 refine_input = input("Enter plan refinements: ").strip()
                             except (EOFError, KeyboardInterrupt):
+                                _clear_task_cancellation()
                                 refine_input = ""
                             if refine_input:
                                 _STREAM_STATE.reset()
-                                await mgr.reply_session(
-                                    session_id,
-                                    refine_input,
-                                    plan_mode=True,
-                                )
-                                await _drain_pending_interactions(mgr, session_id, yes)
+
+                                async def _run_plan_refine() -> None:
+                                    await mgr.reply_session(
+                                        session_id,
+                                        refine_input,
+                                        plan_mode=True,
+                                    )
+                                    await _drain_pending_interactions(mgr, session_id, yes)
+
+                                active_turn_task = asyncio.create_task(_run_plan_refine())
+                                try:
+                                    await active_turn_task
+                                finally:
+                                    active_turn_task = None
             except (KeyboardInterrupt, asyncio.CancelledError):
+                _clear_task_cancellation()
                 if session_id:
                     mgr.interrupt_session(session_id)
                 if console is not None and _RICH:
-                    console.print("\n[bold yellow]⚡ Turn interrupted by user.[/]")
+                    console.print("\n[bold yellow]Turn interrupted by user.[/]")
                 else:
-                    print("\n⚡ Turn interrupted by user.")
+                    print("\nTurn interrupted by user.")
                 continue
     finally:
+        if old_sigint_handler is not None:
+            try:
+                signal.signal(signal.SIGINT, old_sigint_handler)
+            except (ValueError, AttributeError):
+                pass
         render_exit_summary(console, mgr, session_id)
 
     return 0
@@ -1207,9 +1472,13 @@ async def _run_once(mgr: SessionManager, prompt: str, yes: bool, plan_mode: bool
     """Execute a single prompt non-interactively and exit."""
     effective_prompt, _ = expand_file_mentions(prompt, mgr.project_root)
     _STREAM_STATE.reset()
-    session_id = await mgr.create_session(effective_prompt, plan_mode=plan_mode)
-    await _drain_pending_interactions(mgr, session_id, yes)
-    return 0
+    try:
+        session_id = await mgr.create_session(effective_prompt, plan_mode=plan_mode)
+        await _drain_pending_interactions(mgr, session_id, yes)
+        return 0
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        _clear_task_cancellation()
+        return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1323,7 +1592,10 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             mgr.dispose()
 
-    return asyncio.run(_main())
+    try:
+        return asyncio.run(_main())
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        return 0
 
 
 if __name__ == "__main__":

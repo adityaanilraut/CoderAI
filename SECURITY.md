@@ -33,8 +33,11 @@ CoderAI implements the following core security principles:
 2. **Fail-Closed Default**: Actions that cannot be safely evaluated or that violate explicit policy are denied.
 3. **Snippet-Scoped File Operations**: File modifications are bound to verified snippet identifiers, preventing blind hallucinations and race conditions.
 4. **Isolated Plan Mode Boundary**: Planning phases strictly enforce read-only execution unless explicitly authorized by the user.
-5. **Git Checkpointing & Instant Undo**: File modifications are checkpointed per turn, allowing immediate rollback of inadvertent changes.
-6. **Subprocess Isolation & Timeout Bounds**: Shell executions enforce strict timeouts, signal traps, and process tree termination to prevent runaway processes.
+5. **OS Sandboxing**: Shell commands are executed inside native OS sandboxes (`sandbox-exec` on macOS, `bwrap` on Linux) under non-privileged presets.
+6. **PreToolUse Hooks**: Optional validation scripts run prior to tool execution with fail-closed denial.
+7. **Git Checkpointing & Instant Undo**: File modifications are checkpointed per turn, allowing immediate rollback of inadvertent changes.
+8. **Subprocess Isolation & Timeout Bounds**: Shell executions enforce strict timeouts, signal traps, and process tree termination to prevent runaway processes.
+9. **Network & SSRF Guard**: Outbound web requests enforce private IP filters, loopback blocking, and same-origin redirect verification.
 
 ---
 
@@ -57,14 +60,22 @@ CoderAI classifies all operations into granular side-effect scopes:
 | `network`        | Outbound HTTP requests and web searches                        | Medium     |
 | `mcp`            | Calling tools exposed by external MCP servers                  | Medium     |
 
-#### Permission Policies
+#### Permission Presets
 
-Permissions are configured in `~/.coderai/settings.json` (user-level) or `.coderai/settings.json` (project-level):
+CoderAI supports 3 standard presets for fast and consistent security configuration:
+
+- **`read-only`**: Blocks all mutations and confines execution to read operations with an active OS sandbox.
+- **`workspace-write`**: Grants write access only within the workspace root with an active OS sandbox.
+- **`danger-full-access`**: Full access with interactive user confirmation for sensitive operations.
+
+#### Custom Permission Policies
+
+Permissions can also be customized in `~/.coderai/settings.json` (user-level) or `.coderai/settings.json` (project-level):
 
 ```json
 {
   "permissions": {
-    "defaultMode": "allowAll",
+    "preset": "workspace-write",
     "allow": ["read-in-cwd", "query-git-log"],
     "ask": [
       "write-in-cwd",
@@ -86,7 +97,34 @@ Permissions are configured in `~/.coderai/settings.json` (user-level) or `.coder
 
 ---
 
-### 2. Snippet-Scoped Editing & Version Guarding (`coderai/core/state.py`, `coderai/core/tools/edit.py`)
+### 2. OS-Level Sandboxing (`coderai/core/sandbox.py`)
+
+For `read-only` and `workspace-write` presets, shell commands are wrapped in native OS sandboxes:
+
+- **macOS Seatbelt**: Uses `sandbox-exec` with a compiled profile allowing read operations and restricting file writes strictly to the workspace root and temporary directories.
+- **Linux Bubblewrap (`bwrap`)**: Isolates the process in private mount namespaces with a read-only root and writeable workspace binds.
+- **Fallback**: If OS sandbox tools are not available on the host platform, commands fall back to interactive user confirmation (`ask`).
+
+---
+
+### 3. PreToolUse Hooks (`coderai/core/hooks.py`)
+
+Organizations can define custom PreToolUse hook scripts in `.coderai/hooks.json` to enforce compliance and security checks:
+
+```json
+{
+  "preToolUse": [
+    {
+      "command": "python scripts/security_check.py --tool {tool_name}",
+      "failAction": "deny"
+    }
+  ]
+}
+```
+
+---
+
+### 4. Snippet-Scoped Editing & Version Guarding (`coderai/core/state.py`, `coderai/core/tools/edit.py`)
 
 To prevent hallucinated edits or accidental full-file corruption:
 
@@ -97,7 +135,7 @@ To prevent hallucinated edits or accidental full-file corruption:
 
 ---
 
-### 3. Plan Mode Capability Fence (`coderai/core/prompt.py`, `coderai/core/permissions.py`)
+### 5. Plan Mode Capability Fence (`coderai/core/prompt.py`, `coderai/core/permissions.py`)
 
 When Plan Mode is enabled (`/plan` in REPL or `--plan` on CLI):
 
@@ -107,7 +145,7 @@ When Plan Mode is enabled (`/plan` in REPL or `--plan` on CLI):
 
 ---
 
-### 4. Git-Backed Checkpointing & Recovery (`coderai/core/common/file_history.py`)
+### 6. Git-Backed Checkpointing & Recovery (`coderai/core/common/file_history.py`)
 
 Every tool-driven filesystem modification is tracked in a local Git-backed history store (`.git_history`):
 
@@ -117,7 +155,7 @@ Every tool-driven filesystem modification is tracked in a local Git-backed histo
 
 ---
 
-### 5. Process Lifecycle & Shell Hygiene (`coderai/core/tools/bash.py`, `coderai/core/common/`)
+### 7. Process Lifecycle & Shell Hygiene (`coderai/core/tools/bash.py`, `coderai/core/common/`)
 
 Shell execution is guarded by multiple defense layers:
 
@@ -128,15 +166,23 @@ Shell execution is guarded by multiple defense layers:
 
 ---
 
-### 6. Model Context Protocol (MCP) Security (`coderai/core/mcp/`)
+### 8. Network Security & SSRF Protection (`coderai/core/network/`)
 
-- MCP servers communicate over standard input/output (`stdio`) without exposed local network ports.
+- **SSRF Validation**: Blocks requests targeting `127.0.0.1`, private RFC 1918 subnets (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local metadata addresses (`169.254.169.254`), and loopback addresses.
+- **Same-Origin Redirects**: Redirects are only followed if the destination URL shares the identical protocol, host, and port of the initial validated URL.
+- **HTML Sanitization**: Responses are stripped of script tags, tracking pixels, and malicious payloads before markdown conversion.
+
+---
+
+### 9. Model Context Protocol (MCP) Security (`coderai/core/mcp/`)
+
+- MCP servers communicate over `stdio`, `sse`, or `streamable-http`.
 - Server executables and argument lists are explicitly specified in configuration.
 - Tool names are strictly namespaced (`mcp__<server>__<tool>`) to prevent collisions with native tools.
 
 ---
 
-### 7. Storage and Credential Protection
+### 10. Storage and Credential Protection
 
 - **Local Session Storage**: Session transcripts, indexes, and checkpoints are stored in user-owned directories (`~/.coderai/projects/<project-hash>/`).
 - **Environment Isolation**: API keys configured via environment variables (`OPENAI_API_KEY`, `CODERAI_API_KEY`) are read strictly within client initialization and never logged to disk or serialized in session histories.

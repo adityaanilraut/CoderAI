@@ -94,8 +94,11 @@ class ToolExecutionContext:
     on_before_file_mutation: Callable[[str], None] | None = None
     on_after_file_mutation: Callable[[str], None] | None = None
     on_plugin_rate_limit_exceeded: Callable[[str], None] | None = None
+    on_load_skill: Callable[[str], Any] | None = None
     bash_timeout_ms: int | None = None
     bash_min_timeout_ms: int | None = None
+    permission_decision: str | None = None
+    sandbox_mode: str | None = None
 
     def get(self, key: str, default: Any = None) -> Any:
         """Dict-like access for backwards compatibility."""
@@ -117,7 +120,19 @@ class ToolExecutionHooks:
     on_before_file_mutation: Callable[[str], None] | None = None
     on_after_file_mutation: Callable[[str], None] | None = None
     on_plugin_rate_limit_exceeded: Callable[[str], None] | None = None
+    on_load_skill: Callable[[str], Any] | None = None
     should_stop: Callable[[], bool] | None = None
+    permission_decision: str | None = None
+    pre_execute: Callable[[str, dict[str, Any], "ToolExecutionContext"], str] | None = None
+    post_execute: (
+        Callable[[str, dict[str, Any], ToolResult, "ToolExecutionContext"], ToolResult | None]
+        | None
+    ) = None
+    guards: list[Callable[[str, dict[str, Any], "ToolExecutionContext"], str]] = field(
+        default_factory=list
+    )
+    timeout_ms: int | None = None
+    sandbox_mode: str | None = None
 
 
 @dataclass

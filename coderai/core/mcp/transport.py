@@ -363,3 +363,90 @@ class SseMcpTransport(McpTransport):
             except Exception:
                 pass
             self._session = None
+
+
+class StreamableHttpMcpTransport(McpTransport):
+    """MCP Streamable HTTP: POST JSON-RPC to one URL; JSON or SSE responses."""
+
+    def __init__(
+        self,
+        server_name: str,
+        url: str,
+        headers: dict[str, str] | None = None,
+        policy: Any = None,
+    ) -> None:
+        super().__init__(server_name)
+        self.url = url
+        self.headers = headers or {}
+        self.policy = policy
+        self._session: requests.Session | None = None
+        self._disconnected = False
+        self._connected = False
+
+    def is_connected(self) -> bool:
+        return self._connected and not self._disconnected
+
+    async def connect(self, timeout_s: float = 30.0) -> None:
+        check_outbound_url(self.url, self.policy)
+        self._session = requests.Session()
+        self._session.headers.update(self.headers)
+        self._session.headers.setdefault("Accept", "application/json, text/event-stream")
+        self._disconnected = False
+        self._connected = True
+        _ = timeout_s
+
+    def send(self, message: dict[str, Any]) -> None:
+        if self._disconnected or not self._session:
+            return
+
+        def _do_post() -> None:
+            try:
+                assert self._session is not None
+                resp = self._session.post(
+                    self.url,
+                    json=message,
+                    timeout=30.0,
+                    headers={"Content-Type": "application/json"},
+                )
+                ctype = (resp.headers.get("content-type") or "").lower()
+                if "text/event-stream" in ctype:
+                    data_buffer: list[str] = []
+                    for raw_line in resp.iter_lines(decode_unicode=True):
+                        if raw_line is None:
+                            continue
+                        line = raw_line.strip()
+                        if not line:
+                            if data_buffer and self.on_message:
+                                try:
+                                    parsed = json.loads("\n".join(data_buffer))
+                                    if isinstance(parsed, dict):
+                                        self.on_message(parsed)
+                                except Exception:
+                                    pass
+                            data_buffer.clear()
+                            continue
+                        if line.startswith("event:"):
+                            continue
+                        if line.startswith("data:"):
+                            data_buffer.append(line[len("data:") :].strip())
+                    return
+                try:
+                    parsed = resp.json()
+                except Exception:
+                    return
+                if isinstance(parsed, dict) and self.on_message:
+                    self.on_message(parsed)
+            except Exception:
+                pass
+
+        threading.Thread(target=_do_post, daemon=True).start()
+
+    async def disconnect(self) -> None:
+        self._disconnected = True
+        self._connected = False
+        if self._session:
+            try:
+                self._session.close()
+            except Exception:
+                pass
+            self._session = None

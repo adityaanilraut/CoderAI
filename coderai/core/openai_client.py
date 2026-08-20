@@ -41,7 +41,7 @@ def resolve_model_provider_routing(
         )
         return explicit_base_url, api_key
 
-    # 2. DeepSeek models (deepseek-v4-pro, deepseek-v4-flash, deepseek-r1, etc.)
+    # 2. DeepSeek models (deepseek-v4-pro, deepseek-v4-flash, deepseek-r1, deepseek-v3, etc.)
     if m.startswith("deepseek-") or m.startswith("deepseek/"):
         base_url = (
             env.get("DEEPSEEK_BASE_URL")
@@ -56,7 +56,7 @@ def resolve_model_provider_routing(
         )
         return base_url, api_key
 
-    # 3. Google Gemini models (gemini-2.5-pro, gemini-2.5-flash, etc.)
+    # 3. Google Gemini models (gemini-2.5-pro, gemini-2.5-flash, gemini-2.0-flash, etc.)
     if m.startswith("gemini-") or m.startswith("google/"):
         base_url = (
             env.get("GEMINI_BASE_URL")
@@ -73,7 +73,7 @@ def resolve_model_provider_routing(
         )
         return base_url, api_key
 
-    # 4. Anthropic Claude models (claude-3-7-sonnet, claude-3-5-sonnet, etc.)
+    # 4. Anthropic Claude models (claude-3-7-sonnet, etc.)
     if m.startswith("claude-") or m.startswith("anthropic/"):
         anthropic_url = env.get("ANTHROPIC_BASE_URL") or os.getenv("ANTHROPIC_BASE_URL")
         openrouter_key = env.get("OPENROUTER_API_KEY") or os.getenv("OPENROUTER_API_KEY")

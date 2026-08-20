@@ -30,6 +30,9 @@ async def test_tool_registry_builtins_and_aliases():
     assert registry.has_tool("web_fetch")
     assert registry.has_tool("Task")
     assert registry.has_tool("subagent")
+    assert registry.has_tool("job_list")
+    assert registry.has_tool("job_output")
+    assert registry.has_tool("job_kill")
 
     read_def = registry.get("read")
     assert read_def is not None

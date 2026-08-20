@@ -29,6 +29,16 @@ def parse_plan_stats(plan_text: str) -> tuple[int, int]:
     return total, completed
 
 
+def make_plan_progress_bar(completed: int, total: int, width: int = 10) -> str:
+    """Generate a visual progress bar string for plans."""
+    if total <= 0:
+        return ""
+    pct = max(0.0, min(1.0, completed / total))
+    filled = int(round(pct * width))
+    bar = "█" * filled + "░" * (width - filled)
+    return f"[{bar}] {int(pct * 100)}%"
+
+
 def format_plan_content(plan_text: str) -> Text | str:
     """Format markdown checklist into styled Rich Text."""
     if not _RICH or Text is None:
@@ -47,12 +57,21 @@ def format_plan_content(plan_text: str) -> Text | str:
             item_text = stripped[5:].strip()
             formatted.append("  ✓ ", style="bold green")
             formatted.append(f"{item_text}\n", style="green")
+        elif stripped.startswith(("- [-]", "* [-]")):
+            item_text = stripped[5:].strip()
+            formatted.append("  - ", style="bold yellow")
+            formatted.append(f"{item_text}\n", style="yellow")
         elif stripped.startswith(("- [ ]", "* [ ]")):
             item_text = stripped[5:].strip()
             formatted.append("  ○ ", style="bold cyan")
             formatted.append(f"{item_text}\n", style="white")
         elif stripped.startswith("#"):
-            formatted.append(f"\n{stripped}\n", style="bold yellow")
+            heading = stripped.lstrip("#").strip()
+            formatted.append(f"\n  {heading}\n", style="bold yellow")
+        elif stripped.startswith(("-", "*", "•")):
+            item_text = stripped.lstrip("-*• ").strip()
+            formatted.append("    • ", style="dim cyan")
+            formatted.append(f"{item_text}\n", style="dim white")
         else:
             formatted.append(f"  {stripped}\n", style="dim white")
 
@@ -65,8 +84,8 @@ def render_plan_preview(console: Any | None, plan_text: str, title: str = "Plan 
         return
 
     total, completed = parse_plan_stats(plan_text)
-    pct = int((completed / total) * 100) if total > 0 else 0
-    progress_badge = f" • [{completed}/{total} tasks ({pct}%)]" if total > 0 else ""
+    bar_str = make_plan_progress_bar(completed, total, width=8)
+    progress_badge = f" • {bar_str} ({completed}/{total} tasks)" if total > 0 else ""
 
     if console is not None and _RICH and Panel is not None:
         formatted = format_plan_content(plan_text)

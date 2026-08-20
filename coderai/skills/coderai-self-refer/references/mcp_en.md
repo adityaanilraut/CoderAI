@@ -41,11 +41,17 @@ Edit `~/.coderai/settings.json` and add the `mcpServers` field:
 
 ### Configuration Fields
 
-| Field     | Type     | Required | Description                                                                                                                                                      |
-| --------- | -------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `command` | string   | Yes      | Path or command of the MCP server executable (e.g., `npx`, `node`, `python`). When the command is `npx`, Deep Code automatically prepends `-y` to the arguments. |
-| `args`    | string[] | No       | List of arguments to pass to the command                                                                                                                         |
-| `env`     | object   | No       | Environment variables (e.g., API keys) to pass to the MCP server process                                                                                         |
+| Field             | Type     | Required | Description |
+| ----------------- | -------- | -------- | ----------- |
+| `command`         | string   | One of `command` or `url` | Stdio executable (`npx`, `node`, `python`). When the command is `npx`, CoderAI automatically prepends `-y` to the arguments. |
+| `url`             | string   | One of `command` or `url` | SSE endpoint for a remote MCP server. |
+| `args`            | string[] | No | Arguments passed to a stdio `command`. |
+| `env`             | object   | No | Environment variables for the stdio process. |
+| `cwd`             | string   | No | Working directory for the stdio process. |
+| `headers`         | object   | No | Extra HTTP headers for SSE servers. |
+| `disabled`        | boolean  | No | Skip connecting this server when `true`. |
+| `enabled`         | boolean  | No | Skip connecting this server when `false`. |
+| `allowPrivateIps` | boolean  | No | Allow SSE URLs that resolve to private/loopback addresses. |
 
 ## Common MCP Examples
 

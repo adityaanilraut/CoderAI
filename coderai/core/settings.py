@@ -14,6 +14,7 @@ import re
 from typing import Any, Literal
 
 from coderai.core.common.model_capabilities import defaults_to_thinking_mode
+from coderai.core.sandbox import apply_preset, parse_sandbox_mode
 
 DEFAULT_MODEL = "gpt-5.6-luna"
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
@@ -47,7 +48,15 @@ VALID_PERMISSION_SCOPES = {
     "mcp",
 }
 
-ReasoningEffort = Literal["high", "max"]
+ReasoningEffort = Literal["off", "low", "medium", "high", "max"]
+DEFAULT_REASONING_EFFORT: ReasoningEffort = "max"
+VALID_REASONING_EFFORTS = {"off", "low", "medium", "high", "max"}
+_REASONING_EFFORT_ALIASES = {
+    "none": "off",
+    "disabled": "off",
+    "false": "off",
+    "0": "off",
+}
 
 
 def _home() -> pathlib.Path:
@@ -163,6 +172,19 @@ def _parse_bool(value: Any) -> bool | None:
     return None
 
 
+def parse_reasoning_effort(value: Any) -> ReasoningEffort | None:
+    """Normalize a reasoning-effort setting to off|low|medium|high|max."""
+    if not isinstance(value, str):
+        return None
+    raw = value.strip().lower()
+    if not raw:
+        return None
+    normalized = _REASONING_EFFORT_ALIASES.get(raw, raw)
+    if normalized in VALID_REASONING_EFFORTS:
+        return normalized  # type: ignore[return-value]
+    return None
+
+
 def _parse_temperature(value: Any) -> float | None:
     try:
         raw = float(value)
@@ -256,9 +278,9 @@ def first_token_window(*values: Any) -> int | None:
 
 def get_default_context_window(model: str = "") -> int:
     m = (model or "").strip().lower()
-    if "deepseek" in m or "v4" in m:
+    if "deepseek" in m or "v4" in m or "r1" in m or "v3" in m:
         return 1024 * 1024
-    if any(k in m for k in ("gpt-5", "claude-3-7", "gemini-2.5")):
+    if any(k in m for k in ("gpt-5", "gpt-4.5", "claude-3-7", "gemini-2.5", "gemini-2.0")):
         return 512 * 1024
     return DEFAULT_CONTEXT_WINDOW
 
@@ -356,6 +378,13 @@ def resolve_current_settings(project_root: str = ".") -> dict[str, Any]:
         or _parse_temperature(user.get("temperature"))
     )
 
+    multimodal = (
+        _resolve_multimodal_mode(system_env.get("MULTIMODAL"))
+        or _resolve_multimodal_mode(project.get("multimodal"))
+        or _resolve_multimodal_mode(user.get("multimodal"))
+        or "default"
+    )
+
     return {
         "env": env,
         "apiKey": api_key,
@@ -365,7 +394,14 @@ def resolve_current_settings(project_root: str = ".") -> dict[str, Any]:
         "autoCompactWindow": auto_compact_window,
         "temperature": temperature,
         "thinkingEnabled": thinking_enabled,
-        "reasoningEffort": "max",
+        "reasoningEffort": (
+            parse_reasoning_effort(system_env.get("REASONING_EFFORT"))
+            or parse_reasoning_effort(project.get("reasoningEffort"))
+            or parse_reasoning_effort(project_env.get("REASONING_EFFORT"))
+            or parse_reasoning_effort(user.get("reasoningEffort"))
+            or parse_reasoning_effort(user_env.get("REASONING_EFFORT"))
+            or DEFAULT_REASONING_EFFORT
+        ),
         "debugLogEnabled": bool(_parse_bool(system_env.get("DEBUG_LOG_ENABLED"))),
         "telemetryEnabled": False,
         "notify": first(system_env.get("NOTIFY"), project.get("notify"), user.get("notify"))
@@ -378,12 +414,37 @@ def resolve_current_settings(project_root: str = ".") -> dict[str, Any]:
             )
             or None
         ),
+        "multimodal": multimodal,
         "mcpServers": _merge_mcp_servers(user, project, user_env, project_env, system_env),
-        "permissions": _merge_permissions(user, project),
+        "permissions": apply_preset(
+            _merge_permissions(user, project),
+            parse_sandbox_mode(
+                first(
+                    system_env.get("PERMISSION_PRESET"),
+                    project.get("permissionPreset"),
+                    user.get("permissionPreset"),
+                    ((project.get("permissions") or {}).get("preset")),
+                    ((user.get("permissions") or {}).get("preset")),
+                )
+            ),
+        ),
         "enabledSkills": _merge_enabled_skills(user, project),
         "skillScanPaths": _merge_skill_scan_paths(user, project),
         "statusline": _merge_statusline(user, project),
     }
+
+
+def _resolve_multimodal_mode(val: Any) -> str | None:
+    if not isinstance(val, str):
+        return None
+    v = val.strip().lower()
+    if v in ("on", "true", "yes", "1"):
+        return "on"
+    if v in ("off", "false", "no", "0"):
+        return "off"
+    if v == "default":
+        return "default"
+    return None
 
 
 def _normalize_skill_scan_paths(value: Any) -> list[str]:
@@ -419,34 +480,90 @@ def _merge_enabled_skills(user: dict | None, project: dict | None) -> dict[str, 
     }
 
 
+def _merge_string_map(*maps: Any) -> dict[str, str]:
+    merged: dict[str, str] = {}
+    for item in maps:
+        if not isinstance(item, dict):
+            continue
+        for key, value in item.items():
+            if isinstance(key, str) and isinstance(value, str):
+                merged[key] = value
+    return merged
+
+
+def _merge_mcp_server_config(user_cfg: Any, project_cfg: Any) -> dict[str, Any] | None:
+    """Merge one MCP server. Keep stdio (`command`) and SSE (`url`) configs."""
+    uc = user_cfg if isinstance(user_cfg, dict) else {}
+    pc = project_cfg if isinstance(project_cfg, dict) else {}
+
+    command = _trim(pc.get("command")) or _trim(uc.get("command"))
+    url = _trim(pc.get("url")) or _trim(uc.get("url"))
+    if not command and not url:
+        return None
+
+    cfg: dict[str, Any] = {}
+    if command:
+        cfg["command"] = command
+    if url:
+        cfg["url"] = url
+
+    args = pc.get("args") if "args" in pc else uc.get("args")
+    if args is not None:
+        cfg["args"] = args
+
+    cwd = _trim(pc.get("cwd")) or _trim(uc.get("cwd"))
+    if cwd:
+        cfg["cwd"] = cwd
+
+    env_cfg = _merge_string_map(uc.get("env"), pc.get("env"))
+    if env_cfg:
+        cfg["env"] = env_cfg
+
+    headers = _merge_string_map(uc.get("headers"), pc.get("headers"))
+    if headers:
+        cfg["headers"] = headers
+
+    if "disabled" in pc:
+        cfg["disabled"] = bool(pc["disabled"])
+    elif "disabled" in uc:
+        cfg["disabled"] = bool(uc["disabled"])
+
+    if "enabled" in pc:
+        cfg["enabled"] = bool(pc["enabled"])
+    elif "enabled" in uc:
+        cfg["enabled"] = bool(uc["enabled"])
+
+    if "allowPrivateIps" in pc:
+        cfg["allowPrivateIps"] = bool(pc["allowPrivateIps"])
+    elif "allowPrivateIps" in uc:
+        cfg["allowPrivateIps"] = bool(uc["allowPrivateIps"])
+
+    return cfg
+
+
 def _merge_mcp_servers(
     user: dict,
     project: dict,
-    user_env: dict[str, str],
-    project_env: dict[str, str],
-    system_env: dict[str, str],
+    _user_env: dict[str, str],
+    _project_env: dict[str, str],
+    _system_env: dict[str, str],
 ) -> dict[str, dict] | None:
     user_servers = user.get("mcpServers") or {}
     project_servers = project.get("mcpServers") or {}
+    if not isinstance(user_servers, dict):
+        user_servers = {}
+    if not isinstance(project_servers, dict):
+        project_servers = {}
     names = set(user_servers) | set(project_servers)
     if not names:
         return None
     merged: dict[str, dict] = {}
     for name in names:
-        uc = user_servers.get(name) or {}
-        pc = project_servers.get(name) or {}
-        command = pc.get("command") or uc.get("command")
-        if not command:
+        if not isinstance(name, str) or not name:
             continue
-        cfg: dict = {"command": command}
-        args = pc.get("args") or uc.get("args")
-        if args is not None:
-            cfg["args"] = args
-        env_cfg = {**(uc.get("env") or {}), **(pc.get("env") or {})}
-        env_cfg = {k: v for k, v in env_cfg.items() if isinstance(k, str) and isinstance(v, str)}
-        if env_cfg:
-            cfg["env"] = env_cfg
-        merged[name] = cfg
+        cfg = _merge_mcp_server_config(user_servers.get(name), project_servers.get(name))
+        if cfg:
+            merged[name] = cfg
     return merged or None
 
 

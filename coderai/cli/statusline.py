@@ -38,7 +38,7 @@ def strip_ansi(text: str) -> str:
 
 
 def get_git_branch_cached(project_root: str) -> str:
-    """Get the active git branch name or 'no-git'."""
+    """Get the active git branch name with dirty status marker if uncommitted changes exist, or 'no-git'."""
     try:
         res = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
@@ -48,10 +48,28 @@ def get_git_branch_cached(project_root: str) -> str:
             timeout=1,
         )
         if res.returncode == 0 and res.stdout.strip():
-            return res.stdout.strip()
+            branch = res.stdout.strip()
+            # Check dirty status
+            res_dirty = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=project_root,
+                capture_output=True,
+                text=True,
+                timeout=1,
+            )
+            if res_dirty.returncode == 0 and res_dirty.stdout.strip():
+                return f"{branch}*"
+            return branch
     except Exception:
         pass
     return "no-git"
+
+
+def make_mini_bar(pct: float, width: int = 8) -> str:
+    """Generate a compact unicode progress bar."""
+    clamped = max(0.0, min(100.0, pct))
+    filled = int(round((clamped / 100.0) * width))
+    return "■" * filled + "□" * (width - filled)
 
 
 def compute_token_gauge(active_tokens: int, model: str) -> tuple[str, str, float]:
@@ -172,9 +190,10 @@ class StatuslineEngine:
         turns: int = 0,
         mcp_count: int = 0,
     ) -> Text | str:
-        """Format the default dynamic gauge."""
+        """Format the default dynamic powerline gauge."""
         plan_label = "ON" if plan_mode else "OFF"
-        tokens_display, token_style, _ = compute_token_gauge(active_tokens, model)
+        tokens_display, token_style, pct = compute_token_gauge(active_tokens, model)
+        mini_bar = make_mini_bar(pct, width=6)
 
         if not _RICH or Text is None:
             extra = ""
@@ -185,31 +204,41 @@ class StatuslineEngine:
             return f"[Model: {model}] [Tokens: {tokens_display}] [Plan: {plan_label}] [Git: {branch}]{extra}"
 
         bar = Text()
-        bar.append(" [", style="dim")
-        bar.append("Model: ", style="dim cyan")
-        bar.append(model, style="bold cyan")
-        bar.append("] [", style="dim")
-        bar.append("Tokens: ", style=f"dim {token_style.replace('bold ', '')}")
-        bar.append(tokens_display, style=f"bold {token_style.replace('bold ', '')}")
-        bar.append("] [", style="dim")
-        bar.append("Plan: ", style="dim yellow")
+        # Model Segment
+        bar.append(" ", style="default")
+        bar.append(f"Model: {model}", style="bold cyan")
+
+        # Divider
+        bar.append(" │ ", style="dim")
+
+        # Tokens Segment with Mini Bar
+        base_color = token_style.replace("bold ", "")
+        bar.append(f"Tokens: {tokens_display}", style=f"bold {base_color}")
+        bar.append(f" [{mini_bar}]", style=f"dim {base_color}")
+
+        # Divider
+        bar.append(" │ ", style="dim")
+
+        # Plan Mode Segment
+        bar.append("Plan: ", style="dim")
         bar.append(plan_label, style="bold yellow" if plan_mode else "dim white")
-        bar.append("] [", style="dim")
+
+        # Divider
+        bar.append(" │ ", style="dim")
+
+        # Git Branch Segment
         bar.append("Git: ", style="dim magenta")
         bar.append(branch, style="bold magenta")
-        bar.append("]", style="dim")
 
+        # Optional Turns Segment
         if turns > 0:
-            bar.append(" [", style="dim")
-            bar.append("Turns: ", style="dim white")
-            bar.append(str(turns), style="bold white")
-            bar.append("]", style="dim")
+            bar.append(" │ ", style="dim")
+            bar.append(f"Turns: {turns}", style="bold white")
 
+        # Optional MCP Segment
         if mcp_count > 0:
-            bar.append(" [", style="dim")
-            bar.append("MCP: ", style="dim green")
-            bar.append(str(mcp_count), style="bold green")
-            bar.append("]", style="dim")
+            bar.append(" │ ", style="dim")
+            bar.append(f"MCP: {mcp_count}", style="bold green")
 
         return bar
 

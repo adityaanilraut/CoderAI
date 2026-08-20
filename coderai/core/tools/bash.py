@@ -16,6 +16,9 @@ from typing import Any
 
 from coderai.core.common.bash_timeout import DEFAULT_BASH_TIMEOUT_MS, clamp_bash_timeout_ms
 from coderai.core.common.process_tree import kill_process_tree
+from coderai.core.jobs import get_job_store
+from coderai.core.sandbox import wrap_sandbox_command
+from coderai.core.spill import apply_spill_policy
 from coderai.core.common.shell_utils import (
     build_disable_extglob_command,
     build_shell_env,
@@ -118,6 +121,22 @@ def _join_output(stdout: str, stderr: str) -> str:
     return trimmed_stdout or trimmed_stderr
 
 
+def _sandbox_wrap(
+    shell_path: str, shell_args: list[str], context: Any, cwd: str
+) -> tuple[list[str], dict[str, Any]]:
+    mode = getattr(context, "sandbox_mode", None)
+    project_root = getattr(context, "project_root", None) or cwd
+    if isinstance(context, dict):
+        mode = context.get("sandbox_mode", mode)
+        project_root = context.get("project_root", project_root)
+    return wrap_sandbox_command(
+        [shell_path, *shell_args],
+        mode=mode,
+        workspace_root=str(project_root or cwd),
+        cwd=cwd,
+    )
+
+
 def _truncate_output(output: str) -> tuple[str, bool]:
     if len(output) <= MAX_OUTPUT_CHARS:
         return output, False
@@ -188,7 +207,17 @@ def handle_bash_tool(args: dict[str, Any], context: Any) -> ToolResult:
     execution = _execute_shell_command(shell_path, shell_args, start_cwd, command, context)
     cleaned_stdout, cwd = _strip_marker(execution["stdout"], marker)
     combined = _join_output(cleaned_stdout, execution["stderr"])
-    truncated_text, is_truncated = _truncate_output(combined)
+    spilled, spill_ref = apply_spill_policy(
+        combined,
+        session_id=str(session_id),
+        tool_name="bash",
+        max_inline_bytes=MAX_OUTPUT_CHARS,
+        suggested_name="bash.txt",
+    )
+    if spill_ref is not None:
+        truncated_text, is_truncated = spilled, True
+    else:
+        truncated_text, is_truncated = _truncate_output(combined)
 
     _update_session_cwd(session_id, start_cwd, cwd)
 
@@ -217,6 +246,10 @@ def handle_bash_tool(args: dict[str, Any], context: Any) -> ToolResult:
         "timedOut": execution["timed_out"],
         "timeoutMs": execution["timeout_ms"],
     }
+    if spill_ref is not None:
+        metadata["spill"] = spill_ref.to_dict()
+    if execution.get("sandbox"):
+        metadata["sandbox"] = execution["sandbox"]
     if execution.get("deadline_at_ms"):
         import datetime
 
@@ -286,8 +319,9 @@ def _execute_shell_command(
     else:
         kwargs["start_new_session"] = True
 
+    argv, sandbox_meta = _sandbox_wrap(shell_path, shell_args, context, cwd)
     try:
-        proc = subprocess.Popen([shell_path, *shell_args], **kwargs)
+        proc = subprocess.Popen(argv, **kwargs)
     except Exception as spawn_err:
         return {
             "stdout": "",
@@ -298,6 +332,7 @@ def _execute_shell_command(
             "timed_out": False,
             "timeout_ms": state["timeout_ms"],
             "deadline_at_ms": state["deadline_at_ms"],
+            "sandbox": sandbox_meta,
         }
 
     pid = proc.pid
@@ -417,6 +452,7 @@ def _execute_shell_command(
         "timed_out": state["timed_out"],
         "timeout_ms": state["timeout_ms"],
         "deadline_at_ms": state["deadline_at_ms"],
+        "sandbox": sandbox_meta,
     }
 
 
@@ -461,13 +497,15 @@ def _start_background_shell_command(
     else:
         kwargs["start_new_session"] = True
 
+    argv, sandbox_meta = _sandbox_wrap(shell_path, shell_args, context, cwd)
     try:
-        proc = subprocess.Popen([shell_path, *shell_args], **kwargs)
+        proc = subprocess.Popen(argv, **kwargs)
     except Exception as e:
         return ToolResult(
             ok=False,
             name="bash",
             error=f"Failed to start background command: {e}",
+            metadata={"sandbox": sandbox_meta},
         )
 
     pid = proc.pid
@@ -491,6 +529,15 @@ def _start_background_shell_command(
 
     if on_process_start and pid:
         on_process_start(pid, command)
+
+    get_job_store().start(
+        job_id=task_id,
+        session_id=str(session_id),
+        kind="bash",
+        label=command,
+        process_id=pid if pid else None,
+        output_path=str(output_path),
+    )
 
     # Background worker thread to stream output to file and notify completion
     def bg_worker() -> None:
@@ -554,6 +601,14 @@ def _start_background_shell_command(
         ok = exit_code == 0 and signal_name is None
         err_msg = None if ok else _build_error_message(exit_code, signal_name)
 
+        get_job_store().complete(
+            task_id,
+            ok=ok,
+            exit_code=exit_code,
+            signal=signal_name,
+            detail=err_msg,
+        )
+
         if on_background_process_complete:
             on_background_process_complete(
                 BackgroundProcessCompletion(
@@ -576,7 +631,12 @@ def _start_background_shell_command(
 
     parts = [f"Command running in background with ID: {task_id}."]
     if stop_command:
-        parts.append(f"Stop it with: {stop_command}")
+        parts.append(f"Stop it with job_kill (job_id={task_id}) or: {stop_command}")
+    else:
+        parts.append(f"Stop it with job_kill using job_id {task_id}.")
+    parts.append(
+        "Read output with job_output. Do not busy-poll; keep working on independent steps."
+    )
     parts.append(f"Output is being written to: {output_path}")
 
     return ToolResult(
