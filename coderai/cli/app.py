@@ -184,13 +184,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Resume the most recent session for the current project directory.",
     )
     parser.add_argument("--plan", action="store_true", help="start session in Plan Mode")
-    parser.add_argument(
-        "--server",
-        "--serve",
-        dest="server",
-        action="store_true",
-        help="run in JSON-RPC 2.0 headless server mode for IDE integration",
-    )
     parser.add_argument("--yes", "-y", action="store_true", help="auto-approve all permissions")
     parser.add_argument("--verbose", "-v", action="store_true", help="print debug information")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -1475,10 +1468,19 @@ async def _run_once(mgr: SessionManager, prompt: str, yes: bool, plan_mode: bool
     try:
         session_id = await mgr.create_session(effective_prompt, plan_mode=plan_mode)
         await _drain_pending_interactions(mgr, session_id, yes)
+        entry = mgr.get_session(session_id)
+        if entry and entry.status == "failed":
+            return 1
         return 0
     except (KeyboardInterrupt, asyncio.CancelledError):
         _clear_task_cancellation()
         return 0
+    except Exception as e:
+        if console is not None and _RICH:
+            console.print(f"[bold red]Error:[/] {e}")
+        else:
+            print(f"Error: {e}", file=sys.stderr)
+        return 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1546,22 +1548,6 @@ def main(argv: list[str] | None = None) -> int:
     mgr = _build_manager(project_root, args.model)
 
     async def _main() -> int:
-        is_server_mode = bool(getattr(args, "server", False)) or (
-            bool(args.prompt)
-            and len(args.prompt) == 1
-            and args.prompt[0].lower() in ("serve", "server")
-        )
-        if is_server_mode:
-            from coderai.core.server import CoderAIServer
-
-            server = CoderAIServer(
-                project_root=project_root,
-                model=args.model,
-                session_manager=mgr,
-            )
-            await server.run_stdio()
-            return 0
-
         await mgr.init_mcp_servers()
         try:
             if has_exec and prompt_value:
@@ -1590,7 +1576,10 @@ def main(argv: list[str] | None = None) -> int:
                 initial_prompt=prompt_value,
             )
         finally:
-            mgr.dispose()
+            try:
+                mgr.dispose()
+            except Exception:
+                pass
 
     try:
         return asyncio.run(_main())

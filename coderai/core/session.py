@@ -4,9 +4,13 @@ Port of deepcode core/src/session.ts, sized for a Python CLI:
 
     stream -> tool_calls -> permissions -> execute -> loop
 
-Persistence: JSONL messages + a sessions index under
+Persistence: append-only JSONL event log + a sessions index under
 `~/.coderai/projects/<projectCode>/`, with token-threshold compaction,
 isolated GitFileHistory checkpoint-based undo, subagent orchestration, and Plan Mode gating.
+
+Event model: ``SessionEvent`` from ``coderai.core.events`` is the canonical
+log entry.  Legacy ``SessionMessage`` is preserved for backward compat with
+existing session files and CLI rendering.
 """
 
 from __future__ import annotations
@@ -39,6 +43,7 @@ from coderai.core.common.llm_retry import (
 from coderai.core.common.message_converter import OpenAIMessageConverter
 from coderai.core.common.openai_thinking import build_thinking_request_options
 from coderai.core.common.repeat_tool_reminder import RepeatToolReminder
+from coderai.core.common.usage import accumulate_usage_dict, extract_usage_dict
 from coderai.core.mcp import McpManager
 from coderai.core.permissions import (
     PLAN_MODE_FORCE_ASK_SCOPES,
@@ -61,6 +66,20 @@ from coderai.core.prompt import (
     load_skill,
     match_skills_for_prompt,
     parse_skill_match_response,
+)
+from coderai.core.events import (
+    SessionEvent,
+    make_event,
+    make_turn_start,
+    make_turn_end,
+    make_step_start,
+    make_step_end,
+    make_user_message as make_user_event,
+    make_assistant_message as make_assistant_event,
+    make_tool_call as make_tool_call_event,
+    make_tool_result as make_tool_result_event,
+    make_request_header,
+    legacy_message_to_event,
 )
 from coderai.core.state import clear_session_state, rebuild_session_state_from_history
 from coderai.core.tools.executor import ToolExecutor
@@ -249,6 +268,10 @@ class SessionManager:
             self.project_root, str(self._storage()["project_dir"] / "file-history" / ".git")
         )
         self._repeat_reminders: dict[str, RepeatToolReminder] = {}
+        # Event-model state: per-session turn/step/seq counters
+        self._turn_counters: dict[str, int] = {}
+        self._step_counters: dict[str, int] = {}
+        self._seq_counters: dict[str, int] = {}
 
     def set_model(self, model_name: str) -> None:
         self._override_model = model_name.strip() if model_name else None
@@ -349,6 +372,30 @@ class SessionManager:
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(self._serialize_message(message), ensure_ascii=False) + "\n")
 
+    def _next_seq(self, session_id: str) -> int:
+        """Return and increment the monotonic event sequence for a session."""
+        seq = self._seq_counters.get(session_id, 0)
+        self._seq_counters[session_id] = seq + 1
+        return seq
+
+    def _current_turn(self, session_id: str) -> int:
+        return self._turn_counters.get(session_id, 0)
+
+    def _current_step(self, session_id: str) -> int:
+        return self._step_counters.get(session_id, 0)
+
+    def _append_event(self, session_id: str, event: SessionEvent) -> None:
+        """Append a typed SessionEvent to the JSONL log.
+
+        Events are written in the new format alongside legacy messages.
+        The JSONL line includes a ``type`` key that distinguishes it from
+        legacy ``SessionMessage`` dicts (which have ``role`` instead).
+        """
+        self._ensure_dir()
+        path = self._messages_path(session_id)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(event.to_dict(), ensure_ascii=False) + "\n")
+
     def _save_messages(self, session_id: str, messages: list[SessionMessage]) -> None:
         self._ensure_dir()
         with open(self._messages_path(session_id), "w", encoding="utf-8") as f:
@@ -364,12 +411,22 @@ class SessionManager:
             if not line.strip():
                 continue
             try:
-                messages.append(self._deserialize_message(json.loads(line), session_id))
+                msg = self._deserialize_message(json.loads(line), session_id)
+                if msg is not None:
+                    messages.append(msg)
             except (ValueError, TypeError):
                 continue
         return messages
 
     def _serialize_message(self, m: SessionMessage) -> dict[str, Any]:
+        ts = 0
+        if m.create_time:
+            try:
+                ts = int(datetime.datetime.fromisoformat(m.create_time).timestamp() * 1000)
+            except Exception:
+                ts = int(time.time() * 1000)
+        else:
+            ts = int(time.time() * 1000)
         return {
             "id": m.id,
             "sessionId": m.session_id,
@@ -382,10 +439,99 @@ class SessionManager:
             "visible": m.visible,
             "createTime": m.create_time,
             "updateTime": m.update_time,
+            "timestamp": ts,
             "meta": m.meta,
         }
 
-    def _deserialize_message(self, d: dict[str, Any], session_id: str) -> SessionMessage:
+    def _deserialize_message(self, d: dict[str, Any], session_id: str) -> SessionMessage | None:
+        from coderai.core.events import (
+            LOG_ONLY_EVENT_TYPES,
+            USER_MESSAGE,
+            ASSISTANT_MESSAGE,
+            TOOL_RESULT,
+            COMPACTION_SUMMARY,
+            STEERING_MESSAGE,
+        )
+
+        event_type = d.get("type")
+        if event_type:
+            if event_type in LOG_ONLY_EVENT_TYPES:
+                return None
+            data = d.get("data") or {}
+            time_val = d.get("time") or d.get("timestamp") or 0.0
+            create_time = ""
+            if time_val:
+                try:
+                    create_time = datetime.datetime.fromtimestamp(
+                        float(time_val) / 1000.0, tz=datetime.timezone.utc
+                    ).isoformat()
+                except Exception:
+                    create_time = _now()
+            if event_type == USER_MESSAGE:
+                return SessionMessage(
+                    id=data.get("id") or uuid.uuid4().hex,
+                    session_id=session_id,
+                    role="user" if data.get("source") != "system" else "system",
+                    content=data.get("content") or "",
+                    create_time=create_time or _now(),
+                    update_time=create_time or _now(),
+                    meta=data.get("meta"),
+                )
+            elif event_type == ASSISTANT_MESSAGE:
+                return SessionMessage(
+                    id=data.get("id") or uuid.uuid4().hex,
+                    session_id=session_id,
+                    role="assistant",
+                    content=data.get("content") or "",
+                    tool_calls=data.get("toolCalls"),
+                    thinking=data.get("thinking"),
+                    create_time=create_time or _now(),
+                    update_time=create_time or _now(),
+                    meta=data.get("meta"),
+                )
+            elif event_type == TOOL_RESULT:
+                return SessionMessage(
+                    id=uuid.uuid4().hex,
+                    session_id=session_id,
+                    role="tool",
+                    content=data.get("content") or "",
+                    tool_call_id=data.get("callId"),
+                    create_time=create_time or _now(),
+                    update_time=create_time or _now(),
+                    meta=data.get("meta"),
+                )
+            elif event_type == COMPACTION_SUMMARY:
+                return SessionMessage(
+                    id=uuid.uuid4().hex,
+                    session_id=session_id,
+                    role="system",
+                    content=f"There are earlier parts of the conversation. Here is a summary:\n\n{data.get('content', '')}",
+                    create_time=create_time or _now(),
+                    update_time=create_time or _now(),
+                    meta={"isSummary": True, "kind": "compact/summary", "replacedIds": data.get("shadowedIds", [])},
+                    visible=False,
+                )
+            elif event_type == STEERING_MESSAGE:
+                return SessionMessage(
+                    id=data.get("id") or uuid.uuid4().hex,
+                    session_id=session_id,
+                    role="user",
+                    content=data.get("content") or "",
+                    create_time=create_time or _now(),
+                    update_time=create_time or _now(),
+                    meta=data.get("meta"),
+                )
+            return None
+
+        # Legacy SessionMessage dict
+        create_time = d.get("createTime") or ""
+        if not create_time and d.get("timestamp"):
+            try:
+                create_time = datetime.datetime.fromtimestamp(
+                    float(d["timestamp"]) / 1000.0, tz=datetime.timezone.utc
+                ).isoformat()
+            except Exception:
+                create_time = _now()
         return SessionMessage(
             id=d.get("id") or uuid.uuid4().hex,
             session_id=session_id,
@@ -396,8 +542,8 @@ class SessionManager:
             thinking=d.get("thinking"),
             compacted=bool(d.get("compacted")),
             visible=d.get("visible") is not False,
-            create_time=d.get("createTime") or "",
-            update_time=d.get("updateTime") or "",
+            create_time=create_time or _now(),
+            update_time=d.get("updateTime") or create_time or _now(),
             meta=d.get("meta"),
         )
 
@@ -453,11 +599,15 @@ class SessionManager:
         tool_call_id: str,
         content: str,
         tool_function: Any = None,
+        tool_meta: dict[str, Any] | None = None,
     ) -> SessionMessage:
         now = _now()
         is_invisible = _is_invisible_execution(content)
         params_md = _build_tool_params_snippet(tool_function)
         result_md = _build_tool_result_snippet(content)
+        meta: dict[str, Any] = {"function": tool_function, "paramsMd": params_md, "resultMd": result_md}
+        if tool_meta and isinstance(tool_meta, dict):
+            meta.update(tool_meta)
         return SessionMessage(
             id=uuid.uuid4().hex,
             session_id=session_id,
@@ -468,7 +618,7 @@ class SessionManager:
             visible=not is_invisible,
             create_time=now,
             update_time=now,
-            meta={"function": tool_function, "paramsMd": params_md, "resultMd": result_md},
+            meta=meta,
         )
 
     # ---- lifecycle ----
@@ -1047,6 +1197,8 @@ class SessionManager:
         permission_replies: list[dict[str, Any]] | None = None,
         deferred_prompt: str | None = None,
     ) -> None:
+        from coderai.core.agent_loop import AgentLoop
+
         started_at_ms = int(time.time() * 1000)
         client_info = self.create_openai_client()
         client = client_info.get("client")
@@ -1059,6 +1211,10 @@ class SessionManager:
 
         abort_event = asyncio.Event()
         self.session_controllers[session_id] = abort_event
+
+        # Instantiate the bounded agent loop for structured event emission
+        loop = AgentLoop(self, session_id)
+        loop.emit_turn_start()
 
         messages = self.list_session_messages(session_id)
         rebuild_session_state_from_history(
@@ -1164,6 +1320,9 @@ class SessionManager:
                     await self._compact_session(session_id)
                     messages = self.list_session_messages(session_id)
 
+                # Emit step/start event before preparing LLM request
+                loop.emit_step_start()
+
                 # Prepare tools and messages for LLM request
                 multimodal_mode = settings.get("multimodal", "default")
                 tools = get_tools(
@@ -1221,9 +1380,13 @@ class SessionManager:
                         ),
                         False,
                     )
+                    loop.emit_step_end()
+                    loop.emit_turn_end("error")
                     return
 
                 if self.is_interrupted(session_id):
+                    loop.emit_step_end()
+                    loop.emit_turn_end("interrupted")
                     return
 
                 choice = (response.get("choices") or [{}])[0]
@@ -1239,9 +1402,15 @@ class SessionManager:
 
                 usage = response.get("usage")
                 total_active = _total_tokens(usage)
+                extracted_usage = extract_usage_dict(usage) if usage else None
 
                 # Build and record assistant turn
                 assistant_msg = self._build_assistant(session_id, content, tool_calls, thinking)
+                assistant_msg.meta = {
+                    **(assistant_msg.meta or {}),
+                    "usage": extracted_usage,
+                    "model": model,
+                }
 
                 curr_entry = self._get_entry(session_id) or {}
                 is_plan = bool(curr_entry.get("planMode"))
@@ -1297,6 +1466,8 @@ class SessionManager:
                                 "updateTime": _now(),
                             },
                         )
+                        loop.emit_step_end()
+                        loop.emit_turn_end("permission")
                         return
 
                     # Execute allowed tool calls
@@ -1341,12 +1512,20 @@ class SessionManager:
                 )
 
                 if refusal or waiting_for_user:
+                    loop.emit_step_end()
+                    loop.emit_turn_end("refusal" if refusal else "waiting")
                     return
 
                 if not tool_calls:
+                    loop.emit_step_end()
+                    loop.emit_turn_end("natural")
                     return
 
+                # Tool calls present — emit step/end, continue loop for next step
+                loop.emit_step_end()
+
             # Max iterations reached
+            loop.emit_turn_end("max_iterations")
             self._update_entry(
                 session_id,
                 lambda e: {
@@ -1363,6 +1542,7 @@ class SessionManager:
             self.on_assistant_message(continuation_msg, False)
 
         except asyncio.CancelledError:
+            loop.emit_turn_end("cancelled")
             self._update_entry(
                 session_id,
                 lambda e: {
@@ -1504,6 +1684,7 @@ class SessionManager:
                     execution["toolCallId"],
                     execution["content"],
                     tool_fn,
+                    tool_meta=result_meta if isinstance(result_meta, dict) else None,
                 )
                 self._append_message(tool_msg)
                 self.on_assistant_message(tool_msg, True)
@@ -1849,14 +2030,23 @@ class SessionManager:
 
     def dispose(self) -> None:
         for event in self.session_controllers.values():
-            event.set()
+            try:
+                event.set()
+            except Exception:
+                pass
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            asyncio.run(self.mcp_manager.disconnect())
+            try:
+                asyncio.run(self.mcp_manager.disconnect())
+            except Exception:
+                pass
             return
         if not loop.is_closed():
-            loop.create_task(self.mcp_manager.disconnect())
+            try:
+                loop.create_task(self.mcp_manager.disconnect())
+            except Exception:
+                pass
 
 
 def _entry_from_dict(d: dict[str, Any]) -> SessionEntry:
@@ -2011,11 +2201,7 @@ def _call_stream_or_sync(
 
                 chunk_usage = getattr(chunk, "usage", None)
                 if chunk_usage:
-                    usage_dict = {
-                        "prompt_tokens": getattr(chunk_usage, "prompt_tokens", 0),
-                        "completion_tokens": getattr(chunk_usage, "completion_tokens", 0),
-                        "total_tokens": getattr(chunk_usage, "total_tokens", 0),
-                    }
+                    usage_dict = extract_usage_dict(chunk_usage)
 
             if on_progress:
                 on_progress({"estimatedTokens": estimated_tokens, "type": "end"})
@@ -2026,6 +2212,9 @@ def _call_stream_or_sync(
                     "prompt_tokens": 0,
                     "completion_tokens": estimated_tokens,
                     "total_tokens": estimated_tokens,
+                    "cached_tokens": 0,
+                    "prompt_cache_hit_tokens": 0,
+                    "prompt_cache_miss_tokens": 0,
                 }
 
             tool_calls = [tool_calls_dict[i] for i in sorted(tool_calls_dict.keys())] or None
@@ -2068,11 +2257,7 @@ def _format_completion_response(resp: Any) -> dict[str, Any]:
     }
     usage = getattr(resp, "usage", None)
     if usage is not None:
-        result["usage"] = {
-            "prompt_tokens": getattr(usage, "prompt_tokens", 0),
-            "completion_tokens": getattr(usage, "completion_tokens", 0),
-            "total_tokens": getattr(usage, "total_tokens", 0),
-        }
+        result["usage"] = extract_usage_dict(usage)
     return result
 
 
@@ -2104,14 +2289,7 @@ def _pydantic_tool_calls(message: Any) -> list[dict[str, Any]] | None:
 def _accumulate_usage(
     current: dict[str, Any] | None, usage: dict[str, Any] | None
 ) -> dict[str, Any] | None:
-    if usage is None:
-        return current
-    c = current or {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-    return {
-        "prompt_tokens": c.get("prompt_tokens", 0) + usage.get("prompt_tokens", 0),
-        "completion_tokens": c.get("completion_tokens", 0) + usage.get("completion_tokens", 0),
-        "total_tokens": c.get("total_tokens", 0) + usage.get("total_tokens", 0),
-    }
+    return accumulate_usage_dict(current, usage)
 
 
 def _accumulate_usage_per_model(

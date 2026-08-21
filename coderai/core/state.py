@@ -41,13 +41,6 @@ class FileSnippet:
     scope_type: str  # "snippet" | "full"
 
 
-_file_states: dict[str, dict[str, FileState]] = {}
-_snippets: dict[str, dict[str, FileSnippet]] = {}
-_counters: dict[str, int] = {}
-_full_counters: dict[str, int] = {}
-_versions: dict[str, dict[str, int]] = {}
-
-
 def normalize_file_path(file_path: str) -> str:
     if not file_path:
         return ""
@@ -60,73 +53,209 @@ def is_absolute_file_path(file_path: str) -> bool:
     return os.path.isabs(file_path)
 
 
+class SessionStateManager:
+    """Encapsulates snippet-scoped file states, file versions, and snippet counters."""
+
+    def __init__(self) -> None:
+        self._file_states: dict[str, dict[str, FileState]] = {}
+        self._snippets: dict[str, dict[str, FileSnippet]] = {}
+        self._counters: dict[str, int] = {}
+        self._full_counters: dict[str, int] = {}
+        self._versions: dict[str, dict[str, int]] = {}
+
+    def clear(self, session_id: str) -> None:
+        if not session_id:
+            return
+        self._file_states.pop(session_id, None)
+        self._snippets.pop(session_id, None)
+        self._counters.pop(session_id, None)
+        self._full_counters.pop(session_id, None)
+        self._versions.pop(session_id, None)
+
+    def has_session_state(self, session_id: str) -> bool:
+        return bool(
+            self._file_states.get(session_id)
+            or self._snippets.get(session_id)
+            or session_id in self._counters
+            or session_id in self._full_counters
+            or self._versions.get(session_id)
+        )
+
+    def get_file_version(self, session_id: str, file_path: str) -> int:
+        return self._versions.get(session_id, {}).get(normalize_file_path(file_path), 0)
+
+    def set_file_version(self, session_id: str, file_path: str, version: int) -> None:
+        self._versions.setdefault(session_id, {})[normalize_file_path(file_path)] = version
+
+    def record_file_state(
+        self, session_id: str, state: FileState, increment_version: bool = False
+    ) -> None:
+        if not session_id or not state.file_path:
+            return
+        normalized = normalize_file_path(state.file_path)
+        current = self.get_file_version(session_id, normalized)
+        next_version = current + 1 if increment_version else current
+        self.set_file_version(session_id, normalized, next_version)
+        state.file_path = normalized
+        state.version = next_version
+        self._file_states.setdefault(session_id, {})[normalized] = state
+
+    def mark_file_read(
+        self, session_id: str, file_path: str, state: dict[str, Any] | None = None
+    ) -> None:
+        if not session_id or not file_path:
+            return
+        state = state or {}
+        self.record_file_state(
+            session_id,
+            FileState(
+                file_path=file_path,
+                content=state.get("content", ""),
+                timestamp=state.get("timestamp", 0),
+                offset=state.get("offset"),
+                limit=state.get("limit"),
+                is_partial_view=state.get("is_partial_view", False),
+                encoding=state.get("encoding", "utf8"),
+                line_endings=state.get("line_endings", "LF"),
+            ),
+        )
+
+    def get_file_state(self, session_id: str, file_path: str) -> FileState | None:
+        if not session_id or not file_path:
+            return None
+        return self._file_states.get(session_id, {}).get(normalize_file_path(file_path))
+
+    def was_file_read(self, session_id: str, file_path: str) -> bool:
+        return self.get_file_state(session_id, file_path) is not None
+
+    def store_snippet(self, session_id: str, snippet: FileSnippet) -> FileSnippet:
+        self._snippets.setdefault(session_id, {})[snippet.id] = snippet
+        return snippet
+
+    def create_with_id(
+        self,
+        session_id: str,
+        file_path: str,
+        start_line: int,
+        end_line: int,
+        preview: str,
+        sid: str,
+        scope_type: str,
+    ) -> FileSnippet | None:
+        if not session_id or not file_path or start_line < 1 or end_line < start_line:
+            return None
+        snippet = FileSnippet(
+            id=sid,
+            file_path=normalize_file_path(file_path),
+            start_line=start_line,
+            end_line=end_line,
+            preview=preview,
+            file_version=self.get_file_version(session_id, file_path),
+            scope_type=scope_type,
+        )
+        return self.store_snippet(session_id, snippet)
+
+    def create_snippet(
+        self, session_id: str, file_path: str, start_line: int, end_line: int, preview: str
+    ) -> FileSnippet | None:
+        nxt = self._counters.get(session_id, 0) + 1
+        self._counters[session_id] = nxt
+        return self.create_with_id(
+            session_id, file_path, start_line, end_line, preview, f"snippet_{nxt}", "snippet"
+        )
+
+    def create_full_file_snippet(
+        self, session_id: str, file_path: str, start_line: int, end_line: int, preview: str
+    ) -> FileSnippet | None:
+        nxt = self._full_counters.get(session_id, 0)
+        self._full_counters[session_id] = nxt + 1
+        return self.create_with_id(
+            session_id, file_path, start_line, end_line, preview, f"full_file_{nxt}", "full"
+        )
+
+    def restore_snippet(
+        self,
+        session_id: str,
+        *,
+        id: str,
+        file_path: str,
+        start_line: int,
+        end_line: int,
+        preview: str = "",
+        scope_type: str | None = None,
+    ) -> FileSnippet | None:
+        if not session_id or not id or not file_path or start_line < 1 or end_line < start_line:
+            return None
+        scope = scope_type or ("full" if id.startswith("full_file_") else "snippet")
+        restored = self.create_with_id(
+            session_id, file_path, start_line, end_line, preview, id, scope
+        )
+        if restored:
+            if id.startswith("full_file_"):
+                try:
+                    n = int(id.split("_")[2])
+                    self._full_counters[session_id] = max(
+                        self._full_counters.get(session_id, 0), n + 1
+                    )
+                except (IndexError, ValueError):
+                    pass
+            elif id.startswith("snippet_"):
+                try:
+                    n = int(id.split("_")[1])
+                    self._counters[session_id] = max(self._counters.get(session_id, 0), n)
+                except (IndexError, ValueError):
+                    pass
+        return restored
+
+    def get_snippet(self, session_id: str, snippet_id: str) -> FileSnippet | None:
+        if not session_id or not snippet_id:
+            return None
+        return self._snippets.get(session_id, {}).get(snippet_id)
+
+    def has_snippet_outdated_file_version(self, session_id: str, snippet: FileSnippet) -> bool:
+        return self.get_file_version(session_id, snippet.file_path) > snippet.file_version
+
+
+_default_manager = SessionStateManager()
+
+# Global module-level compatibility bindings
+_file_states = _default_manager._file_states
+_snippets = _default_manager._snippets
+_counters = _default_manager._counters
+_full_counters = _default_manager._full_counters
+_versions = _default_manager._versions
+
+
 def clear_session_state(session_id: str) -> None:
-    if not session_id:
-        return
-    _file_states.pop(session_id, None)
-    _snippets.pop(session_id, None)
-    _counters.pop(session_id, None)
-    _full_counters.pop(session_id, None)
-    _versions.pop(session_id, None)
+    _default_manager.clear(session_id)
 
 
 def has_session_state(session_id: str) -> bool:
-    return bool(
-        _file_states.get(session_id)
-        or _snippets.get(session_id)
-        or session_id in _counters
-        or session_id in _full_counters
-        or _versions.get(session_id)
-    )
+    return _default_manager.has_session_state(session_id)
 
 
 def get_file_version(session_id: str, file_path: str) -> int:
-    return _versions.get(session_id, {}).get(normalize_file_path(file_path), 0)
+    return _default_manager.get_file_version(session_id, file_path)
 
 
 def _set_file_version(session_id: str, file_path: str, version: int) -> None:
-    _versions.setdefault(session_id, {})[normalize_file_path(file_path)] = version
+    _default_manager.set_file_version(session_id, file_path, version)
 
 
 def record_file_state(session_id: str, state: FileState, increment_version: bool = False) -> None:
-    if not session_id or not state.file_path:
-        return
-    normalized = normalize_file_path(state.file_path)
-    current = get_file_version(session_id, normalized)
-    next_version = current + 1 if increment_version else current
-    _set_file_version(session_id, normalized, next_version)
-    state.file_path = normalized
-    state.version = next_version
-    _file_states.setdefault(session_id, {})[normalized] = state
+    _default_manager.record_file_state(session_id, state, increment_version=increment_version)
 
 
 def mark_file_read(session_id: str, file_path: str, state: dict[str, Any] | None = None) -> None:
-    if not session_id or not file_path:
-        return
-    state = state or {}
-    record_file_state(
-        session_id,
-        FileState(
-            file_path=file_path,
-            content=state.get("content", ""),
-            timestamp=state.get("timestamp", 0),
-            offset=state.get("offset"),
-            limit=state.get("limit"),
-            is_partial_view=state.get("is_partial_view", False),
-            encoding=state.get("encoding", "utf8"),
-            line_endings=state.get("line_endings", "LF"),
-        ),
-    )
+    _default_manager.mark_file_read(session_id, file_path, state)
 
 
 def get_file_state(session_id: str, file_path: str) -> FileState | None:
-    if not session_id or not file_path:
-        return None
-    return _file_states.get(session_id, {}).get(normalize_file_path(file_path))
+    return _default_manager.get_file_state(session_id, file_path)
 
 
 def was_file_read(session_id: str, file_path: str) -> bool:
-    return get_file_state(session_id, file_path) is not None
+    return _default_manager.was_file_read(session_id, file_path)
 
 
 def is_full_file_view(state: FileState | None) -> bool:
@@ -135,51 +264,17 @@ def is_full_file_view(state: FileState | None) -> bool:
     )
 
 
-def _store(session_id: str, snippet: FileSnippet) -> FileSnippet:
-    _snippets.setdefault(session_id, {})[snippet.id] = snippet
-    return snippet
-
-
-def _create_with_id(
-    session_id: str,
-    file_path: str,
-    start_line: int,
-    end_line: int,
-    preview: str,
-    sid: str,
-    scope_type: str,
-) -> FileSnippet | None:
-    if not session_id or not file_path or start_line < 1 or end_line < start_line:
-        return None
-    snippet = FileSnippet(
-        id=sid,
-        file_path=normalize_file_path(file_path),
-        start_line=start_line,
-        end_line=end_line,
-        preview=preview,
-        file_version=get_file_version(session_id, file_path),
-        scope_type=scope_type,
-    )
-    return _store(session_id, snippet)
-
-
 def create_snippet(
     session_id: str, file_path: str, start_line: int, end_line: int, preview: str
 ) -> FileSnippet | None:
-    nxt = _counters.get(session_id, 0) + 1
-    _counters[session_id] = nxt
-    return _create_with_id(
-        session_id, file_path, start_line, end_line, preview, f"snippet_{nxt}", "snippet"
-    )
+    return _default_manager.create_snippet(session_id, file_path, start_line, end_line, preview)
 
 
 def create_full_file_snippet(
     session_id: str, file_path: str, start_line: int, end_line: int, preview: str
 ) -> FileSnippet | None:
-    nxt = _full_counters.get(session_id, 0)
-    _full_counters[session_id] = nxt + 1
-    return _create_with_id(
-        session_id, file_path, start_line, end_line, preview, f"full_file_{nxt}", "full"
+    return _default_manager.create_full_file_snippet(
+        session_id, file_path, start_line, end_line, preview
     )
 
 
@@ -193,34 +288,23 @@ def restore_snippet(
     preview: str = "",
     scope_type: str | None = None,
 ) -> FileSnippet | None:
-    if not session_id or not id or not file_path or start_line < 1 or end_line < start_line:
-        return None
-    scope = scope_type or ("full" if id.startswith("full_file_") else "snippet")
-    restored = _create_with_id(session_id, file_path, start_line, end_line, preview, id, scope)
-    if restored:
-        if id.startswith("full_file_"):
-            try:
-                n = int(id.split("_")[2])
-                _full_counters[session_id] = max(_full_counters.get(session_id, 0), n + 1)
-            except (IndexError, ValueError):
-                pass
-        elif id.startswith("snippet_"):
-            try:
-                n = int(id.split("_")[1])
-                _counters[session_id] = max(_counters.get(session_id, 0), n)
-            except (IndexError, ValueError):
-                pass
-    return restored
+    return _default_manager.restore_snippet(
+        session_id,
+        id=id,
+        file_path=file_path,
+        start_line=start_line,
+        end_line=end_line,
+        preview=preview,
+        scope_type=scope_type,
+    )
 
 
 def get_snippet(session_id: str, snippet_id: str) -> FileSnippet | None:
-    if not session_id or not snippet_id:
-        return None
-    return _snippets.get(session_id, {}).get(snippet_id)
+    return _default_manager.get_snippet(session_id, snippet_id)
 
 
 def has_snippet_outdated_file_version(session_id: str, snippet: FileSnippet) -> bool:
-    return get_file_version(session_id, snippet.file_path) > snippet.file_version
+    return _default_manager.has_snippet_outdated_file_version(session_id, snippet)
 
 
 def rebuild_session_state_from_history(session_id: str, messages: list[dict[str, Any]]) -> None:

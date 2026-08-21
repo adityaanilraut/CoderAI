@@ -94,7 +94,10 @@ def test_call_stream_or_sync_passes_stream_options():
     req = called_requests[0]
     assert req.get("stream") is True
     assert req.get("stream_options") == {"include_usage": True}
-    assert res.get("usage") == {"prompt_tokens": 12, "completion_tokens": 5, "total_tokens": 17}
+    usage = res.get("usage") or {}
+    assert usage.get("prompt_tokens") == 12
+    assert usage.get("completion_tokens") == 5
+    assert usage.get("total_tokens") == 17
     assert res["choices"][0]["message"]["content"] == "Hello world!"
 
 

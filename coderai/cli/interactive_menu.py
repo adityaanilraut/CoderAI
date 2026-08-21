@@ -678,6 +678,8 @@ def render_token_breakdown(
         print(f"  Active Model:      {active_model}")
         print(f"  Prompt Tokens:     {prompt_tokens:,}")
         print(f"  Completion Tokens: {completion_tokens:,}")
+        if cached_tokens > 0:
+            print(f"  Cached Tokens:     {cached_tokens:,}")
         print(f"  Total Tokens:      {total_tokens:,}")
         print(f"  Active Context:    {active_tokens:,} ({pct_used:.1f}%)")
         print(f"  Estimated Cost:    ${total_cost:.4f} USD\n")

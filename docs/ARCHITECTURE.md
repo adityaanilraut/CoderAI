@@ -1,6 +1,6 @@
 # CoderAI Architecture
 
-CoderAI is an autonomous terminal AI pair programmer architected for high reliability, deterministic tool execution, and defense-in-depth security. The system strictly decouples the UI-agnostic engine (`coderai.core`) from interactive terminal and companion interfaces (`coderai.cli`, `coderai.core.server`).
+CoderAI is an autonomous terminal AI pair programmer architected for high reliability, deterministic tool execution, and defense-in-depth security. The system strictly decouples the UI-agnostic engine (`coderai.core`) from the interactive terminal/CLI interface (`coderai.cli`).
 
 ---
 
@@ -9,10 +9,8 @@ CoderAI is an autonomous terminal AI pair programmer architected for high reliab
 ```mermaid
 graph TD
     User([User / Developer]) <--> CLI[Interactive CLI / TUI<br/>coderai.cli]
-    IDE([IDE Companion / Extension]) <--> Server[JSON-RPC 2.0 Server<br/>coderai.core.server]
     
     CLI <--> SessionMgr[SessionManager<br/>coderai.core.session]
-    Server <--> SessionMgr
     
     subgraph "Core Engine (coderai.core)"
         SessionMgr --> Loop[Bounded Agent Loop<br/>Event-Stream JSONL]

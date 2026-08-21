@@ -17,6 +17,7 @@ from collections.abc import Callable
 
 from coderai.core.common.message_converter import OpenAIMessageConverter
 from coderai.core.common.openai_thinking import build_thinking_request_options
+from coderai.core.common.usage import extract_usage_dict
 from coderai.core.prompt import get_runtime_context, get_subagent_system_prompt, get_tools
 from coderai.core.state import clear_session_state
 from coderai.core.tools.types import ToolExecutionHooks
@@ -54,6 +55,7 @@ class SubAgentResult:
     summary: str
     active_tokens: int = 0
     total_tokens: int = 0
+    cached_tokens: int = 0
     iterations: int = 0
     tool_calls_count: int = 0
     error: str | None = None
@@ -67,6 +69,7 @@ class SubAgentResult:
             "summary": self.summary,
             "active_tokens": self.active_tokens,
             "total_tokens": self.total_tokens,
+            "cached_tokens": self.cached_tokens,
             "iterations": self.iterations,
             "tool_calls_count": self.tool_calls_count,
             "error": self.error,
@@ -233,10 +236,12 @@ class SubAgentManager:
         available_tools = self._get_sandboxed_tools(spec, model)
 
         # Build isolated initial message history
-        system_prompt = get_subagent_system_prompt(spec.mode, spec.description)
+        system_prompt = get_subagent_system_prompt(spec.mode)
         runtime_context = get_runtime_context(self.project_root, model)
 
         initial_user_prompt = spec.prompt
+        if spec.description:
+            initial_user_prompt = f"Goal: {spec.description}\n\n{initial_user_prompt}"
         if spec.extra_context:
             initial_user_prompt += f"\n\nAdditional Context:\n{spec.extra_context}"
 
@@ -248,6 +253,7 @@ class SubAgentManager:
 
         total_prompt_tokens = 0
         total_completion_tokens = 0
+        total_cached_tokens = 0
         active_tokens = 0
         tool_calls_count = 0
         last_assistant_reply = ""
@@ -262,6 +268,7 @@ class SubAgentManager:
                     summary=last_assistant_reply or "Sub-agent was interrupted.",
                     active_tokens=active_tokens,
                     total_tokens=total_prompt_tokens + total_completion_tokens,
+                    cached_tokens=total_cached_tokens,
                     iterations=iteration,
                     tool_calls_count=tool_calls_count,
                     artifacts=artifacts,
@@ -309,8 +316,10 @@ class SubAgentManager:
             usage = response.get("usage") or {}
             p_tok = usage.get("prompt_tokens", 0)
             c_tok = usage.get("completion_tokens", 0)
+            cached_tok = usage.get("cached_tokens", 0) or usage.get("prompt_cache_hit_tokens", 0)
             total_prompt_tokens += p_tok
             total_completion_tokens += c_tok
+            total_cached_tokens += cached_tok
             active_tokens = usage.get("total_tokens", p_tok + c_tok)
 
             choice = (response.get("choices") or [{}])[0]
@@ -331,6 +340,7 @@ class SubAgentManager:
                     summary=f"Model refused request: {refusal}",
                     active_tokens=active_tokens,
                     total_tokens=total_prompt_tokens + total_completion_tokens,
+                    cached_tokens=total_cached_tokens,
                     iterations=iteration,
                     tool_calls_count=tool_calls_count,
                     error=refusal,
@@ -359,6 +369,7 @@ class SubAgentManager:
                     summary=content or "Sub-agent completed task without text output.",
                     active_tokens=active_tokens,
                     total_tokens=total_prompt_tokens + total_completion_tokens,
+                    cached_tokens=total_cached_tokens,
                     iterations=iteration,
                     tool_calls_count=tool_calls_count,
                     artifacts=artifacts,
@@ -424,6 +435,7 @@ class SubAgentManager:
             or "Sub-agent reached max iteration limit before final conclusion.",
             active_tokens=active_tokens,
             total_tokens=total_prompt_tokens + total_completion_tokens,
+            cached_tokens=total_cached_tokens,
             iterations=spec.max_iterations,
             tool_calls_count=tool_calls_count,
             artifacts=artifacts,
@@ -526,9 +538,5 @@ def _call_llm_sync(client: Any, request: dict[str, Any]) -> dict[str, Any]:
     }
     usage = getattr(resp, "usage", None)
     if usage:
-        res["usage"] = {
-            "prompt_tokens": getattr(usage, "prompt_tokens", 0),
-            "completion_tokens": getattr(usage, "completion_tokens", 0),
-            "total_tokens": getattr(usage, "total_tokens", 0),
-        }
+        res["usage"] = extract_usage_dict(usage)
     return res

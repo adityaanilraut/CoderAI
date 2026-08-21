@@ -20,7 +20,7 @@
 
 ## Overview
 
-**CoderAI** is an autonomous terminal coding agent built with a clean, decoupled architecture: a **UI-agnostic engine** (`coderai.core`) paired with an **interactive terminal UI** (`coderai.cli`) and a **headless JSON-RPC 2.0 companion server** (`coderai.core.server`).
+**CoderAI** is an autonomous terminal coding agent built with a clean, decoupled architecture: a **UI-agnostic engine** (`coderai.core`) paired with a high-performance **interactive terminal UI** (`coderai.cli`).
 
 CoderAI is designed from the ground up for safety, deterministic execution, and developer velocity:
 
@@ -245,7 +245,6 @@ coderai/
 │   ├── lsp/                        # Language Server Protocol client
 │   ├── mcp/                        # Model Context Protocol (stdio, SSE, streamable-http)
 │   ├── network/                    # Outbound HTTP, cache, SSRF, sanitizer
-│   ├── server/                     # Headless JSON-RPC 2.0 IDE companion server
 │   ├── session_query/              # Full-text session indexer & search
 │   ├── teams/                      # Agent swarm & task board
 │   ├── terminal/                   # PTY terminal manager

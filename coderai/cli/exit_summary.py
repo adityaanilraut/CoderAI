@@ -119,10 +119,12 @@ def render_exit_summary(console: Any | None, mgr: SessionManager, session_id: st
         table.add_row("Active Model:", f"[bold cyan]{stats['model']}[/]")
         table.add_row("Conversation Turns:", f"{stats['turns']}")
         table.add_row("Files Modified:", f"[bold green]{files_str}[/]")
-        table.add_row(
-            "Token Usage:",
-            f"Prompt: {stats['prompt_tokens']:,} | Comp: {stats['completion_tokens']:,} | Total: {stats['total_tokens']:,}",
+        token_usage_str = (
+            f"Prompt: {stats['prompt_tokens']:,} | Comp: {stats['completion_tokens']:,} | Total: {stats['total_tokens']:,}"
         )
+        if stats.get("cached_tokens", 0) > 0:
+            token_usage_str += f" | Cached: {stats['cached_tokens']:,}"
+        table.add_row("Token Usage:", token_usage_str)
         table.add_row("Estimated Cost:", f"[bold green]{cost_str}[/]")
         table.add_row("Active Context:", f"{stats['active_tokens']:,} tokens")
         table.add_row("Checkpoint Hash:", f"[bold magenta]{checkpoint_str}[/]")
@@ -142,8 +144,9 @@ def render_exit_summary(console: Any | None, mgr: SessionManager, session_id: st
         print(f"  Active Model:       {stats['model']}")
         print(f"  Conversation Turns: {stats['turns']}")
         print(f"  Files Modified:     {files_str}")
+        cached_info = f" | Cached: {stats['cached_tokens']:,}" if stats.get("cached_tokens", 0) > 0 else ""
         print(
-            f"  Tokens (P/C/Total): {stats['prompt_tokens']} / {stats['completion_tokens']} / {stats['total_tokens']}"
+            f"  Tokens (P/C/Total): {stats['prompt_tokens']} / {stats['completion_tokens']} / {stats['total_tokens']}{cached_info}"
         )
         print(f"  Estimated Cost:     {cost_str}")
         print(f"  Active Context:     {stats['active_tokens']} tokens")

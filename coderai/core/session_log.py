@@ -1,4 +1,8 @@
-"""Append-only session log helpers: deriveMessages() and pairing-balanced tool-result pruning."""
+"""Append-only session log helpers: deriveMessages() and pairing-balanced tool-result pruning.
+
+Legacy message-based ``derive_messages()`` is preserved for backward compat.
+New code should prefer ``derive_messages_from_events()`` from ``coderai.core.events``.
+"""
 
 from __future__ import annotations
 
@@ -37,14 +41,25 @@ def derive_messages(messages: list[Any]) -> list[Any]:
     return prune_tool_results(visible)
 
 
-def prune_tool_results(messages: list[Any], max_chars: int = MAX_TOOL_RESULT_CHARS) -> list[Any]:
-    """Truncate oversized tool payloads in place on copies; keep pairing intact."""
+def prune_tool_results(
+    messages: list[Any],
+    max_chars: int = MAX_TOOL_RESULT_CHARS,
+) -> list[Any]:
+    """Truncate oversized tool payloads in place on copies; keep pairing intact.
+
+    A single, consistent *max_chars* limit is applied to **every** tool message
+    so that conversation prefixes remain 100 % immutable across turns.  This
+    guarantees provider prompt-caching (DeepSeek KV cache, Anthropic prompt
+    cache) hits reliably without prefix invalidation from retroactively mutated
+    historical tool messages.
+    """
     out: list[Any] = []
     for message in messages:
         if getattr(message, "role", "") != "tool":
             out.append(message)
             continue
         content = getattr(message, "content", "") or ""
+
         if len(content) <= max_chars:
             out.append(message)
             continue

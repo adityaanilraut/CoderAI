@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import time
 from typing import Any
 from collections.abc import Callable
 
@@ -184,17 +185,36 @@ class ToolExecutor:
         hooks: ToolExecutionHooks | dict[str, Any] | None = None,
     ) -> ToolResult:
         """Execute a single tool call: parse → pre-execute → guard → execute → post-execute."""
+        start_time_ms = int(time.time() * 1000)
         tool_name = tool_call["function"]["name"]
         raw_args_str = tool_call["function"].get("arguments", "")
 
         parsed = self._parse_tool_arguments(raw_args_str)
         if not parsed["ok"]:
-            return ToolResult(ok=False, name=tool_name, error=parsed["error"])
+            end_time_ms = int(time.time() * 1000)
+            return ToolResult(
+                ok=False,
+                name=tool_name,
+                error=parsed["error"],
+                metadata={
+                    "startTime": start_time_ms,
+                    "endTime": end_time_ms,
+                    "durationMs": end_time_ms - start_time_ms,
+                    "timestamp": start_time_ms,
+                },
+            )
         raw_args = parsed["args"]
         context = self._build_execution_context(session_id, tool_call, hooks)
 
         denied = self._pre_execute_deny(tool_name, raw_args, context, hooks)
         if denied is not None:
+            end_time_ms = int(time.time() * 1000)
+            meta = dict(denied.metadata or {})
+            meta.setdefault("startTime", start_time_ms)
+            meta.setdefault("endTime", end_time_ms)
+            meta.setdefault("durationMs", end_time_ms - start_time_ms)
+            meta.setdefault("timestamp", start_time_ms)
+            denied.metadata = meta
             return denied
 
         tool_def = self.registry.get(tool_name)
@@ -203,10 +223,17 @@ class ToolExecutor:
             try:
                 validated_args = self.registry.validate_arguments(tool_def.name, raw_args)
             except ValidationError as val_err:
+                end_time_ms = int(time.time() * 1000)
                 return ToolResult(
                     ok=False,
                     name=tool_name,
                     error=f"ValidationError: {val_err}",
+                    metadata={
+                        "startTime": start_time_ms,
+                        "endTime": end_time_ms,
+                        "durationMs": end_time_ms - start_time_ms,
+                        "timestamp": start_time_ms,
+                    },
                 )
             result = await self._run_handler(tool_def, validated_args, context, hooks)
         elif self.mcp_manager is not None and self.mcp_manager.is_mcp_tool(tool_name):
@@ -214,7 +241,14 @@ class ToolExecutor:
         else:
             result = ToolResult(ok=False, name=tool_name, error=f"Unknown tool: {tool_name}")
 
+        end_time_ms = int(time.time() * 1000)
         result = self._apply_result_spill(tool_name, result, context)
+        meta = dict(result.metadata or {})
+        meta.setdefault("startTime", start_time_ms)
+        meta.setdefault("endTime", end_time_ms)
+        meta.setdefault("durationMs", max(0, end_time_ms - start_time_ms))
+        meta.setdefault("timestamp", start_time_ms)
+        result.metadata = meta
         return self._post_execute(tool_name, raw_args, result, context, hooks)
 
     def _build_execution_context(

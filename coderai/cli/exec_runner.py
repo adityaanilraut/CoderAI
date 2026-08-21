@@ -151,6 +151,13 @@ async def run_exec_session(
 
         return 1 if had_error else 0
 
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        return 0
     except Exception as e:
         _print_text(f"[Error] Execution error: {e}")
         return 1
+    finally:
+        try:
+            manager.dispose()
+        except Exception:
+            pass
