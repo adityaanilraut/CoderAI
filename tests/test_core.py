@@ -1306,7 +1306,8 @@ async def test_session_injects_matched_skills_after_user_turn(
     sid = await mgr.create_session("please follow tdd-workflow for this change")
     messages = mgr.list_session_messages(sid)
     roles = [m.role for m in messages]
-    assert roles[:2] == ["system", "system"]
+    assert roles[0] == "system"
+    assert roles[1] == "user"
     skill_msgs = [m for m in messages if m.role == "system" and (m.meta or {}).get("skill")]
     assert skill_msgs
     assert skill_msgs[0].meta["skill"]["name"] == "tdd-workflow"
@@ -1373,10 +1374,12 @@ async def test_compaction_preserves_prefix_and_records_tokens(
         mgr._append_message(mgr._build_assistant(sid, f"ack {i}", None))
 
     before = mgr.list_session_messages(sid)
-    prefix_ids = [m.id for m in before if m.role == "system"][:2]
+    prefix_ids = [m.id for m in before if m.role == "system"]
     await mgr._compact_session(sid)
     after = mgr.list_session_messages(sid)
-    assert [m.id for m in after[:2]] == prefix_ids
+    assert [
+        m.id for m in after if m.role == "system" and not (m.meta or {}).get("isSummary")
+    ] == prefix_ids
     assert any((m.meta or {}).get("isSummary") for m in after)
     from coderai.core.session_log import derive_messages
 

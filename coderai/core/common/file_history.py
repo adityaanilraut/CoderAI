@@ -233,14 +233,23 @@ class GitFileHistory:
 
         self._spawn_git(["update-ref", branch_ref, checkpoint_hash])
 
-    def fork_session(self, source_session_id: str, target_session_id: str) -> None:
+    def fork_session(
+        self,
+        source_session_id: str,
+        target_session_id: str,
+        checkpoint_hash: str | None = None,
+    ) -> None:
         source_ref = self._get_session_branch_ref(source_session_id)
         target_ref = self._get_session_branch_ref(target_session_id)
         if not source_ref or not target_ref or not os.path.exists(self.git_dir):
             return
-        source_hash = self.get_current_checkpoint_hash(source_session_id)
-        if source_hash:
-            self._spawn_git(["update-ref", target_ref, source_hash])
+        target_hash = (
+            checkpoint_hash
+            if (checkpoint_hash and _is_commit_hash(checkpoint_hash))
+            else self.get_current_checkpoint_hash(source_session_id)
+        )
+        if target_hash:
+            self._spawn_git(["update-ref", target_ref, target_hash])
 
     def list_checkpoints(self, session_id: str) -> list[dict[str, str]]:
         branch_ref = self._get_session_branch_ref(session_id)

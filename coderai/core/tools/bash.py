@@ -27,6 +27,7 @@ from coderai.core.common.shell_utils import (
     rewrite_windows_null_redirect,
     to_native_cwd,
 )
+from coderai.core.terminal.manager import get_terminal_manager
 from coderai.core.tools.types import (
     BackgroundProcessCompletion,
     ProcessTimeoutControl,
@@ -77,21 +78,22 @@ def _build_shell_command(command: str) -> tuple[str, list[str], str]:
     init_command = build_shell_init_command(shell_path)
     disable_extglob_command = build_disable_extglob_command(shell_path)
     normalized_command = rewrite_windows_null_redirect(command)
-    wrapped_parts: list[str] = []
+    wrapped_lines: list[str] = ["{"]
     if init_command:
-        wrapped_parts.append(init_command)
+        wrapped_lines.append(init_command)
     if disable_extglob_command:
-        wrapped_parts.append(disable_extglob_command)
-    wrapped_parts.append("export PAGER=cat NO_COLOR=1 2>/dev/null || true")
-    wrapped_parts.extend(
+        wrapped_lines.append(disable_extglob_command)
+    wrapped_lines.append("export PAGER=cat NO_COLOR=1 2>/dev/null || true")
+    wrapped_lines.append(normalized_command)
+    wrapped_lines.extend(
         [
-            normalized_command,
             "__CODERAI_STATUS__=$?",
             f'printf "%s%s\\n" "{marker}" "$PWD"',
             "exit $__CODERAI_STATUS__",
+            "} < /dev/null",
         ]
     )
-    wrapped_command = f"{{ {'; '.join(wrapped_parts)}; }} < /dev/null"
+    wrapped_command = "\n".join(wrapped_lines)
     return shell_path, ["-c", wrapped_command], marker
 
 
@@ -173,6 +175,160 @@ def _append_chunk(existing: str, chunk: str) -> str:
     return existing + chunk[:remaining]
 
 
+ANSI_ESCAPE_PATTERN = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+
+
+def _strip_ansi_escapes(text: str) -> str:
+    return ANSI_ESCAPE_PATTERN.sub("", text)
+
+
+def handle_persistent_bash_tool(args: dict[str, Any], context: Any) -> ToolResult:
+    """Execute command in a persistent PTY bash shell retaining variables and working directory."""
+    return handle_bash_tool({**args, "persistent": True}, context)
+
+
+def _execute_persistent_bash(
+    command: str,
+    session_id: str,
+    start_cwd: str,
+    context: Any,
+    args: dict[str, Any],
+) -> ToolResult:
+    mgr = get_terminal_manager()
+    session_name = f"persistent_bash_{session_id}"
+    sandbox_mode = getattr(context, "sandbox_mode", None)
+    project_root = getattr(context, "project_root", None) or start_cwd
+    if isinstance(context, dict):
+        sandbox_mode = context.get("sandbox_mode", sandbox_mode)
+        project_root = context.get("project_root", project_root)
+
+    term = mgr.get_session(session_name)
+    if term is None or not term.is_alive:
+        try:
+            term = mgr.open_session(
+                command="bash",
+                name=session_name,
+                cwd=start_cwd,
+                sandbox_mode=sandbox_mode,
+                workspace_root=str(project_root),
+            )
+            term.send("stty -echo 2>/dev/null || true; export PS1=''", submit=True)
+            time.sleep(0.05)
+            term.read_available(timeout_s=0.1)
+        except Exception as e:
+            return ToolResult(
+                ok=False,
+                name="bash",
+                error=f"Failed to initialize persistent bash session: {e}",
+            )
+
+    # Flush unread prior output
+    term.read_unread()
+
+    token = secrets.token_hex(6)
+    start_marker = f"__CODERAI_START_{token}__"
+    end_marker = f"__CODERAI_END_{token}__"
+    wrapped_cmd = f'printf "\\n%s\\n" "{start_marker}"; {command}; printf "\\n%s:%%d:%%s\\n" "{end_marker}" "$?" "$PWD"'
+
+    timeout_ms = args.get("timeout_ms")
+    timeout_s = (float(timeout_ms) / 1000.0) if timeout_ms else (DEFAULT_BASH_TIMEOUT_MS / 1000.0)
+
+    try:
+        term.send(wrapped_cmd, submit=True)
+    except Exception as e:
+        return ToolResult(
+            ok=False,
+            name="bash",
+            error=f"Failed to write to persistent bash session: {e}",
+        )
+
+    accumulated = ""
+    deadline = time.time() + timeout_s
+    timed_out = False
+    exit_code: int | None = None
+    next_cwd: str | None = None
+
+    while time.time() < deadline:
+        chunk = term.read_unread()
+        if chunk:
+            accumulated += chunk
+            if end_marker in accumulated:
+                break
+        else:
+            time.sleep(0.02)
+        if not term.is_alive:
+            break
+
+    if end_marker not in accumulated:
+        if time.time() >= deadline:
+            timed_out = True
+            try:
+                term.send_signal("SIGINT")
+            except Exception:
+                pass
+
+    clean_accum = _strip_ansi_escapes(accumulated)
+    body = clean_accum
+
+    if start_marker in clean_accum and end_marker in clean_accum:
+        after_start = clean_accum.split(start_marker)[-1]
+        before_end, after_end = after_start.split(end_marker, 1)
+        body = before_end.strip()
+        meta_line = after_end.strip()
+        m = re.match(r"^:(\d+):(.*)$", meta_line)
+        if m:
+            try:
+                exit_code = int(m.group(1))
+                next_cwd = m.group(2).splitlines()[0].strip() or None
+            except ValueError:
+                pass
+    elif end_marker in clean_accum:
+        body = clean_accum.split(end_marker, 1)[0].strip()
+
+    if next_cwd and os.path.isdir(next_cwd):
+        _update_session_cwd(session_id, start_cwd, next_cwd)
+
+    cleaned_body = body.strip()
+    spilled, spill_ref = apply_spill_policy(
+        cleaned_body,
+        session_id=str(session_id),
+        tool_name="bash",
+        max_inline_bytes=MAX_OUTPUT_CHARS,
+        suggested_name="bash_persistent.txt",
+    )
+    if spill_ref is not None:
+        truncated_text, is_truncated = spilled, True
+    else:
+        truncated_text, is_truncated = _truncate_output(cleaned_body)
+
+    ok = (exit_code == 0 or exit_code is None) and not timed_out
+    error_msg = None
+    if not ok:
+        if timed_out:
+            error_msg = "Command timed out in persistent bash session."
+        elif exit_code is not None and exit_code != 0:
+            error_msg = f"Command failed with exit code {exit_code}."
+
+    metadata: dict[str, Any] = {
+        "exitCode": exit_code,
+        "cwd": next_cwd or start_cwd,
+        "truncated": is_truncated,
+        "timedOut": timed_out,
+        "persistent": True,
+        "terminalSessionId": term.session_id,
+    }
+    if spill_ref is not None:
+        metadata["spill"] = spill_ref.to_dict()
+
+    return ToolResult(
+        ok=ok,
+        name="bash",
+        output=truncated_text or "(no output)",
+        error=error_msg,
+        metadata=metadata,
+    )
+
+
 def handle(args: dict[str, Any], context: Any) -> ToolResult:
     return handle_bash_tool(args, context)
 
@@ -180,6 +336,7 @@ def handle(args: dict[str, Any], context: Any) -> ToolResult:
 def handle_bash_tool(args: dict[str, Any], context: Any) -> ToolResult:
     raw_command = as_str(args.get("command"))
     run_in_background = _is_true(args.get("run_in_background"))
+    persistent = _is_true(args.get("persistent"))
     command = _strip_trailing_background_operator(raw_command) if run_in_background else raw_command
 
     if not command.strip():
@@ -197,6 +354,10 @@ def handle_bash_tool(args: dict[str, Any], context: Any) -> ToolResult:
     )
 
     start_cwd = _get_session_cwd(session_id, project_root)
+
+    if persistent and sys.platform != "win32":
+        return _execute_persistent_bash(command, str(session_id), start_cwd, context, args)
+
     shell_path, shell_args, marker = _build_shell_command(command)
 
     if run_in_background:
@@ -274,15 +435,10 @@ def _execute_shell_command(
     context: Any,
 ) -> dict[str, Any]:
     configured_env: dict[str, str] = {}
-    client_factory = getattr(context, "create_openai_client", None) or (
-        context.get("create_openai_client") if isinstance(context, dict) else None
-    )
-    if client_factory:
-        try:
-            info = client_factory()
-            configured_env = info.get("env") or {}
-        except Exception:
-            pass
+    if isinstance(context, dict):
+        configured_env = dict(context.get("shell_env") or {})
+    elif hasattr(context, "shell_env") and context.shell_env:
+        configured_env = dict(context.shell_env)
 
     bash_timeout_ms = getattr(context, "bash_timeout_ms", None)
     bash_min_timeout_ms = getattr(context, "bash_min_timeout_ms", None)
@@ -327,6 +483,7 @@ def _execute_shell_command(
             "stdout": "",
             "stderr": "",
             "exitCode": None,
+            "exit_code": None,
             "signal": None,
             "error": str(spawn_err),
             "timed_out": False,
@@ -471,15 +628,10 @@ def _start_background_shell_command(
     started_at_ms = int(time.time() * 1000)
 
     configured_env: dict[str, str] = {}
-    client_factory = getattr(context, "create_openai_client", None) or (
-        context.get("create_openai_client") if isinstance(context, dict) else None
-    )
-    if client_factory:
-        try:
-            info = client_factory()
-            configured_env = info.get("env") or {}
-        except Exception:
-            pass
+    if isinstance(context, dict):
+        configured_env = dict(context.get("shell_env") or {})
+    elif hasattr(context, "shell_env") and context.shell_env:
+        configured_env = dict(context.shell_env)
 
     env = build_shell_env(shell_path, configured_env)
     kwargs: dict[str, Any] = {

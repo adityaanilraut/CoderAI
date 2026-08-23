@@ -57,6 +57,10 @@ def format_plan_content(plan_text: str) -> Text | str:
             item_text = stripped[5:].strip()
             formatted.append("  ✓ ", style="bold green")
             formatted.append(f"{item_text}\n", style="green")
+        elif stripped.startswith(("- [>]", "* [>]", "- [*]", "* [*]")):
+            item_text = stripped[5:].strip()
+            formatted.append("  ❯ ", style="bold cyan")
+            formatted.append(f"{item_text}\n", style="bold cyan")
         elif stripped.startswith(("- [-]", "* [-]")):
             item_text = stripped[5:].strip()
             formatted.append("  - ", style="bold yellow")
@@ -79,24 +83,27 @@ def format_plan_content(plan_text: str) -> Text | str:
 
 
 def render_plan_preview(console: Any | None, plan_text: str, title: str = "Plan Progress") -> None:
-    """Render the plan progress checklist inside a Rich panel or fallback to standard output."""
+    """Render the plan progress checklist as a compact sequential terminal event."""
     if not plan_text.strip():
         return
 
     total, completed = parse_plan_stats(plan_text)
     bar_str = make_plan_progress_bar(completed, total, width=8)
-    progress_badge = f" • {bar_str} ({completed}/{total} tasks)" if total > 0 else ""
+    progress_badge = f" {bar_str} ({completed}/{total} tasks)" if total > 0 else ""
 
-    if console is not None and _RICH and Panel is not None:
+    if console is not None and _RICH and Text is not None:
+        header = Text()
+        header.append("    ↳ ", style="dim yellow")
+        header.append(title, style="bold yellow")
+        if progress_badge:
+            header.append(f" {progress_badge}", style="dim")
+        console.print(header)
+
         formatted = format_plan_content(plan_text)
-        panel = Panel(
-            formatted,
-            title=f"[bold yellow]{title}[/][dim]{progress_badge}[/]",
-            border_style="yellow",
-            padding=(0, 1),
-        )
-        console.print(panel)
+        console.print(formatted)
     else:
-        print(f"\n--- {title}{progress_badge} ---")
+        progress_plain = f" {progress_badge}" if progress_badge else ""
+        print(f"    ↳ {title}{progress_plain}")
         for line in plan_text.splitlines():
-            print(f"  {line}")
+            print(f"      {line}")
+

@@ -13,16 +13,322 @@ from coderai.core.prompt import list_skills
 from coderai.core.session import SessionEntry, SessionManager, SessionMessage
 
 try:
+    from rich.live import Live
     from rich.panel import Panel
     from rich.table import Table
     from rich.text import Text
 
     _RICH = True
 except ImportError:  # pragma: no cover
+    Live = None  # type: ignore[assignment,misc]
     Panel = None  # type: ignore[assignment,misc]
     Table = None  # type: ignore[assignment,misc]
     Text = None  # type: ignore[assignment,misc]
     _RICH = False
+
+
+import sys
+
+
+def _read_single_key() -> str:
+    """Read a single keypress or escape sequence from standard input on Unix/Mac."""
+    if not sys.stdin.isatty():
+        return ""
+    try:
+        import termios
+        import tty
+
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            ch = sys.stdin.read(1)
+            if ch == "\x1b":  # Escape sequence
+                ch2 = sys.stdin.read(1)
+                if ch2 == "[":
+                    ch3 = sys.stdin.read(1)
+                    if ch3 == "A":
+                        return "UP"
+                    elif ch3 == "B":
+                        return "DOWN"
+                    elif ch3 == "C":
+                        return "RIGHT"
+                    elif ch3 == "D":
+                        return "LEFT"
+                return "ESCAPE"
+            elif ch in ("\r", "\n"):
+                return "ENTER"
+            elif ch in ("\x03",):  # Ctrl+C
+                return "CTRL_C"
+            elif ch in ("\x04",):  # Ctrl+D
+                return "CTRL_D"
+            elif ch in ("\x7f", "\x08"):  # Backspace
+                return "BACKSPACE"
+            return ch
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+    except Exception:
+        return ""
+
+
+def select_with_arrows(
+    console: Any | None,
+    items: list[tuple[str, str, str]],  # (value_key, display_title, description)
+    title: str = "Select an option",
+    default_idx: int = 0,
+    allow_custom: bool = False,
+) -> int | str | None:
+    """Interactive arrow-key and shortcut selector with live in-place TUI rendering and fallback."""
+    if not items:
+        return None
+
+    if default_idx < 0 or default_idx >= len(items):
+        default_idx = 0
+
+    total_slots = len(items) + (1 if allow_custom else 0)
+
+    # If not a TTY, fallback to clean indexed input prompt
+    if not sys.stdin.isatty():
+        if console is not None and _RICH and Panel is not None:
+            body_lines = [
+                f"  {num:2}. {disp_title} [dim]— {desc}[/]"
+                for num, (_, disp_title, desc) in enumerate(items, 1)
+            ]
+            if allow_custom:
+                body_lines.append(f"  {len(items) + 1:2}. Other / Custom (type custom value)")
+            panel = Panel(
+                "\n".join(body_lines),
+                title=f"[bold magenta]{title}[/]",
+                border_style="magenta",
+                padding=(0, 1),
+            )
+            console.print(panel)
+        try:
+            raw = input(f"{title} [1-{total_slots}]: ").strip()
+            if raw.isdigit() and 1 <= int(raw) <= len(items):
+                return int(raw) - 1
+            elif raw.isdigit() and allow_custom and int(raw) == len(items) + 1:
+                return ""
+            elif raw:
+                return raw
+            return default_idx
+        except (EOFError, KeyboardInterrupt):
+            return default_idx
+
+    selected_idx = default_idx
+    filter_query = ""
+
+    def _render_menu_panel(cur_sel: int, cur_query: str) -> Any:
+        if cur_query:
+            filtered_indices = [
+                i
+                for i in range(len(items))
+                if cur_query.lower() in items[i][0].lower()
+                or cur_query.lower() in items[i][1].lower()
+                or cur_query.lower() in items[i][2].lower()
+            ]
+            if not filtered_indices:
+                filtered_indices = [cur_sel] if cur_sel < len(items) else [0]
+        else:
+            filtered_indices = list(range(len(items)))
+
+        body_lines = []
+        if cur_query:
+            body_lines.append(f"[dim cyan]Filter:[/] [bold yellow]{cur_query}[/]\n")
+
+        for disp_num, item_idx in enumerate(filtered_indices, 1):
+            key_name, disp_title, desc = items[item_idx]
+            is_sel = item_idx == cur_sel
+            prefix = "[bold cyan]❯[/]" if is_sel else " "
+            num_tag = f"[bold cyan]{disp_num:2}.[/]" if is_sel else f"[dim]{disp_num:2}.[/]"
+            title_style = "[bold white on #252538]" if is_sel else "[white]"
+            title_text = f"{title_style} {disp_title} [/]" if is_sel else f"{disp_title}"
+            desc_text = f" [dim]— {desc}[/]" if desc else ""
+            body_lines.append(f"  {prefix} {num_tag} {title_text}{desc_text}")
+
+        if allow_custom:
+            custom_num = len(filtered_indices) + 1
+            is_sel_custom = cur_sel == len(items)
+            prefix = "[bold cyan]❯[/]" if is_sel_custom else " "
+            num_tag = f"[bold cyan]{custom_num:2}.[/]" if is_sel_custom else f"[dim]{custom_num:2}.[/]"
+            title_style = (
+                "[bold white on #252538] Other / Custom (type custom value) [/]"
+                if is_sel_custom
+                else "[dim italic]Other / Custom (type custom value)[/]"
+            )
+            body_lines.append(f"  {prefix} {num_tag} {title_style}")
+
+        total_count = len(filtered_indices) + (1 if allow_custom else 0)
+        quick_range = f"1-{min(total_count, 9)}" if total_count > 1 else "1"
+        footer = (
+            f"[dim]↑/↓ or j/k: navigate • Enter: select • {quick_range}: quick select • Esc/q: cancel[/]"
+        )
+        if Panel is not None:
+            return Panel(
+                "\n".join(body_lines) + f"\n\n{footer}",
+                title=f"[bold magenta]{title}[/]",
+                border_style="magenta",
+                padding=(0, 1),
+            )
+        return "\n".join(body_lines) + f"\n\n{footer}"
+
+    def _get_filtered(cur_query: str) -> list[int]:
+        if cur_query:
+            f_inds = [
+                i
+                for i in range(len(items))
+                if cur_query.lower() in items[i][0].lower()
+                or cur_query.lower() in items[i][1].lower()
+                or cur_query.lower() in items[i][2].lower()
+            ]
+            return f_inds if f_inds else ([selected_idx] if selected_idx < len(items) else [0])
+        return list(range(len(items)))
+
+    def _get_selectable(cur_query: str) -> list[int]:
+        f_inds = _get_filtered(cur_query)
+        if allow_custom:
+            return f_inds + [len(items)]
+        return f_inds
+
+    # Use Live rendering if available for in-place updates without scroll spam
+    if Live is not None and console is not None and _RICH:
+        with Live(
+            _render_menu_panel(selected_idx, filter_query),
+            console=console,
+            transient=True,
+            auto_refresh=False,
+        ) as live:
+            while True:
+                selectable = _get_selectable(filter_query)
+                filtered_indices = _get_filtered(filter_query)
+                if selected_idx not in selectable and selectable:
+                    selected_idx = selectable[0]
+
+                live.update(_render_menu_panel(selected_idx, filter_query), refresh=True)
+
+                key = _read_single_key()
+                if key in ("UP", "k"):
+                    if selectable:
+                        if selected_idx in selectable:
+                            cur_pos = selectable.index(selected_idx)
+                            selected_idx = selectable[(cur_pos - 1) % len(selectable)]
+                        else:
+                            selected_idx = selectable[-1]
+                elif key in ("DOWN", "j"):
+                    if selectable:
+                        if selected_idx in selectable:
+                            cur_pos = selectable.index(selected_idx)
+                            selected_idx = selectable[(cur_pos + 1) % len(selectable)]
+                        else:
+                            selected_idx = selectable[0]
+                elif key == "ENTER":
+                    if allow_custom and selected_idx == len(items):
+                        live.stop()
+                        try:
+                            custom_val = input("\nEnter custom value: ").strip()
+                            return custom_val if custom_val else default_idx
+                        except (EOFError, KeyboardInterrupt):
+                            return default_idx
+                    res = selected_idx
+                    break
+                elif key in ("ESCAPE", "q", "CTRL_C", "CTRL_D"):
+                    res = default_idx
+                    break
+                elif key == "BACKSPACE":
+                    filter_query = filter_query[:-1]
+                elif key in ("1", "2", "3", "4", "5", "6", "7", "8", "9"):
+                    digit = int(key)
+                    if 1 <= digit <= len(filtered_indices):
+                        res = filtered_indices[digit - 1]
+                        break
+                    elif allow_custom and digit == len(filtered_indices) + 1:
+                        live.stop()
+                        try:
+                            custom_val = input("\nEnter custom value: ").strip()
+                            return custom_val if custom_val else default_idx
+                        except (EOFError, KeyboardInterrupt):
+                            return default_idx
+                elif key in ("c", "C") and allow_custom and not filter_query:
+                    live.stop()
+                    try:
+                        custom_val = input("\nEnter custom value: ").strip()
+                        return custom_val if custom_val else default_idx
+                    except (EOFError, KeyboardInterrupt):
+                        return default_idx
+                elif len(key) == 1 and key.isprintable():
+                    filter_query += key
+
+        # Confirmation event line
+        if isinstance(res, int) and 0 <= res < len(items):
+            chosen_label = items[res][1]
+            console.print(f"  [bold green]●[/] [dim]Selected:[/] [bold cyan]{chosen_label}[/]")
+        return res
+
+    while True:
+        selectable = _get_selectable(filter_query)
+        filtered_indices = _get_filtered(filter_query)
+        if selected_idx not in selectable and selectable:
+            selected_idx = selectable[0]
+
+        print(f"\n--- {title} ---")
+        for disp_num, item_idx in enumerate(filtered_indices, 1):
+            key_name, disp_title, desc = items[item_idx]
+            marker = "❯" if item_idx == selected_idx else " "
+            print(f" {marker} {disp_num:2}. {disp_title} — {desc}")
+        if allow_custom:
+            custom_num = len(filtered_indices) + 1
+            marker = "❯" if selected_idx == len(items) else " "
+            print(f" {marker} {custom_num:2}. Other / Custom (type custom value)")
+        total_count = len(filtered_indices) + (1 if allow_custom else 0)
+        quick_range = f"1-{min(total_count, 9)}" if total_count > 1 else "1"
+        print(f"  ↑/↓ or j/k: navigate, Enter: select, {quick_range}: quick select, Esc/q: cancel")
+
+        key = _read_single_key()
+        if key in ("UP", "k"):
+            if selectable:
+                if selected_idx in selectable:
+                    cur_pos = selectable.index(selected_idx)
+                    selected_idx = selectable[(cur_pos - 1) % len(selectable)]
+                else:
+                    selected_idx = selectable[-1]
+        elif key in ("DOWN", "j"):
+            if selectable:
+                if selected_idx in selectable:
+                    cur_pos = selectable.index(selected_idx)
+                    selected_idx = selectable[(cur_pos + 1) % len(selectable)]
+                else:
+                    selected_idx = selectable[0]
+        elif key == "ENTER":
+            if allow_custom and selected_idx == len(items):
+                try:
+                    custom_val = input("\nEnter custom value: ").strip()
+                    return custom_val if custom_val else default_idx
+                except (EOFError, KeyboardInterrupt):
+                    return default_idx
+            return selected_idx
+        elif key in ("ESCAPE", "q", "CTRL_C", "CTRL_D"):
+            return default_idx
+        elif key == "BACKSPACE":
+            filter_query = filter_query[:-1]
+        elif key in ("1", "2", "3", "4", "5", "6", "7", "8", "9"):
+            digit = int(key)
+            if 1 <= digit <= len(filtered_indices):
+                return filtered_indices[digit - 1]
+            elif allow_custom and digit == len(filtered_indices) + 1:
+                try:
+                    custom_val = input("\nEnter custom value: ").strip()
+                    return custom_val if custom_val else default_idx
+                except (EOFError, KeyboardInterrupt):
+                    return default_idx
+        elif key in ("c", "C") and allow_custom and not filter_query:
+            try:
+                custom_val = input("\nEnter custom value: ").strip()
+                return custom_val if custom_val else default_idx
+            except (EOFError, KeyboardInterrupt):
+                return default_idx
+        elif len(key) == 1 and key.isprintable():
+            filter_query += key
+
 
 
 def _format_badges_markup(badges: list[str]) -> str:
@@ -40,79 +346,94 @@ def _format_badges_markup(badges: list[str]) -> str:
 
 
 def select_model_interactive(console: Any | None, current_model: str) -> str:
-    """Prompt the user with an interactive model selection menu."""
-    if console is not None and _RICH and Table is not None:
-        table = Table(
-            title="Select Active Model (Frontier Coding & Reasoning)",
-            border_style="magenta",
-            header_style="bold magenta",
-        )
-        table.add_column("#", style="bold cyan", width=4)
-        table.add_column("Category", style="dim", width=18)
-        table.add_column("Model Name", style="bold white", width=22)
-        table.add_column("Capabilities", width=26)
-        table.add_column("Description", style="dim")
-        table.add_column("Active", justify="center", width=8)
+    """Prompt the user with an interactive model selection menu with arrow-key navigation."""
+    items: list[tuple[str, str, str]] = []
+    default_idx = 0
+    for idx, (name, desc, category) in enumerate(CURATED_MODELS):
+        badges = get_model_badges(name)
+        badges_str = " ".join(f"[{b}]" for b in badges)
+        items.append((name, f"{name:<20} {badges_str}", f"[{category}] {desc}"))
+        if name == current_model:
+            default_idx = idx
 
-        for idx, (name, desc, category) in enumerate(CURATED_MODELS, 1):
-            is_cur = "[bold green]✓ Active[/]" if name == current_model else "—"
-            badges = get_model_badges(name)
-            badges_str = _format_badges_markup(badges)
-            table.add_row(str(idx), category, name, badges_str, desc, is_cur)
+    res = select_with_arrows(
+        console,
+        items,
+        title=f"Select Active Model (Current: {current_model})",
+        default_idx=default_idx,
+        allow_custom=True,
+    )
+    if isinstance(res, int) and 0 <= res < len(CURATED_MODELS):
+        return CURATED_MODELS[res][0]
+    elif isinstance(res, str) and res:
+        from coderai.cli.fuzzy import fuzzy_filter
 
-        table.add_section()
-        table.add_row(
-            str(len(CURATED_MODELS) + 1),
-            "Custom",
-            "Custom...",
-            "[dim]—[/]",
-            "Enter any custom model identifier or provider endpoint",
-            "",
-        )
-        console.print(table)
-    else:
-        print("\n--- Select Active Model ---")
-        current_category = ""
-        for idx, (name, desc, category) in enumerate(CURATED_MODELS, 1):
-            if category != current_category:
-                current_category = category
-                print(f"\n[{category}]")
-            cur_marker = " (Active)" if name == current_model else ""
-            badges_plain = format_capability_badges(name)
-            badge_str = f" {badges_plain}" if badges_plain else ""
-            print(f"  {idx:2}. {name:<22}{badge_str:<26} {desc}{cur_marker}")
-        print(f"\n  {len(CURATED_MODELS) + 1:2}. Custom (enter custom model name)")
+        model_names = [name for name, _, _ in CURATED_MODELS]
+        fuzzy_models = fuzzy_filter(res, model_names, limit=1)
+        if fuzzy_models:
+            return fuzzy_models[0]
+        return res
+    return current_model
 
-    try:
-        choice = input(
-            f"\nSelect model [1-{len(CURATED_MODELS) + 1}, or name] (Enter to keep '{current_model}'): "
-        ).strip()
-    except (EOFError, KeyboardInterrupt):
-        return current_model
 
-    if not choice:
-        return current_model
+REASONING_EFFORT_CHOICES: list[tuple[str, str, str, str]] = [
+    (
+        "max",
+        "Max Reasoning Depth",
+        "Uncapped chain-of-thought tokens (up to 64k), best for complex SWE-bench & architecture",
+        "[bold magenta]Max[/]",
+    ),
+    (
+        "high",
+        "High Reasoning Depth",
+        "Deep multi-step reasoning (~16k-24k tokens), ideal for algorithms & security reviews",
+        "[magenta]High[/]",
+    ),
+    (
+        "medium",
+        "Medium Reasoning Depth",
+        "Balanced reasoning (~4k-8k tokens), standard for everyday coding & refactoring",
+        "[cyan]Medium[/]",
+    ),
+    (
+        "low",
+        "Low Reasoning Depth",
+        "Fast light reasoning (~1k-2k tokens), ultra-low latency for syntax & quick fixes",
+        "[yellow]Low[/]",
+    ),
+    (
+        "off",
+        "Disable Reasoning (Off)",
+        "Direct model response without hidden chain-of-thought tokens (0 reasoning tokens)",
+        "[dim]Off[/]",
+    ),
+]
 
-    if choice.isdigit():
-        num = int(choice)
-        if 1 <= num <= len(CURATED_MODELS):
-            return CURATED_MODELS[num - 1][0]
-        if num == len(CURATED_MODELS) + 1:
-            try:
-                custom_name = input("Enter custom model identifier: ").strip()
-                return custom_name if custom_name else current_model
-            except (EOFError, KeyboardInterrupt):
-                return current_model
 
-    from coderai.cli.fuzzy import fuzzy_filter
+def select_reasoning_effort_interactive(
+    console: Any | None, current_effort: str = "max", model: str = ""
+) -> str:
+    """Prompt the user with an interactive reasoning effort selection menu (DeepSeek Harness alignment)."""
+    norm_cur = (current_effort or "max").strip().lower()
+    title_extra = f" for '{model}'" if model else ""
 
-    # Direct model name typed by user - attempt fuzzy match first
-    model_names = [name for name, _, _ in CURATED_MODELS]
-    fuzzy_models = fuzzy_filter(choice, model_names, limit=1)
-    if fuzzy_models:
-        return fuzzy_models[0]
+    items = [(tag, f"{name} ({tag})", desc) for tag, name, desc, _ in REASONING_EFFORT_CHOICES]
+    default_idx = next((i for i, (t, _, _) in enumerate(items) if t == norm_cur), 0)
 
-    return choice
+    res = select_with_arrows(
+        console,
+        items,
+        title=f"Select Reasoning Effort{title_extra}",
+        default_idx=default_idx,
+    )
+    if isinstance(res, int) and 0 <= res < len(items):
+        return items[res][0]
+    elif isinstance(res, str) and res:
+        from coderai.core.common.openai_thinking import normalize_reasoning_effort
+
+        return normalize_reasoning_effort(res)
+    return norm_cur
+
 
 
 def select_session_interactive(console: Any | None, sessions: list[SessionEntry]) -> str | None:
@@ -124,199 +445,237 @@ def select_session_interactive(console: Any | None, sessions: list[SessionEntry]
             print("No saved sessions found in workspace.")
         return None
 
-    if console is not None and _RICH and Table is not None:
-        table = Table(title="Interactive Saved Sessions Menu", border_style="blue")
-        table.add_column("#", style="bold cyan", width=4)
-        table.add_column("Session ID", style="bold white", width=16)
-        table.add_column("Status", style="yellow", width=12)
-        table.add_column("Plan", style="magenta", width=6)
-        table.add_column("Tokens", style="green", width=10)
-        table.add_column("Summary", style="white")
-
-        for idx, s in enumerate(sessions, 1):
-            table.add_row(
-                str(idx),
-                s.id[:14],
-                s.status,
-                "✓" if s.plan_mode else "—",
-                f"{s.active_tokens:,}",
-                (s.summary or "(no summary)")[:50],
-            )
-        console.print(table)
-        console.print(
-            "[dim]Actions: [bold cyan]<num>[/] resume • [bold red]d <num>[/] delete • [bold yellow]f <num>[/] fork • [bold]Enter[/] cancel[/]"
-        )
-    else:
-        print("\n--- Saved Sessions ---")
-        for idx, s in enumerate(sessions, 1):
-            plan_str = "[plan]" if s.plan_mode else "      "
-            print(
-                f"  {idx:2}. {s.id[:14]}  {s.status:10} {plan_str}  {s.active_tokens:6} tokens  {(s.summary or '')[:40]}"
-            )
-        print("Actions: <num> resume | d <num> delete | f <num> fork | Enter cancel")
-
-    try:
-        raw_choice = input(
-            f"\nSelect session action [1-{len(sessions)}, d <num>, f <num>, or query]: "
-        ).strip()
-    except (EOFError, KeyboardInterrupt):
-        return None
-
-    if not raw_choice:
-        return None
-
-    # Handle delete action: "d 1" or "del 1"
-    if (
-        raw_choice.startswith(("d ", "del ", "delete ", "d", "del", "delete"))
-        and len(raw_choice.split()) > 1
-    ):
-        parts = raw_choice.split()
-        if parts[1].isdigit():
-            idx = int(parts[1])
-            if 1 <= idx <= len(sessions):
-                return f"delete:{sessions[idx - 1].id}"
-
-    # Handle fork action: "f 1" or "fork 1"
-    if raw_choice.startswith(("f ", "fork ", "f", "fork")) and len(raw_choice.split()) > 1:
-        parts = raw_choice.split()
-        if parts[1].isdigit():
-            idx = int(parts[1])
-            if 1 <= idx <= len(sessions):
-                return f"fork:{sessions[idx - 1].id}"
-
-    # Standard resume by number
-    if raw_choice.isdigit():
-        idx = int(raw_choice)
-        if 1 <= idx <= len(sessions):
-            return sessions[idx - 1].id
-
-    # If user typed raw session id or search query, use fuzzy search
     from coderai.cli.fuzzy import fuzzy_filter
 
-    matched_sessions = fuzzy_filter(
-        raw_choice,
-        sessions,
-        key_func=lambda s: f"{s.id} {s.summary or ''}",
-        limit=1,
+    current_page = 0
+    page_size = 10
+    active_filter = ""
+
+    while True:
+        # Apply filter if set
+        if active_filter:
+            display_sessions = fuzzy_filter(
+                active_filter,
+                sessions,
+                key_func=lambda s: f"{s.id} {s.summary or ''} {s.status}",
+                limit=len(sessions),
+            )
+        else:
+            display_sessions = list(sessions)
+
+        total_sessions = len(display_sessions)
+        total_pages = max(1, (total_sessions + page_size - 1) // page_size)
+        if current_page >= total_pages:
+            current_page = total_pages - 1
+        if current_page < 0:
+            current_page = 0
+
+        start_idx = current_page * page_size
+        end_idx = min(start_idx + page_size, total_sessions)
+        page_items = display_sessions[start_idx:end_idx]
+
+        filter_tag = f" [cyan](Filter: '{active_filter}')[/]" if active_filter else ""
+        title = f"Saved Sessions — Page {current_page + 1}/{total_pages} (Total: {total_sessions}){filter_tag}"
+
+        if console is not None and _RICH and Table is not None:
+            table = Table(title=title, border_style="blue")
+            table.add_column("#", style="bold cyan", width=4)
+            table.add_column("Session ID", style="bold white", width=16)
+            table.add_column("Status", style="yellow", width=12)
+            table.add_column("Plan", style="magenta", width=6)
+            table.add_column("Tokens", style="green", width=10)
+            table.add_column("Summary", style="white")
+
+            for page_rel_idx, s in enumerate(page_items, 1):
+                abs_idx = start_idx + page_rel_idx
+                table.add_row(
+                    str(abs_idx),
+                    s.id[:14],
+                    s.status,
+                    "✓" if s.plan_mode else "—",
+                    f"{s.active_tokens:,}",
+                    (s.summary or "(no summary)")[:50],
+                )
+            console.print(table)
+            nav_hints = []
+            if current_page < total_pages - 1:
+                nav_hints.append("[bold cyan]n[/] next page")
+            if current_page > 0:
+                nav_hints.append("[bold cyan]p[/] prev page")
+            nav_str = (" • " + " • ".join(nav_hints)) if nav_hints else ""
+            console.print(
+                f"[dim]Actions: [bold cyan]<num>[/] resume • [bold red]d <num>[/] delete • [bold yellow]f <num>[/] fork • [bold blue]s <query>[/] search{nav_str} • [bold]Enter[/] cancel[/]"
+            )
+        else:
+            print(f"\n--- {title} ---")
+            for page_rel_idx, s in enumerate(page_items, 1):
+                abs_idx = start_idx + page_rel_idx
+                plan_str = "[plan]" if s.plan_mode else "      "
+                print(
+                    f"  {abs_idx:2}. {s.id[:14]}  {s.status:10} {plan_str}  {s.active_tokens:6} tokens  {(s.summary or '')[:40]}"
+                )
+            print("Actions: <num> resume | d <num> delete | f <num> fork | s <query> search | n/p page | Enter cancel")
+
+        try:
+            raw_choice = input(
+                f"\nSelect session action [1-{total_sessions}, d <num>, f <num>, s <query>, n/p]: "
+            ).strip()
+        except (EOFError, KeyboardInterrupt):
+            return None
+
+        if not raw_choice:
+            return None
+
+        # Pagination commands
+        if raw_choice.lower() in ("n", "next") and current_page < total_pages - 1:
+            current_page += 1
+            continue
+        if raw_choice.lower() in ("p", "prev", "previous") and current_page > 0:
+            current_page -= 1
+            continue
+
+        # Search filter command: "s <query>" or "/search <query>"
+        if raw_choice.startswith(("s ", "search ", "/search ", "find ")):
+            active_filter = raw_choice.split(None, 1)[1].strip() if len(raw_choice.split()) > 1 else ""
+            current_page = 0
+            continue
+        if raw_choice.lower() in ("s", "clear", "all", "reset"):
+            active_filter = ""
+            current_page = 0
+            continue
+
+        # Handle delete action: "d 1" or "del 1"
+        if (
+            raw_choice.startswith(("d ", "del ", "delete ", "d", "del", "delete"))
+            and len(raw_choice.split()) > 1
+        ):
+            parts = raw_choice.split()
+            if parts[1].isdigit():
+                idx = int(parts[1])
+                if 1 <= idx <= len(display_sessions):
+                    return f"delete:{display_sessions[idx - 1].id}"
+
+        # Handle fork action: "f 1" or "fork 1"
+        if raw_choice.startswith(("f ", "fork ", "f", "fork")) and len(raw_choice.split()) > 1:
+            parts = raw_choice.split()
+            if parts[1].isdigit():
+                idx = int(parts[1])
+                if 1 <= idx <= len(display_sessions):
+                    return f"fork:{display_sessions[idx - 1].id}"
+
+        # Standard resume by number
+        if raw_choice.isdigit():
+            idx = int(raw_choice)
+            if 1 <= idx <= len(display_sessions):
+                return display_sessions[idx - 1].id
+
+        # If user typed raw session id or fuzzy query
+        matched_sessions = fuzzy_filter(
+            raw_choice,
+            sessions,
+            key_func=lambda s: f"{s.id} {s.summary or ''}",
+            limit=1,
+        )
+        if matched_sessions:
+            return matched_sessions[0].id
+
+        matched = next((s.id for s in sessions if s.id.startswith(raw_choice)), None)
+        return matched
+
+
+def prompt_plan_implementation(console: Any | None, plan_text: str = "") -> str:
+    """Prompt the user for next action when a plan has been proposed."""
+    options = [
+        (
+            "execute",
+            "Yes, execute plan now",
+            "turn off Plan Mode and begin implementation automatically",
+        ),
+        ("refine", "Refine plan", "specify adjustments and stay in Plan Mode"),
+        ("stay", "No, stay in plan mode", "keep exploring before executing"),
+    ]
+    res = select_with_arrows(
+        console,
+        options,
+        title="Plan Ready — Next Action",
+        default_idx=0,
     )
-    if matched_sessions:
-        return matched_sessions[0].id
-
-    matched = next((s.id for s in sessions if s.id.startswith(raw_choice)), None)
-    return matched
-
-
-def prompt_plan_implementation(console: Any | None) -> str:
-    """Display interactive post-plan decision prompt.
-
-    Returns:
-      "execute" -> execute plan now (exit plan mode)
-      "refine"  -> refine plan
-      "stay"    -> stay in plan mode
-    """
-    if console is not None and _RICH and Panel is not None:
-        body = (
-            "[bold white]A plan has been proposed for your request.[/]\n\n"
-            "  [bold green][1][/] [bold]Yes, execute plan now[/]  [dim]— turn off Plan Mode and begin implementation[/]\n"
-            "  [bold yellow][2][/] [bold]Refine plan[/]            [dim]— specify adjustments and stay in Plan Mode[/]\n"
-            "  [bold cyan][3][/] [bold]No, stay in plan mode[/]  [dim]— keep exploring before executing[/]"
-        )
-        panel = Panel(
-            body,
-            title="[bold yellow]Plan Ready — Next Action[/]",
-            border_style="yellow",
-        )
-        console.print()
-        console.print(panel)
-    else:
-        print("\n--- Plan Ready ---")
-        print("  1. Yes, execute plan now (turn off Plan Mode and begin implementation)")
-        print("  2. Refine plan (specify adjustments and stay in Plan Mode)")
-        print("  3. No, stay in plan mode (keep exploring)")
-
-    try:
-        raw = input("\nChoose action [1/2/3] (default 1): ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        return "stay"
-
-    if raw in ("1", "y", "yes", "execute", ""):
+    if isinstance(res, int) and 0 <= res < len(options):
+        return options[res][0]
+    elif isinstance(res, str) and res in ("execute", "refine", "stay"):
+        return res
+    elif isinstance(res, str) and res.lower() in ("1", "y", "yes", "execute"):
         return "execute"
-    if raw in ("2", "r", "refine"):
+    elif isinstance(res, str) and res.lower() in ("2", "r", "refine"):
         return "refine"
+    elif isinstance(res, str) and res.lower() in ("3", "s", "n", "no", "stay"):
+        return "stay"
     return "stay"
 
 
 def select_undo_interactive(
     console: Any | None, targets: list[dict[str, Any]]
 ) -> tuple[dict[str, Any] | None, str]:
-    """Display interactive turn selector and restore mode picker for /undo.
-
-    Returns (selected_target, mode) where mode is:
-      - "restore_both"
-      - "restore_conversation_only"
-      - "restore_code_only"
-    """
+    """Display interactive turn selector and restore mode picker for /undo."""
     if not targets:
         return None, "restore_both"
 
     if len(targets) == 1:
         chosen_target = targets[0]
     else:
-        if console is not None and _RICH and Table is not None:
-            table = Table(title="Available Undo Checkpoints", border_style="cyan")
-            table.add_column("Turn #", style="bold cyan", width=8)
-            table.add_column("Prompt Snippet", style="white")
-            table.add_column("Checkpoint Git Hash", style="dim", width=18)
-            table.add_column("Has Code Backup", style="green", width=16)
+        items = []
+        for t in targets:
+            idx = t.get("index", 1)
+            prompt_snip = t.get("prompt", "")[:50]
+            ckpt = (t.get("checkpoint_hash") or "—")[:10]
+            has_code = "✓ code backup" if t.get("can_restore_code") else "conv only"
+            items.append((str(idx), f"Turn #{idx}: {prompt_snip}", f"ckpt: {ckpt} [{has_code}]"))
 
-            for t in targets:
-                ckpt = t.get("checkpoint_hash") or "—"
-                can_code = "[bold green]✓ Yes[/]" if t.get("can_restore_code") else "[dim]—[/]"
-                table.add_row(str(t["index"]), t["prompt"][:60], ckpt[:12], can_code)
-            console.print(table)
-        else:
-            print("\n--- Available Undo Checkpoints ---")
-            for t in targets:
-                ckpt = (t.get("checkpoint_hash") or "")[:10]
-                print(f"  {t['index']:2}. {t['prompt'][:50]} (ckpt: {ckpt})")
-
-        try:
-            choice_str = input(
-                f"\nSelect turn to undo to [1-{len(targets)}] (default {len(targets)}: latest, Enter cancel): "
-            ).strip()
-        except (EOFError, KeyboardInterrupt):
-            return None, "restore_both"
-
-        if not choice_str:
-            chosen_target = targets[-1]
-        elif choice_str.isdigit() and 1 <= int(choice_str) <= len(targets):
-            chosen_target = targets[int(choice_str) - 1]
-        else:
-            return None, "restore_both"
-
-    # Choose restore mode
-    if console is not None and _RICH:
-        console.print(
-            "\n[bold]Select restore mode:[/]\n"
-            "  [bold cyan]1.[/] [bold]Restore Both[/] [dim]— Revert files on disk and rollback conversation history (Default)[/]\n"
-            "  [bold cyan]2.[/] [bold]Restore Conversation Only[/] [dim]— Rollback message history, keep code changes on disk[/]\n"
-            "  [bold cyan]3.[/] [bold]Restore Code Only[/] [dim]— Revert files on disk, keep conversation history[/]"
+        res = select_with_arrows(
+            console,
+            items,
+            title="Select Turn Checkpoint to Restore",
+            default_idx=len(items) - 1,
         )
-    else:
-        print("\nSelect restore mode:")
-        print("  1. Restore Both (files on disk + conversation history) [Default]")
-        print("  2. Restore Conversation Only (keep code changes on disk)")
-        print("  3. Restore Code Only (revert files, keep conversation)")
+        if isinstance(res, int) and 0 <= res < len(targets):
+            chosen_target = targets[res]
+        elif isinstance(res, str) and res.isdigit() and 1 <= int(res) <= len(targets):
+            chosen_target = targets[int(res) - 1]
+        else:
+            return None, "restore_both"
 
-    try:
-        mode_str = input("Choose mode [1/2/3] (default 1): ").strip()
-    except (EOFError, KeyboardInterrupt):
-        return chosen_target, "restore_both"
-
-    if mode_str == "2":
-        return chosen_target, "restore_conversation_only"
-    elif mode_str == "3":
-        return chosen_target, "restore_code_only"
+    # Mode picker
+    mode_options = [
+        (
+            "restore_both",
+            "Restore Conversation + Code",
+            "Roll back conversation and reset workspace files to checkpoint",
+        ),
+        (
+            "restore_conversation_only",
+            "Restore Conversation Only",
+            "Truncate conversation history but keep current workspace files",
+        ),
+        (
+            "restore_code_only",
+            "Restore Code Only",
+            "Reset files to checkpoint but keep full conversation history",
+        ),
+    ]
+    mode_res = select_with_arrows(
+        console,
+        mode_options,
+        title="Select Restore Mode",
+        default_idx=0,
+    )
+    if isinstance(mode_res, int) and 0 <= mode_res < len(mode_options):
+        return chosen_target, mode_options[mode_res][0]
+    elif isinstance(mode_res, str) and mode_res in (
+        "restore_both",
+        "restore_conversation_only",
+        "restore_code_only",
+    ):
+        return chosen_target, mode_res
     return chosen_target, "restore_both"
 
 

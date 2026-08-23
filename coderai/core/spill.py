@@ -27,13 +27,17 @@ class SpillRef:
     locator: str
     bytes: int
     retrieval_hint: str = RETRIEVAL_HINT
+    sha256: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d: dict[str, Any] = {
             "locator": self.locator,
             "bytes": self.bytes,
             "retrievalHint": self.retrieval_hint,
         }
+        if self.sha256:
+            d["sha256"] = self.sha256
+        return d
 
 
 def encode_segment(raw: str) -> str:
@@ -99,7 +103,8 @@ def save_text(
         os.write(fd, data)
     finally:
         os.close(fd)
-    return SpillRef(locator=str(path), bytes=len(data))
+    digest = sha256(data).hexdigest()
+    return SpillRef(locator=str(path), bytes=len(data), sha256=digest)
 
 
 def try_save_text(

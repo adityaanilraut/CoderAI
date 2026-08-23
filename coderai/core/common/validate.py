@@ -31,6 +31,119 @@ def clean_json_string(raw: str) -> str:
     return cleaned.strip()
 
 
+def repair_json_string(raw: str) -> str:
+    """Heuristically repair broken, truncated, or unterminated JSON strings."""
+    cleaned = clean_json_string(raw)
+    if not cleaned:
+        return "{}"
+
+    # Try fast path if already valid
+    import json
+
+    try:
+        json.loads(cleaned)
+        return cleaned
+    except Exception:
+        pass
+
+    # Strip trailing whitespace and trailing commas
+    s = cleaned.rstrip()
+
+    # Repair partial boolean/null tokens at the very end
+    if s.endswith("tru"):
+        s = s[:-3] + "true"
+    elif s.endswith("fals"):
+        s = s[:-4] + "false"
+    elif s.endswith("nul"):
+        s = s[:-3] + "null"
+
+    # Track open strings and brackets/braces
+    stack: list[str] = []
+    in_string = False
+    escaped = False
+    repaired_chars: list[str] = []
+
+    for char in s:
+        if escaped:
+            repaired_chars.append(char)
+            escaped = False
+            continue
+
+        if char == "\\":
+            repaired_chars.append(char)
+            escaped = True
+            continue
+
+        if char == '"':
+            in_string = not in_string
+            repaired_chars.append(char)
+            continue
+
+        if in_string:
+            # Escape literal unescaped newlines inside strings
+            if char == "\n":
+                repaired_chars.append("\\n")
+            elif char == "\r":
+                repaired_chars.append("\\r")
+            elif char == "\t":
+                repaired_chars.append("\\t")
+            else:
+                repaired_chars.append(char)
+            continue
+
+        # Outside of string literals
+        if char in ("{", "["):
+            stack.append(char)
+            repaired_chars.append(char)
+        elif char == "}":
+            if stack and stack[-1] == "{":
+                stack.pop()
+            repaired_chars.append(char)
+        elif char == "]":
+            if stack and stack[-1] == "[":
+                stack.pop()
+            repaired_chars.append(char)
+        else:
+            repaired_chars.append(char)
+
+    res = "".join(repaired_chars)
+
+    # If stream ended inside a string literal, close the quote
+    if in_string:
+        res += '"'
+
+    # Remove any trailing dangling comma outside string
+    res = res.rstrip()
+    while res.endswith(","):
+        res = res[:-1].rstrip()
+
+    # Balance unclosed brackets and braces in reverse order
+    while stack:
+        opener = stack.pop()
+        # Remove trailing comma before closing bracket/brace
+        if res.endswith(","):
+            res = res[:-1].rstrip()
+        if opener == "{":
+            res += "}"
+        elif opener == "[":
+            res += "]"
+
+    # Verify if repair produced valid JSON; if still invalid, wrap if possible
+    try:
+        json.loads(res)
+        return res
+    except Exception:
+        # Fallback: if it doesn't start with { or [, wrap in {}
+        if not (res.startswith("{") or res.startswith("[")):
+            res = "{" + res + "}"
+            try:
+                json.loads(res)
+                return res
+            except Exception:
+                pass
+        return res
+
+
 def semantic_boolean(value: Any, default: bool = False) -> bool:
     """Coerce boolean-like inputs ("true", "false", bool) to a boolean."""
     if value is None:

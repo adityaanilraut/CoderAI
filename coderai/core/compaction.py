@@ -14,7 +14,7 @@ import abc
 import re
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Callable, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from coderai.core.session import SessionManager, SessionMessage
@@ -67,7 +67,9 @@ class ToolResultPruner:
             if role != "tool":
                 out.append(msg)
                 continue
-            content = getattr(msg, "content", "") if hasattr(msg, "content") else msg.get("content", "")
+            content = (
+                getattr(msg, "content", "") if hasattr(msg, "content") else msg.get("content", "")
+            )
             if not isinstance(content, str) or len(content) <= self.max_chars:
                 out.append(msg)
                 continue
@@ -86,6 +88,28 @@ class ToolResultPruner:
         return out
 
 
+def prune_tool_results_for_compaction(messages: list[Any], max_chars: int = 1500) -> list[Any]:
+    """Helper to prune bulky tool results from a slice of messages before summarization."""
+    pruner = ToolResultPruner(max_chars=max_chars)
+    return pruner.prune_messages(messages)
+
+
+def evaluate_compaction_trigger(
+    active_tokens: int,
+    context_limit: int,
+    pressure_ratio: float = 0.75,
+    overflow_ratio: float = 0.95,
+) -> str | None:
+    """Evaluate whether active tokens meet dual-trigger thresholds ('overflow' vs 'pressure')."""
+    if context_limit <= 0 or active_tokens <= 0:
+        return None
+    if active_tokens >= int(context_limit * overflow_ratio):
+        return "overflow"
+    if active_tokens >= int(context_limit * pressure_ratio):
+        return "pressure"
+    return None
+
+
 class CompactionEngine(abc.ABC):
     """Abstract seam for session compaction implementations."""
 
@@ -102,6 +126,7 @@ class CompactionEngine(abc.ABC):
     async def compact_now(
         self,
         session_id: str,
+        trigger: str = "manual",
     ) -> CompactionResult | None:
         """Explicitly compact the session (e.g. on user command or idle)."""
         ...
@@ -112,6 +137,7 @@ class CompactionEngine(abc.ABC):
         session_id: str,
         start_idx: int,
         end_idx: int,
+        trigger: str = "pressure",
     ) -> CompactionResult | None:
         """Compact an explicit slice of messages into a summary."""
         ...
@@ -126,11 +152,9 @@ class BasicCompaction(CompactionEngine):
         pruner: ToolResultPruner | None = None,
     ) -> None:
         self.manager = manager
-        self.pruner = pruner or ToolResultPruner()
+        self.pruner = pruner or ToolResultPruner(max_chars=2000)
 
-    def _find_safe_region(
-        self, messages: list[SessionMessage]
-    ) -> tuple[int, int] | None:
+    def _find_safe_region(self, messages: list[SessionMessage]) -> tuple[int, int] | None:
         """Find a safe [start, end) index range that preserves tool pairing."""
         start = next((i for i, m in enumerate(messages) if m.role != "system"), -1)
         if start == -1:
@@ -156,6 +180,7 @@ class BasicCompaction(CompactionEngine):
         session_id: str,
         start_idx: int,
         end_idx: int,
+        trigger: str = "pressure",
     ) -> CompactionResult | None:
         from coderai.core.prompt import get_compact_prompt
         from coderai.core.events import (
@@ -172,6 +197,9 @@ class BasicCompaction(CompactionEngine):
         if not target_slice:
             return None
 
+        # Prune oversized tool result dumps from history before building prompt
+        pruned_slice = self.pruner.prune_messages(target_slice)
+
         client_info = self.manager.create_openai_client()
         client = client_info.get("client")
         if client is None:
@@ -179,21 +207,52 @@ class BasicCompaction(CompactionEngine):
 
         compaction_id = f"cmp_{uuid.uuid4().hex[:10]}"
         model = self.manager.get_active_model()
-        prompt = get_compact_prompt(target_slice)
 
-        # Emit compaction/start
+        # Build KV-cache preserving compaction messages: retain conversation prefix and append directive
+        compaction_messages: list[dict[str, Any]] = []
+        for m in pruned_slice:
+            role = getattr(m, "role", "") if hasattr(m, "role") else m.get("role", "")
+            content = getattr(m, "content", "") if hasattr(m, "content") else m.get("content", "")
+            if role and content:
+                compaction_messages.append({"role": role, "content": str(content)})
+
+        compaction_directive = (
+            "You are now acting as a compaction engine for this AI coding assistant. "
+            "Condense the conversation ABOVE into a structured checkpoint that lets another model resume the work with no loss of essential context.\n\n"
+            'Output EXACTLY the Markdown structure below: keep every section, in order. Use terse bullets, not prose paragraphs. Write "(none)" for an empty section — never drop a section.\n\n'
+            "## Primary Request and Intent\n"
+            "- [the user's original and evolving goals; quote verbatim where the exact wording matters]\n\n"
+            "## Key Technical Concepts\n"
+            "- [technologies, frameworks, patterns, and conventions in play]\n\n"
+            "## Critical Decisions & Constraints\n"
+            "- [architectural, design, and implementation decisions made and why]\n\n"
+            "## State of Progress\n"
+            "- [completed tasks, modified files, and verified behaviors]\n\n"
+            "## Pending Work & Next Steps\n"
+            "- [immediate next actions and known open questions]\n\n"
+            "Do not include conversational filler before or after the summary."
+        )
+
+        if not compaction_messages:
+            prompt = get_compact_prompt(pruned_slice)
+            compaction_messages = [{"role": "user", "content": prompt}]
+        else:
+            compaction_messages.append({"role": "user", "content": compaction_directive})
+
+        # Emit compaction/start with trigger metadata
         self.manager._append_event(
             session_id,
             make_compaction_start(
                 self.manager._next_seq(session_id),
                 compaction_id,
                 {"start": start_idx, "end": end_idx},
+                trigger=trigger,
             ),
         )
 
         response = await self.manager._create_completion(
             client,
-            {"model": model, "messages": [{"role": "user", "content": prompt}]},
+            {"model": model, "messages": compaction_messages},
             emit_stream=False,
         )
         raw = (response.get("choices") or [{}])[0].get("message") or {}
@@ -214,7 +273,8 @@ class BasicCompaction(CompactionEngine):
                 summary_seq,
                 compaction_id,
                 summary,
-                [],
+                shadowed_seqs=[],
+                shadowed_ids=replaced_ids,
             ),
         )
 
@@ -228,21 +288,6 @@ class BasicCompaction(CompactionEngine):
             ),
         )
 
-        # Also append legacy SessionMessage for backward compatibility with existing readers
-        summary_message = self.manager._build_message(
-            session_id,
-            "system",
-            f"There are earlier parts of the conversation. Here is a summary:\n\n{summary}",
-            meta={
-                "isSummary": True,
-                "kind": "compact/summary",
-                "replacedIds": replaced_ids,
-                "compactionId": compaction_id,
-            },
-        )
-        summary_message.visible = False
-        self.manager._append_message(summary_message)
-
         return CompactionResult(
             compaction_id=compaction_id,
             summary=summary,
@@ -251,16 +296,40 @@ class BasicCompaction(CompactionEngine):
             shadowed_token_count=tokens,
         )
 
-    async def compact_now(self, session_id: str) -> CompactionResult | None:
+    async def compact_now(
+        self, session_id: str, trigger: str = "manual"
+    ) -> CompactionResult | None:
         messages = self.manager.list_session_messages(session_id)
         region = self._find_safe_region(messages)
         if not region:
             return None
-        return await self.compact_region(session_id, region[0], region[1])
+        return await self.compact_region(session_id, region[0], region[1], trigger=trigger)
 
     async def compact_if_needed(
         self,
         session_id: str,
         trigger: str = "pressure",
     ) -> CompactionResult | None:
-        return await self.compact_now(session_id)
+        from coderai.core.prompt import calculate_context_budget
+
+        entry = self.manager._get_entry(session_id) or {}
+        active_tokens = entry.get("activeTokens", 0)
+        model = self.manager.get_active_model()
+        budget = calculate_context_budget(model)
+        limit = budget["context_limit"]
+
+        evaluated_trigger = evaluate_compaction_trigger(active_tokens, limit)
+        if (
+            trigger == "force"
+            or evaluated_trigger == trigger
+            or (trigger == "pressure" and evaluated_trigger in ("pressure", "overflow"))
+        ):
+            effective_trigger = evaluated_trigger or trigger
+            messages = self.manager.list_session_messages(session_id)
+            region = self._find_safe_region(messages)
+            if not region:
+                return None
+            return await self.compact_region(
+                session_id, region[0], region[1], trigger=effective_trigger
+            )
+        return None

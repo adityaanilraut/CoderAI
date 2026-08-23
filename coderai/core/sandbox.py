@@ -6,10 +6,13 @@ spawns (Seatbelt on macOS, bwrap on Linux). Plan-mode force-ask is unchanged.
 
 from __future__ import annotations
 
+import atexit
+import os
 import pathlib
 import shutil
 import sys
 import tempfile
+import time
 from typing import Any
 
 SANDBOX_MODES = ("read-only", "workspace-write", "danger-full-access")
@@ -214,6 +217,50 @@ def sandbox_available(mode: str | None = None) -> bool:
     return False
 
 
+_SEATBELT_TEMP_FILES: set[str] = set()
+
+
+def cleanup_seatbelt_profiles() -> None:
+    """Clean up any registered seatbelt profile files on disk."""
+    for path in list(_SEATBELT_TEMP_FILES):
+        try:
+            if os.path.exists(path):
+                os.unlink(path)
+        except OSError:
+            pass
+        _SEATBELT_TEMP_FILES.discard(path)
+
+
+atexit.register(cleanup_seatbelt_profiles)
+
+
+def delete_seatbelt_profile(path: str | None) -> None:
+    """Delete an individual seatbelt profile file."""
+    if not path:
+        return
+    try:
+        if os.path.exists(path):
+            os.unlink(path)
+    except OSError:
+        pass
+    _SEATBELT_TEMP_FILES.discard(path)
+
+
+def _cleanup_stale_seatbelt_profiles() -> None:
+    """Best-effort cleanup of stale seatbelt profile files older than 1 hour in tempdir."""
+    try:
+        temp_dir = pathlib.Path(tempfile.gettempdir())
+        now = time.time()
+        for p in temp_dir.glob("coderai_sb_*.sb"):
+            try:
+                if now - p.stat().st_mtime > 3600:
+                    p.unlink(missing_ok=True)
+            except OSError:
+                pass
+    except Exception:
+        pass
+
+
 def wrap_sandbox_command(
     argv: list[str],
     *,
@@ -227,13 +274,17 @@ def wrap_sandbox_command(
     if parsed == "danger-full-access":
         return argv, meta
     if sys.platform == "darwin" and shutil.which("sandbox-exec"):
+        _cleanup_stale_seatbelt_profiles()
         profile = build_seatbelt_profile(parsed, workspace_root)
-        handle = tempfile.NamedTemporaryFile("w", suffix=".sb", delete=False, encoding="utf-8")
+        handle = tempfile.NamedTemporaryFile(
+            "w", prefix="coderai_sb_", suffix=".sb", delete=False, encoding="utf-8"
+        )
         try:
             handle.write(profile)
             handle.flush()
         finally:
             handle.close()
+        _SEATBELT_TEMP_FILES.add(handle.name)
         meta["sandboxApplied"] = True
         meta["sandboxBackend"] = "seatbelt"
         meta["sandboxProfile"] = handle.name
@@ -262,3 +313,59 @@ def wrap_sandbox_command(
         return bwrap, meta
     meta["sandboxSkipped"] = "no sandbox backend on this platform"
     return argv, meta
+
+
+def check_sandbox_path_access(
+    target_path: str | pathlib.Path,
+    op: str = "write",  # "read" | "write" | "delete"
+    *,
+    mode: str | None = None,
+    workspace_root: str | pathlib.Path | None = None,
+) -> tuple[bool, str | None]:
+    """Validate whether a file operation on target_path is permitted under sandbox mode."""
+    parsed = parse_sandbox_mode(mode) or DEFAULT_SANDBOX_MODE
+    if parsed == "danger-full-access":
+        return True, None
+
+    try:
+        p = pathlib.Path(target_path).resolve()
+        ws_root = pathlib.Path(workspace_root or ".").resolve()
+    except Exception as exc:
+        return False, f"SANDBOX_VIOLATION: Invalid path '{target_path}': {exc}"
+
+    if op in ("write", "delete"):
+        if parsed == "read-only":
+            return False, f"SANDBOX_VIOLATION: Cannot {op} file '{target_path}' under 'read-only' sandbox policy."
+
+        if parsed == "workspace-write":
+            # Allow workspace paths and standard temporary directories (/tmp, /private/tmp)
+            tmp_candidates = [
+                "/tmp",
+                "/private/tmp",
+            ]
+            tmp_paths = [pathlib.Path(t).resolve() for t in tmp_candidates if os.path.exists(t)]
+
+            is_under_ws = False
+            try:
+                p.relative_to(ws_root)
+                is_under_ws = True
+            except ValueError:
+                is_under_ws = False
+
+            is_under_tmp = False
+            for t in tmp_paths:
+                try:
+                    p.relative_to(t)
+                    is_under_tmp = True
+                    break
+                except ValueError:
+                    continue
+
+            if not is_under_ws and not is_under_tmp:
+                return (
+                    False,
+                    f"SANDBOX_VIOLATION: Write/delete operation to '{target_path}' outside workspace root '{ws_root}' is blocked under 'workspace-write' sandbox policy.",
+                )
+
+    return True, None
+

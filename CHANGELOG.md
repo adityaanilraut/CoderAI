@@ -59,7 +59,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Multi-line & Advanced Input Buffering Engine**: Support for multi-line code block entry (` ``` ` triple backtick blocks), trailing backslash (`\`) line continuations, and paste buffering without premature turn submission.
 - **Fuzzy Subsequence Completion & Ranking**: Integrated fuzzy matching engine across slash commands (`/undo`, `/compact`, `/history`), subcommands (`/mcp reconnect`, `/thinking summary`), `@file` workspace suggestions, model selection, and session search.
 - **Dynamic Context Window Gauges**: Accurate real-time token % gauges in status bar with green (<60%), yellow (60-80%), and red (>80%) context utilization indicators.
-- **Headless JSON-RPC 2.0 Server Mode & IDE Companion Bridge**: Added `coderai serve` / `coderai --server` protocol for editor extensions with streaming event notifications (`turn_start`, `stream_chunk`, `tool_call`, `tool_result`, `ask_permission`, `ask_question`, `turn_finish`).
 - **Dual CLI Entry Point**: Registered official shorthand alias `cai` alongside `coderai`.
 - **Complete Interactive Slash Commands Suite**: Added `/fork`, `/delete` (`/rm`), `/mcp`, `/tokens` (`/cost`), `/config` (`/settings`), `/history`, `/export`, `/compact`, `/thinking`, and `/clear`.
 - **Readline Autocompletion & Persistent History**: Full `readline` integration with tab completion for slash commands, models, and `@file` workspace paths, plus persistent prompt history across sessions in `~/.coderai/history`.

@@ -171,20 +171,14 @@ def create_openai_client(
 
     try:
         from openai import OpenAI
+        try:
+            import openai.resources.chat
+            import openai.resources.models
+        except Exception:
+            pass
 
         client_instance = OpenAI(api_key=api_key, base_url=base_url or None)
         _client_pool[cache_key] = client_instance
-
-        # Fire-and-forget warmup: pre-establish TCP+TLS connection in background
-        import threading
-
-        def _warmup() -> None:
-            try:
-                client_instance.models.list(timeout=3.0)
-            except Exception:
-                pass
-
-        threading.Thread(target=_warmup, daemon=True).start()
     except Exception:
         client_instance = None
 

@@ -49,6 +49,8 @@ class TerminalSession:
         name: str | None = None,
         cwd: str | None = None,
         env: dict[str, str] | None = None,
+        sandbox_mode: str | None = None,
+        workspace_root: str | None = None,
     ) -> None:
         self.session_id = session_id
         self.name = name or f"terminal-{session_id}"
@@ -70,6 +72,17 @@ class TerminalSession:
             cmd_args = list(command)
         self.process_type = os.path.basename(cmd_args[0])
 
+        self._sandbox_meta: dict[str, Any] = {}
+        if sandbox_mode:
+            from coderai.core.sandbox import wrap_sandbox_command
+
+            cmd_args, self._sandbox_meta = wrap_sandbox_command(
+                cmd_args,
+                mode=sandbox_mode,
+                workspace_root=workspace_root or self.cwd,
+                cwd=self.cwd,
+            )
+
         # Open pseudo-terminal pair
         self.master_fd, self.slave_fd = pty.openpty()
 
@@ -86,6 +99,11 @@ class TerminalSession:
                 close_fds=True,
             )
         except Exception:
+            profile = self._sandbox_meta.get("sandboxProfile")
+            if profile:
+                from coderai.core.sandbox import delete_seatbelt_profile
+
+                delete_seatbelt_profile(profile)
             os.close(self.master_fd)
             os.close(self.slave_fd)
             raise
@@ -206,6 +224,12 @@ class TerminalSession:
             except Exception:
                 pass
 
+        profile = getattr(self, "_sandbox_meta", {}).get("sandboxProfile")
+        if profile:
+            from coderai.core.sandbox import delete_seatbelt_profile
+
+            delete_seatbelt_profile(profile)
+
         if self.master_fd >= 0:
             try:
                 os.close(self.master_fd)
@@ -246,6 +270,8 @@ class TerminalManager:
         name: str | None = None,
         cwd: str | None = None,
         env: dict[str, str] | None = None,
+        sandbox_mode: str | None = None,
+        workspace_root: str | None = None,
     ) -> TerminalSession:
         """Create and spawn a new persistent terminal session."""
         if command is None:
@@ -264,12 +290,19 @@ class TerminalManager:
             name=name,
             cwd=cwd,
             env=env,
+            sandbox_mode=sandbox_mode,
+            workspace_root=workspace_root,
         )
         self._sessions[session_id] = term
         return term
 
     def get_session(self, session_id: str) -> TerminalSession | None:
-        return self._sessions.get(session_id)
+        if session_id in self._sessions:
+            return self._sessions[session_id]
+        for term in self._sessions.values():
+            if term.name == session_id:
+                return term
+        return None
 
     def list_sessions(self) -> list[TerminalSessionStatus]:
         return [s.status() for s in self._sessions.values()]

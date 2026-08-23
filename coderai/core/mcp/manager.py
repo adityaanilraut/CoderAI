@@ -7,7 +7,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from typing import Any
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 from coderai.core.mcp.client import McpClient
 from coderai.core.tools.types import ToolResult
@@ -114,10 +114,89 @@ class McpManager:
         self.server_statuses: list[McpServerStatus] = []
         self.configured_server_names: list[str] = []
         self.server_configs: dict[str, dict[str, Any]] = {}
+        self.session_tool_masks: dict[str, dict[str, set[str]]] = {}
         self.initialized = False
         self.disposed = False
         self.on_tools_list_changed: Callable[[], None] | None = None
         self.on_status_changed: Callable[[], None] | None = None
+
+    def set_session_tool_mask(
+        self,
+        session_id: str,
+        allow: Sequence[str] | set[str] | None = None,
+        deny: Sequence[str] | set[str] | None = None,
+    ) -> None:
+        """Set an allow/deny tool mask for a specific session."""
+        mask: dict[str, set[str]] = {}
+        if allow is not None:
+            mask["allow"] = set(allow)
+        if deny is not None:
+            mask["deny"] = set(deny)
+        self.session_tool_masks[session_id] = mask
+
+    def get_session_tool_mask(self, session_id: str) -> dict[str, set[str]] | None:
+        """Get the active tool mask for a session."""
+        return self.session_tool_masks.get(session_id)
+
+    def clear_session_tool_mask(self, session_id: str) -> None:
+        """Clear the active tool mask for a session."""
+        self.session_tool_masks.pop(session_id, None)
+
+    def is_tool_enabled_for_session(self, session_id: str | None, tool_name: str) -> bool:
+        """Check if an MCP tool is permitted under the session's active tool mask."""
+        if not session_id or session_id not in self.session_tool_masks:
+            return True
+        mask = self.session_tool_masks[session_id]
+        allow_set = mask.get("allow")
+        deny_set = mask.get("deny")
+        if allow_set is not None and tool_name not in allow_set:
+            return False
+        if deny_set is not None and tool_name in deny_set:
+            return False
+        return True
+
+    def eject_server(self, name: str) -> bool:
+        """Dynamically eject and disconnect an MCP server and purge all its registered tools."""
+        client = next((c for c in self.clients if c.server_name == name), None)
+        if client:
+            try:
+                import asyncio
+
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    loop.create_task(client.disconnect())
+                else:
+                    loop.run_until_complete(client.disconnect())
+            except Exception:
+                pass
+        existed = (
+            any(c.server_name == name for c in self.clients)
+            or any(t.server_name == name for t in self.tools)
+            or name in self.configured_server_names
+            or name in self.server_configs
+        )
+        self.clients = [c for c in self.clients if c.server_name != name]
+        self.tools = [t for t in self.tools if t.server_name != name]
+        self.prompts = [p for p in self.prompts if p.get("server_name") != name]
+        self.resources = [r for r in self.resources if r.get("server_name") != name]
+        self.server_statuses = [s for s in self.server_statuses if s.name != name]
+        if name in self.configured_server_names:
+            self.configured_server_names.remove(name)
+        self.server_configs.pop(name, None)
+        if existed:
+            if self.on_tools_list_changed:
+                self.on_tools_list_changed()
+            if self.on_status_changed:
+                self.on_status_changed()
+        return existed
+
+    async def reload_server(self, name: str, config: dict[str, Any] | None = None) -> bool:
+        """Dynamically reload or reconnect an MCP server with fresh schemas."""
+        return await self.reconnect(name, config)
+
+    def list_active_servers(self) -> list[str]:
+        """Return a list of currently active and connected MCP server names."""
+        return [c.server_name for c in self.clients if c.is_connected()]
 
     def set_on_tools_list_changed(self, handler: Callable[[], None]) -> None:
         self.on_tools_list_changed = handler
@@ -232,7 +311,13 @@ class McpManager:
         status = next((s for s in self.server_statuses if s.name == name), None)
         return status.connected if status else False
 
-    def list_tools(self) -> list[McpToolEntry]:
+    def list_tools(self, session_id: str | None = None) -> list[McpToolEntry]:
+        if session_id:
+            return [
+                t
+                for t in self.tools
+                if self.is_tool_enabled_for_session(session_id, t.namespaced_name)
+            ]
         return list(self.tools)
 
     def get_prompts(self) -> list[dict[str, Any]]:
@@ -408,9 +493,10 @@ class McpManager:
                 )
         return result
 
-    def get_mcp_tool_definitions(self) -> list[dict[str, Any]]:
+    def get_mcp_tool_definitions(self, session_id: str | None = None) -> list[dict[str, Any]]:
         defs: list[dict[str, Any]] = []
-        for t in self.tools:
+        target_tools = self.list_tools(session_id=session_id)
+        for t in target_tools:
             input_schema = t.definition.get("inputSchema") or {}
             props = input_schema.get("properties") or {}
             params: dict[str, Any] = {
@@ -445,12 +531,24 @@ class McpManager:
             return desc
         return f"{desc}\nMCP source: {source}"
 
-    def is_mcp_tool(self, name: str) -> bool:
+    def is_mcp_tool(self, name: str, session_id: str | None = None) -> bool:
+        if session_id and not self.is_tool_enabled_for_session(session_id, name):
+            return False
         return name.startswith("mcp__") and any(t.namespaced_name == name for t in self.tools)
 
     async def execute_mcp_tool(
-        self, name: str, args: dict[str, Any], timeout_s: float = 60.0
+        self,
+        name: str,
+        args: dict[str, Any],
+        timeout_s: float = 60.0,
+        session_id: str | None = None,
     ) -> ToolResult:
+        if session_id and not self.is_tool_enabled_for_session(session_id, name):
+            return ToolResult(
+                ok=False,
+                name=name,
+                error=f"MCP tool '{name}' is disabled for session '{session_id}'",
+            )
         tool = next((t for t in self.tools if t.namespaced_name == name), None)
         if not tool:
             return ToolResult(ok=False, name=name, error=f"Unknown MCP tool: {name}")

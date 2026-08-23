@@ -20,7 +20,9 @@ SKILL_RESOURCE_EXCLUDED_DIRS = {
 
 
 def _escape(value: str) -> str:
-    return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+    return (
+        value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+    )
 
 
 def strip_skill_prompt_metadata(content: str) -> str:

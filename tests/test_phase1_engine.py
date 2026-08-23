@@ -7,28 +7,17 @@ Validates:
 4. CLI entry point invocation and argument parsing.
 """
 
-import json
-import pytest
 from unittest.mock import MagicMock
 
 from coderai.core.events import (
     SessionEvent,
-    make_turn_start,
-    make_turn_end,
-    make_step_start,
-    make_step_end,
     make_user_event,
-    make_assistant_event,
-    make_tool_call_event,
-    make_tool_result_event,
-    make_request_header,
     derive_messages_from_events,
     TURN_START,
     TURN_END,
     STEP_START,
     STEP_END,
     REQUEST_HEADER,
-    USER_MESSAGE,
     ASSISTANT_MESSAGE,
     TOOL_CALL,
     TOOL_RESULT,
@@ -115,7 +104,9 @@ def test_trajectory_derivation_from_loop_events():
     loop.emit_turn_start()
 
     # User message manually appended to log
-    user_ev = make_user_event(seq=manager._next_seq("sess_trajectory"), content="Help me write code")
+    user_ev = make_user_event(
+        seq=manager._next_seq("sess_trajectory"), content="Help me write code"
+    )
     emitted_events.append(user_ev)
 
     loop.emit_step_start()

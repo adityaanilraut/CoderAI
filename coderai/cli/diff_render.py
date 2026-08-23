@@ -55,24 +55,39 @@ def format_diff_text(diff_text: str) -> Text | str:
 
 
 def render_diff_preview(console: Any | None, diff_text: str, title: str = "Diff Preview") -> None:
-    """Render a formatted diff block inside a Rich panel or fallback to standard output."""
+    """Render a clean, compact diff preview with syntax highlighting and line stats."""
     if not diff_text.strip():
         return
 
     added, removed = parse_diff_stats(diff_text)
-    stats_badge = f" • [green]+{added}[/] [red]-{removed}[/]" if (added > 0 or removed > 0) else ""
 
-    if console is not None and _RICH and Panel is not None:
-        formatted = format_diff_text(diff_text)
-        panel = Panel(
-            formatted,
-            title=f"[bold cyan]{title}[/]{stats_badge}",
-            border_style="cyan",
-            padding=(0, 1),
-        )
-        console.print(panel)
+    if console is not None and _RICH and Text is not None:
+        header = Text()
+        header.append("    ↳ ", style="dim cyan")
+        header.append(title, style="bold cyan")
+        if added > 0 or removed > 0:
+            header.append(f" +{added}", style="bold green")
+            header.append(f" -{removed}", style="bold red")
+        console.print(header)
+
+        diff_body = Text()
+        for line in diff_text.splitlines():
+            if line.startswith("--- ") or line.startswith("+++ "):
+                diff_body.append(f"      {line}\n", style="bold cyan")
+            elif line.startswith("@@"):
+                diff_body.append(f"      {line}\n", style="bold magenta")
+            elif line.startswith("+"):
+                diff_body.append(f"      {line}\n", style="green")
+            elif line.startswith("-"):
+                diff_body.append(f"      {line}\n", style="red")
+            elif line.startswith("\\"):
+                diff_body.append(f"      {line}\n", style="dim italic")
+            else:
+                diff_body.append(f"      {line}\n", style="dim white")
+        console.print(diff_body)
     else:
         stats_plain = f" (+{added}, -{removed})" if (added > 0 or removed > 0) else ""
-        print(f"\n--- {title}{stats_plain} ---")
+        print(f"    ↳ {title}{stats_plain}")
         for line in diff_text.splitlines():
-            print(f"  {line}")
+            print(f"      {line}")
+

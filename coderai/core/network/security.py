@@ -143,8 +143,8 @@ def validate_outbound_url(url: str, policy: NetworkPolicy | None = None) -> tupl
         except socket.gaierror:
             # Name resolution failed - let HTTP client handle connection failure
             pass
-        except Exception:
-            pass
+        except Exception as exc:
+            return False, f"Failed to resolve host '{hostname}' safely: {exc}"
 
     # 3. Check allowed domains (if allowlist is populated)
     if policy.allowed_domains:

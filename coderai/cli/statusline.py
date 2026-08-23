@@ -294,10 +294,10 @@ class StatuslineEngine:
             model, active_tokens, plan_mode, branch, turns=turns, mcp_count=mcp_count
         )
         if console is not None and _RICH:
-            console.print()
             console.print(bar)
         else:
-            print(f"\n{bar}")
+            print(f"{bar}")
+
 
 
 _DEFAULT_ENGINE = StatuslineEngine()

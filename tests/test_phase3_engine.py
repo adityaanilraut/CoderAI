@@ -8,19 +8,13 @@ Validates:
 """
 
 import pathlib
-import pytest
-from unittest.mock import MagicMock
 
 from coderai.core.compaction import (
-    BasicCompaction,
     ToolResultPruner,
-    CompactionResult,
 )
 from coderai.core.events import (
-    SessionEvent,
     make_user_event,
     make_assistant_event,
-    make_tool_call_event,
     make_tool_result_event,
     make_compaction_summary,
     derive_messages_from_events,
@@ -30,7 +24,6 @@ from coderai.core.prompt_sections import (
     PromptSection,
     assemble_sections,
     order_tools,
-    TOOL_ORDER,
 )
 
 
@@ -56,7 +49,11 @@ def test_compaction_shadow_event_derivation():
     events = [
         make_user_event(seq=0, content="Analyze this repo"),
         make_assistant_event(
-            seq=1, turn=1, step=1, content="I'll search", tool_calls=[{"id": "c1", "function": {"name": "grep"}}]
+            seq=1,
+            turn=1,
+            step=1,
+            content="I'll search",
+            tool_calls=[{"id": "c1", "function": {"name": "grep"}}],
         ),
         make_tool_result_event(seq=2, turn=1, step=1, call_id="c1", content="Found 10 files"),
         make_compaction_summary(

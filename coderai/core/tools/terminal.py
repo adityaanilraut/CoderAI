@@ -21,12 +21,23 @@ def handle_terminal_open_tool(args: dict[str, Any], context: Any) -> ToolResult:
     cwd = as_str(args.get("cwd", "")).strip() or None
 
     project_root = getattr(context, "project_root", ".") if context else "."
+    sandbox_mode = getattr(context, "sandbox_mode", None)
+    if isinstance(context, dict):
+        sandbox_mode = context.get("sandbox_mode", sandbox_mode)
+        project_root = context.get("project_root", project_root)
+
     if not cwd:
         cwd = project_root
 
     mgr = get_terminal_manager()
     try:
-        term = mgr.open_session(command=shell_type, name=name, cwd=cwd)
+        term = mgr.open_session(
+            command=shell_type,
+            name=name,
+            cwd=cwd,
+            sandbox_mode=sandbox_mode,
+            workspace_root=str(project_root),
+        )
         # Give the shell a moment to emit initial prompt
         initial_output = term.read_available(timeout_s=0.2)
         out = {
@@ -37,6 +48,8 @@ def handle_terminal_open_tool(args: dict[str, Any], context: Any) -> ToolResult:
             "cwd": term.cwd,
             "output": initial_output,
         }
+        if getattr(term, "_sandbox_meta", None):
+            out["sandbox"] = term._sandbox_meta
         return ToolResult(
             ok=True,
             name="terminal_open",

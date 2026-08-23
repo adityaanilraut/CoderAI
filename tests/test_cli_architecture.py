@@ -3,13 +3,10 @@
 from __future__ import annotations
 
 import pathlib
-import pytest
 
-from coderai._version import __version__
-from coderai.cli.app import _build_parser, _build_manager
+from coderai.cli.app import _build_parser
 from coderai.core.permissions import compute_tool_call_permissions, PLAN_MODE_FORCE_ASK_SCOPES
-from coderai.core.prompt import get_system_prompt, get_tools, load_skill
-from coderai.core.session import SessionManager
+from coderai.core.prompt import get_system_prompt, get_tools
 from coderai.core.state import (
     clear_session_state,
     record_file_state,

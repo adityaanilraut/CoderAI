@@ -39,9 +39,7 @@ def extract_usage_dict(raw: Any) -> dict[str, int]:
             or 0
         )
         creation = int(
-            raw.get("cache_creation_input_tokens")
-            or raw.get("prompt_cache_creation_tokens")
-            or 0
+            raw.get("cache_creation_input_tokens") or raw.get("prompt_cache_creation_tokens") or 0
         )
         miss = raw.get("prompt_cache_miss_tokens")
         if miss is None:
@@ -131,8 +129,12 @@ def accumulate_usage_dict(
         "total_tokens": c.get("total_tokens", 0) + extracted["total_tokens"],
         "cached_tokens": c.get("cached_tokens", 0) + extracted["cached_tokens"],
         "uncached_tokens": c.get("uncached_tokens", 0) + extracted["uncached_tokens"],
-        "prompt_cache_hit_tokens": c.get("prompt_cache_hit_tokens", 0) + extracted["prompt_cache_hit_tokens"],
-        "prompt_cache_miss_tokens": c.get("prompt_cache_miss_tokens", 0) + extracted["prompt_cache_miss_tokens"],
-        "cache_creation_input_tokens": c.get("cache_creation_input_tokens", 0) + extracted["cache_creation_input_tokens"],
-        "cache_read_input_tokens": c.get("cache_read_input_tokens", 0) + extracted["cache_read_input_tokens"],
+        "prompt_cache_hit_tokens": c.get("prompt_cache_hit_tokens", 0)
+        + extracted["prompt_cache_hit_tokens"],
+        "prompt_cache_miss_tokens": c.get("prompt_cache_miss_tokens", 0)
+        + extracted["prompt_cache_miss_tokens"],
+        "cache_creation_input_tokens": c.get("cache_creation_input_tokens", 0)
+        + extracted["cache_creation_input_tokens"],
+        "cache_read_input_tokens": c.get("cache_read_input_tokens", 0)
+        + extracted["cache_read_input_tokens"],
     }

@@ -358,3 +358,145 @@ async def test_clear_task_cancellation():
 
     _clear_task_cancellation()
     assert task.cancelling() == 0
+
+
+def test_claude_style_tool_events_and_stream_transitions():
+    """Verify sequential event rendering and stream state lifecycle."""
+    from coderai.cli.app import _StreamState, _on_assistant_message
+    from rich.console import Console
+
+    console = Console()
+    state = _StreamState()
+
+    # 1. Thinking chunk transition to content streaming
+    state.on_thinking_chunk("Analyzing codebase architecture...")
+    assert state.thinking_streamer.is_active
+    state.on_chunk("Here is the updated solution.")
+    assert state.is_streaming
+    assert state.had_streamed()
+    assert not state.thinking_streamer.is_active
+
+    # Ensure newline finishes streaming cleanly
+    assert state.ensure_newline() is True
+    assert not state.is_streaming
+
+    # 2. Assistant message tool invocations
+    tool_call_mock = {
+        "id": "tc_1",
+        "type": "function",
+        "function": {"name": "read", "arguments": "{}"},
+    }
+    msg_asst = SessionMessage(
+        id="asst_1",
+        session_id="sess_1",
+        role="assistant",
+        content="",
+        tool_calls=[tool_call_mock],
+    )
+    _on_assistant_message(msg_asst, False)
+
+    # 3. Tool results render as compact sequential events
+    tool_result_msg = SessionMessage(
+        id="tool_1",
+        session_id="sess_1",
+        role="tool",
+        content='{"name": "bash", "ok": true, "output": "test passed\\n2 tests in 0.05s", "metadata": {"command": "pytest", "exit_code": 0}}',
+    )
+    render_tool_card(console, tool_result_msg)
+
+    # 4. Thinking trace expanded and compact
+    render_thinking_block(console, "Step 1: Check imports\nStep 2: Run tests", expanded=True)
+    render_thinking_block(console, "Quick thought", expanded=False)
+
+
+def test_prompt_user_questions_claude_style(monkeypatch: pytest.MonkeyPatch):
+    """Verify AskUserQuestion interactive questioning formats and answer parsing."""
+    from coderai.cli.app import _prompt_user_questions
+
+    questions = [
+        {
+            "question": "Which database would you like to use?",
+            "options": [
+                {"label": "PostgreSQL", "description": "Production SQL database"},
+                {"label": "SQLite", "description": "Local embedded database"},
+            ],
+            "multiSelect": False,
+        },
+        {
+            "question": "Select required features",
+            "options": [
+                {"label": "Auth", "description": "JWT authentication"},
+                {"label": "RateLimiting", "description": "Token bucket rate limiting"},
+            ],
+            "multiSelect": True,
+        },
+    ]
+
+    # Test numerical single-select and comma multi-select
+    inputs = ["1", "1, 2"]
+    monkeypatch.setattr("builtins.input", lambda _: inputs.pop(0))
+    result = _prompt_user_questions(questions)
+    assert "Which database would you like to use?: PostgreSQL" in result
+    assert "Select required features: Auth, RateLimiting" in result
+
+    # Test custom answer text
+    custom_inputs = ["MongoDB", "Monitoring"]
+    monkeypatch.setattr("builtins.input", lambda _: custom_inputs.pop(0))
+    custom_result = _prompt_user_questions(questions)
+    assert "Which database would you like to use?: MongoDB" in custom_result
+    assert "Select required features: Monitoring" in custom_result
+
+
+def test_prompt_user_questions_arrow_selection():
+    """Verify arrow navigation integration for AskUserQuestion."""
+    from unittest.mock import patch
+    from coderai.cli.app import _prompt_user_questions
+
+    questions = [
+        {
+            "question": "Which database would you like to use?",
+            "options": [
+                {"label": "PostgreSQL", "description": "Production SQL database"},
+                {"label": "SQLite", "description": "Local embedded database"},
+            ],
+            "multiSelect": False,
+        }
+    ]
+
+    # Arrow selection index 1 -> SQLite
+    with patch("coderai.cli.app.select_with_arrows", return_value=1):
+        res = _prompt_user_questions(questions)
+        assert "Which database would you like to use?: SQLite" in res
+
+    # Custom typed value
+    with patch("coderai.cli.app.select_with_arrows", return_value="DuckDB"):
+        res_custom = _prompt_user_questions(questions)
+        assert "Which database would you like to use?: DuckDB" in res_custom
+
+
+def test_select_with_arrows_custom_numbering_and_selection(monkeypatch: pytest.MonkeyPatch):
+    """Verify select_with_arrows numbers Custom sequentially and supports quick select."""
+    from coderai.cli.interactive_menu import select_with_arrows
+    from rich.console import Console
+
+    console = Console()
+    items = [
+        ("opt1", "Keyboard", "Navigate using keyboard"),
+        ("opt2", "Mouse", "Pointer input"),
+        ("opt3", "Both", "Keyboard + mouse"),
+    ]
+
+    # In non-TTY mode, custom is option 4
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    monkeypatch.setattr("builtins.input", lambda _: "2")
+    res_num = select_with_arrows(console, items, title="Question 2/3", allow_custom=True)
+    assert res_num == 1  # 2 - 1 = 0-indexed 1
+
+    # In non-TTY mode, selecting custom option 4 returns empty or custom text
+    monkeypatch.setattr("builtins.input", lambda _: "Custom text")
+    res_custom = select_with_arrows(console, items, title="Question 2/3", allow_custom=True)
+    assert res_custom == "Custom text"
+
+
+
+

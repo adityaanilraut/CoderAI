@@ -11,18 +11,14 @@ import pytest
 from unittest.mock import MagicMock
 
 from coderai.core.tools.registry import ToolRegistry
-from coderai.core.tools.executor import ToolExecutor
 from coderai.core.tools.types import ToolDefinition, ToolResult, ValidationError
 from coderai.core.network.security import (
     is_private_or_loopback_ip,
     validate_outbound_url,
     NetworkPolicy,
-    NetworkSecurityError,
 )
 from coderai.core.network.sanitizer import (
     extract_and_sanitize_html,
-    sanitize_prompt_injection,
-    clean_markdown_whitespace,
 )
 from coderai.core.approval import (
     ApprovalService,
@@ -30,7 +26,6 @@ from coderai.core.approval import (
     ApprovalPolicy,
     ApprovalRequest,
 )
-from coderai.core.permissions import compute_tool_call_permissions
 
 
 def test_primitive_tool_registry_schemas_and_validation():
@@ -96,9 +91,15 @@ def test_network_ssrf_and_private_ip_guard():
     policy = NetworkPolicy(allow_private_ips=False, enforce_ssrf_protection=True)
     is_valid, reason = validate_outbound_url("http://127.0.0.1/secret", policy)
     assert is_valid is False
-    assert "private" in (reason or "").lower() or "loopback" in (reason or "").lower() or "ssrf" in (reason or "").lower()
+    assert (
+        "private" in (reason or "").lower()
+        or "loopback" in (reason or "").lower()
+        or "ssrf" in (reason or "").lower()
+    )
 
-    is_valid_cloud, reason_cloud = validate_outbound_url("http://169.254.169.254/latest/meta-data/", policy)
+    is_valid_cloud, reason_cloud = validate_outbound_url(
+        "http://169.254.169.254/latest/meta-data/", policy
+    )
     assert is_valid_cloud is False
 
 

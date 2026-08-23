@@ -395,10 +395,13 @@ def resolve_current_settings(project_root: str = ".") -> dict[str, Any]:
         "temperature": temperature,
         "thinkingEnabled": thinking_enabled,
         "reasoningEffort": (
-            parse_reasoning_effort(system_env.get("REASONING_EFFORT"))
+            parse_reasoning_effort(system_env.get("CODERAI_REASONING_EFFORT"))
+            or parse_reasoning_effort(system_env.get("REASONING_EFFORT"))
             or parse_reasoning_effort(project.get("reasoningEffort"))
+            or parse_reasoning_effort(project_env.get("CODERAI_REASONING_EFFORT"))
             or parse_reasoning_effort(project_env.get("REASONING_EFFORT"))
             or parse_reasoning_effort(user.get("reasoningEffort"))
+            or parse_reasoning_effort(user_env.get("CODERAI_REASONING_EFFORT"))
             or parse_reasoning_effort(user_env.get("REASONING_EFFORT"))
             or DEFAULT_REASONING_EFFORT
         ),

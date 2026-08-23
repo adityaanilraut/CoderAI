@@ -1,17 +1,32 @@
-"""Language Server Protocol (LSP) Client and Fallback Static Analyzer."""
+"""Language Server Protocol (LSP) Client and Fallback Static Analyzer.
+
+Provides live JSON-RPC stdio language server connections for Python, TypeScript/JS,
+Go, Rust, C/C++ with robust static analysis fallback when binaries are absent.
+"""
 
 from __future__ import annotations
 
 import ast
+import asyncio
+import logging
 import os
 import pathlib
 import re
 import shutil
 import subprocess
 import threading
-from dataclasses import dataclass
 from typing import Any
-from urllib.parse import unquote, urlparse
+
+from coderai.core.lsp.instance import LspInstance
+from coderai.core.lsp.protocol import (
+    LspHoverResult,
+    LspLocation,
+    LspSymbol,
+    file_to_uri,
+    uri_to_file,
+)
+
+logger = logging.getLogger(__name__)
 
 LSP_SERVER_COMMANDS: dict[str, list[str]] = {
     ".py": ["pyright-langserver", "--stdio"],
@@ -26,76 +41,12 @@ LSP_SERVER_COMMANDS: dict[str, list[str]] = {
 }
 
 
-@dataclass
-class LspLocation:
-    path: str
-    line: int  # 1-based
-    character: int  # 1-based
-    end_line: int | None = None
-    end_character: int | None = None
-    snippet: str | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        d: dict[str, Any] = {
-            "path": self.path,
-            "line": self.line,
-            "character": self.character,
-        }
-        if self.end_line is not None:
-            d["endLine"] = self.end_line
-        if self.end_character is not None:
-            d["endCharacter"] = self.end_character
-        if self.snippet:
-            d["snippet"] = self.snippet
-        return d
-
-
-@dataclass
-class LspHoverResult:
-    contents: str
-    range: dict[str, Any] | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        return {"contents": self.contents, "range": self.range}
-
-
-@dataclass
-class LspSymbol:
-    name: str
-    kind: str
-    path: str
-    line: int
-    character: int
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "name": self.name,
-            "kind": self.kind,
-            "path": self.path,
-            "line": self.line,
-            "character": self.character,
-        }
-
-
-def _file_to_uri(file_path: str) -> str:
-    p = pathlib.Path(file_path).resolve()
-    return p.as_uri()
-
-
-def _uri_to_file(uri: str) -> str:
-    parsed = urlparse(uri)
-    if parsed.scheme == "file":
-        return unquote(parsed.path)
-    return uri
-
-
 class LspClient:
-    """LSP Client connecting to local language servers over stdio, with fallback static analysis."""
+    """LSP Client pooling live language server instances over stdio with fallback static analysis."""
 
     def __init__(self, workspace_root: str = ".") -> None:
         self.workspace_root = str(pathlib.Path(workspace_root).resolve())
-        self._servers: dict[str, subprocess.Popen[bytes]] = {}
-        self._req_id = 1
+        self._instances: dict[str, LspInstance] = {}
         self._lock = threading.Lock()
 
     def _find_server_for_ext(self, ext: str) -> list[str] | None:
@@ -110,6 +61,19 @@ class LspClient:
             return ["pylsp"]
         return None
 
+    def _get_or_create_instance(self, ext: str) -> LspInstance | None:
+        cmd = self._find_server_for_ext(ext)
+        if not cmd:
+            return None
+
+        key = f"{ext}:{self.workspace_root}"
+        with self._lock:
+            inst = self._instances.get(key)
+            if inst is None or not inst.is_alive():
+                inst = LspInstance(command=cmd, workspace_root=self.workspace_root)
+                self._instances[key] = inst
+            return inst
+
     def query(
         self,
         operation: str,
@@ -117,6 +81,7 @@ class LspClient:
         line: int,
         character: int,
         project_root: str | None = None,
+        timeout_s: float = 15.0,
     ) -> dict[str, Any]:
         """Execute an LSP query (goToDefinition, findReferences, goToImplementation, hover, documentSymbol)."""
         root = project_root or self.workspace_root
@@ -128,17 +93,40 @@ class LspClient:
         ext = pathlib.Path(abs_path).suffix.lower()
 
         # Check if a live LSP binary is available
-        server_cmd = self._find_server_for_ext(ext)
-        if server_cmd:
+        instance = self._get_or_create_instance(ext)
+        if instance:
             try:
-                res = self._query_live_lsp(server_cmd, operation, abs_path, line, character, root)
+                # Run query in event loop
+                res = self._run_async(
+                    instance.query(
+                        operation=operation,
+                        file_path=abs_path,
+                        line=line,
+                        character=character,
+                        timeout_s=timeout_s,
+                    )
+                )
                 if res and res.get("ok"):
                     return res
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"Live LSP query error: {exc}")
 
         # Fallback static analysis engine
         return self._query_fallback(operation, abs_path, line, character, root)
+
+    def _run_async(self, coro: Any) -> Any:
+        """Run a coroutine from synchronous caller safely."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop and loop.is_running():
+            # If called from an active event loop, run in a separate thread runner
+            fut = asyncio.run_coroutine_threadsafe(coro, loop)
+            return fut.result(timeout=30.0)
+        else:
+            return asyncio.run(coro)
 
     def _query_fallback(
         self,
@@ -200,6 +188,14 @@ class LspClient:
                 "symbols": [sym.to_dict() for sym in symbols],
                 "mode": "fallback_ast",
             }
+        elif operation == "workspaceSymbol":
+            symbols = self._fallback_workspace_symbols(file_path, root)
+            return {
+                "ok": True,
+                "operation": operation,
+                "symbols": [sym.to_dict() for sym in symbols],
+                "mode": "fallback_regex",
+            }
         else:
             return {
                 "ok": False,
@@ -211,7 +207,6 @@ class LspClient:
         if not line_text:
             return ""
         idx = max(0, min(character - 1, len(line_text) - 1))
-        # Expand word under cursor
         start = idx
         while start > 0 and (line_text[start - 1].isalnum() or line_text[start - 1] == "_"):
             start -= 1
@@ -227,11 +222,9 @@ class LspClient:
             return []
         locations: list[LspLocation] = []
 
-        # 1. Check Python AST in current file and surrounding project files
         if current_file.endswith(".py"):
             locations.extend(self._python_ast_find_defs(symbol, current_file))
 
-        # 2. Ripgrep search for def/class/function/const declarations
         pattern = rf"\b(def|class|function|const|let|var|type|interface|fn|func|struct|enum)\s+{re.escape(symbol)}\b"
         try:
             rg_bin = shutil.which("rg") or "rg"
@@ -323,7 +316,6 @@ class LspClient:
         if not symbol:
             return None
 
-        # Check Python docstring via AST
         if file_path.endswith(".py"):
             try:
                 content = "\n".join(lines)
@@ -342,7 +334,6 @@ class LspClient:
             except Exception:
                 pass
 
-        # Generic hover
         curr_line = lines[line_num - 1] if 0 <= line_num - 1 < len(lines) else ""
         return LspHoverResult(contents=f"Symbol: `{symbol}`\nContext: `{curr_line.strip()}`")
 
@@ -351,7 +342,7 @@ class LspClient:
         if file_path.endswith(".py"):
             try:
                 tree = ast.parse(content, filename=file_path)
-                for node in ast.iter_child_nodes(tree):
+                for node in ast.walk(tree):
                     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                         symbols.append(
                             LspSymbol(
@@ -376,17 +367,43 @@ class LspClient:
                 pass
         return symbols
 
-    def _query_live_lsp(
-        self,
-        cmd: list[str],
-        operation: str,
-        file_path: str,
-        line: int,
-        character: int,
-        root: str,
-    ) -> dict[str, Any] | None:
-        # Placeholder for full stdio JSON-RPC lifecycle if server process is running
-        return None
+    def _fallback_workspace_symbols(self, query_str: str, root: str) -> list[LspSymbol]:
+        symbols: list[LspSymbol] = []
+        if not query_str:
+            return symbols
+        try:
+            rg_bin = shutil.which("rg") or "rg"
+            pattern = rf"\b(def|class|function)\s+([a-zA-Z0-9_]*{re.escape(query_str)}[a-zA-Z0-9_]*)\b"
+            cmd = [rg_bin, "-n", pattern, root]
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=5.0)
+            if out.returncode == 0:
+                for line in out.stdout.splitlines():
+                    parts = line.split(":", 2)
+                    if len(parts) >= 3 and parts[1].isdigit():
+                        symbols.append(
+                            LspSymbol(
+                                name=query_str,
+                                kind="symbol",
+                                path=parts[0],
+                                line=int(parts[1]),
+                                character=1,
+                            )
+                        )
+        except Exception:
+            pass
+        return symbols[:50]
+
+    def close(self) -> None:
+        """Close all running language server instances."""
+        with self._lock:
+            instances = list(self._instances.values())
+            self._instances.clear()
+
+        for inst in instances:
+            try:
+                self._run_async(inst.close())
+            except Exception:
+                pass
 
 
 _default_lsp_client: LspClient | None = None

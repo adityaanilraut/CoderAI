@@ -7,8 +7,12 @@ per-tool decisions plus the subset that must be surfaced to the UI as `ask`.
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import pathlib
+import time
+import uuid
+from dataclasses import dataclass, field
 from typing import Any
 from collections.abc import Callable
 
@@ -52,6 +56,213 @@ PLAN_MODE_FORCE_ASK_SCOPES: list[str] = [
 ]
 
 Decision = str  # "allow" | "deny" | "ask"
+
+
+def get_scope_risk_level(scope: str) -> str:
+    """Return risk rating: 'low', 'moderate', 'high', 'critical'."""
+    if scope in ("read-in-cwd", "query-git-log"):
+        return "low"
+    if scope in ("read-out-cwd", "write-in-cwd", "mcp"):
+        return "moderate"
+    if scope in ("write-out-cwd", "delete-in-cwd", "network"):
+        return "high"
+    if scope in ("delete-out-cwd", "mutate-git-log"):
+        return "critical"
+    return "moderate"
+
+
+def get_request_risk_badge(scopes: list[str]) -> tuple[str, str]:
+    """Return (label, color_style) for a set of permission scopes."""
+    if not scopes:
+        return "SAFE", "green"
+    risks = [get_scope_risk_level(s) for s in scopes]
+    if "critical" in risks:
+        return "CRITICAL RISK", "bold white on red"
+    if "high" in risks:
+        return "HIGH RISK", "bold red"
+    if "moderate" in risks:
+        return "MODERATE RISK", "bold yellow"
+    return "LOW RISK", "bold green"
+
+
+def _generate_file_diff_preview(
+    project_root: str,
+    file_path: str,
+    old_str: str | None,
+    new_str: str | None,
+    full_new_content: str | None = None,
+) -> str | None:
+    """Generate a unified diff preview of proposed file changes before execution."""
+    if not file_path:
+        return None
+    try:
+        from coderai.core.common.file_utils import build_diff_preview
+
+        abs_path = (
+            pathlib.Path(file_path)
+            if pathlib.Path(file_path).is_absolute()
+            else (pathlib.Path(project_root) / file_path)
+        ).resolve()
+
+        old_content = (
+            abs_path.read_text(encoding="utf-8", errors="replace")
+            if abs_path.is_file()
+            else ""
+        )
+
+        if full_new_content is not None:
+            new_content = full_new_content
+        elif old_str is not None and new_str is not None:
+            if old_content and old_str in old_content:
+                new_content = old_content.replace(old_str, new_str, 1)
+            else:
+                new_content = new_str
+        else:
+            return None
+
+        diff = build_diff_preview(file_path, old_content, new_content)
+        return diff if diff.strip() else None
+    except Exception:
+        return None
+
+
+@dataclass
+class PermissionTicket:
+    """Capability escalation grant with optional scoping, expiration, and usage quotas."""
+
+    ticket_id: str = field(default_factory=lambda: f"tkt_{uuid.uuid4().hex[:8]}")
+    session_id: str = ""
+    tool_name: str = "*"  # specific tool name or "*" for all tools
+    scope: str = "*"  # specific scope or "*"
+    granted_at: float = field(default_factory=time.time)
+    expires_at: float | None = None
+    max_uses: int | None = None
+    use_count: int = 0
+    pattern: str | None = None  # glob pattern matching target path or command prefix
+
+    def is_valid(
+        self,
+        tool_name: str | None = None,
+        scope: str | None = None,
+        target: str | None = None,
+    ) -> bool:
+        """Check if this ticket is active and matches requested tool, scope, and target."""
+        now = time.time()
+        if self.expires_at is not None and now > self.expires_at:
+            return False
+        if self.max_uses is not None and self.use_count >= self.max_uses:
+            return False
+        if self.tool_name != "*" and tool_name and self.tool_name != tool_name:
+            return False
+        if self.scope != "*" and scope and self.scope != scope:
+            return False
+        if self.pattern and target:
+            if not (
+                fnmatch.fnmatch(target, self.pattern) or target.startswith(self.pattern.rstrip("*"))
+            ):
+                return False
+        return True
+
+    def consume(
+        self,
+        tool_name: str | None = None,
+        scope: str | None = None,
+        target: str | None = None,
+    ) -> bool:
+        if not self.is_valid(tool_name=tool_name, scope=scope, target=target):
+            return False
+        self.use_count += 1
+        return True
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ticket_id": self.ticket_id,
+            "session_id": self.session_id,
+            "tool_name": self.tool_name,
+            "scope": self.scope,
+            "granted_at": self.granted_at,
+            "expires_at": self.expires_at,
+            "max_uses": self.max_uses,
+            "use_count": self.use_count,
+            "pattern": self.pattern,
+        }
+
+
+class PermissionTicketRegistry:
+    """In-memory manager for active permission escalation tickets."""
+
+    def __init__(self) -> None:
+        self._tickets: dict[str, PermissionTicket] = {}
+
+    def grant_ticket(self, ticket: PermissionTicket) -> PermissionTicket:
+        self._tickets[ticket.ticket_id] = ticket
+        return ticket
+
+    def request_escalation(
+        self,
+        session_id: str,
+        tool_name: str = "*",
+        scope: str = "*",
+        duration_seconds: float | None = None,
+        max_uses: int | None = None,
+        pattern: str | None = None,
+    ) -> PermissionTicket:
+        now = time.time()
+        expires_at = (now + duration_seconds) if duration_seconds is not None else None
+        ticket = PermissionTicket(
+            session_id=session_id,
+            tool_name=tool_name,
+            scope=scope,
+            granted_at=now,
+            expires_at=expires_at,
+            max_uses=max_uses,
+            pattern=pattern,
+        )
+        return self.grant_ticket(ticket)
+
+    def check_and_consume(
+        self,
+        session_id: str,
+        tool_name: str,
+        scope: str,
+        target: str | None = None,
+        consume: bool = True,
+    ) -> bool:
+        for t in list(self._tickets.values()):
+            if t.session_id and t.session_id != session_id:
+                continue
+            if t.is_valid(tool_name=tool_name, scope=scope, target=target):
+                if consume:
+                    t.consume(tool_name=tool_name, scope=scope, target=target)
+                return True
+        return False
+
+    def revoke_ticket(self, ticket_id: str) -> bool:
+        return bool(self._tickets.pop(ticket_id, None))
+
+    def list_active_tickets(self, session_id: str | None = None) -> list[PermissionTicket]:
+        now = time.time()
+        res: list[PermissionTicket] = []
+        for t in self._tickets.values():
+            if session_id and t.session_id and t.session_id != session_id:
+                continue
+            if (t.expires_at is None or now <= t.expires_at) and (
+                t.max_uses is None or t.use_count < t.max_uses
+            ):
+                res.append(t)
+        return res
+
+    def clear_session_tickets(self, session_id: str) -> None:
+        to_remove = [tid for tid, t in self._tickets.items() if t.session_id == session_id]
+        for tid in to_remove:
+            self._tickets.pop(tid, None)
+
+
+_ticket_registry = PermissionTicketRegistry()
+
+
+def get_permission_ticket_registry() -> PermissionTicketRegistry:
+    return _ticket_registry
 
 
 def parse_tool_call_for_permissions(tool_call: Any) -> dict[str, Any] | None:
@@ -165,7 +376,11 @@ def describe_tool_permission_request(
 
     if name in ("write", "Write"):
         fp = args.get("file_path") if isinstance(args.get("file_path"), str) else ""
-        return {
+        content = args.get("content") if isinstance(args.get("content"), str) else ""
+        diff_prev = _generate_file_diff_preview(
+            project_root, fp, None, None, full_new_content=content
+        )
+        res = {
             "toolCallId": tool_call["id"],
             "name": name,
             "command": _path_cmd("write", fp),
@@ -175,17 +390,34 @@ def describe_tool_permission_request(
             if fp
             else [],
         }
+        if diff_prev:
+            res["diff_preview"] = diff_prev
+        return res
 
     if name in ("edit", "Edit"):
         fp = args.get("file_path") if isinstance(args.get("file_path"), str) else ""
-        if not fp:
-            snippet_id = args.get("snippet_id") if isinstance(args.get("snippet_id"), str) else ""
-            fp = (
-                resolve_snippet_path(session_id, snippet_id)
-                if (snippet_id and resolve_snippet_path)
-                else ""
-            )
-        return {
+        snippet_id = args.get("snippet_id") if isinstance(args.get("snippet_id"), str) else ""
+        old_str = (
+            args.get("old_str")
+            or args.get("old_string")
+            or args.get("search")
+            or args.get("targetContent")
+        )
+        new_str = (
+            args.get("new_str")
+            or args.get("new_string")
+            or args.get("replace")
+            or args.get("replacementContent")
+        )
+        if not fp and snippet_id and resolve_snippet_path:
+            fp = resolve_snippet_path(session_id, snippet_id) or ""
+        diff_prev = _generate_file_diff_preview(
+            project_root,
+            fp,
+            old_str if isinstance(old_str, str) else None,
+            new_str if isinstance(new_str, str) else None,
+        )
+        res = {
             "toolCallId": tool_call["id"],
             "name": name,
             "command": _path_cmd("edit", fp),
@@ -195,6 +427,9 @@ def describe_tool_permission_request(
             if fp
             else ["write-out-cwd"],
         }
+        if diff_prev:
+            res["diff_preview"] = diff_prev
+        return res
 
     if name in ("bash", "Bash"):
         command = args.get("command") if isinstance(args.get("command"), str) else "bash"
@@ -250,12 +485,24 @@ def describe_tool_permission_request(
                 if fp
                 else ["write-in-cwd"]
             )
-        return {
+        diff_prev = None
+        if cmd == "create":
+            diff_prev = _generate_file_diff_preview(
+                project_root, fp, None, None, full_new_content=args.get("file_text", "")
+            )
+        elif cmd == "str_replace":
+            diff_prev = _generate_file_diff_preview(
+                project_root, fp, args.get("old_str"), args.get("new_str")
+            )
+        res = {
             "toolCallId": tool_call["id"],
             "name": "str_replace_editor",
             "command": f"str_replace_editor {cmd} {fp}".strip(),
             "scopes": scopes,
         }
+        if diff_prev:
+            res["diff_preview"] = diff_prev
+        return res
 
     if name in ("terminal_open", "terminal_send", "terminal_signal", "terminal_close"):
         return {
@@ -485,9 +732,11 @@ def compute_tool_call_permissions(
     force_ask_scopes: list[str] | set[str] | None = None,
     read_permission_exempt_paths: list[str] | None = None,
     resolve_snippet_path: Callable[[str, str], str | None] | None = None,
+    ticket_registry: PermissionTicketRegistry | None = None,
 ) -> dict[str, Any]:
     """Return {"permissions": [...], "askPermissions": [...]}."""
     settings = settings or DEFAULT_PERMISSION_SETTINGS
+    registry = ticket_registry or _ticket_registry
     permissions: list[dict[str, Any]] = []
     ask_permissions: list[dict[str, Any]] = []
 
@@ -505,20 +754,37 @@ def compute_tool_call_permissions(
         decision = evaluate_permission_scopes(
             request["scopes"], settings, force_ask_scopes=force_ask_scopes
         )
-        permissions.append({"toolCallId": tool_call["id"], "permission": decision})
         if decision == "ask":
             ask_scopes = get_scopes_requiring_ask(
                 request["scopes"], settings, force_ask_scopes=force_ask_scopes
             )
-            ask_permissions.append(
-                {
-                    "toolCallId": tool_call["id"],
-                    "scopes": ask_scopes if ask_scopes else request["scopes"],
-                    "name": request["name"],
-                    "command": request["command"],
-                    "description": request.get("description", ""),
-                }
-            )
+            target = request.get("command") or request.get("name")
+            uncovered_scopes: list[str] = []
+            for sc in ask_scopes:
+                if registry.check_and_consume(
+                    session_id, request["name"], sc, target=target, consume=False
+                ):
+                    continue
+                uncovered_scopes.append(sc)
+
+            if not uncovered_scopes:
+                permissions.append({"toolCallId": tool_call["id"], "permission": "allow"})
+            else:
+                permissions.append({"toolCallId": tool_call["id"], "permission": "ask"})
+                ask_permissions.append(
+                    {
+                        "toolCallId": tool_call["id"],
+                        "scopes": uncovered_scopes,
+                        "name": request["name"],
+                        "command": request["command"],
+                        "description": request.get("description", ""),
+                        "diff_preview": request.get("diff_preview"),
+                        "risk_level": get_request_risk_badge(uncovered_scopes)[0],
+                    }
+                )
+        else:
+            permissions.append({"toolCallId": tool_call["id"], "permission": decision})
+
     return {"permissions": permissions, "askPermissions": ask_permissions}
 
 

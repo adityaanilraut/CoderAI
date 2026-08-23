@@ -597,6 +597,10 @@ def handle_read_tool(args: dict[str, Any], context: Any) -> ToolResult:
         },
     )
 
+    from coderai.core.tools.observation import get_observation_tracker
+
+    get_observation_tracker().record_observation(session_id, file_path, content=raw)
+
     formatted_output = _format_with_line_numbers(selected, start_line)
 
     if is_partial_view:

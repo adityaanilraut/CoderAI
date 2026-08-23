@@ -82,6 +82,12 @@ def test_str_replace_editor_replace_and_undo(temp_workspace, tool_context):
     with open(file_path, "w") as f:
         f.write("apple\nbanana\ncherry\n")
 
+    # View first to observe the file
+    handle_str_replace_editor_tool(
+        {"command": "view", "path": file_path},
+        tool_context,
+    )
+
     # 1. Successful unique replacement
     res = handle_str_replace_editor_tool(
         {
@@ -119,6 +125,11 @@ def test_str_replace_editor_insert(temp_workspace, tool_context):
     with open(file_path, "w") as f:
         f.write("Line 1\nLine 2\n")
 
+    handle_str_replace_editor_tool(
+        {"command": "view", "path": file_path},
+        tool_context,
+    )
+
     res = handle_str_replace_editor_tool(
         {
             "command": "insert",
@@ -138,6 +149,11 @@ def test_str_replace_editor_duplicate_match_error(temp_workspace, tool_context):
     file_path = os.path.join(temp_workspace, "dup.txt")
     with open(file_path, "w") as f:
         f.write("foo\nbar\nfoo\n")
+
+    handle_str_replace_editor_tool(
+        {"command": "view", "path": file_path},
+        tool_context,
+    )
 
     res = handle_str_replace_editor_tool(
         {

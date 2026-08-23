@@ -176,10 +176,40 @@ class HttpClient:
         if headers:
             req_headers.update(headers)
 
+        current = url
         try:
-            resp = self._session.post(
-                url, data=data, json=json_data, headers=req_headers, timeout=timeout
-            )
+            resp = None
+            for _ in range(10):
+                check_outbound_url(current, self.policy)
+                resp = self._session.post(
+                    current,
+                    data=data,
+                    json=json_data,
+                    headers=req_headers,
+                    timeout=timeout,
+                    allow_redirects=False,
+                )
+                if resp.is_redirect or resp.is_permanent_redirect:
+                    location = resp.headers.get("Location") or resp.headers.get("location")
+                    if not location:
+                        break
+                    nxt = urllib.parse.urljoin(current, location)
+                    if not is_same_origin(current, nxt):
+                        return HttpResponse(
+                            status_code=resp.status_code,
+                            text="",
+                            content=b"",
+                            headers={k.lower(): v for k, v in resp.headers.items()},
+                            url=current,
+                            elapsed_ms=(time.perf_counter() - start_time) * 1000.0,
+                            ok=False,
+                            error=f"Redirect to different origin blocked: {nxt}",
+                        )
+                    current = nxt
+                    continue
+                break
+
+            assert resp is not None
             elapsed_ms = (time.perf_counter() - start_time) * 1000.0
             resp_headers = {k.lower(): v for k, v in resp.headers.items()}
 

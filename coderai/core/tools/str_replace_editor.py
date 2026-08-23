@@ -13,6 +13,7 @@ from coderai.core.common.file_utils import (
     read_text_file_with_metadata,
     write_text_file,
 )
+from coderai.core.common.string_matcher import match_multistage
 from coderai.core.state import (
     FileState,
     normalize_file_path,
@@ -127,24 +128,26 @@ def handle_str_replace_editor_tool(args: dict[str, Any], context: Any) -> ToolRe
     target_path = _resolve_path(path_arg, project_root)
 
     if command == "view":
-        return _handle_view(target_path, args.get("view_range"), project_root)
+        return _handle_view(target_path, args.get("view_range"), project_root, context)
     elif command == "create":
         return _handle_create(target_path, args.get("file_text"), context)
     elif command == "str_replace":
         return _handle_str_replace(target_path, args.get("old_str"), args.get("new_str"), context)
     elif command == "insert":
         return _handle_insert(target_path, args.get("insert_line"), args.get("new_str"), context)
-    elif command == "undo_edit":
+    elif command in ("undo_edit", "undo_command"):
         return _handle_undo(target_path, context)
     else:
         return ToolResult(
             ok=False,
             name="str_replace_editor",
-            error=f"Unrecognized command `{command}`. Allowed commands are: `view`, `create`, `str_replace`, `insert`, `undo_edit`.",
+            error=f"Unrecognized command `{command}`. Allowed commands are: `view`, `create`, `str_replace`, `insert`, `undo_edit` (or `undo_command`).",
         )
 
 
-def _handle_view(target_path: str, view_range: Any, project_root: str) -> ToolResult:
+def _handle_view(
+    target_path: str, view_range: Any, project_root: str, context: Any = None
+) -> ToolResult:
     p = pathlib.Path(target_path)
     if not p.exists():
         return ToolResult(
@@ -183,6 +186,11 @@ def _handle_view(target_path: str, view_range: Any, project_root: str) -> ToolRe
             error=f"Failed to read file `{target_path}`: {exc}",
         )
 
+    session_id = str(getattr(context, "session_id", "default") or "default")
+    from coderai.core.tools.observation import get_observation_tracker
+
+    get_observation_tracker().record_observation(session_id, target_path, content=content)
+
     start_line = 1
     end_line = -1
     if isinstance(view_range, list) and len(view_range) >= 2:
@@ -219,6 +227,19 @@ def _handle_create(target_path: str, file_text: Any, context: Any) -> ToolResult
             name="str_replace_editor",
             error=f"File already exists at `{target_path}`. Cannot use `create` on existing files. Use `str_replace` or `insert`.",
         )
+
+    sandbox_mode = getattr(context, "sandbox_mode", None)
+    project_root = getattr(context, "project_root", None)
+    if isinstance(context, dict):
+        sandbox_mode = context.get("sandbox_mode", sandbox_mode)
+        project_root = context.get("project_root", project_root)
+    from coderai.core.sandbox import check_sandbox_path_access
+
+    sb_allowed, sb_err = check_sandbox_path_access(
+        target_path, op="write", mode=sandbox_mode, workspace_root=project_root
+    )
+    if not sb_allowed and sb_err:
+        return ToolResult(ok=False, name="str_replace_editor", error=sb_err)
 
     if context and hasattr(context, "on_before_file_mutation") and context.on_before_file_mutation:
         context.on_before_file_mutation(target_path)
@@ -275,16 +296,44 @@ def _handle_str_replace(target_path: str, old_str: Any, new_str: Any, context: A
             error=f"Failed to read file `{target_path}`: {exc}",
         )
 
-    line_nums = _find_line_numbers(current_content, old_s)
+    session_id = str(getattr(context, "session_id", "default") or "default")
+    sandbox_mode = getattr(context, "sandbox_mode", None)
+    project_root = getattr(context, "project_root", None)
+    if isinstance(context, dict):
+        sandbox_mode = context.get("sandbox_mode", sandbox_mode)
+        project_root = context.get("project_root", project_root)
+    from coderai.core.sandbox import check_sandbox_path_access
 
-    if len(line_nums) == 0:
+    sb_allowed, sb_err = check_sandbox_path_access(
+        target_path, op="write", mode=sandbox_mode, workspace_root=project_root
+    )
+    if not sb_allowed and sb_err:
+        return ToolResult(ok=False, name="str_replace_editor", error=sb_err)
+
+    from coderai.core.tools.observation import get_observation_tracker
+
+    allowed, obs_err = get_observation_tracker().check_mutation_allowed(
+        session_id, target_path, require_observed=True
+    )
+    if not allowed and obs_err:
         return ToolResult(
             ok=False,
             name="str_replace_editor",
-            error=f"No replacement was performed, old_str did not appear verbatim in {target_path}.",
+            error=obs_err,
         )
 
-    if len(line_nums) > 1:
+    match_res = match_multistage(current_content, old_s, new_s)
+    matches = match_res.matches
+
+    if len(matches) == 0:
+        return ToolResult(
+            ok=False,
+            name="str_replace_editor",
+            error=f"No replacement was performed, old_str did not appear in {target_path}.",
+        )
+
+    if len(matches) > 1:
+        line_nums = [current_content[:s].count("\n") + 1 for s, _ in matches]
         return ToolResult(
             ok=False,
             name="str_replace_editor",
@@ -297,7 +346,8 @@ def _handle_str_replace(target_path: str, old_str: Any, new_str: Any, context: A
     if context and hasattr(context, "on_before_file_mutation") and context.on_before_file_mutation:
         context.on_before_file_mutation(target_path)
 
-    new_content = current_content.replace(old_s, new_s, 1)
+    start_off, end_off = matches[0]
+    new_content = current_content[:start_off] + match_res.replaced_new + current_content[end_off:]
     try:
         write_text_file(target_path, new_content)
     except Exception as exc:
@@ -307,13 +357,13 @@ def _handle_str_replace(target_path: str, old_str: Any, new_str: Any, context: A
             error=f"Failed to write file `{target_path}`: {exc}",
         )
 
-    session_id = str(getattr(context, "session_id", "default") or "default")
     _record_state(session_id, target_path, new_content)
+    get_observation_tracker().record_observation(session_id, target_path, content=new_content)
 
     if context and hasattr(context, "on_after_file_mutation") and context.on_after_file_mutation:
         context.on_after_file_mutation(target_path)
 
-    diff = build_diff_preview(current_content, new_content, target_path)
+    diff = build_diff_preview(target_path, current_content, new_content)
     return ToolResult(
         ok=True,
         name="str_replace_editor",
@@ -373,6 +423,32 @@ def _handle_insert(target_path: str, insert_line: Any, new_str: Any, context: An
             error=f"Invalid `insert_line` parameter: {ins_line}. It should be within the range of lines of the file: [0, {total_lines}].",
         )
 
+    session_id = str(getattr(context, "session_id", "default") or "default")
+    sandbox_mode = getattr(context, "sandbox_mode", None)
+    project_root = getattr(context, "project_root", None)
+    if isinstance(context, dict):
+        sandbox_mode = context.get("sandbox_mode", sandbox_mode)
+        project_root = context.get("project_root", project_root)
+    from coderai.core.sandbox import check_sandbox_path_access
+
+    sb_allowed, sb_err = check_sandbox_path_access(
+        target_path, op="write", mode=sandbox_mode, workspace_root=project_root
+    )
+    if not sb_allowed and sb_err:
+        return ToolResult(ok=False, name="str_replace_editor", error=sb_err)
+
+    from coderai.core.tools.observation import get_observation_tracker
+
+    allowed, obs_err = get_observation_tracker().check_mutation_allowed(
+        session_id, target_path, require_observed=True
+    )
+    if not allowed and obs_err:
+        return ToolResult(
+            ok=False,
+            name="str_replace_editor",
+            error=obs_err,
+        )
+
     _push_undo(target_path, current_content)
 
     if context and hasattr(context, "on_before_file_mutation") and context.on_before_file_mutation:
@@ -393,8 +469,8 @@ def _handle_insert(target_path: str, insert_line: Any, new_str: Any, context: An
             error=f"Failed to write file `{target_path}`: {exc}",
         )
 
-    session_id = str(getattr(context, "session_id", "default") or "default")
     _record_state(session_id, target_path, new_content)
+    get_observation_tracker().record_observation(session_id, target_path, content=new_content)
 
     if context and hasattr(context, "on_after_file_mutation") and context.on_after_file_mutation:
         context.on_after_file_mutation(target_path)

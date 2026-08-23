@@ -15,10 +15,18 @@ from coderai.core.common.file_utils import (
     write_text_file,
 )
 from coderai.core.common.openai_thinking import build_thinking_request_options
+from coderai.core.common.string_matcher import (
+    find_occurrences as _find_occurrences,
+    match_multistage,
+    normalize_escaping as _normalize_escaping,
+    normalize_loose_text as _normalize_loose_text,
+    normalize_quotes as _normalize_quotes,
+)
 from coderai.core.common.validate import execute_validated_tool, semantic_boolean, semantic_integer
 from coderai.core.state import (
     FileSnippet,
     FileState,
+    create_full_file_snippet,
     create_snippet,
     get_file_state,
     get_snippet,
@@ -40,8 +48,11 @@ OUTDATED_SNIPPET_NOT_FOUND_ERROR = (
 
 def _validate_edit_schema(args: dict[str, Any]) -> tuple[bool, dict[str, Any], str | None]:
     snippet_id = args.get("snippet_id")
-    if not isinstance(snippet_id, str) or not snippet_id.strip():
-        return False, {}, "snippet_id is required."
+    file_path = args.get("file_path") or args.get("path")
+    if (not isinstance(snippet_id, str) or not snippet_id.strip()) and (
+        not isinstance(file_path, str) or not file_path.strip()
+    ):
+        return False, {}, "Either file_path or snippet_id is required."
 
     old_string = args.get("old_string")
     new_string = args.get("new_string")
@@ -56,7 +67,10 @@ def _validate_edit_schema(args: dict[str, Any]) -> tuple[bool, dict[str, Any], s
         return False, {}, exp_err
 
     validated = dict(args)
-    validated["snippet_id"] = snippet_id.strip()
+    if isinstance(snippet_id, str) and snippet_id.strip():
+        validated["snippet_id"] = snippet_id.strip()
+    if isinstance(file_path, str) and file_path.strip():
+        validated["file_path"] = file_path.strip()
     validated["old_string"] = old_string
     validated["new_string"] = new_string
     validated["replace_all"] = replace_all
@@ -74,22 +88,55 @@ def handle_edit_tool(args: dict[str, Any], context: Any) -> ToolResult:
             session_id = ctx.get("session_id") or "default"
         else:
             session_id = getattr(ctx, "session_id", None) or "default"
-        snippet_id = validated_args["snippet_id"]
-        snippet = get_snippet(session_id, snippet_id)
-
-        if not snippet:
-            return ToolResult(ok=False, name="edit", error=f"Unknown snippet_id: {snippet_id}")
-
+        snippet_id = validated_args.get("snippet_id")
         file_path_arg = as_str(validated_args.get("file_path")).strip()
-        file_path = normalize_file_path(file_path_arg if file_path_arg else snippet.file_path)
 
-        if not is_absolute_file_path(file_path):
-            return ToolResult(ok=False, name="edit", error="file_path must be an absolute path.")
-
-        if snippet.file_path != file_path:
-            return ToolResult(
-                ok=False, name="edit", error="snippet_id does not belong to the provided file_path."
+        if snippet_id:
+            snippet = get_snippet(session_id, snippet_id)
+            if not snippet:
+                return ToolResult(ok=False, name="edit", error=f"Unknown snippet_id: {snippet_id}")
+            file_path = normalize_file_path(file_path_arg if file_path_arg else snippet.file_path)
+            if not is_absolute_file_path(file_path):
+                project_root = (
+                    (ctx.get("project_root") if isinstance(ctx, dict) else getattr(ctx, "project_root", None))
+                    or "."
+                )
+                file_path = normalize_file_path(str(pathlib.Path(project_root) / file_path))
+            if snippet.file_path != file_path and not file_path.endswith(snippet.file_path):
+                return ToolResult(
+                    ok=False, name="edit", error="snippet_id does not belong to the provided file_path."
+                )
+        else:
+            if not file_path_arg:
+                return ToolResult(ok=False, name="edit", error="file_path is required when snippet_id is omitted.")
+            project_root = (
+                (ctx.get("project_root") if isinstance(ctx, dict) else getattr(ctx, "project_root", None))
+                or "."
             )
+            file_path = file_path_arg if is_absolute_file_path(file_path_arg) else str(pathlib.Path(project_root) / file_path_arg)
+            file_path = normalize_file_path(file_path)
+            p_check = pathlib.Path(file_path)
+            if not p_check.exists():
+                return ToolResult(ok=False, name="edit", error=f"File not found: {file_path}")
+            if p_check.is_dir():
+                return ToolResult(ok=False, name="edit", error="file_path points to a directory.")
+            try:
+                content_res = read_text_file_with_metadata(file_path)
+                lines = content_res["content"].splitlines()
+                total_lines = max(1, len(lines))
+                snippet = create_full_file_snippet(
+                    session_id, file_path, 1, total_lines, content_res["content"]
+                )
+                from coderai.core.state import mark_file_read
+                from coderai.core.tools.observation import get_observation_tracker
+
+                get_observation_tracker().record_observation(
+                    session_id, file_path, content_res["content"]
+                )
+                mark_file_read(session_id, file_path, content_res)
+                file_state = get_file_state(session_id, file_path)
+            except Exception as e:
+                return ToolResult(ok=False, name="edit", error=f"Error reading file before editing: {e}")
 
         old_string = validated_args["old_string"]
         new_string = validated_args["new_string"]
@@ -105,6 +152,22 @@ def handle_edit_tool(args: dict[str, Any], context: Any) -> ToolResult:
         if p.is_dir():
             return ToolResult(ok=False, name="edit", error="file_path points to a directory.")
 
+        sandbox_mode = ctx.get("sandbox_mode") if isinstance(ctx, dict) else getattr(ctx, "sandbox_mode", None)
+        project_root = (
+            (ctx.get("project_root") if isinstance(ctx, dict) else getattr(ctx, "project_root", None))
+            or "."
+        )
+        from coderai.core.sandbox import check_sandbox_path_access
+
+        sb_allowed, sb_err = check_sandbox_path_access(
+            file_path,
+            op="write",
+            mode=sandbox_mode,
+            workspace_root=project_root,
+        )
+        if not sb_allowed and sb_err:
+            return ToolResult(ok=False, name="edit", error=sb_err)
+
         file_state = get_file_state(session_id, file_path)
         if not file_state:
             return ToolResult(ok=False, name="edit", error="Must read file before editing.")
@@ -114,6 +177,21 @@ def handle_edit_tool(args: dict[str, Any], context: Any) -> ToolResult:
                 ok=False,
                 name="edit",
                 error="File has been modified since read. Read it again before editing.",
+            )
+
+        from coderai.core.tools.observation import get_observation_tracker
+
+        allowed, obs_err = get_observation_tracker().check_mutation_allowed(session_id, file_path)
+        if not allowed and obs_err:
+            return ToolResult(
+                ok=False,
+                name="edit",
+                error=obs_err,
+                metadata={
+                    "scope": _format_scope_metadata(
+                        _build_search_scope(file_path, "", snippet), snippet
+                    )
+                },
             )
 
         try:
@@ -141,20 +219,14 @@ def handle_edit_tool(args: dict[str, Any], context: Any) -> ToolResult:
             matches = [(0, 0)]
             matched_via = "empty_file"
         else:
-            matches = _find_occurrences(scope_text, old_string)
+            match_res = match_multistage(scope_text, old_string, new_string)
+            matches = match_res.matches
+            if matches:
+                matched_via = match_res.matched_via
+                replacement_old = match_res.replaced_old
+                replacement_new = match_res.replaced_new
 
-        # 1. Line leading tab correction (if copied from read output with line tabs)
-        if not matches:
-            tab_stripped_old = _strip_read_result_line_tabs(old_string)
-            if tab_stripped_old != old_string:
-                tab_matches = _find_occurrences(scope_text, tab_stripped_old)
-                if len(tab_matches) == 1:
-                    matches = tab_matches
-                    matched_via = "line_leading_tab_correction"
-                    replacement_old = tab_stripped_old
-                    replacement_new = _strip_read_result_line_tabs(new_string)
-
-        # 2. LLM loose escape and quotation marks correction
+        # 2. LLM loose escape and quotation marks correction (last resort fallback)
         if not matches:
             loose_candidate = _find_loose_candidate(scope_text, old_string)
             if loose_candidate:
@@ -265,6 +337,9 @@ def handle_edit_tool(args: dict[str, Any], context: Any) -> ToolResult:
                 ),
                 increment_version=True,
             )
+            get_observation_tracker().record_observation(
+                session_id, file_path, content=fresh_metadata["content"]
+            )
         except Exception as e:
             return ToolResult(ok=False, name="edit", error=str(e))
 
@@ -308,24 +383,6 @@ def _build_search_scope(file_path: str, raw: str, snippet: FileSnippet) -> dict[
         "file_path": file_path,
         "snippet_id": snippet.id,
     }
-
-
-def _find_occurrences(scope_text: str, needle: str) -> list[tuple[int, int]]:
-    if not scope_text or not needle:
-        return []
-    matches: list[tuple[int, int]] = []
-    idx = 0
-    while True:
-        pos = scope_text.find(needle, idx)
-        if pos == -1:
-            break
-        matches.append((pos, pos + len(needle)))
-        idx = pos + len(needle)
-    return matches
-
-
-def _strip_read_result_line_tabs(value: str) -> str:
-    return re.sub(r"\n\t", "\n", value)
 
 
 def _apply_replacement(
@@ -431,22 +488,6 @@ def _call_completions(client: Any, **kwargs) -> Any:
         except RuntimeError:
             return asyncio.run(res)
     return res
-
-
-def _normalize_quotes(val: str) -> str:
-    return val.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
-
-
-def _normalize_escaping(val: str) -> str:
-    return re.sub(r"\\+(?=[\"'`\\“”‘’])", "", val)
-
-
-def _normalize_loose_text(val: str) -> str:
-    v = val.replace("\r\n", "\n").replace("\r", "\n")
-    v = _normalize_escaping(v)
-    v = _normalize_quotes(v)
-    v = re.sub(r"[ \t]+", " ", v)
-    return v.strip()
 
 
 def to_bigrams(value: str) -> list[str]:

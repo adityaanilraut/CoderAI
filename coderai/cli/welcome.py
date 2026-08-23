@@ -82,11 +82,13 @@ def render_welcome_screen(
     plan_mode: bool = False,
     mcp_servers_count: int = 0,
     skills_count: int = 0,
+    reasoning_effort: str = "max",
 ) -> None:
     """Render the stylish CoderAI welcome screen."""
     branch, is_dirty = get_git_status(project_root)
     workspace_str = _format_workspace_path(project_root)
-    thinking_str = "Enabled (Adaptive)" if defaults_to_thinking_mode(active_model) else "Adaptive"
+    effort_norm = (reasoning_effort or "max").capitalize()
+    thinking_str = f"Enabled ({effort_norm})" if defaults_to_thinking_mode(active_model) else effort_norm
     plan_status = "ON" if plan_mode else "OFF"
     py_ver = f"{sys.version_info.major}.{sys.version_info.minor}"
     sys_tag = platform.system()
@@ -151,23 +153,26 @@ def render_welcome_screen(
         actions.append("/help", style="bold cyan")
         actions.append(" manual  ", style="dim")
         actions.append("•  ", style="dim")
+        actions.append("/doctor", style="bold green")
+        actions.append(" diagnostics  ", style="dim")
+        actions.append("•  ", style="dim")
         actions.append("/plan", style="bold yellow")
-        actions.append(" toggle  ", style="dim")
+        actions.append(" plan mode  ", style="dim")
         actions.append("•  ", style="dim")
         actions.append("/model", style="bold magenta")
         actions.append(" switch  ", style="dim")
         actions.append("•  ", style="dim")
-        actions.append("/tokens", style="bold green")
-        actions.append(" cost  ", style="dim")
-        actions.append("•  ", style="dim")
-        actions.append("/undo", style="bold red")
-        actions.append(" revert  ", style="dim")
-        actions.append("•  ", style="dim")
         actions.append("@file", style="bold blue")
         actions.append(" context  ", style="dim")
         actions.append("•  ", style="dim")
+        actions.append("Ctrl-R", style="bold white")
+        actions.append(" search  ", style="dim")
+        actions.append("•  ", style="dim")
+        actions.append("Ctrl-C", style="bold red")
+        actions.append(" interrupt  ", style="dim")
+        actions.append("•  ", style="dim")
         actions.append("Tab", style="bold white")
-        actions.append(" autocomplete", style="dim")
+        actions.append(" complete", style="dim")
         console.print(actions)
         console.print()
     else:
@@ -178,5 +183,5 @@ def render_welcome_screen(
             f"Workspace: {workspace_str}{branch_str} | Model: {active_model} | Reasoning: {thinking_str} | Plan: {plan_status}"
         )
         print(
-            "Shortcuts: /help commands • /plan toggle • /model switch • /tokens cost • /undo revert • @file context\n"
+            "Shortcuts: /help commands • /doctor health • /plan toggle • /model switch • Ctrl-R history • Ctrl-C interrupt • Tab complete • @file context\n"
         )

@@ -238,3 +238,19 @@ async def test_tool_executor_interruption_should_stop(tmp_path):
     executions = await executor.execute_tool_calls("sess_stop", calls, hooks=hooks)
     assert len(executions) == 0
     assert len(executed) == 0
+
+
+def test_tool_registry_openai_schema_sanitization():
+    registry = ToolRegistry()
+    schemas = registry.to_openai_schemas()
+    for s in schemas:
+        schema_json = json.dumps(s)
+        assert '"uniqueItems"' not in schema_json
+        assert '"$schema"' not in schema_json
+        assert '"$id"' not in schema_json
+
+    bash_def = registry.get("bash")
+    assert bash_def is not None
+    bash_schema = bash_def.to_openai_schema()
+    assert "uniqueItems" not in bash_schema["function"]["parameters"]["properties"]["sideEffects"]
+

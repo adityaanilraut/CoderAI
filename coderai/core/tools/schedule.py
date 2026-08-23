@@ -24,12 +24,14 @@ def handle_schedule_create_tool(args: dict[str, Any], context: Any) -> ToolResul
         )
 
     mgr = get_schedule_manager()
+    session_id = getattr(context, "session_id", None)
     try:
         rec = mgr.create(
             prompt=prompt,
             after_seconds=after_seconds,
             at=at,
             every_seconds=every_seconds,
+            session_id=session_id,
         )
         out = rec.to_dict()
         return ToolResult(
@@ -49,7 +51,8 @@ def handle_schedule_create_tool(args: dict[str, Any], context: Any) -> ToolResul
 def handle_schedule_list_tool(args: dict[str, Any], context: Any) -> ToolResult:
     """List all active and overdue session reminders."""
     mgr = get_schedule_manager()
-    records = mgr.list_schedules()
+    session_id = getattr(context, "session_id", None)
+    records = mgr.list_schedules(session_id=session_id)
     out = [r.to_dict() for r in records]
     return ToolResult(
         ok=True,

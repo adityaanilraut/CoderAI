@@ -7,16 +7,12 @@ Validates:
 4. Scope security rails and plan mode constraints.
 """
 
-import pytest
-
 from coderai.core.sandbox import (
     preset_permissions,
     parse_sandbox_mode,
-    PRESET_SCOPE_MAP,
     build_seatbelt_profile,
     wrap_sandbox_command,
     sandbox_policy_prompt,
-    apply_preset,
 )
 from coderai.core.session import sanitize_repetition_loops
 from coderai.core.common.llm_error import describe_llm_error
@@ -61,7 +57,9 @@ def test_sandbox_profile_generation_and_wrapping():
 
     # Test danger-full-access does not alter argv
     argv = ["echo", "hello"]
-    wrapped_argv, meta = wrap_sandbox_command(argv, mode="danger-full-access", workspace_root="/tmp/project")
+    wrapped_argv, meta = wrap_sandbox_command(
+        argv, mode="danger-full-access", workspace_root="/tmp/project"
+    )
     assert wrapped_argv == argv
     assert meta["sandboxApplied"] is False
 

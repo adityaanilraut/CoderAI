@@ -8,13 +8,11 @@ import re
 from typing import Any
 
 from coderai.core.skill.filesystem import (
-    get_skill_read_exempt_paths,
     get_skill_scan_roots,
     _skill_markdown_path,
 )
 from coderai.core.skill.loader import (
     extract_skill_frontmatter,
-    strip_skill_prompt_metadata,
 )
 
 STOP_WORDS = {
@@ -181,23 +179,15 @@ class SkillRegistry:
             if skill.get("allowImplicitInvocation") is False:
                 continue
 
-            # Exact skill name mentioned in prompt
-            if name_lower in prompt_lower:
+            # Exact skill name mentioned in prompt or /skill command
+            if name_lower in prompt_lower or f"/{name_lower}" in prompt_lower:
                 matched.append(skill)
                 continue
 
-            name_tokens = {t for t in re.findall(r"\w+", name_lower) if t not in STOP_WORDS}
+            name_tokens = {t for t in re.findall(r"\w+", name_lower) if t not in STOP_WORDS and len(t) >= 3}
             if name_tokens and name_tokens.issubset(prompt_tokens):
                 matched.append(skill)
                 continue
-
-            desc_tokens = {
-                t
-                for t in re.findall(r"\w+", skill.get("description", "").lower())
-                if len(t) >= 4 and t not in STOP_WORDS
-            }
-            if len(desc_tokens & prompt_sig) >= 2:
-                matched.append(skill)
         return matched
 
 
@@ -277,9 +267,7 @@ def parse_skill_match_response(raw: str, candidate_names: set[str]) -> list[str]
             is_match = match_val
         elif isinstance(match_val, dict):
             is_match = bool(
-                match_val.get("match")
-                or match_val.get("matched")
-                or match_val.get("relevant")
+                match_val.get("match") or match_val.get("matched") or match_val.get("relevant")
             )
         elif isinstance(match_val, str):
             is_match = match_val.strip().lower() in ("true", "yes", "1", "matched", "match")

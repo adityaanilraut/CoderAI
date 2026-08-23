@@ -16,10 +16,7 @@ when the model is interrupted/cancelled.
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import time
-import uuid
 from typing import Any, TYPE_CHECKING
 
 from coderai.core.events import (
@@ -84,12 +81,38 @@ class AgentLoop:
     def emit_step_end(self) -> None:
         self._emit(make_step_end(self._next_seq(), self._turn, self._step))
 
+    def run_pre_step_hooks(self) -> Any:
+        from coderai.core.hooks import HookPoint, run_hook_point
+        return run_hook_point(
+            HookPoint.PRE_STEP,
+            payload={"turn": self._turn, "step": self._step, "session_id": self.session_id},
+            project_root=getattr(self.manager, "project_root", "."),
+        )
+
+    def run_post_step_hooks(self) -> Any:
+        from coderai.core.hooks import HookPoint, run_hook_point
+        return run_hook_point(
+            HookPoint.POST_STEP,
+            payload={"turn": self._turn, "step": self._step, "session_id": self.session_id},
+            project_root=getattr(self.manager, "project_root", "."),
+        )
+
+    def check_stop_criteria_hooks(self) -> Any:
+        from coderai.core.hooks import HookPoint, run_hook_point
+        return run_hook_point(
+            HookPoint.STOP_CRITERIA,
+            payload={"turn": self._turn, "step": self._step, "session_id": self.session_id},
+            project_root=getattr(self.manager, "project_root", "."),
+        )
+
     def emit_request_header(self, model: str, system: str | None = None) -> None:
         header: dict[str, Any] = {"model": model}
         if system:
             header["system"] = system[:200]  # truncated for log compactness
         self._emit(
-            make_request_header(self._next_seq(), header, reason="initial" if self._step == 1 else "change")
+            make_request_header(
+                self._next_seq(), header, reason="initial" if self._step == 1 else "change"
+            )
         )
 
     def emit_assistant(
@@ -116,9 +139,7 @@ class AgentLoop:
 
     def emit_tool_call(self, call_id: str, name: str, arguments: str) -> None:
         self._emit(
-            make_tool_call_event(
-                self._next_seq(), self._turn, self._step, call_id, name, arguments
-            )
+            make_tool_call_event(self._next_seq(), self._turn, self._step, call_id, name, arguments)
         )
 
     def emit_tool_result(

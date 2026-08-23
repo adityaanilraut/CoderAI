@@ -45,10 +45,15 @@ def resolve_shell_path() -> str:
             return gb
         return "bash"
 
+    # Prioritize standard bash for POSIX compliance and clean subshell execution
+    bash_path = shutil.which("bash") or "/bin/bash"
+    if pathlib.Path(bash_path).exists():
+        return bash_path
+
     env_shell = os.environ.get("SHELL")
     if env_shell and get_shell_kind(env_shell) != "unknown":
         return env_shell
-    return shutil.which("bash") or shutil.which("sh") or "/bin/bash"
+    return shutil.which("sh") or "/bin/sh"
 
 
 def get_shell_kind(shell_path: str) -> str:
@@ -61,12 +66,13 @@ def get_shell_kind(shell_path: str) -> str:
 
 
 def build_shell_init_command(shell_path: str) -> str | None:
+    py_alias = "if ! command -v python >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then alias python=python3 2>/dev/null || true; fi"
     kind = get_shell_kind(shell_path)
     if kind == "zsh":
-        return 'ZSHRC="${ZDOTDIR:-$HOME}/.zshrc"; if [ -f "$ZSHRC" ]; then { . "$ZSHRC"; } >/dev/null 2>&1; fi'
+        return f'ZSHRC="${{ZDOTDIR:-$HOME}}/.zshrc"; if [ -f "$ZSHRC" ]; then {{ . "$ZSHRC"; }} >/dev/null 2>&1; fi; {py_alias}'
     if kind == "bash":
-        return 'BASHRC="${BASH_ENV:-$HOME/.bashrc}"; if [ -f "$BASHRC" ]; then { . "$BASHRC"; } >/dev/null 2>&1; fi'
-    return None
+        return f'BASHRC="${{BASH_ENV:-$HOME/.bashrc}}"; if [ -f "$BASHRC" ]; then {{ . "$BASHRC"; }} >/dev/null 2>&1; fi; {py_alias}'
+    return py_alias
 
 
 def build_disable_extglob_command(shell_path: str) -> str | None:
@@ -114,12 +120,90 @@ def to_native_cwd(shell_cwd: str) -> str:
     return posix_path_to_windows_path(shell_cwd)
 
 
-def build_shell_env(shell_path: str | None, configured_env: dict | None = None) -> dict[str, str]:
-    env = dict(os.environ)
+ENV_OVERRIDES: dict[str, str] = {
+    "NO_COLOR": "1",
+    "TERM": "dumb",
+    "PAGER": "cat",
+    "GIT_PAGER": "cat",
+    "GIT_EDITOR": "true",
+}
+
+SENSITIVE_ENV_EXACT_NAMES: set[str] = {
+    "OPENAI_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "CODERAI_API_KEY",
+    "OPENROUTER_API_KEY",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_SECURITY_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_TOKEN",
+    "GITLAB_TOKEN",
+    "HF_TOKEN",
+    "HUGGING_FACE_HUB_TOKEN",
+}
+
+SENSITIVE_ENV_PREFIXES = ("AWS_SECRET", "CODERAI_SECRET", "GITHUB_SECRET")
+SENSITIVE_ENV_SUFFIXES = ("_API_KEY", "_SECRET_KEY", "_AUTH_TOKEN", "_ACCESS_TOKEN")
+
+
+def is_sensitive_env_var(key: str) -> bool:
+    """Determine whether an environment variable name holds sensitive secrets."""
+    upper = key.upper()
+    if upper in SENSITIVE_ENV_EXACT_NAMES:
+        return True
+    if any(upper.startswith(prefix) for prefix in SENSITIVE_ENV_PREFIXES):
+        return True
+    if any(upper.endswith(suffix) for suffix in SENSITIVE_ENV_SUFFIXES):
+        return True
+    if (
+        "TOKEN" in upper
+        or "SECRET" in upper
+        or "PRIVATE_KEY" in upper
+        or "API_KEY" in upper
+        or "PASSWORD" in upper
+    ):
+        return True
+    return False
+
+
+def scrub_subprocess_env(
+    env: dict[str, str], preserve_keys: set[str] | None = None
+) -> dict[str, str]:
+    """Return a sanitized copy of env with ambient sensitive API keys and secrets removed."""
+    preserve = preserve_keys or set()
+    cleaned: dict[str, str] = {}
+    for k, v in env.items():
+        if k in preserve or not is_sensitive_env_var(k):
+            cleaned[k] = v
+    return cleaned
+
+
+def build_shell_env(
+    shell_path: str | None,
+    configured_env: dict | None = None,
+    scrub_ambient: bool = True,
+) -> dict[str, str]:
+    """Construct child shell environment, scrubbing ambient host credentials unless explicitly configured."""
+    if scrub_ambient:
+        env = scrub_subprocess_env(
+            dict(os.environ), preserve_keys=set((configured_env or {}).keys())
+        )
+    else:
+        env = dict(os.environ)
+
     env.update(configured_env or {})
+    env.update(ENV_OVERRIDES)
     if shell_path:
         env["SHELL"] = shell_path
-    env["GIT_EDITOR"] = "true"
-    env["PAGER"] = "cat"
-    env["NO_COLOR"] = "1"
+
+    # Prepend Python runtime path so python/python3 points to current interpreter
+    py_dir = str(pathlib.Path(sys.executable).parent)
+    current_path = env.get("PATH", "")
+    if py_dir not in current_path.split(os.pathsep):
+        env["PATH"] = f"{py_dir}{os.pathsep}{current_path}"
+
     return env

@@ -88,10 +88,25 @@ def handle_write_tool(args: dict[str, Any], context: Any) -> ToolResult:
             session_id = ctx.get("session_id") or "default"
             on_before_mutation = ctx.get("on_before_file_mutation")
             on_after_mutation = ctx.get("on_after_file_mutation")
+            sandbox_mode = ctx.get("sandbox_mode")
+            project_root = ctx.get("project_root")
         else:
             session_id = getattr(ctx, "session_id", None) or "default"
             on_before_mutation = getattr(ctx, "on_before_file_mutation", None)
             on_after_mutation = getattr(ctx, "on_after_file_mutation", None)
+            sandbox_mode = getattr(ctx, "sandbox_mode", None)
+            project_root = getattr(ctx, "project_root", None)
+
+        from coderai.core.sandbox import check_sandbox_path_access
+
+        sb_allowed, sb_err = check_sandbox_path_access(
+            file_path,
+            op="write",
+            mode=sandbox_mode,
+            workspace_root=project_root,
+        )
+        if not sb_allowed and sb_err:
+            return ToolResult(ok=False, name="write", error=sb_err)
 
         p = pathlib.Path(file_path)
         existing_file = p.exists()
@@ -160,6 +175,12 @@ def handle_write_tool(args: dict[str, Any], context: Any) -> ToolResult:
                     line_endings=fresh_metadata["lineEndings"],
                 ),
                 increment_version=True,
+            )
+
+            from coderai.core.tools.observation import get_observation_tracker
+
+            get_observation_tracker().record_observation(
+                session_id, file_path, content=fresh_metadata["content"]
             )
 
             meta: dict[str, Any] = {

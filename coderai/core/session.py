@@ -41,20 +41,32 @@ from coderai.core.common.llm_retry import (
     retry_delay_ms,
 )
 from coderai.core.common.message_converter import OpenAIMessageConverter
+from coderai.core.common.model_capabilities import (
+    is_fast_model,
+    resolve_adaptive_reasoning_effort,
+)
 from coderai.core.common.openai_thinking import build_thinking_request_options
 from coderai.core.common.repeat_tool_reminder import RepeatToolReminder
 from coderai.core.common.usage import accumulate_usage_dict, extract_usage_dict
+from coderai.core.common.validate import repair_json_string
 from coderai.core.mcp import McpManager
 from coderai.core.permissions import (
     PLAN_MODE_FORCE_ASK_SCOPES,
+    PermissionTicket,
     build_permission_tool_execution,
     compute_tool_call_permissions,
     resolve_snippet_file_path,
 )
+from coderai.core.compaction import (
+    BasicCompaction,
+    DEFAULT_MAX_TOOL_RESULT_CHARS,
+    ToolResultPruner,
+    evaluate_compaction_trigger,
+)
 from coderai.core.prompt import (
     build_skill_documents_prompt,
-    get_compact_prompt,
-    get_compact_prompt_token_threshold,
+    calculate_context_budget,
+    format_tool_definitions,
     get_init_command_prompt,
     get_plan_mode_prompt,
     get_runtime_context,
@@ -69,17 +81,6 @@ from coderai.core.prompt import (
 )
 from coderai.core.events import (
     SessionEvent,
-    make_event,
-    make_turn_start,
-    make_turn_end,
-    make_step_start,
-    make_step_end,
-    make_user_message as make_user_event,
-    make_assistant_message as make_assistant_event,
-    make_tool_call as make_tool_call_event,
-    make_tool_result as make_tool_result_event,
-    make_request_header,
-    legacy_message_to_event,
 )
 from coderai.core.state import clear_session_state, rebuild_session_state_from_history
 from coderai.core.tools.executor import ToolExecutor
@@ -199,6 +200,8 @@ class SessionEntry:
     update_time: str = ""
     plan_mode: bool = False
     fork_of: str | None = None
+    parent_session_id: str | None = None
+    fork_point: str | int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -219,6 +222,8 @@ class SessionEntry:
             "updateTime": self.update_time,
             "planMode": self.plan_mode,
             "forkOf": self.fork_of,
+            "parentSessionId": self.parent_session_id or self.fork_of,
+            "forkPoint": self.fork_point,
         }
 
 
@@ -235,8 +240,10 @@ class SessionManager:
         get_resolved_settings: Callable[[], dict[str, Any]],
         render_markdown: Callable[[str], str] | None = None,
         on_assistant_message: Callable[[SessionMessage, bool], None] | None = None,
+        on_user_message: Callable[[SessionMessage], None] | None = None,
         on_session_entry_updated: Callable[[SessionEntry], None] | None = None,
         on_stream_chunk: Callable[[str], None] | None = None,
+        on_thinking_chunk: Callable[[str], None] | None = None,
         on_llm_stream_progress: Callable[[dict[str, Any]], None] | None = None,
         non_interactive: bool = False,
         max_iterations: int = MAX_ITERATIONS,
@@ -246,8 +253,10 @@ class SessionManager:
         self.get_resolved_settings = get_resolved_settings
         self.render_markdown = render_markdown or (lambda t: t)
         self.on_assistant_message = on_assistant_message or (lambda m, c: None)
+        self.on_user_message = on_user_message
         self.on_session_entry_updated = on_session_entry_updated
         self.on_stream_chunk = on_stream_chunk
+        self.on_thinking_chunk = on_thinking_chunk
         self.on_llm_stream_progress = on_llm_stream_progress
         self.non_interactive = non_interactive
         self.max_iterations = max_iterations
@@ -263,11 +272,23 @@ class SessionManager:
         )
         self._active_session_id: str | None = None
         self._override_model: str | None = None
+        self._override_reasoning_effort: str | None = None
         self.session_controllers: dict[str, asyncio.Event] = {}
+        self.compaction_engine = BasicCompaction(self)
         self.file_history = GitFileHistory(
             self.project_root, str(self._storage()["project_dir"] / "file-history" / ".git")
         )
         self._repeat_reminders: dict[str, RepeatToolReminder] = {}
+        # Subsystems: Jobs, Schedule, Agents
+        from coderai.core.jobs import JobStore
+        from coderai.core.schedule import ScheduleManager
+        from coderai.core.agents import AgentRegistry
+
+        self.job_store = JobStore()
+        sched_storage = str(self._storage()["project_dir"] / "schedule.json")
+        self.schedule_manager = ScheduleManager(sched_storage)
+        self.agent_registry = AgentRegistry()
+
         # Event-model state: per-session turn/step/seq counters
         self._turn_counters: dict[str, int] = {}
         self._step_counters: dict[str, int] = {}
@@ -281,11 +302,59 @@ class SessionManager:
             return self._override_model
         return str(self.get_resolved_settings().get("model") or "gpt-5.6-luna")
 
+    def set_reasoning_effort(self, effort: str) -> None:
+        from coderai.core.common.openai_thinking import normalize_reasoning_effort
+
+        norm = normalize_reasoning_effort(effort)
+        self._override_reasoning_effort = norm
+
+    def get_reasoning_effort(self) -> str:
+        if self._override_reasoning_effort:
+            return self._override_reasoning_effort
+        return str(self.get_resolved_settings().get("reasoningEffort") or "max")
+
     def get_diff(self, session_id: str | None = None, from_checkpoint: str | None = None) -> str:
         sid = session_id or self._active_session_id
         if not sid:
             return ""
         return self.file_history.get_diff(sid, from_checkpoint=from_checkpoint)
+
+    def grant_permission_ticket(
+        self,
+        tool_name: str = "*",
+        scope: str = "*",
+        duration_seconds: float | None = None,
+        max_uses: int | None = None,
+        pattern: str | None = None,
+        session_id: str | None = None,
+    ) -> PermissionTicket:
+        """Grant a structured capability escalation ticket to a session."""
+        from coderai.core.permissions import get_permission_ticket_registry
+
+        sid = session_id or self._active_session_id or ""
+        return get_permission_ticket_registry().request_escalation(
+            session_id=sid,
+            tool_name=tool_name,
+            scope=scope,
+            duration_seconds=duration_seconds,
+            max_uses=max_uses,
+            pattern=pattern,
+        )
+
+    def list_active_permission_tickets(
+        self, session_id: str | None = None
+    ) -> list[PermissionTicket]:
+        """List active capability escalation tickets for a session."""
+        from coderai.core.permissions import get_permission_ticket_registry
+
+        sid = session_id or self._active_session_id or ""
+        return get_permission_ticket_registry().list_active_tickets(session_id=sid)
+
+    def revoke_permission_ticket(self, ticket_id: str) -> bool:
+        """Revoke a capability escalation ticket by ID."""
+        from coderai.core.permissions import get_permission_ticket_registry
+
+        return get_permission_ticket_registry().revoke_ticket(ticket_id)
 
     # ---- storage ----
 
@@ -341,27 +410,13 @@ class SessionManager:
         self._ensure_dir()
         entries = index.get("entries") or []
         if len(entries) > MAX_SESSION_ENTRIES:
-            # Sort by updateTime descending, keep the most recent MAX_SESSION_ENTRIES
+            # Sort by updateTime descending, keep the most recent MAX_SESSION_ENTRIES in index
             sorted_entries = sorted(
                 entries,
                 key=lambda e: e.get("updateTime") or e.get("createTime") or "",
                 reverse=True,
             )
-            keep_entries = sorted_entries[:MAX_SESSION_ENTRIES]
-            pruned_entries = sorted_entries[MAX_SESSION_ENTRIES:]
-            index["entries"] = keep_entries
-
-            # Clean up message files and state for pruned sessions
-            for pruned in pruned_entries:
-                pruned_id = pruned.get("id")
-                if pruned_id:
-                    msg_file = self._messages_path(pruned_id)
-                    if msg_file.exists():
-                        try:
-                            msg_file.unlink()
-                        except Exception:
-                            pass
-                    clear_session_state(pruned_id)
+            index["entries"] = sorted_entries[:MAX_SESSION_ENTRIES]
 
         self._storage()["index_path"].write_text(json.dumps(index, indent=2), encoding="utf-8")
 
@@ -407,16 +462,54 @@ class SessionManager:
         if not path.exists():
             return []
         messages: list[SessionMessage] = []
+        max_seq = self._seq_counters.get(session_id, 0)
         for line in path.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
             try:
-                msg = self._deserialize_message(json.loads(line), session_id)
+                raw = json.loads(line)
+                if isinstance(raw, dict) and "seq" in raw and isinstance(raw["seq"], int):
+                    max_seq = max(max_seq, raw["seq"] + 1)
+                msg = self._deserialize_message(raw, session_id)
                 if msg is not None:
                     messages.append(msg)
             except (ValueError, TypeError):
                 continue
+        self._seq_counters[session_id] = max_seq
         return messages
+
+    def list_session_events(self, session_id: str) -> list[SessionEvent]:
+        persistence = self.get_persistence()
+        return persistence.list_events(session_id)
+
+    def get_persistence(self, backend: str = "jsonl"):
+        """Get session persistence backend ('sqlite' or 'jsonl')."""
+        storage = self._storage()["project_dir"]
+        if backend == "sqlite":
+            from coderai.core.persistence import SqlitePersistence
+
+            return SqlitePersistence(storage / "sessions.db")
+        from coderai.core.persistence import JsonlPersistence
+
+        return JsonlPersistence(storage)
+
+    def get_projection_cache(self):
+        """Get session projection cache backed by SQLite or in-memory."""
+        from coderai.core.persistence import SessionProjectionCache
+
+        storage = self._storage()["project_dir"]
+        return SessionProjectionCache(storage / "projection_cache.db")
+
+    def get_telemetry_coordinator(self, sink=None, mode="FULL"):
+        """Get session telemetry coordinator."""
+        from coderai.core.session_telemetry import (
+            OTelStructuredTelemetrySink,
+            SessionTelemetryCoordinator,
+            TelemetryMode,
+        )
+
+        effective_sink = sink or OTelStructuredTelemetrySink(TelemetryMode(mode))
+        return SessionTelemetryCoordinator(effective_sink, TelemetryMode(mode))
 
     def _serialize_message(self, m: SessionMessage) -> dict[str, Any]:
         ts = 0
@@ -508,7 +601,11 @@ class SessionManager:
                     content=f"There are earlier parts of the conversation. Here is a summary:\n\n{data.get('content', '')}",
                     create_time=create_time or _now(),
                     update_time=create_time or _now(),
-                    meta={"isSummary": True, "kind": "compact/summary", "replacedIds": data.get("shadowedIds", [])},
+                    meta={
+                        "isSummary": True,
+                        "kind": "compact/summary",
+                        "replacedIds": data.get("shadowedIds", []),
+                    },
                     visible=False,
                 )
             elif event_type == STEERING_MESSAGE:
@@ -602,17 +699,22 @@ class SessionManager:
         tool_meta: dict[str, Any] | None = None,
     ) -> SessionMessage:
         now = _now()
-        is_invisible = _is_invisible_execution(content)
+        pruned_content = ToolResultPruner(max_chars=DEFAULT_MAX_TOOL_RESULT_CHARS).prune_content(content)
+        is_invisible = _is_invisible_execution(pruned_content)
         params_md = _build_tool_params_snippet(tool_function)
-        result_md = _build_tool_result_snippet(content)
-        meta: dict[str, Any] = {"function": tool_function, "paramsMd": params_md, "resultMd": result_md}
+        result_md = _build_tool_result_snippet(pruned_content)
+        meta: dict[str, Any] = {
+            "function": tool_function,
+            "paramsMd": params_md,
+            "resultMd": result_md,
+        }
         if tool_meta and isinstance(tool_meta, dict):
             meta.update(tool_meta)
         return SessionMessage(
             id=uuid.uuid4().hex,
             session_id=session_id,
             role="tool",
-            content=content,
+            content=pruned_content,
             tool_call_id=tool_call_id,
             compacted=False,
             visible=not is_invisible,
@@ -668,6 +770,31 @@ class SessionManager:
             f"{prefix}{tail['content']}\n"
             "</background_task_failure_log>"
         )
+
+    def _dispatch_due_schedules(self, session_id: str) -> bool:
+        """Check for due timers and inject reminder messages into the session."""
+        try:
+            from coderai.core.schedule import get_schedule_manager
+
+            mgr = get_schedule_manager()
+            due_records = mgr.check_due(session_id=session_id)
+            if not due_records:
+                return False
+
+            for rec in due_records:
+                reminder_text = (
+                    f'<scheduled_reminder id="{rec.id}" kind="{rec.kind}">\n'
+                    f"Prompt: {rec.prompt}\n"
+                    f"Scheduled at: {rec.scheduled_at}\n"
+                    f"</scheduled_reminder>"
+                )
+                msg = self._build_message(session_id, "user", reminder_text)
+                self._append_message(msg)
+                if self.on_user_message:
+                    self.on_user_message(msg)
+            return True
+        except Exception:
+            return False
 
     def add_background_process_completion_message(
         self, session_id: str, completion: BackgroundProcessCompletion
@@ -891,12 +1018,12 @@ class SessionManager:
             "nonInteractive": self.non_interactive,
             "sandboxMode": sandbox_mode,
             "workspaceRoot": self.project_root,
+            "preset": settings.get("preset") or settings.get("toolsPreset"),
+            "enabledSkills": settings.get("enabledSkills"),
+            "skillScanPaths": settings.get("skillScanPaths"),
         }
         self._append_message(
             self._build_message(session_id, "system", get_system_prompt(prompt_options))
-        )
-        self._append_message(
-            self._build_message(session_id, "system", get_runtime_context(self.project_root, model))
         )
         instructions = load_agent_instructions(self.project_root)
         if instructions:
@@ -910,14 +1037,31 @@ class SessionManager:
                     meta={"isPlanMode": True},
                 )
             )
+
+        # Prepend dynamic workspace runtime context to the first user turn (keeping system prompt prefix 100% static)
+        runtime_context = get_runtime_context(self.project_root, model)
+        if runtime_context:
+            if isinstance(user_prompt, str):
+                effective_user_prompt = f"{runtime_context}\n\n---\n\n{user_prompt}"
+            elif isinstance(user_prompt, dict):
+                effective_user_prompt = dict(user_prompt)
+                effective_user_prompt["text"] = (
+                    f"{runtime_context}\n\n---\n\n{user_prompt.get('text', '')}"
+                )
+            else:
+                effective_user_prompt = f"{runtime_context}\n\n---\n\n{str(user_prompt)}"
+        else:
+            effective_user_prompt = user_prompt
+
         self._append_message(
             self._build_message(
                 session_id,
                 "user",
-                user_prompt,
+                effective_user_prompt,
                 meta={
                     "checkpointHash": ckpt_res.checkpoint_hash,
                     "userPrompt": {"planMode": plan_mode},
+                    "rawPrompt": user_prompt,
                 },
             )
         )
@@ -968,8 +1112,8 @@ class SessionManager:
                     self._append_message(
                         self._build_message(
                             session_id,
-                            "system",
-                            get_plan_mode_prompt(),
+                            "user",
+                            "[Plan Mode enabled: explore and draft proposed plan before mutating repo state.]",
                             meta={"isPlanMode": True},
                         )
                     )
@@ -977,8 +1121,8 @@ class SessionManager:
                     self._append_message(
                         self._build_message(
                             session_id,
-                            "system",
-                            "You have exited Plan Mode. You are now free to execute the plan and perform mutating operations.",
+                            "user",
+                            "[Exited Plan Mode: proceeding with plan execution.]",
                             meta={"isPlanMode": False},
                         )
                     )
@@ -1076,6 +1220,7 @@ class SessionManager:
         if (
             explicit_names is None
             and user_prompt
+            and isinstance(user_prompt, str)
             and user_prompt.strip()
             and user_prompt.strip() != "/continue"
         ):
@@ -1090,22 +1235,12 @@ class SessionManager:
                 loaded_names=loaded,
                 custom_scan_paths=custom_paths,
             )
-            if not matched:
-                llm_names = await self._identify_matching_skill_names(
-                    user_prompt, loaded_names=loaded
-                )
-                matched = [
-                    skill
-                    for skill in list_skills(
-                        self.project_root, enabled_skills=enabled, custom_scan_paths=custom_paths
-                    )
-                    if skill["name"] in llm_names
-                ]
             for skill in matched:
                 if skill["name"] not in names:
                     names.append(skill["name"])
 
-        self._append_skill_messages(session_id, names)
+        if names:
+            self._append_skill_messages(session_id, names)
 
     def inject_skills(self, session_id: str, skill_names: list[str]) -> None:
         """Append skill documents to a session without starting a new agent turn."""
@@ -1135,61 +1270,7 @@ class SessionManager:
             output=f"Loaded skill: {skill_name}.",
         )
 
-    async def _identify_matching_skill_names(
-        self, user_prompt: str, loaded_names: set[str] | None = None
-    ) -> list[str]:
-        enabled = self.get_resolved_settings().get("enabledSkills") or {}
-        loaded = loaded_names or set()
-        candidates = [
-            skill
-            for skill in list_skills(self.project_root, enabled_skills=enabled)
-            if skill["name"] not in loaded and skill.get("allowImplicitInvocation") is not False
-        ]
-        if not candidates:
-            return []
-        client_info = self.create_openai_client()
-        client = client_info.get("client")
-        if client is None:
-            return []
-        candidate_payload = [
-            {"name": skill["name"], "description": skill.get("description", "")}
-            for skill in candidates
-        ]
-        system_prompt = (
-            "When users ask you to perform tasks, check if any of the available skills match "
-            "the goal and situation. Skills provide specialized capabilities and domain knowledge.\n\n"
-            "Respond in JSON format:\n"
-            '```\n{\n  "skillNames": ["", ...]\n}\n```\n\n'
-            'If none of the available skills match, respond with an empty array, i.e. {"skillNames": []}.\n'
-        )
-        instructions = load_agent_instructions(self.project_root)
-        if instructions:
-            system_prompt += (
-                "Use the current agent instructions as additional context when deciding "
-                "which skills match:\n\n"
-                f"<agent-instructions>\n{instructions}\n</agent-instructions>\n\n"
-            )
-        system_prompt += "The candidate skills are as follows:\n\n```\n"
-        system_prompt += json.dumps(candidate_payload, indent=2)
-        system_prompt += "\n```"
-        try:
-            response = await self._create_completion(
-                client,
-                {
-                    "model": self.get_active_model(),
-                    "temperature": 0.1,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    "response_format": {"type": "json_object"},
-                },
-                emit_stream=False,
-            )
-        except Exception:
-            return []
-        raw = str(((response.get("choices") or [{}])[0].get("message") or {}).get("content") or "")
-        return parse_skill_match_response(raw, {skill["name"] for skill in candidates})
+
 
     async def _activate(
         self,
@@ -1206,7 +1287,7 @@ class SessionManager:
         base_url = client_info.get("baseURL")
         temperature = client_info.get("temperature")
         thinking_enabled = bool(client_info.get("thinkingEnabled"))
-        reasoning_effort = client_info.get("reasoningEffort") or "max"
+        reasoning_effort = self.get_reasoning_effort() or client_info.get("reasoningEffort") or "max"
         settings = self.get_resolved_settings()
 
         abort_event = asyncio.Event()
@@ -1251,6 +1332,9 @@ class SessionManager:
             for iteration in range(self.max_iterations):
                 if self.is_interrupted(session_id):
                     return
+
+                # Check for and dispatch any due schedule reminders
+                self._dispatch_due_schedules(session_id)
 
                 messages = self.list_session_messages(session_id)
 
@@ -1303,21 +1387,24 @@ class SessionManager:
                         return
                     continue
 
-                # Auto-compaction check before making LLM completion request
+                # Auto-compaction dual-trigger check before making LLM completion request
                 current_entry = self._get_entry(session_id) or {}
                 active_tokens = current_entry.get("activeTokens", 0)
-                auto_compact_thresh = settings.get(
-                    "autoCompactWindow"
-                ) or get_compact_prompt_token_threshold(model)
-                if active_tokens > auto_compact_thresh:
+                budget = calculate_context_budget(model)
+                auto_compact_thresh = (
+                    settings.get("autoCompactWindow") or budget["pressure_threshold"]
+                )
+                trigger = evaluate_compaction_trigger(active_tokens, budget["context_limit"])
+                if active_tokens > auto_compact_thresh or trigger is not None:
+                    eff_trigger = trigger or "pressure"
                     compact_notice = self._build_assistant(
                         session_id,
-                        "The conversation is getting long, compacting...",
+                        f"The conversation is getting long ({eff_trigger} trigger), compacting...",
                         None,
                     )
                     compact_notice.meta = {"asThinking": True}
                     self.on_assistant_message(compact_notice, False)
-                    await self._compact_session(session_id)
+                    await self._compact_session(session_id, trigger=eff_trigger)
                     messages = self.list_session_messages(session_id)
 
                 # Emit step/start event before preparing LLM request
@@ -1325,14 +1412,18 @@ class SessionManager:
 
                 # Prepare tools and messages for LLM request
                 multimodal_mode = settings.get("multimodal", "default")
+                tools_preset = settings.get("toolsPreset") or settings.get("preset")
                 tools = get_tools(
                     {
                         "model": model,
                         "nonInteractive": self.non_interactive,
                         "multimodal": multimodal_mode,
+                        "preset": tools_preset,
                     },
-                    external_tools=self.mcp_tool_definitions,
+                    external_tools=self.mcp_tool_definitions if not tools_preset else None,
                 )
+                if tools:
+                    tools = format_tool_definitions(tools, model=model)
                 converted = self.message_converter.convert_session_messages(
                     messages, model, thinking_enabled=thinking_enabled
                 )
@@ -1343,11 +1434,24 @@ class SessionManager:
                 }
                 if temperature is not None:
                     request["temperature"] = temperature
+                eff_reasoning = reasoning_effort
+                if eff_reasoning in ("adaptive", "auto", None) or (
+                    is_fast_model(model)
+                    and eff_reasoning == "max"
+                    and not settings.get("explicitReasoningEffort")
+                ):
+                    eff_reasoning = resolve_adaptive_reasoning_effort(
+                        model,
+                        turn=loop.turn,
+                        step=loop.step,
+                        explicit_effort=settings.get("explicitReasoningEffort"),
+                    )
+
                 request.update(
                     build_thinking_request_options(
                         thinking_enabled,
                         base_url=base_url,
-                        reasoning_effort=reasoning_effort,
+                        reasoning_effort=eff_reasoning,
                         model=model,
                         has_tools=bool(request.get("tools")),
                     )
@@ -1565,11 +1669,29 @@ class SessionManager:
     ) -> bool:
         waiting = False
         ctrl = self.session_controllers.get(session_id)
+        if not tool_calls:
+            return waiting
 
+        read_only_tool_names = {
+            "read",
+            "Read",
+            "grep",
+            "Grep",
+            "glob",
+            "Glob",
+            "WebSearch",
+            "web_search",
+            "WebFetch",
+            "web_fetch",
+            "lsp",
+            "session_query",
+            "UnderstandImage",
+            "understand_image",
+        }
+
+        # Normalize all raw tool calls
+        normalized_calls: list[dict[str, Any]] = []
         for raw_tc in tool_calls:
-            if ctrl and ctrl.is_set():
-                break
-
             tc = (
                 raw_tc
                 if isinstance(raw_tc, dict)
@@ -1583,40 +1705,71 @@ class SessionManager:
                     },
                 }
             )
-            tc_id = str(tc.get("id") or uuid.uuid4().hex)
-            tc["id"] = tc_id
+            tc["id"] = str(tc.get("id") or uuid.uuid4().hex)
+            normalized_calls.append(tc)
 
+        # Partition into contiguous execution chunks (parallel read-only vs sequential mutating)
+        chunks: list[tuple[str, list[dict[str, Any]]]] = []
+        current_chunk_kind: str | None = None
+        current_chunk: list[dict[str, Any]] = []
+
+        for tc in normalized_calls:
+            fn = tc.get("function") or {}
+            fn_name = str(fn.get("name", "") if isinstance(fn, dict) else "")
             blocked = build_permission_tool_execution(tc, permission_replies, message_permissions)
-            if blocked:
-                tool_msg = self._build_tool_message(
-                    session_id,
-                    tc_id,
-                    blocked["content"],
-                    tc.get("function"),
-                )
-                self._append_message(tool_msg)
-                self.on_assistant_message(tool_msg, True)
+
+            kind = "blocked" if blocked else "parallel" if fn_name in read_only_tool_names else "sequential"
+            if current_chunk_kind is None or current_chunk_kind == kind:
+                current_chunk_kind = kind
+                current_chunk.append(tc)
+            else:
+                chunks.append((current_chunk_kind, current_chunk))
+                current_chunk_kind = kind
+                current_chunk = [tc]
+
+        if current_chunk:
+            chunks.append((current_chunk_kind, current_chunk))
+
+        for chunk_kind, chunk_tcs in chunks:
+            if ctrl and ctrl.is_set():
+                break
+
+            if chunk_kind == "blocked":
+                for tc in chunk_tcs:
+                    blocked = build_permission_tool_execution(tc, permission_replies, message_permissions)
+                    blocked_content = blocked["content"] if blocked else "Blocked by permission"
+                    tool_msg = self._build_tool_message(
+                        session_id,
+                        tc["id"],
+                        blocked_content,
+                        tc.get("function"),
+                    )
+                    self._append_message(tool_msg)
+                    self.on_assistant_message(tool_msg, True)
                 continue
 
-            # Record pre-mutation checkpoint for file-editing tools
-            func = tc.get("function") if isinstance(tc, dict) else None
-            name = str(func.get("name", "")) if isinstance(func, dict) else ""
-            target_path = None
-            if name in ("edit", "Edit", "write", "Write"):
-                try:
-                    target_path = _resolve_target_file_path(session_id, self.project_root, tc)
-                    if target_path:
-                        self.file_history.record_checkpoint(
-                            session_id, [target_path], f"Before {name} tool execution"
-                        )
-                except Exception:
-                    pass
+            # Checkpoints for mutating calls
+            target_paths: dict[str, str] = {}
+            if chunk_kind == "sequential":
+                for tc in chunk_tcs:
+                    func = tc.get("function") if isinstance(tc, dict) else None
+                    name = str(func.get("name", "")) if isinstance(func, dict) else ""
+                    if name in ("edit", "Edit", "write", "Write"):
+                        try:
+                            tp = _resolve_target_file_path(session_id, self.project_root, tc)
+                            if tp:
+                                target_paths[tc["id"]] = tp
+                                self.file_history.record_checkpoint(
+                                    session_id, [tp], f"Before {name} tool execution"
+                                )
+                        except Exception:
+                            pass
 
             def _on_before_file_mutation(fp: str) -> None:
                 if fp:
                     try:
                         self.file_history.record_checkpoint(
-                            session_id, [fp], f"Before {name} tool execution"
+                            session_id, [fp], "Before tool execution"
                         )
                     except Exception:
                         pass
@@ -1625,7 +1778,7 @@ class SessionManager:
                 if fp:
                     try:
                         self.file_history.record_checkpoint(
-                            session_id, [fp], f"After {name} tool execution"
+                            session_id, [fp], "After tool execution"
                         )
                     except Exception:
                         pass
@@ -1660,10 +1813,14 @@ class SessionManager:
                 permission_decision="allow",
                 post_execute=_post_execute,
                 sandbox_mode=(self.get_resolved_settings().get("permissions") or {}).get("sandbox"),
+                list_session_messages=lambda sid: self.list_session_messages(sid),
+                list_session_events=lambda sid: self.list_session_events(sid),
             )
 
-            executions = await self.tool_executor.execute_tool_calls(session_id, [tc], hooks=hooks)
-            follow_up_messages: list[SessionMessage] = []
+            is_parallel = chunk_kind == "parallel" and len(chunk_tcs) > 1
+            executions = await self.tool_executor.execute_tool_calls(
+                session_id, chunk_tcs, hooks=hooks, parallel=is_parallel
+            )
 
             for execution in executions:
                 result = execution["result"]
@@ -1676,12 +1833,18 @@ class SessionManager:
                         lambda e: {**e, "planMode": False, "updateTime": _now()},
                     )
 
+                exec_tc_id = execution["toolCallId"]
                 tool_fn = self.message_converter.find_tool_function(
-                    tool_calls, execution["toolCallId"]
-                ) or tc.get("function")
+                    tool_calls, exec_tc_id
+                )
+                if not tool_fn:
+                    matching = [t for t in chunk_tcs if t.get("id") == exec_tc_id]
+                    if matching:
+                        tool_fn = matching[0].get("function")
+
                 tool_msg = self._build_tool_message(
                     session_id,
-                    execution["toolCallId"],
+                    exec_tc_id,
                     execution["content"],
                     tool_fn,
                     tool_meta=result_meta if isinstance(result_meta, dict) else None,
@@ -1689,11 +1852,12 @@ class SessionManager:
                 self._append_message(tool_msg)
                 self.on_assistant_message(tool_msg, True)
 
+                follow_up_messages: list[SessionMessage] = []
                 for follow_up in result.get("followUpMessages") or []:
                     role = (
-                        follow_up.get("role", "system")
+                        follow_up.get("role", "user")
                         if isinstance(follow_up, dict)
-                        else getattr(follow_up, "role", "system")
+                        else getattr(follow_up, "role", "user")
                     )
                     content = (
                         follow_up.get("content", "")
@@ -1705,27 +1869,30 @@ class SessionManager:
                         if isinstance(follow_up, dict)
                         else getattr(follow_up, "content_params", None)
                     )
-                    if role == "system":
+                    if content:
                         follow_up_messages.append(
                             self._build_message(
                                 session_id,
-                                "system",
+                                "user",
                                 content,
-                                meta={"contentParams": content_params} if content_params else None,
+                                meta={"contentParams": content_params, "advisoryRole": role}
+                                if content_params
+                                else {"advisoryRole": role},
                             )
                         )
 
-            for fum in follow_up_messages:
-                self._append_message(fum)
+                for fum in follow_up_messages:
+                    self._append_message(fum)
 
-            # Record post-mutation checkpoint for file-editing tools
-            if target_path:
-                try:
-                    self.file_history.record_checkpoint(
-                        session_id, [target_path], f"After {name} tool execution"
-                    )
-                except Exception:
-                    pass
+                # Record post-mutation checkpoint for file-editing tools
+                tp = target_paths.get(exec_tc_id)
+                if tp:
+                    try:
+                        self.file_history.record_checkpoint(
+                            session_id, [tp], "After tool execution"
+                        )
+                    except Exception:
+                        pass
 
         return waiting
 
@@ -1760,8 +1927,14 @@ class SessionManager:
         self, client: Any, request: dict[str, Any], *, emit_stream: bool = True
     ) -> dict[str, Any]:
         on_chunk = self.on_stream_chunk if emit_stream else None
+        on_thinking = self.on_thinking_chunk if emit_stream else None
         result = await asyncio.to_thread(
-            _call_stream_or_sync, client, request, on_chunk, self.on_llm_stream_progress
+            _call_stream_or_sync,
+            client,
+            request,
+            on_chunk,
+            self.on_llm_stream_progress,
+            on_thinking,
         )
         if self.get_resolved_settings().get("debugLogEnabled"):
             log_openai_chat_completion_debug(
@@ -1775,60 +1948,25 @@ class SessionManager:
             )
         return result
 
-    async def _compact_session(self, session_id: str) -> None:
-        client_info = self.create_openai_client()
-        client = client_info.get("client")
-        if client is None:
-            return
-        messages = self.list_session_messages(session_id)
-        start = next((i for i, m in enumerate(messages) if m.role != "system"), -1)
-        if start == -1:
-            return
-        end = -1
-        search_start = start + (len(messages) - start) * 2 // 3
-        for i in range(max(search_start, start), len(messages)):
-            if messages[i].role != "tool":
-                end = i
-                break
-        if end == -1 or end <= start:
-            return
-        prompt = get_compact_prompt(messages[start:end])
-        model = self.get_active_model()
-        response = await self._create_completion(
-            client,
-            {"model": model, "messages": [{"role": "user", "content": prompt}]},
-            emit_stream=False,
-        )
-        raw = (response.get("choices") or [{}])[0].get("message") or {}
-        raw_summary = str(raw.get("content") or "").strip()
-        summary = re.sub(
-            r"<analysis>[\s\S]*?</analysis>", "", raw_summary, flags=re.IGNORECASE
-        ).strip()
-        now = _now()
-        usage = response.get("usage")
-        self._update_entry(
-            session_id,
-            lambda e: {
-                **e,
-                "usage": _accumulate_usage(e.get("usage"), usage),
-                "usagePerModel": _accumulate_usage_per_model(e.get("usagePerModel"), model, usage),
-                "activeTokens": _total_tokens(usage) or e.get("activeTokens", 0),
-                "updateTime": now,
-            },
-        )
-        replaced_ids = [m.id for m in messages[start:end]]
-        summary_message = self._build_message(
-            session_id,
-            "system",
-            f"There are earlier parts of the conversation. Here is a summary:\n\n{summary}",
-            meta={"isSummary": True, "kind": "compact/summary", "replacedIds": replaced_ids},
-        )
-        summary_message.visible = False
-        self._append_message(summary_message)
+    async def _compact_session(self, session_id: str, trigger: str = "pressure") -> None:
+        """Execute session compaction through the pluggable CompactionEngine."""
+        res = await self.compaction_engine.compact_if_needed(session_id, trigger=trigger)
+        if not res:
+            res = await self.compaction_engine.compact_now(session_id, trigger=trigger)
+        if res:
+            now = _now()
+            self._update_entry(
+                session_id,
+                lambda e: {
+                    **e,
+                    "activeTokens": res.shadowed_token_count or e.get("activeTokens", 0),
+                    "updateTime": now,
+                },
+            )
 
-    async def compact_session(self, session_id: str) -> None:
+    async def compact_session(self, session_id: str, trigger: str = "manual") -> None:
         """Public method to compact long session context history."""
-        await self._compact_session(session_id)
+        await self._compact_session(session_id, trigger=trigger)
 
     # ---- queries, delete, fork & undo ----
 
@@ -1860,37 +1998,111 @@ class SessionManager:
                 pass
         return True
 
-    def fork_session(self, source_session_id: str) -> str | None:
-        """Fork an existing session into a new independent session with shared history."""
+    def rename_session(self, session_id: str, new_title: str) -> bool:
+        """Rename an existing session title/summary in index and memory."""
+        cleaned_title = (new_title or "").strip()
+        if not cleaned_title:
+            return False
+        entry = self._get_entry(session_id)
+        if not entry:
+            return False
+        self._update_entry(
+            session_id,
+            lambda e: {**e, "summary": cleaned_title, "updateTime": _now()},
+        )
+        return True
+
+    def fork_session(
+        self,
+        source_session_id: str,
+        at_message_id_or_seq: str | int | None = None,
+    ) -> str | None:
+        """Fork an existing session into a new independent session branch with cloned message history, event logs, and file checkpoint."""
         src_entry = self._get_entry(source_session_id)
         if not src_entry:
             return None
 
-        forked_id = uuid.uuid4().hex
+        forked_id = f"ses_{uuid.uuid4().hex[:12]}"
         now = _now()
-        source_messages = self.list_session_messages(source_session_id)
 
-        forked_messages: list[SessionMessage] = []
-        for m in source_messages:
-            forked_messages.append(
-                SessionMessage(
-                    id=uuid.uuid4().hex,
-                    session_id=forked_id,
-                    role=m.role,
-                    content=m.content,
-                    tool_calls=m.tool_calls,
-                    tool_call_id=m.tool_call_id,
-                    thinking=m.thinking,
-                    compacted=m.compacted,
-                    visible=m.visible,
-                    create_time=m.create_time or now,
-                    update_time=now,
-                    meta=m.meta,
-                )
-            )
+        # Read raw jsonl lines to support both legacy SessionMessage dicts and new SessionEvents
+        raw_lines: list[str] = []
+        path = self._messages_path(source_session_id)
+        if path.exists():
+            raw_lines = [
+                line.strip()
+                for line in path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
 
-        self._save_messages(forked_id, forked_messages)
+        sliced_lines: list[str] = []
+        checkpoint_hash: str | None = None
 
+        if at_message_id_or_seq is None:
+            sliced_lines = list(raw_lines)
+        elif isinstance(at_message_id_or_seq, int):
+            # Check if matching by seq number or message index
+            matched_by_seq = False
+            for line in raw_lines:
+                try:
+                    data = json.loads(line)
+                    if "seq" in data:
+                        if int(data["seq"]) <= at_message_id_or_seq:
+                            sliced_lines.append(line)
+                            matched_by_seq = True
+                    elif not matched_by_seq and len(sliced_lines) <= at_message_id_or_seq:
+                        sliced_lines.append(line)
+                except Exception:
+                    continue
+            if not matched_by_seq and not sliced_lines and raw_lines:
+                # Fallback to index-based slice
+                sliced_lines = raw_lines[: at_message_id_or_seq + 1]
+        elif isinstance(at_message_id_or_seq, str):
+            for line in raw_lines:
+                sliced_lines.append(line)
+                try:
+                    data = json.loads(line)
+                    if data.get("id") == at_message_id_or_seq:
+                        break
+                except Exception:
+                    continue
+
+        # Find latest checkpoint hash in the sliced messages/events
+        for line in reversed(sliced_lines):
+            try:
+                data = json.loads(line)
+                meta = data.get("meta") or data.get("data", {}).get("meta") or {}
+                if isinstance(meta, dict) and meta.get("checkpointHash"):
+                    checkpoint_hash = meta["checkpointHash"]
+                    break
+            except Exception:
+                continue
+
+        # Write cloned lines to the new session's file, rewriting sessionId
+        forked_lines: list[str] = []
+        for line in sliced_lines:
+            try:
+                data = json.loads(line)
+                if "sessionId" in data:
+                    data["sessionId"] = forked_id
+                elif "session_id" in data:
+                    data["session_id"] = forked_id
+                forked_lines.append(json.dumps(data, ensure_ascii=False))
+            except Exception:
+                forked_lines.append(line)
+
+        self._ensure_dir()
+        with open(self._messages_path(forked_id), "w", encoding="utf-8") as f:
+            for line_item in forked_lines:
+                f.write(line_item + "\n")
+
+        # Fork file history branch
+        self.file_history.ensure_session(forked_id)
+        self.file_history.fork_session(
+            source_session_id, forked_id, checkpoint_hash=checkpoint_hash
+        )
+
+        # Update sessions index
         index = self._load_index()
         forked_entry = {
             "id": forked_id,
@@ -1909,12 +2121,13 @@ class SessionManager:
             "updateTime": now,
             "planMode": src_entry.get("planMode", False),
             "forkOf": source_session_id,
+            "parentSessionId": source_session_id,
+            "forkPoint": at_message_id_or_seq,
         }
         index["entries"].insert(0, forked_entry)
         index["entries"] = index["entries"][:MAX_SESSION_ENTRIES]
         self._save_index(index)
 
-        self.file_history.ensure_session(forked_id)
         return forked_id
 
     def list_undo_targets(self, session_id: str) -> list[dict[str, Any]]:
@@ -1933,7 +2146,16 @@ class SessionManager:
             can_restore_code = bool(
                 ckpt_hash and self.file_history.can_restore(session_id, ckpt_hash)
             )
-            prompt_preview = m.content.strip().splitlines()[0] if m.content else "(empty prompt)"
+            raw_p = (m.meta or {}).get("rawPrompt")
+            if raw_p and isinstance(raw_p, str):
+                prompt_preview = raw_p.strip().splitlines()[0] if raw_p else "(empty prompt)"
+            else:
+                prompt_text = m.content or ""
+                if "\n\n---\n\n" in prompt_text:
+                    prompt_text = prompt_text.split("\n\n---\n\n", 1)[1]
+                prompt_preview = (
+                    prompt_text.strip().splitlines()[0] if prompt_text else "(empty prompt)"
+                )
             targets.append(
                 {
                     "index": idx,
@@ -2067,7 +2289,9 @@ def _entry_from_dict(d: dict[str, Any]) -> SessionEntry:
         create_time=d.get("createTime", ""),
         update_time=d.get("updateTime", ""),
         plan_mode=bool(d.get("planMode")),
-        fork_of=d.get("forkOf"),
+        fork_of=d.get("forkOf") or d.get("parentSessionId"),
+        parent_session_id=d.get("parentSessionId") or d.get("forkOf"),
+        fork_point=d.get("forkPoint"),
     )
 
 
@@ -2109,6 +2333,7 @@ def _call_stream_or_sync(
     request: dict[str, Any],
     on_chunk: Callable[[str], None] | None = None,
     on_progress: Callable[[dict[str, Any]], None] | None = None,
+    on_thinking_chunk: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     stream_req = {
         **request,
@@ -2151,57 +2376,71 @@ def _call_stream_or_sync(
             usage_dict: dict[str, int] = {}
             estimated_tokens = 0
 
-            for chunk in resp:
-                choices = getattr(chunk, "choices", None) or []
-                if choices:
-                    c = choices[0]
-                    delta = getattr(c, "delta", None)
-                    if delta:
-                        delta_content = getattr(delta, "content", None)
-                        if delta_content:
-                            content_parts.append(delta_content)
-                            estimated_tokens += max(1, len(delta_content) // 4)
-                            if on_chunk:
-                                on_chunk(delta_content)
-                            if on_progress:
-                                on_progress({"estimatedTokens": estimated_tokens, "type": "update"})
+            try:
+                for chunk in resp:
+                    choices = getattr(chunk, "choices", None) or []
+                    if choices:
+                        c = choices[0]
+                        delta = getattr(c, "delta", None)
+                        if delta:
+                            delta_content = getattr(delta, "content", None)
+                            if delta_content:
+                                content_parts.append(delta_content)
+                                estimated_tokens += max(1, len(delta_content) // 4)
+                                if on_chunk:
+                                    on_chunk(delta_content)
+                                if on_progress:
+                                    on_progress(
+                                        {"estimatedTokens": estimated_tokens, "type": "update"}
+                                    )
 
-                        delta_thinking = getattr(delta, "reasoning_content", None) or getattr(
-                            delta, "thinking", None
-                        )
-                        if delta_thinking:
-                            thinking_parts.append(delta_thinking)
-                            estimated_tokens += max(1, len(delta_thinking) // 4)
-                            if on_progress:
-                                on_progress({"estimatedTokens": estimated_tokens, "type": "update"})
+                            delta_thinking = getattr(delta, "reasoning_content", None) or getattr(
+                                delta, "thinking", None
+                            )
+                            if delta_thinking:
+                                thinking_parts.append(delta_thinking)
+                                estimated_tokens += max(1, len(delta_thinking) // 4)
+                                if on_thinking_chunk:
+                                    on_thinking_chunk(delta_thinking)
+                                if on_progress:
+                                    on_progress(
+                                        {
+                                            "estimatedTokens": estimated_tokens,
+                                            "type": "update",
+                                            "isThinking": True,
+                                        }
+                                    )
 
-                        delta_refusal = getattr(delta, "refusal", None)
-                        if delta_refusal:
-                            refusal_parts.append(delta_refusal)
+                            delta_refusal = getattr(delta, "refusal", None)
+                            if delta_refusal:
+                                refusal_parts.append(delta_refusal)
 
-                        delta_tc = getattr(delta, "tool_calls", None)
-                        if delta_tc:
-                            for tc_delta in delta_tc:
-                                idx = getattr(tc_delta, "index", 0)
-                                if idx not in tool_calls_dict:
-                                    tool_calls_dict[idx] = {
-                                        "id": getattr(tc_delta, "id", "") or uuid.uuid4().hex,
-                                        "type": "function",
-                                        "function": {"name": "", "arguments": ""},
-                                    }
-                                entry = tool_calls_dict[idx]
-                                if getattr(tc_delta, "id", None):
-                                    entry["id"] = tc_delta.id
-                                func = getattr(tc_delta, "function", None)
-                                if func:
-                                    if getattr(func, "name", None):
-                                        entry["function"]["name"] += func.name
-                                    if getattr(func, "arguments", None):
-                                        entry["function"]["arguments"] += func.arguments
+                            delta_tc = getattr(delta, "tool_calls", None)
+                            if delta_tc:
+                                for tc_delta in delta_tc:
+                                    idx = getattr(tc_delta, "index", 0)
+                                    if idx not in tool_calls_dict:
+                                        tool_calls_dict[idx] = {
+                                            "id": getattr(tc_delta, "id", "") or uuid.uuid4().hex,
+                                            "type": "function",
+                                            "function": {"name": "", "arguments": ""},
+                                        }
+                                    entry = tool_calls_dict[idx]
+                                    if getattr(tc_delta, "id", None):
+                                        entry["id"] = tc_delta.id
+                                    func = getattr(tc_delta, "function", None)
+                                    if func:
+                                        if getattr(func, "name", None):
+                                            entry["function"]["name"] += func.name
+                                        if getattr(func, "arguments", None):
+                                            entry["function"]["arguments"] += func.arguments
 
-                chunk_usage = getattr(chunk, "usage", None)
-                if chunk_usage:
-                    usage_dict = extract_usage_dict(chunk_usage)
+                    chunk_usage = getattr(chunk, "usage", None)
+                    if chunk_usage:
+                        usage_dict = extract_usage_dict(chunk_usage)
+            except Exception as stream_err:
+                # If stream failed mid-generation or failed with API error, re-raise to avoid duplicate sync request
+                raise stream_err
 
             if on_progress:
                 on_progress({"estimatedTokens": estimated_tokens, "type": "end"})
@@ -2217,7 +2456,16 @@ def _call_stream_or_sync(
                     "prompt_cache_miss_tokens": 0,
                 }
 
-            tool_calls = [tool_calls_dict[i] for i in sorted(tool_calls_dict.keys())] or None
+            # Repair and assemble tool calls
+            assembled_tool_calls: list[dict[str, Any]] = []
+            for i in sorted(tool_calls_dict.keys()):
+                tc = tool_calls_dict[i]
+                raw_args = tc.get("function", {}).get("arguments", "")
+                if raw_args:
+                    tc["function"]["arguments"] = repair_json_string(raw_args)
+                assembled_tool_calls.append(tc)
+
+            tool_calls = assembled_tool_calls or None
             res: dict[str, Any] = {
                 "choices": [
                     {
@@ -2233,10 +2481,9 @@ def _call_stream_or_sync(
             if usage_dict:
                 res["usage"] = usage_dict
             return res
-    except Exception:
-        pass
-
-    return _call_sync(client, request)
+    except (TypeError, AttributeError):
+        # Client does not support streaming create() or response object format
+        return _call_sync(client, request)
 
 
 def _format_completion_response(resp: Any) -> dict[str, Any]:

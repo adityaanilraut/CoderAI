@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import os
 import pathlib
-from typing import Any
 
 
 def get_extension_root() -> str:
     from coderai.core.prompt import get_extension_root as _ext_root
+
     try:
         return _ext_root()
     except Exception:

@@ -321,12 +321,19 @@ def make_request_header(
 
 
 def make_compaction_start(
-    seq: int, compaction_id: str, shadowed_range: dict[str, int]
+    seq: int,
+    compaction_id: str,
+    shadowed_range: dict[str, int],
+    trigger: str = "pressure",
 ) -> SessionEvent:
     return make_event(
         seq,
         COMPACTION_START,
-        {"compactionId": compaction_id, "shadowedRange": shadowed_range},
+        {
+            "compactionId": compaction_id,
+            "shadowedRange": shadowed_range,
+            "trigger": trigger,
+        },
     )
 
 
@@ -334,17 +341,20 @@ def make_compaction_summary(
     seq: int,
     compaction_id: str,
     content: str,
-    shadowed_seqs: list[int],
+    shadowed_seqs: list[int] | None = None,
+    shadowed_ids: list[str] | None = None,
 ) -> SessionEvent:
+    data: dict[str, Any] = {
+        "compactionId": compaction_id,
+        "content": content,
+        "shadowedSeqs": shadowed_seqs or [],
+        "shadowedIds": shadowed_ids or [],
+    }
     return make_event(
         seq,
         COMPACTION_SUMMARY,
-        {
-            "compactionId": compaction_id,
-            "content": content,
-            "shadowedSeqs": shadowed_seqs,
-        },
-        source_event_seqs=shadowed_seqs,
+        data,
+        source_event_seqs=shadowed_seqs or [],
     )
 
 
@@ -528,9 +538,7 @@ def derive_messages_from_events(events: list[SessionEvent]) -> list[dict[str, An
                 tail = MAX_TOOL_RESULT_CHARS - head
                 omitted = len(content) - MAX_TOOL_RESULT_CHARS
                 content = (
-                    f"{content[:head]}\n\n"
-                    f"...[{omitted} characters omitted]...\n\n"
-                    f"{content[-tail:]}"
+                    f"{content[:head]}\n\n...[{omitted} characters omitted]...\n\n{content[-tail:]}"
                 )
             messages.append(
                 {

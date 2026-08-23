@@ -1,8 +1,10 @@
-"""Modular, type-safe Tool Registry with strict JSON Schema and type validation."""
+"""Modular, type-safe Tool Registry with scoped layers, strict JSON Schema, and DeepSeek Harness parity."""
 
 from __future__ import annotations
 
+import copy
 from typing import Any
+from collections.abc import Callable, Sequence
 
 from coderai.core.tools import ask_user_question as _ask
 from coderai.core.tools import agents as _agents
@@ -38,7 +40,13 @@ from coderai.core.teams import (
     handle_team_task_update_tool as _task_update_handle,
     handle_wait_agent_tool as _wait_agent_handle,
 )
-from coderai.core.tools.types import ToolDefinition, ValidationError
+from coderai.core.tools.types import (
+    ToolDefinition,
+    ToolPresentationMode,
+    ValidationError,
+    canonicalize_tool_schema,
+)
+from coderai.core.tools.schema import define_tool
 
 BASH_SCOPE_ENUM = [
     "read-in-cwd",
@@ -54,44 +62,273 @@ BASH_SCOPE_ENUM = [
 ]
 
 
+class ToolLayer:
+    """Scoped tool registration layer supporting dynamic overrides, filters, and guards."""
+
+    def __init__(self, scope: str | None = None) -> None:
+        self.scope = scope
+        self.tools: dict[str, ToolDefinition] = {}
+        self.aliases: dict[str, str] = {}
+        self.restrictions: list[dict[str, set[str]]] = []
+        self.suppressions: set[str] = set()
+        self.guards: list[Callable[[ToolDefinition, dict[str, Any], Any], str | None]] = []
+        self.mode: ToolPresentationMode | None = None
+
+    def insert(self, tool_def: ToolDefinition) -> None:
+        self.tools[tool_def.name] = tool_def
+        for alias in tool_def.aliases:
+            self.aliases[alias] = tool_def.name
+
+    def remove(self, name: str) -> bool:
+        canonical = self.aliases.get(name, name)
+        removed = self.tools.pop(canonical, None)
+        if removed:
+            # Clean up aliases
+            self.aliases = {k: v for k, v in self.aliases.items() if v != canonical}
+            self.suppressions.discard(canonical)
+            return True
+        return False
+
+    def suppress(self, name: str) -> None:
+        canonical = self.aliases.get(name, name)
+        self.suppressions.add(canonical)
+
+    def restore(self, name: str) -> bool:
+        canonical = self.aliases.get(name, name)
+        if canonical in self.suppressions:
+            self.suppressions.remove(canonical)
+            return True
+        return False
+
+    def is_suppressed(self, name: str) -> bool:
+        canonical = self.aliases.get(name, name)
+        return canonical in self.suppressions
+
+    def admits(self, name: str) -> bool:
+        """Check if a tool name passes all compiled restrictions in this layer."""
+        if self.is_suppressed(name):
+            return False
+        for r in self.restrictions:
+            allow_set = r.get("allow")
+            deny_set = r.get("deny")
+            if allow_set is not None and name not in allow_set:
+                return False
+            if deny_set is not None and name in deny_set:
+                return False
+        return True
+
+
 class ToolRegistry:
-    """Type-safe registry for built-in and dynamic agent tools with strict validation."""
+    """Type-safe registry for built-in and dynamic agent tools with scoping, restrictions, and validation."""
 
     def __init__(self) -> None:
-        self._tools: dict[str, ToolDefinition] = {}
-        self._aliases: dict[str, str] = {}
+        self._global_layer = ToolLayer(scope=None)
+        self._scoped_layers: dict[str, ToolLayer] = {}
+        self._change_listeners: list[Callable[[], None]] = []
+        self.default_mode: ToolPresentationMode = "native"
         self._register_builtins()
 
-    def register(self, tool_def: ToolDefinition) -> None:
-        """Register a tool definition and its aliases."""
-        self._tools[tool_def.name] = tool_def
-        for alias in tool_def.aliases:
-            self._aliases[alias] = tool_def.name
+    def on_change(self, listener: Callable[[], None]) -> Callable[[], None]:
+        """Subscribe a listener to tool registration/restriction changes."""
+        self._change_listeners.append(listener)
 
-    def get(self, name: str) -> ToolDefinition | None:
-        """Resolve a tool definition by name or alias."""
-        canonical = self._aliases.get(name, name)
-        return self._tools.get(canonical)
+        def disposer() -> None:
+            if listener in self._change_listeners:
+                self._change_listeners.remove(listener)
 
-    def has_tool(self, name: str) -> bool:
-        """Check if a tool exists by name or alias."""
-        return self.get(name) is not None
+        return disposer
 
-    def list_tools(self) -> list[ToolDefinition]:
-        """Return all registered tool definitions."""
-        return list(self._tools.values())
+    def _emit_change(self) -> None:
+        for listener in list(self._change_listeners):
+            try:
+                listener()
+            except Exception:
+                pass
+
+    def _get_layer(self, scope: str | None, create: bool = False) -> ToolLayer:
+        if scope is None:
+            return self._global_layer
+        if scope not in self._scoped_layers:
+            if create:
+                self._scoped_layers[scope] = ToolLayer(scope=scope)
+            else:
+                return ToolLayer(scope=scope)
+        return self._scoped_layers[scope]
+
+    def register(self, tool_def: ToolDefinition, scope: str | None = None) -> Callable[[], None]:
+        """Register a tool definition and return an unregister disposer function."""
+        layer = self._get_layer(scope, create=True)
+        layer.insert(tool_def)
+        self._emit_change()
+
+        def unregister_disposer() -> None:
+            self.unregister(tool_def.name, scope=scope)
+
+        return unregister_disposer
+
+    def unregister(self, name: str, scope: str | None = None) -> bool:
+        """Unregister a tool by name or alias from the specified scope or global layer."""
+        layer = self._get_layer(scope, create=False)
+        removed = layer.remove(name)
+        if removed:
+            self._emit_change()
+        return removed
+
+    def suppress_tool(self, name: str, scope: str | None = None) -> Callable[[], None]:
+        """Temporarily suppress a tool in the specified scope (or globally)."""
+        layer = self._get_layer(scope, create=True)
+        layer.suppress(name)
+        self._emit_change()
+
+        def disposer() -> None:
+            self.restore_tool(name, scope=scope)
+
+        return disposer
+
+    def restore_tool(self, name: str, scope: str | None = None) -> bool:
+        """Restore a previously suppressed tool in the specified scope (or globally)."""
+        layer = self._get_layer(scope, create=False)
+        restored = layer.restore(name)
+        if restored:
+            self._emit_change()
+        return restored
+
+    def is_tool_suppressed(self, name: str, scope: str | None = None) -> bool:
+        """Check if a tool is suppressed in the given scope or globally."""
+        if scope and scope in self._scoped_layers:
+            if self._scoped_layers[scope].is_suppressed(name):
+                return True
+        return self._global_layer.is_suppressed(name)
+
+    def restrict(
+        self,
+        filter_spec: dict[str, Sequence[str]],
+        scope: str | None = None,
+    ) -> Callable[[], None]:
+        """Restrict visible tools for a scope (e.g. allow only read tools for a read_only subagent)."""
+        layer = self._get_layer(scope, create=True)
+        compiled: dict[str, set[str]] = {}
+        if "allow" in filter_spec:
+            compiled["allow"] = set(filter_spec["allow"])
+        if "deny" in filter_spec:
+            compiled["deny"] = set(filter_spec["deny"])
+
+        layer.restrictions.append(compiled)
+        self._emit_change()
+
+        def disposer() -> None:
+            if compiled in layer.restrictions:
+                layer.restrictions.remove(compiled)
+                self._emit_change()
+
+        return disposer
+
+    def set_session_mask(
+        self,
+        session_id: str,
+        allow: Sequence[str] | None = None,
+        deny: Sequence[str] | None = None,
+    ) -> Callable[[], None]:
+        """Convenience method to set an allow/deny tool mask for a session."""
+        filter_spec: dict[str, Sequence[str]] = {}
+        if allow is not None:
+            filter_spec["allow"] = list(allow)
+        if deny is not None:
+            filter_spec["deny"] = list(deny)
+        return self.restrict(filter_spec, scope=session_id)
+
+    def clear_session_mask(self, session_id: str) -> None:
+        """Clear all restrictions and suppressions from a session's scoped layer."""
+        if session_id in self._scoped_layers:
+            layer = self._scoped_layers[session_id]
+            layer.restrictions.clear()
+            layer.suppressions.clear()
+            self._emit_change()
+
+    def guard(
+        self,
+        guard_fn: Callable[[ToolDefinition, dict[str, Any], Any], str | None],
+        scope: str | None = None,
+    ) -> Callable[[], None]:
+        """Register a monotonic execution guard for a scope or globally."""
+        layer = self._get_layer(scope, create=True)
+        layer.guards.append(guard_fn)
+
+        def disposer() -> None:
+            if guard_fn in layer.guards:
+                layer.guards.remove(guard_fn)
+
+        return disposer
+
+    def get(self, name: str, scope: str | None = None) -> ToolDefinition | None:
+        """Resolve a tool definition by name or alias, applying scoping and active restrictions."""
+        # 1. Check scoped layer first
+        if scope and scope in self._scoped_layers:
+            scoped_layer = self._scoped_layers[scope]
+            canonical = scoped_layer.aliases.get(name, name)
+            if scoped_layer.is_suppressed(canonical):
+                return None
+            if canonical in scoped_layer.tools:
+                if not scoped_layer.admits(canonical):
+                    return None
+                return scoped_layer.tools[canonical]
+
+        # 2. Check global layer
+        canonical = self._global_layer.aliases.get(name, name)
+        if self._global_layer.is_suppressed(canonical):
+            return None
+        tool_def = self._global_layer.tools.get(canonical)
+        if tool_def is None:
+            return None
+
+        # 3. Check restrictions on inherited tool
+        if scope and scope in self._scoped_layers:
+            if not self._scoped_layers[scope].admits(tool_def.name):
+                return None
+
+        return tool_def
+
+    def has_tool(self, name: str, scope: str | None = None) -> bool:
+        """Check if a tool exists and is permitted in the given scope."""
+        return self.get(name, scope=scope) is not None
+
+    def list_tools(self, scope: str | None = None) -> list[ToolDefinition]:
+        """Return all registered and permitted tool definitions for the given scope."""
+        tools_map: dict[str, ToolDefinition] = {}
+
+        # 1. Global tools that pass scope restrictions and aren't suppressed
+        for name, tool_def in self._global_layer.tools.items():
+            if self._global_layer.is_suppressed(name):
+                continue
+            if scope and scope in self._scoped_layers:
+                if not self._scoped_layers[scope].admits(name):
+                    continue
+            tools_map[name] = tool_def
+
+        # 2. Scoped tool additions / overrides
+        if scope and scope in self._scoped_layers:
+            for name, tool_def in self._scoped_layers[scope].tools.items():
+                if not self._scoped_layers[scope].admits(name):
+                    continue
+                tools_map[name] = tool_def
+
+        return list(tools_map.values())
 
     def get_openai_tool_definitions(
         self,
         options: dict[str, Any] | None = None,
         external_tools: list[dict[str, Any]] | None = None,
+        scope: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Generate OpenAI function definitions for all registered tools."""
+        """Generate OpenAI function definitions for all registered and visible tools."""
         options = options or {}
         definitions: list[dict[str, Any]] = []
 
-        for tool in self._tools.values():
-            if options.get("nonInteractive") is True and tool.name == "AskUserQuestion":
+        for tool in self.list_tools(scope=scope):
+            if options.get("nonInteractive") is True and tool.name in (
+                "AskUserQuestion",
+                "ask_user_question",
+            ):
                 continue
             definitions.append(tool.to_openai_schema())
 
@@ -100,15 +337,22 @@ class ToolRegistry:
 
         return definitions
 
-    def validate_arguments(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+    def validate_arguments(
+        self,
+        name: str,
+        args: dict[str, Any],
+        scope: str | None = None,
+    ) -> dict[str, Any]:
         """Strictly validate input arguments against the tool's parameter schema.
 
         Raises:
-            ValidationError: If required fields are missing or types mismatch.
+            ValidationError: If required fields are missing, types mismatch, or constraints are violated.
         """
-        tool_def = self.get(name)
+        tool_def = self.get(name, scope=scope)
         if not tool_def:
-            raise ValidationError(f"Tool '{name}' is not registered in the ToolRegistry.")
+            raise ValidationError(
+                f"Tool '{name}' is not registered or is restricted in the ToolRegistry."
+            )
 
         if not isinstance(args, dict):
             raise ValidationError(f"Tool arguments for '{name}' must be a dictionary/object.")
@@ -139,6 +383,10 @@ class ToolRegistry:
                     raise ValidationError(
                         f"Argument '{param_name}' for tool '{name}' must be a number, got {type(value).__name__}."
                     )
+                if expected_type == "integer" and int(value) != value:
+                    raise ValidationError(
+                        f"Argument '{param_name}' for tool '{name}' must be an integer, got {value}."
+                    )
             elif expected_type == "boolean":
                 if not isinstance(value, bool):
                     raise ValidationError(
@@ -164,11 +412,75 @@ class ToolRegistry:
 
         return args
 
+    def to_openai_schemas(
+        self,
+        scope: str | None = None,
+        options: dict[str, Any] | None = None,
+        external_tools: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Project registered tools onto formatted OpenAI Function tool call schemas."""
+        options = options or {}
+        from coderai.core.prompt_sections import order_tools
+        from coderai.core.common.model_capabilities import supports_multimodal
+
+        tools_list: list[dict[str, Any]] = []
+        is_non_interactive = options.get("nonInteractive") is True
+        is_child_agent = options.get("childAgent") is True
+        model = str(options.get("model", ""))
+        multimodal_mode = str(options.get("multimodal", "default"))
+        model_supports_vision = supports_multimodal(model, multimodal_mode)
+
+        preset = options.get("preset") or options.get("toolsPreset") or options.get("tools_preset")
+
+        for tool_def in self.list_tools(scope=scope):
+            name = tool_def.name
+            # Filter non-interactive tools
+            if is_non_interactive and name in ("AskUserQuestion", "ask_user_question"):
+                continue
+            # Filter child agent specific tools
+            if not is_child_agent and name == "report":
+                continue
+            # Filter multimodal tool if model has native vision
+            if model_supports_vision and name in ("UnderstandImage", "understand_image"):
+                continue
+
+            schema = tool_def.to_openai_schema()
+            tools_list.append(schema)
+
+        if external_tools:
+            tools_list.extend(canonicalize_tool_schema(external_tools))
+
+        if preset in ("minimal", "benchmark", "coding", "dsh_minimal"):
+            core_names = {"bash", "str_replace_editor", "edit", "read", "write", "glob", "grep"}
+            if preset == "dsh_minimal":
+                core_names = {"bash", "str_replace_editor"}
+            tools_list = [
+                t for t in tools_list if (t.get("function") or {}).get("name") in core_names
+            ]
+
+        ordered = order_tools(tools_list)
+        return [canonicalize_tool_schema(t) for t in ordered]
+
+    def to_sdk_schemas(
+        self, scope: str | None = None, language: str = "python"
+    ) -> list[dict[str, Any]]:
+        """Project registered tools onto Code Mode SDK signatures."""
+        del language
+        schemas: list[dict[str, Any]] = []
+        for tool in self.list_tools(scope=scope):
+            if tool.name in ("code_mode", "run_code"):
+                continue
+            item = copy.deepcopy(tool.to_openai_schema())
+            if tool.output:
+                item["output"] = copy.deepcopy(tool.output.schema)
+            schemas.append(item)
+        return schemas
+
     def _register_builtins(self) -> None:
-        """Register the core standard built-in tools."""
-        # 1. bash
+        """Register the core standard built-in tools with DeepSeek Harness parity."""
+        # 1. bash & pwsh
         self.register(
-            ToolDefinition(
+            define_tool(
                 name="bash",
                 aliases=["Bash"],
                 description="Execute shell commands in a persistent bash session.",
@@ -182,31 +494,78 @@ class ToolRegistry:
                         "type": "array",
                         "description": "Permission scopes required by this bash command.",
                         "items": {"type": "string", "enum": sorted(BASH_SCOPE_ENUM)},
-                        "uniqueItems": True,
                     },
                     "run_in_background": {"type": "boolean"},
+                    "persistent": {
+                        "type": "boolean",
+                        "description": "Run inside a persistent PTY bash shell retaining variables and working directory across calls.",
+                    },
+                    "timeout_ms": {
+                        "type": "number",
+                        "description": "Command execution timeout in milliseconds.",
+                    },
+                    "sandbox_permissions": {
+                        "type": "string",
+                        "description": "Escalated sandbox permissions mode if required.",
+                    },
+                    "justification": {
+                        "type": "string",
+                        "description": "Justification for requested sandbox escalation.",
+                    },
                 },
                 required=["command", "sideEffects"],
                 handler=_bash.handle_bash_tool,
                 category="shell",
                 is_mutating=True,
+                is_concurrency_safe=False,
             )
         )
 
         self.register(
-            ToolDefinition(
+            define_tool(
+                name="pwsh",
+                aliases=["PowerShell", "powershell"],
+                description="Execute commands in a PowerShell session with background job and timeout support.",
+                parameters={
+                    "command": {
+                        "type": "string",
+                        "description": "The PowerShell command or script to execute.",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Clear description of what this command does.",
+                    },
+                    "sideEffects": {
+                        "type": "array",
+                        "description": "Permission scopes required by this command.",
+                        "items": {"type": "string", "enum": sorted(BASH_SCOPE_ENUM)},
+                    },
+                    "run_in_background": {"type": "boolean"},
+                },
+                required=["command", "sideEffects"],
+                handler=_pwsh.handle_pwsh_tool,
+                category="shell",
+                is_mutating=True,
+                is_concurrency_safe=False,
+            )
+        )
+
+        # 2. Background jobs
+        self.register(
+            define_tool(
                 name="job_list",
                 aliases=["JobList"],
                 description="List your background jobs (running and finished) with their ids, kinds, and statuses.",
                 parameters={},
                 required=[],
                 handler=_jobs.handle_job_list_tool,
-                category="shell",
+                category="meta",
                 is_mutating=False,
+                is_concurrency_safe=True,
             )
         )
         self.register(
-            ToolDefinition(
+            define_tool(
                 name="job_output",
                 aliases=["JobOutput"],
                 description=(
@@ -229,12 +588,13 @@ class ToolRegistry:
                 },
                 required=["job_id"],
                 handler=_jobs.handle_job_output_tool,
-                category="shell",
+                category="meta",
                 is_mutating=False,
+                is_concurrency_safe=True,
             )
         )
         self.register(
-            ToolDefinition(
+            define_tool(
                 name="job_kill",
                 aliases=["JobKill"],
                 description="Request cancellation of a running background job by job id.",
@@ -250,16 +610,17 @@ class ToolRegistry:
                 },
                 required=["job_id"],
                 handler=_jobs.handle_job_kill_tool,
-                category="shell",
+                category="meta",
                 is_mutating=True,
+                is_concurrency_safe=False,
             )
         )
 
-        # 2. glob / grep (workspace discovery — not shell find/rg)
+        # 3. Filesystem Discovery (glob / grep)
         self.register(
-            ToolDefinition(
+            define_tool(
                 name="glob",
-                aliases=["Glob"],
+                aliases=["Glob", "glob_search"],
                 description=_search_fs.GLOB_DESCRIPTION,
                 parameters={
                     "pattern": {
@@ -278,12 +639,13 @@ class ToolRegistry:
                 handler=_search_fs.handle_glob_tool,
                 category="filesystem",
                 is_mutating=False,
+                is_concurrency_safe=True,
             )
         )
         self.register(
-            ToolDefinition(
+            define_tool(
                 name="grep",
-                aliases=["Grep"],
+                aliases=["Grep", "grep_search"],
                 description=_search_fs.GREP_DESCRIPTION,
                 parameters={
                     "pattern": {
@@ -303,104 +665,155 @@ class ToolRegistry:
                 handler=_search_fs.handle_grep_tool,
                 category="filesystem",
                 is_mutating=False,
+                is_concurrency_safe=True,
             )
         )
 
-        # 3. read
+        # 4. Filesystem Core (read, write, edit, str_replace_editor)
         self.register(
-            ToolDefinition(
+            define_tool(
                 name="read",
                 aliases=["Read"],
-                description="Read files from the filesystem (text, images, notebooks).",
+                description="Read a text file, notebook, image, or directory listing with line numbering and observation tracking.",
                 parameters={
-                    "file_path": {"type": "string", "description": "UNIX-style path to file"},
+                    "file_path": {
+                        "type": "string",
+                        "description": "Absolute or workspace-relative path to read.",
+                    },
                     "offset": {
                         "type": "number",
-                        "description": "Line number to start reading from",
+                        "description": "1-based starting line number to read from.",
                     },
-                    "limit": {"type": "number", "description": "Number of lines to read"},
+                    "limit": {
+                        "type": "number",
+                        "description": "Maximum number of lines to return (default: 2000).",
+                    },
                 },
                 required=["file_path"],
                 handler=_read.handle_read_tool,
                 category="filesystem",
                 is_mutating=False,
+                is_concurrency_safe=True,
             )
         )
-
-        # 3. write
         self.register(
-            ToolDefinition(
+            define_tool(
                 name="write",
                 aliases=["Write"],
-                description="Create files or overwrite them with a complete string payload. Prefer edit for existing files.",
+                description="Create or completely overwrite a UTF-8 text file.",
                 parameters={
-                    "file_path": {"type": "string", "description": "Absolute path to file"},
+                    "file_path": {
+                        "type": "string",
+                        "description": "Absolute path to the file to create or overwrite.",
+                    },
                     "content": {
                         "type": "string",
-                        "description": "Complete file content as a single string.",
+                        "description": "The exact full text content to write to the file.",
                     },
                 },
                 required=["file_path", "content"],
                 handler=_write.handle_write_tool,
                 category="filesystem",
                 is_mutating=True,
+                is_concurrency_safe=False,
             )
         )
-
-        # 4. edit
         self.register(
-            ToolDefinition(
+            define_tool(
                 name="edit",
                 aliases=["Edit"],
-                description="Perform scoped string replacements in files.",
+                description="Edit an existing UTF-8 text file with snippet-scoped or path replacement.",
                 parameters={
                     "snippet_id": {
                         "type": "string",
-                        "description": "Required Read/Edit snippet_id.",
+                        "description": "Snippet ID returned from a prior read call for scoped editing.",
                     },
                     "file_path": {
                         "type": "string",
-                        "description": "Optional absolute path guard; must match snippet_id's file.",
+                        "description": "Absolute path to the file being edited.",
                     },
                     "old_string": {
                         "type": "string",
-                        "description": "Exact text to replace inside snippet_id's scope",
+                        "description": "Exact literal text to replace.",
                     },
                     "new_string": {
                         "type": "string",
-                        "description": "Replacement text (must differ from old_string)",
+                        "description": "Exact literal replacement text.",
                     },
                     "replace_all": {
                         "type": "boolean",
-                        "description": "Replace all occurrences of old_string (default false)",
+                        "description": "Replace all occurrences when true.",
                     },
                     "expected_occurrences": {
                         "type": "number",
-                        "description": "Expected number of matches",
+                        "description": "Expected number of occurrences to replace.",
                     },
                 },
-                required=["snippet_id", "old_string", "new_string"],
+                required=["old_string", "new_string"],
                 handler=_edit.handle_edit_tool,
                 category="filesystem",
                 is_mutating=True,
+                is_concurrency_safe=False,
+            )
+        )
+        self.register(
+            define_tool(
+                name="str_replace_editor",
+                aliases=["StrReplaceEditor"],
+                description="Custom editing tool for viewing, creating, str_replace, insert, and undo commands on files.",
+                parameters={
+                    "command": {
+                        "type": "string",
+                        "enum": ["view", "create", "str_replace", "insert", "undo_edit", "undo_command"],
+                        "description": "The editing command to execute.",
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "Absolute path to the target file or directory.",
+                    },
+                    "file_text": {
+                        "type": "string",
+                        "description": "Required for `create` command: initial file content.",
+                    },
+                    "old_str": {
+                        "type": "string",
+                        "description": "Required for `str_replace`: unique text to replace.",
+                    },
+                    "new_str": {
+                        "type": "string",
+                        "description": "Replacement text for `str_replace` or `insert`.",
+                    },
+                    "insert_line": {
+                        "type": "integer",
+                        "description": "Required for `insert`: 0-based or 1-based line number after which to insert.",
+                    },
+                    "view_range": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "Optional [start_line, end_line] for `view` command.",
+                    },
+                },
+                required=["command", "path"],
+                handler=_str_replace.handle_str_replace_editor_tool,
+                category="filesystem",
+                is_mutating=True,
+                is_concurrency_safe=lambda args: args.get("command") == "view",
             )
         )
 
-        # 5. AskUserQuestion
+        # 5. Interactive & Questions
         self.register(
-            ToolDefinition(
+            define_tool(
                 name="AskUserQuestion",
-                aliases=["ask_user_question"],
-                description="When the task has ambiguities or multiple implementation approaches, use this tool to pause and ask the user for clarification or a decision.",
+                aliases=["ask_user_question", "ask_user"],
+                description="Prompt the user with structured questions, choices, or clarifications.",
                 parameters={
                     "questions": {
                         "type": "array",
-                        "description": "Questions to present to the user. Usually only one is needed.",
                         "items": {
                             "type": "object",
                             "properties": {
                                 "question": {"type": "string"},
-                                "multiSelect": {"type": "boolean"},
                                 "options": {
                                     "type": "array",
                                     "items": {
@@ -412,72 +825,31 @@ class ToolRegistry:
                                         "required": ["label"],
                                     },
                                 },
+                                "multiSelect": {"type": "boolean"},
                             },
                             "required": ["question", "options"],
                         },
+                        "description": "List of structured questions to present to the user.",
                     }
                 },
                 required=["questions"],
                 handler=_ask.handle_ask_user_question_tool,
                 category="interactive",
                 is_mutating=False,
+                is_concurrency_safe=False,
             )
         )
 
-        # 6. UpdatePlan
+        # 6. Web & Network
         self.register(
-            ToolDefinition(
-                name="UpdatePlan",
-                aliases=["update_plan"],
-                description="Update the current task plan. The plan argument must be the complete markdown task list to show as the latest progress state.",
-                parameters={
-                    "plan": {"type": "string", "description": "The complete markdown task list."},
-                    "explanation": {
-                        "type": "string",
-                        "description": "Optional short reason for changing the plan.",
-                    },
-                },
-                required=["plan"],
-                handler=_plan.handle_update_plan_tool,
-                category="meta",
-                is_mutating=False,
-            )
-        )
-
-        # 7. UnderstandImage
-        self.register(
-            ToolDefinition(
-                name="UnderstandImage",
-                aliases=["understand_image"],
-                description="Analyze or extract information from a local JPEG, PNG, or WebP image.",
-                parameters={
-                    "prompt": {
-                        "type": "string",
-                        "description": "A clear instruction describing what to analyze.",
-                    },
-                    "image_path": {
-                        "type": "string",
-                        "description": "The absolute path of the image to analyze.",
-                    },
-                },
-                required=["prompt", "image_path"],
-                handler=_image.handle_understand_image_tool,
-                category="meta",
-                rate_limited_id="UnderstandImage",
-                is_mutating=False,
-            )
-        )
-
-        # 8. WebSearch
-        self.register(
-            ToolDefinition(
+            define_tool(
                 name="WebSearch",
                 aliases=["web_search"],
-                description="Perform web searching using a natural language query.",
+                description="Search the web for up-to-date documentation, issues, and references.",
                 parameters={
                     "query": {
                         "type": "string",
-                        "description": "A clear, specific natural language search query.",
+                        "description": "Search query string.",
                     }
                 },
                 required=["query"],
@@ -485,43 +857,74 @@ class ToolRegistry:
                 category="web",
                 rate_limited_id="WebSearch",
                 is_mutating=False,
+                is_concurrency_safe=True,
             )
         )
-
-        # 9. WebFetch
         self.register(
-            ToolDefinition(
+            define_tool(
                 name="WebFetch",
                 aliases=["web_fetch"],
-                description="Fetch content from an external web URL, sanitize against prompt injection, and return clean Markdown or JSON.",
+                description="Fetch and extract readable Markdown content from a public URL.",
                 parameters={
                     "url": {
                         "type": "string",
-                        "description": "The HTTP or HTTPS URL to fetch content from.",
-                    },
-                    "raw": {
-                        "type": "boolean",
-                        "description": "If true, return raw plain text instead of parsed Markdown.",
-                    },
-                    "max_length": {
-                        "type": "number",
-                        "description": "Maximum characters to return (default: 30,000).",
-                    },
+                        "description": "The URL to fetch and convert to Markdown.",
+                    }
                 },
                 required=["url"],
                 handler=_fetch.handle_web_fetch_tool,
                 category="web",
                 rate_limited_id="WebFetch",
                 is_mutating=False,
+                is_concurrency_safe=True,
             )
         )
 
-        # 10. Task / subagent_fork (one-shot)
+        # 7. Subagents & Delegation
         self.register(
-            ToolDefinition(
+            define_tool(
                 name="Task",
-                aliases=["task", "subagent_fork", "SubAgentFork"],
-                description="Spawn a one-shot sub-agent and wait for aggregated findings.",
+                aliases=["task"],
+                description="Spawn an isolated sub-agent session for complex, modular, or exploratory tasks.",
+                parameters={
+                    "description": {
+                        "type": "string",
+                        "description": "Short 3-5 word summary of the task.",
+                    },
+                    "prompt": {
+                        "type": "string",
+                        "description": "Detailed instructions and context for the sub-agent.",
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["read_only", "general"],
+                        "description": "Execution permissions mode for the sub-agent (default: 'read_only').",
+                    },
+                    "timeout_seconds": {
+                        "type": "number",
+                        "description": "Maximum execution time in seconds (default: 90).",
+                    },
+                    "context": {
+                        "type": "string",
+                        "description": "Optional additional context or code snippets.",
+                    },
+                    "depth": {
+                        "type": "integer",
+                        "description": "Current subagent nesting depth.",
+                    },
+                },
+                required=["description", "prompt"],
+                handler=_subagent.handle_subagent_tool,
+                category="subagent",
+                is_mutating=False,
+                is_concurrency_safe=False,
+            )
+        )
+        self.register(
+            define_tool(
+                name="subagent",
+                aliases=["SubAgent"],
+                description="Start a continuable sub-agent in the background and return an agent id. Use send_message / list_agents / interrupt_agent to steer it. For a one-shot child, use Task or subagent_fork.",
                 parameters={
                     "description": {
                         "type": "string",
@@ -529,12 +932,12 @@ class ToolRegistry:
                     },
                     "prompt": {
                         "type": "string",
-                        "description": "Detailed instructions, objective, and context for the sub-agent.",
+                        "description": "Detailed instructions for the sub-agent.",
                     },
                     "mode": {
                         "type": "string",
                         "enum": ["read_only", "general"],
-                        "description": "Execution mode ('read_only' or 'general').",
+                        "description": "Execution permissions mode for the sub-agent (default: 'read_only').",
                     },
                     "timeout_seconds": {
                         "type": "number",
@@ -546,85 +949,324 @@ class ToolRegistry:
                     },
                 },
                 required=["description", "prompt"],
-                handler=_subagent.handle_subagent_tool,
-                category="subagent",
-                is_mutating=False,
-            )
-        )
-        self.register(
-            ToolDefinition(
-                name="subagent",
-                aliases=["SubAgent"],
-                description="Start a continuable background sub-agent and return an agent id.",
-                parameters={
-                    "description": {"type": "string", "description": "Short 3-5 word summary."},
-                    "prompt": {"type": "string", "description": "Detailed instructions."},
-                    "mode": {"type": "string", "enum": ["read_only", "general"]},
-                    "timeout_seconds": {"type": "number"},
-                    "context": {"type": "string"},
-                },
-                required=["description", "prompt"],
                 handler=_agents.handle_continuable_subagent_tool,
                 category="subagent",
                 is_mutating=False,
+                is_concurrency_safe=False,
             )
         )
         self.register(
-            ToolDefinition(
+            define_tool(
+                name="subagent_fork",
+                aliases=["SubagentFork"],
+                description="Spawn a one-shot sub-agent and wait for its aggregated findings (alias of Task).",
+                parameters={
+                    "description": {
+                        "type": "string",
+                        "description": "Short 3-5 word summary of the sub-task.",
+                    },
+                    "prompt": {
+                        "type": "string",
+                        "description": "Detailed instructions for the sub-agent.",
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["read_only", "general"],
+                        "description": "Execution permissions mode for the sub-agent (default: 'read_only').",
+                    },
+                    "timeout_seconds": {
+                        "type": "number",
+                        "description": "Optional timeout in seconds for sub-agent completion (default: 90).",
+                    },
+                    "context": {
+                        "type": "string",
+                        "description": "Optional additional context snippets or file excerpts.",
+                    },
+                },
+                required=["description", "prompt"],
+                handler=_agents.handle_subagent_fork_tool,
+                category="subagent",
+                is_mutating=False,
+                is_concurrency_safe=False,
+            )
+        )
+        self.register(
+            define_tool(
                 name="send_message",
                 aliases=["SendMessage"],
-                description="Send a follow-up message to a sub-agent by agent id.",
+                description="Send a follow-up message to a running or parked sub-agent by agent id.",
                 parameters={
-                    "agent_id": {"type": "string"},
-                    "message": {"type": "string"},
+                    "agent_id": {
+                        "type": "string",
+                        "description": "Target agent id.",
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "Follow-up message or instructions.",
+                    },
                 },
                 required=["agent_id", "message"],
                 handler=_agents.handle_send_message_tool,
                 category="subagent",
-                is_mutating=False,
+                is_mutating=True,
+                is_concurrency_safe=False,
             )
         )
         self.register(
-            ToolDefinition(
+            define_tool(
                 name="interrupt_agent",
                 aliases=["InterruptAgent"],
                 description="Cancel a running sub-agent by agent id.",
-                parameters={"agent_id": {"type": "string"}},
+                parameters={
+                    "agent_id": {
+                        "type": "string",
+                        "description": "Target agent id to cancel.",
+                    }
+                },
                 required=["agent_id"],
                 handler=_agents.handle_interrupt_agent_tool,
                 category="subagent",
                 is_mutating=True,
+                is_concurrency_safe=False,
             )
         )
         self.register(
-            ToolDefinition(
+            define_tool(
                 name="list_agents",
                 aliases=["ListAgents"],
-                description="List sub-agents spawned from this session.",
+                description="List sub-agents spawned from this session with ids and statuses.",
                 parameters={},
                 required=[],
                 handler=_agents.handle_list_agents_tool,
                 category="subagent",
                 is_mutating=False,
+                is_concurrency_safe=True,
             )
         )
         self.register(
-            ToolDefinition(
+            define_tool(
                 name="report",
                 aliases=["Report"],
-                description="Child-only: submit the final report for the parent agent.",
-                parameters={"summary": {"type": "string"}},
+                description="Child-only: submit the final report for the parent agent and finish this sub-agent.",
+                parameters={
+                    "summary": {
+                        "type": "string",
+                        "description": "Final report summary for parent.",
+                    }
+                },
                 required=["summary"],
                 handler=_agents.handle_report_tool,
                 category="subagent",
                 is_mutating=False,
+                is_concurrency_safe=False,
+            )
+        )
+
+        # 8. Interactive Terminal PTY Sessions
+        self.register(
+            define_tool(
+                name="terminal_open",
+                aliases=["TerminalOpen"],
+                description="Open a persistent interactive terminal (PTY) session.",
+                parameters={
+                    "type": {"type": "string", "enum": ["bash", "sh", "zsh", "pwsh"]},
+                    "name": {"type": "string"},
+                    "cwd": {"type": "string"},
+                },
+                required=[],
+                handler=_terminal.handle_terminal_open_tool,
+                category="shell",
+                is_mutating=True,
+                is_concurrency_safe=False,
             )
         )
         self.register(
-            ToolDefinition(
+            define_tool(
+                name="terminal_send",
+                aliases=["TerminalSend"],
+                description="Send input text to an active interactive terminal session.",
+                parameters={
+                    "sessionId": {"type": "string"},
+                    "text": {"type": "string"},
+                    "submit": {"type": "boolean"},
+                    "run_in_background": {"type": "boolean"},
+                    "timeout_ms": {"type": "number"},
+                },
+                required=["sessionId", "text"],
+                handler=_terminal.handle_terminal_send_tool,
+                category="shell",
+                is_mutating=True,
+                is_concurrency_safe=False,
+            )
+        )
+        self.register(
+            define_tool(
+                name="terminal_read",
+                aliases=["TerminalRead"],
+                description="Read pending output from an active interactive terminal session.",
+                parameters={
+                    "sessionId": {"type": "string"},
+                    "timeout_ms": {"type": "number"},
+                },
+                required=["sessionId"],
+                handler=_terminal.handle_terminal_read_tool,
+                category="shell",
+                is_mutating=False,
+                is_concurrency_safe=True,
+            )
+        )
+        self.register(
+            define_tool(
+                name="terminal_signal",
+                aliases=["TerminalSignal"],
+                description="Send a POSIX signal (e.g. SIGINT, SIGTERM, SIGKILL) to an active terminal.",
+                parameters={
+                    "sessionId": {"type": "string"},
+                    "signal": {
+                        "type": "string",
+                        "enum": ["SIGINT", "SIGTERM", "SIGKILL", "SIGHUP"],
+                    },
+                },
+                required=["sessionId"],
+                handler=_terminal.handle_terminal_signal_tool,
+                category="shell",
+                is_mutating=True,
+                is_concurrency_safe=False,
+            )
+        )
+        self.register(
+            define_tool(
+                name="terminal_close",
+                aliases=["TerminalClose"],
+                description="Close and terminate an active persistent terminal session.",
+                parameters={"sessionId": {"type": "string"}},
+                required=["sessionId"],
+                handler=_terminal.handle_terminal_close_tool,
+                category="shell",
+                is_mutating=True,
+                is_concurrency_safe=False,
+            )
+        )
+        self.register(
+            define_tool(
+                name="terminal_list",
+                aliases=["TerminalList"],
+                description="List all active persistent interactive terminal sessions.",
+                parameters={},
+                required=[],
+                handler=_terminal.handle_terminal_list_tool,
+                category="shell",
+                is_mutating=False,
+                is_concurrency_safe=True,
+            )
+        )
+
+        # 9. Language Server Protocol (LSP)
+        self.register(
+            define_tool(
+                name="lsp",
+                aliases=["Lsp"],
+                description="Query Language Server Protocol features: definitions, references, hover docs, document symbols.",
+                parameters={
+                    "operation": {
+                        "type": "string",
+                        "enum": ["goToDefinition", "findReferences", "hover", "documentSymbol"],
+                        "description": "The LSP query operation to perform.",
+                    },
+                    "file_path": {
+                        "type": "string",
+                        "description": "Path to the target source file.",
+                    },
+                    "line": {
+                        "type": "integer",
+                        "description": "1-based line number for position queries.",
+                    },
+                    "character": {
+                        "type": "integer",
+                        "description": "1-based character column number for position queries.",
+                    },
+                },
+                required=["operation", "file_path"],
+                handler=_lsp.handle_lsp_tool,
+                category="meta",
+                is_mutating=False,
+                is_concurrency_safe=True,
+            )
+        )
+
+        # 10. Skills
+        self.register(
+            define_tool(
+                name="skill",
+                aliases=["Skill"],
+                description="Load full instructions and examples for a specialized skill into active context.",
+                parameters={
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the skill to load (e.g. 'accidental-data-loss-prevention').",
+                    }
+                },
+                required=["name"],
+                handler=_skill.handle_skill_tool,
+                category="meta",
+                is_mutating=False,
+                is_concurrency_safe=True,
+            )
+        )
+
+        # 11. Image understanding
+        self.register(
+            define_tool(
+                name="UnderstandImage",
+                aliases=["understand_image"],
+                description="Analyze and extract visual insights from a local image file.",
+                parameters={
+                    "image_path": {
+                        "type": "string",
+                        "description": "Path to the image file.",
+                    },
+                    "prompt": {
+                        "type": "string",
+                        "description": "Question or prompt regarding the image contents.",
+                    },
+                },
+                required=["image_path"],
+                handler=_image.handle_understand_image_tool,
+                category="meta",
+                rate_limited_id="UnderstandImage",
+                is_mutating=False,
+                is_concurrency_safe=True,
+            )
+        )
+
+        # 12. Plan & Todo tools
+        self.register(
+            define_tool(
+                name="UpdatePlan",
+                aliases=["update_plan"],
+                description="Update the task plan and milestones.",
+                parameters={
+                    "plan": {
+                        "type": "string",
+                        "description": "The updated markdown plan.",
+                    },
+                    "explanation": {
+                        "type": "string",
+                        "description": "Brief explanation of plan changes.",
+                    },
+                },
+                required=["plan"],
+                handler=_plan.handle_update_plan_tool,
+                category="meta",
+                is_mutating=True,
+                is_concurrency_safe=False,
+            )
+        )
+        self.register(
+            define_tool(
                 name="todo_write",
-                aliases=["TodoWrite", "todoWrite"],
-                description="Replace the structured todo list. Wraps UpdatePlan.",
+                aliases=["TodoWrite"],
+                description="Update the structured todo checklist for this session.",
                 parameters={
                     "todos": {
                         "type": "array",
@@ -638,650 +1280,313 @@ class ToolRegistry:
                                     "enum": ["pending", "in_progress", "completed", "cancelled"],
                                 },
                             },
+                            "required": ["content", "status"],
                         },
-                    }
+                    },
+                    "merge": {"type": "boolean"},
                 },
                 required=["todos"],
                 handler=_todo.handle_todo_write_tool,
                 category="meta",
-                is_mutating=False,
+                is_mutating=True,
+                is_concurrency_safe=False,
             )
         )
         self.register(
-            ToolDefinition(
+            define_tool(
                 name="exit_plan_mode",
                 aliases=["ExitPlanMode"],
-                description="Exit Plan Mode after the plan is approved. Mutation tools remain in the schema.",
-                parameters={"summary": {"type": "string"}},
+                description="Leave Plan Mode while mutation tools stay active.",
+                parameters={
+                    "summary": {
+                        "type": "string",
+                        "description": "Summary of plan conclusions before exiting plan mode.",
+                    }
+                },
                 required=[],
                 handler=_plan_mode.handle_exit_plan_mode_tool,
                 category="meta",
                 is_mutating=False,
-            )
-        )
-        self.register(
-            ToolDefinition(
-                name="goal",
-                aliases=["Goal"],
-                description="List, add, or update session goals.",
-                parameters={
-                    "action": {
-                        "type": "string",
-                        "enum": ["list", "add", "update", "done", "cancel", "start"],
-                    },
-                    "title": {"type": "string"},
-                    "goal_id": {"type": "string"},
-                    "status": {"type": "string"},
-                    "notes": {"type": "string"},
-                },
-                required=[],
-                handler=_goal_handle,
-                category="meta",
-                is_mutating=False,
+                is_concurrency_safe=False,
             )
         )
 
-        # 11. skill (Dynamic skill loader)
+        # 13. Schedule
         self.register(
-            ToolDefinition(
-                name="skill",
-                aliases=["Skill", "load_skill"],
-                description="Load the full instructions for an available skill. Call this with the exact skill name from the session skill catalog before acting on a task that names or clearly matches that skill.",
-                parameters={
-                    "name": {
-                        "type": "string",
-                        "description": "The exact skill name from the available skills list.",
-                    }
-                },
-                required=["name"],
-                handler=_skill.handle_skill_tool,
-                category="meta",
-                is_mutating=False,
-            )
-        )
-
-        # 12. str_replace_editor (Anthropic-style file editor)
-        self.register(
-            ToolDefinition(
-                name="str_replace_editor",
-                aliases=["StrReplaceEditor"],
-                description="Anthropic-style custom file editor for viewing, creating, replacing string snippets, inserting lines, and undoing edits.",
-                parameters={
-                    "command": {
-                        "type": "string",
-                        "enum": ["view", "create", "str_replace", "insert", "undo_edit"],
-                        "description": "The command to run: `view`, `create`, `str_replace`, `insert`, `undo_edit`.",
-                    },
-                    "path": {
-                        "type": "string",
-                        "description": "Path to the file or directory.",
-                    },
-                    "file_text": {
-                        "type": "string",
-                        "description": "Content of the file to create (for `create`).",
-                    },
-                    "old_str": {
-                        "type": "string",
-                        "description": "Exact unique string to replace (for `str_replace`).",
-                    },
-                    "new_str": {
-                        "type": "string",
-                        "description": "Replacement string (for `str_replace`) or string to insert (for `insert`).",
-                    },
-                    "insert_line": {
-                        "type": "integer",
-                        "description": "Line number after which to insert `new_str` (for `insert`).",
-                    },
-                    "view_range": {
-                        "type": "array",
-                        "items": {"type": "integer"},
-                        "description": "Line range `[start, end]` to view (for `view`).",
-                    },
-                },
-                required=["command", "path"],
-                handler=_str_replace.handle_str_replace_editor_tool,
-                category="filesystem",
-                is_mutating=True,
-            )
-        )
-
-        # 13. Persistent PTY Terminals
-        self.register(
-            ToolDefinition(
-                name="terminal_open",
-                aliases=["TerminalOpen"],
-                description="Open a persistent interactive PTY terminal session.",
-                parameters={
-                    "type": {
-                        "type": "string",
-                        "description": "Shell command/type (default 'bash')",
-                    },
-                    "name": {"type": "string", "description": "Optional name for terminal session"},
-                    "cwd": {"type": "string", "description": "Optional initial working directory"},
-                },
-                required=[],
-                handler=_terminal.handle_terminal_open_tool,
-                category="shell",
-                is_mutating=True,
-            )
-        )
-        self.register(
-            ToolDefinition(
-                name="terminal_send",
-                aliases=["TerminalSend"],
-                description="Send text or a command to an open persistent terminal session.",
-                parameters={
-                    "sessionId": {"type": "string", "description": "Target terminal session ID"},
-                    "text": {"type": "string", "description": "Text/command to send to stdin"},
-                    "submit": {"type": "boolean", "description": "Append newline (default true)"},
-                    "run_in_background": {
-                        "type": "boolean",
-                        "description": "Run in background and return immediately",
-                    },
-                    "timeout_ms": {
-                        "type": "number",
-                        "description": "Max wait time in milliseconds",
-                    },
-                },
-                required=["sessionId", "text"],
-                handler=_terminal.handle_terminal_send_tool,
-                category="shell",
-                is_mutating=True,
-            )
-        )
-        self.register(
-            ToolDefinition(
-                name="terminal_read",
-                aliases=["TerminalRead"],
-                description="Read available output from an open persistent terminal session.",
-                parameters={
-                    "sessionId": {"type": "string", "description": "Target terminal session ID"},
-                    "timeout_ms": {
-                        "type": "number",
-                        "description": "Max wait time in milliseconds",
-                    },
-                },
-                required=["sessionId"],
-                handler=_terminal.handle_terminal_read_tool,
-                category="shell",
-                is_mutating=False,
-            )
-        )
-        self.register(
-            ToolDefinition(
-                name="terminal_signal",
-                aliases=["TerminalSignal"],
-                description="Send a signal (SIGINT, SIGTERM, SIGKILL) to an open terminal session.",
-                parameters={
-                    "sessionId": {"type": "string", "description": "Target terminal session ID"},
-                    "signal": {
-                        "type": "string",
-                        "enum": ["SIGINT", "SIGTERM", "SIGKILL", "SIGTSTP", "SIGHUP"],
-                        "description": "Signal name",
-                    },
-                },
-                required=["sessionId", "signal"],
-                handler=_terminal.handle_terminal_signal_tool,
-                category="shell",
-                is_mutating=True,
-            )
-        )
-        self.register(
-            ToolDefinition(
-                name="terminal_close",
-                aliases=["TerminalClose"],
-                description="Close and terminate a persistent terminal session.",
-                parameters={
-                    "sessionId": {"type": "string", "description": "Target terminal session ID"}
-                },
-                required=["sessionId"],
-                handler=_terminal.handle_terminal_close_tool,
-                category="shell",
-                is_mutating=True,
-            )
-        )
-        self.register(
-            ToolDefinition(
-                name="terminal_list",
-                aliases=["TerminalList"],
-                description="List all active persistent terminal sessions.",
-                parameters={},
-                required=[],
-                handler=_terminal.handle_terminal_list_tool,
-                category="shell",
-                is_mutating=False,
-            )
-        )
-
-        # 14. Language Server Protocol (LSP)
-        self.register(
-            ToolDefinition(
-                name="lsp",
-                aliases=["Lsp"],
-                description="Query Language Server Protocol (LSP) for precise code definitions, references, hover docstrings, and document symbols.",
-                parameters={
-                    "operation": {
-                        "type": "string",
-                        "enum": [
-                            "goToDefinition",
-                            "findReferences",
-                            "goToImplementation",
-                            "hover",
-                            "documentSymbol",
-                            "workspaceSymbol",
-                        ],
-                        "description": "LSP query operation",
-                    },
-                    "file_path": {
-                        "type": "string",
-                        "description": "Path to the target file",
-                    },
-                    "line": {
-                        "type": "integer",
-                        "description": "1-based line number",
-                    },
-                    "character": {
-                        "type": "integer",
-                        "description": "1-based character position",
-                    },
-                },
-                required=["operation"],
-                handler=_lsp.handle_lsp_tool,
-                category="filesystem",
-                is_mutating=False,
-            )
-        )
-
-        # 15. Schedule Subsystem
-        self.register(
-            ToolDefinition(
+            define_tool(
                 name="schedule_create",
                 aliases=["ScheduleCreate"],
-                description="Create a durable reminder or recurring scheduled task. Provide prompt and exactly one of after_seconds, at, or every_seconds.",
+                description="Schedule a reminder or background instruction (one-shot or cron).",
                 parameters={
                     "prompt": {
                         "type": "string",
-                        "description": "Notification message or task instruction",
+                        "description": "The instruction prompt to execute when triggered.",
                     },
                     "after_seconds": {
-                        "type": "integer",
-                        "description": "Relative delay in seconds (e.g. 60)",
+                        "type": "number",
+                        "description": "Seconds to wait for one-shot timer.",
                     },
-                    "at": {
+                    "cron_expression": {
                         "type": "string",
-                        "description": "ISO 8601 / RFC 3339 UTC target instant",
-                    },
-                    "every_seconds": {
-                        "type": "integer",
-                        "description": "Fixed interval in seconds (minimum 300 / 5 minutes)",
+                        "description": "Cron expression for recurring schedule.",
                     },
                 },
                 required=["prompt"],
                 handler=_schedule.handle_schedule_create_tool,
                 category="meta",
                 is_mutating=True,
+                is_concurrency_safe=False,
             )
         )
         self.register(
-            ToolDefinition(
+            define_tool(
                 name="schedule_list",
                 aliases=["ScheduleList"],
-                description="List all active and overdue scheduled reminders.",
+                description="List all scheduled timers and cron jobs.",
                 parameters={},
                 required=[],
                 handler=_schedule.handle_schedule_list_tool,
                 category="meta",
                 is_mutating=False,
+                is_concurrency_safe=True,
             )
         )
         self.register(
-            ToolDefinition(
+            define_tool(
                 name="schedule_delete",
                 aliases=["ScheduleDelete"],
-                description="Delete a scheduled reminder by schedule_id.",
-                parameters={
-                    "schedule_id": {
-                        "type": "string",
-                        "description": "ID of the schedule to delete",
-                    }
-                },
+                description="Delete an active timer or cron schedule by ID.",
+                parameters={"schedule_id": {"type": "string"}},
                 required=["schedule_id"],
                 handler=_schedule.handle_schedule_delete_tool,
                 category="meta",
                 is_mutating=True,
+                is_concurrency_safe=False,
             )
         )
 
-        # 16. Workflow Scripting Engine
+        # 14. Ralph / Workflow / Goal
         self.register(
-            ToolDefinition(
-                name="workflow",
-                aliases=["Workflow"],
-                description="Execute an orchestration script that fans out subagents with pipeline, parallel, and schema validation primitives.",
-                parameters={
-                    "script": {
-                        "type": "string",
-                        "description": "Python orchestration script using workflow primitives (agent, pipeline, parallel, phase, log).",
-                    },
-                    "meta": {
-                        "type": "object",
-                        "properties": {
-                            "name": {"type": "string"},
-                            "description": {"type": "string"},
-                            "phases": {"type": "array", "items": {"type": "string"}},
-                        },
-                        "description": "Metadata for the workflow execution (name, description, phases).",
-                    },
-                    "args": {
-                        "type": "object",
-                        "description": "Optional dictionary of arguments passed into the script scope.",
-                    },
-                },
-                required=["script"],
-                handler=_workflow_handle,
-                category="subagent",
-                is_mutating=True,
-            )
-        )
-
-        # 17. Ralph Automated Verification Engine
-        self.register(
-            ToolDefinition(
+            define_tool(
                 name="ralph",
-                aliases=["Ralph"],
-                description="Execute multi-round adversarial verification on an immutable objective with fresh child agents.",
+                aliases=["Ralph", "workflow_run"],
+                description="Run an automated task loop with verification until completion criteria are met.",
                 parameters={
-                    "objective": {
-                        "type": "string",
-                        "description": "The immutable specification or goal to verify.",
-                    },
+                    "objective": {"type": "string", "description": "Immutable verification objective instructions."},
+                    "prompt": {"type": "string", "description": "Alias for objective."},
                     "max_rounds": {
                         "type": "integer",
-                        "description": "Maximum number of verification rounds (default: 5).",
+                        "description": "Maximum verification rounds (default: 5).",
                     },
-                    "context": {
-                        "type": "string",
-                        "description": "Optional initial context or guidelines.",
-                    },
-                    "mode": {
-                        "type": "string",
-                        "enum": ["general", "read_only"],
-                        "description": "Execution mode for child agents ('general' or 'read_only').",
+                    "max_iterations": {
+                        "type": "integer",
+                        "description": "Alias for max_rounds.",
                     },
                     "timeout_per_round": {
                         "type": "number",
-                        "description": "Max timeout in seconds per round (default: 90).",
+                        "description": "Timeout in seconds per round (default: 90s).",
+                    },
+                    "context": {
+                        "type": "string",
+                        "description": "Optional initial context or requirements for round 1.",
                     },
                 },
-                required=["objective"],
+                required=[],
                 handler=_ralph.handle_ralph_tool,
-                category="subagent",
+                category="meta",
                 is_mutating=True,
+                is_concurrency_safe=False,
+            )
+        )
+        self.register(
+            define_tool(
+                name="workflow",
+                aliases=["Workflow"],
+                description="Execute declarative multi-step workflows with dependencies and verification.",
+                parameters={
+                    "workflow": {"type": "object", "description": "Workflow definition schema."},
+                    "action": {"type": "string", "enum": ["run", "status", "cancel", "list"]},
+                    "workflow_id": {"type": "string"},
+                },
+                required=[],
+                handler=_workflow_handle,
+                category="meta",
+                is_mutating=True,
+                is_concurrency_safe=False,
+            )
+        )
+        self.register(
+            define_tool(
+                name="goal",
+                aliases=["Goal"],
+                description="Declare a high-level overnight or long-running goal with progress milestones.",
+                parameters={
+                    "title": {"type": "string", "description": "Goal title."},
+                    "description": {
+                        "type": "string",
+                        "description": "Detailed goal specification.",
+                    },
+                    "milestones": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Key milestone checkpoints.",
+                    },
+                },
+                required=["title", "description"],
+                handler=_goal_handle,
+                category="meta",
+                is_mutating=True,
+                is_concurrency_safe=False,
             )
         )
 
-        # 18. Agent Teams & Swarm Coordination Tools
+        # 15. Team & Multi-Agent Coordination
         self.register(
-            ToolDefinition(
+            define_tool(
                 name="spawn_teammate",
-                aliases=["SpawnTeammate"],
-                description="Spawn a dedicated role-based teammate in the multi-agent swarm.",
+                aliases=["team_spawn", "TeamSpawn", "SpawnTeammate"],
+                description="Spawn a specialized teammate agent for concurrent collaboration.",
                 parameters={
-                    "name": {
-                        "type": "string",
-                        "description": "Name of the teammate agent.",
-                    },
-                    "role": {
-                        "type": "string",
-                        "description": "Role of the teammate (e.g. 'architect', 'coder', 'reviewer', 'tester', 'researcher').",
-                    },
-                    "system_prompt": {
-                        "type": "string",
-                        "description": "Optional custom system instructions for this teammate.",
-                    },
-                    "mode": {
-                        "type": "string",
-                        "enum": ["general", "read_only"],
-                        "description": "Execution mode ('general' or 'read_only').",
-                    },
-                    "allowed_tools": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Optional list of allowed tool names for this teammate.",
-                    },
+                    "name": {"type": "string", "description": "Teammate identifier/name."},
+                    "role": {"type": "string", "description": "Role/persona for the teammate."},
+                    "prompt": {"type": "string", "description": "Task instructions for teammate."},
                 },
-                required=["name", "role"],
+                required=["name", "role", "prompt"],
                 handler=_spawn_teammate_handle,
                 category="subagent",
                 is_mutating=True,
+                is_concurrency_safe=False,
             )
         )
         self.register(
-            ToolDefinition(
+            define_tool(
                 name="team_task_create",
                 aliases=["TeamTaskCreate"],
                 description="Create a task on the shared team task board.",
                 parameters={
-                    "title": {
-                        "type": "string",
-                        "description": "Short title of the task.",
-                    },
-                    "description": {
-                        "type": "string",
-                        "description": "Detailed task description and requirements.",
-                    },
-                    "assigned_to": {
-                        "type": "string",
-                        "description": "Optional teammate ID or role assigned to this task.",
-                    },
-                    "priority": {
-                        "type": "string",
-                        "enum": ["low", "medium", "high", "critical"],
-                        "description": "Priority level of the task.",
-                    },
-                    "dependencies": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Optional list of task IDs that must complete before this task.",
-                    },
+                    "title": {"type": "string"},
+                    "description": {"type": "string"},
+                    "assigned_to": {"type": "string"},
                 },
                 required=["title"],
                 handler=_task_create_handle,
                 category="subagent",
                 is_mutating=True,
+                is_concurrency_safe=False,
             )
         )
         self.register(
-            ToolDefinition(
+            define_tool(
                 name="team_task_get",
                 aliases=["TeamTaskGet"],
                 description="Retrieve details of a task from the shared team task board.",
-                parameters={
-                    "task_id": {
-                        "type": "string",
-                        "description": "ID of the task to retrieve.",
-                    },
-                },
+                parameters={"task_id": {"type": "string"}},
                 required=["task_id"],
                 handler=_task_get_handle,
                 category="subagent",
                 is_mutating=False,
+                is_concurrency_safe=True,
             )
         )
         self.register(
-            ToolDefinition(
+            define_tool(
                 name="team_task_list",
                 aliases=["TeamTaskList"],
-                description="List tasks on the shared team task board with optional filters.",
+                description="List tasks on the shared team task board.",
                 parameters={
                     "status": {
                         "type": "string",
                         "enum": ["pending", "in_progress", "completed", "blocked", "failed"],
-                        "description": "Optional status filter.",
                     },
-                    "assigned_to": {
-                        "type": "string",
-                        "description": "Optional assignee filter.",
-                    },
+                    "assigned_to": {"type": "string"},
                 },
                 required=[],
                 handler=_task_list_handle,
                 category="subagent",
                 is_mutating=False,
+                is_concurrency_safe=True,
             )
         )
         self.register(
-            ToolDefinition(
+            define_tool(
                 name="team_task_update",
                 aliases=["TeamTaskUpdate"],
-                description="Update status, assignee, result, or notes for a task on the shared task board.",
+                description="Update status or assignee for a task on the shared team task board.",
                 parameters={
-                    "task_id": {
-                        "type": "string",
-                        "description": "ID of the task to update.",
-                    },
+                    "task_id": {"type": "string"},
                     "status": {
                         "type": "string",
                         "enum": ["pending", "in_progress", "completed", "blocked", "failed"],
-                        "description": "New status for the task.",
                     },
-                    "assigned_to": {
-                        "type": "string",
-                        "description": "New assignee for the task.",
-                    },
-                    "result": {
-                        "type": "string",
-                        "description": "Completion result or summary.",
-                    },
-                    "notes": {
-                        "type": "string",
-                        "description": "Additional notes or blockers.",
-                    },
+                    "assigned_to": {"type": "string"},
+                    "result": {"type": "string"},
+                    "notes": {"type": "string"},
                 },
                 required=["task_id"],
                 handler=_task_update_handle,
                 category="subagent",
                 is_mutating=True,
+                is_concurrency_safe=False,
             )
         )
         self.register(
-            ToolDefinition(
+            define_tool(
                 name="wait_agent",
                 aliases=["WaitAgent"],
                 description="Wait for completion or message settlement from spawned teammates or subagents.",
                 parameters={
-                    "agent_id": {
-                        "type": "string",
-                        "description": "ID of the teammate or subagent to await.",
-                    },
-                    "agent_ids": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "List of teammate or subagent IDs to await.",
-                    },
-                    "timeout_seconds": {
-                        "type": "number",
-                        "description": "Maximum seconds to wait (default: 60).",
-                    },
-                    "wait_for": {
-                        "type": "string",
-                        "enum": ["completion", "message", "any_settlement"],
-                        "description": "Settlement condition to wait for (default: 'completion').",
-                    },
+                    "agent_id": {"type": "string"},
+                    "agent_ids": {"type": "array", "items": {"type": "string"}},
+                    "timeout_seconds": {"type": "number"},
                 },
                 required=[],
                 handler=_wait_agent_handle,
                 category="subagent",
                 is_mutating=False,
+                is_concurrency_safe=False,
             )
         )
 
-        # 19. Code Mode & Interactive Execution
+        # 16. Code Mode & Session Query
         self.register(
-            ToolDefinition(
+            define_tool(
                 name="code_mode",
                 aliases=["CodeMode", "python_exec"],
-                description="Execute Python code in a stateful sandbox with workspace tool helpers (read_file, write_file, edit_file, glob_search, grep_search, run_command).",
+                description="Execute Python code in a stateful sandbox with workspace tool helpers.",
                 parameters={
                     "code": {
                         "type": "string",
-                        "description": "The Python code snippet or script to execute.",
+                        "description": "The Python code snippet to execute.",
                     },
-                    "reset_state": {
-                        "type": "boolean",
-                        "description": "Optional flag to reset the variable environment before running.",
-                    },
-                    "timeout_seconds": {
-                        "type": "number",
-                        "description": "Maximum execution time in seconds (default: 30).",
-                    },
+                    "reset_state": {"type": "boolean"},
+                    "timeout_seconds": {"type": "number"},
                 },
                 required=["code"],
                 handler=_code_mode_handle,
                 category="meta",
                 is_mutating=True,
+                is_concurrency_safe=False,
             )
         )
-
-        # 20. Session Query & Full-Text Search (FTS)
         self.register(
-            ToolDefinition(
+            define_tool(
                 name="session_query",
                 aliases=["SessionQuery", "session_search", "SessionSearch"],
-                description="Search historical conversation turns, compacted history, and tool outputs using full-text search.",
+                description="Search historical conversation turns and tool outputs using full-text search.",
                 parameters={
                     "query": {
                         "type": "string",
-                        "description": "Natural language or keyword search query.",
+                        "description": "Natural language or keyword query.",
                     },
-                    "session_id": {
-                        "type": "string",
-                        "description": "Optional session ID to limit search to a specific session.",
-                    },
-                    "role": {
-                        "type": "string",
-                        "enum": ["user", "assistant", "tool", "system"],
-                        "description": "Optional role filter.",
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum number of results to return (default: 10).",
-                    },
+                    "session_id": {"type": "string"},
+                    "role": {"type": "string", "enum": ["user", "assistant", "tool", "system"]},
+                    "limit": {"type": "integer"},
                 },
                 required=["query"],
                 handler=_session_query_handle,
                 category="meta",
                 is_mutating=False,
-            )
-        )
-
-        # 21. Cross-Platform PowerShell Execution
-        self.register(
-            ToolDefinition(
-                name="pwsh",
-                aliases=["PowerShell", "powershell"],
-                description="Execute commands in a PowerShell session with background job and timeout support.",
-                parameters={
-                    "command": {
-                        "type": "string",
-                        "description": "The PowerShell command or script to execute.",
-                    },
-                    "description": {
-                        "type": "string",
-                        "description": "Clear description of what this command does.",
-                    },
-                    "sideEffects": {
-                        "type": "array",
-                        "description": "Permission scopes required by this command.",
-                        "items": {"type": "string", "enum": sorted(BASH_SCOPE_ENUM)},
-                        "uniqueItems": True,
-                    },
-                    "run_in_background": {"type": "boolean"},
-                },
-                required=["command", "sideEffects"],
-                handler=_pwsh.handle_pwsh_tool,
-                category="shell",
-                is_mutating=True,
+                is_concurrency_safe=True,
             )
         )
 

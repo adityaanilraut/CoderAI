@@ -41,12 +41,19 @@ async def handle_workflow_tool(args: dict[str, Any], context: ToolExecutionConte
 
     result = await execute_workflow_script(script, workflow_args, wf_context)
 
+    meta_data = {
+        "runId": result.workflow_id,
+        "agentsStarted": result.agent_executions,
+        "result": result.output,
+        **result.to_dict(),
+    }
+
     if result.status == "completed":
         return ToolResult(
             ok=True,
             name="workflow",
             output=result.format_markdown(),
-            metadata=result.to_dict(),
+            metadata=meta_data,
         )
     else:
         return ToolResult(
@@ -54,5 +61,5 @@ async def handle_workflow_tool(args: dict[str, Any], context: ToolExecutionConte
             name="workflow",
             error=result.error or f"Workflow execution {result.status}.",
             output=result.format_markdown(),
-            metadata=result.to_dict(),
+            metadata=meta_data,
         )

@@ -26,6 +26,7 @@ class ScheduleRecord:
     after_seconds: int | None = None
     every_seconds: int | None = None
     target_timestamp: float = 0.0
+    session_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -37,6 +38,8 @@ class ScheduleRecord:
             "state": self.state,
             "deliveryMode": self.delivery_mode,
         }
+        if self.session_id:
+            d["sessionId"] = self.session_id
         if self.after_seconds is not None:
             d["afterSeconds"] = self.after_seconds
         if self.every_seconds is not None:
@@ -60,6 +63,7 @@ class ScheduleManager:
         after_seconds: int | None = None,
         at: str | dict[str, Any] | None = None,
         every_seconds: int | None = None,
+        session_id: str | None = None,
     ) -> ScheduleRecord:
         """Create a new schedule record."""
         prompt = (prompt or "").strip()
@@ -94,6 +98,7 @@ class ScheduleManager:
                 created_at=now_utc.isoformat().replace("+00:00", "Z"),
                 after_seconds=after_s,
                 target_timestamp=target_ts,
+                session_id=session_id,
             )
 
         elif every_seconds is not None:
@@ -116,6 +121,7 @@ class ScheduleManager:
                 created_at=now_utc.isoformat().replace("+00:00", "Z"),
                 every_seconds=every_s,
                 target_timestamp=target_ts,
+                session_id=session_id,
             )
 
         else:  # at selector
@@ -131,6 +137,7 @@ class ScheduleManager:
                 scheduled_at=target_dt.isoformat().replace("+00:00", "Z"),
                 created_at=now_utc.isoformat().replace("+00:00", "Z"),
                 target_timestamp=target_ts,
+                session_id=session_id,
             )
 
         with self._lock:
@@ -139,12 +146,14 @@ class ScheduleManager:
 
         return rec
 
-    def list_schedules(self) -> list[ScheduleRecord]:
+    def list_schedules(self, session_id: str | None = None) -> list[ScheduleRecord]:
         """Return active and overdue schedules in creation order."""
         now_ts = time.time()
         with self._lock:
             active = []
             for rec in self._schedules.values():
+                if session_id and rec.session_id and rec.session_id != session_id:
+                    continue
                 if rec.state in ("scheduled", "overdue"):
                     if rec.target_timestamp <= now_ts and rec.state == "scheduled":
                         rec.state = "overdue"
@@ -162,12 +171,14 @@ class ScheduleManager:
                 return True
             return False
 
-    def check_due(self) -> list[ScheduleRecord]:
+    def check_due(self, session_id: str | None = None) -> list[ScheduleRecord]:
         """Return all schedules that have reached or passed their deadline."""
         now_ts = time.time()
         due = []
         with self._lock:
             for rec in list(self._schedules.values()):
+                if session_id and rec.session_id and rec.session_id != session_id:
+                    continue
                 if rec.state in ("scheduled", "overdue") and rec.target_timestamp <= now_ts:
                     due.append(rec)
                     if rec.kind == "every" and rec.every_seconds:
@@ -261,6 +272,7 @@ class ScheduleManager:
                     delivery_mode=item.get("deliveryMode", "session-local"),
                     after_seconds=item.get("afterSeconds"),
                     every_seconds=item.get("everySeconds"),
+                    session_id=item.get("sessionId"),
                 )
                 self._schedules[rec.id] = rec
         except Exception:

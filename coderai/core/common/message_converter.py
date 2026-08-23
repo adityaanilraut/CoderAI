@@ -18,8 +18,90 @@ from coderai.core.common.model_capabilities import supports_multimodal
 from coderai.core.session_log import derive_messages
 
 
+def canonicalize_tool_call(tool_call: Any) -> dict[str, Any]:
+    """Canonicalize a tool call dictionary structure with deterministic keys."""
+    if isinstance(tool_call, dict):
+        tc_id = str(tool_call.get("id") or "")
+        fn = tool_call.get("function") or {}
+        fn_name = (
+            str(fn.get("name") or "")
+            if isinstance(fn, dict)
+            else str(getattr(fn, "name", "") or "")
+        )
+        fn_args = (
+            str(fn.get("arguments") or "")
+            if isinstance(fn, dict)
+            else str(getattr(fn, "arguments", "") or "")
+        )
+    else:
+        tc_id = str(getattr(tool_call, "id", "") or "")
+        fn = getattr(tool_call, "function", None)
+        fn_name = str(getattr(fn, "name", "") or "") if fn else ""
+        fn_args = str(getattr(fn, "arguments", "") or "") if fn else ""
+
+    return {
+        "id": tc_id,
+        "type": "function",
+        "function": {
+            "name": fn_name,
+            "arguments": fn_args,
+        },
+    }
+
+
+def is_cache_control_supported(model: str) -> bool:
+    """Check if model family supports explicit Anthropic-style prompt cache breakpoints."""
+    if not model:
+        return False
+    m = model.lower()
+    return "claude" in m or "anthropic" in m
+
+
+def apply_cache_control_breakpoints(
+    messages: list[dict[str, Any]], model: str
+) -> list[dict[str, Any]]:
+    """Place prompt cache breakpoints on system prompt and penultimate turn for supported models."""
+    if not is_cache_control_supported(model) or not messages:
+        return messages
+
+    out = [dict(m) for m in messages]
+
+    # 1. System prompt breakpoint
+    for i, msg in enumerate(out):
+        if msg.get("role") == "system":
+            c = msg.get("content")
+            if isinstance(c, str):
+                out[i] = {
+                    **msg,
+                    "content": [{"type": "text", "text": c, "cache_control": {"type": "ephemeral"}}],
+                }
+            elif isinstance(c, list) and c and isinstance(c[-1], dict):
+                parts = [dict(p) for p in c]
+                parts[-1]["cache_control"] = {"type": "ephemeral"}
+                out[i] = {**msg, "content": parts}
+            break
+
+    # 2. Penultimate turn breakpoint
+    user_indices = [i for i, m in enumerate(out) if m.get("role") == "user"]
+    if user_indices:
+        target_idx = user_indices[-2] if len(user_indices) >= 2 else user_indices[-1]
+        msg = out[target_idx]
+        c = msg.get("content")
+        if isinstance(c, str):
+            out[target_idx] = {
+                **msg,
+                "content": [{"type": "text", "text": c, "cache_control": {"type": "ephemeral"}}],
+            }
+        elif isinstance(c, list) and c and isinstance(c[-1], dict):
+            parts = [dict(p) for p in c]
+            parts[-1]["cache_control"] = {"type": "ephemeral"}
+            out[target_idx] = {**msg, "content": parts}
+
+    return out
+
+
 class OpenAIMessageConverter:
-    """Converts internal SessionMessage objects into OpenAI chat message dicts."""
+    """Converts internal SessionMessage objects into OpenAI chat message dicts with deterministic serialization."""
 
     def __init__(self, render_init_prompt: Any = None) -> None:
         self.render_init_prompt = render_init_prompt
@@ -29,6 +111,7 @@ class OpenAIMessageConverter:
         messages: list[Any],
         model: str | None = None,
         thinking_enabled: bool = False,
+        enable_cache_control: bool = True,
     ) -> list[dict[str, Any]]:
         active_messages = derive_messages(messages)
         tool_pairings = self._pair_tool_messages(active_messages)
@@ -38,6 +121,8 @@ class OpenAIMessageConverter:
 
         for index, message in enumerate(active_messages):
             role = getattr(message, "role", "")
+            if role not in ("system", "user", "assistant", "tool"):
+                continue
             if role == "tool":
                 # Paired tool messages are appended directly after their assistant message
                 continue
@@ -82,6 +167,9 @@ class OpenAIMessageConverter:
                     self._build_interrupted_openai_tool_message(tool_calls, tool_call_id)
                 )
 
+        if enable_cache_control and is_cache_control_supported(target_model):
+            openai_messages = apply_cache_control_breakpoints(openai_messages, target_model)
+
         return openai_messages
 
     def build_messages(self, messages: list[Any]) -> list[dict[str, Any]]:
@@ -112,24 +200,36 @@ class OpenAIMessageConverter:
         message: Any,
         thinking_enabled: bool,
         model: str,
+        max_tool_result_chars: int = 16_000,
     ) -> dict[str, Any]:
         role = getattr(message, "role", "user")
         content = self._render_content(message)
+
+        if role == "tool":
+            if not content or (isinstance(content, str) and not content.strip()):
+                content = "(no output)"
+            elif isinstance(content, str) and len(content) > max_tool_result_chars:
+                head = max_tool_result_chars // 2
+                tail = max_tool_result_chars - head
+                omitted = len(content) - max_tool_result_chars
+                content = f"{content[:head]}\n\n...[{omitted} characters omitted]...\n\n{content[-tail:]}"
+        elif role == "assistant":
+            if content is None:
+                content = ""
+
         base: dict[str, Any] = {"role": role, "content": content}
 
         tool_calls = getattr(message, "tool_calls", None)
-        if tool_calls:
-            base["tool_calls"] = tool_calls
+        if tool_calls and isinstance(tool_calls, list):
+            base["tool_calls"] = [canonicalize_tool_call(tc) for tc in tool_calls]
 
         tool_call_id = getattr(message, "tool_call_id", None)
         if tool_call_id:
-            base["tool_call_id"] = tool_call_id
+            base["tool_call_id"] = str(tool_call_id)
 
         thinking = getattr(message, "thinking", None)
         if isinstance(thinking, str) and thinking:
             base["reasoning_content"] = thinking
-        elif thinking_enabled and role == "assistant":
-            base["reasoning_content"] = ""
 
         # Multimodal content support
         meta = getattr(message, "meta", None) or {}

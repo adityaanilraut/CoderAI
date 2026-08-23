@@ -23,6 +23,42 @@ from coderai.core.subagent import SubAgentManager, SubAgentResult, SubAgentSpec
 logger = logging.getLogger(__name__)
 
 
+class WorkflowErrorCode:
+    """Machine-routable workflow failure codes (DeepSeek Harness parity)."""
+
+    SCRIPT_PARSE = "SCRIPT_PARSE"
+    META_INVALID = "META_INVALID"
+    INVALID_ARGUMENT = "INVALID_ARGUMENT"
+    UNSUPPORTED_OPTION = "UNSUPPORTED_OPTION"
+    UNSUPPORTED_SCHEMA = "UNSUPPORTED_SCHEMA"
+    AGENT_CAP = "AGENT_CAP"
+    ITEM_CAP = "ITEM_CAP"
+    AGENT_START = "AGENT_START"
+    AGENT_RESULT = "AGENT_RESULT"
+    RESULT_UNSERIALIZABLE = "RESULT_UNSERIALIZABLE"
+    CANCELLED = "CANCELLED"
+
+
+class WorkflowError(Exception):
+    """Typed error for workflow execution failures."""
+
+    def __init__(
+        self,
+        message: str,
+        code: str = WorkflowErrorCode.AGENT_RESULT,
+        fatal: bool = True,
+    ) -> None:
+        super().__init__(message)
+        self.message = message
+        self.code = code
+        self.fatal = fatal
+
+
+def is_fatal_workflow_error(error: Any) -> bool:
+    """Return True if error is a fatal WorkflowError."""
+    return isinstance(error, WorkflowError) and error.fatal
+
+
 @dataclass
 class WorkflowPhase:
     """Represents a phase in a workflow execution."""

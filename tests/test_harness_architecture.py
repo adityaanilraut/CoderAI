@@ -10,8 +10,6 @@ Tests:
 """
 
 import pathlib
-import pytest
-from unittest.mock import MagicMock
 
 from coderai.core.events import (
     SessionEvent,
@@ -21,27 +19,20 @@ from coderai.core.events import (
     make_step_end,
     make_user_event,
     make_assistant_event,
-    make_tool_call_event,
     make_tool_result_event,
     make_compaction_summary,
     derive_messages_from_events,
-    USER_MESSAGE,
-    ASSISTANT_MESSAGE,
-    TOOL_RESULT,
 )
-from coderai.core.compaction import ToolResultPruner, CompactionResult
+from coderai.core.compaction import ToolResultPruner
 from coderai.core.approval import (
     ApprovalService,
     ApprovalOutcome,
     ApprovalPolicy,
     ApprovalRequest,
 )
-from coderai.core.persistence import JsonlPersistence, SessionHeader
+from coderai.core.persistence import JsonlPersistence
 from coderai.core.skill import (
     SkillRegistry,
-    extract_skill_frontmatter,
-    strip_skill_prompt_metadata,
-    parse_skill_match_response,
 )
 from coderai.core.state import SessionStateManager, FileState
 
@@ -69,7 +60,11 @@ def test_derive_messages_from_events():
         make_step_start(seq=1, turn=1, step=1),
         make_user_event(seq=2, content="Hello"),
         make_assistant_event(
-            seq=3, turn=1, step=1, content="I'll run a tool", tool_calls=[{"id": "c1", "function": {"name": "test"}}]
+            seq=3,
+            turn=1,
+            step=1,
+            content="I'll run a tool",
+            tool_calls=[{"id": "c1", "function": {"name": "test"}}],
         ),
         make_tool_result_event(seq=4, turn=1, step=1, call_id="c1", content="Tool output ok"),
         make_step_end(seq=5, turn=1, step=1),
@@ -90,7 +85,9 @@ def test_compaction_shadow_hides_events_in_derive():
     events = [
         make_user_event(seq=0, content="Old message 1"),
         make_assistant_event(seq=1, turn=1, step=1, content="Old reply 1"),
-        make_compaction_summary(seq=2, compaction_id="c1", content="Summary of old messages", shadowed_seqs=[0, 1]),
+        make_compaction_summary(
+            seq=2, compaction_id="c1", content="Summary of old messages", shadowed_seqs=[0, 1]
+        ),
         make_user_event(seq=3, content="New message 2"),
     ]
 

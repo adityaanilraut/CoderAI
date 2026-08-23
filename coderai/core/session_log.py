@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from typing import Any
 
-MAX_TOOL_RESULT_CHARS = 32_000
+from coderai.core.compaction import ToolResultPruner, DEFAULT_MAX_TOOL_RESULT_CHARS
+
+MAX_TOOL_RESULT_CHARS = DEFAULT_MAX_TOOL_RESULT_CHARS
 
 
 def _meta(message: Any) -> dict[str, Any]:
@@ -45,35 +47,5 @@ def prune_tool_results(
     messages: list[Any],
     max_chars: int = MAX_TOOL_RESULT_CHARS,
 ) -> list[Any]:
-    """Truncate oversized tool payloads in place on copies; keep pairing intact.
-
-    A single, consistent *max_chars* limit is applied to **every** tool message
-    so that conversation prefixes remain 100 % immutable across turns.  This
-    guarantees provider prompt-caching (DeepSeek KV cache, Anthropic prompt
-    cache) hits reliably without prefix invalidation from retroactively mutated
-    historical tool messages.
-    """
-    out: list[Any] = []
-    for message in messages:
-        if getattr(message, "role", "") != "tool":
-            out.append(message)
-            continue
-        content = getattr(message, "content", "") or ""
-
-        if len(content) <= max_chars:
-            out.append(message)
-            continue
-        head = max_chars // 2
-        tail = max_chars - head
-        clipped = f"{content[:head]}\n\n...[{len(content) - max_chars} characters omitted]...\n\n{content[-tail:]}"
-        clone = message
-        try:
-            clone = type(message)(**{**message.__dict__, "content": clipped})
-        except TypeError:
-            try:
-                message.content = clipped
-            except Exception:
-                pass
-            clone = message
-        out.append(clone)
-    return out
+    """Truncate oversized tool payloads in place on copies; keep pairing intact."""
+    return ToolResultPruner(max_chars=max_chars).prune_messages(messages)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import pathlib
 import shutil
 import subprocess
@@ -12,6 +13,7 @@ import uuid
 from typing import Any
 
 from coderai.core.jobs import get_job_store
+from coderai.core.sandbox import delete_seatbelt_profile, wrap_sandbox_command
 from coderai.core.spill import apply_spill_policy
 from coderai.core.tools.types import ToolResult, as_str
 
@@ -43,6 +45,10 @@ async def handle_pwsh_tool(args: dict[str, Any], context: Any) -> ToolResult:
     run_in_background = bool(args.get("run_in_background", False))
     project_root = getattr(context, "project_root", ".") if context else "."
     session_id = getattr(context, "session_id", "default") if context else "default"
+    sandbox_mode = getattr(context, "sandbox_mode", None)
+    if isinstance(context, dict):
+        sandbox_mode = context.get("sandbox_mode", sandbox_mode)
+        project_root = context.get("project_root", project_root)
 
     pwsh_bin = _resolve_pwsh_executable()
     if not pwsh_bin:
@@ -55,6 +61,14 @@ async def handle_pwsh_tool(args: dict[str, Any], context: Any) -> ToolResult:
             )
         pwsh_bin = "powershell.exe"
 
+    cmd_argv = [pwsh_bin, "-NoProfile", "-NonInteractive", "-Command", command]
+    wrapped_argv, sandbox_meta = wrap_sandbox_command(
+        cmd_argv,
+        mode=sandbox_mode,
+        workspace_root=str(project_root),
+        cwd=str(project_root),
+    )
+
     if run_in_background:
         # Background job execution
         job_id = f"job_pwsh_{uuid.uuid4().hex[:8]}"
@@ -64,7 +78,7 @@ async def handle_pwsh_tool(args: dict[str, Any], context: Any) -> ToolResult:
 
         f = open(log_file, "w", encoding="utf-8")
         proc = subprocess.Popen(
-            [pwsh_bin, "-NoProfile", "-NonInteractive", "-Command", command],
+            wrapped_argv,
             cwd=project_root,
             stdout=f,
             stderr=subprocess.STDOUT,
@@ -81,6 +95,10 @@ async def handle_pwsh_tool(args: dict[str, Any], context: Any) -> ToolResult:
             process_id=proc.pid,
         )
 
+        meta: dict[str, Any] = {"job_id": job_id, "pid": proc.pid, "kind": "pwsh"}
+        if sandbox_meta:
+            meta["sandbox"] = sandbox_meta
+
         return ToolResult(
             ok=True,
             name="pwsh",
@@ -89,14 +107,16 @@ async def handle_pwsh_tool(args: dict[str, Any], context: Any) -> ToolResult:
                 f"Description: {description}\n"
                 f"Use `job_output(job_id='{job_id}')` to stream logs or `job_kill(job_id='{job_id}')` to terminate."
             ),
-            metadata={"job_id": job_id, "pid": proc.pid, "kind": "pwsh"},
+            metadata=meta,
         )
 
-    # Synchronous execution
+    # Synchronous execution offloaded to worker thread to prevent event loop starvation
     start_time = time.time()
+    profile_path = sandbox_meta.get("sandboxProfile")
     try:
-        completed = subprocess.run(
-            [pwsh_bin, "-NoProfile", "-NonInteractive", "-Command", command],
+        completed = await asyncio.to_thread(
+            subprocess.run,
+            wrapped_argv,
             cwd=project_root,
             capture_output=True,
             text=True,
@@ -118,20 +138,24 @@ async def handle_pwsh_tool(args: dict[str, Any], context: Any) -> ToolResult:
             tool_name="pwsh",
         )
 
+        meta = {"returncode": completed.returncode, "duration_seconds": duration}
+        if sandbox_meta:
+            meta["sandbox"] = sandbox_meta
+
         if completed.returncode != 0:
             return ToolResult(
                 ok=False,
                 name="pwsh",
                 output=output_text or f"Command failed with exit code {completed.returncode}.",
                 error=f"PowerShell command exited with code {completed.returncode}.",
-                metadata={"returncode": completed.returncode, "duration_seconds": duration},
+                metadata=meta,
             )
 
         return ToolResult(
             ok=True,
             name="pwsh",
             output=output_text or "(Command executed with no output)",
-            metadata={"returncode": 0, "duration_seconds": duration},
+            metadata=meta,
         )
     except subprocess.TimeoutExpired:
         return ToolResult(
@@ -145,3 +169,7 @@ async def handle_pwsh_tool(args: dict[str, Any], context: Any) -> ToolResult:
             name="pwsh",
             error=f"Failed to execute PowerShell command: {exc}",
         )
+    finally:
+        if profile_path:
+            delete_seatbelt_profile(profile_path)
+

@@ -105,12 +105,6 @@ coderai "Refactor auth middleware to support JWT refresh tokens"
 coderai --yes "Run unit tests and fix any failing assertions in tests/test_core.py"
 ```
 
-### 6. Start Headless JSON-RPC 2.0 IDE Companion Server
-
-```bash
-coderai serve --port 8765
-```
-
 ---
 
 ## Interactive CLI & Slash Commands

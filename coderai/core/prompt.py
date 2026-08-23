@@ -9,19 +9,66 @@ from __future__ import annotations
 
 import datetime
 import json
-import os
 import pathlib
 import platform
 import re
 import subprocess
 from typing import Any
 
-from coderai.core.common.model_capabilities import supports_multimodal
-from coderai.core.common.shell_utils import resolve_shell_path
-from coderai.core.prompt_sections import assemble_sections, order_tools, PromptSection
+from coderai.core.prompt_sections import (
+    IDENTITY_ORDER,
+    PERSONA_ORDER,
+    SANDBOX_POLICY_ORDER,
+    SKILLS_CATALOG_ORDER,
+    SUBAGENT_DELEGATION_ORDER,
+    TOOL_BASH_ORDER,
+    TOOL_EDIT_ORDER,
+    TOOL_GOAL_ORDER,
+    TOOL_GREP_ORDER,
+    TOOL_JOBS_ORDER,
+    TOOL_PWSH_ORDER,
+    TOOL_READ_ORDER,
+    TOOL_WEB_FETCH_ORDER,
+    TOOL_WRITE_ORDER,
+    PromptSection,
+    assemble_sections,
+)
 from coderai.core.sandbox import sandbox_policy_prompt
+from coderai.core.skill import (
+    DEFAULT_SKILL_RESOURCE_FILE_LIMIT,
+    SKILL_RESOURCE_EXCLUDED_DIRS,
+    SkillRegistry,
+    _implicit_invocation_allowed,
+    build_skill_documents_prompt,
+    extract_skill_frontmatter,
+    get_bundled_skills_root,
+    get_skill_read_exempt_paths,
+    get_skill_scan_roots,
+    list_skill_resource_files,
+    list_skills,
+    load_skill,
+    match_skills_for_prompt,
+    parse_skill_match_response,
+    render_skill_document_block,
+    render_skill_resources,
+    strip_skill_prompt_metadata,
+)
 
-SYSTEM_PROMPT_BASE = "You are a helpful software engineer assistant."
+SYSTEM_PROMPT_BASE = """You are a helpful software engineer assistant.
+
+## Test Generation & Invariant Reasoning Rules
+When writing, modifying, or analyzing reproduction tests and unit tests:
+1. **Mental Post-Fix Trace**: Before writing test assertions, mentally trace what every assertion will evaluate to AFTER the bug is fixed. Never include assertions that assume, assert, or validate buggy behavior.
+2. **Multi-Assertion Invariant Validation**: Ensure every single assertion in the test method tests a valid expected state under the official specification. Do not assume broken invariants or rely solely on the first failure.
+3. **Specification Consistency**: Never include assertions that contradict the intended specification (e.g. asserting len==1 on evicted caches or assertFalse on valid token grants).
+
+## Step Verification Loop Before Task Completion
+Before concluding your task or issuing your final response:
+1. **Inspect Git Diff**: Inspect `git diff` on modified files to verify you modified only the intended files without collateral changes or syntax errors.
+2. **Run Regression Test Suite**: Run the relevant test suite (e.g. `pytest` or test runner) to verify:
+   - Your reproduction test fails specifically due to the reported issue (and not an import error or syntax bug).
+   - All existing passing tests continue to pass without regression.
+3. **Verify Expected States**: Confirm all test assertions specifically target the issue without assuming broken invariants."""
 
 PLAN_MODE_PROMPT = """# Plan Mode
 
@@ -123,22 +170,103 @@ def get_plan_mode_prompt() -> str:
     return PLAN_MODE_PROMPT.strip()
 
 
+MODEL_CONTEXT_WINDOWS: dict[str, int] = {
+    # DeepSeek
+    "deepseek-chat": 128_000,
+    "deepseek-reasoner": 128_000,
+    "deepseek-v3": 128_000,
+    "deepseek-r1": 128_000,
+    # Claude
+    "claude-3-5-sonnet": 200_000,
+    "claude-3-7-sonnet": 200_000,
+    "claude-3-opus": 200_000,
+    "claude-3-haiku": 200_000,
+    "claude-3-5-haiku": 200_000,
+    # Gemini
+    "gemini-1.5-pro": 2_000_000,
+    "gemini-1.5-flash": 1_000_000,
+    "gemini-2.0-flash": 1_000_000,
+    "gemini-2.5-pro": 1_000_000,
+    "gemini-2.5-flash": 1_000_000,
+    # OpenAI
+    "gpt-4o": 128_000,
+    "gpt-4o-mini": 128_000,
+    "gpt-4-turbo": 128_000,
+    "o1": 200_000,
+    "o1-mini": 128_000,
+    "o1-preview": 128_000,
+    "o3-mini": 200_000,
+    "gpt-5.6-luna": 128_000,
+}
+
+
+def get_model_context_limit(model: str | None = None) -> int:
+    """Resolve context window token limit for a model name."""
+    if not model:
+        return 128_000
+    m = model.lower()
+    for pattern, limit in MODEL_CONTEXT_WINDOWS.items():
+        if pattern in m:
+            return limit
+    if "gemini" in m:
+        return 1_000_000
+    if "claude" in m:
+        return 200_000
+    if "deepseek" in m:
+        return 128_000
+    if "gpt-4" in m or "o1" in m or "o3" in m or "gpt-5" in m:
+        return 128_000
+    return 128_000
+
+
+def calculate_context_budget(
+    model: str | None = None,
+    system_tokens: int = 0,
+    tool_tokens: int = 0,
+    safety_margin_tokens: int = 2000,
+    pressure_ratio: float = 0.75,
+    overflow_ratio: float = 0.95,
+) -> dict[str, int]:
+    """Calculate adaptive context budget based on model context limits and active usage."""
+    context_limit = get_model_context_limit(model)
+    max_output = min(8192, int(context_limit * 0.1))
+    if context_limit >= 1_000_000:
+        max_output = 16384
+
+    reserved_system = int(system_tokens + tool_tokens + safety_margin_tokens)
+    pressure_threshold = int(context_limit * pressure_ratio)
+    overflow_threshold = int(context_limit * overflow_ratio)
+    available_history = max(0, context_limit - max_output - reserved_system)
+    compaction_target = int(context_limit * 0.40)
+
+    return {
+        "context_limit": context_limit,
+        "max_output_tokens": max_output,
+        "reserved_system_tokens": reserved_system,
+        "pressure_threshold": pressure_threshold,
+        "overflow_threshold": overflow_threshold,
+        "available_history_budget": available_history,
+        "compaction_target_tokens": compaction_target,
+    }
+
+
 def get_compact_prompt_token_threshold(model: str | None = None) -> int:
-    """Return token threshold after which auto-compaction triggers."""
-    return 100_000
+    """Return token threshold after which auto-compaction triggers based on adaptive budgeting."""
+    budget = calculate_context_budget(model)
+    return budget["pressure_threshold"]
 
 
 def get_subagent_system_prompt(mode: str = "read_only", description: str = "") -> str:
-    """Return specialized system prompt for isolated sub-agents."""
+    """Return specialized static system prompt for isolated sub-agents."""
+    del description  # task descriptions are passed in the initial user prompt for cache stability
     mode_text = (
         "You are operating in READ-ONLY mode. You may explore, read, search, and analyze files, "
         "but you must NOT mutate or create repo files. Use read and WebSearch tools freely."
         if mode == "read_only"
         else "You are operating in GENERAL mode with workspace execution capabilities."
     )
-    desc_text = f" Sub-task goal: '{description}'." if description else ""
     return (
-        f"You are an expert autonomous sub-agent.{desc_text}\n"
+        "You are an expert autonomous sub-agent.\n"
         f"{mode_text}\n"
         "Your task is to thoroughly analyze the objective, use your available tools to gather facts, "
         "and produce a concise, complete, and decision-ready conclusion for the parent agent. "
@@ -147,686 +275,17 @@ def get_subagent_system_prompt(mode: str = "read_only", description: str = "") -
 
 
 def get_tools(
-    options: dict[str, Any] | None = None, external_tools: list[dict[str, Any]] | None = None
+    options: dict[str, Any] | None = None,
+    external_tools: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    options = options or {}
-    tools: list[dict[str, Any]] = [
-        _fn(
-            "bash",
-            "Execute shell commands in a persistent bash session.",
-            {
-                "command": {"type": "string", "description": "The shell command to execute"},
-                "description": {
-                    "type": "string",
-                    "description": "Clear, concise description of what this command does in active voice.",
-                },
-                "sideEffects": {
-                    "type": "array",
-                    "description": "Permission scopes required by this bash command.",
-                    "items": {"type": "string", "enum": sorted(BASH_SCOPE_ENUM)},
-                    "uniqueItems": True,
-                },
-                "run_in_background": {"type": "boolean"},
-            },
-            ["command", "sideEffects"],
-        ),
-        _fn(
-            "job_list",
-            "List your background jobs (running and finished) with their ids, kinds, and statuses.",
-            {},
-            [],
-        ),
-        _fn(
-            "job_output",
-            "Read a background job. Returns output since the previous read. Every response ends with `[status: ...]`. Set wait=true to block until settlement.",
-            {
-                "job_id": {
-                    "type": "string",
-                    "description": "Job id returned when the background work started.",
-                },
-                "wait": {
-                    "type": "boolean",
-                    "description": "Block until the job reaches a terminal status or the timeout expires.",
-                },
-                "timeout_ms": {
-                    "type": "number",
-                    "description": "Max wait in milliseconds when wait is true (default 30000, cap 600000).",
-                },
-            },
-            ["job_id"],
-        ),
-        _fn(
-            "job_kill",
-            "Request cancellation of a running background job by job id.",
-            {
-                "job_id": {
-                    "type": "string",
-                    "description": "Job id returned when the background work started.",
-                },
-                "reason": {
-                    "type": "string",
-                    "description": "Optional short reason recorded with the job.",
-                },
-            },
-            ["job_id"],
-        ),
-        _fn(
-            "AskUserQuestion",
-            "When the task has ambiguities or multiple implementation approaches, use this tool to pause and ask the user for clarification or a decision.",
-            {
-                "questions": {
-                    "type": "array",
-                    "description": "Questions to present to the user. Usually only one is needed.",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "question": {"type": "string"},
-                            "multiSelect": {"type": "boolean"},
-                            "options": {
-                                "type": "array",
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "label": {"type": "string"},
-                                        "description": {"type": "string"},
-                                    },
-                                    "required": ["label"],
-                                },
-                            },
-                        },
-                        "required": ["question", "options"],
-                    },
-                }
-            },
-            ["questions"],
-        ),
-        _fn(
-            "UpdatePlan",
-            "Update the current task plan. The plan argument must be the complete markdown task list to show as the latest progress state.",
-            {
-                "plan": {"type": "string", "description": "The complete markdown task list."},
-                "explanation": {
-                    "type": "string",
-                    "description": "Optional short reason for changing the plan.",
-                },
-            },
-            ["plan"],
-        ),
-        _fn(
-            "glob",
-            "Find files whose paths match a glob pattern. Returns matching file paths — never directories — including hidden and ignored files (VCS metadata directories are excluded). Up to 100 paths come back in modification-time order; a larger result instead returns 100 paths sampled across top-level entries, says so, and reports where the complete sorted list was saved. This tool does not enumerate directory entries.",
-            {
-                "pattern": {
-                    "type": "string",
-                    "description": 'Glob pattern to match file paths against (e.g. "**/*.ts", "src/**/*.test.js"). A pattern with no "/" matches the basename at any depth, so "*" and "*.ts" both search the whole tree; include a separator to anchor the depth.',
-                },
-                "path": {
-                    "type": "string",
-                    "description": "Directory to search in. Defaults to the session workspace; a relative path resolves against it.",
-                },
-            },
-            ["pattern"],
-        ),
-        _fn(
-            "grep",
-            "Search file contents with a ripgrep regular expression. Returns matching lines with line numbers, grouped by file. Returns the first 250 matches inline; a capped result reports where the complete match list was saved. Use read on a matched file for surrounding context.",
-            {
-                "pattern": {
-                    "type": "string",
-                    "description": "Regular expression to search for (ripgrep syntax).",
-                },
-                "path": {
-                    "type": "string",
-                    "description": "File or directory to search. Defaults to the session workspace; a relative path resolves against it.",
-                },
-                "include": {
-                    "type": "string",
-                    "description": 'One glob filter for which files to search (e.g. "*.ts", "*.{js,jsx}"). Not a list; negation is not supported.',
-                },
-            },
-            ["pattern"],
-        ),
-        _fn(
-            "read",
-            "Read files from the filesystem (text, images, notebooks).",
-            {
-                "file_path": {"type": "string", "description": "UNIX-style path to file"},
-                "offset": {"type": "number", "description": "Line number to start reading from"},
-                "limit": {"type": "number", "description": "Number of lines to read"},
-            },
-            ["file_path"],
-        ),
-        _fn(
-            "write",
-            "Create files or overwrite them with a complete string payload. Prefer edit for existing files.",
-            {
-                "file_path": {"type": "string", "description": "Absolute path to file"},
-                "content": {
-                    "type": "string",
-                    "description": "Complete file content as a single string.",
-                },
-            },
-            ["file_path", "content"],
-        ),
-        _fn(
-            "edit",
-            "Perform scoped string replacements in files.",
-            {
-                "snippet_id": {"type": "string", "description": "Required Read/Edit snippet_id."},
-                "file_path": {
-                    "type": "string",
-                    "description": "Optional absolute path guard; must match snippet_id's file.",
-                },
-                "old_string": {
-                    "type": "string",
-                    "description": "Exact text to replace inside snippet_id's scope",
-                },
-                "new_string": {
-                    "type": "string",
-                    "description": "Replacement text (must differ from old_string)",
-                },
-                "replace_all": {
-                    "type": "boolean",
-                    "description": "Replace all occurrences of old_string (default false)",
-                },
-                "expected_occurrences": {
-                    "type": "number",
-                    "description": "Expected number of matches",
-                },
-            },
-            ["snippet_id", "old_string", "new_string"],
-        ),
-        _fn(
-            "skill",
-            "Load the full instructions for an available skill. Call this with the exact skill name from the session skill catalog before acting on a task that names or clearly matches that skill.",
-            {
-                "name": {
-                    "type": "string",
-                    "description": "The exact skill name from the available skills list.",
-                }
-            },
-            ["name"],
-        ),
-        _fn(
-            "Task",
-            "Spawn an isolated sub-agent to execute a specific sub-task (codebase exploration, file analysis, verification, or research) in an independent context and return aggregated findings.",
-            {
-                "description": {
-                    "type": "string",
-                    "description": "Short 3-5 word summary of the sub-task.",
-                },
-                "prompt": {
-                    "type": "string",
-                    "description": "Detailed instructions, objective, and context for the sub-agent.",
-                },
-                "mode": {
-                    "type": "string",
-                    "enum": ["read_only", "general"],
-                    "description": "Execution mode. 'read_only' allows read/search/bash without file mutation. 'general' allows full capabilities.",
-                },
-                "timeout_seconds": {
-                    "type": "number",
-                    "description": "Optional timeout in seconds for sub-agent completion (default: 90).",
-                },
-                "context": {
-                    "type": "string",
-                    "description": "Optional additional context snippets or file excerpts.",
-                },
-            },
-            ["description", "prompt"],
-        ),
-    ]
+    """Retrieve formatted tool definitions using ToolRegistry as the canonical source of truth."""
+    from coderai.core.tools.registry import get_tool_registry
 
-    if options.get("nonInteractive") is True:
-        tools = [t for t in tools if t["function"]["name"] != "AskUserQuestion"]
-
-    tools.append(
-        _fn(
-            "WebSearch",
-            "Perform web searching using a natural language query.",
-            {
-                "query": {
-                    "type": "string",
-                    "description": "A clear, specific natural language search query.",
-                }
-            },
-            ["query"],
-        )
+    registry = get_tool_registry()
+    return registry.to_openai_schemas(
+        options=options,
+        external_tools=external_tools,
     )
-
-    tools.append(
-        _fn(
-            "WebFetch",
-            "Fetch content from an external web URL, sanitize against prompt injection, and return clean Markdown or JSON.",
-            {
-                "url": {
-                    "type": "string",
-                    "description": "The HTTP or HTTPS URL to fetch content from.",
-                },
-                "raw": {
-                    "type": "boolean",
-                    "description": "If true, return raw plain text instead of parsed Markdown.",
-                },
-                "max_length": {
-                    "type": "number",
-                    "description": "Maximum characters to return (default: 30,000).",
-                },
-            },
-            ["url"],
-        )
-    )
-
-    if not supports_multimodal(options.get("model", ""), options.get("multimodal", "default")):
-        tools.append(
-            _fn(
-                "UnderstandImage",
-                "Analyze or extract information from a local JPEG, PNG, or WebP image.",
-                {
-                    "prompt": {
-                        "type": "string",
-                        "description": "A clear instruction describing what to analyze.",
-                    },
-                    "image_path": {
-                        "type": "string",
-                        "description": "The absolute path of the image to analyze.",
-                    },
-                },
-                ["prompt", "image_path"],
-            )
-        )
-
-    for tool in external_tools or []:
-        tools.append(tool)
-
-    extra: list[dict[str, Any]] = [
-        _fn(
-            "subagent",
-            "Start a continuable sub-agent in the background and return an agent id. Use send_message / list_agents / interrupt_agent to steer it. For a one-shot child, use Task or subagent_fork.",
-            {
-                "description": {
-                    "type": "string",
-                    "description": "Short 3-5 word summary of the sub-task.",
-                },
-                "prompt": {
-                    "type": "string",
-                    "description": "Detailed instructions for the sub-agent.",
-                },
-                "mode": {"type": "string", "enum": ["read_only", "general"]},
-                "timeout_seconds": {"type": "number"},
-                "context": {"type": "string"},
-            },
-            ["description", "prompt"],
-        ),
-        _fn(
-            "subagent_fork",
-            "Spawn a one-shot sub-agent and wait for its aggregated findings (alias of Task).",
-            {
-                "description": {"type": "string"},
-                "prompt": {"type": "string"},
-                "mode": {"type": "string", "enum": ["read_only", "general"]},
-                "timeout_seconds": {"type": "number"},
-                "context": {"type": "string"},
-            },
-            ["description", "prompt"],
-        ),
-        _fn(
-            "send_message",
-            "Send a follow-up message to a running or parked sub-agent by agent id.",
-            {
-                "agent_id": {"type": "string"},
-                "message": {"type": "string"},
-            },
-            ["agent_id", "message"],
-        ),
-        _fn(
-            "interrupt_agent",
-            "Cancel a running sub-agent by agent id.",
-            {"agent_id": {"type": "string"}},
-            ["agent_id"],
-        ),
-        _fn(
-            "list_agents",
-            "List sub-agents spawned from this session with ids and statuses.",
-            {},
-            [],
-        ),
-        _fn(
-            "todo_write",
-            "Replace the structured todo list. Each item has content and status (pending, in_progress, completed, cancelled).",
-            {
-                "todos": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "id": {"type": "string"},
-                            "content": {"type": "string"},
-                            "status": {
-                                "type": "string",
-                                "enum": ["pending", "in_progress", "completed", "cancelled"],
-                            },
-                        },
-                    },
-                }
-            },
-            ["todos"],
-        ),
-        _fn(
-            "exit_plan_mode",
-            "Exit Plan Mode after the plan is approved. Mutation tools remain in the schema; this signals the client to lift the plan-mode fence.",
-            {"summary": {"type": "string", "description": "Short summary of the approved plan."}},
-            [],
-        ),
-        _fn(
-            "goal",
-            "List, add, or update session goals.",
-            {
-                "action": {
-                    "type": "string",
-                    "enum": ["list", "add", "update", "done", "cancel", "start"],
-                },
-                "title": {"type": "string"},
-                "goal_id": {"type": "string"},
-                "status": {"type": "string"},
-                "notes": {"type": "string"},
-            },
-            [],
-        ),
-        _fn(
-            "str_replace_editor",
-            "Anthropic-style custom file editor for viewing, creating, replacing string snippets, inserting lines, and undoing edits.",
-            {
-                "command": {
-                    "type": "string",
-                    "enum": ["view", "create", "str_replace", "insert", "undo_edit"],
-                },
-                "path": {"type": "string"},
-                "file_text": {"type": "string"},
-                "old_str": {"type": "string"},
-                "new_str": {"type": "string"},
-                "insert_line": {"type": "integer"},
-                "view_range": {"type": "array", "items": {"type": "integer"}},
-            },
-            ["command", "path"],
-        ),
-        _fn(
-            "terminal_open",
-            "Open a persistent interactive PTY terminal session.",
-            {
-                "type": {"type": "string"},
-                "name": {"type": "string"},
-                "cwd": {"type": "string"},
-            },
-            [],
-        ),
-        _fn(
-            "terminal_send",
-            "Send text or a command to an open persistent terminal session.",
-            {
-                "sessionId": {"type": "string"},
-                "text": {"type": "string"},
-                "submit": {"type": "boolean"},
-                "run_in_background": {"type": "boolean"},
-                "timeout_ms": {"type": "number"},
-            },
-            ["sessionId", "text"],
-        ),
-        _fn(
-            "terminal_read",
-            "Read available output from an open persistent terminal session.",
-            {
-                "sessionId": {"type": "string"},
-                "timeout_ms": {"type": "number"},
-            },
-            ["sessionId"],
-        ),
-        _fn(
-            "terminal_signal",
-            "Send a signal (SIGINT, SIGTERM, SIGKILL) to an open terminal session.",
-            {
-                "sessionId": {"type": "string"},
-                "signal": {
-                    "type": "string",
-                    "enum": ["SIGINT", "SIGTERM", "SIGKILL", "SIGTSTP", "SIGHUP"],
-                },
-            },
-            ["sessionId", "signal"],
-        ),
-        _fn(
-            "terminal_close",
-            "Close and terminate a persistent terminal session.",
-            {"sessionId": {"type": "string"}},
-            ["sessionId"],
-        ),
-        _fn(
-            "terminal_list",
-            "List all active persistent terminal sessions.",
-            {},
-            [],
-        ),
-        _fn(
-            "lsp",
-            "Query Language Server Protocol (LSP) for precise code definitions, references, hover docstrings, and document symbols.",
-            {
-                "operation": {
-                    "type": "string",
-                    "enum": [
-                        "goToDefinition",
-                        "findReferences",
-                        "goToImplementation",
-                        "hover",
-                        "documentSymbol",
-                        "workspaceSymbol",
-                    ],
-                },
-                "file_path": {"type": "string"},
-                "line": {"type": "integer"},
-                "character": {"type": "integer"},
-            },
-            ["operation"],
-        ),
-        _fn(
-            "schedule_create",
-            "Create a durable reminder or recurring scheduled task.",
-            {
-                "prompt": {"type": "string"},
-                "after_seconds": {"type": "integer"},
-                "at": {"type": "string"},
-                "every_seconds": {"type": "integer"},
-            },
-            ["prompt"],
-        ),
-        _fn(
-            "schedule_list",
-            "List all active and overdue scheduled reminders.",
-            {},
-            [],
-        ),
-        _fn(
-            "schedule_delete",
-            "Delete a scheduled reminder by schedule_id.",
-            {"schedule_id": {"type": "string"}},
-            ["schedule_id"],
-        ),
-        _fn(
-            "workflow",
-            "Execute an orchestration script that fans out subagents with pipeline, parallel, and schema validation primitives.",
-            {
-                "script": {"type": "string"},
-                "meta": {
-                    "type": "object",
-                    "properties": {
-                        "name": {"type": "string"},
-                        "description": {"type": "string"},
-                        "phases": {"type": "array", "items": {"type": "string"}},
-                    },
-                },
-                "args": {"type": "object"},
-            },
-            ["script"],
-        ),
-        _fn(
-            "ralph",
-            "Execute multi-round adversarial verification on an immutable objective with fresh child agents.",
-            {
-                "objective": {"type": "string"},
-                "max_rounds": {"type": "integer"},
-                "context": {"type": "string"},
-                "mode": {"type": "string", "enum": ["general", "read_only"]},
-                "timeout_per_round": {"type": "number"},
-            },
-            ["objective"],
-        ),
-        _fn(
-            "spawn_teammate",
-            "Spawn a dedicated role-based teammate in the multi-agent swarm.",
-            {
-                "name": {"type": "string"},
-                "role": {"type": "string"},
-                "system_prompt": {"type": "string"},
-                "mode": {"type": "string", "enum": ["general", "read_only"]},
-                "allowed_tools": {"type": "array", "items": {"type": "string"}},
-            },
-            ["name", "role"],
-        ),
-        _fn(
-            "team_task_create",
-            "Create a task on the shared team task board.",
-            {
-                "title": {"type": "string"},
-                "description": {"type": "string"},
-                "assigned_to": {"type": "string"},
-                "priority": {"type": "string", "enum": ["low", "medium", "high", "critical"]},
-                "dependencies": {"type": "array", "items": {"type": "string"}},
-            },
-            ["title"],
-        ),
-        _fn(
-            "team_task_get",
-            "Retrieve details of a task from the shared team task board.",
-            {"task_id": {"type": "string"}},
-            ["task_id"],
-        ),
-        _fn(
-            "team_task_list",
-            "List tasks on the shared team task board with optional filters.",
-            {
-                "status": {
-                    "type": "string",
-                    "enum": ["pending", "in_progress", "completed", "blocked", "failed"],
-                },
-                "assigned_to": {"type": "string"},
-            },
-            [],
-        ),
-        _fn(
-            "team_task_update",
-            "Update status, assignee, result, or notes for a task on the shared task board.",
-            {
-                "task_id": {"type": "string"},
-                "status": {
-                    "type": "string",
-                    "enum": ["pending", "in_progress", "completed", "blocked", "failed"],
-                },
-                "assigned_to": {"type": "string"},
-                "result": {"type": "string"},
-                "notes": {"type": "string"},
-            },
-            ["task_id"],
-        ),
-        _fn(
-            "wait_agent",
-            "Wait for completion or message settlement from spawned teammates or subagents.",
-            {
-                "agent_id": {"type": "string"},
-                "agent_ids": {"type": "array", "items": {"type": "string"}},
-                "timeout_seconds": {"type": "number"},
-                "wait_for": {"type": "string", "enum": ["completion", "message", "any_settlement"]},
-            },
-            [],
-        ),
-        _fn(
-            "code_mode",
-            "Execute Python code in a stateful sandbox with workspace tool helpers (read_file, write_file, edit_file, glob_search, grep_search, run_command).",
-            {
-                "code": {"type": "string"},
-                "reset_state": {"type": "boolean"},
-                "timeout_seconds": {"type": "number"},
-            },
-            ["code"],
-        ),
-        _fn(
-            "session_query",
-            "Search historical conversation turns, compacted history, and tool outputs using full-text search.",
-            {
-                "query": {"type": "string"},
-                "session_id": {"type": "string"},
-                "role": {"type": "string", "enum": ["user", "assistant", "tool", "system"]},
-                "limit": {"type": "integer"},
-            },
-            ["query"],
-        ),
-        _fn(
-            "pwsh",
-            "Execute commands in a PowerShell session with background job and timeout support.",
-            {
-                "command": {"type": "string"},
-                "description": {"type": "string"},
-                "sideEffects": {
-                    "type": "array",
-                    "items": {"type": "string", "enum": sorted(BASH_SCOPE_ENUM)},
-                },
-                "run_in_background": {"type": "boolean"},
-            },
-            ["command", "sideEffects"],
-        ),
-    ]
-    if options.get("childAgent") is True:
-        extra.append(
-            _fn(
-                "report",
-                "Child-only: submit the final report for the parent agent and finish this sub-agent.",
-                {"summary": {"type": "string"}},
-                ["summary"],
-            )
-        )
-    else:
-        extra = [t for t in extra if t["function"]["name"] != "report"]
-
-    tools.extend(extra)
-    return order_tools(tools)
-
-
-BASH_SCOPE_ENUM = {
-    "read-in-cwd",
-    "read-out-cwd",
-    "write-in-cwd",
-    "write-out-cwd",
-    "delete-in-cwd",
-    "delete-out-cwd",
-    "query-git-log",
-    "mutate-git-log",
-    "network",
-    "unknown",
-}
-
-
-def _fn(
-    name: str, description: str, properties: dict[str, Any], required: list[str]
-) -> dict[str, Any]:
-    return {
-        "type": "function",
-        "function": {
-            "name": name,
-            "description": description,
-            "parameters": {
-                "type": "object",
-                "properties": properties,
-                "required": required,
-                "additionalProperties": False,
-            },
-        },
-    }
 
 
 def format_tool_definitions(
@@ -835,20 +294,11 @@ def format_tool_definitions(
     strict: bool = False,
 ) -> list[dict[str, Any]]:
     """Format tool definitions for specific model families (e.g. strict schemas vs standard function calling)."""
+    from coderai.core.prompt_sections import order_tools
+    from coderai.core.tools.types import canonicalize_tool_schema
+
     formatted: list[dict[str, Any]] = []
-    is_strict_model = strict or any(
-        k in model.lower()
-        for k in (
-            "gpt-5",
-            "gpt-4.5",
-            "gpt-4o",
-            "o1",
-            "o3",
-            "deepseek-v4",
-            "deepseek-r1",
-            "deepseek-v3",
-        )
-    )
+    is_strict_model = bool(strict)
 
     for tool in tools:
         if not isinstance(tool, dict):
@@ -859,99 +309,245 @@ def format_tool_definitions(
             if is_strict_model:
                 func["strict"] = True
                 params["additionalProperties"] = False
-            func["parameters"] = params
+            func["parameters"] = canonicalize_tool_schema(params)
             formatted.append(
-                {
-                    "type": "function",
-                    "function": func,
-                }
+                canonicalize_tool_schema(
+                    {
+                        "type": "function",
+                        "function": func,
+                    }
+                )
             )
         else:
-            formatted.append(tool)
-    return formatted
+            formatted.append(canonicalize_tool_schema(tool))
+    return order_tools(formatted)
 
 
-TOOL_DOCS = """# Available Tools
+PRESET_TOOLS: dict[str, set[str]] = {
+    "benchmark": {"bash", "str_replace_editor", "edit", "read", "write", "glob", "grep"},
+    "coding": {"bash", "str_replace_editor", "edit", "read", "write", "glob", "grep"},
+    "minimal": {"bash", "str_replace_editor", "edit", "read", "write", "glob", "grep"},
+    "dsh_minimal": {"bash", "str_replace_editor"},
+}
 
-## bash
-Execute shell commands in a persistent bash session. Provide `command`, a clear `description`, and the permission `sideEffects` array (or `["unknown"]` when effects cannot be classified). Use `run_in_background` for long jobs and track them with job_list / job_output / job_kill.
+TOOL_GUIDANCE_MAP: dict[str, tuple[str, int, str]] = {
+    "bash": (
+        "tool:bash",
+        TOOL_BASH_ORDER,
+        "## bash\nExecute shell commands in a persistent bash session. Provide `command`, a clear `description`, and the permission `sideEffects` array (or `[\"unknown\"]` when effects cannot be classified). Use `run_in_background` for long jobs and track them with job_list / job_output / job_kill. Use standard POSIX shell commands (e.g. `sed -n 10,25p file.py` or `python3` instead of non-portable GNU flags like `cat -A`).",
+    ),
+    "pwsh": (
+        "tool:pwsh",
+        TOOL_PWSH_ORDER,
+        "## pwsh\nExecute PowerShell commands with background job and timeout support.",
+    ),
+    "job_list": (
+        "tool:job_list",
+        TOOL_JOBS_ORDER,
+        "## job_list\nList background jobs (running and finished) with ids, kinds, and statuses.",
+    ),
+    "job_output": (
+        "tool:job_output",
+        TOOL_JOBS_ORDER,
+        "## job_output\nRead a background job's output since the previous read. Set `wait: true` only when you are blocked on that job. Every response ends with `[status: ...]`.",
+    ),
+    "job_kill": (
+        "tool:job_kill",
+        TOOL_JOBS_ORDER,
+        "## job_kill\nCancel a running background job by `job_id`.",
+    ),
+    "glob": (
+        "tool:glob",
+        TOOL_READ_ORDER,
+        "## glob\nUse the glob tool — not shell find — to discover files by path pattern. A pattern with no \"/\" matches basenames at any depth, so \"*\" matches every file in the tree rather than its top level. Results are files only, never directories, and include hidden and ignored files: a result that fits comes back in modification-time order, while a larger one is sampled across top-level entries, so it spans the tree instead of one subtree.",
+    ),
+    "grep": (
+        "tool:grep",
+        TOOL_GREP_ORDER,
+        "## grep\nUse the grep tool — not shell grep or rg — to search file contents. Use read on a matched file when you need surrounding context.",
+    ),
+    "read": (
+        "tool:read",
+        TOOL_READ_ORDER,
+        "## read\nRead a file. Returns a numbered preview plus a `snippet_id` or line numbers for edits. Use `offset`/`limit` to read a range.",
+    ),
+    "edit": (
+        "tool:edit",
+        TOOL_EDIT_ORDER,
+        "## edit\nUse the edit tool for targeted changes to existing UTF-8 text files. It replaces literal `old_string` with `new_string`; by default `old_string` must appear exactly once. If `old_string` appears multiple times, provide a more specific `old_string` or set `replace_all` to true. Always read the target file first to obtain the exact text.",
+    ),
+    "write": (
+        "tool:write",
+        TOOL_WRITE_ORDER,
+        "## write\nCreate or overwrite a file with a complete string payload. Must read the full file first when overwriting. Prefer `edit` for existing files.",
+    ),
+    "str_replace_editor": (
+        "tool:str_replace_editor",
+        TOOL_EDIT_ORDER,
+        "## str_replace_editor\nAnthropic-style file editor supporting view, create, str_replace, insert, and undo_edit operations.",
+    ),
+    "Task": (
+        "tool:Task",
+        SUBAGENT_DELEGATION_ORDER,
+        "## Task\nSpawn a one-shot sub-agent for focused exploration and wait for aggregated findings. Prefer `subagent` when the child should continue across follow-up messages.",
+    ),
+    "subagent": (
+        "tool:subagent",
+        SUBAGENT_DELEGATION_ORDER,
+        "## subagent\nStart a continuable background sub-agent and get an agent id. Steer it with `send_message`, inspect with `list_agents`, cancel with `interrupt_agent`. One-shot work uses `Task` / `subagent_fork`.",
+    ),
+    "todo_write": (
+        "tool:todo_write",
+        TOOL_GOAL_ORDER,
+        "## todo_write\nReplace the structured todo list (wraps UpdatePlan). Each item has content and status.",
+    ),
+    "exit_plan_mode": (
+        "tool:exit_plan_mode",
+        PERSONA_ORDER + 1,
+        "## exit_plan_mode\nLeave Plan Mode after the plan is approved. Mutation tools stay in the schema for KV-cache stability.",
+    ),
+    "goal": (
+        "tool:goal",
+        TOOL_GOAL_ORDER,
+        "## goal\nTrack session goals (`list` / `add` / `update` / `done`).",
+    ),
+    "AskUserQuestion": (
+        "tool:AskUserQuestion",
+        108,
+        "## AskUserQuestion\nPause to ask the user a clarifying question when the task is ambiguous.",
+    ),
+    "UpdatePlan": (
+        "tool:UpdatePlan",
+        TOOL_GOAL_ORDER,
+        "## UpdatePlan\nUpdate the current markdown task plan.",
+    ),
+    "skill": (
+        "tool:skill",
+        SKILLS_CATALOG_ORDER,
+        "## skill\nLoad the full SKILL.md instructions for a named skill from the session catalog before acting on a matching task.",
+    ),
+    "WebSearch": (
+        "tool:WebSearch",
+        TOOL_WEB_FETCH_ORDER,
+        "## WebSearch\nSearch the web with a natural-language query.",
+    ),
+    "WebFetch": (
+        "tool:WebFetch",
+        TOOL_WEB_FETCH_ORDER,
+        "## WebFetch\nFetch a URL and return sanitized Markdown (or raw text). Use after WebSearch when you need the page contents.",
+    ),
+    "UnderstandImage": (
+        "tool:UnderstandImage",
+        112,
+        "## UnderstandImage\nAnalyze a local image (JPEG/PNG/WebP).",
+    ),
+}
 
-## job_list
-List background jobs (running and finished) with ids, kinds, and statuses.
 
-## job_output
-Read a background job's output since the previous read. Set `wait: true` only when you are blocked on that job. Every response ends with `[status: ...]`.
+def render_tool_docs(preset: str | None = None, non_interactive: bool = False) -> str:
+    """Render tool documentation sections scoped to the active preset."""
+    if preset in PRESET_TOOLS:
+        active_tools = PRESET_TOOLS[preset]
+    else:
+        active_tools = set(TOOL_GUIDANCE_MAP.keys())
 
-## job_kill
-Cancel a running background job by `job_id`.
+    sections = []
+    for tool_name, (_sec_name, sec_order, doc_text) in TOOL_GUIDANCE_MAP.items():
+        if tool_name not in active_tools:
+            continue
+        if non_interactive and tool_name == "AskUserQuestion":
+            continue
+        sections.append((sec_order, doc_text))
 
-## glob
-Use the glob tool — not shell find — to discover files by path pattern. A pattern with no "/" matches basenames at any depth, so "*" matches every file in the tree rather than its top level. Results are files only, never directories, and include hidden and ignored files: a result that fits comes back in modification-time order, while a larger one is sampled across top-level entries, so it spans the tree instead of one subtree.
+    sections.sort(key=lambda s: s[0])
+    docs_body = "\n\n".join(s[1] for s in sections)
+    return f"# Available Tools\n\n{docs_body}" if docs_body else ""
 
-## grep
-Use the grep tool — not shell grep or rg — to search file contents. Use read on a matched file when you need surrounding context.
 
-## read
-Read a file. Returns a numbered preview plus a `snippet_id` you must keep for later edits. Use `offset`/`limit` to read a range.
+TOOL_DOCS = render_tool_docs()
 
-## edit
-Perform a scoped string replacement. Requires the `snippet_id` from a prior `read`. `old_string` must match exactly within the snippet's line range; set `replace_all` to replace every occurrence and `expected_occurrences` to assert a count.
 
-## write
-Create or overwrite a file with a complete string payload. Must read the full file first when overwriting. Prefer `edit` for existing files.
+def render_skill_catalog(
+    project_root: str | None = None,
+    enabled_skills: dict[str, bool] | None = None,
+    custom_scan_paths: list[str] | None = None,
+) -> str | None:
+    """Render a compact catalog of available skills for the system prompt.
 
-## Task
-Spawn a one-shot sub-agent for focused exploration and wait for aggregated findings. Prefer `subagent` when the child should continue across follow-up messages.
+    Port of DeepSeek Harness skill catalog projection:
+    Instead of inlining entire SKILL.md documents into the context window,
+    this lists each skill by name and brief description, instructing the model
+    to load the full skill instructions on-demand via the `skill` tool.
+    """
+    skills = list_skills(
+        project_root=project_root,
+        enabled_skills=enabled_skills,
+        custom_scan_paths=custom_scan_paths,
+    )
+    if not skills:
+        return None
 
-## subagent
-Start a continuable background sub-agent and get an agent id. Steer it with `send_message`, inspect with `list_agents`, cancel with `interrupt_agent`. One-shot work uses `Task` / `subagent_fork`.
+    entries = []
+    for s in skills:
+        name = s.get("name", "")
+        desc = (s.get("description") or "").replace("\n", " ").strip()
+        if name and desc:
+            entries.append(f"- `{name}`: {desc}")
+        elif name:
+            entries.append(f"- `{name}`")
 
-## todo_write
-Replace the structured todo list (wraps UpdatePlan). Each item has content and status.
+    if not entries:
+        return None
 
-## exit_plan_mode
-Leave Plan Mode after the plan is approved. Mutation tools stay in the schema for KV-cache stability.
-
-## goal
-Track session goals (`list` / `add` / `update` / `done`).
-
-## AskUserQuestion
-Pause to ask the user a clarifying question when the task is ambiguous.
-
-## UpdatePlan
-Update the current markdown task plan.
-
-## skill
-Load the full SKILL.md instructions for a named skill from the session catalog before acting on a matching task.
-
-## WebSearch
-Search the web with a natural-language query.
-
-## WebFetch
-Fetch a URL and return sanitized Markdown (or raw text). Use after WebSearch when you need the page contents.
-
-## UnderstandImage
-Analyze a local image (JPEG/PNG/WebP)."""
+    catalog_text = "\n".join(entries)
+    return (
+        "# Available Skills\n\n"
+        "The following specialized skills are available in this environment. "
+        "To load full instructions for any skill, call the `skill` tool with the exact name before proceeding with matching tasks:\n\n"
+        f"{catalog_text}"
+    )
 
 
 def get_system_prompt(options: dict[str, Any] | None = None) -> str:
     options = options or {}
-    docs = TOOL_DOCS
-    if options.get("nonInteractive") is True:
-        docs = re.sub(r"\n## AskUserQuestion\n.*?(?=\n## |\Z)", "", docs, flags=re.S)
+    preset = options.get("preset") or options.get("toolsPreset")
+    non_interactive = bool(options.get("nonInteractive", False))
+    docs = render_tool_docs(preset=preset, non_interactive=non_interactive)
+
+    persona_text = str(options.get("persona") or SYSTEM_PROMPT_BASE)
+    complete = bool(options.get("complete", False))
+
     sections = [
-        PromptSection("base", 10, SYSTEM_PROMPT_BASE),
-        PromptSection("tools", 100, docs),
+        PromptSection("deployment:persona", PERSONA_ORDER, persona_text, complete=complete),
     ]
+    if docs:
+        sections.append(PromptSection("tools", TOOL_READ_ORDER, docs))
+
     sandbox_mode = options.get("sandboxMode")
     if sandbox_mode:
         sections.append(
             PromptSection(
                 "sandbox:policy",
-                90,
+                SANDBOX_POLICY_ORDER,
                 sandbox_policy_prompt(str(sandbox_mode), str(options.get("workspaceRoot") or "")),
             )
         )
+
+    # Only include skill catalog if not in restricted benchmark/minimal preset or explicitly requested
+    workspace_root = str(options.get("workspaceRoot") or "")
+    allow_skills = options.get("enabledSkills") is not False and preset not in (
+        "minimal",
+        "benchmark",
+        "dsh_minimal",
+    )
+    if workspace_root and allow_skills:
+        skill_catalog = render_skill_catalog(
+            project_root=workspace_root,
+            enabled_skills=options.get("enabledSkills"),
+            custom_scan_paths=options.get("skillScanPaths"),
+        )
+        if skill_catalog:
+            sections.append(PromptSection("skills:catalog", SKILLS_CATALOG_ORDER, skill_catalog))
     return assemble_sections(sections)
 
 
@@ -976,12 +572,19 @@ def json_dumps(obj: Any) -> str:
     return json.dumps(obj, ensure_ascii=False)
 
 
-def get_runtime_context(project_root: str, model: str | None = None) -> str:
+def get_runtime_context(
+    project_root: str,
+    model: str | None = None,
+    suppress_dynamic_time: bool = False,
+) -> str:
     """Stable workspace env prefix (no git status / project docs — those are volatile)."""
-    today = datetime.date.today().isoformat()
-    header = f"Today is {today}."
+    header_parts: list[str] = []
     if model:
-        header = f"Current LLM model: {model}. {header}"
+        header_parts.append(f"Current LLM model: {model}.")
+    if not suppress_dynamic_time:
+        today = datetime.date.today().isoformat()
+        header_parts.append(f"Today is {today}.")
+    header = " ".join(header_parts) if header_parts else ""
     env: dict[str, Any] = {
         "homedir": str(pathlib.Path.home()),
         "pwd": project_root,
@@ -992,7 +595,8 @@ def get_runtime_context(project_root: str, model: str | None = None) -> str:
     py = _version("python3", ["--version"])
     if py:
         env["python3 version"] = py
-    return f"{header}\n\n# Local Workspace Environment\n\n```json\n{json.dumps(env, indent=2, sort_keys=True)}\n```"
+    header_str = f"{header}\n\n" if header else ""
+    return f"{header_str}# Local Workspace Environment\n\n```json\n{json.dumps(env, indent=2, sort_keys=True)}\n```"
 
 
 def load_agent_instructions(project_root: str) -> str | None:
@@ -1116,24 +720,37 @@ def _version(command: str, args: list[str]) -> str | None:
     return None
 
 
-# --- skills (lazily-loaded context — delegated to coderai.core.skill) ---
-
-from coderai.core.skill import (
-    DEFAULT_SKILL_RESOURCE_FILE_LIMIT,
-    SKILL_RESOURCE_EXCLUDED_DIRS,
-    SkillRegistry,
-    _implicit_invocation_allowed,
-    build_skill_documents_prompt,
-    extract_skill_frontmatter,
-    get_bundled_skills_root,
-    get_skill_read_exempt_paths,
-    get_skill_scan_roots,
-    list_skill_resource_files,
-    list_skills,
-    load_skill,
-    match_skills_for_prompt,
-    parse_skill_match_response,
-    render_skill_document_block,
-    render_skill_resources,
-    strip_skill_prompt_metadata,
-)
+__all__ = [
+    "DEFAULT_SKILL_RESOURCE_FILE_LIMIT",
+    "SKILL_RESOURCE_EXCLUDED_DIRS",
+    "SkillRegistry",
+    "_implicit_invocation_allowed",
+    "build_skill_documents_prompt",
+    "extract_skill_frontmatter",
+    "get_bundled_skills_root",
+    "get_skill_read_exempt_paths",
+    "get_skill_scan_roots",
+    "list_skill_resource_files",
+    "list_skills",
+    "load_skill",
+    "match_skills_for_prompt",
+    "parse_skill_match_response",
+    "render_skill_document_block",
+    "render_skill_resources",
+    "strip_skill_prompt_metadata",
+    "render_skill_catalog",
+    "get_tools",
+    "format_tool_definitions",
+    "get_system_prompt",
+    "get_compact_prompt",
+    "get_runtime_context",
+    "load_agent_instructions",
+    "get_init_command_prompt",
+    "get_effective_project_agents_md_file",
+    "calculate_context_budget",
+    "get_compact_prompt_token_threshold",
+    "get_subagent_system_prompt",
+    "get_plan_mode_prompt",
+    "get_model_context_limit",
+    "TOOL_DOCS",
+]

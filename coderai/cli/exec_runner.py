@@ -49,6 +49,7 @@ async def run_exec_session(
     plan_mode: bool = False,
     auto_approve: bool = False,
     verbose: bool = False,
+    preset: str = "benchmark",
 ) -> int:
     """Execute a prompt headless in `--exec` mode.
 
@@ -60,6 +61,7 @@ async def run_exec_session(
         plan_mode: Start in Plan Mode.
         auto_approve: Auto-approve all permission prompts.
         verbose: Verbose output.
+        preset: Tool preset to use (default: benchmark).
 
     Returns:
         0 on success, non-zero exit code on failure.
@@ -88,7 +90,11 @@ async def run_exec_session(
     manager = SessionManager(
         project_root=project_root,
         create_openai_client=_core_client,
-        get_resolved_settings=lambda: {},
+        get_resolved_settings=lambda: {
+            "preset": preset,
+            "toolsPreset": preset,
+            "autoApprove": auto_approve,
+        },
         render_markdown=lambda t: t,
         on_assistant_message=on_assistant_message,
         on_stream_chunk=on_stream_chunk if not _RICH else None,

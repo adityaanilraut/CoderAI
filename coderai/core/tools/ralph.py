@@ -233,16 +233,17 @@ def _parse_handoff(raw_text: str) -> RalphHandoff:
 
 async def handle_ralph_tool(args: dict[str, Any], context: ToolExecutionContext) -> ToolResult:
     """Execute multi-round adversarial verification on an immutable objective."""
-    objective = as_str(args.get("objective", "")).strip()
+    objective = as_str(args.get("objective") or args.get("prompt", "")).strip()
     if not objective:
         return ToolResult(
             ok=False,
             name="ralph",
-            error="Missing required argument 'objective'.",
+            error="Missing required argument 'objective' (or 'prompt').",
         )
 
     try:
-        max_rounds = int(args.get("max_rounds", DEFAULT_MAX_ROUNDS))
+        raw_rounds = args.get("max_rounds") or args.get("max_iterations")
+        max_rounds = int(raw_rounds) if raw_rounds is not None else DEFAULT_MAX_ROUNDS
         if max_rounds <= 0:
             max_rounds = DEFAULT_MAX_ROUNDS
     except (ValueError, TypeError):
@@ -402,11 +403,19 @@ async def handle_ralph_tool(args: dict[str, Any], context: ToolExecutionContext)
         final_verdict=final_verdict,
     )
 
+    run_id = f"ralph_{uuid.uuid4().hex[:8]}"
+    meta_dict = {
+        "runId": run_id,
+        "agentsStarted": len(rounds),
+        "result": ralph_res.to_dict(),
+        **ralph_res.to_dict(),
+    }
+
     is_ok = final_status == "complete"
     return ToolResult(
         ok=is_ok,
         name="ralph",
         output=ralph_res.format_markdown(),
-        metadata=ralph_res.to_dict(),
+        metadata=meta_dict,
         error=None if is_ok else f"Ralph verification status: {final_status}",
     )

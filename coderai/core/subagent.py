@@ -37,12 +37,20 @@ class SubAgentSpec:
     prompt: str
     task_id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
     mode: str = "read_only"  # "read_only" | "general"
+    provider: str = "in_process"  # "in_process" | "acp" | "claude_code" | "codex"
     timeout_seconds: float = DEFAULT_SUBAGENT_TIMEOUT
     max_iterations: int = MAX_SUBAGENT_ITERATIONS
     depth: int = 0
     parent_session_id: str | None = None
     allowed_tools: list[str] | None = None
     extra_context: str | None = None
+    agent_id: str | None = None
+    parent_agent_id: str | None = None
+    root_agent_id: str | None = None
+    children_ids: list[str] = field(default_factory=list)
+    handle: Any | None = None
+    seed_messages: list[dict[str, Any]] | None = None
+    seed_events: list[Any] | None = None
 
 
 @dataclass
@@ -58,8 +66,14 @@ class SubAgentResult:
     cached_tokens: int = 0
     iterations: int = 0
     tool_calls_count: int = 0
+    duration_seconds: float = 0.0
     error: str | None = None
     artifacts: list[str] = field(default_factory=list)
+    parent_agent_id: str | None = None
+    root_agent_id: str | None = None
+    depth: int = 0
+    children_ids: list[str] = field(default_factory=list)
+    lifecycle_events: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -72,8 +86,14 @@ class SubAgentResult:
             "cached_tokens": self.cached_tokens,
             "iterations": self.iterations,
             "tool_calls_count": self.tool_calls_count,
+            "duration_seconds": self.duration_seconds,
             "error": self.error,
             "artifacts": self.artifacts,
+            "parent_agent_id": self.parent_agent_id,
+            "root_agent_id": self.root_agent_id,
+            "depth": self.depth,
+            "children_ids": self.children_ids,
+            "lifecycle_events": self.lifecycle_events,
         }
 
     def format_markdown(self) -> str:
@@ -108,6 +128,30 @@ class SubAgentManager:
         self.message_converter = OpenAIMessageConverter()
         self._active_controllers: dict[str, asyncio.Event] = {}
 
+    def _emit_lifecycle_event(
+        self,
+        events: list[dict[str, Any]],
+        event_type: str,
+        spec: SubAgentSpec,
+        data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        evt: dict[str, Any] = {
+            "type": event_type,
+            "agent_id": spec.agent_id or spec.task_id,
+            "task_id": spec.task_id,
+            "depth": spec.depth,
+            "parent_agent_id": spec.parent_agent_id,
+            "root_agent_id": spec.root_agent_id,
+            "timestamp": asyncio.get_event_loop().time()
+            if asyncio.get_event_loop().is_running()
+            else 0.0,
+            "data": data or {},
+        }
+        events.append(evt)
+        if spec.handle and hasattr(spec.handle, "lifecycle_history"):
+            spec.handle.lifecycle_history.append(evt)
+        return evt
+
     def cancel_subagent(self, session_id: str) -> None:
         """Cancel a running sub-agent session."""
         event = self._active_controllers.get(session_id)
@@ -124,47 +168,167 @@ class SubAgentManager:
         session_id = (
             f"sub_{spec.parent_session_id[:8] if spec.parent_session_id else 'root'}_{spec.task_id}"
         )
+        lifecycle_events: list[dict[str, Any]] = []
+        self._emit_lifecycle_event(
+            lifecycle_events,
+            "subagent/spawn",
+            spec,
+            {"description": spec.description, "mode": spec.mode, "depth": spec.depth},
+        )
+
         if spec.depth > MAX_SUBAGENT_DEPTH:
+            self._emit_lifecycle_event(
+                lifecycle_events,
+                "subagent/error",
+                spec,
+                {"error": "RecursionLimitError: Maximum sub-agent nesting depth exceeded."},
+            )
             return SubAgentResult(
                 task_id=spec.task_id,
                 session_id=session_id,
                 status="failed",
                 summary="Maximum sub-agent nesting depth exceeded.",
                 error="RecursionLimitError: Sub-agents cannot spawn additional sub-agents.",
+                parent_agent_id=spec.parent_agent_id,
+                root_agent_id=spec.root_agent_id,
+                depth=spec.depth,
+                children_ids=list(spec.children_ids),
+                lifecycle_events=lifecycle_events,
             )
 
         abort_event = asyncio.Event()
         self._active_controllers[session_id] = abort_event
 
+        self._emit_lifecycle_event(
+            lifecycle_events,
+            "subagent/start",
+            spec,
+            {"timeout_seconds": spec.timeout_seconds, "max_iterations": spec.max_iterations},
+        )
+
         try:
-            return await asyncio.wait_for(
-                self._run_subagent_loop(spec, session_id, abort_event),
-                timeout=spec.timeout_seconds,
-            )
+            if spec.provider == "claude_code":
+                from coderai.core.subagent_backends.claude_code import ClaudeCodeDriver, ClaudeCodeConfig
+                driver = ClaudeCodeDriver(ClaudeCodeConfig(timeout_seconds=spec.timeout_seconds, cwd=self.project_root))
+                raw_res = await driver.execute(spec.prompt, project_root=self.project_root)
+                result = SubAgentResult(
+                    task_id=spec.task_id,
+                    session_id=session_id,
+                    status=raw_res.get("status", "completed" if raw_res.get("ok") else "failed"),
+                    summary=raw_res.get("summary", ""),
+                    error=raw_res.get("error"),
+                    duration_seconds=raw_res.get("duration_seconds", 0.0),
+                )
+            elif spec.provider == "codex":
+                from coderai.core.subagent_backends.codex import CodexDriver, CodexConfig
+                driver = CodexDriver(CodexConfig(timeout_seconds=spec.timeout_seconds, cwd=self.project_root))
+                raw_res = await driver.execute(spec.prompt, project_root=self.project_root)
+                result = SubAgentResult(
+                    task_id=spec.task_id,
+                    session_id=session_id,
+                    status=raw_res.get("status", "completed" if raw_res.get("ok") else "failed"),
+                    summary=raw_res.get("summary", ""),
+                    error=raw_res.get("error"),
+                    duration_seconds=raw_res.get("duration_seconds", 0.0),
+                )
+            elif spec.provider == "acp":
+                from coderai.core.acp.runner import AcpSubagentRunner, AcpRunConfig
+                runner = AcpSubagentRunner(
+                    AcpRunConfig(command="acp-agent", cwd=self.project_root, timeout_seconds=spec.timeout_seconds)
+                )
+                raw_res = await runner.execute(spec.prompt)
+                result = SubAgentResult(
+                    task_id=spec.task_id,
+                    session_id=session_id,
+                    status=raw_res.get("status", "completed" if raw_res.get("ok") else "failed"),
+                    summary=raw_res.get("summary", ""),
+                    error=raw_res.get("error"),
+                    duration_seconds=raw_res.get("duration_seconds", 0.0),
+                )
+            else:
+                result = await asyncio.wait_for(
+                    self._run_subagent_loop(spec, session_id, abort_event, lifecycle_events),
+                    timeout=spec.timeout_seconds,
+                )
+            result.parent_agent_id = spec.parent_agent_id
+            result.root_agent_id = spec.root_agent_id
+            result.depth = spec.depth
+            result.children_ids = list(spec.children_ids)
+            result.lifecycle_events = lifecycle_events
+            if result.status == "completed":
+                self._emit_lifecycle_event(
+                    lifecycle_events,
+                    "subagent/complete",
+                    spec,
+                    {"iterations": result.iterations, "tokens": result.total_tokens},
+                )
+            else:
+                self._emit_lifecycle_event(
+                    lifecycle_events,
+                    "subagent/error",
+                    spec,
+                    {"status": result.status, "error": result.error},
+                )
+            return result
         except asyncio.TimeoutError:
+            self._emit_lifecycle_event(
+                lifecycle_events,
+                "subagent/error",
+                spec,
+                {
+                    "error": f"TimeoutError: Sub-agent execution exceeded {spec.timeout_seconds}s limit."
+                },
+            )
             return SubAgentResult(
                 task_id=spec.task_id,
                 session_id=session_id,
                 status="timeout",
                 summary=f"Sub-agent timed out after {spec.timeout_seconds:.1f} seconds.",
                 error=f"TimeoutError: Sub-agent execution exceeded {spec.timeout_seconds}s limit.",
+                parent_agent_id=spec.parent_agent_id,
+                root_agent_id=spec.root_agent_id,
+                depth=spec.depth,
+                children_ids=list(spec.children_ids),
+                lifecycle_events=lifecycle_events,
             )
         except asyncio.CancelledError:
+            self._emit_lifecycle_event(
+                lifecycle_events,
+                "subagent/error",
+                spec,
+                {"error": "CancelledError: Parent or runner cancelled sub-agent."},
+            )
             return SubAgentResult(
                 task_id=spec.task_id,
                 session_id=session_id,
                 status="interrupted",
                 summary="Sub-agent was cancelled.",
                 error="CancelledError: Parent or runner cancelled sub-agent.",
+                parent_agent_id=spec.parent_agent_id,
+                root_agent_id=spec.root_agent_id,
+                depth=spec.depth,
+                children_ids=list(spec.children_ids),
+                lifecycle_events=lifecycle_events,
             )
         except Exception as e:
             logger.exception("Sub-agent execution error")
+            self._emit_lifecycle_event(
+                lifecycle_events,
+                "subagent/error",
+                spec,
+                {"error": str(e)},
+            )
             return SubAgentResult(
                 task_id=spec.task_id,
                 session_id=session_id,
                 status="failed",
                 summary=f"Sub-agent encountered an error: {e}",
                 error=str(e),
+                parent_agent_id=spec.parent_agent_id,
+                root_agent_id=spec.root_agent_id,
+                depth=spec.depth,
+                children_ids=list(spec.children_ids),
+                lifecycle_events=lifecycle_events,
             )
         finally:
             self._active_controllers.pop(session_id, None)
@@ -210,8 +374,10 @@ class SubAgentManager:
         spec: SubAgentSpec,
         session_id: str,
         abort_event: asyncio.Event,
+        lifecycle_events: list[dict[str, Any]] | None = None,
     ) -> SubAgentResult:
         """Run the isolated agentic loop for the sub-agent."""
+        events = lifecycle_events if lifecycle_events is not None else []
         client_info = self.create_openai_client()
         client = client_info.get("client")
         model = str(client_info.get("model") or "gpt-5.6-luna")
@@ -227,6 +393,11 @@ class SubAgentManager:
                 status="failed",
                 summary="API key not found for sub-agent execution.",
                 error="AuthenticationError: Missing API client.",
+                parent_agent_id=spec.parent_agent_id,
+                root_agent_id=spec.root_agent_id,
+                depth=spec.depth,
+                children_ids=list(spec.children_ids),
+                lifecycle_events=events,
             )
 
         # Setup sandboxed tools
@@ -235,7 +406,7 @@ class SubAgentManager:
         tool_executor = ToolExecutor(self.project_root, self.create_openai_client)
         available_tools = self._get_sandboxed_tools(spec, model)
 
-        # Build isolated initial message history
+        # Build isolated initial message history with static system prompt
         system_prompt = get_subagent_system_prompt(spec.mode)
         runtime_context = get_runtime_context(self.project_root, model)
 
@@ -244,12 +415,19 @@ class SubAgentManager:
             initial_user_prompt = f"Goal: {spec.description}\n\n{initial_user_prompt}"
         if spec.extra_context:
             initial_user_prompt += f"\n\nAdditional Context:\n{spec.extra_context}"
+        if runtime_context:
+            initial_user_prompt = f"{runtime_context}\n\n---\n\n{initial_user_prompt}"
 
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": system_prompt},
-            {"role": "system", "content": runtime_context},
-            {"role": "user", "content": initial_user_prompt},
         ]
+        if spec.seed_messages:
+            for sm in spec.seed_messages:
+                role = sm.get("role")
+                if role and role != "system":
+                    messages.append(dict(sm))
+
+        messages.append({"role": "user", "content": initial_user_prompt})
 
         total_prompt_tokens = 0
         total_completion_tokens = 0
@@ -272,7 +450,35 @@ class SubAgentManager:
                     iterations=iteration,
                     tool_calls_count=tool_calls_count,
                     artifacts=artifacts,
+                    parent_agent_id=spec.parent_agent_id,
+                    root_agent_id=spec.root_agent_id,
+                    depth=spec.depth,
+                    children_ids=list(spec.children_ids),
+                    lifecycle_events=events,
                 )
+
+            # Check for queued steering / interactive messages from parent/user
+            inbox_messages: list[str] = []
+            if spec.handle and getattr(spec.handle, "inbox", None):
+                while spec.handle.inbox:
+                    inbox_messages.append(spec.handle.inbox.pop(0))
+            elif spec.agent_id or spec.task_id:
+                from coderai.core.agents import get_agent_registry
+
+                reg_handle = (
+                    get_agent_registry().get(spec.agent_id or "")
+                    or get_agent_registry().get(spec.task_id or "")
+                    or get_agent_registry().get(f"agent_{spec.task_id}")
+                )
+                if reg_handle and reg_handle.inbox:
+                    while reg_handle.inbox:
+                        inbox_messages.append(reg_handle.inbox.pop(0))
+
+            if inbox_messages:
+                steering_text = "\n\n".join(
+                    [f"[Steering from parent]: {msg}" for msg in inbox_messages]
+                )
+                messages.append({"role": "user", "content": steering_text})
 
             # Build request
             request: dict[str, Any] = {
@@ -311,6 +517,11 @@ class SubAgentManager:
                     tool_calls_count=tool_calls_count,
                     error=str(e),
                     artifacts=artifacts,
+                    parent_agent_id=spec.parent_agent_id,
+                    root_agent_id=spec.root_agent_id,
+                    depth=spec.depth,
+                    children_ids=list(spec.children_ids),
+                    lifecycle_events=events,
                 )
 
             usage = response.get("usage") or {}
@@ -345,6 +556,11 @@ class SubAgentManager:
                     tool_calls_count=tool_calls_count,
                     error=refusal,
                     artifacts=artifacts,
+                    parent_agent_id=spec.parent_agent_id,
+                    root_agent_id=spec.root_agent_id,
+                    depth=spec.depth,
+                    children_ids=list(spec.children_ids),
+                    lifecycle_events=events,
                 )
 
             tool_calls = _normalize_subagent_tool_calls(raw_tool_calls)
@@ -373,6 +589,11 @@ class SubAgentManager:
                     iterations=iteration,
                     tool_calls_count=tool_calls_count,
                     artifacts=artifacts,
+                    parent_agent_id=spec.parent_agent_id,
+                    root_agent_id=spec.root_agent_id,
+                    depth=spec.depth,
+                    children_ids=list(spec.children_ids),
+                    lifecycle_events=events,
                 )
 
             # Execute tools in sandbox
@@ -439,6 +660,11 @@ class SubAgentManager:
             iterations=spec.max_iterations,
             tool_calls_count=tool_calls_count,
             artifacts=artifacts,
+            parent_agent_id=spec.parent_agent_id,
+            root_agent_id=spec.root_agent_id,
+            depth=spec.depth,
+            children_ids=list(spec.children_ids),
+            lifecycle_events=events,
         )
 
     def _get_sandboxed_tools(self, spec: SubAgentSpec, model: str) -> list[dict[str, Any]]:
@@ -503,8 +729,29 @@ def _normalize_subagent_tool_calls(raw: Any) -> list[dict[str, Any]] | None:
 
 
 def _call_llm_sync(client: Any, request: dict[str, Any]) -> dict[str, Any]:
-    """Synchronous LLM call wrapper."""
+    """Synchronous LLM call wrapper supporting both OpenAI SDK objects and dict responses."""
     resp = client.chat.completions.create(**request)
+    if isinstance(resp, dict):
+        choices = resp.get("choices") or [{}]
+        choice = choices[0] if choices else {}
+        msg = choice.get("message") or {}
+        dict_res: dict[str, Any] = {
+            "choices": [
+                {
+                    "message": {
+                        "content": msg.get("content") or "",
+                        "tool_calls": msg.get("tool_calls"),
+                        "reasoning_content": msg.get("reasoning_content"),
+                        "refusal": msg.get("refusal"),
+                    }
+                }
+            ]
+        }
+        usage = resp.get("usage")
+        if usage:
+            dict_res["usage"] = extract_usage_dict(usage)
+        return dict_res
+
     choice = resp.choices[0]
     msg = choice.message
     tool_calls = None
@@ -536,7 +783,7 @@ def _call_llm_sync(client: Any, request: dict[str, Any]) -> dict[str, Any]:
             }
         ]
     }
-    usage = getattr(resp, "usage", None)
-    if usage:
-        res["usage"] = extract_usage_dict(usage)
+    usage_attr = getattr(resp, "usage", None)
+    if usage_attr:
+        res["usage"] = extract_usage_dict(usage_attr)
     return res

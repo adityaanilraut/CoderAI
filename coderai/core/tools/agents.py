@@ -6,17 +6,93 @@ from typing import Any
 
 from coderai.core.agents import get_agent_registry, spawn_background_agent
 from coderai.core.subagent import MAX_SUBAGENT_DEPTH, SubAgentManager, SubAgentSpec
-from coderai.core.tools.subagent import handle_subagent_tool
 from coderai.core.tools.types import ToolExecutionContext, ToolResult, as_str
+
+
+def _extract_seed_messages(context: ToolExecutionContext) -> list[dict[str, Any]]:
+    """Extract completed conversation history from parent session to seed a forked sub-agent."""
+    seed_messages: list[dict[str, Any]] = []
+    if context.list_session_messages and context.session_id:
+        try:
+            parent_msgs = context.list_session_messages(context.session_id)
+            for m in parent_msgs:
+                role = getattr(m, "role", "") if hasattr(m, "role") else m.get("role", "")
+                content = (
+                    getattr(m, "content", "") if hasattr(m, "content") else m.get("content", "")
+                )
+                if role and role != "system" and content:
+                    seed_messages.append({"role": str(role), "content": str(content)})
+        except Exception:
+            pass
+    return seed_messages
 
 
 async def handle_subagent_fork_tool(
     args: dict[str, Any], context: ToolExecutionContext
 ) -> ToolResult:
-    """One-shot sub-agent (legacy Task)."""
-    result = await handle_subagent_tool(args, context)
-    result.name = "subagent_fork"
-    return result
+    """Fork sub-agent seeded with parent's completed conversation context."""
+    description = as_str(args.get("description", "")).strip() or "Forked sub-agent task"
+    prompt = as_str(args.get("prompt", "")).strip()
+    if not prompt:
+        return ToolResult(
+            ok=False,
+            name="subagent_fork",
+            error="Missing required argument 'prompt'. Provide detailed instructions for the forked sub-agent.",
+        )
+    if not context.create_openai_client:
+        return ToolResult(
+            ok=False,
+            name="subagent_fork",
+            error="SubAgentExecutionError: Client factory not available in execution context.",
+        )
+
+    mode = str(args.get("mode") or "read_only").strip().lower()
+    if mode not in ("read_only", "general"):
+        mode = "read_only"
+
+    try:
+        depth = int(args.get("depth", 0))
+    except (ValueError, TypeError):
+        depth = 0
+    if depth >= MAX_SUBAGENT_DEPTH:
+        return ToolResult(
+            ok=False,
+            name="subagent_fork",
+            error=f"RecursionLimitError: sub-agent depth cannot exceed {MAX_SUBAGENT_DEPTH}.",
+        )
+
+    timeout_raw = args.get("timeout_seconds")
+    try:
+        timeout_seconds = float(timeout_raw) if timeout_raw is not None else 90.0
+    except (ValueError, TypeError):
+        timeout_seconds = 90.0
+
+    seed_messages = _extract_seed_messages(context)
+
+    manager = SubAgentManager(
+        project_root=context.project_root,
+        create_openai_client=context.create_openai_client,
+    )
+    spec = SubAgentSpec(
+        description=description,
+        prompt=prompt,
+        mode=mode,
+        depth=depth,
+        timeout_seconds=timeout_seconds,
+        parent_session_id=context.session_id,
+        extra_context=as_str(args.get("context", "")).strip() or None,
+        seed_messages=seed_messages if seed_messages else None,
+    )
+
+    result = await manager.spawn_subagent(spec)
+    is_ok = result.status == "completed"
+    return ToolResult(
+        ok=is_ok,
+        name="subagent_fork",
+        output=result.format_markdown(),
+        error=result.error if not is_ok else None,
+        metadata={**result.to_dict(), "seededMessagesCount": len(seed_messages)},
+    )
 
 
 async def handle_continuable_subagent_tool(
