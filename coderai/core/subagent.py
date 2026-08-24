@@ -208,9 +208,18 @@ class SubAgentManager:
 
         try:
             if spec.provider == "claude_code":
-                from coderai.core.subagent_backends.claude_code import ClaudeCodeDriver, ClaudeCodeConfig
-                driver = ClaudeCodeDriver(ClaudeCodeConfig(timeout_seconds=spec.timeout_seconds, cwd=self.project_root))
-                raw_res = await driver.execute(spec.prompt, project_root=self.project_root)
+                from coderai.core.subagent_backends.claude_code import (
+                    ClaudeCodeDriver,
+                    ClaudeCodeConfig,
+                )
+
+                claude_driver = ClaudeCodeDriver(
+                    ClaudeCodeConfig(
+                        timeout_seconds=spec.timeout_seconds,
+                        cwd=self.project_root,
+                    )
+                )
+                raw_res = await claude_driver.execute(spec.prompt, project_root=self.project_root)
                 result = SubAgentResult(
                     task_id=spec.task_id,
                     session_id=session_id,
@@ -221,8 +230,14 @@ class SubAgentManager:
                 )
             elif spec.provider == "codex":
                 from coderai.core.subagent_backends.codex import CodexDriver, CodexConfig
-                driver = CodexDriver(CodexConfig(timeout_seconds=spec.timeout_seconds, cwd=self.project_root))
-                raw_res = await driver.execute(spec.prompt, project_root=self.project_root)
+
+                codex_driver = CodexDriver(
+                    CodexConfig(
+                        timeout_seconds=spec.timeout_seconds,
+                        cwd=self.project_root,
+                    )
+                )
+                raw_res = await codex_driver.execute(spec.prompt, project_root=self.project_root)
                 result = SubAgentResult(
                     task_id=spec.task_id,
                     session_id=session_id,
@@ -233,8 +248,13 @@ class SubAgentManager:
                 )
             elif spec.provider == "acp":
                 from coderai.core.acp.runner import AcpSubagentRunner, AcpRunConfig
+
                 runner = AcpSubagentRunner(
-                    AcpRunConfig(command="acp-agent", cwd=self.project_root, timeout_seconds=spec.timeout_seconds)
+                    AcpRunConfig(
+                        command="acp-agent",
+                        cwd=self.project_root,
+                        timeout_seconds=spec.timeout_seconds,
+                    )
                 )
                 raw_res = await runner.execute(spec.prompt)
                 result = SubAgentResult(

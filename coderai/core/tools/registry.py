@@ -1,8 +1,7 @@
-"""Modular, type-safe Tool Registry with scoped layers, strict JSON Schema, and DeepSeek Harness parity."""
+"""Modular, type-safe tool registry with scoped layers and strict JSON Schema."""
 
 from __future__ import annotations
 
-import copy
 from typing import Any
 from collections.abc import Callable, Sequence
 
@@ -30,7 +29,7 @@ from coderai.core.tools import write as _write
 from coderai.core.goals import handle_goal_tool as _goal_handle
 from coderai.core.workflow import handle_workflow_tool as _workflow_handle
 from coderai.core.code_mode import handle_code_mode_tool as _code_mode_handle
-from coderai.core.session_query import handle_session_query_tool as _session_query_handle
+from coderai.core.tools.session_query import handle_session_query_tool as _session_query_handle
 from coderai.core.tools import pwsh as _pwsh
 from coderai.core.teams import (
     handle_spawn_teammate_tool as _spawn_teammate_handle,
@@ -42,7 +41,6 @@ from coderai.core.teams import (
 )
 from coderai.core.tools.types import (
     ToolDefinition,
-    ToolPresentationMode,
     ValidationError,
     canonicalize_tool_schema,
 )
@@ -72,7 +70,6 @@ class ToolLayer:
         self.restrictions: list[dict[str, set[str]]] = []
         self.suppressions: set[str] = set()
         self.guards: list[Callable[[ToolDefinition, dict[str, Any], Any], str | None]] = []
-        self.mode: ToolPresentationMode | None = None
 
     def insert(self, tool_def: ToolDefinition) -> None:
         self.tools[tool_def.name] = tool_def
@@ -125,7 +122,6 @@ class ToolRegistry:
         self._global_layer = ToolLayer(scope=None)
         self._scoped_layers: dict[str, ToolLayer] = {}
         self._change_listeners: list[Callable[[], None]] = []
-        self.default_mode: ToolPresentationMode = "native"
         self._register_builtins()
 
     def on_change(self, listener: Callable[[], None]) -> Callable[[], None]:
@@ -292,6 +288,11 @@ class ToolRegistry:
         """Check if a tool exists and is permitted in the given scope."""
         return self.get(name, scope=scope) is not None
 
+    def resolve_name(self, name: str) -> str | None:
+        """Return the canonical registered name for a name or alias."""
+        canonical = self._global_layer.aliases.get(name, name)
+        return canonical if canonical in self._global_layer.tools else None
+
     def list_tools(self, scope: str | None = None) -> list[ToolDefinition]:
         """Return all registered and permitted tool definitions for the given scope."""
         tools_map: dict[str, ToolDefinition] = {}
@@ -313,29 +314,6 @@ class ToolRegistry:
                 tools_map[name] = tool_def
 
         return list(tools_map.values())
-
-    def get_openai_tool_definitions(
-        self,
-        options: dict[str, Any] | None = None,
-        external_tools: list[dict[str, Any]] | None = None,
-        scope: str | None = None,
-    ) -> list[dict[str, Any]]:
-        """Generate OpenAI function definitions for all registered and visible tools."""
-        options = options or {}
-        definitions: list[dict[str, Any]] = []
-
-        for tool in self.list_tools(scope=scope):
-            if options.get("nonInteractive") is True and tool.name in (
-                "AskUserQuestion",
-                "ask_user_question",
-            ):
-                continue
-            definitions.append(tool.to_openai_schema())
-
-        for ext in external_tools or []:
-            definitions.append(ext)
-
-        return definitions
 
     def validate_arguments(
         self,
@@ -420,7 +398,7 @@ class ToolRegistry:
     ) -> list[dict[str, Any]]:
         """Project registered tools onto formatted OpenAI Function tool call schemas."""
         options = options or {}
-        from coderai.core.prompt_sections import order_tools
+        from coderai.core.prompt_sections import get_preset_tools, order_tools
         from coderai.core.common.model_capabilities import supports_multimodal
 
         tools_list: list[dict[str, Any]] = []
@@ -435,13 +413,13 @@ class ToolRegistry:
         for tool_def in self.list_tools(scope=scope):
             name = tool_def.name
             # Filter non-interactive tools
-            if is_non_interactive and name in ("AskUserQuestion", "ask_user_question"):
+            if is_non_interactive and name == "AskUserQuestion":
                 continue
             # Filter child agent specific tools
             if not is_child_agent and name == "report":
                 continue
             # Filter multimodal tool if model has native vision
-            if model_supports_vision and name in ("UnderstandImage", "understand_image"):
+            if model_supports_vision and name == "UnderstandImage":
                 continue
 
             schema = tool_def.to_openai_schema()
@@ -450,40 +428,22 @@ class ToolRegistry:
         if external_tools:
             tools_list.extend(canonicalize_tool_schema(external_tools))
 
-        if preset in ("minimal", "benchmark", "coding", "dsh_minimal"):
-            core_names = {"bash", "str_replace_editor", "edit", "read", "write", "glob", "grep"}
-            if preset == "dsh_minimal":
-                core_names = {"bash", "str_replace_editor"}
+        preset_tools = get_preset_tools(preset)
+        if preset_tools is not None:
             tools_list = [
-                t for t in tools_list if (t.get("function") or {}).get("name") in core_names
+                t for t in tools_list if (t.get("function") or {}).get("name") in preset_tools
             ]
 
         ordered = order_tools(tools_list)
         return [canonicalize_tool_schema(t) for t in ordered]
 
-    def to_sdk_schemas(
-        self, scope: str | None = None, language: str = "python"
-    ) -> list[dict[str, Any]]:
-        """Project registered tools onto Code Mode SDK signatures."""
-        del language
-        schemas: list[dict[str, Any]] = []
-        for tool in self.list_tools(scope=scope):
-            if tool.name in ("code_mode", "run_code"):
-                continue
-            item = copy.deepcopy(tool.to_openai_schema())
-            if tool.output:
-                item["output"] = copy.deepcopy(tool.output.schema)
-            schemas.append(item)
-        return schemas
-
     def _register_builtins(self) -> None:
-        """Register the core standard built-in tools with DeepSeek Harness parity."""
+        """Register the standard built-in tools under canonical names."""
         # 1. bash & pwsh
         self.register(
             define_tool(
                 name="bash",
-                aliases=["Bash"],
-                description="Execute shell commands in a persistent bash session.",
+                description="Execute shell commands, optionally in a persistent PTY session.",
                 parameters={
                     "command": {"type": "string", "description": "The shell command to execute"},
                     "description": {
@@ -524,7 +484,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="pwsh",
-                aliases=["PowerShell", "powershell"],
                 description="Execute commands in a PowerShell session with background job and timeout support.",
                 parameters={
                     "command": {
@@ -554,7 +513,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="job_list",
-                aliases=["JobList"],
                 description="List your background jobs (running and finished) with their ids, kinds, and statuses.",
                 parameters={},
                 required=[],
@@ -567,7 +525,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="job_output",
-                aliases=["JobOutput"],
                 description=(
                     "Read a background job. Returns output since the previous read. "
                     "Every response ends with `[status: ...]`. Set wait=true to block until settlement."
@@ -596,7 +553,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="job_kill",
-                aliases=["JobKill"],
                 description="Request cancellation of a running background job by job id.",
                 parameters={
                     "job_id": {
@@ -620,7 +576,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="glob",
-                aliases=["Glob", "glob_search"],
                 description=_search_fs.GLOB_DESCRIPTION,
                 parameters={
                     "pattern": {
@@ -645,7 +600,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="grep",
-                aliases=["Grep", "grep_search"],
                 description=_search_fs.GREP_DESCRIPTION,
                 parameters={
                     "pattern": {
@@ -673,7 +627,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="read",
-                aliases=["Read"],
                 description="Read a text file, notebook, image, or directory listing with line numbering and observation tracking.",
                 parameters={
                     "file_path": {
@@ -699,7 +652,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="write",
-                aliases=["Write"],
                 description="Create or completely overwrite a UTF-8 text file.",
                 parameters={
                     "file_path": {
@@ -721,7 +673,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="edit",
-                aliases=["Edit"],
                 description="Edit an existing UTF-8 text file with snippet-scoped or path replacement.",
                 parameters={
                     "snippet_id": {
@@ -759,12 +710,18 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="str_replace_editor",
-                aliases=["StrReplaceEditor"],
                 description="Custom editing tool for viewing, creating, str_replace, insert, and undo commands on files.",
                 parameters={
                     "command": {
                         "type": "string",
-                        "enum": ["view", "create", "str_replace", "insert", "undo_edit", "undo_command"],
+                        "enum": [
+                            "view",
+                            "create",
+                            "str_replace",
+                            "insert",
+                            "undo_edit",
+                            "undo_command",
+                        ],
                         "description": "The editing command to execute.",
                     },
                     "path": {
@@ -805,7 +762,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="AskUserQuestion",
-                aliases=["ask_user_question", "ask_user"],
                 description="Prompt the user with structured questions, choices, or clarifications.",
                 parameters={
                     "questions": {
@@ -844,7 +800,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="WebSearch",
-                aliases=["web_search"],
                 description="Search the web for up-to-date documentation, issues, and references.",
                 parameters={
                     "query": {
@@ -863,7 +818,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="WebFetch",
-                aliases=["web_fetch"],
                 description="Fetch and extract readable Markdown content from a public URL.",
                 parameters={
                     "url": {
@@ -884,7 +838,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="Task",
-                aliases=["task"],
                 description="Spawn an isolated sub-agent session for complex, modular, or exploratory tasks.",
                 parameters={
                     "description": {
@@ -923,7 +876,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="subagent",
-                aliases=["SubAgent"],
                 description="Start a continuable sub-agent in the background and return an agent id. Use send_message / list_agents / interrupt_agent to steer it. For a one-shot child, use Task or subagent_fork.",
                 parameters={
                     "description": {
@@ -958,7 +910,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="subagent_fork",
-                aliases=["SubagentFork"],
                 description="Spawn a one-shot sub-agent and wait for its aggregated findings (alias of Task).",
                 parameters={
                     "description": {
@@ -993,7 +944,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="send_message",
-                aliases=["SendMessage"],
                 description="Send a follow-up message to a running or parked sub-agent by agent id.",
                 parameters={
                     "agent_id": {
@@ -1015,7 +965,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="interrupt_agent",
-                aliases=["InterruptAgent"],
                 description="Cancel a running sub-agent by agent id.",
                 parameters={
                     "agent_id": {
@@ -1033,7 +982,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="list_agents",
-                aliases=["ListAgents"],
                 description="List sub-agents spawned from this session with ids and statuses.",
                 parameters={},
                 required=[],
@@ -1046,7 +994,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="report",
-                aliases=["Report"],
                 description="Child-only: submit the final report for the parent agent and finish this sub-agent.",
                 parameters={
                     "summary": {
@@ -1066,7 +1013,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="terminal_open",
-                aliases=["TerminalOpen"],
                 description="Open a persistent interactive terminal (PTY) session.",
                 parameters={
                     "type": {"type": "string", "enum": ["bash", "sh", "zsh", "pwsh"]},
@@ -1083,7 +1029,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="terminal_send",
-                aliases=["TerminalSend"],
                 description="Send input text to an active interactive terminal session.",
                 parameters={
                     "sessionId": {"type": "string"},
@@ -1102,7 +1047,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="terminal_read",
-                aliases=["TerminalRead"],
                 description="Read pending output from an active interactive terminal session.",
                 parameters={
                     "sessionId": {"type": "string"},
@@ -1118,7 +1062,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="terminal_signal",
-                aliases=["TerminalSignal"],
                 description="Send a POSIX signal (e.g. SIGINT, SIGTERM, SIGKILL) to an active terminal.",
                 parameters={
                     "sessionId": {"type": "string"},
@@ -1137,7 +1080,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="terminal_close",
-                aliases=["TerminalClose"],
                 description="Close and terminate an active persistent terminal session.",
                 parameters={"sessionId": {"type": "string"}},
                 required=["sessionId"],
@@ -1150,7 +1092,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="terminal_list",
-                aliases=["TerminalList"],
                 description="List all active persistent interactive terminal sessions.",
                 parameters={},
                 required=[],
@@ -1165,7 +1106,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="lsp",
-                aliases=["Lsp"],
                 description="Query Language Server Protocol features: definitions, references, hover docs, document symbols.",
                 parameters={
                     "operation": {
@@ -1198,7 +1138,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="skill",
-                aliases=["Skill"],
                 description="Load full instructions and examples for a specialized skill into active context.",
                 parameters={
                     "name": {
@@ -1218,7 +1157,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="UnderstandImage",
-                aliases=["understand_image"],
                 description="Analyze and extract visual insights from a local image file.",
                 parameters={
                     "image_path": {
@@ -1243,7 +1181,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="UpdatePlan",
-                aliases=["update_plan"],
                 description="Update the task plan and milestones.",
                 parameters={
                     "plan": {
@@ -1265,7 +1202,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="todo_write",
-                aliases=["TodoWrite"],
                 description="Update the structured todo checklist for this session.",
                 parameters={
                     "todos": {
@@ -1295,7 +1231,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="exit_plan_mode",
-                aliases=["ExitPlanMode"],
                 description="Leave Plan Mode while mutation tools stay active.",
                 parameters={
                     "summary": {
@@ -1315,7 +1250,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="schedule_create",
-                aliases=["ScheduleCreate"],
                 description="Schedule a reminder or background instruction (one-shot or cron).",
                 parameters={
                     "prompt": {
@@ -1341,7 +1275,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="schedule_list",
-                aliases=["ScheduleList"],
                 description="List all scheduled timers and cron jobs.",
                 parameters={},
                 required=[],
@@ -1354,7 +1287,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="schedule_delete",
-                aliases=["ScheduleDelete"],
                 description="Delete an active timer or cron schedule by ID.",
                 parameters={"schedule_id": {"type": "string"}},
                 required=["schedule_id"],
@@ -1369,10 +1301,12 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="ralph",
-                aliases=["Ralph", "workflow_run"],
                 description="Run an automated task loop with verification until completion criteria are met.",
                 parameters={
-                    "objective": {"type": "string", "description": "Immutable verification objective instructions."},
+                    "objective": {
+                        "type": "string",
+                        "description": "Immutable verification objective instructions.",
+                    },
                     "prompt": {"type": "string", "description": "Alias for objective."},
                     "max_rounds": {
                         "type": "integer",
@@ -1401,7 +1335,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="workflow",
-                aliases=["Workflow"],
                 description="Execute declarative multi-step workflows with dependencies and verification.",
                 parameters={
                     "workflow": {"type": "object", "description": "Workflow definition schema."},
@@ -1418,7 +1351,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="goal",
-                aliases=["Goal"],
                 description="Declare a high-level overnight or long-running goal with progress milestones.",
                 parameters={
                     "title": {"type": "string", "description": "Goal title."},
@@ -1444,7 +1376,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="spawn_teammate",
-                aliases=["team_spawn", "TeamSpawn", "SpawnTeammate"],
                 description="Spawn a specialized teammate agent for concurrent collaboration.",
                 parameters={
                     "name": {"type": "string", "description": "Teammate identifier/name."},
@@ -1461,7 +1392,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="team_task_create",
-                aliases=["TeamTaskCreate"],
                 description="Create a task on the shared team task board.",
                 parameters={
                     "title": {"type": "string"},
@@ -1478,7 +1408,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="team_task_get",
-                aliases=["TeamTaskGet"],
                 description="Retrieve details of a task from the shared team task board.",
                 parameters={"task_id": {"type": "string"}},
                 required=["task_id"],
@@ -1491,7 +1420,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="team_task_list",
-                aliases=["TeamTaskList"],
                 description="List tasks on the shared team task board.",
                 parameters={
                     "status": {
@@ -1510,7 +1438,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="team_task_update",
-                aliases=["TeamTaskUpdate"],
                 description="Update status or assignee for a task on the shared team task board.",
                 parameters={
                     "task_id": {"type": "string"},
@@ -1532,7 +1459,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="wait_agent",
-                aliases=["WaitAgent"],
                 description="Wait for completion or message settlement from spawned teammates or subagents.",
                 parameters={
                     "agent_id": {"type": "string"},
@@ -1551,7 +1477,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="code_mode",
-                aliases=["CodeMode", "python_exec"],
                 description="Execute Python code in a stateful sandbox with workspace tool helpers.",
                 parameters={
                     "code": {
@@ -1571,7 +1496,6 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="session_query",
-                aliases=["SessionQuery", "session_search", "SessionSearch"],
                 description="Search historical conversation turns and tool outputs using full-text search.",
                 parameters={
                     "query": {

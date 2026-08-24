@@ -1,4 +1,4 @@
-"""Thinking-mode request options — port of deepcode & DeepSeek Harness LLM reasoning seams."""
+"""OpenAI-compatible thinking / reasoning-effort request helpers."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ ReasoningEffortLevel = Literal["off", "minimal", "low", "medium", "high", "max"]
 _OFF_ALIASES = {"off", "none", "disabled", "false", "0", "disable"}
 _OPENAI_EFFORTS = {"low", "medium", "high", "none"}
 
-# Provider-specific thinking token budgets mapped from effort levels (DeepSeek Harness alignment)
+# Provider-specific thinking token budgets mapped from effort levels
 GEMINI_THINKING_BUDGETS: dict[str, int] = {
     "minimal": 1024,
     "low": 2048,
@@ -69,16 +69,15 @@ def build_thinking_request_options(
     model: str = "",
     has_tools: bool = False,
 ) -> dict:
-    """Build provider-appropriate thinking and reasoning-effort options for OpenAI-compatible client calls.
-
-    Aligns with DeepSeek Harness wire formats for OpenAI, DeepSeek, Google Gemini, Anthropic, and OpenRouter.
-    """
+    """Build provider-appropriate thinking and reasoning-effort options for OpenAI-compatible client calls."""
     del base_url
     m = model.strip().lower()
     effort = normalize_reasoning_effort(reasoning_effort)
 
     is_gpt5 = m.startswith("gpt-5") or "luna" in m or "terra" in m or "sol" in m
-    is_openai_reasoning = is_gpt5 or m.startswith(("o1", "o3", "o4", "deepseek-reasoner", "deepseek-r1"))
+    is_openai_reasoning = is_gpt5 or m.startswith(
+        ("o1", "o3", "o4", "deepseek-reasoner", "deepseek-r1")
+    )
 
     # 1. Disabled / Off state
     if not thinking_enabled or effort == "off":
@@ -97,5 +96,3 @@ def build_thinking_request_options(
             "reasoning_effort": effort,
         }
     }
-
-

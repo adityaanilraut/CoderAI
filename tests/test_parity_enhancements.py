@@ -169,6 +169,16 @@ def test_reasoning_effort_from_settings_and_env(
     assert settings["reasoningEffort"] == "off"
 
 
+def test_settings_use_canonical_project_directory(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from coderai.core.settings import get_project_settings_path
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    assert get_project_settings_path(str(tmp_path)) == str(tmp_path / ".coderai" / "settings.json")
+
+
 def test_mcp_url_servers_survive_settings_merge(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

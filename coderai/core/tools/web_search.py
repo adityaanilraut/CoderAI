@@ -4,15 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import json
 from typing import Any
 
 from coderai.core.network.cache import get_search_cache
-from coderai.core.network.client import get_http_client
 from coderai.core.tools.types import ToolResult, as_str
 from coderai.core.web_providers import (
     WebSearchResult,
-    WebSearchSource,
     resolve_web_search_provider,
 )
 

@@ -522,26 +522,25 @@ def test_update_plan_validation():
 
 
 # ==========================================
-# 7. ToolExecutor & Alias Mapping
+# 7. ToolExecutor Lifecycle
 # ==========================================
 
 
 @pytest.mark.asyncio
-async def test_tool_executor_aliases_and_lifecycle(tmp_path: pathlib.Path):
-    p = tmp_path / "alias_test.py"
+async def test_tool_executor_canonical_name_and_lifecycle(tmp_path: pathlib.Path):
+    p = tmp_path / "canonical_test.py"
     p.write_text("print('hello')\n")
-    session_id = "test_exec_aliases"
+    session_id = "test_exec_canonical"
     clear_session_state(session_id)
 
     executor = ToolExecutor(project_root=str(tmp_path))
 
-    # Read via "Read" alias
     calls = [
         {
             "id": "call_1",
             "type": "function",
             "function": {
-                "name": "Read",
+                "name": "read",
                 "arguments": json.dumps({"file_path": str(p)}),
             },
         }

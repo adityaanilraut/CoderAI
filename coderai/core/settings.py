@@ -1,4 +1,4 @@
-"""Settings resolution — port of deepcode core/src/settings.ts.
+"""Resolve canonical CoderAI settings from files and environment.
 
 Layering: user settings (~/.coderai/settings.json) -> project settings
 (<root>/.coderai/settings.json) -> process env (CODERAI_*). Project wins over
@@ -11,9 +11,10 @@ import json
 import os
 import pathlib
 import re
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from coderai.core.common.model_capabilities import defaults_to_thinking_mode
+from coderai.core.prompt_sections import normalize_tool_preset
 from coderai.core.sandbox import apply_preset, parse_sandbox_mode
 
 DEFAULT_MODEL = "gpt-5.6-luna"
@@ -58,6 +59,8 @@ _REASONING_EFFORT_ALIASES = {
     "0": "off",
 }
 
+ToolPreset = Literal["full", "core", "shell_edit"]
+
 
 def _home() -> pathlib.Path:
     return pathlib.Path.home()
@@ -68,11 +71,7 @@ def get_user_settings_path() -> str:
 
 
 def get_project_settings_path(project_root: str = ".") -> str:
-    root = pathlib.Path(project_root)
-    alt = root / ".coderAI" / "settings.json"
-    if alt.is_file():
-        return str(alt)
-    return str(root / ".coderai" / "settings.json")
+    return str(pathlib.Path(project_root) / ".coderai" / "settings.json")
 
 
 def _read_settings_file(path: str) -> dict | None:
@@ -91,12 +90,7 @@ def read_settings() -> dict | None:
 
 
 def read_project_settings(project_root: str = ".") -> dict | None:
-    root = pathlib.Path(project_root)
-    primary = _read_settings_file(str(root / ".coderai" / "settings.json"))
-    alt = _read_settings_file(str(root / ".coderAI" / "settings.json"))
-    if primary and alt:
-        return {**alt, **primary}
-    return primary or alt
+    return _read_settings_file(get_project_settings_path(project_root))
 
 
 def _write_settings_file(path: str, settings: dict) -> None:
@@ -181,8 +175,14 @@ def parse_reasoning_effort(value: Any) -> ReasoningEffort | None:
         return None
     normalized = _REASONING_EFFORT_ALIASES.get(raw, raw)
     if normalized in VALID_REASONING_EFFORTS:
-        return normalized  # type: ignore[return-value]
+        return cast(ReasoningEffort, normalized)
     return None
+
+
+def parse_tool_preset(value: Any) -> ToolPreset | None:
+    """Accept only canonical tool preset names."""
+    normalized = normalize_tool_preset(value)
+    return cast(ToolPreset, normalized) if normalized is not None else None
 
 
 def _parse_temperature(value: Any) -> float | None:
@@ -307,30 +307,31 @@ def resolve_current_settings(project_root: str = ".") -> dict[str, Any]:
                 return s
         return ""
 
+    def first_parsed(parser: Any, *values: Any) -> Any:
+        for value in values:
+            parsed = parser(value)
+            if parsed is not None:
+                return parsed
+        return None
+
     model = (
         first(system_env.get("MODEL"))
         or _trim(project.get("model"))
-        or first(project_env.get("MODEL"))
         or _trim(user.get("model"))
-        or first(user_env.get("MODEL"))
         or DEFAULT_MODEL
     )
 
     base_url = (
         first(system_env.get("BASE_URL"))
         or _trim(project.get("baseURL"))
-        or first(project_env.get("BASE_URL"))
         or _trim(user.get("baseURL"))
-        or first(user_env.get("BASE_URL"))
         or DEFAULT_BASE_URL
     )
 
     api_key = (
         first(system_env.get("API_KEY"))
         or _trim(project.get("apiKey"))
-        or first(project_env.get("API_KEY"))
         or _trim(user.get("apiKey"))
-        or first(user_env.get("API_KEY"))
         or None
     )
 
@@ -358,24 +359,21 @@ def resolve_current_settings(project_root: str = ".") -> dict[str, Any]:
         context_window,
     )
 
+    configured_thinking = first_parsed(
+        _parse_bool,
+        system_env.get("THINKING_ENABLED"),
+        project.get("thinkingEnabled"),
+        user.get("thinkingEnabled"),
+    )
     thinking_enabled = (
-        _parse_bool(system_env.get("THINKING_ENABLED"))
-        if _parse_bool(system_env.get("THINKING_ENABLED")) is not None
-        else (
-            _parse_bool(project.get("thinkingEnabled"))
-            if _parse_bool(project.get("thinkingEnabled")) is not None
-            else (
-                _parse_bool(user.get("thinkingEnabled"))
-                if _parse_bool(user.get("thinkingEnabled")) is not None
-                else defaults_to_thinking_mode(model)
-            )
-        )
+        configured_thinking if configured_thinking is not None else defaults_to_thinking_mode(model)
     )
 
-    temperature = (
-        _parse_temperature(system_env.get("TEMPERATURE"))
-        or _parse_temperature(project.get("temperature"))
-        or _parse_temperature(user.get("temperature"))
+    temperature = first_parsed(
+        _parse_temperature,
+        system_env.get("TEMPERATURE"),
+        project.get("temperature"),
+        user.get("temperature"),
     )
 
     multimodal = (
@@ -395,18 +393,19 @@ def resolve_current_settings(project_root: str = ".") -> dict[str, Any]:
         "temperature": temperature,
         "thinkingEnabled": thinking_enabled,
         "reasoningEffort": (
-            parse_reasoning_effort(system_env.get("CODERAI_REASONING_EFFORT"))
-            or parse_reasoning_effort(system_env.get("REASONING_EFFORT"))
+            parse_reasoning_effort(system_env.get("REASONING_EFFORT"))
             or parse_reasoning_effort(project.get("reasoningEffort"))
-            or parse_reasoning_effort(project_env.get("CODERAI_REASONING_EFFORT"))
-            or parse_reasoning_effort(project_env.get("REASONING_EFFORT"))
             or parse_reasoning_effort(user.get("reasoningEffort"))
-            or parse_reasoning_effort(user_env.get("CODERAI_REASONING_EFFORT"))
-            or parse_reasoning_effort(user_env.get("REASONING_EFFORT"))
             or DEFAULT_REASONING_EFFORT
         ),
-        "debugLogEnabled": bool(_parse_bool(system_env.get("DEBUG_LOG_ENABLED"))),
-        "telemetryEnabled": False,
+        "debugLogEnabled": bool(
+            first_parsed(
+                _parse_bool,
+                system_env.get("DEBUG_LOG_ENABLED"),
+                project.get("debugLogEnabled"),
+                user.get("debugLogEnabled"),
+            )
+        ),
         "notify": first(system_env.get("NOTIFY"), project.get("notify"), user.get("notify"))
         or None,
         "webSearchTool": (
@@ -418,14 +417,18 @@ def resolve_current_settings(project_root: str = ".") -> dict[str, Any]:
             or None
         ),
         "multimodal": multimodal,
+        "toolsPreset": first_parsed(
+            parse_tool_preset,
+            system_env.get("TOOLS_PRESET"),
+            project.get("toolsPreset"),
+            user.get("toolsPreset"),
+        ),
         "mcpServers": _merge_mcp_servers(user, project, user_env, project_env, system_env),
         "permissions": apply_preset(
             _merge_permissions(user, project),
             parse_sandbox_mode(
                 first(
                     system_env.get("PERMISSION_PRESET"),
-                    project.get("permissionPreset"),
-                    user.get("permissionPreset"),
                     ((project.get("permissions") or {}).get("preset")),
                     ((user.get("permissions") or {}).get("preset")),
                 )

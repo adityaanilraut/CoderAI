@@ -11,7 +11,7 @@ This document provides a comprehensive catalog of all built-in tools available t
 | **File Operations** | `read`, `write`, `edit`, `str_replace_editor` | Scoped file reading, writing, and atomic snippet editing |
 | **Search & Discovery** | `glob`, `grep` | Fast workspace file discovery via bundled ripgrep with spill handling |
 | **Terminal & Processes** | `bash`, `job_list`, `job_output`, `job_kill`, `pwsh` | Shell execution, background job management, cross-platform PowerShell |
-| **PTY Terminals** | `terminal_create`, `terminal_send`, `terminal_read`, `terminal_close`, `terminal_list` | Interactive persistent terminal sessions |
+| **PTY Terminals** | `terminal_open`, `terminal_send`, `terminal_read`, `terminal_signal`, `terminal_close`, `terminal_list` | Interactive persistent terminal sessions |
 | **Agent Orchestration** | `subagent`, `subagent_fork`, `send_message`, `interrupt_agent`, `list_agents` | Continuable background subagents and one-shot delegation |
 | **Swarm & Teams** | `spawn_teammate`, `team_task_create`, `team_task_update`, `team_task_get`, `team_task_list`, `wait_agent` | Multi-agent collaboration with shared task board |
 | **Language Server** | `lsp` | LSP code navigation (definitions, references, symbols) |
@@ -20,6 +20,13 @@ This document provides a comprehensive catalog of all built-in tools available t
 | **Web & Media** | `WebSearch`, `WebFetch`, `UnderstandImage` | Web search, URL fetching with SSRF protection, image understanding |
 | **User Interaction** | `AskUserQuestion` | Interactive user questionnaires and decision modals |
 | **Skills** | `skill` | Load discovered workspace skills (`SKILL.md`) |
+
+## Tool Presets
+
+The `--preset` CLI option, `toolsPreset` setting, and `CODERAI_TOOLS_PRESET` environment variable accept these canonical values:
+- `full`: expose every built-in tool
+- `core`: expose `bash`, `str_replace_editor`, `edit`, `read`, `write`, `glob`, and `grep`
+- `shell_edit`: expose only `bash` and `str_replace_editor`
 
 ---
 
@@ -93,9 +100,10 @@ Executes cross-platform PowerShell commands (Windows `powershell.exe` or Linux/m
 
 ## 4. PTY Terminal Subsystem
 
-- **`terminal_create`**: Spawns an interactive pseudoterminal session.
+- **`terminal_open`**: Spawns an interactive pseudoterminal session.
 - **`terminal_send`**: Sends input or commands to a persistent terminal.
 - **`terminal_read`**: Reads available stdout/stderr from the terminal buffer.
+- **`terminal_signal`**: Sends a signal to a persistent terminal process.
 - **`terminal_close`**: Closes a terminal session and frees resources.
 - **`terminal_list`**: Lists all active terminal sessions.
 

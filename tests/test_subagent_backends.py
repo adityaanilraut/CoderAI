@@ -5,10 +5,9 @@ from __future__ import annotations
 import json
 import pytest
 from coderai.core.acp.protocol import AcpMessage, AcpNdjsonParser
-from coderai.core.acp.runner import AcpSubagentRunner, AcpRunConfig
 from coderai.core.subagent_backends.claude_code import ClaudeCodeDriver, ClaudeCodeConfig
 from coderai.core.subagent_backends.codex import CodexDriver, CodexConfig
-from coderai.core.subagent import SubAgentSpec, SubAgentManager, SubAgentResult
+from coderai.core.subagent import SubAgentSpec
 
 
 def test_acp_ndjson_parser():
@@ -63,11 +62,13 @@ async def test_subagent_spec_provider_field(tmp_path):
 @pytest.mark.asyncio
 async def test_claude_code_execution_handling(monkeypatch):
     import subprocess
+
     def fake_run(*args, **kwargs):
         class Result:
             returncode = 0
             stdout = json.dumps({"result": "Found 3 files with TODO comments"})
             stderr = ""
+
         return Result()
 
     monkeypatch.setattr(subprocess, "run", fake_run)
@@ -81,11 +82,13 @@ async def test_claude_code_execution_handling(monkeypatch):
 @pytest.mark.asyncio
 async def test_codex_execution_handling(monkeypatch):
     import subprocess
+
     def fake_run(*args, **kwargs):
         class Result:
             returncode = 0
             stdout = json.dumps({"output": "Refactored module successfully"})
             stderr = ""
+
         return Result()
 
     monkeypatch.setattr(subprocess, "run", fake_run)

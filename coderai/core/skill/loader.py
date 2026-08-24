@@ -1,4 +1,4 @@
-"""Skill loader and formatting utilities — port of dsh skill package."""
+""""""
 
 from __future__ import annotations
 
@@ -88,7 +88,7 @@ def list_skill_resource_files(
         if any(p in SKILL_RESOURCE_EXCLUDED_DIRS or p.startswith(".") for p in parts):
             continue
         rel = "/".join(parts)
-        if rel in ("SKILL.md", "SKILLS.md"):
+        if rel == "SKILL.md":
             continue
         if len(files) >= limit:
             truncated = True

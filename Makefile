@@ -1,6 +1,6 @@
 # Makefile for CoderAI
 
-.PHONY: help install dev test clean run lint format format-check typecheck install-dev quickstart dist check
+.PHONY: help install dev test clean run lint format format-check typecheck quickstart dist check verify-dist
 
 PYTHON ?= python3
 
@@ -8,7 +8,7 @@ help:
 	@echo "CoderAI Development Commands"
 	@echo "============================"
 	@echo "make install       - Install the package"
-	@echo "make dev           - Install in development mode (alias: install-dev)"
+	@echo "make dev           - Install in development mode"
 	@echo "make test          - Run test suite + CLI smoke test"
 	@echo "make clean         - Clean build artifacts"
 	@echo "make run           - Run the interactive CLI"
@@ -18,16 +18,16 @@ help:
 	@echo "make check         - Check format, lint, types, and tests without modifying files"
 
 install:
-	pip install .
+	$(PYTHON) -m pip install .
 
 dev:
-	pip install -e ".[dev]"
+	$(PYTHON) -m pip install -e ".[dev]"
 
 test:
-	pytest
+	$(PYTHON) -m pytest
 	@echo ""
 	@echo "Running basic CLI smoke test..."
-	coderai --version
+	$(PYTHON) -m coderai --version
 
 clean:
 	rm -rf build/
@@ -45,22 +45,22 @@ clean:
 	find . -type f -name "*.pyc" -delete
 
 run:
-	coderai
+	$(PYTHON) -m coderai
 
 lint:
 	@echo "Running ruff..."
-	python3 -m ruff check coderai/ tests/ scripts/
+	$(PYTHON) -m ruff check coderai/ tests/ scripts/
 
 typecheck:
 	@echo "Running mypy..."
-	python3 -m mypy coderai/
+	$(PYTHON) -m mypy coderai/
 
 format:
-	python3 -m ruff format coderai/ tests/ scripts/
+	$(PYTHON) -m ruff format coderai/ tests/ scripts/
 	@echo "Code formatted with ruff"
 
 format-check:
-	python3 -m ruff format --check coderai/ tests/ scripts/
+	$(PYTHON) -m ruff format --check coderai/ tests/ scripts/
 
 check: format-check lint typecheck test
 
@@ -71,8 +71,8 @@ quickstart: clean dev test
 
 # Build distribution (requires: pip install build)
 dist: clean
-	python3 -m build
+	$(PYTHON) -m build
 	@echo "Distribution built in dist/"
 
-# Alias for `make dev`
-install-dev: dev
+verify-dist: dist
+	$(PYTHON) scripts/verify_wheel.py dist

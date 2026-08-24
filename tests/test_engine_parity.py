@@ -1,6 +1,9 @@
 """Comprehensive test suite for Architecture and Engine Parity in CoderAI."""
 
 import pathlib
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
 import pytest
 
 from coderai.cli.app import _build_parser
@@ -187,6 +190,42 @@ async def test_exec_runner_empty_prompt():
 
 
 @pytest.mark.asyncio
+async def test_exec_runner_uses_canonical_permission_reply_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entry = SimpleNamespace(
+        status="ask_permission",
+        ask_permissions=[{"toolCallId": "call-1"}],
+        fail_reason=None,
+    )
+
+    class FakeManager:
+        async def init_mcp_servers(self) -> None:
+            return None
+
+        async def create_session(self, _prompt: str, plan_mode: bool = False) -> str:
+            return "session-1"
+
+        def get_session(self, _session_id: str):
+            return entry
+
+        async def respond_permissions(self, _session_id: str, replies: list[dict]) -> None:
+            assert replies == [{"toolCallId": "call-1", "permission": "allow"}]
+            entry.status = "completed"
+
+    manager = FakeManager()
+    monkeypatch.setattr(
+        "coderai.cli.exec_runner.build_session_manager",
+        lambda *_args, **_kwargs: manager,
+    )
+    close = AsyncMock()
+    monkeypatch.setattr("coderai.cli.exec_runner.close_session_manager", close)
+
+    assert await run_exec_session("approve", auto_approve=True) == 0
+    close.assert_awaited_once_with(manager)
+
+
+@pytest.mark.asyncio
 async def test_exec_runner_single_turn_success(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -206,7 +245,11 @@ async def test_exec_runner_single_turn_success(
 
     monkeypatch.setattr(
         "coderai.cli.exec_runner._core_client",
-        lambda: {"client": Client(), "model": "gpt-4o", "thinkingEnabled": False},
+        lambda *_args, **_kwargs: {
+            "client": Client(),
+            "model": "gpt-4o",
+            "thinkingEnabled": False,
+        },
     )
 
     exit_code = await run_exec_session(

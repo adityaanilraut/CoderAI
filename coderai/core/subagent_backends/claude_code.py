@@ -55,7 +55,9 @@ class ClaudeCodeDriver(CliSubagentDriver):
         res = await self._run_command(cmd, cwd=cwd, env=self.config.env, backend_name="Claude Code")
         return {
             "ok": res["ok"],
-            "status": "completed" if res["ok"] else ("timeout" if "timed out" in str(res.get("error", "")) else "failed"),
+            "status": "completed"
+            if res["ok"]
+            else ("timeout" if "timed out" in str(res.get("error", "")) else "failed"),
             "summary": res.get("summary") or res.get("error") or "Claude Code task finished.",
             "duration_seconds": res.get("elapsedSeconds", 0.0),
             "stdout": res.get("stdout", ""),

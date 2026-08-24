@@ -1,6 +1,5 @@
 """Session-scoped spill store for oversized tool output.
 
-Port of dsh-spill / dsh-spill-local / dsh-spill-policy: persist full text, return a
 locator plus retrieval hint, and never turn a successful tool call into an error
 when storage is unavailable.
 """

@@ -1,6 +1,8 @@
 include CHANGELOG.md
 include SECURITY.md
 include scripts/verify_wheel.py
+include coderai/vendor/rg
 recursive-include coderai/skills *
+recursive-include docs *.md
 prune tests
 

@@ -1,4 +1,4 @@
-"""McpClient — JSON-RPC 2.0 client for Model Context Protocol supporting Stdio and SSE (deepcode mcp-client.ts)."""
+"""JSON-RPC 2.0 MCP client supporting stdio and SSE transports."""
 
 from __future__ import annotations
 

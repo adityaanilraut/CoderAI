@@ -1,4 +1,4 @@
-"""UnderstandImage tool — analyze a local image via the vision-capable model (deepcode understand-image-handler.ts)."""
+"""UnderstandImage tool — analyze a local image via a vision-capable model."""
 
 from __future__ import annotations
 

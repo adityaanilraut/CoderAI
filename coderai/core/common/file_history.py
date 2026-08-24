@@ -1,4 +1,4 @@
-"""GitFileHistory — isolated content-addressable checkpoint undo (deepcode file-history.ts)."""
+"""Isolated content-addressable Git checkpoint undo."""
 
 from __future__ import annotations
 

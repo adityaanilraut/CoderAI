@@ -1,4 +1,4 @@
-"""Shell helpers — port of deepcode core/src/common/shell-utils.ts."""
+""""""
 
 from __future__ import annotations
 

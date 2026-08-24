@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-import pytest
 from coderai.core.lsp.protocol import (
     LspFrameParser,
     encode_lsp_message,
@@ -12,7 +10,7 @@ from coderai.core.lsp.protocol import (
     file_to_uri,
     uri_to_file,
 )
-from coderai.core.lsp.client import LspClient, get_lsp_client
+from coderai.core.lsp.client import LspClient
 from coderai.core.tools.lsp import handle_lsp_tool
 
 

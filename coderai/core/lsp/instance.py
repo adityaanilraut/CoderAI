@@ -10,7 +10,6 @@ from typing import Any
 
 from coderai.core.lsp.connection import LspConnection
 from coderai.core.lsp.protocol import (
-    LspHoverResult,
     LspLocation,
     LspSymbol,
     file_to_uri,
@@ -72,7 +71,10 @@ class LspInstance:
                     "definition": {"dynamicRegistration": False, "linkSupport": True},
                     "references": {"dynamicRegistration": False},
                     "implementation": {"dynamicRegistration": False, "linkSupport": True},
-                    "documentSymbol": {"dynamicRegistration": False, "hierarchicalDocumentSymbolSupport": True},
+                    "documentSymbol": {
+                        "dynamicRegistration": False,
+                        "hierarchicalDocumentSymbolSupport": True,
+                    },
                 },
             }
 
@@ -91,7 +93,9 @@ class LspInstance:
             }
 
             try:
-                res = await self.connection.send_request("initialize", init_params, timeout_s=timeout_s)
+                res = await self.connection.send_request(
+                    "initialize", init_params, timeout_s=timeout_s
+                )
                 if isinstance(res, dict):
                     self.server_capabilities = res.get("capabilities", {})
                 self.connection.send_notification("initialized", {})

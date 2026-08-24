@@ -75,7 +75,7 @@ graph TD
 
 ### 6. Developer Tooling & Languages
 - **Language Server Protocol (`coderai.core.lsp`)**: Symbol definition, reference lookup, workspace symbols, and document symbol navigation.
-- **PTY Terminal Sessions (`coderai.core.terminal`)**: Persistent pseudoterminals (`terminal_create`, `terminal_send`, `terminal_read`, `terminal_close`).
+- **PTY Terminal Sessions (`coderai.core.terminal`)**: Persistent pseudoterminals (`terminal_open`, `terminal_send`, `terminal_read`, `terminal_signal`, `terminal_close`, `terminal_list`).
 - **Workflow Scripting Engine (`coderai.core.workflow`)**: Multi-phase async execution pipelines with structured logging and parallel task branches.
 - **Code Mode (`coderai.core.code_mode`)**: Sandboxed in-process Python execution for data transformation and batch computation.
 - **Session Query & Search (`coderai.core.session_query`)**: Full-text indexing and fuzzy search across past sessions and conversations.
@@ -96,6 +96,8 @@ coderai/
 │
 ├── cli/                            # Rich Terminal UI Layer
 │   ├── app.py                      # Main REPL, CLI parser, event loop
+│   ├── commands.py                 # Canonical slash-command catalog
+│   ├── session_factory.py          # Shared SessionManager construction
 │   ├── ascii_art.py                # Banner and styling
 │   ├── completer.py                # Tab autocompletion & fuzzy matching
 │   ├── diff_render.py              # Syntax-highlighted diffs
@@ -112,6 +114,7 @@ coderai/
 │
 ├── core/                           # Core Engine
 │   ├── agents.py                   # Continuable subagent manager
+│   ├── agent_loop.py               # Turn/step activation controller
 │   ├── goals.py                    # Session goals store (/goal)
 │   ├── hooks.py                    # PreToolUse hook execution
 │   ├── jobs.py                     # Background process job store
@@ -121,8 +124,8 @@ coderai/
 │   ├── prompt_sections.py          # Stable tool order & section builder
 │   ├── sandbox.py                  # OS sandbox (Seatbelt / bwrap)
 │   ├── schedule.py                 # Schedule subsystem
-│   ├── session.py                  # SessionManager & agent turn loop
-│   ├── session_log.py              # JSONL event stream & message derivation
+│   ├── session.py                  # SessionManager public lifecycle APIs
+│   ├── session_store.py            # Canonical JSONL session storage
 │   ├── settings.py                 # Settings resolution
 │   ├── spill.py                    # Spill-to-file store & locators
 │   ├── state.py                    # Snippet manager & staleness detection
@@ -134,13 +137,13 @@ coderai/
 │   ├── lsp/                        # Language Server Protocol client
 │   ├── mcp/                        # Model Context Protocol client
 │   ├── network/                    # HTTP client, SSRF guard, HTML sanitizer
-│   ├── server/                     # JSON-RPC 2.0 IDE companion server
-│   ├── session_query/              # Full-text session indexer & search
+│   ├── session_query/              # Session history search over JSONL
+│   ├── skill/                      # Skill discovery and loading
 │   ├── teams/                      # Agent swarm & task board
 │   ├── terminal/                   # PTY terminal manager
 │   ├── tools/                      # Built-in tool implementations
-│   ├── vendor/                     # Bundled binaries (ripgrep)
 │   └── workflow/                   # Multi-phase workflow scripting engine
 │
+├── vendor/                         # Bundled binaries (ripgrep)
 └── skills/                         # Built-in agent skills
 ```

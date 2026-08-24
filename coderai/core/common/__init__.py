@@ -1,1 +1,1 @@
-"""coderai.core.common — mirrors deepcode packages/core/src/common/*."""
+"""Shared utilities used across the CoderAI engine."""

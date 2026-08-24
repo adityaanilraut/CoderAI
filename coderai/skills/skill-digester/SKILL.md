@@ -5,166 +5,64 @@ description: Reviews and improves another CoderAI skill's SKILL.md description f
 
 # Skill Digester
 
-Use this skill for two related tasks:
+Use this skill to:
 
 - Review and optionally rewrite the `description` field of another CoderAI skill.
-- Guide installation of an Agent Skill into an interoperable `.agents/skills` root.
+- Install a complete Agent Skill into an interoperable `.agents/skills` root.
 
-## Interaction Rule
+Use the available user-question tool when a required choice is missing. Never edit a description or overwrite a destination without explicit approval.
 
-Whenever user input is needed, call the `AskUserQuestion` tool. Do not ask follow-up questions as plain assistant text. This includes missing skill names or paths, install scope, language preference, duplicate matches, malformed frontmatter decisions, and whether to apply a recommended rewrite.
+## Find a skill
 
-## Workflow
+Run the bundled Python helper from this skill directory:
 
-First classify the request:
-
-- If the user asks to install, add, copy, or place an Agent Skill, use the [Install Agent Skill Workflow](#install-agent-skill-workflow).
-- Otherwise, use the [Digest Description Workflow](#digest-description-workflow).
-
-## Digest Description Workflow
-
-1. Identify the target skill from the user's request.
-   - If the user did not provide a skill name, use `AskUserQuestion` to ask for one.
-   - Locate the skill by running the bundled Node script from this skill directory:
-
-     ```bash
-     python3 ~/.coderai/skills/skill-digester/scripts/find_skill.py "<skill-name-or-path>" "<project-root>"
-     ```
-
-     If this skill is loaded from a project-level or different user-level path, use the `scripts/find_skill.py` file next to this `SKILL.md` instead.
-   - The script searches the same roots CoderAI CLI scans, in priority order:
-     1. Project native skills: `./.coderai/skills/<folder>/SKILL.md`
-     2. Project interoperable skills: `./.agents/skills/<folder>/SKILL.md`
-     3. User native skills: `~/.coderai/skills/<folder>/SKILL.md`
-     4. User interoperable skills: `~/.agents/skills/<folder>/SKILL.md`
-   - Treat `./` as the current CoderAI project root only; do not scan parent directories unless the running project root is changed.
-   - The script resolves each candidate's skill name the way CoderAI does: use the trimmed frontmatter `name` when present, otherwise use the folder name with underscores converted to hyphens.
-   - Match the user's input against the resolved skill name first. If needed, also consider the folder name or an explicit path the user provided.
-   - Treat the matched skill's `path` as the source `SKILL.md` to review.
-   - Treat the matched skill's `digestTarget.path` as the only output `SKILL.md` path to create or edit.
-   - `digestTarget.path` always points to the same scope's native CoderAI root:
-     - Project sources from `./.coderai/skills` or `./.agents/skills` digest to `./.coderai/skills/<folder>/SKILL.md`.
-     - User sources from `~/.coderai/skills` or `~/.agents/skills` digest to `~/.coderai/skills/<folder>/SKILL.md`.
-   - If the script returns one active match, use its `path` for reading and `digestTarget.path` for writing.
-   - If the script returns active and shadowed matches, present each source path and digest target path, then use `AskUserQuestion` before using a shadowed source.
-   - If the script returns no match, state that the skill was not found in CoderAI's scanned skill roots and use `AskUserQuestion` to ask whether the user wants to try another name.
-
-2. Infer the user's preferred language before reviewing.
-   - Infer a likely language from the user's wording. For example, if the user says `消化pdf技能`, infer Chinese.
-   - Confirm the language with `AskUserQuestion` in the inferred language. For Chinese, ask: `请选择您偏好的语言。`
-   - Offer the inferred language first and include `English` as a fallback. The UI provides an `Other` option, so the user can type a different language.
-   - Use the confirmed preferred language for every later question, recommendation, and rewritten `description` field.
-
-3. Read the source `SKILL.md`.
-   - Parse the YAML frontmatter and Markdown body from the matched source path.
-   - Preserve all frontmatter fields and body content except for the `description` field if the user approves a rewrite.
-   - If frontmatter is missing or malformed, explain the issue and use `AskUserQuestion` before making structural repairs.
-
-4. Review the current `description` field against the Agent Skills specification.
-   - Required constraints:
-     - It must be non-empty.
-     - It must be 1-1024 characters.
-     - It should describe what the skill does.
-     - It should describe when to use the skill.
-     - It should include specific keywords that help agents identify relevant tasks.
-   - Compare the description with the actual `SKILL.md` body. Flag mismatches, missing capabilities, overbroad activation language, vague wording, or important trigger keywords that are absent.
-   - Do not rewrite for style alone if the existing description is accurate, specific, and useful.
-
-5. Present the review and recommendation.
-   - If the description is already good, say so and do not change the file unless the user asks.
-   - If improvements are useful, show:
-     - The current description.
-     - Concise review findings.
-     - A recommended replacement written in the preferred language.
-     - The source path being reviewed.
-     - The digest output path that would be created or edited.
-   - Use `AskUserQuestion` to ask the user to choose one of three actions in the preferred language:
-     - Apply the recommended change.
-     - Abandon the change.
-     - Continue discussing the wording.
-
-6. Apply the change only after explicit approval.
-   - Write only to `digestTarget.path`; never write the digested result to `.agents/skills`.
-   - If `digestTarget.sameAsSource` is true, update only the `description` field in that existing native `SKILL.md`.
-   - If `digestTarget.sameAsSource` is false and `digestTarget.exists` is false, create the native target skill directory by copying the source skill directory first, then update only the target `SKILL.md` description. This preserves bundled scripts, references, and assets.
-   - If `digestTarget.sameAsSource` is false and `digestTarget.exists` is true, update only the `description` field in the existing native target `SKILL.md`; do not overwrite its body or bundled files unless the user explicitly asks.
-   - Keep the original `name` and any other frontmatter fields unchanged in the file being written.
-   - Preserve body content exactly unless the user separately asks to edit it.
-   - After editing, report the source path, updated digest output path, and final description.
-
-## Install Agent Skill Workflow
-
-Use this workflow when the user asks to install an Agent Skill. Installation always writes to `.agents/skills`, not `.coderai/skills`.
-
-1. Identify the source skill directory.
-   - If the user provided an explicit file or directory path, resolve it:
-     - `~/...` relative to the user's home directory.
-     - `./...` relative to the current project root.
-     - Absolute paths as written.
-     - A `SKILL.md` path means its parent directory is the source skill directory.
-   - If the user provided a skill name instead of a path, locate it with `scripts/find_skill.py` using the same command and match rules as the digest workflow.
-   - If the user did not provide a skill name or path, use `AskUserQuestion` to ask for the source skill name or path.
-   - The source directory must contain `SKILL.md`. If it does not, report that the path is not an Agent Skill and ask for another source only if the user still wants to install.
-
-2. Determine the installed skill folder name.
-   - Parse the source `SKILL.md` frontmatter.
-   - Use the trimmed frontmatter `name` when present.
-   - Otherwise use the source folder name with underscores converted to hyphens.
-   - Use that resolved name as the target folder name.
-
-3. Ask exactly one installation scope question.
-   - Use `AskUserQuestion` to ask whether to install the skill at user level or project level.
-   - Offer only these scope choices:
-     - User-level install: `~/.agents/skills/<skill-name>/`
-     - Project-level install: `./.agents/skills/<skill-name>/`
-   - Do not ask any other installation preference before copying.
-
-4. Copy the complete skill directory.
-   - User-level destination: `~/.agents/skills/<skill-name>/`.
-   - Project-level destination: `./.agents/skills/<skill-name>/`.
-   - Copy the whole source skill directory, including `SKILL.md`, `references/`, `scripts/`, `templates/`, examples, assets, and other support files.
-   - Preserve file contents and relative paths exactly.
-   - Create the `.agents/skills` parent directory if needed.
-   - If the destination directory already exists, stop and report the conflict. Do not overwrite or merge files unless the user explicitly asks in a later message.
-
-5. Report the result.
-   - Report the source directory and installation destination.
-   - Mention that the agent client may need to reload or restart before the installed skill appears.
-   - Do not digest, rewrite, or normalize the installed skill unless the user separately asks for that.
-
-## AskUserQuestion Patterns
-
-Use one question at a time unless two decisions are tightly coupled. Each question must include `options`; rely on the UI's `Other` option for free-form input.
-
-Examples:
-
-```json
-{"questions":[{"question":"请选择您偏好的语言。","options":[{"label":"中文","description":"后续询问和推荐描述都使用中文。"},{"label":"English","description":"Use English for follow-up questions and the recommended description."}]}]}
+```bash
+python3 scripts/find_skill.py "<skill-name-or-path>" "<project-root>"
 ```
 
-```json
-{"questions":[{"question":"How should I proceed with this description recommendation?","options":[{"label":"Apply change","description":"Update only the description field in the native digest output SKILL.md."},{"label":"Abandon change","description":"Leave the file unchanged."},{"label":"Discuss wording","description":"Continue refining the proposed description before editing."}]}]}
-```
+The helper searches, in order:
 
-```json
-{"questions":[{"question":"Where should I install this Agent Skill?","options":[{"label":"User-level","description":"Install to ~/.agents/skills so it is available across projects."},{"label":"Project-level","description":"Install to ./.agents/skills so it is available in this project."}]}]}
-```
+1. `<project>/.coderai/skills`
+2. `<project>/.agents/skills`
+3. `~/.coderai/skills`
+4. `~/.agents/skills`
 
-## Review Heuristics
+It resolves frontmatter `name`, reports active and shadowed matches, and returns `digestTarget.path` in the equivalent native `.coderai/skills` scope. Ask before selecting a shadowed match.
 
-A strong description is short, concrete, and activation-oriented. Prefer this pattern:
+## Digest a description
+
+1. Confirm the target and preferred language if either is unclear.
+2. Read the complete source `SKILL.md`.
+3. Validate that the description is non-empty, at most 1024 characters, describes what the skill does, and says when it should activate.
+4. Compare it with the body. Flag inaccurate, vague, overly broad, or missing trigger language. Do not rewrite only for stylistic preference.
+5. Show the current description, concise findings, proposed replacement, source path, and `digestTarget.path`.
+6. Ask whether to apply, abandon, or refine the proposal.
+
+After approval, write only to `digestTarget.path`:
+
+- If it is the source, change only `description`.
+- If the target does not exist, copy the complete source directory there, then change only the target description.
+- If a distinct target exists, change only its description; do not replace its body or resources.
+
+Preserve every other frontmatter field and the Markdown body.
+
+## Install a skill
+
+1. Resolve the source directory from an explicit path or the helper. It must contain `SKILL.md`.
+2. Resolve the folder name from frontmatter `name`, falling back to the source folder with underscores converted to hyphens.
+3. Ask exactly one scope question:
+   - user: `~/.agents/skills/<name>/`
+   - project: `<project>/.agents/skills/<name>/`
+4. If the destination exists, stop and report the conflict.
+5. Otherwise copy the whole directory, including scripts, references, templates, and assets.
+6. Report source and destination. Mention that the client may need to reload.
+
+Installation writes only to `.agents/skills`; digestion writes only to `.coderai/skills`. Do not combine installation with a description rewrite unless the user separately requests both.
+
+## Description pattern
 
 ```text
 <What the skill does>. Use when <task types, file types, tools, domains, or user phrases that should trigger it>.
 ```
 
-Avoid descriptions that are only generic labels, marketing copy, or internal implementation notes.
-
-## Safety Notes
-
-- Never modify a different skill with a similar name without asking.
-- Never save the digested output under `.agents/skills`; `.agents/skills` is only a source root for digestion.
-- Never save installed Agent Skills under `.coderai/skills`; installation writes only to `.agents/skills`.
-- Never move a skill between project and user level during digestion.
-- Never overwrite or merge an existing installed skill directory unless the user explicitly asks after seeing the conflict.
-- Never change the target skill's language preference after confirmation unless the user asks.
+Prefer concrete operations and trigger terms. Avoid marketing copy and implementation details.

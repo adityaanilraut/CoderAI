@@ -1,17 +1,13 @@
 """Unit and integration tests for benchmark and latency optimizations."""
 
-import asyncio
 import json
 import pytest
 
 from coderai.core.common.message_converter import OpenAIMessageConverter
 from coderai.core.common.model_capabilities import (
     resolve_adaptive_reasoning_effort,
-    defaults_to_thinking_mode,
-    is_fast_model,
 )
 from coderai.core.prompt import format_tool_definitions, get_runtime_context
-from coderai.core.prompt_sections import order_tools
 from coderai.core.session import SessionManager, SessionMessage
 
 
@@ -39,8 +35,12 @@ def test_deterministic_tool_ordering():
 
 def test_runtime_context_static_prefix():
     """Verify runtime context can suppress volatile dates for frozen prompt caching."""
-    ctx_dynamic = get_runtime_context("/test/root", model="deepseek-v4-flash", suppress_dynamic_time=False)
-    ctx_static = get_runtime_context("/test/root", model="deepseek-v4-flash", suppress_dynamic_time=True)
+    ctx_dynamic = get_runtime_context(
+        "/test/root", model="deepseek-v4-flash", suppress_dynamic_time=False
+    )
+    ctx_static = get_runtime_context(
+        "/test/root", model="deepseek-v4-flash", suppress_dynamic_time=True
+    )
 
     assert "Today is" in ctx_dynamic
     assert "Today is" not in ctx_static
@@ -60,7 +60,12 @@ def test_adaptive_reasoning_effort():
     assert resolve_adaptive_reasoning_effort("deepseek-v4-pro", turn=2, step=1) == "high"
 
     # Explicit override is preserved
-    assert resolve_adaptive_reasoning_effort("deepseek-v4-flash", turn=2, step=1, explicit_effort="max") == "max"
+    assert (
+        resolve_adaptive_reasoning_effort(
+            "deepseek-v4-flash", turn=2, step=1, explicit_effort="max"
+        )
+        == "max"
+    )
 
 
 def test_message_converter_safe_empty_and_pruning():
@@ -76,7 +81,9 @@ def test_message_converter_safe_empty_and_pruning():
         tool_calls=[{"id": "call_1", "function": {"name": "read", "arguments": "{}"}}],
         thinking="Planning step",
     )
-    conv_asst = converter._convert_message(msg_asst, thinking_enabled=True, model="deepseek-v4-flash")
+    conv_asst = converter._convert_message(
+        msg_asst, thinking_enabled=True, model="deepseek-v4-flash"
+    )
     assert conv_asst["content"] == ""
     assert conv_asst["reasoning_content"] == "Planning step"
     assert len(conv_asst["tool_calls"]) == 1
@@ -89,7 +96,9 @@ def test_message_converter_safe_empty_and_pruning():
         content="",
         tool_call_id="call_1",
     )
-    conv_tool_empty = converter._convert_message(msg_tool_empty, thinking_enabled=True, model="deepseek-v4-flash")
+    conv_tool_empty = converter._convert_message(
+        msg_tool_empty, thinking_enabled=True, model="deepseek-v4-flash"
+    )
     assert conv_tool_empty["content"] == "(no output)"
 
     # 3. Oversized tool result pruning

@@ -21,13 +21,15 @@ from coderai.core.permissions import (
     evaluate_permission_scopes,
 )
 from coderai.core.prompt import (
-    build_skill_documents_prompt,
-    extract_skill_frontmatter,
     get_plan_mode_prompt,
     get_runtime_context,
     get_tools,
-    list_skill_resource_files,
     load_agent_instructions,
+)
+from coderai.core.skill import (
+    build_skill_documents_prompt,
+    extract_skill_frontmatter,
+    list_skill_resource_files,
     strip_skill_prompt_metadata,
 )
 from coderai.core.session import SessionManager, SessionMessage

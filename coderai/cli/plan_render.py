@@ -4,15 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-try:
-    from rich.panel import Panel
-    from rich.text import Text
-
-    _RICH = True
-except ImportError:  # pragma: no cover
-    Panel = None  # type: ignore[assignment,misc]
-    Text = None  # type: ignore[assignment,misc]
-    _RICH = False
+from rich.console import Console
+from rich.text import Text
 
 
 def parse_plan_stats(plan_text: str) -> tuple[int, int]:
@@ -39,11 +32,8 @@ def make_plan_progress_bar(completed: int, total: int, width: int = 10) -> str:
     return f"[{bar}] {int(pct * 100)}%"
 
 
-def format_plan_content(plan_text: str) -> Text | str:
+def format_plan_content(plan_text: str) -> Text:
     """Format markdown checklist into styled Rich Text."""
-    if not _RICH or Text is None:
-        return plan_text
-
     formatted = Text()
     lines = plan_text.splitlines()
 
@@ -91,19 +81,11 @@ def render_plan_preview(console: Any | None, plan_text: str, title: str = "Plan 
     bar_str = make_plan_progress_bar(completed, total, width=8)
     progress_badge = f" {bar_str} ({completed}/{total} tasks)" if total > 0 else ""
 
-    if console is not None and _RICH and Text is not None:
-        header = Text()
-        header.append("    ↳ ", style="dim yellow")
-        header.append(title, style="bold yellow")
-        if progress_badge:
-            header.append(f" {progress_badge}", style="dim")
-        console.print(header)
-
-        formatted = format_plan_content(plan_text)
-        console.print(formatted)
-    else:
-        progress_plain = f" {progress_badge}" if progress_badge else ""
-        print(f"    ↳ {title}{progress_plain}")
-        for line in plan_text.splitlines():
-            print(f"      {line}")
-
+    active_console = console or Console()
+    header = Text()
+    header.append("    ↳ ", style="dim yellow")
+    header.append(title, style="bold yellow")
+    if progress_badge:
+        header.append(f" {progress_badge}", style="dim")
+    active_console.print(header)
+    active_console.print(format_plan_content(plan_text))

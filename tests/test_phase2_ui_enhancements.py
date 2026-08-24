@@ -82,8 +82,18 @@ def test_prompt_plan_implementation_choices():
 def test_select_undo_interactive_flow():
     console = Console()
     targets = [
-        {"index": 1, "prompt": "Initial setup", "checkpoint_hash": "abc12345", "can_restore_code": True},
-        {"index": 2, "prompt": "Add database schema", "checkpoint_hash": "def67890", "can_restore_code": True},
+        {
+            "index": 1,
+            "prompt": "Initial setup",
+            "checkpoint_hash": "abc12345",
+            "can_restore_code": True,
+        },
+        {
+            "index": 2,
+            "prompt": "Add database schema",
+            "checkpoint_hash": "def67890",
+            "can_restore_code": True,
+        },
     ]
 
     with patch("coderai.cli.interactive_menu.select_with_arrows", side_effect=[0, 1]):
@@ -119,7 +129,7 @@ def test_dedicated_web_fetch_card():
         "status_code": 200,
         "bytes": 4500,
     }
-    _render_fetch_card(console, "{\"name\": \"deepseek\"}", None, metadata, ok=True)
+    _render_fetch_card(console, '{"name": "deepseek"}', None, metadata, ok=True)
 
 
 def test_dedicated_read_snippet_card():
@@ -140,7 +150,9 @@ def test_dedicated_grep_search_card():
         "path": "coderai/",
         "matches_count": 12,
     }
-    _render_search_grep_card(console, "coderai/core/session.py:100: class SessionManager\n", metadata, ok=True)
+    _render_search_grep_card(
+        console, "coderai/core/session.py:100: class SessionManager\n", metadata, ok=True
+    )
 
 
 def test_dedicated_lsp_card():
@@ -148,8 +160,20 @@ def test_dedicated_lsp_card():
     metadata = {
         "file_path": "coderai/core/app.py",
         "diagnostics": [
-            {"severity": "error", "line": 42, "col": 10, "message": "Type mismatch: expected int, got str", "code": "E012"},
-            {"severity": "warning", "line": 50, "col": 1, "message": "Unused import: sys", "code": "W001"},
+            {
+                "severity": "error",
+                "line": 42,
+                "col": 10,
+                "message": "Type mismatch: expected int, got str",
+                "code": "E012",
+            },
+            {
+                "severity": "warning",
+                "line": 50,
+                "col": 1,
+                "message": "Unused import: sys",
+                "code": "W001",
+            },
         ],
     }
     _render_lsp_card(console, None, metadata, ok=True)
@@ -170,7 +194,11 @@ def test_render_tool_card_dispatches_all_dedicated_cards():
         ("WebFetch", {"url": "https://example.com", "status_code": 200}, "Fetched content"),
         ("read", {"file_path": "main.py", "snippet_id": "c1a2", "line_count": 10}, "x = 1\n"),
         ("grep", {"query": "import os", "path": "src/"}, "src/app.py:1: import os\n"),
-        ("lsp", {"file_path": "app.py", "diagnostics": [{"severity": "error", "message": "fail"}]}, ""),
+        (
+            "lsp",
+            {"file_path": "app.py", "diagnostics": [{"severity": "error", "message": "fail"}]},
+            "",
+        ),
         ("subagent", {"task_name": "Explore repo", "agent_id": "sub_1"}, "Exploration complete."),
     ]
 

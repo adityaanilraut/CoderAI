@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import pathlib
 
+import pytest
+
 from coderai.cli.app import _build_parser
+from coderai.cli.commands import COMMAND_CATALOG, parse_slash_command
+from coderai.cli.completer import AVAILABLE_SLASH_COMMANDS
 from coderai.core.permissions import compute_tool_call_permissions, PLAN_MODE_FORCE_ASK_SCOPES
 from coderai.core.prompt import get_system_prompt, get_tools
 from coderai.core.state import (
@@ -24,6 +28,21 @@ def test_cli_parser_pure_cli():
     assert args.yes is True
     assert args.prompt_flag == "hello world"
     assert not hasattr(args, "server")
+
+
+def test_removed_cli_aliases_have_canonical_replacements():
+    parser = _build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--message", "hello"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--tools-preset", "benchmark"])
+
+
+def test_slash_catalog_drives_completion_and_dispatch():
+    completed = {name for name, _description in AVAILABLE_SLASH_COMMANDS}
+    assert {f"/{name}" for name in COMMAND_CATALOG} <= completed
+    assert parse_slash_command("/settings") == ("/config", "")
+    assert parse_slash_command("/job logs 1") == ("/jobs", "logs 1")
 
 
 def test_cache_aware_context_ordering(tmp_path: pathlib.Path):

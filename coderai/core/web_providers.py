@@ -1,8 +1,4 @@
-"""Pluggable Web Search & Fetch Providers.
-
-Implements modular providers for Exa, Perplexity, DeepSeek, Custom scripts, and generic HTTP search/fetch
-following DeepSeek Harness dsh-web specifications.
-"""
+"""Pluggable web search and fetch providers (Exa, Perplexity, custom scripts, HTTP)."""
 
 from __future__ import annotations
 
@@ -21,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any
 import requests
 
-from coderai.core.network.cache import get_search_cache
+from coderai.core.network.cache import ResponseCache, get_search_cache
 from coderai.core.network.client import get_http_client
 
 logger = logging.getLogger(__name__)
@@ -164,7 +160,9 @@ class ExaSearchProvider(WebSearchProvider):
         timeout_seconds: float = 15.0,
     ) -> WebSearchResult:
         if not self.available():
-            return WebSearchResult(query=query, error="Exa API key not configured (set EXA_API_KEY).")
+            return WebSearchResult(
+                query=query, error="Exa API key not configured (set EXA_API_KEY)."
+            )
 
         url = f"{self.base_url}/search"
         headers = {
@@ -183,7 +181,8 @@ class ExaSearchProvider(WebSearchProvider):
             resp = requests.post(url, json=payload, headers=headers, timeout=timeout_seconds)
             if resp.status_code != 200:
                 return WebSearchResult(
-                    query=query, error=f"Exa search failed with status {resp.status_code}: {resp.text}"
+                    query=query,
+                    error=f"Exa search failed with status {resp.status_code}: {resp.text}",
                 )
             data = resp.json()
             results = data.get("results") or []
@@ -405,6 +404,8 @@ class HttpSearchProvider(WebSearchProvider):
         except Exception:
             pass
 
+        return self._search_fallback(query, max_results, timeout_seconds, cache)
+
     async def search_async(
         self,
         query: str,
@@ -451,6 +452,14 @@ class HttpSearchProvider(WebSearchProvider):
 
         return await asyncio.to_thread(self.search, query, max_results, timeout_seconds)
 
+    def _search_fallback(
+        self,
+        query: str,
+        max_results: int,
+        timeout_seconds: float,
+        cache: ResponseCache,
+    ) -> WebSearchResult:
+        """Search HTML endpoints when the primary DuckDuckGo request has no results."""
         sources: list[WebSearchSource] = []
         seen_urls: set[str] = set()
         headers = {
@@ -538,9 +547,7 @@ class HttpSearchProvider(WebSearchProvider):
                                 or target_url in seen_urls
                             ):
                                 continue
-                            title = html.unescape(
-                                re.sub(r"<[^>]+>", "", h2_match.group(2)).strip()
-                            )
+                            title = html.unescape(re.sub(r"<[^>]+>", "", h2_match.group(2)).strip())
                             snippet = (
                                 html.unescape(
                                     re.sub(r"<[^>]+>", "", snippet_match.group(1)).strip()

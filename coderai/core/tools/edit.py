@@ -1,4 +1,4 @@
-"""edit tool — snippet-scoped replacement with LLM correction fallback (deepcode edit-handler.ts)."""
+"""edit tool — snippet-scoped replacement with LLM correction fallback."""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ from coderai.core.common.file_utils import (
     build_diff_preview,
     has_file_changed_since_state,
     read_text_file_with_metadata,
-    write_text_file,
 )
 from coderai.core.common.openai_thinking import build_thinking_request_options
 from coderai.core.common.string_matcher import (
@@ -36,6 +35,7 @@ from coderai.core.state import (
     record_file_state,
 )
 from coderai.core.tools.types import ToolResult, as_str
+from coderai.core.tools.file_mutation import check_file_write_access, write_file_with_callbacks
 
 MAX_CANDIDATE_COUNT = 5
 REPLACE_ALL_MATCH_THRESHOLD = 5
@@ -98,22 +98,32 @@ def handle_edit_tool(args: dict[str, Any], context: Any) -> ToolResult:
             file_path = normalize_file_path(file_path_arg if file_path_arg else snippet.file_path)
             if not is_absolute_file_path(file_path):
                 project_root = (
-                    (ctx.get("project_root") if isinstance(ctx, dict) else getattr(ctx, "project_root", None))
-                    or "."
-                )
+                    ctx.get("project_root")
+                    if isinstance(ctx, dict)
+                    else getattr(ctx, "project_root", None)
+                ) or "."
                 file_path = normalize_file_path(str(pathlib.Path(project_root) / file_path))
             if snippet.file_path != file_path and not file_path.endswith(snippet.file_path):
                 return ToolResult(
-                    ok=False, name="edit", error="snippet_id does not belong to the provided file_path."
+                    ok=False,
+                    name="edit",
+                    error="snippet_id does not belong to the provided file_path.",
                 )
         else:
             if not file_path_arg:
-                return ToolResult(ok=False, name="edit", error="file_path is required when snippet_id is omitted.")
+                return ToolResult(
+                    ok=False, name="edit", error="file_path is required when snippet_id is omitted."
+                )
             project_root = (
-                (ctx.get("project_root") if isinstance(ctx, dict) else getattr(ctx, "project_root", None))
-                or "."
+                ctx.get("project_root")
+                if isinstance(ctx, dict)
+                else getattr(ctx, "project_root", None)
+            ) or "."
+            file_path = (
+                file_path_arg
+                if is_absolute_file_path(file_path_arg)
+                else str(pathlib.Path(project_root) / file_path_arg)
             )
-            file_path = file_path_arg if is_absolute_file_path(file_path_arg) else str(pathlib.Path(project_root) / file_path_arg)
             file_path = normalize_file_path(file_path)
             p_check = pathlib.Path(file_path)
             if not p_check.exists():
@@ -136,7 +146,12 @@ def handle_edit_tool(args: dict[str, Any], context: Any) -> ToolResult:
                 mark_file_read(session_id, file_path, content_res)
                 file_state = get_file_state(session_id, file_path)
             except Exception as e:
-                return ToolResult(ok=False, name="edit", error=f"Error reading file before editing: {e}")
+                return ToolResult(
+                    ok=False, name="edit", error=f"Error reading file before editing: {e}"
+                )
+
+        if snippet is None:
+            return ToolResult(ok=False, name="edit", error="Could not establish an edit scope.")
 
         old_string = validated_args["old_string"]
         new_string = validated_args["new_string"]
@@ -152,21 +167,9 @@ def handle_edit_tool(args: dict[str, Any], context: Any) -> ToolResult:
         if p.is_dir():
             return ToolResult(ok=False, name="edit", error="file_path points to a directory.")
 
-        sandbox_mode = ctx.get("sandbox_mode") if isinstance(ctx, dict) else getattr(ctx, "sandbox_mode", None)
-        project_root = (
-            (ctx.get("project_root") if isinstance(ctx, dict) else getattr(ctx, "project_root", None))
-            or "."
-        )
-        from coderai.core.sandbox import check_sandbox_path_access
-
-        sb_allowed, sb_err = check_sandbox_path_access(
-            file_path,
-            op="write",
-            mode=sandbox_mode,
-            workspace_root=project_root,
-        )
-        if not sb_allowed and sb_err:
-            return ToolResult(ok=False, name="edit", error=sb_err)
+        sandbox_error = check_file_write_access(ctx, file_path)
+        if sandbox_error:
+            return ToolResult(ok=False, name="edit", error=sandbox_error)
 
         file_state = get_file_state(session_id, file_path)
         if not file_state:
@@ -302,28 +305,15 @@ def handle_edit_tool(args: dict[str, Any], context: Any) -> ToolResult:
                 },
             )
 
-        if isinstance(ctx, dict):
-            on_before_mutation = ctx.get("on_before_file_mutation")
-            on_after_mutation = ctx.get("on_after_file_mutation")
-        else:
-            on_before_mutation = getattr(ctx, "on_before_file_mutation", None)
-            on_after_mutation = getattr(ctx, "on_after_file_mutation", None)
-
         updated_content = _apply_replacement(
             raw, scope, matches, replacement_old, replacement_new, replace_all
         )
         diff_preview = build_diff_preview(file_path, raw, updated_content)
 
         try:
-            if on_before_mutation:
-                on_before_mutation(file_path)
-
-            write_text_file(
-                file_path, updated_content, metadata["encoding"], metadata["lineEndings"]
+            write_file_with_callbacks(
+                ctx, file_path, updated_content, metadata["encoding"], metadata["lineEndings"]
             )
-
-            if on_after_mutation:
-                on_after_mutation(file_path)
 
             fresh_metadata = read_text_file_with_metadata(file_path)
             record_file_state(

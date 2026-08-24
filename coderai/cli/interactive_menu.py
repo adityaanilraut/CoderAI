@@ -2,32 +2,21 @@
 
 from __future__ import annotations
 
+import sys
 from typing import Any
+
+from rich.live import Live
+from rich.panel import Panel
+from rich.table import Table
 
 from coderai.core.common.model_capabilities import (
     CURATED_MODELS,
-    format_capability_badges,
     get_model_badges,
 )
-from coderai.core.prompt import list_skills
 from coderai.core.session import SessionEntry, SessionManager, SessionMessage
+from coderai.core.skill import list_skills
 
-try:
-    from rich.live import Live
-    from rich.panel import Panel
-    from rich.table import Table
-    from rich.text import Text
-
-    _RICH = True
-except ImportError:  # pragma: no cover
-    Live = None  # type: ignore[assignment,misc]
-    Panel = None  # type: ignore[assignment,misc]
-    Table = None  # type: ignore[assignment,misc]
-    Text = None  # type: ignore[assignment,misc]
-    _RICH = False
-
-
-import sys
+_RICH = True
 
 
 def _read_single_key() -> str:
@@ -150,7 +139,9 @@ def select_with_arrows(
             custom_num = len(filtered_indices) + 1
             is_sel_custom = cur_sel == len(items)
             prefix = "[bold cyan]❯[/]" if is_sel_custom else " "
-            num_tag = f"[bold cyan]{custom_num:2}.[/]" if is_sel_custom else f"[dim]{custom_num:2}.[/]"
+            num_tag = (
+                f"[bold cyan]{custom_num:2}.[/]" if is_sel_custom else f"[dim]{custom_num:2}.[/]"
+            )
             title_style = (
                 "[bold white on #252538] Other / Custom (type custom value) [/]"
                 if is_sel_custom
@@ -160,9 +151,7 @@ def select_with_arrows(
 
         total_count = len(filtered_indices) + (1 if allow_custom else 0)
         quick_range = f"1-{min(total_count, 9)}" if total_count > 1 else "1"
-        footer = (
-            f"[dim]↑/↓ or j/k: navigate • Enter: select • {quick_range}: quick select • Esc/q: cancel[/]"
-        )
+        footer = f"[dim]↑/↓ or j/k: navigate • Enter: select • {quick_range}: quick select • Esc/q: cancel[/]"
         if Panel is not None:
             return Panel(
                 "\n".join(body_lines) + f"\n\n{footer}",
@@ -330,7 +319,6 @@ def select_with_arrows(
             filter_query += key
 
 
-
 def _format_badges_markup(badges: list[str]) -> str:
     parts: list[str] = []
     for b in badges:
@@ -413,7 +401,7 @@ REASONING_EFFORT_CHOICES: list[tuple[str, str, str, str]] = [
 def select_reasoning_effort_interactive(
     console: Any | None, current_effort: str = "max", model: str = ""
 ) -> str:
-    """Prompt the user with an interactive reasoning effort selection menu (DeepSeek Harness alignment)."""
+    """Prompt the user with an interactive reasoning effort selection menu."""
     norm_cur = (current_effort or "max").strip().lower()
     title_extra = f" for '{model}'" if model else ""
 
@@ -433,7 +421,6 @@ def select_reasoning_effort_interactive(
 
         return normalize_reasoning_effort(res)
     return norm_cur
-
 
 
 def select_session_interactive(console: Any | None, sessions: list[SessionEntry]) -> str | None:
@@ -514,7 +501,9 @@ def select_session_interactive(console: Any | None, sessions: list[SessionEntry]
                 print(
                     f"  {abs_idx:2}. {s.id[:14]}  {s.status:10} {plan_str}  {s.active_tokens:6} tokens  {(s.summary or '')[:40]}"
                 )
-            print("Actions: <num> resume | d <num> delete | f <num> fork | s <query> search | n/p page | Enter cancel")
+            print(
+                "Actions: <num> resume | d <num> delete | f <num> fork | s <query> search | n/p page | Enter cancel"
+            )
 
         try:
             raw_choice = input(
@@ -536,7 +525,9 @@ def select_session_interactive(console: Any | None, sessions: list[SessionEntry]
 
         # Search filter command: "s <query>" or "/search <query>"
         if raw_choice.startswith(("s ", "search ", "/search ", "find ")):
-            active_filter = raw_choice.split(None, 1)[1].strip() if len(raw_choice.split()) > 1 else ""
+            active_filter = (
+                raw_choice.split(None, 1)[1].strip() if len(raw_choice.split()) > 1 else ""
+            )
             current_page = 0
             continue
         if raw_choice.lower() in ("s", "clear", "all", "reset"):

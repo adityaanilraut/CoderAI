@@ -1,4 +1,4 @@
-"""Pluggable statusline engine — port of deepcode statusline subsystem.
+"""Pluggable statusline engine
 
 Supports:
 - Default dynamic gauge (Model, Tokens, Context Window %, Plan Mode, Git Branch, Turns, MCP count)
@@ -17,15 +17,10 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from rich.console import Console
+from rich.text import Text
+
 from coderai.core.settings import get_default_context_window
-
-try:
-    from rich.text import Text
-
-    _RICH = True
-except ImportError:  # pragma: no cover
-    Text = None  # type: ignore[assignment,misc]
-    _RICH = False
 
 ANSI_ESCAPE_PATTERN = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
@@ -189,19 +184,11 @@ class StatuslineEngine:
         branch: str,
         turns: int = 0,
         mcp_count: int = 0,
-    ) -> Text | str:
+    ) -> Text:
         """Format the default dynamic powerline gauge."""
         plan_label = "ON" if plan_mode else "OFF"
         tokens_display, token_style, pct = compute_token_gauge(active_tokens, model)
         mini_bar = make_mini_bar(pct, width=6)
-
-        if not _RICH or Text is None:
-            extra = ""
-            if turns > 0:
-                extra += f" [Turns: {turns}]"
-            if mcp_count > 0:
-                extra += f" [MCP: {mcp_count}]"
-            return f"[Model: {model}] [Tokens: {tokens_display}] [Plan: {plan_label}] [Git: {branch}]{extra}"
 
         bar = Text()
         # Model Segment
@@ -253,6 +240,7 @@ class StatuslineEngine:
         mcp_count: int = 0,
     ) -> None:
         """Render the active statusline line above the prompt."""
+        active_console = console or Console()
         provider_cfg = self._get_provider_config()
 
         if provider_cfg:
@@ -264,11 +252,8 @@ class StatuslineEngine:
                     provider_cfg["command"], project_root, ttl=ttl
                 )
                 if custom_text:
-                    if console is not None and _RICH:
-                        console.print()
-                        console.print(Text(f" {custom_text}", style="dim cyan"))
-                    else:
-                        print(f"\n {custom_text}")
+                    active_console.print()
+                    active_console.print(Text(f" {custom_text}", style="dim cyan"))
                     return
             elif ptype == "module" and provider_cfg.get("module"):
                 ctx = {
@@ -281,11 +266,8 @@ class StatuslineEngine:
                 }
                 custom_text = self.execute_module_provider(provider_cfg["module"], ctx, ttl=ttl)
                 if custom_text:
-                    if console is not None and _RICH:
-                        console.print()
-                        console.print(Text(f" {custom_text}", style="dim cyan"))
-                    else:
-                        print(f"\n {custom_text}")
+                    active_console.print()
+                    active_console.print(Text(f" {custom_text}", style="dim cyan"))
                     return
 
         # Fallback to default statusline
@@ -293,11 +275,7 @@ class StatuslineEngine:
         bar = self.format_default_status_bar(
             model, active_tokens, plan_mode, branch, turns=turns, mcp_count=mcp_count
         )
-        if console is not None and _RICH:
-            console.print(bar)
-        else:
-            print(f"{bar}")
-
+        active_console.print(bar)
 
 
 _DEFAULT_ENGINE = StatuslineEngine()
@@ -310,7 +288,7 @@ def format_default_status_bar(
     branch: str,
     turns: int = 0,
     mcp_count: int = 0,
-) -> Text | str:
+) -> Text:
     """Format the default dynamic gauge via module helper."""
     return _DEFAULT_ENGINE.format_default_status_bar(
         model, active_tokens, plan_mode, branch, turns=turns, mcp_count=mcp_count

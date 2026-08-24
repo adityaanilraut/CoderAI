@@ -54,9 +54,9 @@ def _tree(tmp_path: pathlib.Path) -> None:
 def test_registry_and_prompt_include_glob_grep():
     registry = get_tool_registry()
     assert registry.has_tool("glob")
-    assert registry.has_tool("Glob")
     assert registry.has_tool("grep")
-    assert registry.has_tool("Grep")
+    assert not registry.has_tool("Glob")
+    assert not registry.has_tool("Grep")
     names = {t["function"]["name"] for t in get_tools()}
     assert {"glob", "grep"} <= names
     assert "## glob" in TOOL_DOCS

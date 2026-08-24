@@ -1,4 +1,4 @@
-"""Model capability hints — port of deepcode & DeepSeek Harness model seams."""
+""""""
 
 from __future__ import annotations
 
@@ -41,13 +41,24 @@ def defaults_to_thinking_mode(model: str) -> bool:
     m = model.strip().lower()
     if m in THINKING_CAPABLE_MODELS:
         return True
-    if any(m.startswith(prefix) for prefix in ("o1", "o3", "o4", "deepseek-reasoner", "deepseek-r1", "claude-3-7", "deepseek-v4")):
+    if any(
+        m.startswith(prefix)
+        for prefix in (
+            "o1",
+            "o3",
+            "o4",
+            "deepseek-reasoner",
+            "deepseek-r1",
+            "claude-3-7",
+            "deepseek-v4",
+        )
+    ):
         return True
     return False
 
 
 def get_supported_reasoning_efforts(model: str) -> list[str]:
-    """Return the list of supported reasoning efforts for a given model (DeepSeek Harness alignment)."""
+    """Return the list of supported reasoning efforts for a given model."""
     if defaults_to_thinking_mode(model):
         return ["off", "low", "medium", "high", "max"]
     return ["off"]
@@ -96,7 +107,6 @@ def resolve_adaptive_reasoning_effort(
     if turn <= 1 and step <= 1:
         return "max"
     return "high"
-
 
 
 def supports_multimodal(model: str, mode: str = "default") -> bool:
@@ -156,15 +166,27 @@ def format_model_effort_tags(model: str) -> str:
 
 CURATED_MODELS: list[tuple[str, str, str]] = [
     # OpenAI GPT-5.6
-    ("gpt-5.6-sol", "Flagship Tier: Deep reasoning, complex agentic coding (Effort: max)", "OpenAI GPT-5.6"),
-    ("gpt-5.6-terra", "Balanced Tier: Everyday coding, cost/speed balanced (Effort: medium)", "OpenAI GPT-5.6"),
+    (
+        "gpt-5.6-sol",
+        "Flagship Tier: Deep reasoning, complex agentic coding (Effort: max)",
+        "OpenAI GPT-5.6",
+    ),
+    (
+        "gpt-5.6-terra",
+        "Balanced Tier: Everyday coding, cost/speed balanced (Effort: medium)",
+        "OpenAI GPT-5.6",
+    ),
     (
         "gpt-5.6-luna",
         "Fast Tier: Ultra-low latency, inline edits & suggestions (Default)",
         "OpenAI GPT-5.6",
     ),
     # Google Gemini
-    ("gemini-3.7-flash", "Next-gen hybrid reasoning with visible thinking (Efforts: low..max)", "Google Gemini"),
+    (
+        "gemini-3.7-flash",
+        "Next-gen hybrid reasoning with visible thinking (Efforts: low..max)",
+        "Google Gemini",
+    ),
     # DeepSeek V4
     (
         "deepseek-v4-pro",
@@ -175,4 +197,3 @@ CURATED_MODELS: list[tuple[str, str, str]] = [
     # Anthropic Claude
     ("claude-3-7-sonnet", "Hybrid reasoning & deep frontier tool calling", "Anthropic"),
 ]
-

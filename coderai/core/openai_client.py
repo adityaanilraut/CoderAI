@@ -1,4 +1,4 @@
-"""OpenAI client factory — port of deepcode core/src/common/openai-client.ts."""
+""""""
 
 from __future__ import annotations
 
@@ -171,9 +171,9 @@ def create_openai_client(
 
     try:
         from openai import OpenAI
+
         try:
-            import openai.resources.chat
-            import openai.resources.models
+            pass
         except Exception:
             pass
 

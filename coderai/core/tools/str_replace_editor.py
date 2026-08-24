@@ -11,7 +11,6 @@ from coderai.core.common.file_utils import (
     build_diff_preview,
     ensure_parent_directory,
     read_text_file_with_metadata,
-    write_text_file,
 )
 from coderai.core.common.string_matcher import match_multistage
 from coderai.core.state import (
@@ -20,6 +19,7 @@ from coderai.core.state import (
     record_file_state,
 )
 from coderai.core.tools.types import ToolResult, as_str
+from coderai.core.tools.file_mutation import check_file_write_access, write_file_with_callbacks
 
 DEFAULT_MAX_OUTPUT_CHARS = 32_000
 TRUNCATED_MESSAGE = "\n<response clipped>"
@@ -228,25 +228,13 @@ def _handle_create(target_path: str, file_text: Any, context: Any) -> ToolResult
             error=f"File already exists at `{target_path}`. Cannot use `create` on existing files. Use `str_replace` or `insert`.",
         )
 
-    sandbox_mode = getattr(context, "sandbox_mode", None)
-    project_root = getattr(context, "project_root", None)
-    if isinstance(context, dict):
-        sandbox_mode = context.get("sandbox_mode", sandbox_mode)
-        project_root = context.get("project_root", project_root)
-    from coderai.core.sandbox import check_sandbox_path_access
-
-    sb_allowed, sb_err = check_sandbox_path_access(
-        target_path, op="write", mode=sandbox_mode, workspace_root=project_root
-    )
-    if not sb_allowed and sb_err:
-        return ToolResult(ok=False, name="str_replace_editor", error=sb_err)
-
-    if context and hasattr(context, "on_before_file_mutation") and context.on_before_file_mutation:
-        context.on_before_file_mutation(target_path)
+    sandbox_error = check_file_write_access(context, target_path)
+    if sandbox_error:
+        return ToolResult(ok=False, name="str_replace_editor", error=sandbox_error)
 
     ensure_parent_directory(target_path)
     try:
-        write_text_file(target_path, text)
+        write_file_with_callbacks(context, target_path, text)
     except Exception as exc:
         return ToolResult(
             ok=False,
@@ -256,9 +244,6 @@ def _handle_create(target_path: str, file_text: Any, context: Any) -> ToolResult
 
     session_id = str(getattr(context, "session_id", "default") or "default")
     _record_state(session_id, target_path, text)
-
-    if context and hasattr(context, "on_after_file_mutation") and context.on_after_file_mutation:
-        context.on_after_file_mutation(target_path)
 
     return ToolResult(
         ok=True,
@@ -297,18 +282,9 @@ def _handle_str_replace(target_path: str, old_str: Any, new_str: Any, context: A
         )
 
     session_id = str(getattr(context, "session_id", "default") or "default")
-    sandbox_mode = getattr(context, "sandbox_mode", None)
-    project_root = getattr(context, "project_root", None)
-    if isinstance(context, dict):
-        sandbox_mode = context.get("sandbox_mode", sandbox_mode)
-        project_root = context.get("project_root", project_root)
-    from coderai.core.sandbox import check_sandbox_path_access
-
-    sb_allowed, sb_err = check_sandbox_path_access(
-        target_path, op="write", mode=sandbox_mode, workspace_root=project_root
-    )
-    if not sb_allowed and sb_err:
-        return ToolResult(ok=False, name="str_replace_editor", error=sb_err)
+    sandbox_error = check_file_write_access(context, target_path)
+    if sandbox_error:
+        return ToolResult(ok=False, name="str_replace_editor", error=sandbox_error)
 
     from coderai.core.tools.observation import get_observation_tracker
 
@@ -343,13 +319,10 @@ def _handle_str_replace(target_path: str, old_str: Any, new_str: Any, context: A
     # Save for undo
     _push_undo(target_path, current_content)
 
-    if context and hasattr(context, "on_before_file_mutation") and context.on_before_file_mutation:
-        context.on_before_file_mutation(target_path)
-
     start_off, end_off = matches[0]
     new_content = current_content[:start_off] + match_res.replaced_new + current_content[end_off:]
     try:
-        write_text_file(target_path, new_content)
+        write_file_with_callbacks(context, target_path, new_content)
     except Exception as exc:
         return ToolResult(
             ok=False,
@@ -359,9 +332,6 @@ def _handle_str_replace(target_path: str, old_str: Any, new_str: Any, context: A
 
     _record_state(session_id, target_path, new_content)
     get_observation_tracker().record_observation(session_id, target_path, content=new_content)
-
-    if context and hasattr(context, "on_after_file_mutation") and context.on_after_file_mutation:
-        context.on_after_file_mutation(target_path)
 
     diff = build_diff_preview(target_path, current_content, new_content)
     return ToolResult(
@@ -424,18 +394,9 @@ def _handle_insert(target_path: str, insert_line: Any, new_str: Any, context: An
         )
 
     session_id = str(getattr(context, "session_id", "default") or "default")
-    sandbox_mode = getattr(context, "sandbox_mode", None)
-    project_root = getattr(context, "project_root", None)
-    if isinstance(context, dict):
-        sandbox_mode = context.get("sandbox_mode", sandbox_mode)
-        project_root = context.get("project_root", project_root)
-    from coderai.core.sandbox import check_sandbox_path_access
-
-    sb_allowed, sb_err = check_sandbox_path_access(
-        target_path, op="write", mode=sandbox_mode, workspace_root=project_root
-    )
-    if not sb_allowed and sb_err:
-        return ToolResult(ok=False, name="str_replace_editor", error=sb_err)
+    sandbox_error = check_file_write_access(context, target_path)
+    if sandbox_error:
+        return ToolResult(ok=False, name="str_replace_editor", error=sandbox_error)
 
     from coderai.core.tools.observation import get_observation_tracker
 
@@ -451,9 +412,6 @@ def _handle_insert(target_path: str, insert_line: Any, new_str: Any, context: An
 
     _push_undo(target_path, current_content)
 
-    if context and hasattr(context, "on_before_file_mutation") and context.on_before_file_mutation:
-        context.on_before_file_mutation(target_path)
-
     insert_content = new_s if new_s.endswith("\n") else new_s + "\n"
     if ins_line == 0:
         new_content = insert_content + "".join(lines)
@@ -461,7 +419,7 @@ def _handle_insert(target_path: str, insert_line: Any, new_str: Any, context: An
         new_content = "".join(lines[:ins_line]) + insert_content + "".join(lines[ins_line:])
 
     try:
-        write_text_file(target_path, new_content)
+        write_file_with_callbacks(context, target_path, new_content)
     except Exception as exc:
         return ToolResult(
             ok=False,
@@ -471,9 +429,6 @@ def _handle_insert(target_path: str, insert_line: Any, new_str: Any, context: An
 
     _record_state(session_id, target_path, new_content)
     get_observation_tracker().record_observation(session_id, target_path, content=new_content)
-
-    if context and hasattr(context, "on_after_file_mutation") and context.on_after_file_mutation:
-        context.on_after_file_mutation(target_path)
 
     return ToolResult(
         ok=True,
@@ -491,11 +446,8 @@ def _handle_undo(target_path: str, context: Any) -> ToolResult:
             error=f"No previous edit found in history for `{target_path}` to undo.",
         )
 
-    if context and hasattr(context, "on_before_file_mutation") and context.on_before_file_mutation:
-        context.on_before_file_mutation(target_path)
-
     try:
-        write_text_file(target_path, prev)
+        write_file_with_callbacks(context, target_path, prev)
     except Exception as exc:
         return ToolResult(
             ok=False,
@@ -505,9 +457,6 @@ def _handle_undo(target_path: str, context: Any) -> ToolResult:
 
     session_id = str(getattr(context, "session_id", "default") or "default")
     _record_state(session_id, target_path, prev)
-
-    if context and hasattr(context, "on_after_file_mutation") and context.on_after_file_mutation:
-        context.on_after_file_mutation(target_path)
 
     return ToolResult(
         ok=True,

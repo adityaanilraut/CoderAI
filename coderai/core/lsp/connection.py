@@ -151,9 +151,7 @@ class LspConnection:
                 except Exception:
                     pass
 
-    async def send_request(
-        self, method: str, params: Any = None, timeout_s: float = 30.0
-    ) -> dict[str, Any]:
+    async def send_request(self, method: str, params: Any = None, timeout_s: float = 30.0) -> Any:
         """Send a JSON-RPC request and await the corresponding response."""
         if not self.is_alive():
             raise RuntimeError(f"LSP server '{self.command[0]}' is not running")
@@ -186,7 +184,9 @@ class LspConnection:
             res = await asyncio.wait_for(fut, timeout=timeout_s)
             if "error" in res:
                 err = res["error"]
-                err_msg = err.get("message", "Unknown LSP error") if isinstance(err, dict) else str(err)
+                err_msg = (
+                    err.get("message", "Unknown LSP error") if isinstance(err, dict) else str(err)
+                )
                 raise RuntimeError(f"LSP error for {method}: {err_msg}")
             return res.get("result")
         except asyncio.TimeoutError:

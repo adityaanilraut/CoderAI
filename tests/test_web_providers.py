@@ -6,8 +6,6 @@ import pytest
 from coderai.core.web_providers import (
     ExaSearchProvider,
     PerplexitySearchProvider,
-    DeepSeekSearchProvider,
-    HttpSearchProvider,
     WebSearchSource,
     WebSearchResult,
     register_web_search_provider,
@@ -15,7 +13,6 @@ from coderai.core.web_providers import (
     list_web_search_providers,
 )
 from coderai.core.tools.web_search import handle_web_search_tool
-from coderai.core.tools.web_fetch import handle_web_fetch_tool
 
 
 def test_provider_registry_listing():
@@ -64,8 +61,10 @@ async def test_handle_web_search_tool_validation():
 async def test_handle_web_search_mock_provider(monkeypatch):
     class MockProvider:
         id = "mock"
+
         def available(self):
             return True
+
         def search(self, q, max_results=8, timeout_seconds=15.0):
             return WebSearchResult(
                 query=q,

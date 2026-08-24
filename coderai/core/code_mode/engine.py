@@ -1,24 +1,18 @@
-"""Code Mode & Interactive Execution Engine for CoderAI.
-
-Provides stateful, sandboxed Python code execution with direct access to workspace
-tools, variable retention across turns, AST expression evaluation, and stdout/stderr capture.
-"""
+"""Stateful Python execution for the code_mode tool."""
 
 from __future__ import annotations
 
-import ast
 import asyncio
-import contextlib
-import io
 import logging
 import os
 import pathlib
 import subprocess
 import sys
 import time
-import traceback
 from dataclasses import dataclass, field
 from typing import Any
+
+from coderai.core.sandbox import DEFAULT_SANDBOX_MODE, parse_sandbox_mode, wrap_sandbox_command
 
 logger = logging.getLogger(__name__)
 
@@ -62,10 +56,11 @@ class CodeModeResult:
 
 
 class CodeModeSandbox:
-    """Stateful execution sandbox retaining variables across multiple code_mode turns."""
+    """Stateful subprocess execution retaining serializable variables between calls."""
 
-    def __init__(self, project_root: str) -> None:
+    def __init__(self, project_root: str, sandbox_mode: str | None = None) -> None:
         self.project_root = str(pathlib.Path(project_root).resolve())
+        self.sandbox_mode = parse_sandbox_mode(sandbox_mode) or DEFAULT_SANDBOX_MODE
         self.globals: dict[str, Any] = {}
         self.code_history: list[str] = []
         self.reset()
@@ -166,27 +161,16 @@ class CodeModeSandbox:
         )
         return res.returncode, res.stdout, res.stderr
 
-    async def execute(
-        self, code: str, timeout_seconds: float = 30.0, use_subprocess: bool = True
-    ) -> CodeModeResult:
-        """Execute code in the stateful sandbox, capturing output and evaluating expressions.
-
-        When use_subprocess is True (default), executes within an isolated CPython worker
-        subprocess (port of @deepseek-ai/dsh-code-runtime-python) with process-group isolation,
-        timeout termination, and structured JSON IPC for variables and result extraction.
-        """
+    async def execute(self, code: str, timeout_seconds: float = 30.0) -> CodeModeResult:
+        """Execute code in an isolated worker and capture its structured result."""
         start_time = time.time()
-
-        if use_subprocess:
-            try:
-                res = await self._execute_subprocess(code, timeout_seconds)
-                res.duration_seconds = max(0.0, time.time() - start_time)
-                return res
-            except Exception as e:
-                logger.warning(f"Subprocess code runtime fallback due to: {e}")
-
-        # In-process execution fallback
-        return await self._execute_in_process(code, timeout_seconds, start_time)
+        try:
+            result = await self._execute_subprocess(code, timeout_seconds)
+        except Exception as exc:
+            logger.exception("Code mode worker failed")
+            result = CodeModeResult(error=f"RuntimeError: {exc}")
+        result.duration_seconds = max(0.0, time.time() - start_time)
+        return result
 
     async def _execute_subprocess(self, code: str, timeout_seconds: float) -> CodeModeResult:
         """Run code inside an isolated CPython worker subprocess."""
@@ -225,10 +209,10 @@ import traceback
 def main():
     if len(sys.argv) < 3:
         sys.exit(1)
-    
+
     code_path = sys.argv[1]
     data_path = sys.argv[2]
-    
+
     with open(code_path, "r", encoding="utf-8") as f:
         code = f.read()
     with open(data_path, "r", encoding="utf-8") as f:
@@ -371,7 +355,8 @@ if __name__ == "__main__":
     main()
 """
 
-        with tempfile.TemporaryDirectory() as tmpdir:
+        sandbox_tmp = "/private/tmp" if sys.platform == "darwin" else None
+        with tempfile.TemporaryDirectory(prefix="coderai-code-", dir=sandbox_tmp) as tmpdir:
             tmp_path = pathlib.Path(tmpdir)
             code_file = tmp_path / "user_code.py"
             data_file = tmp_path / "data.json"
@@ -379,16 +364,28 @@ if __name__ == "__main__":
 
             code_file.write_text(code, encoding="utf-8")
             data_file.write_text(
-                json.dumps({
-                    "project_root": self.project_root,
-                    "variables": state_payload,
-                    "history_code": "\n".join(self.code_history),
-                }),
+                json.dumps(
+                    {
+                        "project_root": self.project_root,
+                        "variables": state_payload,
+                        "history_code": "\n".join(self.code_history),
+                    }
+                ),
                 encoding="utf-8",
             )
             runner_file.write_text(runner_script, encoding="utf-8")
 
-            cmd = [sys.executable, "-u", str(runner_file), str(code_file), str(data_file)]
+            cmd, sandbox_meta = wrap_sandbox_command(
+                [sys.executable, "-u", str(runner_file), str(code_file), str(data_file)],
+                mode=self.sandbox_mode,
+                workspace_root=self.project_root,
+                cwd=self.project_root,
+            )
+            if self.sandbox_mode != "danger-full-access" and not sandbox_meta.get("sandboxApplied"):
+                return CodeModeResult(
+                    error="SandboxUnavailable: code_mode requires an OS sandbox backend "
+                    f"for {self.sandbox_mode!r} mode."
+                )
 
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -438,92 +435,18 @@ if __name__ == "__main__":
                 error=f"Subprocess terminated with code {proc.returncode} without writing output payload.",
             )
 
-    async def _execute_in_process(
-        self, code: str, timeout_seconds: float, start_time: float
-    ) -> CodeModeResult:
-        """In-process execution fallback."""
-        stdout_buf = io.StringIO()
-        stderr_buf = io.StringIO()
-
-        def _run_sync() -> tuple[Any, str | None]:
-            try:
-                tree = ast.parse(code, filename="<code_mode>", mode="exec")
-            except SyntaxError as e:
-                return None, f"SyntaxError: {e}"
-
-            last_expr = None
-            statements = tree.body
-
-            if statements and isinstance(statements[-1], ast.Expr):
-                last_expr = ast.Expression(statements[-1].value)
-                statements = statements[:-1]
-
-            with contextlib.redirect_stdout(stdout_buf), contextlib.redirect_stderr(stderr_buf):
-                try:
-                    if statements:
-                        mod = ast.Module(body=statements, type_ignores=[])
-                        compiled_stmts = compile(mod, filename="<code_mode>", mode="exec")
-                        exec(compiled_stmts, self.globals)
-
-                    eval_result = None
-                    if last_expr is not None:
-                        compiled_expr = compile(last_expr, filename="<code_mode>", mode="eval")
-                        eval_result = eval(compiled_expr, self.globals)
-
-                    return eval_result, None
-                except Exception as exc:
-                    return None, f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"
-
-        try:
-            eval_res, err = await asyncio.wait_for(
-                asyncio.to_thread(_run_sync),
-                timeout=timeout_seconds,
-            )
-        except asyncio.TimeoutError:
-            eval_res = None
-            err = f"TimeoutError: Code execution exceeded {timeout_seconds}s limit."
-        except asyncio.CancelledError:
-            eval_res = None
-            err = "CancelledError: Code execution was cancelled."
-        except Exception as e:
-            eval_res = None
-            err = str(e)
-
-        duration = max(0.0, time.time() - start_time)
-        user_vars = [
-            k
-            for k in self.globals.keys()
-            if not k.startswith("_")
-            and k
-            not in (
-                "project_root",
-                "read_file",
-                "write_file",
-                "edit_file",
-                "glob_search",
-                "grep_search",
-                "run_command",
-            )
-        ]
-
-        return CodeModeResult(
-            stdout=stdout_buf.getvalue(),
-            stderr=stderr_buf.getvalue(),
-            result=eval_res,
-            variables=sorted(user_vars),
-            error=err,
-            duration_seconds=duration,
-        )
-
 
 _sandboxes: dict[str, CodeModeSandbox] = {}
 
 
-def get_code_mode_sandbox(session_id: str, project_root: str) -> CodeModeSandbox:
+def get_code_mode_sandbox(
+    session_id: str, project_root: str, sandbox_mode: str | None = None
+) -> CodeModeSandbox:
     """Get or create the stateful sandbox for a given session."""
-    key = f"{session_id}:{project_root}"
+    normalized_mode = parse_sandbox_mode(sandbox_mode) or DEFAULT_SANDBOX_MODE
+    key = f"{session_id}:{project_root}:{normalized_mode}"
     if key not in _sandboxes:
-        _sandboxes[key] = CodeModeSandbox(project_root)
+        _sandboxes[key] = CodeModeSandbox(project_root, normalized_mode)
     return _sandboxes[key]
 
 

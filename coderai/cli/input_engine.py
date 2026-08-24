@@ -129,7 +129,9 @@ def read_paste_mode(
     prompt_label: str = "paste (enter line with ::: or Ctrl-D to finish)> ",
 ) -> str:
     """Read multiline paste mode until explicit delimiter ':::' or EOF."""
-    print("Entered multiline paste mode. Paste your text, then type ':::' on a new line or press Ctrl-D to finish.")
+    print(
+        "Entered multiline paste mode. Paste your text, then type ':::' on a new line or press Ctrl-D to finish."
+    )
     lines: list[str] = []
     while True:
         try:

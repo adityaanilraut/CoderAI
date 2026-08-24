@@ -1,12 +1,11 @@
-"""Comprehensive tests for ported deepseek-harness architectural patterns.
+"""Focused tests for runtime event, storage, skill, and state behavior.
 
 Tests:
 1. Event model: typed SessionEvent creation, serialization, derive_messages_from_events.
 2. Compaction: ToolResultPruner, safe region discovery, CompactionResult.
-3. Approval: ApprovalService, fail-closed policy, audit event recording.
-4. Persistence: JsonlPersistence event append, replay, flush, and deletion.
-5. Skill subsystem: SkillRegistry layered scanning, frontmatter parsing, match_skills.
-6. State subsystem: SessionStateManager isolation, file version tracking, snippet scoping.
+3. Storage: mixed legacy/event JSONL replay and deletion.
+4. Skill subsystem: SkillRegistry layered scanning, frontmatter parsing, match_skills.
+5. State subsystem: SessionStateManager isolation, file version tracking, snippet scoping.
 """
 
 import pathlib
@@ -24,13 +23,7 @@ from coderai.core.events import (
     derive_messages_from_events,
 )
 from coderai.core.compaction import ToolResultPruner
-from coderai.core.approval import (
-    ApprovalService,
-    ApprovalOutcome,
-    ApprovalPolicy,
-    ApprovalRequest,
-)
-from coderai.core.persistence import JsonlPersistence
+from coderai.core.session_store import JsonlSessionStore
 from coderai.core.skill import (
     SkillRegistry,
 )
@@ -111,45 +104,26 @@ def test_tool_result_pruner_symmetric_truncation():
     assert pruned.endswith("A" * 50)
 
 
-def test_approval_service_fail_closed_and_policy():
-    svc = ApprovalService(default_policy=ApprovalPolicy.ASK)
-    req = ApprovalRequest(tool_name="bash", session_id="s1", scopes=["write-in-cwd"])
-
-    # Without answerers, fail-closed returns UNAVAILABLE
-    outcome = svc.request(req)
-    assert outcome == ApprovalOutcome.UNAVAILABLE
-
-    # With answerer allowing once
-    svc.register_answerer(lambda r: ApprovalOutcome.ALLOWED_ONCE)
-    outcome2 = svc.request(req)
-    assert outcome2 == ApprovalOutcome.ALLOWED_ONCE
-
-    # When policy is NEVER, always REJECTED regardless of answerers
-    svc.set_policy("s1", ApprovalPolicy.NEVER)
-    outcome3 = svc.request(req)
-    assert outcome3 == ApprovalOutcome.REJECTED
-
-
-def test_jsonl_persistence(tmp_path: pathlib.Path):
-    persist = JsonlPersistence(tmp_path / "sessions")
+def test_jsonl_session_store_reads_mixed_rows(tmp_path: pathlib.Path):
+    store = JsonlSessionStore(str(tmp_path))
     sid = "test_sess_001"
 
     ev1 = make_user_event(seq=0, content="First prompt")
     ev2 = make_assistant_event(seq=1, turn=1, step=1, content="Hello response")
 
-    persist.append_event(sid, ev1)
-    persist.append_event(sid, ev2)
-    persist.flush(sid)
+    store.append_row(
+        sid,
+        {"id": "legacy", "sessionId": sid, "role": "user", "content": "Legacy prompt"},
+    )
+    store.append_row(sid, ev1.to_dict())
+    store.append_row(sid, ev2.to_dict())
 
-    assert persist.exists(sid) is True
-
-    reloaded = persist.list_events(sid)
-    assert len(reloaded) == 2
-    assert reloaded[0].data["content"] == "First prompt"
-    assert reloaded[1].data["content"] == "Hello response"
-
-    persist.delete(sid)
-    assert persist.exists(sid) is False
+    reloaded = store.list_events(sid)
+    assert len(reloaded) == 3
+    assert reloaded[0].data["content"] == "Legacy prompt"
+    assert reloaded[1].data["content"] == "First prompt"
+    assert reloaded[2].data["content"] == "Hello response"
+    assert store.delete_log(sid) is True
 
 
 def test_skill_registry_and_frontmatter_parsing(tmp_path: pathlib.Path):

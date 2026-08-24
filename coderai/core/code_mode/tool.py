@@ -26,7 +26,11 @@ async def handle_code_mode_tool(args: dict[str, Any], context: ToolExecutionCont
     except (ValueError, TypeError):
         timeout_seconds = 30.0
 
-    sandbox = get_code_mode_sandbox(context.session_id, context.project_root)
+    sandbox = get_code_mode_sandbox(
+        context.session_id,
+        context.project_root,
+        context.sandbox_mode,
+    )
     if reset_state:
         sandbox.reset()
 

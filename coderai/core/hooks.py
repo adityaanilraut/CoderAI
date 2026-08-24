@@ -1,4 +1,4 @@
-"""Lifecycle Hooks Framework — port of DeepSeek Harness dsh-hook-protocol.
+"""Lifecycle Hooks Framework
 
 Provides full event-driven lifecycle interception:
 - Points: PreToolUse, PostToolUse, PreStep, PostStep, PrePrompt, PostPrompt, StopCriteria, SessionStart, SessionEnd.
@@ -117,7 +117,17 @@ def load_hook_config(project_root: str, settings: dict[str, Any] | None = None) 
                 if isinstance(data.get("hooks"), dict):
                     return data["hooks"]
                 # Direct top-level mapping
-                if any(k in data for k in ("PreToolUse", "preToolUse", "PostToolUse", "postToolUse", "PreStep", "StopCriteria")):
+                if any(
+                    k in data
+                    for k in (
+                        "PreToolUse",
+                        "preToolUse",
+                        "PostToolUse",
+                        "postToolUse",
+                        "PreStep",
+                        "StopCriteria",
+                    )
+                ):
                     return data
         except Exception:
             continue
@@ -158,7 +168,7 @@ def _rank_decision(decision: str) -> int:
 
 
 def merge_hook_outputs(outputs: list[HookOutput]) -> MergedHookOutcome:
-    """Fold multiple hook execution outcomes following DeepSeek Harness precedence."""
+    """Fold multiple hook execution outcomes by documented precedence."""
     max_rank = 0
     reasons: list[str] = []
     stop = False
@@ -294,9 +304,13 @@ def execute_hook_command(
         except json.JSONDecodeError:
             # Check simple string response
             if stdout.lower() in ("block", "deny", "reject"):
-                return HookOutput(decision="deny", exit_code=0, duration_ms=elapsed_ms, raw_stdout=stdout)
+                return HookOutput(
+                    decision="deny", exit_code=0, duration_ms=elapsed_ms, raw_stdout=stdout
+                )
             elif stdout.lower() in ("allow", "approve", "accept"):
-                return HookOutput(decision="allow", exit_code=0, duration_ms=elapsed_ms, raw_stdout=stdout)
+                return HookOutput(
+                    decision="allow", exit_code=0, duration_ms=elapsed_ms, raw_stdout=stdout
+                )
 
         return HookOutput(decision="none", exit_code=0, duration_ms=elapsed_ms, raw_stdout=stdout)
 
@@ -363,11 +377,8 @@ def run_hook_point(
             command = hook.get("command") if isinstance(hook, dict) else hook
             if not isinstance(command, str) or not command.strip():
                 continue
-            hook_timeout = (
-                float(hook.get("timeout"))
-                if isinstance(hook, dict) and hook.get("timeout")
-                else timeout_s
-            )
+            hook_timeout_raw: Any = hook.get("timeout") if isinstance(hook, dict) else None
+            hook_timeout = float(hook_timeout_raw) if hook_timeout_raw else timeout_s
             out = execute_hook_command(
                 command=command,
                 payload=payload,

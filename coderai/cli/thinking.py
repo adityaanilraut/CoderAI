@@ -7,15 +7,7 @@ import sys
 import time
 from typing import Any
 
-try:
-    from rich.panel import Panel
-    from rich.text import Text
-
-    _RICH = True
-except ImportError:  # pragma: no cover
-    Panel = None  # type: ignore[assignment,misc]
-    Text = None  # type: ignore[assignment,misc]
-    _RICH = False
+from rich.console import Console
 
 
 def summarize_thinking(thinking_text: str, max_chars: int = 140) -> str:
@@ -38,23 +30,20 @@ def render_thinking_block(
 
     duration_str = f" [dim cyan]({elapsed_seconds:.1f}s)[/]" if elapsed_seconds is not None else ""
 
-    if console is not None and _RICH:
-        if expanded:
-            console.print(f"  [bold magenta]● Reasoning Trace[/]{duration_str}")
-            for line in thinking_text.strip().splitlines()[:25]:
-                console.print(f"    [dim italic]{line}[/]")
-            if len(thinking_text.strip().splitlines()) > 25:
-                console.print(f"    [dim]... ({len(thinking_text.strip().splitlines()) - 25} more lines truncated)[/]")
-        else:
-            summary = summarize_thinking(thinking_text)
-            console.print(
-                f"  [bold magenta]● Reasoning[/]{duration_str} [dim]•[/] [dim italic]{summary}[/]"
+    active_console = console or Console()
+    if expanded:
+        active_console.print(f"  [bold magenta]● Reasoning Trace[/]{duration_str}")
+        for line in thinking_text.strip().splitlines()[:25]:
+            active_console.print(f"    [dim italic]{line}[/]")
+        if len(thinking_text.strip().splitlines()) > 25:
+            active_console.print(
+                f"    [dim]... ({len(thinking_text.strip().splitlines()) - 25} more lines truncated)[/]"
             )
     else:
         summary = summarize_thinking(thinking_text)
-        duration_plain = f" ({elapsed_seconds:.1f}s)" if elapsed_seconds is not None else ""
-        print(f"  ● Reasoning: {summary}{duration_plain}")
-
+        active_console.print(
+            f"  [bold magenta]● Reasoning[/]{duration_str} [dim]•[/] [dim italic]{summary}[/]"
+        )
 
 
 class LiveThinkingStreamer:
@@ -117,7 +106,9 @@ class LiveThinkingStreamer:
             sys.stdout.flush()
 
         active_console = console or self.console
-        render_thinking_block(active_console, full_thinking, elapsed_seconds=elapsed, expanded=expanded)
+        render_thinking_block(
+            active_console, full_thinking, elapsed_seconds=elapsed, expanded=expanded
+        )
 
         self.reset()
         return full_thinking

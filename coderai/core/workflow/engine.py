@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 
 class WorkflowErrorCode:
-    """Machine-routable workflow failure codes (DeepSeek Harness parity)."""
+    """Machine-routable workflow failure codes."""
 
     SCRIPT_PARSE = "SCRIPT_PARSE"
     META_INVALID = "META_INVALID"

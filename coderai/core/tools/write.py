@@ -1,4 +1,4 @@
-"""write tool — create/overwrite files (deepcode write-handler.ts)."""
+"""write tool — create or overwrite files."""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ from coderai.core.common.file_utils import (
     has_file_changed_since_state,
     normalize_content,
     read_text_file_with_metadata,
-    write_text_file,
 )
 from coderai.core.common.validate import ValidationResult, execute_validated_tool
 from coderai.core.state import (
@@ -24,6 +23,11 @@ from coderai.core.state import (
     record_file_state,
 )
 from coderai.core.tools.types import ToolResult, as_str
+from coderai.core.tools.file_mutation import (
+    check_file_write_access,
+    context_value,
+    write_file_with_callbacks,
+)
 
 
 def _validate_write_schema(args: dict[str, Any]) -> tuple[bool, dict[str, Any], str | None]:
@@ -84,29 +88,10 @@ def handle_write_tool(args: dict[str, Any], context: Any) -> ToolResult:
                 error="file_path must be an absolute path.",
             )
 
-        if isinstance(ctx, dict):
-            session_id = ctx.get("session_id") or "default"
-            on_before_mutation = ctx.get("on_before_file_mutation")
-            on_after_mutation = ctx.get("on_after_file_mutation")
-            sandbox_mode = ctx.get("sandbox_mode")
-            project_root = ctx.get("project_root")
-        else:
-            session_id = getattr(ctx, "session_id", None) or "default"
-            on_before_mutation = getattr(ctx, "on_before_file_mutation", None)
-            on_after_mutation = getattr(ctx, "on_after_file_mutation", None)
-            sandbox_mode = getattr(ctx, "sandbox_mode", None)
-            project_root = getattr(ctx, "project_root", None)
-
-        from coderai.core.sandbox import check_sandbox_path_access
-
-        sb_allowed, sb_err = check_sandbox_path_access(
-            file_path,
-            op="write",
-            mode=sandbox_mode,
-            workspace_root=project_root,
-        )
-        if not sb_allowed and sb_err:
-            return ToolResult(ok=False, name="write", error=sb_err)
+        session_id = context_value(ctx, "session_id") or "default"
+        sandbox_error = check_file_write_access(ctx, file_path)
+        if sandbox_error:
+            return ToolResult(ok=False, name="write", error=sandbox_error)
 
         p = pathlib.Path(file_path)
         existing_file = p.exists()
@@ -155,13 +140,9 @@ def handle_write_tool(args: dict[str, Any], context: Any) -> ToolResult:
                 normalized_content,
             )
 
-            if on_before_mutation:
-                on_before_mutation(file_path)
-
-            bytes_written = write_text_file(file_path, normalized_content, encoding, line_endings)
-
-            if on_after_mutation:
-                on_after_mutation(file_path)
+            bytes_written = write_file_with_callbacks(
+                ctx, file_path, normalized_content, encoding, line_endings
+            )
 
             fresh_metadata = read_text_file_with_metadata(file_path)
 

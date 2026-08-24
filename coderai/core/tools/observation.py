@@ -1,4 +1,4 @@
-"""Filesystem Observation Policy — port of DeepSeek Harness fs-observation-policy.
+"""Filesystem Observation Policy
 
 Tracks authoritative read observations per session. Ensures an agent must observe
 (read/view) an existing file before modifying it, and prevents mutations on stale

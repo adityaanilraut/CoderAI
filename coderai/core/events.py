@@ -1,4 +1,4 @@
-"""Typed session-event system — port of dsh core/session event taxonomy.
+"""Typed session-event system
 
 The session log is an **append-only** sequence of typed ``SessionEvent``s.
 LLM message history is *derived* from the log (``derive_messages()``), not
@@ -42,11 +42,6 @@ COMPACTION_SUMMARY = "compaction/summary"
 COMPACTION_END = "compaction/end"
 COMPACTION_PRUNE = "compaction/prune"
 
-# Approval audit (log-only)
-APPROVAL_ASKED = "approval/asked"
-APPROVAL_DECIDED = "approval/decided"
-APPROVAL_POLICY = "approval/policy"
-
 # Steering (surface — injected context for next step)
 STEERING_MESSAGE = "steering/message"
 
@@ -80,9 +75,6 @@ LOG_ONLY_EVENT_TYPES: frozenset[str] = frozenset(
         COMPACTION_START,
         COMPACTION_END,
         COMPACTION_PRUNE,
-        APPROVAL_ASKED,
-        APPROVAL_DECIDED,
-        APPROVAL_POLICY,
         TODO_WRITE,
         SESSION_END_SEED,
     }
@@ -371,32 +363,6 @@ def make_compaction_end(
             "shadowedTokenCount": shadowed_token_count,
         },
     )
-
-
-# ---- Approval ----
-
-
-def make_approval_asked(
-    seq: int,
-    request_id: str,
-    tool_name: str,
-    call_id: str | None = None,
-    reason: str | None = None,
-) -> SessionEvent:
-    data: dict[str, Any] = {"requestId": request_id, "toolName": tool_name}
-    if call_id:
-        data["callId"] = call_id
-    if reason:
-        data["reason"] = reason
-    return make_event(seq, APPROVAL_ASKED, data)
-
-
-def make_approval_decided(
-    seq: int,
-    request_id: str,
-    outcome: str,
-) -> SessionEvent:
-    return make_event(seq, APPROVAL_DECIDED, {"requestId": request_id, "outcome": outcome})
 
 
 # ---------------------------------------------------------------------------

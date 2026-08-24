@@ -1,256 +1,150 @@
 #!/usr/bin/env python3
-"""Calculate image cost and generate images through Deep Code Plus."""
+"""Generate one image through a user-configured OpenAI-compatible endpoint."""
 
 import argparse
 import base64
 import json
-import mimetypes
-import secrets
-import socket
+import os
 import sys
-import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 
-IMAGE_GEN_URL = "https://coderai.vegamo.cn/api/plugin/image-gen"
-CALC_IMAGE_GEN_COST_URL = "https://coderai.vegamo.cn/api/plugin/calc-image-gen-cost"
-SETTINGS_PATH = Path.home() / ".coderai-plus" / "settings.json"
-MACHINE_ID_PATH = Path.home() / ".coderai" / "machine-id"
-RATIOS = ("1:1", "3:4", "4:3", "16:9", "9:16", "2:3", "3:2", "21:9")
-RESOLUTIONS = ("1k", "1.5k", "2k", "4k")
-MAX_IMAGES = 10
-
-
 class ImageGeneratorError(RuntimeError):
     pass
 
 
-def load_plus_api_key(settings_path: Path) -> str:
-    try:
-        settings = json.loads(settings_path.read_text(encoding="utf-8"))
-        api_key = settings["env"]["PLUS_API_KEY"]
-    except FileNotFoundError as exc:
-        raise ImageGeneratorError(f"Settings file does not exist: {settings_path}") from exc
-    except (json.JSONDecodeError, KeyError, TypeError) as exc:
-        raise ImageGeneratorError(
-            f"Settings file must contain env.PLUS_API_KEY: {settings_path}"
-        ) from exc
-
-    if not isinstance(api_key, str) or not api_key.strip():
-        raise ImageGeneratorError(f"Settings file must contain env.PLUS_API_KEY: {settings_path}")
-    return api_key.strip()
-
-
-def get_machine_id() -> str | None:
-    try:
-        if MACHINE_ID_PATH.exists():
-            machine_id = MACHINE_ID_PATH.read_text(encoding="utf-8").strip()
-            if machine_id:
-                return machine_id
-
-        random_part = secrets.token_hex(8)
-        timestamp = int(time.time() * 1000)
-        machine_id = f"{socket.gethostname()}-{random_part}-{timestamp}"
-        MACHINE_ID_PATH.parent.mkdir(parents=True, exist_ok=True)
-        MACHINE_ID_PATH.write_text(machine_id, encoding="utf-8")
-        return machine_id
-    except OSError:
-        return None
-
-
-def encode_image(source: str) -> str:
-    if source.startswith(("http://", "https://", "data:image/")):
-        return source
-
-    image_path = Path(source).expanduser()
-    if not image_path.is_file():
-        raise ImageGeneratorError(f"Image file does not exist: {image_path}")
-    content_type = mimetypes.guess_type(image_path.name)[0]
-    if not content_type or not content_type.startswith("image/"):
-        raise ImageGeneratorError(f"File is not a recognized image: {image_path}")
-
-    try:
-        encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
-    except OSError as exc:
-        raise ImageGeneratorError(f"Cannot read image: {image_path}: {exc}") from exc
-    return f"data:{content_type};base64,{encoded}"
-
-
 def build_payload(args: argparse.Namespace) -> dict[str, object]:
-    images = args.image or []
-    if len(images) > MAX_IMAGES:
-        raise ImageGeneratorError(f"At most {MAX_IMAGES} reference images are supported.")
-
-    payload: dict[str, object] = {
-        "prompt": args.prompt.strip(),
-        "ratio": args.ratio,
-        "resolution": args.resolution,
-    }
-    if not payload["prompt"]:
+    prompt = args.prompt.strip()
+    if not prompt:
         raise ImageGeneratorError("Prompt must not be empty.")
-    if images:
-        payload["image"] = [encode_image(image) for image in images]
+    payload: dict[str, object] = {"prompt": prompt}
+    if args.model:
+        payload["model"] = args.model
+    if args.size:
+        payload["size"] = args.size
     return payload
 
 
-def request_json(
-    url: str,
-    payload: dict[str, object],
-    api_key: str | None,
-    timeout: int,
+def request_image(
+    url: str, payload: dict[str, object], api_key: str, timeout: int
 ) -> dict[str, Any]:
-    headers = {"Content-Type": "application/json"}
-    if api_key:
-        headers["PLUS-API-KEY"] = api_key
-    if machine_id := get_machine_id():
-        headers["Token"] = machine_id
-
     request = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
-        headers=headers,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
         method="POST",
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             response_text = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
-        response_text = exc.read().decode("utf-8", errors="replace")
-        raise ImageGeneratorError(f"HTTP {exc.code} from {url}: {response_text}") from exc
+        raise ImageGeneratorError(f"Image API returned HTTP {exc.code}.") from exc
     except urllib.error.URLError as exc:
-        raise ImageGeneratorError(f"Request to {url} failed: {exc.reason}") from exc
+        raise ImageGeneratorError(f"Image API request failed: {exc.reason}") from exc
     except TimeoutError as exc:
-        raise ImageGeneratorError(f"Request to {url} timed out.") from exc
+        raise ImageGeneratorError("Image API request timed out.") from exc
 
     try:
         response_data = json.loads(response_text)
     except json.JSONDecodeError as exc:
-        raise ImageGeneratorError(f"Non-JSON response from {url}: {response_text}") from exc
+        raise ImageGeneratorError("Image API returned a non-JSON response.") from exc
     if not isinstance(response_data, dict):
-        raise ImageGeneratorError(f"Invalid response object from {url}.")
-    if response_data.get("success") is not True:
-        reason = response_data.get("reason") or "Unknown API error."
-        raise ImageGeneratorError(str(reason))
+        raise ImageGeneratorError("Image API returned an invalid response object.")
     return response_data
 
 
-def calculate_cost(payload: dict[str, object]) -> int:
-    response_data = request_json(
-        CALC_IMAGE_GEN_COST_URL,
-        payload,
-        None,
-        timeout=30,
-    )
-    result = response_data.get("result")
-    credits = result.get("credits") if isinstance(result, dict) else None
-    if type(credits) is not int or credits < 0:
-        raise ImageGeneratorError("Cost response is missing a valid result.credits value.")
-    return credits
+def save_image(response_data: dict[str, Any], output_path: Path) -> Path:
+    data = response_data.get("data")
+    first = data[0] if isinstance(data, list) and data else None
+    if not isinstance(first, dict):
+        raise ImageGeneratorError("Image API response is missing data[0].")
 
-
-def generate_image(payload: dict[str, object], api_key: str) -> str:
-    response_data = request_json(
-        IMAGE_GEN_URL,
-        payload,
-        api_key,
-        timeout=360,
-    )
-    result = response_data.get("result")
-    image_url = result.get("imageUrl") if isinstance(result, dict) else None
-    if not isinstance(image_url, str) or not image_url.strip():
-        raise ImageGeneratorError("Generation response is missing result.imageUrl.")
-    return image_url.strip()
-
-
-def download_image(image_url: str, output_path: Path) -> Path:
     output_path = output_path.expanduser().resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
+
     try:
-        with urllib.request.urlopen(image_url, timeout=120) as response:
-            image_data = response.read()
+        encoded = first.get("b64_json")
+        image_url = first.get("url")
+        if isinstance(encoded, str) and encoded:
+            image_data = base64.b64decode(encoded, validate=True)
+        elif isinstance(image_url, str) and image_url:
+            parsed = urllib.parse.urlparse(image_url)
+            if parsed.scheme not in {"http", "https"}:
+                raise ImageGeneratorError("Image URL must use HTTP or HTTPS.")
+            with urllib.request.urlopen(image_url, timeout=120) as response:
+                image_data = response.read()
+        else:
+            raise ImageGeneratorError("Image API response has neither b64_json nor url.")
         output_path.write_bytes(image_data)
-    except (OSError, urllib.error.URLError, TimeoutError) as exc:
-        raise ImageGeneratorError(
-            f"Generated image could not be saved to {output_path}: {exc}"
-        ) from exc
+    except ImageGeneratorError:
+        raise
+    except (ValueError, OSError, urllib.error.URLError, TimeoutError) as exc:
+        raise ImageGeneratorError(f"Generated image could not be saved: {exc}") from exc
     return output_path
-
-
-def add_request_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--prompt", required=True, help="Final image prompt")
-    parser.add_argument(
-        "--image",
-        action="append",
-        default=[],
-        help="Local path, HTTP(S) URL, or image data URL; repeat for each image",
-    )
-    parser.add_argument("--ratio", required=True, choices=RATIOS)
-    parser.add_argument("--resolution", required=True, choices=RESOLUTIONS)
-    parser.add_argument(
-        "--settings",
-        type=Path,
-        default=SETTINGS_PATH,
-        help=f"PLUS API settings file (default: {SETTINGS_PATH})",
-    )
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Calculate cost and generate one image through Deep Code Plus.",
+        description="Generate one image through a configured OpenAI-compatible endpoint.",
     )
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    cost_parser = subparsers.add_parser(
-        "cost",
-        help="Calculate the credits required without generating an image",
+    parser.add_argument("--prompt", required=True, help="Image prompt")
+    parser.add_argument("--output", required=True, type=Path, help="Output image path")
+    parser.add_argument(
+        "--endpoint",
+        default=os.getenv("CODERAI_IMAGE_API_URL", ""),
+        help="Image API URL (default: CODERAI_IMAGE_API_URL)",
     )
-    add_request_arguments(cost_parser)
-
-    generate_parser = subparsers.add_parser(
-        "generate",
-        help="Recheck the confirmed cost, then generate an image",
+    parser.add_argument(
+        "--model",
+        default=os.getenv("CODERAI_IMAGE_MODEL", ""),
+        help="Provider image model (default: CODERAI_IMAGE_MODEL)",
     )
-    add_request_arguments(generate_parser)
-    generate_parser.add_argument(
-        "--confirmed-credits",
-        required=True,
+    parser.add_argument(
+        "--size",
+        default="",
+        help="Provider-supported size such as 1024x1024",
+    )
+    parser.add_argument(
+        "--timeout",
         type=int,
-        help="Exact credit cost explicitly confirmed by the user",
-    )
-    generate_parser.add_argument(
-        "--output",
-        type=Path,
-        help="Optional path to save the generated image",
+        default=360,
+        help="Request timeout in seconds",
     )
     return parser
 
 
 def run(args: argparse.Namespace) -> dict[str, object]:
+    endpoint = args.endpoint.strip()
+    api_key = os.getenv("CODERAI_IMAGE_API_KEY", "").strip()
+    if not endpoint:
+        raise ImageGeneratorError("Set CODERAI_IMAGE_API_URL or pass --endpoint.")
+    parsed_endpoint = urllib.parse.urlparse(endpoint)
+    if parsed_endpoint.scheme != "https" and parsed_endpoint.hostname not in {
+        "localhost",
+        "127.0.0.1",
+    }:
+        raise ImageGeneratorError("Image API URL must use HTTPS, except for localhost.")
+    if not api_key:
+        raise ImageGeneratorError("Set CODERAI_IMAGE_API_KEY in the process environment.")
+    if args.timeout <= 0:
+        raise ImageGeneratorError("Timeout must be positive.")
+
     payload = build_payload(args)
-    credits = calculate_cost(payload)
-
-    if args.command == "cost":
-        return {"credits": credits}
-    if args.confirmed_credits < 0:
-        raise ImageGeneratorError("Confirmed credits must not be negative.")
-    if credits != args.confirmed_credits:
-        raise ImageGeneratorError(
-            f"Cost changed from {args.confirmed_credits} to {credits} credits. "
-            "Ask the user to confirm the new cost before generating."
-        )
-
-    api_key = load_plus_api_key(args.settings.expanduser())
-    image_url = generate_image(payload, api_key)
+    response_data = request_image(endpoint, payload, api_key, args.timeout)
+    output = save_image(response_data, args.output)
     result: dict[str, object] = {
-        "credits": credits,
-        "image_url": image_url,
+        "output": str(output),
     }
-    if args.output:
-        result["output"] = str(download_image(image_url, args.output))
+    if args.model:
+        result["model"] = args.model
     return result
 
 

@@ -1,4 +1,4 @@
-"""Compaction Engine — port of dsh compaction subsystem.
+"""Compaction Engine
 
 Provides structured compaction with:
 1. Dual triggers: 'pressure' (active token threshold exceeded) and 'overflow' (context window overflow).

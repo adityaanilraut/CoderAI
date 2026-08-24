@@ -1,4 +1,4 @@
-"""LLM error normalization and credential-safe diagnostics — port of deepcode core/src/common/llm-error.ts."""
+""""""
 
 from __future__ import annotations
 

@@ -458,7 +458,8 @@ async def test_exec_runner_clean_exit_code_zero(
     }
 
     monkeypatch.setattr(
-        "coderai.cli.exec_runner._core_client", lambda: {"client": mock_client, "model": "gpt-4o"}
+        "coderai.cli.exec_runner._core_client",
+        lambda *args, **kwargs: {"client": mock_client, "model": "gpt-4o"},
     )
 
     exit_code = await run_exec_session(
@@ -497,7 +498,7 @@ async def test_session_manager_places_runtime_context_in_user_prompt(tmp_path: p
     mgr = SessionManager(
         project_root=str(tmp_path),
         create_openai_client=lambda: {"client": mock_client, "model": "deepseek-v4-flash"},
-        get_resolved_settings=lambda: {"preset": "benchmark"},
+        get_resolved_settings=lambda: {"preset": "core"},
     )
 
     sid = await mgr.create_session("Write a unit test")
@@ -513,37 +514,63 @@ async def test_session_manager_places_runtime_context_in_user_prompt(tmp_path: p
     assert "Write a unit test" in user_msgs[0].content
 
 
-def test_tool_preset_benchmark_and_coding_filter():
-    """Verify tool preset 'benchmark' and 'coding' scopes tools down to core 6-7 tools."""
+def test_core_tool_preset_filter():
+    """Verify the core preset scopes tools down to the canonical core set."""
 
     all_tools = get_tools()
     assert len(all_tools) > 15  # full set includes all MCP, subagents, jobs, etc.
 
-    benchmark_tools = get_tools({"preset": "benchmark"})
-    bench_names = {t["function"]["name"] for t in benchmark_tools}
-    assert len(benchmark_tools) <= 7
-    assert "bash" in bench_names
-    assert "str_replace_editor" in bench_names
-    assert "read" in bench_names
-    assert "write" in bench_names
-    assert "glob" in bench_names
-    assert "grep" in bench_names
-    assert "AskUserQuestion" not in bench_names
-    assert "subagent" not in bench_names
+    core_tools = get_tools({"preset": "core"})
+    core_names = {t["function"]["name"] for t in core_tools}
+    assert len(core_tools) <= 7
+    assert "bash" in core_names
+    assert "str_replace_editor" in core_names
+    assert "read" in core_names
+    assert "write" in core_names
+    assert "glob" in core_names
+    assert "grep" in core_names
+    assert "AskUserQuestion" not in core_names
+    assert "subagent" not in core_names
 
 
 def test_cli_preset_parsing(tmp_path: pathlib.Path):
     """Verify CLI parser accepts --preset and initializes manager with the preset."""
-    from coderai.cli.app import _build_parser, _build_manager
+    from coderai.cli.app import _build_parser
+    from coderai.cli.session_factory import build_session_manager
 
     parser = _build_parser()
-    args = parser.parse_args(["-p", "test prompt", "--preset", "benchmark"])
-    assert args.preset == "benchmark"
+    args = parser.parse_args(["-p", "test prompt", "--preset", "core"])
+    assert args.preset == "core"
 
-    mgr = _build_manager(str(tmp_path), "gpt-4o", preset=args.preset)
+    mgr = build_session_manager(str(tmp_path), model="gpt-4o", preset=args.preset)
     settings = mgr.get_resolved_settings()
-    assert settings.get("preset") == "benchmark"
-    assert settings.get("toolsPreset") == "benchmark"
+    assert settings.get("preset") == "core"
+    assert settings.get("toolsPreset") == "core"
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--preset", "benchmark"])
+
+
+def test_settings_accept_only_canonical_tool_presets(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+):
+    from coderai.core.settings import parse_tool_preset, resolve_current_settings
+
+    assert parse_tool_preset("full") == "full"
+    assert parse_tool_preset("core") == "core"
+    assert parse_tool_preset("shell_edit") == "shell_edit"
+    assert parse_tool_preset("benchmark") is None
+    assert parse_tool_preset("dsh_minimal") is None
+
+    project_settings = tmp_path / ".coderai"
+    project_settings.mkdir()
+    (project_settings / "settings.json").write_text(
+        json.dumps({"toolsPreset": "core"}), encoding="utf-8"
+    )
+    assert resolve_current_settings(str(tmp_path))["toolsPreset"] == "core"
+
+    monkeypatch.setenv("CODERAI_TOOLS_PRESET", "shell_edit")
+    assert resolve_current_settings(str(tmp_path))["toolsPreset"] == "shell_edit"
 
 
 def test_render_skill_catalog_and_system_prompt(tmp_path: pathlib.Path):
@@ -590,9 +617,17 @@ def test_message_converter_filters_lifecycle_events():
             session_id="sess",
             role="assistant",
             content="Looking at files",
-            tool_calls=[{"id": "call_1", "type": "function", "function": {"name": "glob", "arguments": "{}"}}],
+            tool_calls=[
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "glob", "arguments": "{}"},
+                }
+            ],
         ),
-        SessionMessage(id="t1", session_id="sess", role="tool", content='["a.py"]', tool_call_id="call_1"),
+        SessionMessage(
+            id="t1", session_id="sess", role="tool", content='["a.py"]', tool_call_id="call_1"
+        ),
         SessionMessage(id="ev3", session_id="sess", role="step/end", content=""),
         SessionMessage(id="ev4", session_id="sess", role="turn/end", content=""),
     ]
@@ -618,7 +653,10 @@ async def test_session_init_does_not_bloat_prompt_with_unrequested_skills(tmp_pa
     for sname in ["skill-alpha", "skill-beta", "skill-gamma"]:
         sdir = tmp_path / ".coderai" / "skills" / sname
         sdir.mkdir(parents=True)
-        (sdir / "SKILL.md").write_text(f"---\nname: {sname}\ndescription: Description of {sname}\n---\n# Full body of {sname}\n" * 50)
+        (sdir / "SKILL.md").write_text(
+            f"---\nname: {sname}\ndescription: Description of {sname}\n---\n# Full body of {sname}\n"
+            * 50
+        )
 
     mock_client = MagicMock()
     mock_client.chat.completions.create.return_value = {
@@ -629,7 +667,10 @@ async def test_session_init_does_not_bloat_prompt_with_unrequested_skills(tmp_pa
     mgr = SessionManager(
         project_root=str(tmp_path),
         create_openai_client=lambda: {"client": mock_client, "model": "gpt-5.6-luna"},
-        get_resolved_settings=lambda: {"model": "gpt-5.6-luna", "permissions": {"defaultMode": "allowAll"}},
+        get_resolved_settings=lambda: {
+            "model": "gpt-5.6-luna",
+            "permissions": {"defaultMode": "allowAll"},
+        },
     )
 
     sid = await mgr.create_session("Please write a helper function in python")
@@ -648,8 +689,8 @@ async def test_session_init_does_not_bloat_prompt_with_unrequested_skills(tmp_pa
 
 def test_tool_schema_canonical_sorting_and_determinism():
     """Verify tool schemas are serialized with deterministic key order across repeated calls."""
-    tools1 = get_tools({"preset": "benchmark"})
-    tools2 = get_tools({"preset": "benchmark"})
+    tools1 = get_tools({"preset": "core"})
+    tools2 = get_tools({"preset": "core"})
 
     json1 = json.dumps(tools1, sort_keys=True)
     json2 = json.dumps(tools2, sort_keys=True)
@@ -666,7 +707,9 @@ def test_tool_schema_canonical_sorting_and_determinism():
         if "properties" in params:
             props = params["properties"]
             keys = list(props.keys())
-            assert keys == sorted(keys), f"Properties for tool '{fn['name']}' are not alphabetically sorted: {keys}"
+            assert keys == sorted(keys), (
+                f"Properties for tool '{fn['name']}' are not alphabetically sorted: {keys}"
+            )
 
 
 def test_multiturn_bitwise_prefix_equality_across_many_turns(tmp_path: pathlib.Path):
@@ -677,13 +720,20 @@ def test_multiturn_bitwise_prefix_equality_across_many_turns(tmp_path: pathlib.P
 
     session_msgs: list[SessionMessage] = [
         SessionMessage(id="m0", session_id="s1", role="system", content=sys_prompt),
-        SessionMessage(id="m1", session_id="s1", role="user", content=f"{runtime_ctx}\n\n---\n\nInitial task goal"),
+        SessionMessage(
+            id="m1",
+            session_id="s1",
+            role="user",
+            content=f"{runtime_ctx}\n\n---\n\nInitial task goal",
+        ),
     ]
 
     payloads: list[list[dict[str, Any]]] = []
 
     # Turn 1: initial request
-    payloads.append(converter.convert_session_messages(session_msgs, "deepseek-v4-pro", thinking_enabled=True))
+    payloads.append(
+        converter.convert_session_messages(session_msgs, "deepseek-v4-pro", thinking_enabled=True)
+    )
 
     # Turns 2 through 10
     for t in range(2, 11):
@@ -698,7 +748,10 @@ def test_multiturn_bitwise_prefix_equality_across_many_turns(tmp_path: pathlib.P
                     {
                         "id": call_id,
                         "type": "function",
-                        "function": {"name": "read", "arguments": json.dumps({"file_path": f"src/file_{t}.py"})},
+                        "function": {
+                            "name": "read",
+                            "arguments": json.dumps({"file_path": f"src/file_{t}.py"}),
+                        },
                     }
                 ],
                 thinking=f"Reasoning for turn {t}",
@@ -714,7 +767,9 @@ def test_multiturn_bitwise_prefix_equality_across_many_turns(tmp_path: pathlib.P
             )
         )
 
-        turn_payload = converter.convert_session_messages(session_msgs, "deepseek-v4-pro", thinking_enabled=True)
+        turn_payload = converter.convert_session_messages(
+            session_msgs, "deepseek-v4-pro", thinking_enabled=True
+        )
         payloads.append(turn_payload)
 
         # Verify that all prior turns are strict prefixes of current turn
@@ -785,7 +840,10 @@ async def test_end_to_end_benchmark_cache_hit_rate_parity(tmp_path: pathlib.Path
                 {
                     "id": f"call_{step}",
                     "type": "function",
-                    "function": {"name": "read", "arguments": json.dumps({"file_path": f"test_{step}.py"})},
+                    "function": {
+                        "name": "read",
+                        "arguments": json.dumps({"file_path": f"test_{step}.py"}),
+                    },
                 }
             ]
 
@@ -821,7 +879,7 @@ async def test_end_to_end_benchmark_cache_hit_rate_parity(tmp_path: pathlib.Path
         },
         get_resolved_settings=lambda: {
             "model": "deepseek-v4-pro",
-            "preset": "benchmark",
+            "preset": "core",
             "permissions": {"defaultMode": "allowAll"},
         },
     )
@@ -845,37 +903,40 @@ async def test_end_to_end_benchmark_cache_hit_rate_parity(tmp_path: pathlib.Path
     assert turn_2_to_5_cached == turn_2_to_5_prefix_available
 
 
-def test_system_prompt_scoped_to_benchmark_preset(tmp_path: pathlib.Path):
-    """Verify system prompt under benchmark preset includes only visible tools and excludes unmounted ones."""
-    prompt_benchmark = get_system_prompt({
-        "workspaceRoot": str(tmp_path),
-        "preset": "benchmark",
-        "nonInteractive": True,
-    })
-    # Core benchmark tools should be present
-    assert "## bash" in prompt_benchmark
-    assert "## read" in prompt_benchmark
-    assert "## edit" in prompt_benchmark
-    assert "## write" in prompt_benchmark
-    assert "## glob" in prompt_benchmark
-    assert "## grep" in prompt_benchmark
+def test_system_prompt_scoped_to_core_preset(tmp_path: pathlib.Path):
+    """Verify the core preset includes only its visible tools."""
+    prompt_core = get_system_prompt(
+        {
+            "workspaceRoot": str(tmp_path),
+            "preset": "core",
+            "nonInteractive": True,
+        }
+    )
+    assert "## bash" in prompt_core
+    assert "## read" in prompt_core
+    assert "## edit" in prompt_core
+    assert "## write" in prompt_core
+    assert "## glob" in prompt_core
+    assert "## grep" in prompt_core
 
     # Unmounted full tools should be omitted to preserve tokens and prefix cache
-    assert "## WebSearch" not in prompt_benchmark
-    assert "## WebFetch" not in prompt_benchmark
-    assert "## UnderstandImage" not in prompt_benchmark
-    assert "## subagent" not in prompt_benchmark
-    assert "## Task" not in prompt_benchmark
-    assert "## AskUserQuestion" not in prompt_benchmark
-    assert "# Available Skills" not in prompt_benchmark
+    assert "## WebSearch" not in prompt_core
+    assert "## WebFetch" not in prompt_core
+    assert "## UnderstandImage" not in prompt_core
+    assert "## subagent" not in prompt_core
+    assert "## Task" not in prompt_core
+    assert "## AskUserQuestion" not in prompt_core
+    assert "# Available Skills" not in prompt_core
 
 
-def test_system_prompt_scoped_to_dsh_minimal_preset(tmp_path: pathlib.Path):
-    """Verify system prompt under dsh_minimal preset contains only bash and str_replace_editor."""
-    prompt_min = get_system_prompt({
-        "workspaceRoot": str(tmp_path),
-        "preset": "dsh_minimal",
-    })
+def test_system_prompt_scoped_to_shell_edit_preset(tmp_path: pathlib.Path):
+    """Verify shell_edit contains only bash and str_replace_editor."""
+    prompt_min = get_system_prompt(
+        {
+            "workspaceRoot": str(tmp_path),
+            "preset": "shell_edit",
+        }
+    )
     assert "## bash" in prompt_min
     assert "## str_replace_editor" in prompt_min
     assert "## read" not in prompt_min
@@ -883,8 +944,8 @@ def test_system_prompt_scoped_to_dsh_minimal_preset(tmp_path: pathlib.Path):
     assert "## glob" not in prompt_min
 
 
-def test_edit_tool_direct_file_path_parity(tmp_path: pathlib.Path):
-    """Verify edit tool works with direct file_path (DeepSeek Harness parity) without requiring snippet_id."""
+def test_edit_tool_accepts_direct_file_path(tmp_path: pathlib.Path):
+    """Verify edit works with a direct file_path and no snippet_id."""
     from coderai.core.tools.edit import handle_edit_tool
 
     test_file = tmp_path / "calc.py"
@@ -913,6 +974,3 @@ def test_message_converter_omits_empty_reasoning():
     converted = converter.convert_session_messages(msgs, "deepseek-v4-pro", thinking_enabled=True)
     assert "reasoning_content" not in converted[1]
     assert "reasoning_content" not in converted[2]
-
-
-

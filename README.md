@@ -99,6 +99,11 @@ coderai --plan
 coderai "Refactor auth middleware to support JWT refresh tokens"
 ```
 
+One-shot prompts default to the `core` tool preset. Use `--preset` to select one of:
+- `full`: all built-in tools
+- `core`: shell, file editing, reads, writes, glob, and grep
+- `shell_edit`: only `bash` and `str_replace_editor`
+
 ### 5. Auto-Approve Permissions for CI / Scripting
 
 ```bash
@@ -175,7 +180,7 @@ CoderAI provides a rich, versatile tool surface:
 | **`bash`** | Process | Shell execution with timeout enforcement, process group isolation, and background jobs. |
 | **`job_list` / `job_output` / `job_kill`** | Process | Background job management and streaming output inspection. |
 | **`pwsh`** | Process | Cross-platform PowerShell command execution. |
-| **`terminal_*`** | PTY | Interactive pseudoterminal sessions (`create`, `send`, `read`, `close`, `list`). |
+| **`terminal_*`** | PTY | Interactive pseudoterminal sessions (`terminal_open`, `terminal_send`, `terminal_read`, `terminal_signal`, `terminal_close`, `terminal_list`). |
 | **`subagent` / `subagent_fork`** | Multi-Agent | Continuable background subagents and one-shot task delegation. |
 | **`send_message` / `interrupt_agent`** | Multi-Agent | Inter-agent messaging and subagent control plane. |
 | **`spawn_teammate` / `team_task_*`** | Swarm | Agent team collaboration with shared task board and synchronization (`wait_agent`). |
@@ -201,6 +206,8 @@ coderai/
 │
 ├── cli/                            # Interactive Presentation Layer (Rich UI)
 │   ├── app.py                      # CLI argument parser, REPL, permissions prompt
+│   ├── commands.py                 # Canonical slash-command catalog
+│   ├── session_factory.py          # Shared SessionManager construction
 │   ├── ascii_art.py                # Brand banner and header rendering
 │   ├── completer.py                # Readline autocompletion & fuzzy matching
 │   ├── diff_render.py              # Syntax-highlighted diff preview
@@ -217,6 +224,7 @@ coderai/
 │
 ├── core/                           # UI-Agnostic Core Engine
 │   ├── agents.py                   # Continuable subagent manager
+│   ├── agent_loop.py               # Turn/step activation controller
 │   ├── goals.py                    # Session goals store (/goal)
 │   ├── hooks.py                    # PreToolUse hook execution
 │   ├── jobs.py                     # Background process job store
@@ -226,8 +234,9 @@ coderai/
 │   ├── prompt_sections.py          # Stable tool order & prompt section builder
 │   ├── sandbox.py                  # OS sandbox (Seatbelt / bwrap)
 │   ├── schedule.py                 # Schedule & timer subsystem
-│   ├── session.py                  # SessionManager (bounded agent loop, JSONL persistence)
-│   ├── session_log.py              # JSONL event stream & message derivation
+│   ├── session.py                  # SessionManager public lifecycle APIs
+│   ├── session_store.py            # Canonical JSONL session storage
+│   ├── session_log.py              # Message derivation helpers
 │   ├── settings.py                 # Settings resolver (project + user + environment)
 │   ├── spill.py                    # Spill-to-file store & locators
 │   ├── state.py                    # Snippet manager, file versioning, staleness detection
@@ -239,13 +248,14 @@ coderai/
 │   ├── lsp/                        # Language Server Protocol client
 │   ├── mcp/                        # Model Context Protocol (stdio, SSE, streamable-http)
 │   ├── network/                    # Outbound HTTP, cache, SSRF, sanitizer
-│   ├── session_query/              # Full-text session indexer & search
+│   ├── session_query/              # Session history search over JSONL
+│   ├── skill/                      # Skill discovery and loading
 │   ├── teams/                      # Agent swarm & task board
 │   ├── terminal/                   # PTY terminal manager
 │   ├── tools/                      # Built-in tool implementations
-│   ├── vendor/                     # Bundled binaries (ripgrep)
 │   └── workflow/                   # Multi-phase workflow scripting engine
 │
+├── vendor/                         # Bundled binaries (ripgrep)
 └── skills/                         # Built-in agent skills
 ```
 
@@ -290,6 +300,7 @@ Settings are resolved in order of precedence: **CLI arguments > Environment vari
   "temperature": 0.2,
   "thinkingEnabled": true,
   "reasoningEffort": "max",
+  "toolsPreset": "core",
   "permissions": {
     "preset": "workspace-write",
     "allow": ["read-in-cwd", "query-git-log"],
@@ -319,11 +330,21 @@ Settings are resolved in order of precedence: **CLI arguments > Environment vari
 | `OPENAI_API_KEY` / `CODERAI_API_KEY` | LLM provider API key |
 | `OPENAI_BASE_URL` / `CODERAI_BASE_URL` | API endpoint URL (OpenAI, DeepSeek, Ollama, etc.) |
 | `CODERAI_MODEL` | Default model identifier |
+| `CODERAI_TOOLS_PRESET` | Tool preset (`full`, `core`, `shell_edit`) |
 | `CODERAI_PERMISSION_PRESET` | Permission preset (`read-only`, `workspace-write`, `danger-full-access`) |
 | `CODERAI_THINKING_ENABLED` | Enable reasoning/thinking tokens (`true` / `false`) |
 | `CODERAI_REASONING_EFFORT` | Reasoning effort (`off`, `low`, `medium`, `high`, `max`) |
 | `CODERAI_RG_PATH` | Path to custom ripgrep executable (defaults to bundled binary) |
 | `CODERAI_DEBUG_LOG_ENABLED` | Enable verbose engine debug logging |
+
+### Migration Notes
+
+- Project configuration and tracked agent content now use lowercase `.coderai`; rename `.coderAI` directories before upgrading.
+- Workspace skills use the singular filename `SKILL.md`; rename legacy `SKILLS.md` files.
+- Use `--prompt` (or a positional prompt) instead of the removed `--message` flag.
+- Use `--preset` instead of the removed `--tools-preset` spelling.
+- Tool presets accept only `full`, `core`, or `shell_edit`.
+- Settings JSON uses the documented camelCase keys (`baseURL`, `apiKey`, `thinkingEnabled`, `reasoningEffort`, and `toolsPreset`); environment overrides use `CODERAI_*`.
 
 ---
 

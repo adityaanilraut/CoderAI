@@ -182,11 +182,6 @@ def _strip_ansi_escapes(text: str) -> str:
     return ANSI_ESCAPE_PATTERN.sub("", text)
 
 
-def handle_persistent_bash_tool(args: dict[str, Any], context: Any) -> ToolResult:
-    """Execute command in a persistent PTY bash shell retaining variables and working directory."""
-    return handle_bash_tool({**args, "persistent": True}, context)
-
-
 def _execute_persistent_bash(
     command: str,
     session_id: str,

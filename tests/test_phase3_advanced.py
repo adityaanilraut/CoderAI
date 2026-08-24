@@ -1,11 +1,4 @@
-"""Comprehensive tests for Phase 3: Code Mode, Session Query (FTS), and Cross-Platform Shell (pwsh).
-
-Covers:
-1. Code Mode Engine & Stateful Sandbox (state retention, tools, evaluation, error recovery).
-2. Session Full-Text Search & History Query Indexer (indexing, BM25 scoring, filters, tool handler).
-3. Cross-Platform PowerShell Subsystem (pwsh tool, background jobs, timeouts).
-4. Tool Registry & Permissions integration.
-"""
+"""Code mode, JSONL session query, and PowerShell integration tests."""
 
 import json
 import pathlib
@@ -18,10 +11,9 @@ from coderai.core.code_mode import (
 )
 from coderai.core.jobs import get_job_store
 from coderai.core.permissions import describe_tool_permission_request
-from coderai.core.session_query import (
-    SessionIndex,
-    handle_session_query_tool,
-)
+from coderai.core.session_query import SessionQueryEngine
+from coderai.core.tools.session_query import handle_session_query_tool
+
 from coderai.core.tools.pwsh import handle_pwsh_tool
 from coderai.core.tools.registry import get_tool_registry
 from coderai.core.tools.types import ToolExecutionContext
@@ -134,15 +126,27 @@ async def test_code_mode_error_and_timeout(temp_workspace, tool_context):
     assert "Missing required argument" in tool_res_err.error
 
 
+@pytest.mark.asyncio
+async def test_code_mode_fails_closed_without_requested_os_sandbox(temp_workspace, monkeypatch):
+    monkeypatch.setattr(
+        "coderai.core.code_mode.engine.wrap_sandbox_command",
+        lambda argv, **kwargs: (argv, {"sandboxApplied": False}),
+    )
+    sandbox = CodeModeSandbox(temp_workspace, sandbox_mode="workspace-write")
+
+    result = await sandbox.execute("1 + 1")
+
+    assert result.error is not None
+    assert "SandboxUnavailable" in result.error
+
+
 # =====================================================================
-# 2. Session Query & Full-Text Search (FTS) Tests
+# 2. Session Query Tests
 # =====================================================================
 
 
-def test_session_index_in_memory():
-    index = SessionIndex("/tmp/test_workspace")
-
-    # Index some sample messages
+def test_session_query_engine_reads_canonical_jsonl(tmp_path):
+    engine = SessionQueryEngine(str(tmp_path))
     messages = [
         {
             "id": "m1",
@@ -163,29 +167,29 @@ def test_session_index_in_memory():
         {"id": "m4", "role": "user", "content": "Please write an authentication unit test."},
     ]
 
-    index.index_messages(messages, session_id="session_abc")
+    engine.store.replace_rows("session_abc", messages)
 
     # 1. Search for postgres
-    res = index.search("postgres database")
+    res = engine.search_events("postgres database")
     assert len(res) >= 2
-    assert res[0].session_id == "session_abc"
-    assert "Postgres" in res[0].content_snippet or "postgres" in res[0].content_snippet
+    assert res[0]["sessionId"] == "session_abc"
+    assert "Postgres" in res[0]["snippet"] or "postgres" in res[0]["snippet"]
 
     # 2. Search for pytest with role filter
-    res_tool = index.search("pytest auth", role="tool")
+    res_tool = engine.search_events("pytest auth", role="tool")
     assert len(res_tool) == 1
-    assert res_tool[0].tool_name == "bash"
-    assert "15 passed" in res_tool[0].content_snippet
+    assert res_tool[0]["toolName"] == "bash"
+    assert "15 passed" in res_tool[0]["snippet"]
 
     # 3. Search with non-matching query
-    res_empty = index.search("kubernetes ingress controller")
+    res_empty = engine.search_events("kubernetes ingress controller")
     assert len(res_empty) == 0
 
 
 @pytest.mark.asyncio
 async def test_session_query_workspace_and_tool(temp_workspace, tool_context):
     # Create fake session JSONL on disk
-    sessions_dir = pathlib.Path(temp_workspace) / ".coderAI" / "sessions"
+    sessions_dir = pathlib.Path(temp_workspace) / ".coderai" / "sessions"
     sessions_dir.mkdir(parents=True, exist_ok=True)
     jsonl_path = sessions_dir / "sess_123.jsonl"
 

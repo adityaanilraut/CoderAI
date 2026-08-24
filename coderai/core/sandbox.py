@@ -335,7 +335,10 @@ def check_sandbox_path_access(
 
     if op in ("write", "delete"):
         if parsed == "read-only":
-            return False, f"SANDBOX_VIOLATION: Cannot {op} file '{target_path}' under 'read-only' sandbox policy."
+            return (
+                False,
+                f"SANDBOX_VIOLATION: Cannot {op} file '{target_path}' under 'read-only' sandbox policy.",
+            )
 
         if parsed == "workspace-write":
             # Allow workspace paths and standard temporary directories (/tmp, /private/tmp)
@@ -368,4 +371,3 @@ def check_sandbox_path_access(
                 )
 
     return True, None
-

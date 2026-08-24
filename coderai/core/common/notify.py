@@ -1,4 +1,4 @@
-"""Task completion notification helper (port of deepcode core/src/common/notify.ts)."""
+"""Task completion notification helper."""
 
 from __future__ import annotations
 

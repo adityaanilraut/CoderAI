@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import json
-import pytest
 from coderai.core.hooks import (
     HookPoint,
     HookOutput,
-    MergedHookOutcome,
     matches_hook_pattern,
     merge_hook_outputs,
     load_hook_config,
@@ -73,7 +70,7 @@ def test_load_hook_config_from_settings(tmp_path):
     settings = {
         "hooks": {
             "PreToolUse": [
-                {"matcher": "bash", "hooks": [{"command": "echo '{\"decision\":\"allow\"}'"}]}
+                {"matcher": "bash", "hooks": [{"command": 'echo \'{"decision":"allow"}\''}]}
             ]
         }
     }
@@ -89,7 +86,9 @@ def test_run_hook_point_execution(tmp_path):
                 {
                     "matcher": "bash",
                     "hooks": [
-                        {"command": 'python3 -c "import sys, json; print(json.dumps({\'decision\': \'allow\', \'additionalContext\': [\'Safe command\']}))"'}
+                        {
+                            "command": "python3 -c \"import sys, json; print(json.dumps({'decision': 'allow', 'additionalContext': ['Safe command']}))\""
+                        }
                     ],
                 }
             ],
@@ -97,7 +96,9 @@ def test_run_hook_point_execution(tmp_path):
                 {
                     "matcher": "bash",
                     "hooks": [
-                        {"command": 'python3 -c "import sys, json; print(json.dumps({\'systemMessages\': [\'Tool finished\']}))"'}
+                        {
+                            "command": "python3 -c \"import sys, json; print(json.dumps({'systemMessages': ['Tool finished']}))\""
+                        }
                     ],
                 }
             ],

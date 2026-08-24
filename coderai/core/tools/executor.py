@@ -16,44 +16,29 @@ from coderai.core.tools.types import (
     BackgroundProcessCompletion,
     ProcessTimeoutControl,
     ProcessTimeoutInfo,
-    ToolAbortedError,
-    ToolArgsError,
     ToolCall,
-    ToolCallExecution,
     ToolDefinition,
     ToolError,
     ToolExecutionContext,
-    ToolExecutionError,
     ToolExecutionFollowUpMessage,
     ToolExecutionHooks,
-    ToolExecutionResult,
-    ToolNotFoundError,
-    ToolOutputError,
     ToolResult,
-    ToolTimeoutError,
     ValidationError,
+    normalize_tool_call,
 )
 
 __all__ = [
     "BackgroundProcessCompletion",
     "ProcessTimeoutControl",
     "ProcessTimeoutInfo",
-    "ToolAbortedError",
-    "ToolArgsError",
     "ToolCall",
-    "ToolCallExecution",
     "ToolDefinition",
     "ToolError",
     "ToolExecutionContext",
-    "ToolExecutionError",
     "ToolExecutionFollowUpMessage",
     "ToolExecutionHooks",
-    "ToolExecutionResult",
     "ToolExecutor",
-    "ToolNotFoundError",
-    "ToolOutputError",
     "ToolResult",
-    "ToolTimeoutError",
     "ValidationError",
 ]
 
@@ -72,17 +57,6 @@ class ToolExecutor:
         self.create_openai_client = create_openai_client
         self.mcp_manager = mcp_manager
         self.registry = registry or get_tool_registry()
-
-    @property
-    def tool_handlers(self) -> dict[str, Callable[..., Any]]:
-        """Backward compatibility dictionary of tool handlers."""
-        handlers: dict[str, Callable[..., Any]] = {}
-        for tool_def in self.registry.list_tools():
-            if tool_def.handler:
-                handlers[tool_def.name] = tool_def.handler
-                for alias in tool_def.aliases:
-                    handlers[alias] = tool_def.handler
-        return handlers
 
     async def execute_tool_calls(
         self,
@@ -156,44 +130,7 @@ class ToolExecutor:
 
     def _parse_tool_call(self, raw: Any) -> dict[str, Any] | None:
         """Parse raw tool call structure from LLM output into normalized dict."""
-        if not isinstance(raw, dict):
-            tc_id = getattr(raw, "id", None)
-            func = getattr(raw, "function", None)
-            if isinstance(tc_id, str) and func:
-                fname = getattr(func, "name", None)
-                fargs = getattr(func, "arguments", "")
-                if isinstance(fname, str):
-                    return {
-                        "id": tc_id,
-                        "type": "function",
-                        "function": {
-                            "name": fname,
-                            "arguments": fargs if isinstance(fargs, str) else "",
-                        },
-                    }
-            return None
-
-        tc_id = raw.get("id")
-        if not isinstance(tc_id, str):
-            return None
-
-        func = raw.get("function")
-        if not isinstance(func, dict):
-            return None
-
-        fname = func.get("name")
-        if not isinstance(fname, str):
-            return None
-
-        fargs = func.get("arguments", "")
-        return {
-            "id": tc_id,
-            "type": "function",
-            "function": {
-                "name": fname,
-                "arguments": fargs if isinstance(fargs, str) else "",
-            },
-        }
+        return normalize_tool_call(raw)
 
     async def execute_tool_call(
         self,
@@ -235,21 +172,6 @@ class ToolExecutor:
             meta.setdefault("timestamp", start_time_ms)
             denied.metadata = meta
             return denied
-
-        # Check early cancellation
-        if context.is_aborted:
-            end_time_ms = int(time.time() * 1000)
-            return ToolResult(
-                ok=False,
-                name=tool_name,
-                error=f'tool "{tool_name}" call aborted before dispatch',
-                metadata={
-                    "startTime": start_time_ms,
-                    "endTime": end_time_ms,
-                    "durationMs": end_time_ms - start_time_ms,
-                    "timestamp": start_time_ms,
-                },
-            )
 
         # 3. Resolve Definition & Validate Schema
         tool_def = self.registry.get(tool_name, scope=session_id)

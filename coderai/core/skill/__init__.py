@@ -1,4 +1,4 @@
-"""Skill Subsystem for CoderAI — port of dsh layered skill architecture."""
+""""""
 
 from coderai.core.skill.filesystem import (
     get_bundled_skills_root,
@@ -22,7 +22,6 @@ from coderai.core.skill.registry import (
     list_skills,
     load_skill,
     match_skills_for_prompt,
-    parse_skill_match_response,
 )
 
 __all__ = [
@@ -40,7 +39,6 @@ __all__ = [
     "list_skills",
     "load_skill",
     "match_skills_for_prompt",
-    "parse_skill_match_response",
     "render_skill_document_block",
     "render_skill_resources",
     "strip_skill_prompt_metadata",

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Deep cleanup: `AgentLoop.run()` now owns activation; `JsonlSessionStore` is the sole session persistence path.
+- Canonical project directory is `.coderai` with `SKILL.md` skill manifests.
+- Tool presets reduced to `full`, `core`, and `shell_edit`.
+- CLI aliases `--message` and `--tools-preset` removed in favor of `--prompt` / positional prompts and `--preset`.
+- Skills API is owned by `coderai.core.skill`; prompt construction no longer re-exports the skill package.
+- Session query reads the canonical JSONL store directly (duplicate SQLite/BM25 indexers removed).
+- Shared `build_session_manager` / `close_session_manager` factory for interactive and `--exec` modes.
+
+### Removed
+- Unused parallel implementations: `ApprovalService`, `GoalRoundDriver`, session telemetry coordinator, SQLite session persistence/projection cache, `PythonCodeRuntime`, and tests-only timeout/repeat guards.
+- Dead tool projections (`get_openai_tool_definitions`, `to_sdk_schemas`) and skill LLM-match parser that was never invoked in production.
+
+### Migration
+- Rename `.coderAI` → `.coderai` and `SKILLS.md` → `SKILL.md`.
+- Replace `--message` with `--prompt` / a positional prompt; replace `--tools-preset` with `--preset`.
+- Map old presets `benchmark`/`coding`/`minimal`/`dsh_minimal` to `core` or `shell_edit`.
+
 ### Added
 - **Discovery & Search Subsystem (`glob` / `grep`)**: First-class workspace discovery with bundled ripgrep binary (`coderai/vendor/rg`), automatic Python fallback, result caps (100 glob / 250 grep), and spill-to-disk locators.
 - **Output Spill Management (`coderai.core.spill`)**: Session-scoped spill store for oversized tool results (bash, search, terminal), providing head/tail previews and locator retrieval hints.
@@ -23,7 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Multi-agent collaboration with `spawn_teammate`, `team_task_create`, `team_task_update`, `team_task_get`, `team_task_list`, and `wait_agent`.
 - **Developer Subsystems**:
   - **Language Server Protocol (`coderai.core.lsp`)**: Definition lookup, references, document symbols, and workspace symbols (`lsp`).
-  - **PTY Terminal Subsystem (`coderai.core.terminal`)**: Persistent pseudoterminals (`terminal_create`, `terminal_send`, `terminal_read`, `terminal_close`, `terminal_list`).
+  - **PTY Terminal Subsystem (`coderai.core.terminal`)**: Persistent pseudoterminals (`terminal_open`, `terminal_send`, `terminal_read`, `terminal_close`, `terminal_list`).
   - **Workflow Engine (`coderai.core.workflow`)**: Multi-phase async Python workflow scripting engine with structured logging and parallel branches (`workflow`).
   - **Ralph Verification Harness (`coderai.core.tools.ralph`)**: Automated test-driven feedback and task completion verification loop (`ralph`).
   - **Code Mode (`coderai.core.code_mode`)**: Sandboxed in-process Python execution for fast data manipulation (`code_mode`).

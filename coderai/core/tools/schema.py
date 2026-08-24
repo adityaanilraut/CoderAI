@@ -1,7 +1,4 @@
-"""Declarative tool schema definition and JSON Schema validation.
-
-Ported and adapted from DeepSeek Harness dsh-tools/schema and json-schema.
-"""
+"""Declarative tool schema definition and JSON Schema validation."""
 
 from __future__ import annotations
 
@@ -10,7 +7,6 @@ from typing import Any
 from collections.abc import Callable, Sequence
 from coderai.core.tools.types import (
     ToolDefinition,
-    ToolOutputDefinition,
     ToolCategory,
     PluginRateLimitedTool,
 )
@@ -188,12 +184,10 @@ def define_tool(
     is_mutating: bool = False,
     is_concurrency_safe: bool | Callable[[dict[str, Any]], bool] = False,
     timeout_ms: int | None = None,
-    output: ToolOutputDefinition | None = None,
-    present_call: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
     present_result: Callable[[dict[str, Any], Any], dict[str, Any] | None] | None = None,
     finalize_content: Callable[[Any, Any], str | None] | None = None,
 ) -> ToolDefinition:
-    """Create a structured ToolDefinition matching DeepSeek Harness's declarative standard."""
+    """Create a structured ToolDefinition."""
     params = parameters or {}
     req = list(required) if required is not None else []
     als = list(aliases) if aliases is not None else []
@@ -216,8 +210,6 @@ def define_tool(
         is_mutating=is_mutating,
         is_concurrency_safe=is_concurrency_safe,
         timeout_ms=timeout_ms,
-        output=output,
-        present_call=present_call,
         present_result=present_result,
         finalize_content=finalize_content,
     )

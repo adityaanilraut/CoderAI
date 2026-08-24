@@ -1,4 +1,4 @@
-"""Tool validation utilities — port of deepcode core/src/common/validate.ts."""
+""""""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""coderai.core — UI-agnostic engine (mirrors deepcode packages/core).
+"""UI-agnostic CoderAI engine package.
 
 Public surface:
     from coderai.core.session import SessionManager

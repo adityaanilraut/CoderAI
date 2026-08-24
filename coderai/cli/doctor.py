@@ -2,33 +2,21 @@
 
 from __future__ import annotations
 
-import os
 import pathlib
 import platform
 import shutil
-import subprocess
 import sys
 from dataclasses import dataclass, field
 from typing import Any
 
-from coderai._version import __version__
+from rich.panel import Panel
+from rich.table import Table
+
 from coderai.cli.welcome import get_git_status
 from coderai.core.openai_client import resolve_model_provider_routing
 from coderai.core.skill import list_skills
 
-try:
-    from rich.console import Console
-    from rich.panel import Panel
-    from rich.table import Table
-    from rich.text import Text
-
-    _RICH = True
-except ImportError:  # pragma: no cover
-    Console = None  # type: ignore[assignment,misc]
-    Panel = None  # type: ignore[assignment,misc]
-    Table = None  # type: ignore[assignment,misc]
-    Text = None  # type: ignore[assignment,misc]
-    _RICH = False
+_RICH = True
 
 
 @dataclass
@@ -97,7 +85,9 @@ def run_doctor_diagnostics(project_root: str, mgr: Any) -> DoctorReport:
             name="Virtual Environment",
             status="ok" if in_venv else "warn",
             message=f"Active venv: {sys.prefix}" if in_venv else "Running outside a virtualenv",
-            remediation="Consider activating a project virtual environment." if not in_venv else None,
+            remediation="Consider activating a project virtual environment."
+            if not in_venv
+            else None,
         )
     )
 
@@ -140,8 +130,8 @@ def run_doctor_diagnostics(project_root: str, mgr: Any) -> DoctorReport:
     resolved_settings = mgr.get_resolved_settings() if hasattr(mgr, "get_resolved_settings") else {}
     base_url, api_key = resolve_model_provider_routing(
         active_model,
-        explicit_base_url=resolved_settings.get("baseUrl") or resolved_settings.get("baseURL"),
-        explicit_api_key=resolved_settings.get("apiKey") or resolved_settings.get("api_key"),
+        explicit_base_url=resolved_settings.get("baseURL"),
+        explicit_api_key=resolved_settings.get("apiKey"),
     )
 
     if api_key:
@@ -294,7 +284,11 @@ def run_doctor_diagnostics(project_root: str, mgr: Any) -> DoctorReport:
 def render_doctor(console: Any | None, report: DoctorReport) -> None:
     """Render the Doctor diagnostics report nicely in the console."""
     if console is not None and _RICH and Table is not None and Panel is not None:
-        table = Table(title="[bold cyan]CoderAI System Doctor Diagnostics[/]", border_style="bright_blue", expand=True)
+        table = Table(
+            title="[bold cyan]CoderAI System Doctor Diagnostics[/]",
+            border_style="bright_blue",
+            expand=True,
+        )
         table.add_column("Category", style="dim", width=18)
         table.add_column("Check / Resource", style="bold white", width=24)
         table.add_column("Status", width=10, justify="center")

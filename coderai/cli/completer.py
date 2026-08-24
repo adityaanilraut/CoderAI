@@ -7,63 +7,10 @@ import json
 import pathlib
 from typing import Any
 
+from coderai.cli.commands import completion_entries, resolve_command
 from coderai.cli.file_mention import suggest_workspace_files
 
-AVAILABLE_SLASH_COMMANDS = [
-    ("/help", "Show interactive slash command help menu or /help <command>"),
-    ("/?", "Show interactive slash command help menu or /? <command>"),
-    ("/doctor", "Run comprehensive system health checks and connectivity diagnostics"),
-    ("/plan", "Toggle Plan Mode on/off (or on, off, apply, reset)"),
-    ("/undo", "Revert files and turn to previous turn checkpoint"),
-    ("/diff", "Show unified diff of changes made in session"),
-    ("/model", "Open interactive model selector or switch model"),
-    ("/effort", "Select or change reasoning effort (low, medium, high, max, off)"),
-    ("/reasoning", "Select or change reasoning effort (alias for /effort)"),
-    ("/sessions", "Interactive saved sessions menu (resume, delete, fork, search)"),
-    ("/resume", "Resume saved session directly by ID"),
-    ("/fork", "Fork current or specified session into a new session"),
-    ("/delete", "Delete a saved session"),
-    ("/rm", "Delete a saved session (alias for /delete)"),
-    ("/rename", "Rename active or specified session summary title"),
-    ("/new", "Start a fresh session in the current project"),
-    ("/init", "Initialize or update AGENTS.md guidelines for the project"),
-    ("/skills", "Explore active and workspace skills"),
-    ("/skill", "Load a skill into the current session"),
-    ("/jobs", "Inspect and manage background bash jobs (list, kill, logs)"),
-    ("/job", "Inspect and manage background bash jobs (list, kill, logs)"),
-    ("/schedule", "Manage scheduled reminders and timers (after, at, every, cancel)"),
-    ("/agents", "Inspect subagent hierarchy, tree, reports, and message inbox"),
-    ("/subagents", "Inspect subagent hierarchy, tree, reports, and message inbox"),
-    ("/teams", "Inspect active agent team members and status"),
-    ("/lsp", "Inspect LSP language servers and code diagnostics"),
-    ("/mcp", "Inspect connected MCP servers, tools, prompts, resources, and reconnect"),
-    ("/compact", "Compress conversation history to free context window"),
-    ("/tokens", "Display session token usage and context analytics"),
-    ("/cost", "Display session token usage and cost analytics"),
-    ("/config", "Inspect resolved workspace & user settings"),
-    ("/settings", "Inspect resolved workspace & user settings (alias for /config)"),
-    (
-        "/permission",
-        "Show or set permission preset (read-only, workspace-write, danger-full-access)",
-    ),
-    (
-        "/permissions",
-        "Show or set permission preset (alias for /permission)",
-    ),
-    ("/goal", "List or update session goals (add, done, cancel, start)"),
-    ("/image", "Attach image file for multimodal vision analysis"),
-    ("/editor", "Open external $EDITOR (nano, vim, vi) to compose prompt"),
-    ("/edit", "Open external $EDITOR (alias for /editor)"),
-    ("/paste", "Enter multiline paste mode until ':::' or Ctrl-D"),
-    ("/history", "View turn-by-turn conversation timeline"),
-    ("/export", "Export session conversation to Markdown or JSON"),
-    ("/thinking", "Toggle reasoning trace display (full, summary, lite, normal)"),
-    ("/raw", "Toggle display mode for viewing reasoning traces (lite, normal, raw-scrollback)"),
-    ("/clear", "Clear terminal screen and redraw status bar"),
-    ("/continue", "Continue bounded multi-step agent execution"),
-    ("/exit", "Exit session with summary card"),
-    ("/quit", "Exit session with summary card"),
-]
+AVAILABLE_SLASH_COMMANDS = completion_entries()
 
 
 def _get_saved_session_ids(project_root: str) -> list[str]:
@@ -88,7 +35,11 @@ def _get_discovered_skill_names(project_root: str) -> list[str]:
         from coderai.core.skill import list_skills
 
         skills = list_skills(project_root)
-        return [s.name for s in skills]
+        return [
+            str(skill.get("name") or "")
+            for skill in skills
+            if isinstance(skill, dict) and skill.get("name")
+        ]
     except Exception:
         return []
 
@@ -143,6 +94,12 @@ class CoderAICompleter:
 
             lead_cmd = tokens[0].lower()
             arg_prefix = tokens[1] if len(tokens) > 1 else ""
+            command = resolve_command(lead_cmd)
+            if command and command.subcommands:
+                matching_subs = fuzzy_filter(arg_prefix, list(command.subcommands))
+                if state < len(matching_subs):
+                    return matching_subs[state]
+                return None
 
             # Sub-argument completion for /model
             if lead_cmd in ("/model",):
@@ -152,84 +109,6 @@ class CoderAICompleter:
                 matching_models = fuzzy_filter(arg_prefix, all_models, limit=15)
                 if state < len(matching_models):
                     return matching_models[state]
-                return None
-
-            # Sub-argument completion for /mcp
-            if lead_cmd in ("/mcp",):
-                subcmds = ["reconnect", "prompts", "resources"]
-                matching_subs = fuzzy_filter(arg_prefix, subcmds)
-                if state < len(matching_subs):
-                    return matching_subs[state]
-                return None
-
-            # Sub-argument completion for /thinking and /raw
-            if lead_cmd in ("/thinking", "/raw"):
-                modes = ["full", "summary", "lite", "normal", "on", "off"]
-                matching_modes = fuzzy_filter(arg_prefix, modes)
-                if state < len(matching_modes):
-                    return matching_modes[state]
-                return None
-
-            # Sub-argument completion for /effort and /reasoning
-            if lead_cmd in ("/effort", "/reasoning"):
-                efforts = ["max", "high", "medium", "low", "off"]
-                matching_efforts = fuzzy_filter(arg_prefix, efforts)
-                if state < len(matching_efforts):
-                    return matching_efforts[state]
-                return None
-
-            # Sub-argument completion for /permission and /permissions
-            if lead_cmd in ("/permission", "/permissions"):
-                presets = [
-                    "read-only",
-                    "workspace-write",
-                    "danger-full-access",
-                    "local-network-read",
-                    "unrestricted-read",
-                ]
-                matching_presets = fuzzy_filter(arg_prefix, presets)
-                if state < len(matching_presets):
-                    return matching_presets[state]
-                return None
-
-            # Sub-argument completion for /goal
-            if lead_cmd in ("/goal",):
-                actions = ["list", "add", "done", "cancel", "start"]
-                matching_actions = fuzzy_filter(arg_prefix, actions)
-                if state < len(matching_actions):
-                    return matching_actions[state]
-                return None
-
-            # Sub-argument completion for /plan
-            if lead_cmd in ("/plan",):
-                plan_subs = ["on", "off", "apply", "reset"]
-                matching_plans = fuzzy_filter(arg_prefix, plan_subs)
-                if state < len(matching_plans):
-                    return matching_plans[state]
-                return None
-
-            # Sub-argument completion for /jobs and /job
-            if lead_cmd in ("/jobs", "/job"):
-                job_subs = ["list", "kill", "logs"]
-                matching_jobs = fuzzy_filter(arg_prefix, job_subs)
-                if state < len(matching_jobs):
-                    return matching_jobs[state]
-                return None
-
-            # Sub-argument completion for /schedule
-            if lead_cmd in ("/schedule",):
-                sched_subs = ["list", "after", "at", "every", "cancel"]
-                matching_sched = fuzzy_filter(arg_prefix, sched_subs)
-                if state < len(matching_sched):
-                    return matching_sched[state]
-                return None
-
-            # Sub-argument completion for /agents and /subagents
-            if lead_cmd in ("/agents", "/subagents"):
-                agent_subs = ["list", "tree", "report", "send"]
-                matching_agents = fuzzy_filter(arg_prefix, agent_subs)
-                if state < len(matching_agents):
-                    return matching_agents[state]
                 return None
 
             # Sub-argument completion for /skill

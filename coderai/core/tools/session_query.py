@@ -28,30 +28,6 @@ async def handle_session_query_tool(args: dict[str, Any], context: Any) -> ToolR
                 error="Missing required argument 'query'.",
             )
         hits = engine.search_events(query=query, session_id=session_id, role=role, limit=limit)
-        if not hits:
-            # Check workspace JSONL indexer
-            try:
-                from coderai.core.session_query.indexer import get_session_index
-
-                ws_index = get_session_index(project_root)
-                ws_index.scan_and_index_workspace()
-                ws_results = ws_index.search(
-                    query=query, session_id=session_id, role=role, limit=limit
-                )
-                if ws_results:
-                    hits = [
-                        {
-                            "sessionId": r.session_id,
-                            "seq": idx,
-                            "role": r.role,
-                            "snippet": r.content_snippet,
-                            "toolName": r.tool_name,
-                            "score": r.score,
-                        }
-                        for idx, r in enumerate(ws_results, 1)
-                    ]
-            except Exception:
-                pass
 
         if not hits:
             return ToolResult(

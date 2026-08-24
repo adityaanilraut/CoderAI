@@ -1,4 +1,4 @@
-"""Headless non-interactive execution runner — port of deepcode exec-runner.ts.
+"""Headless non-interactive execution runner.
 
 Provides `--exec` batch execution mode for automated pipelines, CI/CD scripts,
 and command-line one-shot invocations with structured exit codes.
@@ -7,37 +7,24 @@ and command-line one-shot invocations with structured exit codes.
 from __future__ import annotations
 
 import asyncio
-import sys
 
+from rich.console import Console
+from rich.markdown import Markdown
+
+from coderai.cli.session_factory import build_session_manager, close_session_manager
 from coderai.cli.thinking import render_thinking_block
 from coderai.core.openai_client import create_openai_client as _core_client
-from coderai.core.session import SessionManager, SessionMessage
+from coderai.core.session import SessionMessage
 
-try:
-    from rich.console import Console
-    from rich.markdown import Markdown
-
-    _RICH = True
-    console: Console | None = Console()
-except ImportError:  # pragma: no cover
-    Console = None  # type: ignore[assignment,misc]
-    Markdown = None  # type: ignore[assignment,misc]
-    _RICH = False
-    console = None
+console = Console()
 
 
 def _print_text(text: str) -> None:
-    if console is not None and _RICH:
-        console.print(text)
-    else:
-        print(text)
+    console.print(text)
 
 
 def _print_markdown(markdown_text: str) -> None:
-    if console is not None and _RICH and Markdown is not None:
-        console.print(Markdown(markdown_text))
-    else:
-        print(markdown_text)
+    console.print(Markdown(markdown_text))
 
 
 async def run_exec_session(
@@ -49,7 +36,7 @@ async def run_exec_session(
     plan_mode: bool = False,
     auto_approve: bool = False,
     verbose: bool = False,
-    preset: str = "benchmark",
+    preset: str = "core",
 ) -> int:
     """Execute a prompt headless in `--exec` mode.
 
@@ -61,7 +48,7 @@ async def run_exec_session(
         plan_mode: Start in Plan Mode.
         auto_approve: Auto-approve all permission prompts.
         verbose: Verbose output.
-        preset: Tool preset to use (default: benchmark).
+        preset: Tool preset to use (default: core).
 
     Returns:
         0 on success, non-zero exit code on failure.
@@ -70,41 +57,25 @@ async def run_exec_session(
         _print_text("[Error] No prompt provided to --exec.")
         return 1
 
-    last_assistant_text = ""
     had_error = False
 
     def on_assistant_message(msg: SessionMessage, completed: bool) -> None:
-        nonlocal last_assistant_text
         if msg.thinking and verbose:
             render_thinking_block(console, msg.thinking, expanded=True)
-        if msg.content:
-            last_assistant_text = msg.content
-            if completed:
-                _print_markdown(msg.content)
+        if msg.content and completed:
+            _print_markdown(msg.content)
 
-    def on_stream_chunk(chunk: str) -> None:
-        if not _RICH:
-            sys.stdout.write(chunk)
-            sys.stdout.flush()
-
-    manager = SessionManager(
-        project_root=project_root,
-        create_openai_client=_core_client,
-        get_resolved_settings=lambda: {
-            "preset": preset,
-            "toolsPreset": preset,
-            "autoApprove": auto_approve,
-        },
-        render_markdown=lambda t: t,
+    manager = build_session_manager(
+        project_root,
+        model=model,
+        preset=preset,
         on_assistant_message=on_assistant_message,
-        on_stream_chunk=on_stream_chunk if not _RICH else None,
         non_interactive=True,
+        client_factory=_core_client,
     )
 
-    if model:
-        manager.set_model(model)
-
     try:
+        await manager.init_mcp_servers()
         # Determine session ID
         if resume_session_id:
             session_id = resume_session_id
@@ -127,7 +98,7 @@ async def run_exec_session(
                 if auto_approve:
                     # Grant all requested permissions
                     replies = [
-                        {"toolCallId": r.get("toolCallId"), "decision": "allow"} for r in requests
+                        {"toolCallId": r.get("toolCallId"), "permission": "allow"} for r in requests
                     ]
                     await manager.respond_permissions(session_id, replies)
                 else:
@@ -136,7 +107,7 @@ async def run_exec_session(
                         "[coderai] Permission required for tool execution, but running non-interactively without --yes."
                     )
                     replies = [
-                        {"toolCallId": r.get("toolCallId"), "decision": "deny"} for r in requests
+                        {"toolCallId": r.get("toolCallId"), "permission": "deny"} for r in requests
                     ]
                     await manager.respond_permissions(session_id, replies)
                 continue
@@ -163,7 +134,4 @@ async def run_exec_session(
         _print_text(f"[Error] Execution error: {e}")
         return 1
     finally:
-        try:
-            manager.dispose()
-        except Exception:
-            pass
+        await close_session_manager(manager)

@@ -15,18 +15,19 @@ from coderai.core.permissions import (
     resolve_snippet_file_path,
 )
 from coderai.core.prompt import (
-    build_skill_documents_prompt,
-    extract_skill_frontmatter,
     get_plan_mode_prompt,
     get_runtime_context,
     get_system_prompt,
     get_tools,
+    load_agent_instructions,
+)
+from coderai.core.skill import (
+    build_skill_documents_prompt,
+    extract_skill_frontmatter,
     list_skill_resource_files,
     list_skills,
-    load_agent_instructions,
     load_skill,
     match_skills_for_prompt,
-    parse_skill_match_response,
     strip_skill_prompt_metadata,
 )
 from coderai.core.session import SessionManager, SessionMessage
@@ -934,15 +935,15 @@ def test_openai_client_provider_routing(monkeypatch: pytest.MonkeyPatch, tmp_pat
     assert "generativelanguage.googleapis.com" in info["baseURL"]
 
 
-def test_coderai_caps_settings_path(tmp_path: pathlib.Path):
+def test_coderai_settings_path_is_canonical(tmp_path: pathlib.Path):
     from coderai.core.settings import get_project_settings_path, read_project_settings
 
-    caps_dir = tmp_path / ".coderAI"
+    caps_dir = tmp_path / ".coderai"
     caps_dir.mkdir()
     (caps_dir / "settings.json").write_text(json.dumps({"model": "gpt-5.6-sol", "apiKey": "k1"}))
 
     settings_path = get_project_settings_path(str(tmp_path))
-    assert ".coderAI" in settings_path
+    assert ".coderai" in settings_path
 
     data = read_project_settings(str(tmp_path))
     assert data is not None
@@ -1125,9 +1126,9 @@ def test_skill_discovery_paths_and_enabled_filter(
         "---\nname: tdd-workflow\ndescription: Drive changes with tests first\n"
         "allow-implicit-invocation: true\n---\n# TDD\n"
     )
-    legacy = tmp_path / ".coderAI" / "skills" / "security-audit"
-    legacy.mkdir(parents=True)
-    (legacy / "SKILLS.md").write_text(
+    audit = tmp_path / ".coderai" / "skills" / "security-audit"
+    audit.mkdir(parents=True)
+    (audit / "SKILL.md").write_text(
         "---\nname: security-audit\ndescription: Audit code for security issues\n---\n# Audit\n"
     )
     manual = tmp_path / ".coderai" / "skills" / "manual-only"
@@ -1142,7 +1143,7 @@ def test_skill_discovery_paths_and_enabled_filter(
     assert {"tdd-workflow", "security-audit", "manual-only"} <= names
     locations = {s["name"]: s["location"] for s in skills}
     assert locations["tdd-workflow"].endswith("SKILL.md")
-    assert locations["security-audit"].endswith("SKILLS.md")
+    assert locations["security-audit"].endswith("SKILL.md")
 
     filtered = list_skills(str(tmp_path), enabled_skills={"manual-only": False})
     assert "manual-only" not in {s["name"] for s in filtered}
@@ -1150,12 +1151,6 @@ def test_skill_discovery_paths_and_enabled_filter(
     matched = match_skills_for_prompt("please use tdd-workflow on this repo", str(tmp_path))
     assert any(s["name"] == "tdd-workflow" for s in matched)
     assert all(s["name"] != "manual-only" for s in matched)
-
-    parsed = parse_skill_match_response(
-        '{"skillNames": ["tdd-workflow", "missing"]}',
-        {"tdd-workflow", "security-audit"},
-    )
-    assert parsed == ["tdd-workflow"]
 
 
 def test_edit_permission_resolves_snippet_path(tmp_path: pathlib.Path):
@@ -1392,7 +1387,7 @@ async def test_compaction_preserves_prefix_and_records_tokens(
 
 
 def test_multiline_yaml_frontmatter_parsing():
-    from coderai.core.prompt import extract_skill_frontmatter, _implicit_invocation_allowed
+    from coderai.core.skill import extract_skill_frontmatter, _implicit_invocation_allowed
 
     content = """---
 name: advanced-skill
@@ -1414,7 +1409,7 @@ metadata:
 
 
 def test_bundled_skills_discovery_and_content():
-    from coderai.core.prompt import list_skills, load_skill, get_bundled_skills_root
+    from coderai.core.skill import get_bundled_skills_root, list_skills, load_skill
 
     bundled_root = get_bundled_skills_root()
     assert pathlib.Path(bundled_root).is_dir()
@@ -1426,7 +1421,7 @@ def test_bundled_skills_discovery_and_content():
 
     self_refer = load_skill("coderai-self-refer")
     assert self_refer is not None
-    assert "Answers questions about" in self_refer["description"]
+    assert "Answer questions about" in self_refer["description"]
     assert len(self_refer["content"]) > 100
 
     writer = load_skill("skill-writer")

@@ -1,4 +1,4 @@
-"""Side-effect-scoped permissions — port of deepcode core/src/common/permissions.ts.
+"""Side-effect-scoped permissions
 
 Maps every tool call to one or more PermissionScope values, evaluates them
 against settings (allow/deny/ask lists + defaultMode), and returns a plan of
@@ -18,6 +18,7 @@ from collections.abc import Callable
 
 from coderai.core.common.validate import clean_json_string
 from coderai.core.state import get_snippet, is_absolute_file_path, normalize_file_path
+from coderai.core.tools.types import normalize_tool_call
 
 # Scopes (matching settings.PermissionScope). "unknown" is a bash-only sentinel.
 ASK_SCOPES = {
@@ -45,6 +46,64 @@ BASH_SIDE_EFFECTS = {
     "mutate-git-log",
     "network",
     "unknown",
+}
+
+# Every built-in is either described by a path/network-aware branch below or is
+# explicitly safe with respect to external side effects. The coverage test keeps
+# new registered tools from silently inheriting an allow decision.
+PERMISSION_DESCRIBED_TOOLS = {
+    "bash",
+    "pwsh",
+    "glob",
+    "grep",
+    "read",
+    "write",
+    "edit",
+    "WebSearch",
+    "WebFetch",
+    "UnderstandImage",
+    "str_replace_editor",
+    "terminal_open",
+    "terminal_send",
+    "terminal_read",
+    "terminal_signal",
+    "terminal_close",
+    "terminal_list",
+    "lsp",
+    "schedule_create",
+    "schedule_list",
+    "schedule_delete",
+    "Task",
+    "subagent",
+    "subagent_fork",
+    "workflow",
+    "ralph",
+    "spawn_teammate",
+    "team_task_create",
+    "team_task_get",
+    "team_task_list",
+    "team_task_update",
+    "wait_agent",
+    "code_mode",
+    "session_query",
+}
+
+# These tools only mutate CoderAI's own in-memory/session bookkeeping or are
+# observational; they do not require a filesystem/network permission scope.
+PERMISSION_EXEMPT_REGISTERED_TOOLS = {
+    "job_list",
+    "job_output",
+    "job_kill",
+    "AskUserQuestion",
+    "send_message",
+    "interrupt_agent",
+    "list_agents",
+    "report",
+    "skill",
+    "UpdatePlan",
+    "todo_write",
+    "exit_plan_mode",
+    "goal",
 }
 
 PLAN_MODE_FORCE_ASK_SCOPES: list[str] = [
@@ -105,9 +164,7 @@ def _generate_file_diff_preview(
         ).resolve()
 
         old_content = (
-            abs_path.read_text(encoding="utf-8", errors="replace")
-            if abs_path.is_file()
-            else ""
+            abs_path.read_text(encoding="utf-8", errors="replace") if abs_path.is_file() else ""
         )
 
         if full_new_content is not None:
@@ -266,22 +323,16 @@ def get_permission_ticket_registry() -> PermissionTicketRegistry:
 
 
 def parse_tool_call_for_permissions(tool_call: Any) -> dict[str, Any] | None:
-    if not isinstance(tool_call, dict):
-        return None
-    if not isinstance(tool_call.get("id"), str):
-        return None
-    func = tool_call.get("function")
-    if not isinstance(func, dict) or not isinstance(func.get("name"), str):
-        return None
-    args = func.get("arguments")
-    return {
-        "id": tool_call["id"],
-        "type": "function",
-        "function": {
-            "name": func["name"],
-            "arguments": args if isinstance(args, str) else "",
-        },
-    }
+    return normalize_tool_call(tool_call)
+
+
+def permission_coverage_gaps() -> set[str]:
+    """Return built-in canonical tool names missing an explicit permission policy."""
+    from coderai.core.tools.registry import ToolRegistry
+
+    registered = {tool.name for tool in ToolRegistry().list_tools()}
+    covered = PERMISSION_DESCRIBED_TOOLS | PERMISSION_EXEMPT_REGISTERED_TOOLS
+    return registered - covered
 
 
 def parse_tool_arguments(raw: str) -> dict[str, Any]:
@@ -347,10 +398,14 @@ def describe_tool_permission_request(
     read_permission_exempt_paths: list[str] | None = None,
     resolve_snippet_path: Callable[[str, str], str | None] | None = None,
 ) -> dict[str, Any]:
-    name = tool_call["function"]["name"]
+    from coderai.core.tools.registry import get_tool_registry
+
+    requested_name = tool_call["function"]["name"]
+    registered_name = get_tool_registry().resolve_name(requested_name)
+    name = registered_name or requested_name
     args = parse_tool_arguments(tool_call["function"]["arguments"])
 
-    if name in ("glob", "Glob", "grep", "Grep"):
+    if name in ("glob", "grep"):
         fp = args.get("path") if isinstance(args.get("path"), str) else ""
         scopes = [_read_scope(project_root, fp)] if fp else ["read-in-cwd"]
         return {
@@ -360,7 +415,7 @@ def describe_tool_permission_request(
             "scopes": scopes,
         }
 
-    if name in ("read", "Read"):
+    if name == "read":
         fp = args.get("file_path") if isinstance(args.get("file_path"), str) else ""
         scopes = (
             []
@@ -374,8 +429,9 @@ def describe_tool_permission_request(
             "scopes": scopes,
         }
 
-    if name in ("write", "Write"):
-        fp = args.get("file_path") if isinstance(args.get("file_path"), str) else ""
+    if name == "write":
+        raw_file_path = args.get("file_path")
+        fp = raw_file_path if isinstance(raw_file_path, str) else ""
         content = args.get("content") if isinstance(args.get("content"), str) else ""
         diff_prev = _generate_file_diff_preview(
             project_root, fp, None, None, full_new_content=content
@@ -394,8 +450,9 @@ def describe_tool_permission_request(
             res["diff_preview"] = diff_prev
         return res
 
-    if name in ("edit", "Edit"):
-        fp = args.get("file_path") if isinstance(args.get("file_path"), str) else ""
+    if name == "edit":
+        raw_file_path = args.get("file_path")
+        fp = raw_file_path if isinstance(raw_file_path, str) else ""
         snippet_id = args.get("snippet_id") if isinstance(args.get("snippet_id"), str) else ""
         old_str = (
             args.get("old_str")
@@ -431,7 +488,7 @@ def describe_tool_permission_request(
             res["diff_preview"] = diff_prev
         return res
 
-    if name in ("bash", "Bash"):
+    if name == "bash":
         command = args.get("command") if isinstance(args.get("command"), str) else "bash"
         description = args.get("description") if isinstance(args.get("description"), str) else ""
         return {
@@ -442,7 +499,7 @@ def describe_tool_permission_request(
             "scopes": parse_bash_side_effects(args.get("sideEffects")),
         }
 
-    if name in ("WebSearch", "web_search"):
+    if name == "WebSearch":
         query = args.get("query") if isinstance(args.get("query"), str) else "WebSearch"
         return {
             "toolCallId": tool_call["id"],
@@ -451,7 +508,7 @@ def describe_tool_permission_request(
             "scopes": ["network"],
         }
 
-    if name in ("WebFetch", "web_fetch"):
+    if name == "WebFetch":
         url = args.get("url") if isinstance(args.get("url"), str) else "WebFetch"
         return {
             "toolCallId": tool_call["id"],
@@ -460,7 +517,7 @@ def describe_tool_permission_request(
             "scopes": ["network"],
         }
 
-    if name in ("UnderstandImage", "understand_image"):
+    if name == "UnderstandImage":
         image_path = args.get("image_path") if isinstance(args.get("image_path"), str) else ""
         img_scopes: list[str] = ["network"]
         if image_path and not _in_directories(
@@ -474,9 +531,11 @@ def describe_tool_permission_request(
             "scopes": img_scopes,
         }
 
-    if name in ("str_replace_editor", "StrReplaceEditor"):
-        cmd = args.get("command") if isinstance(args.get("command"), str) else "view"
-        fp = args.get("path") if isinstance(args.get("path"), str) else ""
+    if name == "str_replace_editor":
+        raw_command = args.get("command")
+        cmd = raw_command if isinstance(raw_command, str) else "view"
+        raw_path = args.get("path")
+        fp = raw_path if isinstance(raw_path, str) else ""
         if cmd == "view":
             scopes = [_read_scope(project_root, fp)] if fp else ["read-in-cwd"]
         else:
@@ -487,12 +546,22 @@ def describe_tool_permission_request(
             )
         diff_prev = None
         if cmd == "create":
+            file_text = args.get("file_text")
             diff_prev = _generate_file_diff_preview(
-                project_root, fp, None, None, full_new_content=args.get("file_text", "")
+                project_root,
+                fp,
+                None,
+                None,
+                full_new_content=file_text if isinstance(file_text, str) else "",
             )
         elif cmd == "str_replace":
+            old_str = args.get("old_str")
+            new_str = args.get("new_str")
             diff_prev = _generate_file_diff_preview(
-                project_root, fp, args.get("old_str"), args.get("new_str")
+                project_root,
+                fp,
+                old_str if isinstance(old_str, str) else None,
+                new_str if isinstance(new_str, str) else None,
             )
         res = {
             "toolCallId": tool_call["id"],
@@ -550,7 +619,7 @@ def describe_tool_permission_request(
     if name.startswith("mcp__"):
         return {"toolCallId": tool_call["id"], "name": name, "command": name, "scopes": ["mcp"]}
 
-    if name in ("Task", "task", "subagent", "SubAgent", "subagent_fork", "SubAgentFork"):
+    if name in ("Task", "subagent", "subagent_fork"):
         mode = args.get("mode") if isinstance(args.get("mode"), str) else "read_only"
         description = args.get("description") if isinstance(args.get("description"), str) else name
         scopes = [] if mode == "read_only" else ["write-in-cwd"]
@@ -561,7 +630,7 @@ def describe_tool_permission_request(
             "scopes": scopes,
         }
 
-    if name in ("workflow", "Workflow"):
+    if name == "workflow":
         meta_obj = args.get("meta")
         meta = meta_obj if isinstance(meta_obj, dict) else {}
         wf_name_val = meta.get("name")
@@ -573,7 +642,7 @@ def describe_tool_permission_request(
             "scopes": ["write-in-cwd"],
         }
 
-    if name in ("ralph", "Ralph"):
+    if name == "ralph":
         mode = args.get("mode") if isinstance(args.get("mode"), str) else "general"
         obj_val = args.get("objective")
         obj = obj_val if isinstance(obj_val, str) else "verify"
@@ -585,7 +654,7 @@ def describe_tool_permission_request(
             "scopes": scopes,
         }
 
-    if name in ("spawn_teammate", "SpawnTeammate"):
+    if name == "spawn_teammate":
         tm_name = args.get("name") if isinstance(args.get("name"), str) else "teammate"
         mode = args.get("mode") if isinstance(args.get("mode"), str) else "general"
         scopes = [] if mode == "read_only" else ["write-in-cwd"]
@@ -596,7 +665,7 @@ def describe_tool_permission_request(
             "scopes": scopes,
         }
 
-    if name in ("team_task_create", "team_task_update", "TeamTaskCreate", "TeamTaskUpdate"):
+    if name in ("team_task_create", "team_task_update"):
         task_title = args.get("title") or args.get("task_id") or "task"
         return {
             "toolCallId": tool_call["id"],
@@ -609,9 +678,6 @@ def describe_tool_permission_request(
         "team_task_get",
         "team_task_list",
         "wait_agent",
-        "TeamTaskGet",
-        "TeamTaskList",
-        "WaitAgent",
     ):
         return {
             "toolCallId": tool_call["id"],
@@ -620,7 +686,7 @@ def describe_tool_permission_request(
             "scopes": [],
         }
 
-    if name in ("code_mode", "CodeMode", "python_exec"):
+    if name == "code_mode":
         return {
             "toolCallId": tool_call["id"],
             "name": "code_mode",
@@ -628,7 +694,7 @@ def describe_tool_permission_request(
             "scopes": ["write-in-cwd"],
         }
 
-    if name in ("session_query", "SessionQuery", "session_search", "SessionSearch"):
+    if name == "session_query":
         query_val = args.get("query")
         query = query_val if isinstance(query_val, str) else "session_query"
         return {
@@ -638,7 +704,7 @@ def describe_tool_permission_request(
             "scopes": ["read-in-cwd"],
         }
 
-    if name in ("pwsh", "PowerShell", "powershell"):
+    if name == "pwsh":
         command = args.get("command") if isinstance(args.get("command"), str) else "pwsh"
         description = args.get("description") if isinstance(args.get("description"), str) else ""
         return {
@@ -649,6 +715,20 @@ def describe_tool_permission_request(
             "scopes": parse_bash_side_effects(args.get("sideEffects")),
         }
 
+    if name in PERMISSION_EXEMPT_REGISTERED_TOOLS:
+        return {
+            "toolCallId": tool_call["id"],
+            "name": name,
+            "command": name,
+            "scopes": [],
+        }
+    if registered_name is not None:
+        return {
+            "toolCallId": tool_call["id"],
+            "name": name,
+            "command": name,
+            "scopes": ["unknown"],
+        }
     return {"toolCallId": tool_call["id"], "name": name, "command": name, "scopes": []}
 
 
@@ -675,7 +755,7 @@ def evaluate_permission_scopes(
     default_mode = settings.get("defaultMode", "allowAll")
     forced = set(force_ask_scopes or [])
 
-    if "unknown" in scopes and default_mode != "allowAll":
+    if "unknown" in scopes:
         return "ask"
     if not scopes:
         return "allow"
@@ -705,8 +785,7 @@ def get_scopes_requiring_ask(
     result: list[str] = []
     for scope in scopes:
         if scope == "unknown":
-            if default_mode != "allowAll":
-                result.append(scope)
+            result.append(scope)
             continue
         if scope in deny:
             continue

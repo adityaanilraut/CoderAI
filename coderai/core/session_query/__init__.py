@@ -1,17 +1,7 @@
-"""Session Query and Full-Text Search package for CoderAI."""
+"""Session query package backed by canonical session JSONL."""
 
-from coderai.core.session_query.indexer import (
-    IndexedMessage,
-    SessionIndex,
-    SessionSearchResult,
-    get_session_index,
-)
-from coderai.core.session_query.tool import handle_session_query_tool
+from coderai.core.session_query.engine import SessionQueryEngine
 
 __all__ = [
-    "IndexedMessage",
-    "SessionIndex",
-    "SessionSearchResult",
-    "get_session_index",
-    "handle_session_query_tool",
+    "SessionQueryEngine",
 ]

@@ -1,10 +1,8 @@
-"""Tests for Goal Engine and Autonomous Round Driver."""
+"""Tests for the goal tool and store."""
 
 from __future__ import annotations
 
-import pytest
-from coderai.core.goals import Goal, GoalStore, handle_goal_tool
-from coderai.core.goal_driver import GoalRoundDriver, render_goal_round_prompt
+from coderai.core.goals import GoalStore, handle_goal_tool
 
 
 def test_goal_store_lifecycle(tmp_path):
@@ -33,36 +31,6 @@ def test_goal_store_lifecycle(tmp_path):
 
     # Active goal should now be None
     assert store.get_active_goal("sess_1") is None
-
-
-def test_goal_round_driver(tmp_path):
-    store = GoalStore(root_dir=tmp_path / "goals")
-    driver = GoalRoundDriver(project_root=str(tmp_path))
-    driver.store = store
-
-    # No goal -> False
-    cont, g, prompt = driver.should_continue_goal_round("sess_2")
-    assert cont is False
-
-    # Create goal
-    g = store.create("sess_2", objective="Build parser", max_rounds=3)
-    assert g.round == 1
-
-    # Next round (advances to round 2)
-    cont, next_g, prompt = driver.should_continue_goal_round("sess_2")
-    assert cont is True
-    assert next_g.round == 2
-    assert "ROUND 2/3" in prompt
-    assert "Build parser" in prompt
-
-    # Next round (advances to round 3)
-    cont, next_g, prompt = driver.should_continue_goal_round("sess_2")
-    assert cont is True
-    assert next_g.round == 3
-
-    # Exceeding round 3 -> stops and marks failed
-    cont, next_g, prompt = driver.should_continue_goal_round("sess_2")
-    assert cont is False
 
 
 def test_handle_goal_tool(tmp_path):

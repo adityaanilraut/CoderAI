@@ -1,4 +1,4 @@
-"""UpdatePlan tool — updates the task plan (deepcode update-plan-handler.ts)."""
+"""UpdatePlan tool — updates the task plan."""
 
 from __future__ import annotations
 

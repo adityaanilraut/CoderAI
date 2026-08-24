@@ -1,4 +1,4 @@
-"""OpenAI message conversion — port of deepcode core/src/common/openai-message-converter.ts.
+"""OpenAI message conversion
 
 Handles message serialization for OpenAI chat completions:
 - Tool call & response pairing: associates assistant tool_calls with subsequent tool messages.
@@ -73,7 +73,9 @@ def apply_cache_control_breakpoints(
             if isinstance(c, str):
                 out[i] = {
                     **msg,
-                    "content": [{"type": "text", "text": c, "cache_control": {"type": "ephemeral"}}],
+                    "content": [
+                        {"type": "text", "text": c, "cache_control": {"type": "ephemeral"}}
+                    ],
                 }
             elif isinstance(c, list) and c and isinstance(c[-1], dict):
                 parts = [dict(p) for p in c]
@@ -212,7 +214,9 @@ class OpenAIMessageConverter:
                 head = max_tool_result_chars // 2
                 tail = max_tool_result_chars - head
                 omitted = len(content) - max_tool_result_chars
-                content = f"{content[:head]}\n\n...[{omitted} characters omitted]...\n\n{content[-tail:]}"
+                content = (
+                    f"{content[:head]}\n\n...[{omitted} characters omitted]...\n\n{content[-tail:]}"
+                )
         elif role == "assistant":
             if content is None:
                 content = ""

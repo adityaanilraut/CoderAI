@@ -4,15 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-try:
-    from rich.panel import Panel
-    from rich.text import Text
-
-    _RICH = True
-except ImportError:  # pragma: no cover
-    Panel = None  # type: ignore[assignment,misc]
-    Text = None  # type: ignore[assignment,misc]
-    _RICH = False
+from rich.console import Console
+from rich.text import Text
 
 
 def parse_diff_stats(diff_text: str) -> tuple[int, int]:
@@ -29,11 +22,8 @@ def parse_diff_stats(diff_text: str) -> tuple[int, int]:
     return added, removed
 
 
-def format_diff_text(diff_text: str) -> Text | str:
+def format_diff_text(diff_text: str) -> Text:
     """Format a unified diff string into a syntax-highlighted Rich Text object."""
-    if not _RICH or Text is None:
-        return diff_text
-
     formatted = Text()
     lines = diff_text.splitlines()
 
@@ -61,33 +51,27 @@ def render_diff_preview(console: Any | None, diff_text: str, title: str = "Diff 
 
     added, removed = parse_diff_stats(diff_text)
 
-    if console is not None and _RICH and Text is not None:
-        header = Text()
-        header.append("    ↳ ", style="dim cyan")
-        header.append(title, style="bold cyan")
-        if added > 0 or removed > 0:
-            header.append(f" +{added}", style="bold green")
-            header.append(f" -{removed}", style="bold red")
-        console.print(header)
+    active_console = console or Console()
+    header = Text()
+    header.append("    ↳ ", style="dim cyan")
+    header.append(title, style="bold cyan")
+    if added > 0 or removed > 0:
+        header.append(f" +{added}", style="bold green")
+        header.append(f" -{removed}", style="bold red")
+    active_console.print(header)
 
-        diff_body = Text()
-        for line in diff_text.splitlines():
-            if line.startswith("--- ") or line.startswith("+++ "):
-                diff_body.append(f"      {line}\n", style="bold cyan")
-            elif line.startswith("@@"):
-                diff_body.append(f"      {line}\n", style="bold magenta")
-            elif line.startswith("+"):
-                diff_body.append(f"      {line}\n", style="green")
-            elif line.startswith("-"):
-                diff_body.append(f"      {line}\n", style="red")
-            elif line.startswith("\\"):
-                diff_body.append(f"      {line}\n", style="dim italic")
-            else:
-                diff_body.append(f"      {line}\n", style="dim white")
-        console.print(diff_body)
-    else:
-        stats_plain = f" (+{added}, -{removed})" if (added > 0 or removed > 0) else ""
-        print(f"    ↳ {title}{stats_plain}")
-        for line in diff_text.splitlines():
-            print(f"      {line}")
-
+    diff_body = Text()
+    for line in diff_text.splitlines():
+        if line.startswith("--- ") or line.startswith("+++ "):
+            diff_body.append(f"      {line}\n", style="bold cyan")
+        elif line.startswith("@@"):
+            diff_body.append(f"      {line}\n", style="bold magenta")
+        elif line.startswith("+"):
+            diff_body.append(f"      {line}\n", style="green")
+        elif line.startswith("-"):
+            diff_body.append(f"      {line}\n", style="red")
+        elif line.startswith("\\"):
+            diff_body.append(f"      {line}\n", style="dim italic")
+        else:
+            diff_body.append(f"      {line}\n", style="dim white")
+    active_console.print(diff_body)

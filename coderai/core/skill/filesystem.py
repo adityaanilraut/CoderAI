@@ -7,12 +7,8 @@ import pathlib
 
 
 def get_extension_root() -> str:
-    from coderai.core.prompt import get_extension_root as _ext_root
-
-    try:
-        return _ext_root()
-    except Exception:
-        return str(pathlib.Path(__file__).resolve().parent.parent.parent)
+    """Return the installed package root without importing prompt construction."""
+    return str(pathlib.Path(__file__).resolve().parent.parent.parent)
 
 
 def get_bundled_skills_root() -> str:
@@ -30,7 +26,6 @@ def get_skill_scan_roots(
         roots.extend(
             [
                 (str(root / ".coderai" / "skills"), "./.coderai/skills"),
-                (str(root / ".coderAI" / "skills"), "./.coderAI/skills"),
                 (str(root / ".agents" / "skills"), "./.agents/skills"),
                 (str(root / ".claude" / "skills"), "./.claude/skills"),
             ]
@@ -63,8 +58,5 @@ def get_skill_read_exempt_paths(
 
 
 def _skill_markdown_path(skill_dir: pathlib.Path) -> pathlib.Path | None:
-    for filename in ("SKILL.md", "SKILLS.md"):
-        candidate = skill_dir / filename
-        if candidate.is_file():
-            return candidate
-    return None
+    candidate = skill_dir / "SKILL.md"
+    return candidate if candidate.is_file() else None

@@ -1,4 +1,4 @@
-"""Shared tool types — port of DeepSeek Harness core/tools types and execution lifecycle."""
+""""""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ from collections.abc import Callable
 
 PluginRateLimitedTool = Literal["UnderstandImage", "WebSearch", "WebFetch"]
 ToolCategory = Literal["filesystem", "shell", "web", "interactive", "meta", "mcp", "subagent"]
-ToolPresentationMode = Literal["native", "code", "both"]
 
 
 # Canonical Tool Exceptions
@@ -26,52 +25,6 @@ class ValidationError(ToolError):
 
     def __init__(self, message: str) -> None:
         super().__init__(message, code="INVALID_TOOL_ARGUMENTS")
-
-
-class ToolArgsError(ValidationError):
-    """Alias for argument schema validation errors."""
-
-
-class ToolNotFoundError(ToolError):
-    """Raised when the model requests an unknown or restricted tool."""
-
-    def __init__(self, tool_name: str, hint: str | None = None) -> None:
-        msg = f'unknown tool "{tool_name}"'
-        if hint:
-            msg += f": {hint}"
-        super().__init__(msg, code="UNKNOWN_TOOL")
-        self.tool_name = tool_name
-
-
-class ToolOutputError(ToolError):
-    """Raised when a tool body or post-policy value violates its declared output schema."""
-
-    def __init__(self, tool_name: str, violations: list[str]) -> None:
-        msg = f'tool "{tool_name}" returned invalid output: {"; ".join(violations)}'
-        super().__init__(msg, code="INVALID_TOOL_OUTPUT")
-        self.violations = violations
-
-
-class ToolTimeoutError(ToolError):
-    """Raised when a tool execution exceeds its timeout budget."""
-
-    def __init__(self, tool_name: str, timeout_ms: int) -> None:
-        super().__init__(f'tool "{tool_name}" timed out after {timeout_ms}ms', code="TOOL_TIMEOUT")
-
-
-class ToolAbortedError(ToolError):
-    """Raised when a tool execution is cancelled/aborted."""
-
-    def __init__(self, tool_name: str, before_dispatch: bool = False) -> None:
-        code = "ABORTED_BEFORE_DISPATCH" if before_dispatch else "ABORTED"
-        super().__init__(f'tool "{tool_name}" call aborted', code=code)
-
-
-class ToolExecutionError(ToolError):
-    """Raised when an unhandled execution error occurs in a tool handler."""
-
-    def __init__(self, message: str) -> None:
-        super().__init__(message, code="TOOL_EXECUTION_ERROR")
 
 
 DISALLOWED_OPENAI_SCHEMA_KEYS = frozenset({"uniqueItems", "$schema", "$id"})
@@ -104,15 +57,6 @@ class ToolExecutionFollowUpMessage:
 
 
 @dataclass
-class ToolOutputDefinition:
-    """Tool-owned canonical output contract used after the body returns."""
-
-    schema: dict[str, Any]
-    render: Callable[[dict[str, Any], Any], str | list[dict[str, Any]]]
-    presentation_meta: Callable[[dict[str, Any], Any], dict[str, Any]] | None = None
-
-
-@dataclass
 class ToolResult:
     """The discriminated outcome of a tool execution."""
 
@@ -126,10 +70,6 @@ class ToolResult:
         default_factory=list
     )
     concludes_turn: bool = False
-
-
-# Alias for compatibility with deepcode and harness naming
-ToolExecutionResult = ToolResult
 
 
 @dataclass
@@ -191,7 +131,6 @@ class ToolExecutionContext:
         default_factory=list
     )
     is_turn_concluded: bool = False
-    is_aborted: bool = False
 
     def defer_context(self, message: ToolExecutionFollowUpMessage | dict[str, Any]) -> None:
         """Attach a follow-up context message to this execution result."""
@@ -200,10 +139,6 @@ class ToolExecutionContext:
     def conclude_turn(self) -> None:
         """Mark the current agent turn complete after this result."""
         self.is_turn_concluded = True
-
-    def abort(self) -> None:
-        """Mark this execution as aborted/cancelled."""
-        self.is_aborted = True
 
     def get(self, key: str, default: Any = None) -> Any:
         """Dict-like access for backwards compatibility."""
@@ -243,13 +178,6 @@ class ToolExecutionHooks:
 
 
 @dataclass
-class ToolCallExecution:
-    tool_call_id: str
-    content: str
-    result: ToolResult
-
-
-@dataclass
 class ToolDefinition:
     """Type-safe specification and execution contract for a registered tool."""
 
@@ -264,8 +192,6 @@ class ToolDefinition:
     is_mutating: bool = False
     is_concurrency_safe: bool | Callable[[dict[str, Any]], bool] = False
     timeout_ms: int | None = None
-    output: ToolOutputDefinition | None = None
-    present_call: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None
     present_result: Callable[[dict[str, Any], ToolResult], dict[str, Any] | None] | None = None
     finalize_content: Callable[[ToolExecutionContext, ToolResult], str | None] | None = None
 
@@ -304,3 +230,30 @@ def as_str(value: Any, default: str = "") -> str:
 
 # A tool call as produced by the LLM (OpenAI format).
 ToolCall = dict[str, Any]
+
+
+def normalize_tool_call(raw: Any) -> ToolCall | None:
+    """Normalize SDK objects and dictionaries to one OpenAI tool-call shape."""
+    if isinstance(raw, dict):
+        tool_call_id = raw.get("id")
+        function = raw.get("function")
+        if not isinstance(function, dict):
+            return None
+        name = function.get("name")
+        arguments = function.get("arguments", "")
+    else:
+        tool_call_id = getattr(raw, "id", None)
+        function = getattr(raw, "function", None)
+        name = getattr(function, "name", None)
+        arguments = getattr(function, "arguments", "")
+
+    if not isinstance(tool_call_id, str) or not isinstance(name, str):
+        return None
+    return {
+        "id": tool_call_id,
+        "type": "function",
+        "function": {
+            "name": name,
+            "arguments": arguments if isinstance(arguments, str) else "",
+        },
+    }

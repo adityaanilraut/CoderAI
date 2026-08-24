@@ -1,6 +1,5 @@
 """Unit and integration tests for multi-model Reasoning Effort Tags (low, medium, high, max, off)."""
 
-import pytest
 from unittest.mock import MagicMock
 
 from coderai.core.common.openai_thinking import (
@@ -52,15 +51,23 @@ def test_normalize_reasoning_effort():
 def test_thinking_token_budgets():
     # Gemini token budgets
     assert get_thinking_token_budget("low", provider="gemini") == GEMINI_THINKING_BUDGETS["low"]
-    assert get_thinking_token_budget("medium", provider="gemini") == GEMINI_THINKING_BUDGETS["medium"]
+    assert (
+        get_thinking_token_budget("medium", provider="gemini") == GEMINI_THINKING_BUDGETS["medium"]
+    )
     assert get_thinking_token_budget("high", provider="google") == GEMINI_THINKING_BUDGETS["high"]
     assert get_thinking_token_budget("max", provider="gemini") == GEMINI_THINKING_BUDGETS["max"]
     assert get_thinking_token_budget("off", provider="gemini") == 0
 
     # Anthropic Claude token budgets
     assert get_thinking_token_budget("low", provider="claude") == ANTHROPIC_THINKING_BUDGETS["low"]
-    assert get_thinking_token_budget("medium", provider="anthropic") == ANTHROPIC_THINKING_BUDGETS["medium"]
-    assert get_thinking_token_budget("high", provider="anthropic") == ANTHROPIC_THINKING_BUDGETS["high"]
+    assert (
+        get_thinking_token_budget("medium", provider="anthropic")
+        == ANTHROPIC_THINKING_BUDGETS["medium"]
+    )
+    assert (
+        get_thinking_token_budget("high", provider="anthropic")
+        == ANTHROPIC_THINKING_BUDGETS["high"]
+    )
     assert get_thinking_token_budget("max", provider="claude") == ANTHROPIC_THINKING_BUDGETS["max"]
     assert get_thinking_token_budget("off", provider="anthropic") == 0
 
@@ -157,7 +164,6 @@ def test_gemini_and_generic_wire_options():
     assert opts_gemini_off == {}
 
 
-
 def test_model_capabilities_helpers():
     assert defaults_to_thinking_mode("gpt-5.6-sol") is True
     assert defaults_to_thinking_mode("deepseek-v4-pro") is True
@@ -166,7 +172,13 @@ def test_model_capabilities_helpers():
 
     # Supported efforts
     assert get_supported_reasoning_efforts("gpt-5.6-sol") == ["off", "low", "medium", "high", "max"]
-    assert get_supported_reasoning_efforts("deepseek-v4-pro") == ["off", "low", "medium", "high", "max"]
+    assert get_supported_reasoning_efforts("deepseek-v4-pro") == [
+        "off",
+        "low",
+        "medium",
+        "high",
+        "max",
+    ]
     assert get_supported_reasoning_efforts("unknown-text-model") == ["off"]
 
     # Default reasoning effort

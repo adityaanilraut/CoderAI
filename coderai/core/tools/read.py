@@ -1,4 +1,4 @@
-"""read tool — returns snippet_id for scoped edits (deepcode read-handler.ts)."""
+"""read tool — returns snippet_id for scoped edits."""
 
 from __future__ import annotations
 

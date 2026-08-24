@@ -6,7 +6,6 @@ Drives a child ACP agent in a spawned subprocess over the Agent Control Protocol
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import subprocess
@@ -118,7 +117,10 @@ class AcpSubagentRunner:
         response_msg = AcpMessage(
             jsonrpc="2.0",
             id=msg.id,
-            result={"decision": decision, "reason": f"Auto-resolved by ACP runner policy: {decision}"},
+            result={
+                "decision": decision,
+                "reason": f"Auto-resolved by ACP runner policy: {decision}",
+            },
         )
         self._write_message(response_msg)
 
@@ -131,7 +133,9 @@ class AcpSubagentRunner:
         except Exception:
             pass
 
-    async def _send_request(self, method: str, params: dict[str, Any], timeout_s: float = 30.0) -> Any:
+    async def _send_request(
+        self, method: str, params: dict[str, Any], timeout_s: float = 30.0
+    ) -> Any:
         with self._lock:
             req_id = self._next_id
             self._next_id += 1
@@ -158,8 +162,7 @@ class AcpSubagentRunner:
         try:
             self._start_process()
 
-            # 1. Initialize
-            init_res = await self._send_request(
+            await self._send_request(
                 "initialize",
                 {
                     "protocolVersion": PROTOCOL_VERSION,

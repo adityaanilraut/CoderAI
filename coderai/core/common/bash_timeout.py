@@ -1,4 +1,4 @@
-"""Bash timeout constants — port of deepcode core/src/common/bash-timeout.ts."""
+""""""
 
 DEFAULT_BASH_TIMEOUT_MS = 10 * 60 * 1000
 MIN_BASH_TIMEOUT_MS = 60 * 1000

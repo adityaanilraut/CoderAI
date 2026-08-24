@@ -1,6 +1,5 @@
 """First-class glob and grep tools backed by bundled ripgrep.
 
-Port of dsh-tool-fs-search: spawn packaged `rg` with a plain argv vector (no shell),
 cap inline results, and spill the complete formatted page when over cap. A Python
 fallback is used when the binary is unavailable so hosts do not require `rg`.
 """

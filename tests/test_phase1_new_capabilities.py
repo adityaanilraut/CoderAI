@@ -22,7 +22,7 @@ from coderai.core.common.shell_utils import (
 from coderai.core.compaction import BasicCompaction, ToolResultPruner
 from coderai.core.subagent import SubAgentManager, SubAgentSpec
 from coderai.core.tools.agents import handle_subagent_fork_tool
-from coderai.core.tools.bash import handle_persistent_bash_tool
+from coderai.core.tools.bash import handle_bash_tool
 from coderai.core.tools.types import ToolExecutionContext
 from tests.test_support.llm_replay import (
     ReplayClient,
@@ -243,7 +243,7 @@ def test_build_shell_env_scrubs_ambient_environment() -> None:
 
 
 def test_persistent_bash_execution(tmp_path: pathlib.Path) -> None:
-    """Verify handle_persistent_bash_tool executes and retains environment / directory state."""
+    """Verify bash persistent mode retains environment and directory state."""
     import sys
 
     if sys.platform == "win32":
@@ -255,8 +255,8 @@ def test_persistent_bash_execution(tmp_path: pathlib.Path) -> None:
     )
 
     # 1. Export a variable in persistent shell
-    res1 = handle_persistent_bash_tool(
-        {"command": "export PERSISTENT_VAR='coderai_persistent_success'"},
+    res1 = handle_bash_tool(
+        {"command": "export PERSISTENT_VAR='coderai_persistent_success'", "persistent": True},
         context,
     )
     assert res1.ok is True
@@ -264,8 +264,8 @@ def test_persistent_bash_execution(tmp_path: pathlib.Path) -> None:
     assert res1.metadata.get("persistent") is True
 
     # 2. Read exported variable in follow-up command in same session
-    res2 = handle_persistent_bash_tool(
-        {"command": "echo $PERSISTENT_VAR"},
+    res2 = handle_bash_tool(
+        {"command": "echo $PERSISTENT_VAR", "persistent": True},
         context,
     )
     assert res2.ok is True

@@ -1,206 +1,72 @@
-# Deep Code CLI MCP 配置指南
+# CoderAI MCP Configuration
 
-Deep Code CLI 支持 MCP（Model Context Protocol），让 AI 助手能够连接外部工具和服务，如 GitHub、浏览器、数据库等。
+Configure MCP servers in `~/.coderai/settings.json` or `<project>/.coderai/settings.json`. Project entries merge over user entries by server name.
 
-## 概述
-
-配置 MCP 后，Deep Code 可以：
-
-- 操作 GitHub 仓库（查看 Issues、创建 PR、搜索代码等）
-- 操控浏览器（截图、点击、填表单等）
-- 访问文件系统
-- 连接数据库和 API
-- ...以及任何兼容 MCP 协议的外部服务
-
-MCP 工具在 Deep Code 中的命名格式为 `mcp__<服务名>__<工具名>`，例如 `mcp__github__search_code`。
-
-## 配置 MCP 服务器
-
-编辑 `~/.coderai/settings.json`，添加 `mcpServers` 字段：
-
-```json
-{
-  "env": {
-    "MODEL": "deepseek-v4-pro",
-    "BASE_URL": "https://api.deepseek.com",
-    "API_KEY": "sk-..."
-  },
-  "thinkingEnabled": true,
-  "reasoningEffort": "max",
-  "mcpServers": {
-    "<服务名称>": {
-      "command": "<可执行文件>",
-      "args": ["<参数1>", "<参数2>"],
-      "env": {
-        "<环境变量>": "<值>"
-      }
-    }
-  }
-}
-```
-
-### 配置项说明
-
-| 字段              | 类型     | 必填 | 说明 |
-| ----------------- | -------- | ---- | ---- |
-| `command`         | string   | `command` 或 `url` 其一 | Stdio 可执行文件（如 `npx`、`node`、`python`）。当命令是 `npx` 时，CoderAI 会自动在参数前补充 `-y`。 |
-| `url`             | string   | `command` 或 `url` 其一 | 远程 MCP 服务器的 SSE 地址。 |
-| `args`            | string[] | 否 | 传递给 stdio 命令的参数列表。 |
-| `env`             | object   | 否 | 传递给 MCP 服务器进程的环境变量。 |
-| `cwd`             | string   | 否 | stdio 进程工作目录。 |
-| `headers`         | object   | 否 | SSE 请求的额外 HTTP 头。 |
-| `disabled`        | boolean  | 否 | 为 `true` 时跳过连接。 |
-| `enabled`         | boolean  | 否 | 为 `false` 时跳过连接。 |
-| `allowPrivateIps` | boolean  | 否 | 允许 SSE URL 解析到私有/回环地址。 |
-
-## 常用 MCP 示例
-
-### GitHub MCP
-
-让 Deep Code 直接操作 GitHub 仓库（搜索代码、管理 Issue/PR、读写文件等）：
+## Stdio server
 
 ```json
 {
   "mcpServers": {
-    "github": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github"],
-      "env": {
-        "GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_xxxxxxxxxxxx"
-      }
-    }
-  }
-}
-```
-
-> GitHub Personal Access Token 可在 [GitHub Settings > Developer settings > Personal access tokens](https://github.com/settings/tokens) 生成。
-
-### 浏览器控制（Playwright）
-
-让 Deep Code 操控浏览器进行截图、页面操作等：
-
-```json
-{
-  "mcpServers": {
-    "playwright": {
-      "command": "npx",
-      "args": ["@playwright/mcp@latest"]
-    }
-  }
-}
-```
-
-### 文件系统
-
-让 Deep Code 在指定目录中读写文件：
-
-```json
-{
-  "mcpServers": {
-    "filesystem": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/dir"]
-    }
-  }
-}
-```
-
-### 自定义 Python MCP
-
-```json
-{
-  "mcpServers": {
-    "my-tool": {
-      "command": "python",
+    "local-tools": {
+      "command": "python3",
       "args": ["-m", "my_mcp_server"],
+      "cwd": "/absolute/path/to/server",
       "env": {
-        "API_KEY": "xxx"
+        "SERVICE_TOKEN": "set-locally"
       }
     }
   }
 }
 ```
 
-## 完整配置示例
+`command` is executed directly with `args`; CoderAI does not add package-manager flags. On Windows, command lines are launched through the platform shell with argument quoting.
 
-以下是一个配置了 GitHub 和 Playwright 两个 MCP 服务器的完整 `~/.coderai/settings.json`：
+## Remote SSE server
 
 ```json
 {
-  "env": {
-    "MODEL": "deepseek-v4-pro",
-    "BASE_URL": "https://api.deepseek.com",
-    "API_KEY": "sk-xxxxxxxxxxxx"
-  },
-  "thinkingEnabled": true,
-  "reasoningEffort": "max",
   "mcpServers": {
-    "github": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github"],
-      "env": {
-        "GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_xxxxxxxxxxxx"
+    "remote": {
+      "url": "https://mcp.example.com/sse",
+      "headers": {
+        "Authorization": "Bearer set-locally"
       }
-    },
-    "playwright": {
-      "command": "npx",
-      "args": ["@playwright/mcp@latest"]
     }
   }
 }
 ```
 
-## 使用 MCP
+Supported server fields:
 
-配置完成后，启动 `coderai`，在聊天中输入 `/mcp` 即可查看所有已配置的 MCP 服务器状态以及每个服务器提供的工具列表。
+| Field | Meaning |
+| --- | --- |
+| `command` | Stdio executable; use either `command` or `url` |
+| `args` | Stdio argument list |
+| `cwd` | Stdio working directory |
+| `env` | Environment added to the stdio child process |
+| `url` | Remote SSE endpoint |
+| `headers` | HTTP headers for a remote endpoint |
+| `enabled` | Set to `false` to skip the server |
+| `disabled` | Set to `true` to skip the server |
+| `allowPrivateIps` | Permit remote URLs resolving to private or loopback addresses |
 
-在对话中直接使用 MCP 工具名称即可调用，例如：
+Keep tokens out of committed project settings. Prefer environment expansion provided by the server command, a protected user-level settings file, or another local secret mechanism supported by that server.
 
-```
-帮我搜索 GitHub 上 coderai-cli 仓库的 issues
-```
+## Tool names
 
-AI 会自动调用 `mcp__github__search_issues` 工具完成操作。
+Discovered tools use `mcp__<server>__<tool>`. CoderAI sanitizes names to API-safe characters and may shorten long names, so `/mcp` is the authoritative list.
 
-## 工具命名规则
+## Commands
 
-MCP 工具名称由三部分组成：`mcp__<服务名>__<工具名>`
+- `/mcp` shows servers and tools.
+- `/mcp reconnect` reconnects configured servers.
+- `/mcp prompts` lists MCP prompts.
+- `/mcp resources` lists resources.
 
-| 服务名     | 工具名                  | 完整调用名                                 |
-| ---------- | ----------------------- | ------------------------------------------ |
-| github     | search_code             | `mcp__github__search_code`                 |
-| github     | create_pull_request     | `mcp__github__create_pull_request`         |
-| playwright | browser_navigate        | `mcp__playwright__browser_navigate`        |
-| playwright | browser_take_screenshot | `mcp__playwright__browser_take_screenshot` |
+## Troubleshooting
 
-你可以通过 `/mcp` 查看每个服务器提供的具体工具列表。
-
-## 故障排查
-
-### 启动失败
-
-如果 MCP 服务器无法启动，检查：
-
-1. `command` 是否已安装（如 `npx` 需要 Node.js）
-2. `env` 中的环境变量是否正确（如 `GITHUB_PERSONAL_ACCESS_TOKEN`）
-3. 运行 `coderai` 的终端是否有网络访问权限
-
-### 工具不显示
-
-1. 确认 `settings.json` 中的 `mcpServers` 字段格式正确
-2. 启动 coderai 后使用 `/mcp` 查看服务器状态
-3. 如果服务器状态显示错误，根据错误信息排查
-
-### Windows 用户
-
-在 Windows 上，Deep Code CLI 会自动为 `.cmd` 命令添加 shell 支持。如果你的 MCP 命令是批处理脚本，确保文件名以 `.cmd` 结尾。
-
-## 编写你自己的 MCP 服务器
-
-MCP 服务器遵循 [Model Context Protocol](https://modelcontextprotocol.io/) 规范，使用 JSON-RPC 2.0 通信。你可以用任何语言编写 MCP 服务器，只要实现以下协议即可：
-
-1. `initialize` — 握手和协议协商
-2. `tools/list` — 返回可用工具列表
-3. `tools/call` — 执行工具调用
-
-更多参考：[MCP 官方文档](https://modelcontextprotocol.io/)
+1. Run `/mcp` and inspect the server error.
+2. Confirm the executable exists or the remote URL is reachable.
+3. Check `args`, `cwd`, required environment variables, and headers.
+4. Confirm the `mcp` permission scope is allowed or approved.
+5. Use `allowPrivateIps` only when a trusted local/private endpoint is intentional.

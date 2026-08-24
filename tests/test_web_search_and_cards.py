@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 from rich.console import Console
@@ -15,7 +14,6 @@ from coderai.core.web_providers import (
     HttpSearchProvider,
     WebSearchResult,
     WebSearchSource,
-    resolve_web_search_provider,
 )
 
 
@@ -56,7 +54,9 @@ def test_handle_web_search_tool_metadata_format():
             sources=[fake_source],
         )
 
-        with patch("coderai.core.tools.web_search.resolve_web_search_provider") as mock_prov_resolve:
+        with patch(
+            "coderai.core.tools.web_search.resolve_web_search_provider"
+        ) as mock_prov_resolve:
             mock_prov = MagicMock()
             mock_prov.id = "mock"
             mock_prov.search.return_value = fake_res

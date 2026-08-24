@@ -339,7 +339,8 @@ def test_main_handles_keyboard_interrupt(monkeypatch: pytest.MonkeyPatch):
     mock_mgr.init_mcp_servers = AsyncMock()
 
     monkeypatch.setattr("coderai.cli.app._run_interactive", mock_run_interactive)
-    monkeypatch.setattr("coderai.cli.app._build_manager", lambda *a, **kw: mock_mgr)
+    monkeypatch.setattr("coderai.cli.app.build_session_manager", lambda *a, **kw: mock_mgr)
+    monkeypatch.setattr("coderai.cli.app.close_session_manager", AsyncMock())
 
     ret = main([])
     assert ret == 0
@@ -496,7 +497,3 @@ def test_select_with_arrows_custom_numbering_and_selection(monkeypatch: pytest.M
     monkeypatch.setattr("builtins.input", lambda _: "Custom text")
     res_custom = select_with_arrows(console, items, title="Question 2/3", allow_custom=True)
     assert res_custom == "Custom text"
-
-
-
-

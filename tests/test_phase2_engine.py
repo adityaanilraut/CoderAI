@@ -4,11 +4,9 @@ Validates:
 1. Primitive Tool Registry schema validation, parameter type checking, and dispatch.
 2. Native Web Subsystem: SSRF protection, private IP blocking, HTML to Markdown conversion.
 3. MCP Protocol Bridge: Stdio/SSE specs, dynamic tool schemas, and granular permissions.
-4. ApprovalService: fail-closed evaluation, policy override, and audit logging.
 """
 
 import pytest
-from unittest.mock import MagicMock
 
 from coderai.core.tools.registry import ToolRegistry
 from coderai.core.tools.types import ToolDefinition, ToolResult, ValidationError
@@ -20,12 +18,6 @@ from coderai.core.network.security import (
 from coderai.core.network.sanitizer import (
     extract_and_sanitize_html,
 )
-from coderai.core.approval import (
-    ApprovalService,
-    ApprovalOutcome,
-    ApprovalPolicy,
-    ApprovalRequest,
-)
 
 
 def test_primitive_tool_registry_schemas_and_validation():
@@ -34,8 +26,8 @@ def test_primitive_tool_registry_schemas_and_validation():
     assert registry.has_tool("write")
     assert registry.has_tool("edit")
     assert registry.has_tool("bash")
-    assert registry.has_tool("web_search")
-    assert registry.has_tool("web_fetch")
+    assert registry.has_tool("WebSearch")
+    assert registry.has_tool("WebFetch")
 
     read_tool = registry.get("read")
     assert read_tool is not None
@@ -120,26 +112,3 @@ def test_html_sanitizer_and_markdown_extraction():
     assert "Heading 1" in page.markdown
     assert "bold" in page.markdown
     assert "link" in page.markdown
-
-
-def test_approval_service_policy_and_audit():
-    manager = MagicMock()
-    emitted = []
-    manager._next_seq = MagicMock(side_effect=lambda sid: len(emitted))
-    manager._append_event = MagicMock(side_effect=lambda sid, ev: emitted.append(ev))
-
-    service = ApprovalService(manager=manager, default_policy=ApprovalPolicy.ASK)
-    service.register_answerer(lambda req: ApprovalOutcome.ALLOWED_ONCE)
-
-    req = ApprovalRequest(
-        tool_name="bash",
-        session_id="sess_perm",
-        scopes=["write-in-cwd"],
-        reason="Execute command",
-    )
-    outcome = service.request(req)
-    assert outcome == ApprovalOutcome.ALLOWED_ONCE
-    assert len(emitted) == 2  # approval/asked and approval/decided
-    assert emitted[0].type == "approval/asked"
-    assert emitted[1].type == "approval/decided"
-    assert emitted[1].data["outcome"] == "allowed-once"

@@ -1,4 +1,4 @@
-"""AskUserQuestion tool — pauses for user clarification (deepcode ask-user-question-handler.ts)."""
+"""AskUserQuestion tool — pauses for user clarification."""
 
 from __future__ import annotations
 

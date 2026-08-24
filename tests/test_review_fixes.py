@@ -5,23 +5,20 @@ from __future__ import annotations
 import asyncio
 import json
 import pathlib
-import subprocess
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from coderai.core.lsp.connection import LspConnection
-from coderai.core.network.client import HttpClient, HttpResponse
-from coderai.core.network.security import NetworkPolicy, NetworkSecurityError, validate_outbound_url
-from coderai.core.sandbox import check_sandbox_path_access, parse_sandbox_mode
-from coderai.core.session import SessionManager, SessionMessage
+from coderai.core.network.client import HttpClient
+from coderai.core.network.security import NetworkPolicy, validate_outbound_url
+from coderai.core.sandbox import check_sandbox_path_access
+from coderai.core.session import SessionManager
 from coderai.core.subagent_backends.base import CliSubagentDriver
 from coderai.core.subagent_backends.claude_code import ClaudeCodeConfig, ClaudeCodeDriver
 from coderai.core.subagent_backends.codex import CodexConfig, CodexDriver
-from coderai.core.tools.bash import _execute_shell_command
 from coderai.core.tools.executor import ToolExecutor
 from coderai.core.tools.ralph import handle_ralph_tool
-from coderai.core.tools.sanitizer import sanitize_tool_output
 from coderai.core.tools.str_replace_editor import handle_str_replace_editor_tool
 from coderai.core.tools.types import ToolDefinition, ToolResult
 
@@ -50,9 +47,7 @@ class TestSandboxAndSecurityFixes:
         ws.mkdir()
         target = ws / "test.txt"
 
-        ok, err = check_sandbox_path_access(
-            target, op="write", mode="read-only", workspace_root=ws
-        )
+        ok, err = check_sandbox_path_access(target, op="write", mode="read-only", workspace_root=ws)
         assert ok is False
         assert "SANDBOX_VIOLATION" in (err or "")
 
@@ -71,7 +66,9 @@ class TestSandboxAndSecurityFixes:
             res = client.post("https://example.com/api")
             # Must block redirect to private/metadata IP
             assert res.ok is False
-            assert "blocked" in (res.error or "").lower() or "forbidden" in (res.error or "").lower()
+            assert (
+                "blocked" in (res.error or "").lower() or "forbidden" in (res.error or "").lower()
+            )
 
     def test_dns_resolution_fail_closed(self):
         policy = NetworkPolicy(allowed_domains=[])
@@ -84,11 +81,15 @@ class TestSandboxAndSecurityFixes:
 class TestToolSchemaAndHandlerFixes:
     @pytest.mark.asyncio
     async def test_ralph_parameter_aliases(self, mock_tool_context):
-        res = await handle_ralph_tool({"prompt": "Check build correctness", "max_iterations": 2}, mock_tool_context)
+        res = await handle_ralph_tool(
+            {"prompt": "Check build correctness", "max_iterations": 2}, mock_tool_context
+        )
         # Should not fail with "Missing required argument objective"
         assert "Missing required argument 'objective'" not in (res.error or "")
 
-    def test_str_replace_editor_undo_command_alias(self, temp_workspace: pathlib.Path, mock_tool_context):
+    def test_str_replace_editor_undo_command_alias(
+        self, temp_workspace: pathlib.Path, mock_tool_context
+    ):
         f = temp_workspace / "sample.txt"
         f.write_text("initial content\n", encoding="utf-8")
 
@@ -116,7 +117,9 @@ class TestToolSchemaAndHandlerFixes:
         assert undo_res.ok is True
         assert f.read_text(encoding="utf-8") == "initial content\n"
 
-    def test_str_replace_editor_requires_observed(self, temp_workspace: pathlib.Path, mock_tool_context):
+    def test_str_replace_editor_requires_observed(
+        self, temp_workspace: pathlib.Path, mock_tool_context
+    ):
         f = temp_workspace / "unobserved.txt"
         f.write_text("some text\n", encoding="utf-8")
         mock_tool_context.session_id = "fresh-session-unobserved"
@@ -127,7 +130,11 @@ class TestToolSchemaAndHandlerFixes:
             mock_tool_context,
         )
         assert res.ok is False
-        assert "must be observed" in (res.error or "").lower() or "read" in (res.error or "").lower() or "not been read" in (res.error or "")
+        assert (
+            "must be observed" in (res.error or "").lower()
+            or "read" in (res.error or "").lower()
+            or "not been read" in (res.error or "")
+        )
 
 
 class TestExecutorAndAsyncSafety:
@@ -147,7 +154,11 @@ class TestExecutorAndAsyncSafety:
         executor.registry.register(tdef)
         result = await executor.execute_tool_call(
             "sess_test",
-            {"id": "tc_1", "type": "function", "function": {"name": "sync_tool", "arguments": "{}"}},
+            {
+                "id": "tc_1",
+                "type": "function",
+                "function": {"name": "sync_tool", "arguments": "{}"},
+            },
         )
         assert result.ok is True
         assert result.output == "sync_done"
@@ -155,6 +166,7 @@ class TestExecutorAndAsyncSafety:
     @pytest.mark.asyncio
     async def test_mcp_error_does_not_double_execute(self):
         call_count = 0
+
         async def mock_mcp_exec(tool_name: str, args: dict, session_id: str | None = None):
             nonlocal call_count
             call_count += 1
@@ -190,11 +202,8 @@ class TestLspAndSessionFixes:
         )
         msg_dir = tmp_path / "messages"
         msg_dir.mkdir(parents=True, exist_ok=True)
-        mgr._storage = lambda: {
-            "root": tmp_path,
-            "index_path": tmp_path / "sessions.json",
-            "project_dir": msg_dir,
-        }
+        mgr.session_store.project_dir = msg_dir
+        mgr.session_store.index_path = tmp_path / "sessions.json"
 
         # Write a dummy message file with seq 5
         msg_file = msg_dir / "sess1.jsonl"

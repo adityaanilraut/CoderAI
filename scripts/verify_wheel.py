@@ -20,61 +20,22 @@ ENTRY_POINTS = {
     "coderai = coderai.main:main",
     "cai = coderai.main:main",
 }
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
-RUNTIME_MEMBERS = (
-    "coderai/__init__.py",
-    "coderai/__main__.py",
-    "coderai/_version.py",
-    "coderai/main.py",
-    "coderai/py.typed",
-    "coderai/cli/__init__.py",
-    "coderai/cli/app.py",
-    "coderai/cli/ascii_art.py",
-    "coderai/cli/diff_render.py",
-    "coderai/cli/exit_summary.py",
-    "coderai/cli/file_mention.py",
-    "coderai/cli/interactive_menu.py",
-    "coderai/cli/plan_render.py",
-    "coderai/cli/status_bar.py",
-    "coderai/cli/thinking.py",
-    "coderai/cli/tool_card.py",
-    "coderai/cli/welcome.py",
-    "coderai/core/__init__.py",
-    "coderai/core/session.py",
-    "coderai/core/prompt.py",
-    "coderai/core/permissions.py",
-    "coderai/core/settings.py",
-    "coderai/core/state.py",
-    "coderai/core/openai_client.py",
-    "coderai/core/subagent.py",
-    "coderai/core/common/__init__.py",
-    "coderai/core/common/file_history.py",
-    "coderai/core/common/message_converter.py",
-    "coderai/core/common/file_utils.py",
-    "coderai/core/common/shell_utils.py",
-    "coderai/core/common/process_tree.py",
-    "coderai/core/common/bash_timeout.py",
-    "coderai/core/common/openai_thinking.py",
-    "coderai/core/common/model_capabilities.py",
-    "coderai/core/common/error_logger.py",
-    "coderai/core/common/debug_logger.py",
-    "coderai/core/common/llm_error.py",
-    "coderai/core/common/validate.py",
-    "coderai/core/mcp/__init__.py",
-    "coderai/core/mcp/client.py",
-    "coderai/core/mcp/manager.py",
-    "coderai/core/tools/__init__.py",
-    "coderai/core/tools/types.py",
-    "coderai/core/tools/executor.py",
-    "coderai/core/tools/read.py",
-    "coderai/core/tools/edit.py",
-    "coderai/core/tools/write.py",
-    "coderai/core/tools/bash.py",
-    "coderai/core/tools/ask_user_question.py",
-    "coderai/core/tools/update_plan.py",
-    "coderai/core/tools/web_search.py",
-    "coderai/core/tools/understand_image.py",
-    "coderai/core/tools/subagent.py",
+
+def _source_members(pattern: str) -> tuple[str, ...]:
+    return tuple(
+        path.relative_to(REPO_ROOT).as_posix()
+        for path in sorted((REPO_ROOT / "coderai").rglob(pattern))
+        if path.is_file()
+    )
+
+
+RUNTIME_MEMBERS = _source_members("*.py")
+BUNDLED_MEMBERS = (
+    "coderai/vendor/rg",
+    *_source_members("SKILL.md"),
+    *_source_members("references/*.md"),
 )
 
 
@@ -124,9 +85,12 @@ def _verify_metadata(
 def _verify_wheel_archive(wheel: Path, *, expected_version: str | None) -> str:
     with zipfile.ZipFile(wheel) as archive:
         members = set(archive.namelist())
-        missing = sorted(set(RUNTIME_MEMBERS) - members)
+        missing = sorted((set(RUNTIME_MEMBERS) | set(BUNDLED_MEMBERS)) - members)
         if missing:
             raise SystemExit("Wheel is missing runtime files: " + ", ".join(missing))
+        rg_mode = archive.getinfo("coderai/vendor/rg").external_attr >> 16
+        if os.name != "nt" and not rg_mode & 0o111:
+            raise SystemExit("Bundled coderai/vendor/rg is not executable in the wheel")
         metadata_names = [name for name in members if name.endswith(".dist-info/METADATA")]
         entry_names = [name for name in members if name.endswith(".dist-info/entry_points.txt")]
         if len(metadata_names) != 1 or len(entry_names) != 1:
@@ -158,6 +122,7 @@ def _verify_sdist(sdist: Path, *, wheel_version: str) -> None:
             "MANIFEST.in",
             "pyproject.toml",
             *RUNTIME_MEMBERS,
+            *BUNDLED_MEMBERS,
         }
         missing = sorted(f"{root}/{name}" for name in required if f"{root}/{name}" not in members)
         if missing:
@@ -209,19 +174,23 @@ def _run_checked(
 def _core_probe() -> str:
     return """
 import importlib.metadata
+import importlib.resources
 import sys
 
 from coderai._version import __version__
-from coderai.core.prompt import get_system_prompt, get_tools
 from coderai.core.session import SessionManager
 from coderai.core.common.file_history import GitFileHistory
 from coderai.core.tools.executor import ToolExecutor
+from coderai.core.tools.registry import get_tool_registry
 
 metadata = importlib.metadata.metadata('coderai-agent')
 assert __version__ == metadata['Version'], (__version__, metadata['Version'])
-tools = get_tools()
+tools = get_tool_registry().to_openai_schemas()
 tool_names = {t['function']['name'] for t in tools}
 assert {'bash', 'read', 'write', 'edit', 'AskUserQuestion', 'UpdatePlan', 'WebSearch'} <= tool_names
+package_root = importlib.resources.files('coderai')
+assert package_root.joinpath('vendor/rg').is_file()
+assert package_root.joinpath('skills/coderai-self-refer/SKILL.md').is_file()
 print('core-probe-ok')
 """
 

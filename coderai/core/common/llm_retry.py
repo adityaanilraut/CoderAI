@@ -1,8 +1,8 @@
-"""Provider-scoped LLM retry policy — empty / rate-limit / 5xx / timeout / transport.
+"""Provider-scoped LLM retry policy for empty, rate-limit, 5xx, timeout, and transport failures.
 
 Each retry is a fresh request over the same durable history. Failed chunks are
-never persisted. Default "normal" policy: 5 retries, 500ms–10s exponential
-backoff with 10% jitter (DeepSeek Harness dsh-llm-retry).
+never persisted. Default policy: 5 retries with 500ms–10s exponential backoff
+and 10% jitter.
 """
 
 from __future__ import annotations

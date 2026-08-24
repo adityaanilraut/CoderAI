@@ -1,4 +1,4 @@
-"""Ordered system-prompt sections with a stable toolOrder (dsh ctx.systemPrompt)."""
+"""Ordered system-prompt sections with stable tool ordering."""
 
 from __future__ import annotations
 
@@ -6,6 +6,36 @@ from dataclasses import dataclass
 from typing import Any
 
 TOOL_ORDER_REST = "<unlisted-tools>"
+
+CORE_TOOL_PRESET = frozenset(
+    {"bash", "str_replace_editor", "edit", "read", "write", "glob", "grep"}
+)
+SHELL_EDIT_TOOL_PRESET = frozenset({"bash", "str_replace_editor"})
+
+# Preset names are centralized here so schema and prompt projections cannot drift.
+TOOL_PRESETS: dict[str, frozenset[str] | None] = {
+    "full": None,
+    "core": CORE_TOOL_PRESET,
+    "shell_edit": SHELL_EDIT_TOOL_PRESET,
+}
+
+
+def normalize_tool_preset(preset: Any) -> str | None:
+    if not isinstance(preset, str):
+        return None
+    return preset if preset in TOOL_PRESETS else None
+
+
+def get_preset_tools(preset: Any) -> frozenset[str] | None:
+    """Resolve a named preset; unknown and full presets expose all tools."""
+    canonical = normalize_tool_preset(preset)
+    return TOOL_PRESETS.get(canonical) if canonical is not None else None
+
+
+def is_restricted_tool_preset(preset: Any) -> bool:
+    canonical = normalize_tool_preset(preset)
+    return canonical is not None and TOOL_PRESETS[canonical] is not None
+
 
 TOOL_ORDER = [
     "bash",
@@ -58,11 +88,7 @@ TOOL_ORDER = [
     TOOL_ORDER_REST,
 ]
 
-# Standard Section Orders (DeepSeek Harness Parity)
-IDENTITY_ORDER = -100
-HARNESS_SOURCE_ORDER = -99
 PERSONA_ORDER = 0
-CONTEXT_FILE_REFERENCE_ORDER = 99
 TOOL_READ_ORDER = 100
 TOOL_WRITE_ORDER = 101
 TOOL_EDIT_ORDER = 102
@@ -70,18 +96,11 @@ TOOL_GREP_ORDER = 104
 TOOL_BASH_ORDER = 105
 TOOL_PWSH_ORDER = 105
 TOOL_JOBS_ORDER = 106
-TOOL_PTY_ORDER = 106
 SANDBOX_POLICY_ORDER = 110
 SKILLS_CATALOG_ORDER = 110
 TOOL_WEB_FETCH_ORDER = 111
-TOOL_LSP_ORDER = 112
-TOOL_SESSION_QUERY_ORDER = 113
 TOOL_GOAL_ORDER = 114
-TOOL_WORKFLOW_ORDER = 115
-TOOL_RALPH_ORDER = 116
 SUBAGENT_DELEGATION_ORDER = 120
-UI_DELIVERABLES_ORDER = 190
-TOOL_REPORT_ORDER = 200
 
 
 @dataclass(frozen=True)
@@ -136,4 +155,3 @@ def order_tools(
             return (rank.get(name, len(effective_order)), name)
 
         return sorted(tools, key=key)
-

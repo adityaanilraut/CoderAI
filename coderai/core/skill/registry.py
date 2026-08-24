@@ -1,8 +1,7 @@
-"""Skill Registry — port of dsh layered skill registry with discovery and keyword matching."""
+""""""
 
 from __future__ import annotations
 
-import json
 import pathlib
 import re
 from typing import Any
@@ -169,7 +168,6 @@ class SkillRegistry:
         loaded = {n.lower() for n in (loaded_names or set())}
         prompt_lower = user_prompt.lower()
         prompt_tokens = set(re.findall(r"\w+", prompt_lower))
-        prompt_sig = {t for t in prompt_tokens if len(t) >= 4 and t not in STOP_WORDS}
 
         matched: list[dict[str, Any]] = []
         for skill in self.list_skills(enabled_skills=enabled_skills):
@@ -184,7 +182,9 @@ class SkillRegistry:
                 matched.append(skill)
                 continue
 
-            name_tokens = {t for t in re.findall(r"\w+", name_lower) if t not in STOP_WORDS and len(t) >= 3}
+            name_tokens = {
+                t for t in re.findall(r"\w+", name_lower) if t not in STOP_WORDS and len(t) >= 3
+            }
             if name_tokens and name_tokens.issubset(prompt_tokens):
                 matched.append(skill)
                 continue
@@ -221,58 +221,3 @@ def match_skills_for_prompt(
     return registry.match_skills(
         user_prompt, enabled_skills=enabled_skills, loaded_names=loaded_names
     )
-
-
-def parse_skill_match_response(raw: str, candidate_names: set[str]) -> list[str]:
-    """Parse an LLM skill-match JSON object into known candidate names."""
-    if not raw.strip():
-        return []
-    try:
-        parsed = json.loads(raw)
-    except (ValueError, TypeError):
-        start = raw.find("{")
-        end = raw.rfind("}")
-        if start < 0 or end <= start:
-            return []
-        try:
-            parsed = json.loads(raw[start : end + 1])
-        except (ValueError, TypeError):
-            return []
-
-    if not isinstance(parsed, dict):
-        return []
-
-    allowed = {n.lower(): n for n in candidate_names}
-    result: list[str] = []
-
-    names = parsed.get("skillNames")
-    if isinstance(names, list):
-        for item in names:
-            if not isinstance(item, str):
-                continue
-            canonical = allowed.get(item.strip().lower())
-            if canonical and canonical not in result:
-                result.append(canonical)
-        return result
-
-    for skill_name, match_val in parsed.items():
-        if not isinstance(skill_name, str):
-            continue
-        canon = allowed.get(skill_name.strip().lower())
-        if not canon:
-            continue
-
-        is_match = False
-        if isinstance(match_val, bool):
-            is_match = match_val
-        elif isinstance(match_val, dict):
-            is_match = bool(
-                match_val.get("match") or match_val.get("matched") or match_val.get("relevant")
-            )
-        elif isinstance(match_val, str):
-            is_match = match_val.strip().lower() in ("true", "yes", "1", "matched", "match")
-
-        if is_match and canon not in result:
-            result.append(canon)
-
-    return result

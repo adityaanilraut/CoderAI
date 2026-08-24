@@ -4,11 +4,9 @@ from __future__ import annotations
 
 import pathlib
 import tempfile
-from typing import Any
-from unittest.mock import MagicMock
 
 from coderai.cli.app import _prompt_permissions
-from coderai.cli.thinking import LiveThinkingStreamer, render_thinking_block, summarize_thinking
+from coderai.cli.thinking import LiveThinkingStreamer, summarize_thinking
 from coderai.core.permissions import (
     _generate_file_diff_preview,
     compute_tool_call_permissions,
@@ -16,7 +14,7 @@ from coderai.core.permissions import (
     get_request_risk_badge,
     get_scope_risk_level,
 )
-from coderai.core.session import SessionManager, _call_stream_or_sync
+from coderai.core.session import _call_stream_or_sync
 
 
 def test_live_thinking_streamer_lifecycle():
@@ -89,9 +87,7 @@ def test_generate_file_diff_preview_edit():
         test_file = tmp_path / "calc.py"
         test_file.write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
 
-        diff = _generate_file_diff_preview(
-            str(tmp_path), "calc.py", "return a - b", "return a + b"
-        )
+        diff = _generate_file_diff_preview(str(tmp_path), "calc.py", "return a - b", "return a + b")
         assert diff is not None
         assert "-    return a - b" in diff
         assert "+    return a + b" in diff

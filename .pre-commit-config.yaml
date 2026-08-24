@@ -24,7 +24,6 @@ repos:
         language: python
         additional_dependencies:
           - mypy==2.1.0
-          - pydantic==2.13.4
           - types-PyYAML==6.0.12.20260518
           - types-requests==2.33.0.20260518
         types: [python]

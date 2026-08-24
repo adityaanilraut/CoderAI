@@ -1,8 +1,4 @@
-"""SessionManager — UI-agnostic agent loop.
-
-Port of deepcode core/src/session.ts, sized for a Python CLI:
-
-    stream -> tool_calls -> permissions -> execute -> loop
+"""Session lifecycle and public APIs for the CoderAI runtime.
 
 Persistence: append-only JSONL event log + a sessions index under
 `~/.coderai/projects/<projectCode>/`, with token-threshold compaction,
@@ -17,9 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
-import hashlib
 import json
-import os
 import pathlib
 import re
 import shutil
@@ -30,10 +24,8 @@ from typing import Any
 from collections.abc import Callable
 
 from coderai.core.common.debug_logger import log_openai_chat_completion_debug
-from coderai.core.common.error_logger import log_api_error
 from coderai.core.common.file_history import GitFileHistory
 from coderai.core.common.file_utils import read_text_file_tail
-from coderai.core.common.llm_error import describe_llm_error
 from coderai.core.common.llm_retry import (
     DEFAULT_MAX_RETRIES,
     classify_llm_failure,
@@ -41,47 +33,38 @@ from coderai.core.common.llm_retry import (
     retry_delay_ms,
 )
 from coderai.core.common.message_converter import OpenAIMessageConverter
-from coderai.core.common.model_capabilities import (
-    is_fast_model,
-    resolve_adaptive_reasoning_effort,
-)
-from coderai.core.common.openai_thinking import build_thinking_request_options
 from coderai.core.common.repeat_tool_reminder import RepeatToolReminder
 from coderai.core.common.usage import accumulate_usage_dict, extract_usage_dict
 from coderai.core.common.validate import repair_json_string
 from coderai.core.mcp import McpManager
 from coderai.core.permissions import (
-    PLAN_MODE_FORCE_ASK_SCOPES,
     PermissionTicket,
     build_permission_tool_execution,
-    compute_tool_call_permissions,
     resolve_snippet_file_path,
 )
 from coderai.core.compaction import (
     BasicCompaction,
     DEFAULT_MAX_TOOL_RESULT_CHARS,
     ToolResultPruner,
-    evaluate_compaction_trigger,
 )
 from coderai.core.prompt import (
-    build_skill_documents_prompt,
-    calculate_context_budget,
-    format_tool_definitions,
     get_init_command_prompt,
     get_plan_mode_prompt,
     get_runtime_context,
-    get_skill_read_exempt_paths,
     get_system_prompt,
-    get_tools,
-    list_skills,
     load_agent_instructions,
+)
+from coderai.core.skill import (
+    build_skill_documents_prompt,
+    list_skills,
     load_skill,
     match_skills_for_prompt,
-    parse_skill_match_response,
 )
 from coderai.core.events import (
     SessionEvent,
 )
+from coderai.core.session_store import JsonlSessionStore
+from coderai.core.session_store import get_project_code as get_project_code
 from coderai.core.state import clear_session_state, rebuild_session_state_from_history
 from coderai.core.tools.executor import ToolExecutor
 from coderai.core.tools.types import (
@@ -107,46 +90,6 @@ def sanitize_repetition_loops(text: str) -> str:
         return f"{unit} [truncated repetition loop]"
 
     return pattern.sub(_replace, text)
-
-
-def get_project_code(project_root: str) -> str:
-    norm = str(pathlib.Path(project_root).resolve())
-    h = hashlib.sha256(norm.encode()).hexdigest()[:16]
-    base = pathlib.Path(norm).name[:32].replace(" ", "-") or "project"
-    return f"{base}-{h}"
-
-
-def _migrate_storage(src_dir: pathlib.Path, dst_dir: pathlib.Path) -> None:
-    """Migrate session files from global project storage to project-local storage."""
-    if not src_dir.exists() or not src_dir.is_dir():
-        return
-    try:
-        dst_dir.mkdir(parents=True, exist_ok=True)
-        # Migrate sessions-index.json
-        src_index = src_dir / "sessions-index.json"
-        dst_index = dst_dir / "sessions-index.json"
-        if src_index.exists() and not dst_index.exists():
-            shutil.copy2(src_index, dst_index)
-
-        # Migrate *.jsonl message logs
-        for jsonl_file in src_dir.glob("*.jsonl"):
-            dst_file = dst_dir / jsonl_file.name
-            if not dst_file.exists():
-                shutil.copy2(jsonl_file, dst_file)
-
-        # Migrate file-history
-        src_fh = src_dir / "file-history"
-        dst_fh = dst_dir / "file-history"
-        if src_fh.exists() and not dst_fh.exists():
-            shutil.copytree(src_fh, dst_fh)
-
-        # Migrate images
-        src_img = src_dir / "images"
-        dst_img = dst_dir / "images"
-        if src_img.exists() and not dst_img.exists():
-            shutil.copytree(src_img, dst_img)
-    except Exception:
-        pass
 
 
 @dataclass
@@ -275,6 +218,7 @@ class SessionManager:
         self._override_reasoning_effort: str | None = None
         self.session_controllers: dict[str, asyncio.Event] = {}
         self.compaction_engine = BasicCompaction(self)
+        self.session_store = JsonlSessionStore(self.project_root, max_entries=MAX_SESSION_ENTRIES)
         self.file_history = GitFileHistory(
             self.project_root, str(self._storage()["project_dir"] / "file-history" / ".git")
         )
@@ -359,73 +303,24 @@ class SessionManager:
     # ---- storage ----
 
     def _storage(self) -> dict[str, pathlib.Path]:
-        local_dir = pathlib.Path(self.project_root) / ".coderai" / "sessions"
-        global_code = get_project_code(self.project_root)
-        global_dir = pathlib.Path.home() / ".coderai" / "projects" / global_code
-
-        # Attempt project-local storage first
-        try:
-            # Check if migration is needed from global to local
-            if (
-                not (local_dir / "sessions-index.json").exists()
-                and (global_dir / "sessions-index.json").exists()
-            ):
-                _migrate_storage(global_dir, local_dir)
-            local_dir.mkdir(parents=True, exist_ok=True)
-            return {
-                "project_dir": local_dir,
-                "index_path": local_dir / "sessions-index.json",
-            }
-        except (OSError, PermissionError):
-            # Fallback to global user directory if project root is not writable
-            global_dir.mkdir(parents=True, exist_ok=True)
-            return {
-                "project_dir": global_dir,
-                "index_path": global_dir / "sessions-index.json",
-            }
+        return self.session_store.storage_paths()
 
     def _messages_path(self, session_id: str) -> pathlib.Path:
-        return self._storage()["project_dir"] / f"{session_id}.jsonl"
+        return self.session_store.messages_path(session_id)
 
     def _ensure_dir(self) -> pathlib.Path:
-        d = self._storage()["project_dir"]
-        d.mkdir(parents=True, exist_ok=True)
-        return d
+        self.session_store.project_dir.mkdir(parents=True, exist_ok=True)
+        return self.session_store.project_dir
 
     def _load_index(self) -> dict[str, Any]:
-        idx_path = self._storage()["index_path"]
-        if not idx_path.exists():
-            return {"version": 1, "entries": [], "originalPath": self.project_root}
-        try:
-            data = json.loads(idx_path.read_text(encoding="utf-8"))
-            return {
-                "version": 1,
-                "entries": data.get("entries") or [],
-                "originalPath": self.project_root,
-            }
-        except Exception:
-            return {"version": 1, "entries": [], "originalPath": self.project_root}
+        return self.session_store.load_index()
 
     def _save_index(self, index: dict[str, Any]) -> None:
-        self._ensure_dir()
-        entries = index.get("entries") or []
-        if len(entries) > MAX_SESSION_ENTRIES:
-            # Sort by updateTime descending, keep the most recent MAX_SESSION_ENTRIES in index
-            sorted_entries = sorted(
-                entries,
-                key=lambda e: e.get("updateTime") or e.get("createTime") or "",
-                reverse=True,
-            )
-            index["entries"] = sorted_entries[:MAX_SESSION_ENTRIES]
-
-        self._storage()["index_path"].write_text(json.dumps(index, indent=2), encoding="utf-8")
+        self.session_store.save_index(index)
 
     def _append_message(self, message: SessionMessage) -> None:
-        """Append one event to the session JSONL log without rewriting prior rows."""
-        self._ensure_dir()
-        path = self._messages_path(message.session_id)
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(self._serialize_message(message), ensure_ascii=False) + "\n")
+        """Append one legacy-compatible message row to the session log."""
+        self.session_store.append_row(message.session_id, self._serialize_message(message))
 
     def _next_seq(self, session_id: str) -> int:
         """Return and increment the monotonic event sequence for a session."""
@@ -446,70 +341,27 @@ class SessionManager:
         The JSONL line includes a ``type`` key that distinguishes it from
         legacy ``SessionMessage`` dicts (which have ``role`` instead).
         """
-        self._ensure_dir()
-        path = self._messages_path(session_id)
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(event.to_dict(), ensure_ascii=False) + "\n")
+        self.session_store.append_row(session_id, event.to_dict())
 
     def _save_messages(self, session_id: str, messages: list[SessionMessage]) -> None:
-        self._ensure_dir()
-        with open(self._messages_path(session_id), "w", encoding="utf-8") as f:
-            for m in messages:
-                f.write(json.dumps(self._serialize_message(m), ensure_ascii=False) + "\n")
+        self.session_store.replace_rows(
+            session_id, [self._serialize_message(message) for message in messages]
+        )
 
     def list_session_messages(self, session_id: str) -> list[SessionMessage]:
-        path = self._messages_path(session_id)
-        if not path.exists():
-            return []
         messages: list[SessionMessage] = []
         max_seq = self._seq_counters.get(session_id, 0)
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            try:
-                raw = json.loads(line)
-                if isinstance(raw, dict) and "seq" in raw and isinstance(raw["seq"], int):
-                    max_seq = max(max_seq, raw["seq"] + 1)
-                msg = self._deserialize_message(raw, session_id)
-                if msg is not None:
-                    messages.append(msg)
-            except (ValueError, TypeError):
-                continue
+        for row in self.session_store.read_rows(session_id):
+            if "seq" in row and isinstance(row["seq"], int):
+                max_seq = max(max_seq, row["seq"] + 1)
+            message = self._deserialize_message(row, session_id)
+            if message is not None:
+                messages.append(message)
         self._seq_counters[session_id] = max_seq
         return messages
 
     def list_session_events(self, session_id: str) -> list[SessionEvent]:
-        persistence = self.get_persistence()
-        return persistence.list_events(session_id)
-
-    def get_persistence(self, backend: str = "jsonl"):
-        """Get session persistence backend ('sqlite' or 'jsonl')."""
-        storage = self._storage()["project_dir"]
-        if backend == "sqlite":
-            from coderai.core.persistence import SqlitePersistence
-
-            return SqlitePersistence(storage / "sessions.db")
-        from coderai.core.persistence import JsonlPersistence
-
-        return JsonlPersistence(storage)
-
-    def get_projection_cache(self):
-        """Get session projection cache backed by SQLite or in-memory."""
-        from coderai.core.persistence import SessionProjectionCache
-
-        storage = self._storage()["project_dir"]
-        return SessionProjectionCache(storage / "projection_cache.db")
-
-    def get_telemetry_coordinator(self, sink=None, mode="FULL"):
-        """Get session telemetry coordinator."""
-        from coderai.core.session_telemetry import (
-            OTelStructuredTelemetrySink,
-            SessionTelemetryCoordinator,
-            TelemetryMode,
-        )
-
-        effective_sink = sink or OTelStructuredTelemetrySink(TelemetryMode(mode))
-        return SessionTelemetryCoordinator(effective_sink, TelemetryMode(mode))
+        return self.session_store.list_events(session_id)
 
     def _serialize_message(self, m: SessionMessage) -> dict[str, Any]:
         ts = 0
@@ -699,7 +551,9 @@ class SessionManager:
         tool_meta: dict[str, Any] | None = None,
     ) -> SessionMessage:
         now = _now()
-        pruned_content = ToolResultPruner(max_chars=DEFAULT_MAX_TOOL_RESULT_CHARS).prune_content(content)
+        pruned_content = ToolResultPruner(max_chars=DEFAULT_MAX_TOOL_RESULT_CHARS).prune_content(
+            content
+        )
         is_invisible = _is_invisible_execution(pruned_content)
         params_md = _build_tool_params_snippet(tool_function)
         result_md = _build_tool_result_snippet(pruned_content)
@@ -897,11 +751,7 @@ class SessionManager:
         from coderai.core.common.notify import launch_notify_script
 
         settings = self.get_resolved_settings()
-        notify_command = (
-            settings.get("notifyCommand")
-            or os.environ.get("CODERAI_NOTIFY_COMMAND")
-            or os.environ.get("DEEPCODE_NOTIFY_COMMAND")
-        )
+        notify_command = settings.get("notify")
         if not notify_command:
             return
 
@@ -1270,8 +1120,6 @@ class SessionManager:
             output=f"Loaded skill: {skill_name}.",
         )
 
-
-
     async def _activate(
         self,
         session_id: str,
@@ -1280,385 +1128,10 @@ class SessionManager:
     ) -> None:
         from coderai.core.agent_loop import AgentLoop
 
-        started_at_ms = int(time.time() * 1000)
-        client_info = self.create_openai_client()
-        client = client_info.get("client")
-        model = self.get_active_model()
-        base_url = client_info.get("baseURL")
-        temperature = client_info.get("temperature")
-        thinking_enabled = bool(client_info.get("thinkingEnabled"))
-        reasoning_effort = self.get_reasoning_effort() or client_info.get("reasoningEffort") or "max"
-        settings = self.get_resolved_settings()
-
-        abort_event = asyncio.Event()
-        self.session_controllers[session_id] = abort_event
-
-        # Instantiate the bounded agent loop for structured event emission
-        loop = AgentLoop(self, session_id)
-        loop.emit_turn_start()
-
-        messages = self.list_session_messages(session_id)
-        rebuild_session_state_from_history(
-            session_id, [self._serialize_message(m) for m in messages]
+        await AgentLoop(self, session_id).run(
+            permission_replies=permission_replies,
+            deferred_prompt=deferred_prompt,
         )
-
-        self._update_entry(
-            session_id,
-            lambda e: {**e, "status": "processing", "failReason": None, "updateTime": _now()},
-        )
-
-        if client is None:
-            self._update_entry(
-                session_id,
-                lambda e: {
-                    **e,
-                    "status": "failed",
-                    "failReason": "API key not found",
-                    "updateTime": _now(),
-                },
-            )
-            self.on_assistant_message(
-                self._build_message(
-                    session_id,
-                    "assistant",
-                    "API key not found. Set your API key in .env (e.g. OPENAI_API_KEY=...), export it in your shell, or configure ~/.coderai/settings.json.",
-                ),
-                False,
-            )
-            self.session_controllers.pop(session_id, None)
-            return
-
-        try:
-            for iteration in range(self.max_iterations):
-                if self.is_interrupted(session_id):
-                    return
-
-                # Check for and dispatch any due schedule reminders
-                self._dispatch_due_schedules(session_id)
-
-                messages = self.list_session_messages(session_id)
-
-                # Check for trailing pending tool calls (e.g. from permission pause or resume)
-                pending_info = self.message_converter.get_trailing_pending_tool_call_message(
-                    messages
-                )
-                if pending_info.get("toolCalls"):
-                    last_msg = pending_info.get("message")
-                    tool_calls = pending_info.get("toolCalls") or []
-                    msg_perms = (last_msg.meta or {}).get("askPermissions") if last_msg else None
-
-                    waiting = await self._append_tool_messages(
-                        session_id,
-                        tool_calls,
-                        permission_replies=permission_replies,
-                        message_permissions=msg_perms,
-                    )
-                    permission_replies = None
-
-                    # If there was a deferred prompt attached to the permission response, append it now
-                    if deferred_prompt:
-                        self.file_history.ensure_session(session_id)
-                        ckpt = self.file_history.record_tracked_files_checkpoint(
-                            session_id, "User prompt checkpoint"
-                        )
-                        self._append_message(
-                            self._build_message(
-                                session_id,
-                                "user",
-                                deferred_prompt,
-                                meta={"checkpointHash": ckpt.checkpoint_hash},
-                            )
-                        )
-                        deferred_prompt = None
-
-                    if self.is_interrupted(session_id):
-                        return
-
-                    if waiting:
-                        self._update_entry(
-                            session_id,
-                            lambda e: {
-                                **e,
-                                "toolCalls": tool_calls,
-                                "status": "waiting_for_user",
-                                "updateTime": _now(),
-                            },
-                        )
-                        return
-                    continue
-
-                # Auto-compaction dual-trigger check before making LLM completion request
-                current_entry = self._get_entry(session_id) or {}
-                active_tokens = current_entry.get("activeTokens", 0)
-                budget = calculate_context_budget(model)
-                auto_compact_thresh = (
-                    settings.get("autoCompactWindow") or budget["pressure_threshold"]
-                )
-                trigger = evaluate_compaction_trigger(active_tokens, budget["context_limit"])
-                if active_tokens > auto_compact_thresh or trigger is not None:
-                    eff_trigger = trigger or "pressure"
-                    compact_notice = self._build_assistant(
-                        session_id,
-                        f"The conversation is getting long ({eff_trigger} trigger), compacting...",
-                        None,
-                    )
-                    compact_notice.meta = {"asThinking": True}
-                    self.on_assistant_message(compact_notice, False)
-                    await self._compact_session(session_id, trigger=eff_trigger)
-                    messages = self.list_session_messages(session_id)
-
-                # Emit step/start event before preparing LLM request
-                loop.emit_step_start()
-
-                # Prepare tools and messages for LLM request
-                multimodal_mode = settings.get("multimodal", "default")
-                tools_preset = settings.get("toolsPreset") or settings.get("preset")
-                tools = get_tools(
-                    {
-                        "model": model,
-                        "nonInteractive": self.non_interactive,
-                        "multimodal": multimodal_mode,
-                        "preset": tools_preset,
-                    },
-                    external_tools=self.mcp_tool_definitions if not tools_preset else None,
-                )
-                if tools:
-                    tools = format_tool_definitions(tools, model=model)
-                converted = self.message_converter.convert_session_messages(
-                    messages, model, thinking_enabled=thinking_enabled
-                )
-                request: dict[str, Any] = {
-                    "model": model,
-                    "messages": converted,
-                    "tools": tools if tools else None,
-                }
-                if temperature is not None:
-                    request["temperature"] = temperature
-                eff_reasoning = reasoning_effort
-                if eff_reasoning in ("adaptive", "auto", None) or (
-                    is_fast_model(model)
-                    and eff_reasoning == "max"
-                    and not settings.get("explicitReasoningEffort")
-                ):
-                    eff_reasoning = resolve_adaptive_reasoning_effort(
-                        model,
-                        turn=loop.turn,
-                        step=loop.step,
-                        explicit_effort=settings.get("explicitReasoningEffort"),
-                    )
-
-                request.update(
-                    build_thinking_request_options(
-                        thinking_enabled,
-                        base_url=base_url,
-                        reasoning_effort=eff_reasoning,
-                        model=model,
-                        has_tools=bool(request.get("tools")),
-                    )
-                )
-                if not request.get("tools"):
-                    request.pop("tools", None)
-
-                # Execute LLM completion with retry-as-new-turn (failed chunks are not persisted)
-                try:
-                    response = await self._create_completion_with_retry(session_id, client, request)
-                except Exception as err:
-                    if self.is_interrupted(session_id):
-                        return
-                    err_str = describe_llm_error(err)
-                    log_api_error(err, {"sessionId": session_id, "model": model})
-                    self._update_entry(
-                        session_id,
-                        lambda entry: {
-                            **entry,
-                            "status": "failed",
-                            "failReason": err_str,
-                            "updateTime": _now(),
-                        },
-                    )
-                    self.on_assistant_message(
-                        self._build_message(
-                            session_id,
-                            "assistant",
-                            f"Request failed: {err_str}",
-                        ),
-                        False,
-                    )
-                    loop.emit_step_end()
-                    loop.emit_turn_end("error")
-                    return
-
-                if self.is_interrupted(session_id):
-                    loop.emit_step_end()
-                    loop.emit_turn_end("interrupted")
-                    return
-
-                choice = (response.get("choices") or [{}])[0]
-                msg = choice.get("message") or {}
-                raw_content = msg.get("content") or ""
-                content = (
-                    sanitize_repetition_loops(raw_content) if isinstance(raw_content, str) else ""
-                )
-                raw_tool_calls = msg.get("tool_calls")
-                thinking = msg.get("reasoning_content")
-                refusal = msg.get("refusal")
-                tool_calls = _normalize_tool_calls(raw_tool_calls)
-
-                usage = response.get("usage")
-                total_active = _total_tokens(usage)
-                extracted_usage = extract_usage_dict(usage) if usage else None
-
-                # Build and record assistant turn
-                assistant_msg = self._build_assistant(session_id, content, tool_calls, thinking)
-                assistant_msg.meta = {
-                    **(assistant_msg.meta or {}),
-                    "usage": extracted_usage,
-                    "model": model,
-                }
-
-                curr_entry = self._get_entry(session_id) or {}
-                is_plan = bool(curr_entry.get("planMode"))
-                forced_scopes = PLAN_MODE_FORCE_ASK_SCOPES if is_plan else None
-
-                custom_paths = settings.get("skillScanPaths") or []
-                perm_plan = (
-                    compute_tool_call_permissions(
-                        session_id=session_id,
-                        project_root=self.project_root,
-                        tool_calls=tool_calls,
-                        settings=settings.get("permissions") or {},
-                        force_ask_scopes=forced_scopes,
-                        read_permission_exempt_paths=get_skill_read_exempt_paths(
-                            self.project_root, custom_scan_paths=custom_paths
-                        ),
-                        resolve_snippet_path=resolve_snippet_file_path,
-                    )
-                    if tool_calls
-                    else None
-                )
-
-                if perm_plan and perm_plan.get("permissions"):
-                    assistant_msg.meta = {
-                        **(assistant_msg.meta or {}),
-                        "permissions": perm_plan["permissions"],
-                        "askPermissions": perm_plan.get("askPermissions"),
-                    }
-
-                self._append_message(assistant_msg)
-                self.on_assistant_message(assistant_msg, True)
-
-                waiting_for_user = False
-                if tool_calls:
-                    if perm_plan and perm_plan.get("askPermissions"):
-                        # Permission required from user
-                        self._update_entry(
-                            session_id,
-                            lambda e: {
-                                **e,
-                                "assistantReply": content,
-                                "assistantThinking": thinking,
-                                "assistantRefusal": refusal,
-                                "toolCalls": tool_calls,
-                                "usage": _accumulate_usage(e.get("usage"), usage),
-                                "usagePerModel": _accumulate_usage_per_model(
-                                    e.get("usagePerModel"), model, usage
-                                ),
-                                "activeTokens": total_active or e.get("activeTokens", 0),
-                                "status": "ask_permission",
-                                "failReason": None,
-                                "askPermissions": perm_plan["askPermissions"],
-                                "updateTime": _now(),
-                            },
-                        )
-                        loop.emit_step_end()
-                        loop.emit_turn_end("permission")
-                        return
-
-                    # Execute allowed tool calls
-                    waiting_for_user = await self._append_tool_messages(
-                        session_id,
-                        tool_calls,
-                        permission_replies=None,
-                        message_permissions=perm_plan.get("permissions") if perm_plan else None,
-                    )
-
-                if self.is_interrupted(session_id):
-                    return
-
-                new_status = (
-                    "failed"
-                    if refusal
-                    else "waiting_for_user"
-                    if waiting_for_user
-                    else "processing"
-                    if tool_calls
-                    else "completed"
-                )
-
-                self._update_entry(
-                    session_id,
-                    lambda e: {
-                        **e,
-                        "assistantReply": content,
-                        "assistantThinking": thinking,
-                        "assistantRefusal": refusal,
-                        "toolCalls": tool_calls,
-                        "usage": _accumulate_usage(e.get("usage"), usage),
-                        "usagePerModel": _accumulate_usage_per_model(
-                            e.get("usagePerModel"), model, usage
-                        ),
-                        "activeTokens": total_active or e.get("activeTokens", 0),
-                        "status": new_status,
-                        "failReason": refusal if refusal else e.get("failReason"),
-                        "askPermissions": None,
-                        "updateTime": _now(),
-                    },
-                )
-
-                if refusal or waiting_for_user:
-                    loop.emit_step_end()
-                    loop.emit_turn_end("refusal" if refusal else "waiting")
-                    return
-
-                if not tool_calls:
-                    loop.emit_step_end()
-                    loop.emit_turn_end("natural")
-                    return
-
-                # Tool calls present — emit step/end, continue loop for next step
-                loop.emit_step_end()
-
-            # Max iterations reached
-            loop.emit_turn_end("max_iterations")
-            self._update_entry(
-                session_id,
-                lambda e: {
-                    **e,
-                    "status": "completed",
-                    "updateTime": _now(),
-                },
-            )
-            continuation_msg = self._build_assistant(
-                session_id,
-                "The AI agent has taken several steps but hasn't reached a conclusion yet. Do you want to continue?",
-                None,
-            )
-            self.on_assistant_message(continuation_msg, False)
-
-        except asyncio.CancelledError:
-            loop.emit_turn_end("cancelled")
-            self._update_entry(
-                session_id,
-                lambda e: {
-                    **e,
-                    "status": "interrupted",
-                    "failReason": "interrupted",
-                    "updateTime": _now(),
-                },
-            )
-        finally:
-            self.session_controllers.pop(session_id, None)
-            self.maybe_notify_task_completion(session_id, started_at_ms)
 
     async def _append_tool_messages(
         self,
@@ -1718,7 +1191,13 @@ class SessionManager:
             fn_name = str(fn.get("name", "") if isinstance(fn, dict) else "")
             blocked = build_permission_tool_execution(tc, permission_replies, message_permissions)
 
-            kind = "blocked" if blocked else "parallel" if fn_name in read_only_tool_names else "sequential"
+            kind = (
+                "blocked"
+                if blocked
+                else "parallel"
+                if fn_name in read_only_tool_names
+                else "sequential"
+            )
             if current_chunk_kind is None or current_chunk_kind == kind:
                 current_chunk_kind = kind
                 current_chunk.append(tc)
@@ -1727,7 +1206,7 @@ class SessionManager:
                 current_chunk_kind = kind
                 current_chunk = [tc]
 
-        if current_chunk:
+        if current_chunk and current_chunk_kind is not None:
             chunks.append((current_chunk_kind, current_chunk))
 
         for chunk_kind, chunk_tcs in chunks:
@@ -1736,7 +1215,9 @@ class SessionManager:
 
             if chunk_kind == "blocked":
                 for tc in chunk_tcs:
-                    blocked = build_permission_tool_execution(tc, permission_replies, message_permissions)
+                    blocked = build_permission_tool_execution(
+                        tc, permission_replies, message_permissions
+                    )
                     blocked_content = blocked["content"] if blocked else "Blocked by permission"
                     tool_msg = self._build_tool_message(
                         session_id,
@@ -1834,9 +1315,7 @@ class SessionManager:
                     )
 
                 exec_tc_id = execution["toolCallId"]
-                tool_fn = self.message_converter.find_tool_function(
-                    tool_calls, exec_tc_id
-                )
+                tool_fn = self.message_converter.find_tool_function(tool_calls, exec_tc_id)
                 if not tool_fn:
                     matching = [t for t in chunk_tcs if t.get("id") == exec_tc_id]
                     if matching:
@@ -2025,15 +1504,7 @@ class SessionManager:
         forked_id = f"ses_{uuid.uuid4().hex[:12]}"
         now = _now()
 
-        # Read raw jsonl lines to support both legacy SessionMessage dicts and new SessionEvents
-        raw_lines: list[str] = []
-        path = self._messages_path(source_session_id)
-        if path.exists():
-            raw_lines = [
-                line.strip()
-                for line in path.read_text(encoding="utf-8").splitlines()
-                if line.strip()
-            ]
+        raw_lines = self.session_store.read_raw_lines(source_session_id)
 
         sliced_lines: list[str] = []
         checkpoint_hash: str | None = None
@@ -2091,10 +1562,7 @@ class SessionManager:
             except Exception:
                 forked_lines.append(line)
 
-        self._ensure_dir()
-        with open(self._messages_path(forked_id), "w", encoding="utf-8") as f:
-            for line_item in forked_lines:
-                f.write(line_item + "\n")
+        self.session_store.write_raw_lines(forked_id, forked_lines)
 
         # Fork file history branch
         self.file_history.ensure_session(forked_id)
@@ -2251,24 +1719,21 @@ class SessionManager:
         self.mcp_tool_definitions = self.mcp_manager.get_mcp_tool_definitions()
 
     def dispose(self) -> None:
+        """Best-effort sync dispose. Prefer ``close_session_manager`` from an async context."""
         for event in self.session_controllers.values():
             try:
                 event.set()
             except Exception:
                 pass
         try:
-            loop = asyncio.get_running_loop()
+            asyncio.get_running_loop()
         except RuntimeError:
             try:
                 asyncio.run(self.mcp_manager.disconnect())
             except Exception:
                 pass
             return
-        if not loop.is_closed():
-            try:
-                loop.create_task(self.mcp_manager.disconnect())
-            except Exception:
-                pass
+        # A running loop already owns async teardown via close_session_manager.
 
 
 def _entry_from_dict(d: dict[str, Any]) -> SessionEntry:
@@ -2484,6 +1949,7 @@ def _call_stream_or_sync(
     except (TypeError, AttributeError):
         # Client does not support streaming create() or response object format
         return _call_sync(client, request)
+    return _call_sync(client, request)
 
 
 def _format_completion_response(resp: Any) -> dict[str, Any]:

@@ -3,7 +3,7 @@
 Validates:
 1. Token Compaction Engine: dual triggers, shadow event bracketing, tool pairing preservation.
 2. Symmetrical ToolResultPruner for oversized output reduction.
-3. Structured JSONL persistence: SessionHeader, flush, atomic append, and replay.
+3. Structured JSONL session storage and replay.
 4. KV-Cache deterministic prefixing: PromptSection sorting, stable TOOL_ORDER.
 """
 
@@ -19,7 +19,7 @@ from coderai.core.events import (
     make_compaction_summary,
     derive_messages_from_events,
 )
-from coderai.core.persistence import JsonlPersistence, SessionHeader
+from coderai.core.session_store import JsonlSessionStore
 from coderai.core.prompt_sections import (
     PromptSection,
     assemble_sections,
@@ -77,32 +77,19 @@ def test_compaction_shadow_event_derivation():
     assert messages[2]["content"] == "Editing file now."
 
 
-def test_jsonl_persistence_header_and_atomic_flush(tmp_path: pathlib.Path):
-    persist = JsonlPersistence(tmp_path / "sessions")
+def test_jsonl_session_store_event_replay(tmp_path: pathlib.Path):
+    store = JsonlSessionStore(str(tmp_path))
     session_id = "test_persistence_sess"
 
-    header = SessionHeader(
-        session_id=session_id,
-        model="gpt-5.6-luna",
-        project_root=str(tmp_path),
-        provider="deepseek",
-        persona="expert-coder",
-        created_at=1000.0,
-    )
-    assert header.to_dict()["model"] == "gpt-5.6-luna"
-
     ev1 = make_user_event(seq=0, content="Initial prompt")
-    persist.append_event(session_id, ev1)
-    persist.flush(session_id)
+    store.append_row(session_id, ev1.to_dict())
 
-    assert persist.exists(session_id) is True
-
-    reloaded_events = persist.list_events(session_id)
+    reloaded_events = store.list_events(session_id)
     assert len(reloaded_events) == 1
     assert reloaded_events[0].data["content"] == "Initial prompt"
 
-    persist.delete(session_id)
-    assert persist.exists(session_id) is False
+    assert store.delete_log(session_id) is True
+    assert store.messages_path(session_id).exists() is False
 
 
 def test_prompt_sections_deterministic_ordering():

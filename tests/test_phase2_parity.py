@@ -28,11 +28,7 @@ from coderai.core.permissions import (
     evaluate_permission_scopes,
     get_scopes_requiring_ask,
 )
-from coderai.core.prompt import (
-    get_skill_scan_roots,
-    list_skills,
-    load_skill,
-)
+from coderai.core.skill import get_skill_scan_roots, list_skills, load_skill
 from coderai.core.session import SessionManager
 from coderai.core.settings import resolve_current_settings
 from coderai.core.state import get_file_version, get_snippet

@@ -172,4 +172,3 @@ async def handle_pwsh_tool(args: dict[str, Any], context: Any) -> ToolResult:
     finally:
         if profile_path:
             delete_seatbelt_profile(profile_path)
-

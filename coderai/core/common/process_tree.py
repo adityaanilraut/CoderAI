@@ -1,4 +1,4 @@
-"""Process-tree kill — port of deepcode core/src/common/process-tree.ts."""
+""""""
 
 from __future__ import annotations
 

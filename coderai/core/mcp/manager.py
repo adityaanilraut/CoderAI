@@ -1,4 +1,4 @@
-"""McpManager — manages MCP server lifecycle, namespaces tools, and merges definitions (deepcode mcp-manager.ts)."""
+"""MCP manager for server lifecycle, namespaced tools, and schema merge."""
 
 from __future__ import annotations
 

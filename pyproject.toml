@@ -52,7 +52,14 @@ where = ["."]
 include = ["coderai*"]
 
 [tool.setuptools.package-data]
-coderai = ["vendor/rg", "vendor/rg-*", "vendor/rg.exe"]
+coderai = [
+    "vendor/rg",
+    "vendor/rg-*",
+    "vendor/rg.exe",
+    "skills/*/SKILL.md",
+    "skills/*/references/*.md",
+    "skills/*/scripts/*.py",
+]
 
 [tool.setuptools.dynamic]
 version = {attr = "coderai._version.__version__"}
@@ -75,11 +82,6 @@ warn_return_any = false
 warn_unused_configs = true
 ignore_missing_imports = true
 exclude = ["tests/"]
-[[tool.mypy.overrides]]
-module = "numpy"
-follow_imports = "skip"
-follow_imports_for_stubs = true
-ignore_errors = true
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

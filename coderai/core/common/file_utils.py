@@ -1,4 +1,4 @@
-"""File I/O with metadata — port of deepcode core/src/common/file-utils.ts."""
+""""""
 
 from __future__ import annotations
 
@@ -62,7 +62,6 @@ def write_file_atomic(
 ) -> int:
     """Replace filename with content in one atomic step, creating parent directories.
 
-    Port of @deepseek-ai/dsh-atomic-write. Writes to a random-suffix sibling opened
     with exclusive create (O_CREAT | O_EXCL | O_WRONLY), preserves or sets mode bits,
     flushes and syncs buffer, and atomically renames over target.
     """
@@ -128,7 +127,6 @@ def with_file_lock(
 ) -> T:
     """Hold cross-process writer lock for filename around an operation.
 
-    Port of @deepseek-ai/dsh-atomic-write withFileLock. Uses sibling <filename>.lock
     with exclusive create, exponential backoff retry, and timeout protection.
     """
     target = pathlib.Path(filename).resolve()

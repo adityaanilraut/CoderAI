@@ -8,25 +8,16 @@ import subprocess
 import sys
 from typing import Any
 
+from rich.align import Align
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
+
 from coderai._version import __version__
 from coderai.cli.ascii_art import get_gradient_ascii_logo
 from coderai.core.common.model_capabilities import defaults_to_thinking_mode
 
-try:
-    from rich.align import Align
-    from rich.console import Console
-    from rich.panel import Panel
-    from rich.table import Table
-    from rich.text import Text
-
-    _RICH = True
-except ImportError:  # pragma: no cover
-    Align = None  # type: ignore[assignment,misc]
-    Console = None  # type: ignore[assignment,misc]
-    Panel = None  # type: ignore[assignment,misc]
-    Table = None  # type: ignore[assignment,misc]
-    Text = None  # type: ignore[assignment,misc]
-    _RICH = False
+_RICH = True
 
 
 def get_git_status(project_root: str) -> tuple[str | None, bool]:
@@ -88,7 +79,9 @@ def render_welcome_screen(
     branch, is_dirty = get_git_status(project_root)
     workspace_str = _format_workspace_path(project_root)
     effort_norm = (reasoning_effort or "max").capitalize()
-    thinking_str = f"Enabled ({effort_norm})" if defaults_to_thinking_mode(active_model) else effort_norm
+    thinking_str = (
+        f"Enabled ({effort_norm})" if defaults_to_thinking_mode(active_model) else effort_norm
+    )
     plan_status = "ON" if plan_mode else "OFF"
     py_ver = f"{sys.version_info.major}.{sys.version_info.minor}"
     sys_tag = platform.system()

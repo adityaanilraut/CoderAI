@@ -1,4 +1,4 @@
-"""CLI — rich UI over coderai.core (mirrors DeepCode packages/cli).
+"""Rich terminal interface over :mod:`coderai.core`.
 
 Presentation layer: argparse, interactive REPL, markdown rendering, tool execution cards,
 diff previews, thinking mode summaries, dynamic status bar, interactive menus, permission
@@ -18,6 +18,7 @@ import sys
 from typing import Any
 
 from coderai._version import __version__
+from coderai.cli.commands import parse_slash_command, resolve_command
 from coderai.cli.completer import setup_readline
 from coderai.cli.diff_render import render_diff_preview
 from coderai.cli.exit_summary import render_exit_summary
@@ -38,35 +39,26 @@ from coderai.cli.interactive_menu import (
     select_undo_interactive,
     select_with_arrows,
 )
+from coderai.cli.session_factory import build_session_manager, close_session_manager
 from coderai.cli.status_bar import render_status_bar
 from coderai.cli.thinking import LiveThinkingStreamer, render_thinking_block
 from coderai.cli.tool_card import render_tool_card
 from coderai.cli.welcome import render_welcome_screen
-from coderai.core.openai_client import create_openai_client as _core_client
 from coderai.core.permissions import (
     PLAN_MODE_FORCE_ASK_SCOPES,
     append_project_permission_allows,
 )
-from coderai.core.prompt import list_skills, load_skill
+from coderai.core.prompt_sections import TOOL_PRESETS
 from coderai.core.session import SessionManager, SessionMessage
+from coderai.core.skill import list_skills, load_skill
 
-try:
-    from rich.console import Console
-    from rich.markdown import Markdown
-    from rich.panel import Panel
-    from rich.table import Table
-    from rich.text import Text
+from rich.console import Console
+from rich.markdown import Markdown
+from rich.panel import Panel
+from rich.table import Table
 
-    _RICH = True
-    console: Console | None = Console()
-except ImportError:  # pragma: no cover
-    Console = None  # type: ignore[assignment,misc]
-    Markdown = None  # type: ignore[assignment,misc]
-    Panel = None  # type: ignore[assignment,misc]
-    Table = None  # type: ignore[assignment,misc]
-    Text = None  # type: ignore[assignment,misc]
-    _RICH = False
-    console = None
+_RICH = True
+console = Console()
 
 
 def _clear_task_cancellation() -> None:
@@ -125,11 +117,8 @@ def get_scope_color(scope: str) -> str:
 
 
 def _render_markdown(text: str) -> None:
-    """Render markdown text via Rich or standard output."""
-    if console is not None and _RICH and Markdown is not None:
-        console.print(Markdown(text))
-    else:
-        print(text)
+    """Render markdown text via Rich."""
+    console.print(Markdown(text))
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -146,7 +135,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Submit a prompt on launch",
     )
     parser.add_argument("--model", "-m", help="LLM model to use")
-    parser.add_argument("--message", dest="message", help="send a single message and exit")
     parser.add_argument(
         "--exec",
         "-x",
@@ -186,11 +174,10 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--preset",
-        "--tools-preset",
         dest="preset",
-        choices=["benchmark", "coding", "minimal", "full", "dsh_minimal"],
+        choices=list(TOOL_PRESETS),
         default=None,
-        help="Tool preset (e.g. benchmark/coding restricts to core 6 tools)",
+        help="Tool preset: full, core, or shell_edit",
     )
     parser.add_argument("--plan", action="store_true", help="start session in Plan Mode")
     parser.add_argument("--yes", "-y", action="store_true", help="auto-approve all permissions")
@@ -241,18 +228,20 @@ def _prompt_permissions(
             )
             badge_str = f" [{risk_style}] {risk_level} [/]"
 
-            console.print(f"\n  [bold yellow]! Permission Required ({idx}/{len(requests)})[/]{badge_str}")
+            console.print(
+                f"\n  [bold yellow]! Permission Required ({idx}/{len(requests)})[/]{badge_str}"
+            )
             console.print(f"    [bold cyan]{name}:[/] [bold white]{command}[/]")
             if description:
                 console.print(f"    [dim]{description}[/]")
             if is_forced_plan_scope:
-                console.print("    [bold red][WARNING] Mutating action requested while in Plan Mode.[/]")
+                console.print(
+                    "    [bold red][WARNING] Mutating action requested while in Plan Mode.[/]"
+                )
             console.print(f"    [dim]Scopes:[/] {scopes_str}")
 
             if diff_preview and isinstance(diff_preview, str) and diff_preview.strip():
-                render_diff_preview(
-                    console, diff_preview, title=f"Pre-Approval Diff ({name})"
-                )
+                render_diff_preview(console, diff_preview, title=f"Pre-Approval Diff ({name})")
         else:
             print(f"\n! Permission Required ({idx}/{len(requests)}) [{risk_level}]")
             print(f"  {name}: {command}")
@@ -263,9 +252,7 @@ def _prompt_permissions(
             if scopes:
                 print(f"  Scopes: {', '.join(scopes)}")
             if diff_preview and isinstance(diff_preview, str) and diff_preview.strip():
-                render_diff_preview(
-                    None, diff_preview, title=f"Pre-Approval Diff ({name})"
-                )
+                render_diff_preview(None, diff_preview, title=f"Pre-Approval Diff ({name})")
 
         options: list[tuple[str, str, str]] = [("allow", "1", "Yes")]
         always_target = next((s for s in scopes if s in ALWAYS_ALLOWED_SCOPES), None)
@@ -373,8 +360,6 @@ def _prompt_user_questions(questions: list[dict[str, Any]]) -> str:
     return "\n".join(answers) if answers else "User responded."
 
 
-
-
 class _StreamState:
     """Track streaming progress, live reasoning tokens, and execution spinners."""
 
@@ -474,49 +459,6 @@ def _on_assistant_message(message: SessionMessage, should_connect: bool) -> None
                 _STREAM_STATE.start_spinner(f"Executing {name}...")
             else:
                 print(f"  → invoking {name}...")
-
-
-
-def _build_manager(
-    project_root: str, model: str | None, preset: str | None = None
-) -> SessionManager:
-    """Build and initialize the core SessionManager."""
-    from coderai.core.settings import resolve_current_settings
-
-    resolved = resolve_current_settings(project_root)
-    if model:
-        resolved["model"] = model
-    if preset:
-        resolved["preset"] = preset
-        resolved["toolsPreset"] = preset
-
-    def get_settings() -> dict[str, Any]:
-        return resolved
-
-    mgr: SessionManager | None = None
-
-    def create_client() -> dict[str, Any]:
-        active_model = mgr.get_active_model() if mgr is not None else model
-        return _core_client(project_root, model_override=active_model)
-
-    def on_stream_chunk(chunk: str) -> None:
-        _STREAM_STATE.on_chunk(chunk)
-
-    def on_thinking_chunk(chunk: str) -> None:
-        _STREAM_STATE.on_thinking_chunk(chunk)
-
-    mgr = SessionManager(
-        project_root=project_root,
-        create_openai_client=create_client,
-        get_resolved_settings=get_settings,
-        render_markdown=lambda t: t,
-        on_assistant_message=_on_assistant_message,
-        on_stream_chunk=on_stream_chunk,
-        on_thinking_chunk=on_thinking_chunk,
-    )
-    if model:
-        mgr.set_model(model)
-    return mgr
 
 
 async def _drain_pending_interactions(mgr: SessionManager, session_id: str, yes: bool) -> None:
@@ -688,7 +630,12 @@ COMMAND_HELP_DETAILS: dict[str, dict[str, Any]] = {
             "• /agents report <id>       — Display final report or findings from subagent\n"
             "• /agents send <id> <msg>   — Send instruction message into subagent inbox"
         ),
-        "examples": ["/agents", "/agents tree", "/agents report ag_1", "/agents send ag_1 Please check module B"],
+        "examples": [
+            "/agents",
+            "/agents tree",
+            "/agents report ag_1",
+            "/agents send ag_1 Please check module B",
+        ],
     },
     "teams": {
         "title": "Multi-Agent Teams",
@@ -722,7 +669,10 @@ COMMAND_HELP_DETAILS: dict[str, dict[str, Any]] = {
         "syntax": "/rename [new_title] or /rename <session_id> <new_title>",
         "summary": "Rename the summary/title of the active or specified session.",
         "description": "Updates the session summary displayed in /sessions and history logs.",
-        "examples": ["/rename Implement Auth Service", "/rename sess_abc123 Refactor Database Layer"],
+        "examples": [
+            "/rename Implement Auth Service",
+            "/rename sess_abc123 Refactor Database Layer",
+        ],
     },
     "editor": {
         "title": "External $EDITOR Integration",
@@ -741,7 +691,7 @@ COMMAND_HELP_DETAILS: dict[str, dict[str, Any]] = {
         "description": (
             "Enters dedicated multiline capture mode. Paste text freely and type ':::' on a new line "
             "or press Ctrl-D to complete input.\n"
-            "Tip: You can also wrap prompts directly in \"\"\" triple quotes \"\"\" or ``` code fences."
+            'Tip: You can also wrap prompts directly in """ triple quotes """ or ``` code fences.'
         ),
         "examples": ["/paste"],
     },
@@ -750,14 +700,26 @@ COMMAND_HELP_DETAILS: dict[str, dict[str, Any]] = {
         "syntax": "/model [name]",
         "summary": "Select or switch active LLM model.",
         "description": "Opens interactive curated model menu or switches to specified model identifier directly.",
-        "examples": ["/model", "/model deepseek-v4-pro", "/model gemini-2.5-pro", "/model claude-3-7-sonnet"],
+        "examples": [
+            "/model",
+            "/model deepseek-v4-pro",
+            "/model gemini-2.5-pro",
+            "/model claude-3-7-sonnet",
+        ],
     },
     "effort": {
         "title": "Reasoning Effort Selection",
         "syntax": "/effort [off|low|medium|high|max]",
         "summary": "Select or switch reasoning effort level (thinking token budget).",
         "description": "Opens interactive reasoning effort menu or sets effort tier (off, low, medium, high, max).",
-        "examples": ["/effort", "/effort max", "/effort high", "/effort medium", "/effort low", "/effort off"],
+        "examples": [
+            "/effort",
+            "/effort max",
+            "/effort high",
+            "/effort medium",
+            "/effort low",
+            "/effort off",
+        ],
     },
     "reasoning": {
         "title": "Reasoning Effort Selection (Alias)",
@@ -904,29 +866,14 @@ COMMAND_HELP_DETAILS: dict[str, dict[str, Any]] = {
     },
 }
 
-# Aliases mapping to canonical help keys
-COMMAND_HELP_ALIASES: dict[str, str] = {
-    "?": "help",
-    "cost": "tokens",
-    "settings": "config",
-    "permissions": "permission",
-    "raw": "thinking",
-    "rm": "delete",
-    "job": "jobs",
-    "subagents": "agents",
-    "subagent": "agents",
-    "edit": "editor",
-    "keyboard": "shortcuts",
-    "keys": "shortcuts",
-}
-
 
 def _render_help_menu(cmd_name: str | None = None) -> None:
     """Display interactive command help table or specific command contextual help."""
     # Contextual help if cmd_name is provided
     if cmd_name:
         key = cmd_name.strip().lstrip("/").lower()
-        canonical_key = COMMAND_HELP_ALIASES.get(key, key)
+        command = resolve_command(key)
+        canonical_key = command.name if command else key
         details = COMMAND_HELP_DETAILS.get(canonical_key)
         if details:
             if console is not None and _RICH and Panel is not None:
@@ -963,7 +910,9 @@ def _render_help_menu(cmd_name: str | None = None) -> None:
             return
         else:
             if console is not None and _RICH:
-                console.print(f"[dim yellow]No specific help found for '{cmd_name}'. Showing full help menu:[/]\n")
+                console.print(
+                    f"[dim yellow]No specific help found for '{cmd_name}'. Showing full help menu:[/]\n"
+                )
             else:
                 print(f"No specific help found for '{cmd_name}'. Showing full help menu:\n")
 
@@ -983,21 +932,29 @@ def _render_help_menu(cmd_name: str | None = None) -> None:
             "Session Management", "/init", "Initialize or update AGENTS.md contributor guidelines"
         )
         table.add_row(
-            "Session Management", "/sessions [query]", "Interactive session browser (resume, delete, fork, search)"
+            "Session Management",
+            "/sessions [query]",
+            "Interactive session browser (resume, delete, fork, search)",
         )
         table.add_row("Session Management", "/resume <id>", "Resume a saved session by ID directly")
         table.add_row(
             "Session Management", "/fork [id]", "Fork current or target session into new branch"
         )
-        table.add_row("Session Management", "/delete, /rm <id>", "Delete a saved session from workspace")
-        table.add_row("Session Management", "/rename [title]", "Rename active or specified session summary")
+        table.add_row(
+            "Session Management", "/delete, /rm <id>", "Delete a saved session from workspace"
+        )
+        table.add_row(
+            "Session Management", "/rename [title]", "Rename active or specified session summary"
+        )
         table.add_row(
             "Session Management", "/export [file]", "Export session history to Markdown or JSON"
         )
 
         table.add_section()
         table.add_row(
-            "Planning & Safety", "/plan [on|off|apply]", "Toggle Plan Mode (strict read-only safety boundary)"
+            "Planning & Safety",
+            "/plan [on|off|apply]",
+            "Toggle Plan Mode (strict read-only safety boundary)",
         )
         table.add_row(
             "Planning & Safety",
@@ -1014,7 +971,9 @@ def _render_help_menu(cmd_name: str | None = None) -> None:
             "Models & Reasoning", "/model [name]", "Interactive model selector or switch directly"
         )
         table.add_row(
-            "Models & Reasoning", "/effort [level]", "Interactive reasoning effort selector (low..max, off)"
+            "Models & Reasoning",
+            "/effort [level]",
+            "Interactive reasoning effort selector (low..max, off)",
         )
         table.add_row(
             "Models & Reasoning",
@@ -1024,7 +983,9 @@ def _render_help_menu(cmd_name: str | None = None) -> None:
         table.add_row(
             "Models & Reasoning", "/skills", "Explore active and discovered workspace skills"
         )
-        table.add_row("Models & Reasoning", "/skill <name>", "Load a skill into the current session")
+        table.add_row(
+            "Models & Reasoning", "/skill <name>", "Load a skill into the current session"
+        )
 
         table.add_section()
         table.add_row(
@@ -1037,10 +998,16 @@ def _render_help_menu(cmd_name: str | None = None) -> None:
             "Core & Diagnostics", "/schedule [subcmd]", "Manage session-scoped reminders and timers"
         )
         table.add_row(
-            "Core & Diagnostics", "/agents, /subagents", "Inspect subagent hierarchy, tree, and reports"
+            "Core & Diagnostics",
+            "/agents, /subagents",
+            "Inspect subagent hierarchy, tree, and reports",
         )
-        table.add_row("Core & Diagnostics", "/teams", "Inspect active agent team members and status")
-        table.add_row("Core & Diagnostics", "/lsp", "Inspect LSP language servers and code diagnostics")
+        table.add_row(
+            "Core & Diagnostics", "/teams", "Inspect active agent team members and status"
+        )
+        table.add_row(
+            "Core & Diagnostics", "/lsp", "Inspect LSP language servers and code diagnostics"
+        )
 
         table.add_section()
         table.add_row(
@@ -1055,7 +1022,9 @@ def _render_help_menu(cmd_name: str | None = None) -> None:
             "Tools & Analytics", "/compact", "Compress history to free up active context tokens"
         )
         table.add_row("Tools & Analytics", "/history", "View turn-by-turn conversation timeline")
-        table.add_row("Tools & Analytics", "/config, /settings", "Inspect resolved workspace & user settings")
+        table.add_row(
+            "Tools & Analytics", "/config, /settings", "Inspect resolved workspace & user settings"
+        )
         table.add_row(
             "Tools & Analytics",
             "/permission, /permissions",
@@ -1064,21 +1033,37 @@ def _render_help_menu(cmd_name: str | None = None) -> None:
         table.add_row("Tools & Analytics", "/goal [add|done] ...", "List or update session goals")
 
         table.add_section()
-        table.add_row("Input & Media", "/image <path> [prompt]", "Attach image file for multimodal vision analysis")
-        table.add_row("Input & Media", "/editor, /edit", "Open external $EDITOR (nano, vim, vi) to compose prompt")
+        table.add_row(
+            "Input & Media",
+            "/image <path> [prompt]",
+            "Attach image file for multimodal vision analysis",
+        )
+        table.add_row(
+            "Input & Media",
+            "/editor, /edit",
+            "Open external $EDITOR (nano, vim, vi) to compose prompt",
+        )
         table.add_row("Input & Media", "/paste", "Enter multiline paste mode until ':::' or Ctrl-D")
 
         table.add_section()
         table.add_row("Utilities & Controls", "/clear", "Clear terminal screen and redraw status")
-        table.add_row("Utilities & Controls", "/help, /? [command]", "Show command help menu or detailed contextual help")
-        table.add_row("Utilities & Controls", "/exit, /quit", "Exit CoderAI session with summary card")
+        table.add_row(
+            "Utilities & Controls",
+            "/help, /? [command]",
+            "Show command help menu or detailed contextual help",
+        )
+        table.add_row(
+            "Utilities & Controls", "/exit, /quit", "Exit CoderAI session with summary card"
+        )
 
         console.print()
         console.print(table)
         console.print(
             "[dim]Shortcuts: [bold cyan]Tab[/] complete • [bold cyan]Ctrl-R[/] history search • [bold cyan]Ctrl-C[/] interrupt • [bold cyan]Ctrl-D[/] exit • [bold cyan]@file.py[:10-30][/] file context[/]"
         )
-        console.print("[dim]Type [bold cyan]/help <command>[/] for detailed syntax and examples (e.g. [bold cyan]/help goal[/], [bold cyan]/help plan[/]).[/]\n")
+        console.print(
+            "[dim]Type [bold cyan]/help <command>[/] for detailed syntax and examples (e.g. [bold cyan]/help goal[/], [bold cyan]/help plan[/]).[/]\n"
+        )
     else:
         print("\n--- CoderAI Slash Commands ---")
         print("Session Management:")
@@ -1114,7 +1099,9 @@ def _render_help_menu(cmd_name: str | None = None) -> None:
         print("  /compact               Compress conversation context")
         print("  /history               View session timeline")
         print("  /config, /settings     View active configuration")
-        print("  /permission [preset]   Show or set permission preset (read-only, workspace-write, danger-full-access)")
+        print(
+            "  /permission [preset]   Show or set permission preset (read-only, workspace-write, danger-full-access)"
+        )
         print("  /goal [add|done] ...   List or update session goals")
         print("\nInput & Media:")
         print("  /image <path> [prompt] Attach image file for multimodal vision analysis")
@@ -1124,8 +1111,12 @@ def _render_help_menu(cmd_name: str | None = None) -> None:
         print("  /clear                 Clear terminal screen")
         print("  /help, /? [cmd]        Show command help menu or detailed command help")
         print("  /exit, /quit           Quit CoderAI\n")
-        print("Shortcuts: Tab complete | Ctrl-R history search | Ctrl-C interrupt | Ctrl-D exit | @file context")
-        print("Type /help <command> for detailed syntax and examples (e.g. /help goal, /help plan).\n")
+        print(
+            "Shortcuts: Tab complete | Ctrl-R history search | Ctrl-C interrupt | Ctrl-D exit | @file context"
+        )
+        print(
+            "Type /help <command> for detailed syntax and examples (e.g. /help goal, /help plan).\n"
+        )
 
 
 def _show_diff(mgr: SessionManager, session_id: str | None) -> None:
@@ -1365,9 +1356,7 @@ async def _run_interactive(
                 continue
 
             if raw.startswith("/"):
-                tokens = raw.split()
-                cmd = tokens[0].lower()
-                cmd_arg = " ".join(tokens[1:]).strip() if len(tokens) > 1 else ""
+                cmd, cmd_arg = parse_slash_command(raw)
 
                 if cmd in ("/exit", "/quit"):
                     break
@@ -1413,15 +1402,30 @@ async def _run_interactive(
                                 jt.add_column("Kind", style="magenta", width=10)
                                 jt.add_column("Command / Label", style="white")
                                 for j in jobs:
-                                    status_color = "green" if j.status == "completed" else ("yellow" if j.status == "running" else "red")
-                                    jt.add_row(f"[{status_color}]{j.status.upper()}[/]", j.id, j.kind, j.label[:60])
+                                    status_color = (
+                                        "green"
+                                        if j.status == "completed"
+                                        else ("yellow" if j.status == "running" else "red")
+                                    )
+                                    jt.add_row(
+                                        f"[{status_color}]{j.status.upper()}[/]",
+                                        j.id,
+                                        j.kind,
+                                        j.label[:60],
+                                    )
                                 console.print(jt)
                             else:
                                 for j in jobs:
-                                    print(f"[{j.status.upper():9}] {j.id:12} {j.kind:8} {j.label[:60]}")
+                                    print(
+                                        f"[{j.status.upper():9}] {j.id:12} {j.kind:8} {j.label[:60]}"
+                                    )
                     elif action == "kill" and job_target:
                         res = job_store.cancel(job_target)
-                        print(f"Cancelled job {job_target}" if res else f"Job '{job_target}' not found or already stopped.")
+                        print(
+                            f"Cancelled job {job_target}"
+                            if res
+                            else f"Job '{job_target}' not found or already stopped."
+                        )
                     elif action == "logs" and job_target:
                         j = getattr(job_store, "_jobs", {}).get(job_target)
                         if j and j.output_path and os.path.exists(j.output_path):
@@ -1447,19 +1451,33 @@ async def _run_interactive(
                             print("No scheduled timers or reminders in workspace.")
                         else:
                             if console is not None and _RICH and Table is not None:
-                                st = Table(title="Scheduled Timers & Reminders", border_style="cyan")
+                                st = Table(
+                                    title="Scheduled Timers & Reminders", border_style="cyan"
+                                )
                                 st.add_column("ID", style="bold cyan", width=6)
                                 st.add_column("State", width=12)
                                 st.add_column("Kind", style="magenta", width=8)
                                 st.add_column("Scheduled At", style="dim", width=22)
                                 st.add_column("Prompt / Instruction", style="white")
                                 for r in records:
-                                    state_color = "green" if r.state == "dispatched" else ("yellow" if r.state == "scheduled" else "dim")
-                                    st.add_row(r.id, f"[{state_color}]{r.state}[/]", r.kind, r.scheduled_at[:19], r.prompt[:50])
+                                    state_color = (
+                                        "green"
+                                        if r.state == "dispatched"
+                                        else ("yellow" if r.state == "scheduled" else "dim")
+                                    )
+                                    st.add_row(
+                                        r.id,
+                                        f"[{state_color}]{r.state}[/]",
+                                        r.kind,
+                                        r.scheduled_at[:19],
+                                        r.prompt[:50],
+                                    )
                                 console.print(st)
                             else:
                                 for r in records:
-                                    print(f"[{r.state:10}] ID:{r.id:4} Kind:{r.kind:6} At:{r.scheduled_at[:19]} -> {r.prompt[:50]}")
+                                    print(
+                                        f"[{r.state:10}] ID:{r.id:4} Kind:{r.kind:6} At:{r.scheduled_at[:19]} -> {r.prompt[:50]}"
+                                    )
                     elif action == "after" and len(tokens_sub) >= 3 and tokens_sub[1].isdigit():
                         sec = int(tokens_sub[1])
                         p = tokens_sub[2]
@@ -1473,9 +1491,13 @@ async def _run_interactive(
                     elif action in ("cancel", "rm", "delete") and len(tokens_sub) >= 2:
                         cid = tokens_sub[1]
                         res = sched_mgr.delete(cid)
-                        print(f"✓ Cancelled schedule #{cid}" if res else f"Schedule #{cid} not found.")
+                        print(
+                            f"✓ Cancelled schedule #{cid}" if res else f"Schedule #{cid} not found."
+                        )
                     else:
-                        print("Usage: /schedule [list|after <sec> <prompt>|every <sec> <prompt>|cancel <id>]")
+                        print(
+                            "Usage: /schedule [list|after <sec> <prompt>|every <sec> <prompt>|cancel <id>]"
+                        )
                     continue
 
                 if cmd in ("/agents", "/subagents"):
@@ -1499,12 +1521,25 @@ async def _run_interactive(
                                 at.add_column("Inbox", width=6)
                                 at.add_column("Task Description", style="white")
                                 for a in agents:
-                                    status_color = "green" if a.status == "completed" else ("yellow" if a.status == "running" else "red")
-                                    at.add_row(a.id[:12], f"[{status_color}]{a.status}[/]", a.mode, str(a.depth), str(len(a.inbox)), a.description[:50])
+                                    status_color = (
+                                        "green"
+                                        if a.status == "completed"
+                                        else ("yellow" if a.status == "running" else "red")
+                                    )
+                                    at.add_row(
+                                        a.id[:12],
+                                        f"[{status_color}]{a.status}[/]",
+                                        a.mode,
+                                        str(a.depth),
+                                        str(len(a.inbox)),
+                                        a.description[:50],
+                                    )
                                 console.print(at)
                             else:
                                 for a in agents:
-                                    print(f"[{a.status.upper():11}] ID:{a.id:12} Mode:{a.mode:8} Depth:{a.depth} Inbox:{len(a.inbox)} -> {a.description[:50]}")
+                                    print(
+                                        f"[{a.status.upper():11}] ID:{a.id:12} Mode:{a.mode:8} Depth:{a.depth} Inbox:{len(a.inbox)} -> {a.description[:50]}"
+                                    )
                     elif action == "tree":
                         agents = agent_reg.list(session_id)
                         roots = [
@@ -1531,7 +1566,11 @@ async def _run_interactive(
                         aid = tokens_sub[1]
                         msg = tokens_sub[2]
                         res = agent_reg.send(aid, msg)
-                        print(f"✓ Message dispatched to subagent '{aid}' inbox." if res else f"Unknown subagent ID '{aid}'.")
+                        print(
+                            f"✓ Message dispatched to subagent '{aid}' inbox."
+                            if res
+                            else f"Unknown subagent ID '{aid}'."
+                        )
                     else:
                         print("Usage: /agents [list|tree|report <id>|send <id> <msg>]")
                     continue
@@ -1555,12 +1594,24 @@ async def _run_interactive(
                             tt.add_column("Mode", width=12)
                             tt.add_column("Status", width=12)
                             for tm in teammates:
-                                status_color = "green" if tm.status in ("idle", "ready") else ("yellow" if tm.status == "working" else "dim")
-                                tt.add_row(tm.teammate_id, tm.name, tm.role, tm.mode, f"[{status_color}]{tm.status}[/]")
+                                status_color = (
+                                    "green"
+                                    if tm.status in ("idle", "ready")
+                                    else ("yellow" if tm.status == "working" else "dim")
+                                )
+                                tt.add_row(
+                                    tm.teammate_id,
+                                    tm.name,
+                                    tm.role,
+                                    tm.mode,
+                                    f"[{status_color}]{tm.status}[/]",
+                                )
                             console.print(tt)
                         else:
                             for tm in teammates:
-                                print(f"[{tm.status.upper():8}] ID:{tm.teammate_id:12} {tm.name:16} ({tm.role}) [{tm.mode}]")
+                                print(
+                                    f"[{tm.status.upper():8}] ID:{tm.teammate_id:12} {tm.name:16} ({tm.role}) [{tm.mode}]"
+                                )
                     continue
 
                 if cmd == "/lsp":
@@ -1596,14 +1647,16 @@ async def _run_interactive(
                         lt.add_column("Status", width=14)
                         lt.add_column("Binary Path / Fallback", style="dim")
                         for ext, bin_name, available, path_info in detected_servers:
-                            status_badge = "[green]AVAILABLE[/]" if available else "[yellow]STATIC AST[/]"
+                            status_badge = (
+                                "[green]AVAILABLE[/]" if available else "[yellow]STATIC AST[/]"
+                            )
                             lt.add_row(ext, bin_name, status_badge, path_info)
                         console.print(lt)
                     else:
                         print(f"\n--- LSP Language Servers ({active_inst_count} active) ---")
                         for ext, bin_name, available, path_info in detected_servers:
-                            st = "AVAILABLE" if available else "STATIC AST"
-                            print(f"  {ext:10} {bin_name:26} [{st:10}] {path_info}")
+                            status_text = "AVAILABLE" if available else "STATIC AST"
+                            print(f"  {ext:10} {bin_name:26} [{status_text:10}] {path_info}")
                         print()
                     continue
 
@@ -1618,7 +1671,9 @@ async def _run_interactive(
                         target_sid = parts[0]
                         new_title = parts[1]
                     if not target_sid:
-                        print("No active session to rename. Usage: /rename <session_id> <new_title>")
+                        print(
+                            "No active session to rename. Usage: /rename <session_id> <new_title>"
+                        )
                         continue
                     if not new_title:
                         print("Usage: /rename <new_title>")
@@ -1640,15 +1695,22 @@ async def _run_interactive(
                         print("Usage: /image <file_path> [prompt]")
                         continue
                     img_path = tokens_img[0]
-                    img_prompt = tokens_img[1] if len(tokens_img) > 1 else f"Inspect and analyze image: {img_path}"
+                    img_prompt = (
+                        tokens_img[1]
+                        if len(tokens_img) > 1
+                        else f"Inspect and analyze image: {img_path}"
+                    )
                     content_param, err = parse_and_attach_image(img_path, mgr.project_root)
                     if err:
                         print(f"Image error: {err}")
                         continue
+                    if content_param is None:
+                        print("Image error: attachment metadata was not produced")
+                        continue
                     if console is not None and _RICH:
                         console.print(
                             f"[bold green]✓ Attached image:[/] [cyan]{content_param['name']}[/] "
-                            f"({content_param['width']}x{content_param['height']} • {content_param['bytes']/1024:.1f} KB)"
+                            f"({content_param['width']}x{content_param['height']} • {content_param['bytes'] / 1024:.1f} KB)"
                         )
                     else:
                         print(
@@ -1664,13 +1726,21 @@ async def _run_interactive(
                             s_id = await mgr.create_session(img_prompt, plan_mode=active_plan_mode)
                             msgs = mgr.list_session_messages(s_id)
                             if msgs:
-                                user_msg = next((m for m in reversed(msgs) if m.role == "user"), None)
+                                user_msg = next(
+                                    (m for m in reversed(msgs) if m.role == "user"), None
+                                )
                                 if user_msg:
-                                    user_msg.meta = {**(user_msg.meta or {}), "contentParams": [content_param]}
+                                    user_msg.meta = {
+                                        **(user_msg.meta or {}),
+                                        "contentParams": [content_param],
+                                    }
                         else:
                             s_id = session_id
                             user_msg = mgr._build_message(
-                                session_id, "user", img_prompt, meta={"contentParams": [content_param]}
+                                session_id,
+                                "user",
+                                img_prompt,
+                                meta={"contentParams": [content_param]},
                             )
                             mgr._append_message(user_msg)
                             await mgr.reply_session(session_id, plan_mode=active_plan_mode)
@@ -1703,7 +1773,9 @@ async def _run_interactive(
                         print("Editor closed with empty content; prompt cancelled.")
                         continue
                     if console is not None and _RICH:
-                        console.print(f"[bold cyan]Prompt submitted from editor ({len(composed)} chars)[/]")
+                        console.print(
+                            f"[bold cyan]Prompt submitted from editor ({len(composed)} chars)[/]"
+                        )
                     else:
                         print(f"Prompt submitted from editor ({len(composed)} chars)")
                     raw = composed
@@ -1734,7 +1806,10 @@ async def _run_interactive(
                             parse_sandbox_mode,
                             preset_permissions,
                         )
-                        from coderai.core.settings import read_project_settings, write_project_settings
+                        from coderai.core.settings import (
+                            read_project_settings,
+                            write_project_settings,
+                        )
 
                         arg = cmd_arg.strip().lower()
                         if not arg:
@@ -1766,9 +1841,10 @@ async def _run_interactive(
                             }
                         )
                         settings["permissions"] = permissions
-                        settings["permissionPreset"] = parsed
                         write_project_settings(settings, mgr.project_root)
-                        print(f"Permission preset set to {parsed}. New sessions will use this preset.")
+                        print(
+                            f"Permission preset set to {parsed}. New sessions will use this preset."
+                        )
                         continue
 
                     if cmd == "/goal":
@@ -1783,14 +1859,16 @@ async def _run_interactive(
                             print(store.format(sid))
                         elif action == "add" and rest:
                             goal = store.add(sid, rest)
-                            print(f"Added goal {goal.id}: {goal.title}")
+                            print(f"Added goal {goal.id}: {goal.objective}")
                         elif action in ("done", "cancel", "start") and rest:
                             updated = store.update(
                                 sid,
                                 rest,
-                                status={"done": "done", "cancel": "cancelled", "start": "in_progress"}[
-                                    action
-                                ],
+                                status={
+                                    "done": "done",
+                                    "cancel": "cancelled",
+                                    "start": "in_progress",
+                                }[action],
                             )
                             print(f"Updated {updated.id}" if updated else f"Unknown goal '{rest}'")
                         else:
@@ -1831,7 +1909,9 @@ async def _run_interactive(
                                         f"[bold red]Failed to reconnect MCP server '{server_name}'{err_msg}[/]"
                                     )
                                 else:
-                                    print(f"Failed to reconnect MCP server '{server_name}'{err_msg}")
+                                    print(
+                                        f"Failed to reconnect MCP server '{server_name}'{err_msg}"
+                                    )
                             continue
                         elif cmd_arg.startswith("prompts"):
                             render_mcp_prompts(console, mgr)
@@ -2102,7 +2182,9 @@ async def _run_interactive(
                                     if session_id == del_target:
                                         session_id = None
                                     if console is not None and _RICH:
-                                        console.print(f"[bold green]✓ Deleted session:[/] {del_target}")
+                                        console.print(
+                                            f"[bold green]✓ Deleted session:[/] {del_target}"
+                                        )
                                     else:
                                         print(f"Deleted session: {del_target}")
                             elif chosen_action.startswith("fork:"):
@@ -2189,7 +2271,9 @@ async def _run_interactive(
                                 s_id = await mgr.create_session("/init", plan_mode=active_plan_mode)
                             else:
                                 s_id = session_id
-                                await mgr.reply_session(session_id, "/init", plan_mode=active_plan_mode)
+                                await mgr.reply_session(
+                                    session_id, "/init", plan_mode=active_plan_mode
+                                )
                             await _drain_pending_interactions(mgr, s_id, yes)
                             return s_id
 
@@ -2397,11 +2481,7 @@ def main(argv: list[str] | None = None) -> int:
     prompt_value = (
         args.prompt_flag
         if has_prompt_flag
-        else (
-            exec_str
-            if exec_str
-            else (" ".join(args.prompt) if has_positional else (args.message or None))
-        )
+        else (exec_str if exec_str else (" ".join(args.prompt) if has_positional else None))
     )
 
     if has_positional and has_prompt_flag:
@@ -2444,31 +2524,37 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    # Determine preset: explicit arg takes precedence; headless/prompt runs default to benchmark
+    # Explicit presets take precedence; new prompt runs default to core.
     preset_mode = args.preset
     if prompt_value and not (args.resume or args.fork or args.last) and not preset_mode:
-        preset_mode = "benchmark"
-
-    mgr = _build_manager(project_root, args.model, preset=preset_mode)
+        preset_mode = "core"
 
     async def _main() -> int:
+        if has_exec and prompt_value:
+            from coderai.cli.exec_runner import run_exec_session
+
+            resume_id = args.resume if isinstance(args.resume, str) else None
+            return await run_exec_session(
+                prompt_value,
+                project_root=project_root,
+                model=args.model,
+                resume_session_id=resume_id,
+                plan_mode=args.plan,
+                auto_approve=args.yes,
+                verbose=args.verbose,
+                preset=preset_mode or "core",
+            )
+
+        mgr = build_session_manager(
+            project_root,
+            model=args.model,
+            preset=preset_mode,
+            on_assistant_message=_on_assistant_message,
+            on_stream_chunk=_STREAM_STATE.on_chunk,
+            on_thinking_chunk=_STREAM_STATE.on_thinking_chunk,
+        )
         await mgr.init_mcp_servers()
         try:
-            if has_exec and prompt_value:
-                from coderai.cli.exec_runner import run_exec_session
-
-                resume_id = args.resume if isinstance(args.resume, str) else None
-                return await run_exec_session(
-                    prompt_value,
-                    project_root=project_root,
-                    model=args.model,
-                    resume_session_id=resume_id,
-                    plan_mode=args.plan,
-                    auto_approve=args.yes,
-                    verbose=args.verbose,
-                    preset=preset_mode or "benchmark",
-                )
-
             if prompt_value and not (args.resume or args.fork or args.last):
                 return await _run_once(mgr, prompt_value, args.yes, plan_mode=args.plan)
             return await _run_interactive(
@@ -2481,10 +2567,7 @@ def main(argv: list[str] | None = None) -> int:
                 initial_prompt=prompt_value,
             )
         finally:
-            try:
-                mgr.dispose()
-            except Exception:
-                pass
+            await close_session_manager(mgr)
 
     try:
         return asyncio.run(_main())

@@ -1,15 +1,10 @@
 """Unit tests verifying the 13 CLI review findings, fixes, parity, and enhancements."""
 
-import json
-import os
 import pathlib
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from coderai.cli.app import (
-    COMMAND_HELP_ALIASES,
-    COMMAND_HELP_DETAILS,
     _render_help_menu,
 )
 from coderai.cli.completer import (
@@ -17,19 +12,15 @@ from coderai.cli.completer import (
     CoderAICompleter,
 )
 from coderai.cli.doctor import (
-    DiagnosticItem,
     DoctorReport,
-    mask_secret,
     render_doctor,
     run_doctor_diagnostics,
 )
 from coderai.cli.image_attachment import (
     detect_image_dimensions,
     parse_and_attach_image,
-    resolve_image_path,
 )
 from coderai.cli.input_engine import (
-    count_code_fences,
     count_triple_quotes,
     is_multiline_incomplete,
     normalize_multiline_input,
@@ -38,7 +29,7 @@ from coderai.cli.input_engine import (
 )
 from coderai.cli.interactive_menu import select_session_interactive
 from coderai.cli.welcome import render_welcome_screen
-from coderai.core.session import SessionEntry, SessionManager, SessionMessage
+from coderai.core.session import SessionEntry, SessionManager
 
 
 def test_help_menu_plain_text_and_rich_parity(capsys):
@@ -67,7 +58,19 @@ def test_help_menu_plain_text_and_rich_parity(capsys):
 
 def test_contextual_help_commands(capsys):
     """Point 4 & 5: Ensure contextual help /help <cmd> works with detailed syntax and examples."""
-    for cmd_key in ["plan", "goal", "mcp", "permission", "doctor", "jobs", "schedule", "agents", "image", "rename", "shortcuts"]:
+    for cmd_key in [
+        "plan",
+        "goal",
+        "mcp",
+        "permission",
+        "doctor",
+        "jobs",
+        "schedule",
+        "agents",
+        "image",
+        "rename",
+        "shortcuts",
+    ]:
         # Test rich
         _render_help_menu(cmd_key)
         # Test plain text
@@ -89,13 +92,51 @@ def test_completer_all_commands_and_aliases():
     """Point 2: Ensure completer has all slash commands and working aliases."""
     cmd_dict = dict(AVAILABLE_SLASH_COMMANDS)
     expected_cmds = [
-        "/help", "/?", "/doctor", "/plan", "/undo", "/diff", "/model", "/sessions",
-        "/resume", "/fork", "/delete", "/rm", "/rename", "/new", "/init", "/skills",
-        "/skill", "/jobs", "/job", "/schedule", "/agents", "/subagents", "/teams",
-        "/lsp", "/mcp", "/compact", "/tokens", "/cost", "/config", "/settings",
-        "/permission", "/permissions", "/goal", "/image", "/editor", "/edit",
-        "/paste", "/history", "/export", "/thinking", "/raw", "/clear", "/continue",
-        "/exit", "/quit",
+        "/help",
+        "/?",
+        "/doctor",
+        "/plan",
+        "/undo",
+        "/diff",
+        "/model",
+        "/sessions",
+        "/resume",
+        "/fork",
+        "/delete",
+        "/rm",
+        "/rename",
+        "/new",
+        "/init",
+        "/skills",
+        "/skill",
+        "/jobs",
+        "/job",
+        "/schedule",
+        "/agents",
+        "/subagents",
+        "/teams",
+        "/lsp",
+        "/mcp",
+        "/compact",
+        "/tokens",
+        "/cost",
+        "/config",
+        "/settings",
+        "/permission",
+        "/permissions",
+        "/goal",
+        "/image",
+        "/editor",
+        "/edit",
+        "/paste",
+        "/history",
+        "/export",
+        "/thinking",
+        "/raw",
+        "/clear",
+        "/continue",
+        "/exit",
+        "/quit",
     ]
     for c in expected_cmds:
         assert c in cmd_dict, f"Command {c} missing from AVAILABLE_SLASH_COMMANDS"
@@ -179,8 +220,19 @@ def test_multiline_and_editor_input(tmp_path: pathlib.Path):
     assert pasted == "line 1\nline 2"
 
     # External editor mock
-    with patch("subprocess.run", return_value=MagicMock(returncode=0)), \
-         patch("builtins.open", MagicMock(return_value=MagicMock(__enter__=MagicMock(return_value=MagicMock(read=lambda: "edited prompt content"))))):
+    with (
+        patch("subprocess.run", return_value=MagicMock(returncode=0)),
+        patch(
+            "builtins.open",
+            MagicMock(
+                return_value=MagicMock(
+                    __enter__=MagicMock(
+                        return_value=MagicMock(read=lambda: "edited prompt content")
+                    )
+                )
+            ),
+        ),
+    ):
         content = open_external_editor("initial")
         assert content == "edited prompt content"
 
@@ -326,4 +378,3 @@ def test_lsp_and_teams_execution(tmp_path: pathlib.Path, capsys):
     assert tm.name == "architect"
     teammates = team_mgr.list_teammates()
     assert len(teammates) == 1
-

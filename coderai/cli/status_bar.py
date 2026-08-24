@@ -4,17 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from rich.text import Text
+
 from coderai.cli.statusline import StatuslineEngine, compute_token_gauge
 
 __all__ = ["compute_token_gauge", "format_status_bar", "render_status_bar"]
-
-try:
-    from rich.text import Text
-
-    _RICH = True
-except ImportError:  # pragma: no cover
-    Text = None  # type: ignore[assignment,misc]
-    _RICH = False
 
 _ENGINE = StatuslineEngine()
 
@@ -26,7 +20,7 @@ def format_status_bar(
     branch: str,
     turns: int = 0,
     mcp_count: int = 0,
-) -> Text | str:
+) -> Text:
     """Format a dynamic status bar: [Model: <name>] [Tokens: <active> (<% of max>)] [Plan: ON/OFF] [Git: <branch>]."""
     return _ENGINE.format_default_status_bar(
         model, active_tokens, plan_mode, branch, turns=turns, mcp_count=mcp_count

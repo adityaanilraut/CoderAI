@@ -1,4 +1,4 @@
-"""Debug logging — port of deepcode core/src/common/debug-logger.ts."""
+""""""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Snippet-scoped file state — port of deepcode core/src/common/state.ts.
+"""Snippet-scoped file state
 
 Core invariant: `read` returns a `snippet_id`; `edit` requires it and is scoped
 to that snippet's line range. Edits are rejected when the file changed since the

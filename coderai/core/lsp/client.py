@@ -22,8 +22,6 @@ from coderai.core.lsp.protocol import (
     LspHoverResult,
     LspLocation,
     LspSymbol,
-    file_to_uri,
-    uri_to_file,
 )
 
 logger = logging.getLogger(__name__)
@@ -373,7 +371,9 @@ class LspClient:
             return symbols
         try:
             rg_bin = shutil.which("rg") or "rg"
-            pattern = rf"\b(def|class|function)\s+([a-zA-Z0-9_]*{re.escape(query_str)}[a-zA-Z0-9_]*)\b"
+            pattern = (
+                rf"\b(def|class|function)\s+([a-zA-Z0-9_]*{re.escape(query_str)}[a-zA-Z0-9_]*)\b"
+            )
             cmd = [rg_bin, "-n", pattern, root]
             out = subprocess.run(cmd, capture_output=True, text=True, timeout=5.0)
             if out.returncode == 0:

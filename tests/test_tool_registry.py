@@ -5,6 +5,11 @@ import json
 import pytest
 from coderai.core.tools.executor import ToolExecutor
 from coderai.core.tools.registry import ToolRegistry
+from coderai.core.permissions import (
+    describe_tool_permission_request,
+    evaluate_permission_scopes,
+    permission_coverage_gaps,
+)
 from coderai.core.tools.types import (
     ToolDefinition,
     ToolExecutionHooks,
@@ -14,25 +19,22 @@ from coderai.core.tools.types import (
 
 
 @pytest.mark.asyncio
-async def test_tool_registry_builtins_and_aliases():
+async def test_tool_registry_builtins_use_canonical_names_only():
     registry = ToolRegistry()
     assert registry.has_tool("bash")
-    assert registry.has_tool("Bash")
     assert registry.has_tool("read")
-    assert registry.has_tool("Read")
     assert registry.has_tool("write")
-    assert registry.has_tool("Write")
     assert registry.has_tool("edit")
-    assert registry.has_tool("Edit")
     assert registry.has_tool("WebSearch")
-    assert registry.has_tool("web_search")
     assert registry.has_tool("WebFetch")
-    assert registry.has_tool("web_fetch")
     assert registry.has_tool("Task")
     assert registry.has_tool("subagent")
     assert registry.has_tool("job_list")
     assert registry.has_tool("job_output")
     assert registry.has_tool("job_kill")
+    assert not registry.has_tool("Bash")
+    assert not registry.has_tool("Read")
+    assert not registry.has_tool("web_search")
 
     read_def = registry.get("read")
     assert read_def is not None
@@ -254,3 +256,59 @@ def test_tool_registry_openai_schema_sanitization():
     bash_schema = bash_def.to_openai_schema()
     assert "uniqueItems" not in bash_schema["function"]["parameters"]["properties"]["sideEffects"]
 
+
+def test_tool_registry_canonical_presets():
+    registry = ToolRegistry()
+    core_names = {
+        schema["function"]["name"]
+        for schema in registry.to_openai_schemas(options={"preset": "core"})
+    }
+    shell_edit_names = {
+        schema["function"]["name"]
+        for schema in registry.to_openai_schemas(options={"preset": "shell_edit"})
+    }
+    assert core_names == {"bash", "str_replace_editor", "edit", "read", "write", "glob", "grep"}
+    assert shell_edit_names == {"bash", "str_replace_editor"}
+    assert len(registry.to_openai_schemas(options={"preset": "full"})) > len(core_names)
+
+
+def test_registered_tools_have_permission_coverage():
+    assert permission_coverage_gaps() == set()
+
+
+def test_unknown_registered_tool_fails_closed_but_safe_tool_does_not(tmp_path):
+    from coderai.core.tools.registry import get_tool_registry
+
+    registry = get_tool_registry()
+    unregister = registry.register(
+        ToolDefinition(name="unclassified_dynamic_tool", aliases=["dynamic_alias"])
+    )
+    try:
+        request = describe_tool_permission_request(
+            session_id="session",
+            project_root=str(tmp_path),
+            tool_call={
+                "id": "dynamic",
+                "function": {"name": "unclassified_dynamic_tool", "arguments": "{}"},
+            },
+        )
+        assert request["scopes"] == ["unknown"]
+        assert evaluate_permission_scopes(request["scopes"]) == "ask"
+
+        aliased_request = describe_tool_permission_request(
+            session_id="session",
+            project_root=str(tmp_path),
+            tool_call={"id": "alias", "function": {"name": "dynamic_alias", "arguments": "{}"}},
+        )
+        assert aliased_request["name"] == "unclassified_dynamic_tool"
+        assert aliased_request["scopes"] == ["unknown"]
+
+        safe_request = describe_tool_permission_request(
+            session_id="session",
+            project_root=str(tmp_path),
+            tool_call={"id": "safe", "function": {"name": "job_list", "arguments": "{}"}},
+        )
+        assert safe_request["scopes"] == []
+        assert evaluate_permission_scopes(safe_request["scopes"]) == "allow"
+    finally:
+        unregister()

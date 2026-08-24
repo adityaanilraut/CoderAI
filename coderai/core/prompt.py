@@ -1,4 +1,4 @@
-"""Prompts and tool definitions — port of deepcode core/src/prompt.ts.
+"""System prompts, tool schemas, and runtime context for the agent.
 
 Cache-aware ordering: the system prompt (tools + runtime context) is a stable
 prefix that changes rarely; the volatile user content (history, snippets, the
@@ -11,12 +11,10 @@ import datetime
 import json
 import pathlib
 import platform
-import re
 import subprocess
 from typing import Any
 
 from coderai.core.prompt_sections import (
-    IDENTITY_ORDER,
     PERSONA_ORDER,
     SANDBOX_POLICY_ORDER,
     SKILLS_CATALOG_ORDER,
@@ -32,26 +30,13 @@ from coderai.core.prompt_sections import (
     TOOL_WRITE_ORDER,
     PromptSection,
     assemble_sections,
+    get_preset_tools,
+    is_restricted_tool_preset,
 )
 from coderai.core.sandbox import sandbox_policy_prompt
+from coderai.core.common.shell_utils import resolve_shell_path
 from coderai.core.skill import (
-    DEFAULT_SKILL_RESOURCE_FILE_LIMIT,
-    SKILL_RESOURCE_EXCLUDED_DIRS,
-    SkillRegistry,
-    _implicit_invocation_allowed,
-    build_skill_documents_prompt,
-    extract_skill_frontmatter,
-    get_bundled_skills_root,
-    get_skill_read_exempt_paths,
-    get_skill_scan_roots,
-    list_skill_resource_files,
     list_skills,
-    load_skill,
-    match_skills_for_prompt,
-    parse_skill_match_response,
-    render_skill_document_block,
-    render_skill_resources,
-    strip_skill_prompt_metadata,
 )
 
 SYSTEM_PROMPT_BASE = """You are a helpful software engineer assistant.
@@ -160,10 +145,6 @@ The summary should include:
 8. Current Work (precisely what was being worked on immediately before this summary)
 9. Optional Next Step
 """
-
-
-def get_extension_root() -> str:
-    return str(pathlib.Path(__file__).resolve().parent.parent)
 
 
 def get_plan_mode_prompt() -> str:
@@ -323,18 +304,11 @@ def format_tool_definitions(
     return order_tools(formatted)
 
 
-PRESET_TOOLS: dict[str, set[str]] = {
-    "benchmark": {"bash", "str_replace_editor", "edit", "read", "write", "glob", "grep"},
-    "coding": {"bash", "str_replace_editor", "edit", "read", "write", "glob", "grep"},
-    "minimal": {"bash", "str_replace_editor", "edit", "read", "write", "glob", "grep"},
-    "dsh_minimal": {"bash", "str_replace_editor"},
-}
-
 TOOL_GUIDANCE_MAP: dict[str, tuple[str, int, str]] = {
     "bash": (
         "tool:bash",
         TOOL_BASH_ORDER,
-        "## bash\nExecute shell commands in a persistent bash session. Provide `command`, a clear `description`, and the permission `sideEffects` array (or `[\"unknown\"]` when effects cannot be classified). Use `run_in_background` for long jobs and track them with job_list / job_output / job_kill. Use standard POSIX shell commands (e.g. `sed -n 10,25p file.py` or `python3` instead of non-portable GNU flags like `cat -A`).",
+        '## bash\nExecute shell commands. Provide `command`, a clear `description`, and the permission `sideEffects` array (or `["unknown"]` when effects cannot be classified). Set `persistent` only when shell state must survive across calls. Use `run_in_background` for long jobs and track them with job_list / job_output / job_kill. Use standard POSIX shell commands (e.g. `sed -n 10,25p file.py` or `python3` instead of non-portable GNU flags like `cat -A`).',
     ),
     "pwsh": (
         "tool:pwsh",
@@ -359,7 +333,7 @@ TOOL_GUIDANCE_MAP: dict[str, tuple[str, int, str]] = {
     "glob": (
         "tool:glob",
         TOOL_READ_ORDER,
-        "## glob\nUse the glob tool — not shell find — to discover files by path pattern. A pattern with no \"/\" matches basenames at any depth, so \"*\" matches every file in the tree rather than its top level. Results are files only, never directories, and include hidden and ignored files: a result that fits comes back in modification-time order, while a larger one is sampled across top-level entries, so it spans the tree instead of one subtree.",
+        '## glob\nUse the glob tool — not shell find — to discover files by path pattern. A pattern with no "/" matches basenames at any depth, so "*" matches every file in the tree rather than its top level. Results are files only, never directories, and include hidden and ignored files: a result that fits comes back in modification-time order, while a larger one is sampled across top-level entries, so it spans the tree instead of one subtree.',
     ),
     "grep": (
         "tool:grep",
@@ -446,10 +420,7 @@ TOOL_GUIDANCE_MAP: dict[str, tuple[str, int, str]] = {
 
 def render_tool_docs(preset: str | None = None, non_interactive: bool = False) -> str:
     """Render tool documentation sections scoped to the active preset."""
-    if preset in PRESET_TOOLS:
-        active_tools = PRESET_TOOLS[preset]
-    else:
-        active_tools = set(TOOL_GUIDANCE_MAP.keys())
+    active_tools = get_preset_tools(preset) or frozenset(TOOL_GUIDANCE_MAP)
 
     sections = []
     for tool_name, (_sec_name, sec_order, doc_text) in TOOL_GUIDANCE_MAP.items():
@@ -474,7 +445,6 @@ def render_skill_catalog(
 ) -> str | None:
     """Render a compact catalog of available skills for the system prompt.
 
-    Port of DeepSeek Harness skill catalog projection:
     Instead of inlining entire SKILL.md documents into the context window,
     this lists each skill by name and brief description, instructing the model
     to load the full skill instructions on-demand via the `skill` tool.
@@ -533,12 +503,9 @@ def get_system_prompt(options: dict[str, Any] | None = None) -> str:
             )
         )
 
-    # Only include skill catalog if not in restricted benchmark/minimal preset or explicitly requested
     workspace_root = str(options.get("workspaceRoot") or "")
-    allow_skills = options.get("enabledSkills") is not False and preset not in (
-        "minimal",
-        "benchmark",
-        "dsh_minimal",
+    allow_skills = options.get("enabledSkills") is not False and not is_restricted_tool_preset(
+        preset
     )
     if workspace_root and allow_skills:
         skill_catalog = render_skill_catalog(
@@ -605,10 +572,8 @@ def load_agent_instructions(project_root: str) -> str | None:
     home = pathlib.Path.home()
     candidates = [
         root / ".coderai" / "AGENTS.md",
-        root / ".coderAI" / "AGENTS.md",
         root / "AGENTS.md",
         root / ".coderai" / "CODERAI.md",
-        root / ".coderAI" / "CODERAI.md",
         root / "CODERAI.md",
         root / "CLAUDE.md",
         home / ".coderai" / "AGENTS.md",
@@ -630,8 +595,6 @@ def get_effective_project_agents_md_file(project_root: str) -> str | None:
     root = pathlib.Path(project_root)
     candidate_paths = [
         (root / ".coderai" / "AGENTS.md", "./.coderai/AGENTS.md"),
-        (root / ".coderAI" / "AGENTS.md", "./.coderAI/AGENTS.md"),
-        (root / ".deepcode" / "AGENTS.md", "./.deepcode/AGENTS.md"),
         (root / "AGENTS.md", "./AGENTS.md"),
         (root / ".coderai" / "CODERAI.md", "./.coderai/CODERAI.md"),
         (root / "CODERAI.md", "./CODERAI.md"),
@@ -721,23 +684,6 @@ def _version(command: str, args: list[str]) -> str | None:
 
 
 __all__ = [
-    "DEFAULT_SKILL_RESOURCE_FILE_LIMIT",
-    "SKILL_RESOURCE_EXCLUDED_DIRS",
-    "SkillRegistry",
-    "_implicit_invocation_allowed",
-    "build_skill_documents_prompt",
-    "extract_skill_frontmatter",
-    "get_bundled_skills_root",
-    "get_skill_read_exempt_paths",
-    "get_skill_scan_roots",
-    "list_skill_resource_files",
-    "list_skills",
-    "load_skill",
-    "match_skills_for_prompt",
-    "parse_skill_match_response",
-    "render_skill_document_block",
-    "render_skill_resources",
-    "strip_skill_prompt_metadata",
     "render_skill_catalog",
     "get_tools",
     "format_tool_definitions",

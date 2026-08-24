@@ -1,14 +1,9 @@
-"""Autonomous Goal Engine — Domain types, store, and model-facing tool.
-
-Follows DeepSeek Harness dsh-goal specification with round budgeting, revision tracking,
-and multi-phase lifecycle management.
-"""
+"""Autonomous goal engine — domain types, store, and model-facing tool."""
 
 from __future__ import annotations
 
 import json
 import logging
-import os
 import pathlib
 import threading
 import time
@@ -16,7 +11,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from coderai.core.tools.types import ToolExecutionContext, ToolResult, as_str
+from coderai.core.tools.types import ToolResult, as_str
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +55,9 @@ class Goal:
         return cls(
             id=str(data.get("id") or uuid.uuid4().hex[:8]),
             objective=str(data.get("objective") or data.get("title") or ""),
-            status=str(data.get("status") if data.get("status") in VALID_GOAL_STATUS else "running"),
+            status=str(
+                data.get("status") if data.get("status") in VALID_GOAL_STATUS else "running"
+            ),
             round=int(data.get("round", 1)),
             max_rounds=int(data.get("max_rounds", DEFAULT_MAX_GOAL_ROUNDS)),
             revision=int(data.get("revision", 1)),
@@ -68,6 +65,9 @@ class Goal:
             created_at=float(data.get("created_at", time.time())),
             updated_at=float(data.get("updated_at", time.time())),
         )
+
+
+_GoalList = list[Goal]
 
 
 class GoalStore:
@@ -98,7 +98,7 @@ class GoalStore:
             self._cache[session_id] = goals
             return list(goals)
 
-    def _save(self, session_id: str, goals: list[Goal]) -> None:
+    def _save(self, session_id: str, goals: _GoalList) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
         path = self._path(session_id)
         data = [g.to_dict() for g in goals]
@@ -265,7 +265,7 @@ def handle_goal_tool(args: dict[str, Any], context: Any) -> ToolResult:
         return ToolResult(
             ok=True,
             name="goal",
-            output=f"Goal [{updated.id}] PAUSED.",
+            output=f"Goal [{active.id}] PAUSED.",
             metadata=updated.to_dict() if updated else {},
         )
 
@@ -275,7 +275,9 @@ def handle_goal_tool(args: dict[str, Any], context: Any) -> ToolResult:
         target_id = goal_id or (active.id if active else None)
         if not target_id:
             return ToolResult(ok=False, name="goal", error="No goal target specified to update.")
-        changes = {k: v for k, v in args.items() if k in ("objective", "status", "max_rounds", "notes")}
+        changes = {
+            k: v for k, v in args.items() if k in ("objective", "status", "max_rounds", "notes")
+        }
         updated = store.update(session_id, target_id, **changes)
         if not updated:
             return ToolResult(ok=False, name="goal", error=f"Goal '{target_id}' not found.")
