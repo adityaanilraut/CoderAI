@@ -1,10 +1,12 @@
-# CoderAI Architecture
+# 🏗️ CoderAI Architecture & System Design
 
-CoderAI is an autonomous terminal AI pair programmer architected for high reliability, deterministic tool execution, and defense-in-depth security. The system strictly decouples the UI-agnostic engine (`coderai.core`) from the interactive terminal/CLI interface (`coderai.cli`).
+For full architectural documentation, refer to the root [ARCHITECTURE.md](../ARCHITECTURE.md).
 
 ---
 
-## High-Level Architecture
+## Quick Architectural Overview
+
+**CoderAI** is an autonomous terminal AI pair programming system architected for high reliability, deterministic tool execution, token efficiency, and defense-in-depth security. The codebase strictly decouples the UI-agnostic core engine (`coderai.core`) from the rich interactive terminal interface (`coderai.cli`).
 
 ```mermaid
 graph TD
@@ -23,7 +25,7 @@ graph TD
         Loop --> Pipeline[Typed Tool Pipeline]
         
         Pipeline --> PreHook[PreToolUse Hooks<br/>hooks.json]
-        Pipeline --> SandboxGuard[Security Guard<br/>Scopes & OS Sandbox]
+        Pipeline --> SandboxGuard[Security Guard<br/>10 Scopes & OS Sandbox]
         Pipeline --> Executor[Tool Executor<br/>Registry & Dispatch]
         Pipeline --> SpillPolicy[Spill Policy<br/>Output Locators]
         
@@ -41,109 +43,4 @@ graph TD
     end
 ```
 
----
-
-## Core Subsystems
-
-### 1. Bounded Agent Loop & Event-Stream Persistence (`coderai.core.session`)
-- **Event-Driven Lifecycle**: Every turn executes deterministically through `stream → tool_calls → permissions → execute → post-process → loop`.
-- **Append-Only Event Stream**: Turn events and messages are persisted to JSONL storage without destructive rewrites.
-- **Context Compaction**: Automated and manual (`/compact`) token compaction replaces older turns with a synthesized `compact/summary` event while preserving pairing-balanced tool calls and Git history.
-- **Loop Guards & Repeat Reminders**: Automatically detects and prevents runaway identical tool loops with exponential reminder notices.
-
-### 2. Snippet-Scoped File Operations (`coderai.core.state`, `coderai.core.tools`)
-- **Anchored Snippet Model**: `read` operations return anchored `snippet_id` tokens capturing file content and exact version hash.
-- **Staleness Guarding**: `edit` operations target a verified snippet. If external processes modify the file, edits fail safely and prompt the agent to re-read.
-- **Deterministic Replacement**: Whitespace tolerance, unique string replacement, and `replace_all` guards eliminate blind overwrites.
-
-### 3. Safety Rails, OS Sandboxing & Permissions (`coderai.core.permissions`, `coderai.core.sandbox`)
-- **10 Granular Scopes**: `read-in-cwd`, `read-out-cwd`, `write-in-cwd`, `write-out-cwd`, `delete-in-cwd`, `delete-out-cwd`, `query-git-log`, `mutate-git-log`, `network`, `mcp`.
-- **Preset Modes**: `read-only`, `workspace-write`, `danger-full-access`.
-- **OS Sandboxing**: Integrates native OS-level sandboxing (macOS `sandbox-exec`/Seatbelt and Linux `bwrap`/bubblewrap) for bash execution.
-- **PreToolUse Hooks**: Claude/Codex-compatible pre-execution validation scripts loaded from `.coderai/hooks.json`.
-
-### 4. Git-Backed Turn Checkpointing & Instant Undo (`coderai.core.common.file_history`)
-- **Turn Checkpoints**: Every turn automatically commits workspace file snapshots into `.git_history`.
-- **Instant Rollback**: The `/undo` slash command rolls back file state to any prior turn checkpoint without corrupting the working tree.
-- **Unified Diff**: The `/diff` command renders syntax-highlighted diffs across turns.
-
-### 5. Multi-Agent Orchestration & Teams (`coderai.core.agents`, `coderai.core.teams`)
-- **Continuable Subagents**: Background subagents (`subagent`) with inter-agent messaging (`send_message`), interruption (`interrupt_agent`), and listing (`list_agents`).
-- **One-Shot Delegation**: Forked subagents (`subagent_fork` / `Task`) with specialized personas and isolated workspaces.
-- **Agent Teams & Swarm**: Teammate spawning (`spawn_teammate`), shared task boards (`team_task_*`), and multi-agent synchronization (`wait_agent`).
-- **Ralph Verification Loop**: Automated goal-driven verification and test validation harness (`ralph`).
-
-### 6. Developer Tooling & Languages
-- **Language Server Protocol (`coderai.core.lsp`)**: Symbol definition, reference lookup, workspace symbols, and document symbol navigation.
-- **PTY Terminal Sessions (`coderai.core.terminal`)**: Persistent pseudoterminals (`terminal_open`, `terminal_send`, `terminal_read`, `terminal_signal`, `terminal_close`, `terminal_list`).
-- **Workflow Scripting Engine (`coderai.core.workflow`)**: Multi-phase async execution pipelines with structured logging and parallel task branches.
-- **Code Mode (`coderai.core.code_mode`)**: Sandboxed in-process Python execution for data transformation and batch computation.
-- **Session Query & Search (`coderai.core.session_query`)**: Full-text indexing and fuzzy search across past sessions and conversations.
-
-### 7. MCP Subsystem (`coderai.core.mcp`)
-- **Transports**: Supports `stdio`, `sse` (Server-Sent Events), and `streamable-http`.
-- **Full MCP Protocol**: Dynamic discovery and invocation of MCP Tools, Prompts, and Resources.
-- **Configuration**: Multi-server definitions in `.coderai/settings.json` and `~/.coderai/settings.json` with environment variable expansion and private IP policies.
-
----
-
-## Directory Structure
-
-```
-coderai/
-├── main.py                         # CLI entry point
-├── py.typed                        # PEP 561 marker
-│
-├── cli/                            # Rich Terminal UI Layer
-│   ├── app.py                      # Main REPL, CLI parser, event loop
-│   ├── commands.py                 # Canonical slash-command catalog
-│   ├── session_factory.py          # Shared SessionManager construction
-│   ├── ascii_art.py                # Banner and styling
-│   ├── completer.py                # Tab autocompletion & fuzzy matching
-│   ├── diff_render.py              # Syntax-highlighted diffs
-│   ├── exit_summary.py             # Session analytics & exit cards
-│   ├── export_render.py            # Session export formatting
-│   ├── file_mention.py             # @file context expansion
-│   ├── fuzzy.py                    # Fuzzy subsequence ranking
-│   ├── interactive_menu.py         # Interactive menus (models, sessions, skills)
-│   ├── plan_render.py              # Plan checklist renderer
-│   ├── status_bar.py               # Real-time token & model status bar
-│   ├── thinking.py                 # Reasoning / thinking block renderer
-│   ├── tool_card.py                # Tool execution cards
-│   └── welcome.py                  # Welcome screen
-│
-├── core/                           # Core Engine
-│   ├── agents.py                   # Continuable subagent manager
-│   ├── agent_loop.py               # Turn/step activation controller
-│   ├── goals.py                    # Session goals store (/goal)
-│   ├── hooks.py                    # PreToolUse hook execution
-│   ├── jobs.py                     # Background process job store
-│   ├── openai_client.py            # LLM provider routing & factory
-│   ├── permissions.py              # 10 scopes, policy evaluation, presets
-│   ├── prompt.py                   # System prompt builder
-│   ├── prompt_sections.py          # Stable tool order & section builder
-│   ├── sandbox.py                  # OS sandbox (Seatbelt / bwrap)
-│   ├── schedule.py                 # Schedule subsystem
-│   ├── session.py                  # SessionManager public lifecycle APIs
-│   ├── session_store.py            # Canonical JSONL session storage
-│   ├── settings.py                 # Settings resolution
-│   ├── spill.py                    # Spill-to-file store & locators
-│   ├── state.py                    # Snippet manager & staleness detection
-│   ├── subagent.py                 # Subagent orchestration
-│   ├── web_providers.py            # Pluggable web search backends
-│   │
-│   ├── code_mode/                  # Interactive Python execution engine
-│   ├── common/                     # Core utilities & helpers
-│   ├── lsp/                        # Language Server Protocol client
-│   ├── mcp/                        # Model Context Protocol client
-│   ├── network/                    # HTTP client, SSRF guard, HTML sanitizer
-│   ├── session_query/              # Session history search over JSONL
-│   ├── skill/                      # Skill discovery and loading
-│   ├── teams/                      # Agent swarm & task board
-│   ├── terminal/                   # PTY terminal manager
-│   ├── tools/                      # Built-in tool implementations
-│   └── workflow/                   # Multi-phase workflow scripting engine
-│
-├── vendor/                         # Bundled binaries (ripgrep)
-└── skills/                         # Built-in agent skills
-```
+See [ARCHITECTURE.md](../ARCHITECTURE.md) for in-depth breakdown of subsystems, sequence diagrams, safety rails, and data persistence models.

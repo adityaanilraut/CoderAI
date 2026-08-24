@@ -1343,7 +1343,7 @@ async def _run_interactive(
             )
 
             try:
-                prompt_label = "coderai [plan] ❯ " if active_plan_mode else "coderai ❯ "
+                prompt_label = "[plan] ❯ " if active_plan_mode else "❯ "
                 raw = read_user_turn(prompt_label).strip()
             except KeyboardInterrupt:
                 _clear_task_cancellation()
