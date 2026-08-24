@@ -10,7 +10,7 @@
   <a href="#quickstart">Quickstart</a> •
   <a href="#interactive-cli--slash-commands">Interactive CLI</a> •
   <a href="#core-tools">Core Tools</a> •
-  <a href="ARCHITECTURE.md">Architecture</a> •
+  <a href="docs/ARCHITECTURE.md">Architecture</a> •
   <a href="#security--permissions">Security</a> •
   <a href="#configuration">Configuration</a> •
   <a href="#development">Development</a> •
@@ -21,22 +21,15 @@
 
 ## Overview
 
-**CoderAI** is an autonomous terminal coding agent built with a clean, decoupled architecture: a **UI-agnostic engine** (`coderai.core`) paired with a high-performance **interactive terminal UI** (`coderai.cli`).
+**CoderAI** is an autonomous terminal AI pair programmer designed for high reliability, deterministic tool execution, token efficiency, and developer velocity. It couples a headless core engine (`coderai.core`) with a rich interactive terminal interface (`coderai.cli`).
 
-CoderAI is designed from the ground up for safety, deterministic execution, and developer velocity:
-
-- **Snippet-Scoped File Editing**: `read` yields an anchored `snippet_id`; `edit` strictly targets that snippet with real-time file-version checks to prevent hallucinations, out-of-context changes, and stale overwrites.
-- **Bounded Agent Loop**: Deterministic agent turns (`stream → tool_calls → permissions → execute → post-process → loop`) with loop-guards and token-threshold compaction.
-- **Granular Permissions & OS Sandboxing**: 10 fine-grained permission scopes (`read-in-cwd`, `write-in-cwd`, `mutate-git-log`, `network`, `mcp`, etc.), 3 security presets (`read-only`, `workspace-write`, `danger-full-access`), and native OS sandboxing (macOS Seatbelt, Linux Bubblewrap).
-- **Plan Mode**: Strict read-only boundary during exploration, planning, and task breakdown.
-- **GitFileHistory Checkpointing & Instant Undo**: Every turn is automatically snapshotted into `.git_history`, allowing one-command rollback (`/undo`) and diff inspection (`/diff`).
-- **High-Performance Search & Discovery**: Bundled ripgrep binary (`glob` / `grep`) with automatic Python fallback and spill-to-disk locators for large search results.
-- **Multi-Agent Orchestration & Teams Swarm**: Continuable background subagents (`subagent`, `send_message`), agent team task boards (`spawn_teammate`, `team_task_*`), and automated verification loops (`ralph`).
-- **Developer Subsystems**: Language Server Protocol (`lsp`), persistent PTY terminals (`terminal_*`), async workflow scripts (`workflow`), in-process Python execution (`code_mode`), and full-text session search (`session_query`).
-- **Frontier LLM Support with Thinking Mode**: Native routing and reasoning token rendering for OpenAI (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`), DeepSeek (`deepseek-v4-pro`, `deepseek-v4-flash`), Google Gemini (`gemini-3.7-flash`), Anthropic (`claude-3-7-sonnet`), OpenRouter, and local Ollama endpoints.
-- **Model Context Protocol (MCP)**: Native stdio, SSE, and streamable-http MCP client for connecting external custom tools, prompts, and resources.
-- **Context Expansion via `@file`**: Seamlessly reference workspace files in your prompts with auto-attached context and line-range slicing.
-- **Minimal Core Dependencies**: Pruned to `rich`, `openai`, `requests`, and `pyyaml`.
+- 🎯 **Snippet-Anchored Editing**: Precise, hash-anchored edits with real-time staleness detection to eliminate hallucinated overwrites.
+- 🔄 **Bounded Agent Loop**: Deterministic turn execution with loop guards, repeat reminders, and token compaction.
+- 🛡️ **Defense-in-Depth Security**: 10 fine-grained permission scopes, 3 security presets, and native OS sandboxing (Seatbelt / Bubblewrap).
+- ⏪ **Turn Checkpoints & Instant Undo**: Automatic `.git_history` snapshots enable one-command rollback (`/undo`) and diff inspection (`/diff`).
+- ⚡ **High-Performance Search**: Bundled native `ripgrep` binary with spill-to-disk locators for large search outputs.
+- 🤖 **Multi-Agent Teams & Swarm**: Continuable background subagents, shared team task boards, and automated verification loops (`ralph`).
+- 🧠 **Frontier Models & MCP**: Native reasoning token support (OpenAI, DeepSeek, Gemini, Claude) and Model Context Protocol integration.
 
 ---
 
@@ -448,7 +441,7 @@ make clean
 
 ## Documentation
 
-- [Architecture & System Design](ARCHITECTURE.md)
+- [Architecture & System Design](docs/ARCHITECTURE.md)
 - [Tool Reference](docs/TOOLS.md)
 - [Permissions & Security Model](docs/PERMISSIONS.md)
 - [Model Context Protocol (MCP)](docs/MCP.md)
