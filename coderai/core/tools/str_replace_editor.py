@@ -124,17 +124,39 @@ def handle_str_replace_editor_tool(args: dict[str, Any], context: Any) -> ToolRe
             error="Missing required parameter `path`.",
         )
 
-    project_root = getattr(context, "project_root", ".") if context else "."
-    target_path = _resolve_path(path_arg, project_root)
+    iso_val = (
+        context.get("isolated_cwd")
+        if isinstance(context, dict)
+        else getattr(context, "isolated_cwd", None)
+    )
+    isolated_cwd = (
+        str(iso_val)
+        if isinstance(iso_val, (str, pathlib.Path)) and "MagicMock" not in str(type(iso_val))
+        else None
+    )
+
+    pr_val = (
+        context.get("project_root")
+        if isinstance(context, dict)
+        else getattr(context, "project_root", None)
+    )
+    project_root = (
+        str(pr_val)
+        if isinstance(pr_val, (str, pathlib.Path)) and "MagicMock" not in str(type(pr_val))
+        else "."
+    )
+    effective_root = isolated_cwd or project_root
+    target_path = _resolve_path(path_arg, effective_root)
+
 
     if command == "view":
         return _handle_view(target_path, args.get("view_range"), project_root, context)
     elif command == "create":
-        return _handle_create(target_path, args.get("file_text"), context)
+        return _handle_create(target_path, args.get("file_text"), context, args=args)
     elif command == "str_replace":
-        return _handle_str_replace(target_path, args.get("old_str"), args.get("new_str"), context)
+        return _handle_str_replace(target_path, args.get("old_str"), args.get("new_str"), context, args=args)
     elif command == "insert":
-        return _handle_insert(target_path, args.get("insert_line"), args.get("new_str"), context)
+        return _handle_insert(target_path, args.get("insert_line"), args.get("new_str"), context, args=args)
     elif command in ("undo_edit", "undo_command"):
         return _handle_undo(target_path, context)
     else:
@@ -143,6 +165,7 @@ def handle_str_replace_editor_tool(args: dict[str, Any], context: Any) -> ToolRe
             name="str_replace_editor",
             error=f"Unrecognized command `{command}`. Allowed commands are: `view`, `create`, `str_replace`, `insert`, `undo_edit` (or `undo_command`).",
         )
+
 
 
 def _handle_view(
@@ -211,7 +234,9 @@ def _handle_view(
     )
 
 
-def _handle_create(target_path: str, file_text: Any, context: Any) -> ToolResult:
+def _handle_create(
+    target_path: str, file_text: Any, context: Any, args: dict[str, Any] | None = None
+) -> ToolResult:
     if file_text is None:
         return ToolResult(
             ok=False,
@@ -231,6 +256,19 @@ def _handle_create(target_path: str, file_text: Any, context: Any) -> ToolResult
     sandbox_error = check_file_write_access(context, target_path)
     if sandbox_error:
         return ToolResult(ok=False, name="str_replace_editor", error=sandbox_error)
+
+    from coderai.core.tools.file_mutation import generate_virtual_patch, is_dry_run
+
+    if is_dry_run(context, args):
+        patch = generate_virtual_patch(target_path, None, text)
+        return ToolResult(
+            ok=True,
+            name="str_replace_editor",
+            output=f"[dry-run] Virtual create preview for {target_path}:\n{patch['diff']}"
+            if patch["diff"]
+            else f"[dry-run] File creation verified at: {target_path}",
+            metadata={"dry_run": True, "virtual_patch": patch, "file_path": target_path},
+        )
 
     ensure_parent_directory(target_path)
     try:
@@ -252,7 +290,13 @@ def _handle_create(target_path: str, file_text: Any, context: Any) -> ToolResult
     )
 
 
-def _handle_str_replace(target_path: str, old_str: Any, new_str: Any, context: Any) -> ToolResult:
+def _handle_str_replace(
+    target_path: str,
+    old_str: Any,
+    new_str: Any,
+    context: Any,
+    args: dict[str, Any] | None = None,
+) -> ToolResult:
     if old_str is None:
         return ToolResult(
             ok=False,
@@ -286,17 +330,21 @@ def _handle_str_replace(target_path: str, old_str: Any, new_str: Any, context: A
     if sandbox_error:
         return ToolResult(ok=False, name="str_replace_editor", error=sandbox_error)
 
-    from coderai.core.tools.observation import get_observation_tracker
+    from coderai.core.tools.file_mutation import generate_virtual_patch, is_dry_run
 
-    allowed, obs_err = get_observation_tracker().check_mutation_allowed(
-        session_id, target_path, require_observed=True
-    )
-    if not allowed and obs_err:
-        return ToolResult(
-            ok=False,
-            name="str_replace_editor",
-            error=obs_err,
+    if not is_dry_run(context, args):
+        from coderai.core.tools.observation import get_observation_tracker
+
+        allowed, obs_err = get_observation_tracker().check_mutation_allowed(
+            session_id, target_path, require_observed=True
         )
+        if not allowed and obs_err:
+            return ToolResult(
+                ok=False,
+                name="str_replace_editor",
+                error=obs_err,
+            )
+
 
     match_res = match_multistage(current_content, old_s, new_s)
     matches = match_res.matches
@@ -316,11 +364,23 @@ def _handle_str_replace(target_path: str, old_str: Any, new_str: Any, context: A
             error=f"No replacement was performed. Multiple occurrences of old_str in lines [{', '.join(map(str, line_nums))}]. Please include more surrounding context in `old_str` to make it unique.",
         )
 
+    start_off, end_off = matches[0]
+    new_content = current_content[:start_off] + match_res.replaced_new + current_content[end_off:]
+
+    from coderai.core.tools.file_mutation import generate_virtual_patch, is_dry_run
+
+    if is_dry_run(context, args):
+        patch = generate_virtual_patch(target_path, current_content, new_content)
+        return ToolResult(
+            ok=True,
+            name="str_replace_editor",
+            output=f"[dry-run] The file {target_path} edit preview:\n{patch['diff']}",
+            metadata={"dry_run": True, "virtual_patch": patch, "file_path": target_path},
+        )
+
     # Save for undo
     _push_undo(target_path, current_content)
 
-    start_off, end_off = matches[0]
-    new_content = current_content[:start_off] + match_res.replaced_new + current_content[end_off:]
     try:
         write_file_with_callbacks(context, target_path, new_content)
     except Exception as exc:
@@ -341,7 +401,13 @@ def _handle_str_replace(target_path: str, old_str: Any, new_str: Any, context: A
     )
 
 
-def _handle_insert(target_path: str, insert_line: Any, new_str: Any, context: Any) -> ToolResult:
+def _handle_insert(
+    target_path: str,
+    insert_line: Any,
+    new_str: Any,
+    context: Any,
+    args: dict[str, Any] | None = None,
+) -> ToolResult:
     if insert_line is None:
         return ToolResult(
             ok=False,
@@ -398,25 +464,40 @@ def _handle_insert(target_path: str, insert_line: Any, new_str: Any, context: An
     if sandbox_error:
         return ToolResult(ok=False, name="str_replace_editor", error=sandbox_error)
 
-    from coderai.core.tools.observation import get_observation_tracker
+    from coderai.core.tools.file_mutation import generate_virtual_patch, is_dry_run
 
-    allowed, obs_err = get_observation_tracker().check_mutation_allowed(
-        session_id, target_path, require_observed=True
-    )
-    if not allowed and obs_err:
-        return ToolResult(
-            ok=False,
-            name="str_replace_editor",
-            error=obs_err,
+    if not is_dry_run(context, args):
+        from coderai.core.tools.observation import get_observation_tracker
+
+        allowed, obs_err = get_observation_tracker().check_mutation_allowed(
+            session_id, target_path, require_observed=True
         )
+        if not allowed and obs_err:
+            return ToolResult(
+                ok=False,
+                name="str_replace_editor",
+                error=obs_err,
+            )
 
-    _push_undo(target_path, current_content)
 
     insert_content = new_s if new_s.endswith("\n") else new_s + "\n"
     if ins_line == 0:
         new_content = insert_content + "".join(lines)
     else:
         new_content = "".join(lines[:ins_line]) + insert_content + "".join(lines[ins_line:])
+
+    from coderai.core.tools.file_mutation import generate_virtual_patch, is_dry_run
+
+    if is_dry_run(context, args):
+        patch = generate_virtual_patch(target_path, current_content, new_content)
+        return ToolResult(
+            ok=True,
+            name="str_replace_editor",
+            output=f"[dry-run] The file {target_path} insertion preview:\n{patch['diff']}",
+            metadata={"dry_run": True, "virtual_patch": patch, "file_path": target_path},
+        )
+
+    _push_undo(target_path, current_content)
 
     try:
         write_file_with_callbacks(context, target_path, new_content)
@@ -435,6 +516,7 @@ def _handle_insert(target_path: str, insert_line: Any, new_str: Any, context: An
         name="str_replace_editor",
         output=f"The file {target_path} has been edited successfully (inserted text after line {ins_line}).",
     )
+
 
 
 def _handle_undo(target_path: str, context: Any) -> ToolResult:

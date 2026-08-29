@@ -185,3 +185,92 @@ def create_openai_client(
     result = base()
     result["client"] = client_instance
     return result
+
+
+def clear_client_pool() -> None:
+    """Clear all cached OpenAI client instances."""
+    global _client_pool
+    _client_pool.clear()
+
+
+def probe_provider_connectivity(
+    model: str,
+    base_url: str | None = None,
+    api_key: str | None = None,
+    timeout: float = 10.0,
+) -> tuple[bool, str]:
+    """Probe API connection to a provider with the given model, endpoint, and key.
+
+    Returns (success: bool, message: str).
+    """
+    resolved_url, resolved_key = resolve_model_provider_routing(
+        model=model,
+        explicit_base_url=base_url,
+        explicit_api_key=api_key,
+    )
+
+    if not resolved_key:
+        return False, f"No API key provided or resolved for model '{model}' (endpoint: {resolved_url})."
+
+    try:
+        from openai import OpenAI
+
+        client = OpenAI(
+            api_key=resolved_key,
+            base_url=resolved_url or None,
+            timeout=timeout,
+            max_retries=1,
+        )
+
+        # Attempt lightweight probe: try max_completion_tokens first (OpenAI o1/o3/gpt-5 requirement),
+        # then fallback to max_tokens, then plain request without token limit parameter.
+        resp = None
+        probe_errors: list[str] = []
+
+        try:
+            resp = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": "ping"}],
+                max_completion_tokens=5,
+            )
+        except Exception as e_comp:
+            probe_errors.append(str(e_comp))
+            if any(k in str(e_comp) for k in ("max_completion_tokens", "Unsupported parameter", "400")):
+                try:
+                    resp = client.chat.completions.create(
+                        model=model,
+                        messages=[{"role": "user", "content": "ping"}],
+                        max_tokens=5,
+                    )
+                except Exception as e_max:
+                    probe_errors.append(str(e_max))
+                    try:
+                        resp = client.chat.completions.create(
+                            model=model,
+                            messages=[{"role": "user", "content": "ping"}],
+                        )
+                    except Exception as e_plain:
+                        raise e_plain
+            else:
+                raise e_comp
+
+        model_name = getattr(resp, "model", model) if resp else model
+        return True, f"Successfully connected! Model response received from '{model_name}'."
+    except Exception as e:
+        # Check if error message has meaningful details
+        err_str = str(e)
+        if "AuthenticationError" in type(e).__name__ or "401" in err_str:
+            return False, "Authentication Failed: Invalid API key (401 Unauthorized)."
+        if "NotFoundError" in type(e).__name__ or "404" in err_str:
+            return False, f"Model Not Found (404): Endpoint '{resolved_url}' does not recognize '{model}'."
+        if "RateLimitError" in type(e).__name__ or "429" in err_str:
+            return False, "Rate Limit Exceeded (429): Quota or rate limit reached on provider."
+        if "APIConnectionError" in type(e).__name__ or "ConnectError" in err_str:
+            return False, f"Connection Failed: Could not reach endpoint '{resolved_url}'."
+        return False, f"Connection test error ({type(e).__name__}): {err_str[:120]}"
+
+
+# Alias for backward compatibility
+check_provider_connectivity = probe_provider_connectivity
+
+

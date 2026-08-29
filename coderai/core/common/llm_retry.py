@@ -12,7 +12,18 @@ from typing import Any
 
 from coderai.core.common.llm_error import get_llm_error_details
 
-RETRYABLE_CODES = ("EMPTY_RESPONSE", "RATE_LIMIT", "SERVER", "TIMEOUT", "TRANSPORT")
+RETRYABLE_CODES = (
+    "EMPTY_RESPONSE",
+    "RATE_LIMIT",
+    "SERVER",
+    "TIMEOUT",
+    "TRANSPORT",
+    "CONTEXT_OVERFLOW",
+    "QUOTA_EXCEEDED",
+)
+FAILOVER_ELIGIBLE_CODES = frozenset(
+    {"RATE_LIMIT", "SERVER", "TIMEOUT", "TRANSPORT", "CONTEXT_OVERFLOW", "QUOTA_EXCEEDED"}
+)
 DEFAULT_MAX_RETRIES = 5
 DEFAULT_INITIAL_DELAY_MS = 500
 DEFAULT_MAX_DELAY_MS = 10_000
@@ -28,6 +39,30 @@ def classify_llm_failure(error: Any) -> str | None:
     code = (details.get("code") or "").lower()
     combined = f"{name} {message} {code}"
 
+    if any(
+        tok in combined
+        for tok in (
+            "context_length_exceeded",
+            "maximum context length",
+            "string_above_max_length",
+            "prompt is too long",
+            "too many tokens",
+            "context length",
+            "max_tokens",
+        )
+    ):
+        return "CONTEXT_OVERFLOW"
+    if any(
+        tok in combined
+        for tok in (
+            "insufficient_quota",
+            "quota_exceeded",
+            "credit_balance_too_low",
+            "billing_not_active",
+            "exceeded your current quota",
+        )
+    ):
+        return "QUOTA_EXCEEDED"
     if (
         status == 429
         or "rate_limit" in code
@@ -35,8 +70,25 @@ def classify_llm_failure(error: Any) -> str | None:
         or "too many requests" in combined
     ):
         return "RATE_LIMIT"
-    if isinstance(status, int) and 500 <= status <= 599:
+    if (
+        (isinstance(status, int) and 500 <= status <= 599)
+        or any(
+            tok in combined
+            for tok in (
+                "500",
+                "502",
+                "503",
+                "504",
+                "internal server error",
+                "service unavailable",
+                "bad gateway",
+                "gateway timeout",
+                "server_error",
+            )
+        )
+    ):
         return "SERVER"
+
     if "timeout" in combined or "timed out" in combined:
         return "TIMEOUT"
     if any(
@@ -45,6 +97,13 @@ def classify_llm_failure(error: Any) -> str | None:
     ):
         return "TRANSPORT"
     return None
+
+
+def is_failover_eligible(error: Any) -> bool:
+    """Check if an LLM error qualifies for multi-model failover cascade."""
+    code = classify_llm_failure(error)
+    return code in FAILOVER_ELIGIBLE_CODES
+
 
 
 def is_empty_llm_response(response: dict[str, Any] | None) -> bool:

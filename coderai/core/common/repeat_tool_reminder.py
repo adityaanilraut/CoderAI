@@ -85,3 +85,9 @@ class RepeatToolReminder:
         if self._count == self.thresholds[0]:
             return GENTLE_REMINDER
         return detailed_reminder(tool_name, self._count, canonical)
+
+    def reset(self) -> None:
+        """Reset the consecutive-call tracking chain (e.g. on new user turns)."""
+        self._key = None
+        self._count = 0
+

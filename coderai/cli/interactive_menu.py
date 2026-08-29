@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from typing import Any
 
@@ -20,10 +21,49 @@ _RICH = True
 
 
 def _read_single_key() -> str:
-    """Read a single keypress or escape sequence from standard input on Unix/Mac."""
+    """Read a single keypress or escape sequence from standard input on Unix/Mac or Windows."""
     if not sys.stdin.isatty():
         return ""
+
+    # Windows support
+    if os.name == "nt":
+        try:
+            import msvcrt
+
+            ch = msvcrt.getch()
+            if ch in (b"\x00", b"\xe0"):
+                ch2 = msvcrt.getch()
+                win_map = {
+                    b"H": "UP",
+                    b"P": "DOWN",
+                    b"K": "LEFT",
+                    b"M": "RIGHT",
+                    b"G": "HOME",
+                    b"O": "END",
+                    b"S": "DELETE",
+                    b"I": "PAGE_UP",
+                    b"Q": "PAGE_DOWN",
+                }
+                return win_map.get(ch2, "")
+            if ch in (b"\r", b"\n"):
+                return "ENTER"
+            elif ch == b"\x1b":
+                return "ESCAPE"
+            elif ch == b"\x03":
+                return "CTRL_C"
+            elif ch == b"\x04":
+                return "CTRL_D"
+            elif ch in (b"\x08", b"\x7f"):
+                return "BACKSPACE"
+            elif ch == b"\t":
+                return "TAB"
+            return ch.decode("utf-8", errors="ignore")
+        except Exception:
+            return ""
+
+    # Unix / macOS support with select timeout for escape sequence disambiguation
     try:
+        import select
         import termios
         import tty
 
@@ -33,8 +73,15 @@ def _read_single_key() -> str:
             tty.setraw(fd)
             ch = sys.stdin.read(1)
             if ch == "\x1b":  # Escape sequence
+                # Use non-blocking select to see if more bytes follow within 50ms
+                r, _, _ = select.select([sys.stdin], [], [], 0.05)
+                if not r:
+                    return "ESCAPE"
                 ch2 = sys.stdin.read(1)
                 if ch2 == "[":
+                    r, _, _ = select.select([sys.stdin], [], [], 0.05)
+                    if not r:
+                        return "ESCAPE"
                     ch3 = sys.stdin.read(1)
                     if ch3 == "A":
                         return "UP"
@@ -44,6 +91,40 @@ def _read_single_key() -> str:
                         return "RIGHT"
                     elif ch3 == "D":
                         return "LEFT"
+                    elif ch3 in ("H", "1", "7"):
+                        if ch3 in ("1", "7"):
+                            select.select([sys.stdin], [], [], 0.02)
+                            sys.stdin.read(1)  # consume trailing ~
+                        return "HOME"
+                    elif ch3 in ("F", "4", "8"):
+                        if ch3 in ("4", "8"):
+                            select.select([sys.stdin], [], [], 0.02)
+                            sys.stdin.read(1)  # consume trailing ~
+                        return "END"
+                    elif ch3 == "3":
+                        select.select([sys.stdin], [], [], 0.02)
+                        sys.stdin.read(1)  # consume ~
+                        return "DELETE"
+                    elif ch3 == "5":
+                        select.select([sys.stdin], [], [], 0.02)
+                        sys.stdin.read(1)  # consume ~
+                        return "PAGE_UP"
+                    elif ch3 == "6":
+                        select.select([sys.stdin], [], [], 0.02)
+                        sys.stdin.read(1)  # consume ~
+                        return "PAGE_DOWN"
+                    elif ch3 == "Z":
+                        return "BACKTAB"
+                    return "ESCAPE"
+                elif ch2 == "O":
+                    r, _, _ = select.select([sys.stdin], [], [], 0.05)
+                    if r:
+                        ch3 = sys.stdin.read(1)
+                        if ch3 == "H":
+                            return "HOME"
+                        elif ch3 == "F":
+                            return "END"
+                    return "ESCAPE"
                 return "ESCAPE"
             elif ch in ("\r", "\n"):
                 return "ENTER"
@@ -53,6 +134,8 @@ def _read_single_key() -> str:
                 return "CTRL_D"
             elif ch in ("\x7f", "\x08"):  # Backspace
                 return "BACKSPACE"
+            elif ch == "\t":
+                return "TAB"
             return ch
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
@@ -66,6 +149,7 @@ def select_with_arrows(
     title: str = "Select an option",
     default_idx: int = 0,
     allow_custom: bool = False,
+    allow_cancel: bool = False,
 ) -> int | str | None:
     """Interactive arrow-key and shortcut selector with live in-place TUI rendering and fallback."""
     if not items:
@@ -94,15 +178,17 @@ def select_with_arrows(
             console.print(panel)
         try:
             raw = input(f"{title} [1-{total_slots}]: ").strip()
+            if raw.lower() in ("q", "cancel", "exit", "0") and allow_cancel:
+                return None
             if raw.isdigit() and 1 <= int(raw) <= len(items):
                 return int(raw) - 1
             elif raw.isdigit() and allow_custom and int(raw) == len(items) + 1:
                 return ""
             elif raw:
                 return raw
-            return default_idx
+            return None if allow_cancel and not raw else default_idx
         except (EOFError, KeyboardInterrupt):
-            return default_idx
+            return None if allow_cancel else default_idx
 
     selected_idx = default_idx
     filter_query = ""
@@ -149,9 +235,11 @@ def select_with_arrows(
             )
             body_lines.append(f"  {prefix} {num_tag} {title_style}")
 
-        total_count = len(filtered_indices) + (1 if allow_custom else 0)
-        quick_range = f"1-{min(total_count, 9)}" if total_count > 1 else "1"
-        footer = f"[dim]↑/↓ or j/k: navigate • Enter: select • {quick_range}: quick select • Esc/q: cancel[/]"
+        if cur_query:
+            footer = f"[dim]↑/↓: navigate • Enter: select • Esc: clear filter ({len(filtered_indices)} matches) • Backspace: delete[/]"
+        else:
+            footer = "[dim]↑/↓: navigate • Type to search • Enter: select • Esc/q: cancel[/]"
+
         if Panel is not None:
             return Panel(
                 "\n".join(body_lines) + f"\n\n{footer}",
@@ -196,20 +284,40 @@ def select_with_arrows(
                 live.update(_render_menu_panel(selected_idx, filter_query), refresh=True)
 
                 key = _read_single_key()
-                if key in ("UP", "k"):
+                if key == "UP":
                     if selectable:
                         if selected_idx in selectable:
                             cur_pos = selectable.index(selected_idx)
                             selected_idx = selectable[(cur_pos - 1) % len(selectable)]
                         else:
                             selected_idx = selectable[-1]
-                elif key in ("DOWN", "j"):
+                elif key == "DOWN":
                     if selectable:
                         if selected_idx in selectable:
                             cur_pos = selectable.index(selected_idx)
                             selected_idx = selectable[(cur_pos + 1) % len(selectable)]
                         else:
                             selected_idx = selectable[0]
+                elif key == "PAGE_UP":
+                    if selectable:
+                        if selected_idx in selectable:
+                            cur_pos = selectable.index(selected_idx)
+                            selected_idx = selectable[max(0, cur_pos - 5)]
+                        else:
+                            selected_idx = selectable[0]
+                elif key == "PAGE_DOWN":
+                    if selectable:
+                        if selected_idx in selectable:
+                            cur_pos = selectable.index(selected_idx)
+                            selected_idx = selectable[min(len(selectable) - 1, cur_pos + 5)]
+                        else:
+                            selected_idx = selectable[-1]
+                elif key == "HOME":
+                    if selectable:
+                        selected_idx = selectable[0]
+                elif key == "END":
+                    if selectable:
+                        selected_idx = selectable[-1]
                 elif key == "ENTER":
                     if allow_custom and selected_idx == len(items):
                         live.stop()
@@ -217,33 +325,20 @@ def select_with_arrows(
                             custom_val = input("\nEnter custom value: ").strip()
                             return custom_val if custom_val else default_idx
                         except (EOFError, KeyboardInterrupt):
-                            return default_idx
+                            return None if allow_cancel else default_idx
                     res = selected_idx
                     break
-                elif key in ("ESCAPE", "q", "CTRL_C", "CTRL_D"):
-                    res = default_idx
+                elif key == "ESCAPE":
+                    if filter_query:
+                        filter_query = ""
+                    else:
+                        res = None if allow_cancel else default_idx
+                        break
+                elif key in ("CTRL_C", "CTRL_D") or (key in ("q", "Q") and not filter_query):
+                    res = None if allow_cancel else default_idx
                     break
                 elif key == "BACKSPACE":
                     filter_query = filter_query[:-1]
-                elif key in ("1", "2", "3", "4", "5", "6", "7", "8", "9"):
-                    digit = int(key)
-                    if 1 <= digit <= len(filtered_indices):
-                        res = filtered_indices[digit - 1]
-                        break
-                    elif allow_custom and digit == len(filtered_indices) + 1:
-                        live.stop()
-                        try:
-                            custom_val = input("\nEnter custom value: ").strip()
-                            return custom_val if custom_val else default_idx
-                        except (EOFError, KeyboardInterrupt):
-                            return default_idx
-                elif key in ("c", "C") and allow_custom and not filter_query:
-                    live.stop()
-                    try:
-                        custom_val = input("\nEnter custom value: ").strip()
-                        return custom_val if custom_val else default_idx
-                    except (EOFError, KeyboardInterrupt):
-                        return default_idx
                 elif len(key) == 1 and key.isprintable():
                     filter_query += key
 
@@ -268,53 +363,63 @@ def select_with_arrows(
             custom_num = len(filtered_indices) + 1
             marker = "❯" if selected_idx == len(items) else " "
             print(f" {marker} {custom_num:2}. Other / Custom (type custom value)")
-        total_count = len(filtered_indices) + (1 if allow_custom else 0)
-        quick_range = f"1-{min(total_count, 9)}" if total_count > 1 else "1"
-        print(f"  ↑/↓ or j/k: navigate, Enter: select, {quick_range}: quick select, Esc/q: cancel")
+        if filter_query:
+            print(f"  Filter: '{filter_query}' ({len(filtered_indices)} matches) | Esc: clear filter")
+        else:
+            print(f"  ↑/↓: navigate, Type to search, Enter: select, Esc/q: cancel")
 
         key = _read_single_key()
-        if key in ("UP", "k"):
+        if key == "UP":
             if selectable:
                 if selected_idx in selectable:
                     cur_pos = selectable.index(selected_idx)
                     selected_idx = selectable[(cur_pos - 1) % len(selectable)]
                 else:
                     selected_idx = selectable[-1]
-        elif key in ("DOWN", "j"):
+        elif key == "DOWN":
             if selectable:
                 if selected_idx in selectable:
                     cur_pos = selectable.index(selected_idx)
                     selected_idx = selectable[(cur_pos + 1) % len(selectable)]
                 else:
                     selected_idx = selectable[0]
+        elif key == "PAGE_UP":
+            if selectable:
+                if selected_idx in selectable:
+                    cur_pos = selectable.index(selected_idx)
+                    selected_idx = selectable[max(0, cur_pos - 5)]
+                else:
+                    selected_idx = selectable[0]
+        elif key == "PAGE_DOWN":
+            if selectable:
+                if selected_idx in selectable:
+                    cur_pos = selectable.index(selected_idx)
+                    selected_idx = selectable[min(len(selectable) - 1, cur_pos + 5)]
+                else:
+                    selected_idx = selectable[-1]
+        elif key == "HOME":
+            if selectable:
+                selected_idx = selectable[0]
+        elif key == "END":
+            if selectable:
+                selected_idx = selectable[-1]
         elif key == "ENTER":
             if allow_custom and selected_idx == len(items):
                 try:
                     custom_val = input("\nEnter custom value: ").strip()
                     return custom_val if custom_val else default_idx
                 except (EOFError, KeyboardInterrupt):
-                    return default_idx
+                    return None if allow_cancel else default_idx
             return selected_idx
-        elif key in ("ESCAPE", "q", "CTRL_C", "CTRL_D"):
-            return default_idx
+        elif key == "ESCAPE":
+            if filter_query:
+                filter_query = ""
+            else:
+                return None if allow_cancel else default_idx
+        elif key in ("CTRL_C", "CTRL_D") or (key in ("q", "Q") and not filter_query):
+            return None if allow_cancel else default_idx
         elif key == "BACKSPACE":
             filter_query = filter_query[:-1]
-        elif key in ("1", "2", "3", "4", "5", "6", "7", "8", "9"):
-            digit = int(key)
-            if 1 <= digit <= len(filtered_indices):
-                return filtered_indices[digit - 1]
-            elif allow_custom and digit == len(filtered_indices) + 1:
-                try:
-                    custom_val = input("\nEnter custom value: ").strip()
-                    return custom_val if custom_val else default_idx
-                except (EOFError, KeyboardInterrupt):
-                    return default_idx
-        elif key in ("c", "C") and allow_custom and not filter_query:
-            try:
-                custom_val = input("\nEnter custom value: ").strip()
-                return custom_val if custom_val else default_idx
-            except (EOFError, KeyboardInterrupt):
-                return default_idx
         elif len(key) == 1 and key.isprintable():
             filter_query += key
 
@@ -876,6 +981,7 @@ def render_config_interactive(console: Any | None, project_root: str) -> None:
     from coderai.core.settings import (
         get_project_settings_path,
         get_user_settings_path,
+        mask_api_key,
         resolve_current_settings,
     )
 
@@ -889,24 +995,27 @@ def render_config_interactive(console: Any | None, project_root: str) -> None:
         table.add_column("Value", style="bold white")
 
         table.add_row("Active Model:", str(settings.get("model", "default")))
-        table.add_row("Base URL:", str(settings.get("base_url", "default")))
-        table.add_row("Permission Mode:", str(settings.get("permissions_default", "askAll")))
-        table.add_row("Reasoning Effort:", str(settings.get("reasoning_effort", "adaptive")))
-        table.add_row("Timeout (s):", str(settings.get("timeout_seconds", 300)))
-        table.add_row("Context Window:", f"{settings.get('context_window', 262144):,} tokens")
+        table.add_row("Base URL:", str(settings.get("baseURL", "default")))
+        api_k = settings.get("apiKey")
+        table.add_row("API Key:", f"[bold green]{mask_api_key(api_k)}[/]" if api_k else "[dim red]Not set[/]")
+        perms = settings.get("permissions") or {}
+        table.add_row("Permission Mode:", str(perms.get("defaultMode", "allowAll")))
+        table.add_row("Reasoning Effort:", str(settings.get("reasoningEffort", "max")))
+        table.add_row("Context Window:", f"{settings.get('contextWindow', 262144):,} tokens")
+        table.add_row("Auto-Compact Window:", f"{settings.get('autoCompactWindow', 131072):,} tokens")
 
-        allows = settings.get("permissions_allow") or []
+        allows = perms.get("allow") or []
         allows_str = ", ".join(allows) if allows else "none"
         table.add_row("Allowed Scopes:", f"[bold green]{allows_str}[/]")
 
-        mcp_servers = list(settings.get("mcp_servers", {}).keys())
+        mcp_servers = list(settings.get("mcpServers", {}).keys()) if settings.get("mcpServers") else []
         table.add_row("Configured MCP Servers:", ", ".join(mcp_servers) if mcp_servers else "none")
         table.add_row("User Config File:", f"[dim]{user_path}[/]")
         table.add_row("Project Config File:", f"[dim]{proj_path}[/]")
 
         panel = Panel(
             table,
-            title="[bold cyan]CoderAI Active Configuration[/]",
+            title="[bold cyan]CoderAI Active Configuration[/] [dim]• Tip: Run [bold yellow]/setup[/bold yellow] to change keys/models[/dim]",
             border_style="cyan",
             padding=(0, 1),
         )
@@ -917,7 +1026,9 @@ def render_config_interactive(console: Any | None, project_root: str) -> None:
         for k, v in settings.items():
             print(f"  {k}: {v}")
         print(f"  User Config: {user_path}")
-        print(f"  Project Config: {proj_path}\n")
+        print(f"  Project Config: {proj_path}")
+        print("  Tip: Run /setup to change keys and models.\n")
+
 
 
 MODEL_PRICING_PER_M: dict[str, tuple[float, float, float]] = {
@@ -998,7 +1109,9 @@ def render_token_breakdown(
         table.add_row("Prompt Tokens:", f"{prompt_tokens:,}")
         table.add_row("Completion Tokens:", f"{completion_tokens:,}")
         if cached_tokens > 0:
+            hit_rate = (cached_tokens / prompt_tokens * 100.0) if prompt_tokens > 0 else 0.0
             table.add_row("Cached Tokens:", f"[green]{cached_tokens:,}[/]")
+            table.add_row("Cache Hit Rate:", f"[bold green]{hit_rate:.1f}%[/]")
         table.add_row("Total Session Tokens:", f"[bold cyan]{total_tokens:,}[/]")
         table.add_row(
             "Active Working Context:",
@@ -1012,7 +1125,8 @@ def render_token_breakdown(
                 m_total = m_usage.get("total_tokens", 0) if isinstance(m_usage, dict) else 0
                 m_prompt = m_usage.get("prompt_tokens", 0) if isinstance(m_usage, dict) else 0
                 m_comp = m_usage.get("completion_tokens", 0) if isinstance(m_usage, dict) else 0
-                m_cost = estimate_model_cost(model_name, m_prompt, m_comp)
+                m_cached = m_usage.get("cached_tokens", 0) if isinstance(m_usage, dict) else 0
+                m_cost = estimate_model_cost(model_name, m_prompt, m_comp, m_cached)
                 table.add_row(f"  • {model_name}:", f"{m_total:,} tokens (${m_cost:.4f})")
 
         panel = Panel(
@@ -1029,7 +1143,9 @@ def render_token_breakdown(
         print(f"  Prompt Tokens:     {prompt_tokens:,}")
         print(f"  Completion Tokens: {completion_tokens:,}")
         if cached_tokens > 0:
+            hit_rate = (cached_tokens / prompt_tokens * 100.0) if prompt_tokens > 0 else 0.0
             print(f"  Cached Tokens:     {cached_tokens:,}")
+            print(f"  Cache Hit Rate:    {hit_rate:.1f}%")
         print(f"  Total Tokens:      {total_tokens:,}")
         print(f"  Active Context:    {active_tokens:,} ({pct_used:.1f}%)")
         print(f"  Estimated Cost:    ${total_cost:.4f} USD\n")

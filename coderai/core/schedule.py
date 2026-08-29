@@ -54,7 +54,7 @@ class ScheduleManager:
         self.storage_path = storage_path
         self._schedules: dict[str, ScheduleRecord] = {}
         self._next_id = 1
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()  # ponytail: RLock to allow re-entrant _generate_id inside create(); per-schedule locks if contention matters
         self._load()
 
     def create(

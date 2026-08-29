@@ -300,6 +300,45 @@ def _render_subagent_card(
         print(f"    ↳ Subagent {task_name}: {status}")
 
 
+def _render_session_card(
+    console: Any, output_text: str | None, metadata: dict[str, Any], ok: bool
+) -> None:
+    """Render session query / trace results cleanly."""
+    query = metadata.get("query") or metadata.get("session_id") or ""
+    results_count = metadata.get("count") or (len(output_text.splitlines()) if output_text else 0)
+    status_style = "bold green" if ok else "bold red"
+
+    title = f"    ↳ [bold cyan]Session Query:[/] [bold yellow]'{query}'[/] [{status_style}]({results_count} events)[/]" if query else f"    ↳ [bold cyan]Session Query[/] [{status_style}]({results_count} events)[/]"
+
+    if console is not None and _RICH:
+        console.print(title)
+        if output_text and output_text.strip():
+            for line in output_text.strip().splitlines()[:10]:
+                console.print(f"      [dim]│[/] {line}")
+    elif output_text:
+        print(f"    ↳ Session Query: {results_count} events")
+
+
+def _render_code_mode_card(
+    console: Any, output_text: str | None, metadata: dict[str, Any], ok: bool
+) -> None:
+    """Render sandboxed python code mode execution cleanly."""
+    status = "success" if ok else "error"
+    status_style = "bold green" if ok else "bold red"
+    duration = metadata.get("durationMs")
+    dur_str = f" [dim]({duration:.1f}ms)[/]" if duration else ""
+
+    title = f"    ↳ [bold magenta]Python Code Mode[/] [{status_style}]({status})[/]{dur_str}"
+
+    if console is not None and _RICH:
+        console.print(title)
+        if output_text and output_text.strip():
+            for line in output_text.strip().splitlines()[:15]:
+                console.print(f"      [dim]│[/] {line}")
+    elif output_text:
+        print(f"    ↳ Python Code Mode: {status}")
+
+
 def render_tool_card(console: Any | None, message: SessionMessage) -> None:
     """Render a compact sequential tool result event with status, diffs, terminal outputs, and checklists."""
     name, summary_text, ok, metadata = parse_tool_message(message)
@@ -360,6 +399,14 @@ def render_tool_card(console: Any | None, message: SessionMessage) -> None:
             # Subagent task card
             elif name in ("subagent", "delegate", "agent_task", "invoke_agent"):
                 _render_subagent_card(console, raw_output, metadata, ok)
+
+            # Session query / trace card
+            elif name in ("session_query", "session_search", "session_trace", "session_event_search", "session_event_read"):
+                _render_session_card(console, raw_output, metadata, ok)
+
+            # Code mode card
+            elif name in ("code_mode", "python_eval", "eval"):
+                _render_code_mode_card(console, raw_output, metadata, ok)
 
             # Read tool snippet info
             elif name in ("read", "Read", "view_file"):

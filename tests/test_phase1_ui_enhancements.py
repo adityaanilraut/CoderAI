@@ -37,6 +37,33 @@ def test_live_thinking_streamer_lifecycle():
     assert len(streamer.thinking_chunks) == 0
 
 
+def test_live_thinking_streamer_terminal_width_bounds(monkeypatch):
+    from unittest.mock import MagicMock
+    import sys
+
+    # Mock terminal width to 60 columns
+    mock_console = MagicMock()
+    mock_console.width = 60
+    mock_console.is_terminal = True
+
+    streamer = LiveThinkingStreamer(mock_console)
+    assert streamer._get_term_width() == 60
+
+    written_lines = []
+    monkeypatch.setattr(sys.stdout, "write", lambda s: written_lines.append(s))
+    monkeypatch.setattr(sys.stdout, "flush", lambda: None)
+
+    # Feed very long reasoning text
+    long_reasoning = "The site renders correctly: 26 menu cards, 6 category tabs, cart count 0. Everything works. Let me also test the interactive behavior via browser..."
+    streamer.on_chunk(long_reasoning)
+    streamer._render_inline()
+
+    assert len(written_lines) > 0
+    latest = written_lines[-1]
+    # Verify no line overflow
+    assert streamer._last_line_len <= 60
+
+
 def test_summarize_thinking():
     short_text = "Analyzing module dependencies..."
     assert summarize_thinking(short_text) == short_text

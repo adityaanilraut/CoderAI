@@ -80,7 +80,20 @@ def handle_write_tool(args: dict[str, Any], context: Any) -> ToolResult:
         return ValidationResult(ok=True, input=new_input)
 
     def run(validated_args: dict[str, Any], ctx: Any) -> ToolResult:
-        file_path = normalize_file_path(as_str(validated_args.get("file_path")))
+        raw_fp = as_str(validated_args.get("file_path"))
+        iso_val = context_value(ctx, "isolated_cwd")
+        isolated_cwd = (
+            str(iso_val)
+            if isinstance(iso_val, (str, pathlib.Path)) and "MagicMock" not in str(type(iso_val))
+            else None
+        )
+        if isolated_cwd and not is_absolute_file_path(raw_fp):
+            file_path = normalize_file_path(str(pathlib.Path(isolated_cwd) / raw_fp))
+        else:
+            file_path = normalize_file_path(raw_fp)
+
+
+
         if not is_absolute_file_path(file_path):
             return ToolResult(
                 ok=False,
@@ -125,19 +138,48 @@ def handle_write_tool(args: dict[str, Any], context: Any) -> ToolResult:
         normalized_content = normalize_content(raw_content)
 
         try:
+            existing_metadata = read_text_file_with_metadata(file_path) if existing_file else None
+            diff_preview = build_diff_preview(
+                file_path,
+                existing_metadata["content"] if existing_metadata else None,
+                normalized_content,
+            )
+
+            from coderai.core.tools.file_mutation import generate_virtual_patch, is_dry_run
+
+            if is_dry_run(ctx, validated_args):
+                patch = generate_virtual_patch(
+                    file_path,
+                    existing_metadata["content"] if existing_metadata else None,
+                    normalized_content,
+                )
+                meta = {
+                    "type": "update" if existing_metadata else "create",
+                    "file_path": file_path,
+                    "dry_run": True,
+                    "diff_preview": diff_preview or patch["diff"],
+                    "virtual_patch": patch,
+                    "lines_added": patch["lines_added"],
+                    "lines_removed": patch["lines_removed"],
+                }
+                if repair_metadata:
+                    meta.update(repair_metadata)
+                return ToolResult(
+                    ok=True,
+                    name="write",
+                    output=f"[dry-run] Virtual write preview for {file_path}:\n{patch['diff']}"
+                    if patch["diff"]
+                    else f"[dry-run] Verified write for {file_path}.",
+                    metadata=meta,
+                )
+
             ensure_parent_directory(file_path)
 
-            existing_metadata = read_text_file_with_metadata(file_path) if existing_file else None
             encoding = existing_metadata["encoding"] if existing_metadata else "utf8"
             line_endings = (
                 existing_metadata["lineEndings"]
                 if existing_metadata
                 else ("CRLF" if "\r\n" in raw_content else "LF")
-            )
-            diff_preview = build_diff_preview(
-                file_path,
-                existing_metadata["content"] if existing_metadata else None,
-                normalized_content,
             )
 
             bytes_written = write_file_with_callbacks(
@@ -183,6 +225,7 @@ def handle_write_tool(args: dict[str, Any], context: Any) -> ToolResult:
                 metadata=meta,
             )
         except Exception as e:
+
             return ToolResult(ok=False, name="write", error=str(e))
 
     return execute_validated_tool(

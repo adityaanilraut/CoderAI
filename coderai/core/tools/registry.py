@@ -25,11 +25,19 @@ from coderai.core.tools import understand_image as _image
 from coderai.core.tools import update_plan as _plan
 from coderai.core.tools import web_fetch as _fetch
 from coderai.core.tools import web_search as _search
+from coderai.core.tools import browser as _browser
 from coderai.core.tools import write as _write
+
 from coderai.core.goals import handle_goal_tool as _goal_handle
 from coderai.core.workflow import handle_workflow_tool as _workflow_handle
 from coderai.core.code_mode import handle_code_mode_tool as _code_mode_handle
-from coderai.core.tools.session_query import handle_session_query_tool as _session_query_handle
+from coderai.core.tools.session_query import (
+    handle_session_query_tool as _session_query_handle,
+    handle_session_search_tool as _session_search_handle,
+    handle_session_trace_tool as _session_trace_handle,
+    handle_session_event_search_tool as _session_event_search_handle,
+    handle_session_event_read_tool as _session_event_read_handle,
+)
 from coderai.core.tools import pwsh as _pwsh
 from coderai.core.teams import (
     handle_spawn_teammate_tool as _spawn_teammate_handle,
@@ -284,9 +292,14 @@ class ToolRegistry:
 
         return tool_def
 
+    def get_tool(self, name: str, scope: str | None = None) -> ToolDefinition | None:
+        """Alias for get(name, scope)."""
+        return self.get(name, scope=scope)
+
     def has_tool(self, name: str, scope: str | None = None) -> bool:
         """Check if a tool exists and is permitted in the given scope."""
         return self.get(name, scope=scope) is not None
+
 
     def resolve_name(self, name: str) -> str | None:
         """Return the canonical registered name for a name or alias."""
@@ -834,7 +847,96 @@ class ToolRegistry:
             )
         )
 
+        self.register(
+            define_tool(
+                name="browser_navigate",
+                description="Navigate headless browser to a URL and extract indexed interactive elements and page content.",
+                parameters={
+                    "url": {"type": "string", "description": "The URL to navigate to."},
+                    "html_override": {
+                        "type": "string",
+                        "description": "Optional direct HTML content to render and inspect.",
+                    },
+                },
+                required=["url"],
+                handler=_browser.handle_browser_navigate_tool,
+                category="web",
+                is_mutating=False,
+                is_concurrency_safe=False,
+            )
+        )
+        self.register(
+            define_tool(
+                name="browser_click",
+                description="Click an indexed element [#N] or selector in the active browser page.",
+                parameters={
+                    "element_ref": {
+                        "type": ["integer", "string"],
+                        "description": "Element reference ID [#N] (e.g. 1 or '#1') or CSS selector to click.",
+                    }
+                },
+                required=["element_ref"],
+                handler=_browser.handle_browser_click_tool,
+                category="web",
+                is_mutating=True,
+                is_concurrency_safe=False,
+            )
+        )
+        self.register(
+            define_tool(
+                name="browser_type",
+                description="Type text into an input or textarea element on the active browser page.",
+                parameters={
+                    "element_ref": {
+                        "type": ["integer", "string"],
+                        "description": "Element reference ID [#N] or CSS selector.",
+                    },
+                    "text": {"type": "string", "description": "Text to type into element."},
+                    "clear_first": {
+                        "type": "boolean",
+                        "description": "Clear existing value before typing (default: true).",
+                    },
+                },
+                required=["element_ref", "text"],
+                handler=_browser.handle_browser_type_tool,
+                category="web",
+                is_mutating=True,
+                is_concurrency_safe=False,
+            )
+        )
+        self.register(
+            define_tool(
+                name="browser_snapshot",
+                description="Capture current DOM tree snapshot, scroll position, and text/element catalog.",
+                parameters={
+                    "extract_dom": {
+                        "type": "boolean",
+                        "description": "Extract structured element hierarchy.",
+                    },
+                    "full_page": {"type": "boolean"},
+                },
+                required=[],
+                handler=_browser.handle_browser_snapshot_tool,
+                category="web",
+                is_mutating=False,
+                is_concurrency_safe=True,
+            )
+        )
+        self.register(
+            define_tool(
+                name="browser_close",
+                description="Close active browser session and reset state.",
+                parameters={},
+                required=[],
+                handler=_browser.handle_browser_close_tool,
+                category="web",
+                is_mutating=False,
+                is_concurrency_safe=False,
+            )
+        )
+
         # 7. Subagents & Delegation
+
         self.register(
             define_tool(
                 name="Task",
@@ -864,6 +966,14 @@ class ToolRegistry:
                     "depth": {
                         "type": "integer",
                         "description": "Current subagent nesting depth.",
+                    },
+                    "max_depth": {
+                        "type": "integer",
+                        "description": "Maximum allowed subagent nesting depth.",
+                    },
+                    "token_budget": {
+                        "type": "integer",
+                        "description": "Maximum cumulative token budget for the subagent run.",
                     },
                 },
                 required=["description", "prompt"],
@@ -899,6 +1009,18 @@ class ToolRegistry:
                         "type": "string",
                         "description": "Optional additional context snippets or file excerpts.",
                     },
+                    "depth": {
+                        "type": "integer",
+                        "description": "Current subagent nesting depth.",
+                    },
+                    "max_depth": {
+                        "type": "integer",
+                        "description": "Maximum allowed subagent nesting depth.",
+                    },
+                    "token_budget": {
+                        "type": "integer",
+                        "description": "Maximum cumulative token budget for the subagent run.",
+                    },
                 },
                 required=["description", "prompt"],
                 handler=_agents.handle_continuable_subagent_tool,
@@ -932,6 +1054,18 @@ class ToolRegistry:
                     "context": {
                         "type": "string",
                         "description": "Optional additional context snippets or file excerpts.",
+                    },
+                    "depth": {
+                        "type": "integer",
+                        "description": "Current subagent nesting depth.",
+                    },
+                    "max_depth": {
+                        "type": "integer",
+                        "description": "Maximum allowed subagent nesting depth.",
+                    },
+                    "token_budget": {
+                        "type": "integer",
+                        "description": "Maximum cumulative token budget for the subagent run.",
                     },
                 },
                 required=["description", "prompt"],
@@ -999,7 +1133,12 @@ class ToolRegistry:
                     "summary": {
                         "type": "string",
                         "description": "Final report summary for parent.",
-                    }
+                    },
+                    "delivery": {
+                        "type": "string",
+                        "enum": ["next-step", "quiet"],
+                        "description": "Parent scheduling strategy: 'next-step' (default) stages context for parent's next step; 'quiet' appends context silently without waking.",
+                    },
                 },
                 required=["summary"],
                 handler=_agents.handle_report_tool,
@@ -1438,7 +1577,7 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="team_task_update",
-                description="Update status or assignee for a task on the shared team task board.",
+                description="Update status, assignee, result, or notes for a task on the shared team task board with optimistic CAS locking.",
                 parameters={
                     "task_id": {"type": "string"},
                     "status": {
@@ -1448,6 +1587,10 @@ class ToolRegistry:
                     "assigned_to": {"type": "string"},
                     "result": {"type": "string"},
                     "notes": {"type": "string"},
+                    "expected_revision": {
+                        "type": "integer",
+                        "description": "Expected current task revision for optimistic concurrency check.",
+                    },
                 },
                 required=["task_id"],
                 handler=_task_update_handle,
@@ -1508,6 +1651,82 @@ class ToolRegistry:
                 },
                 required=["query"],
                 handler=_session_query_handle,
+                category="meta",
+                is_mutating=False,
+                is_concurrency_safe=True,
+            )
+        )
+        self.register(
+            define_tool(
+                name="session_search",
+                description="Search prior sessions in the workspace by query keywords and topics.",
+                parameters={
+                    "query": {
+                        "type": "string",
+                        "description": "Natural language or keyword search query.",
+                    },
+                    "limit": {"type": "integer"},
+                },
+                required=["query"],
+                handler=_session_search_handle,
+                category="meta",
+                is_mutating=False,
+                is_concurrency_safe=True,
+            )
+        )
+        self.register(
+            define_tool(
+                name="session_trace",
+                description="Read the authorized session lineage, event count, and recent event summaries around one session.",
+                parameters={
+                    "session_id": {
+                        "type": "string",
+                        "description": "Target session ID to trace.",
+                    },
+                },
+                required=["session_id"],
+                handler=_session_trace_handle,
+                category="meta",
+                is_mutating=False,
+                is_concurrency_safe=True,
+            )
+        )
+        self.register(
+            define_tool(
+                name="session_event_search",
+                description="Search historical events and messages within a specific session or across workspace sessions.",
+                parameters={
+                    "query": {
+                        "type": "string",
+                        "description": "Keyword search query.",
+                    },
+                    "session_id": {"type": "string"},
+                    "role": {"type": "string", "enum": ["user", "assistant", "tool", "system"]},
+                    "limit": {"type": "integer"},
+                },
+                required=["query"],
+                handler=_session_event_search_handle,
+                category="meta",
+                is_mutating=False,
+                is_concurrency_safe=True,
+            )
+        )
+        self.register(
+            define_tool(
+                name="session_event_read",
+                description="Read one full unabridged event and neighboring event summaries from a session log.",
+                parameters={
+                    "session_id": {
+                        "type": "string",
+                        "description": "The session ID containing the target event.",
+                    },
+                    "seq": {
+                        "type": "integer",
+                        "description": "The event sequence number to retrieve.",
+                    },
+                },
+                required=["session_id", "seq"],
+                handler=_session_event_read_handle,
                 category="meta",
                 is_mutating=False,
                 is_concurrency_safe=True,

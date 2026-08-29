@@ -10,11 +10,10 @@
   <a href="#quickstart">Quickstart</a> •
   <a href="#interactive-cli--slash-commands">Interactive CLI</a> •
   <a href="#core-tools">Core Tools</a> •
-  <a href="docs/ARCHITECTURE.md">Architecture</a> •
   <a href="#security--permissions">Security</a> •
   <a href="#configuration">Configuration</a> •
   <a href="#development">Development</a> •
-  <a href="#documentation">Documentation</a>
+  <a href="#license">License</a>
 </p>
 
 ---
@@ -189,17 +188,33 @@ pip install -e ".[dev]"
 
 ## Quickstart
 
-### 1. Set Your API Key
+### 1. Configure Providers, API Keys & Models (Interactive Setup)
+
+You can run the interactive setup wizard directly from the command line or from within CoderAI:
 
 ```bash
-# Standard OpenAI API Key
-export OPENAI_API_KEY="sk-..."
+# Interactive setup wizard
+coderai setup
 
-# Or specify a custom base URL (e.g. OpenRouter, DeepSeek, Ollama, Gemini)
-export OPENAI_BASE_URL="https://api.openai.com/v1"
+# Or configure non-interactively
+coderai setup --provider deepseek --key sk-... --setup-model deepseek-v4-pro
+coderai setup --provider gemini --key AIzaSy... --setup-model gemini-3.7-flash
+coderai setup --base-url http://localhost:11434/v1 --setup-model qwen2.5-coder:32b --provider ollama
+
+# Test active provider connectivity
+coderai setup --test
+
+# View configured keys & endpoints status table
+coderai setup --status
 ```
 
-You can also create a `.env` file or configure settings in `~/.coderai/settings.json` or `.coderai/settings.json`.
+Alternatively, you can export environment variables in your shell or `.env` file:
+```bash
+export OPENAI_API_KEY="sk-..."
+export DEEPSEEK_API_KEY="sk-..."
+export GEMINI_API_KEY="AIzaSy..."
+export ANTHROPIC_API_KEY="sk-ant-..."
+```
 
 ### 2. Launch Interactive REPL
 
@@ -208,6 +223,8 @@ coderai
 # or
 cai
 ```
+
+Inside the REPL, you can type `/setup` at any time to add or update API keys, switch default models, or configure local LLM endpoints.
 
 ### 3. Launch in Plan Mode
 
@@ -243,6 +260,7 @@ When running `coderai`, you enter an interactive REPL featuring an ASCII banner,
 
 | Command                | Description                                                                           |
 | ---------------------- | ------------------------------------------------------------------------------------- |
+| `/setup`               | Interactive setup wizard: configure API keys, providers, local endpoints & models     |
 | `/continue`            | Continue bounded multi-step agent execution                                           |
 | `/plan`                | Toggle Plan Mode on/off with visual indicator                                         |
 | `/undo`                | Revert workspace files and history to the previous turn checkpoint                    |
@@ -436,16 +454,6 @@ python scripts/self_check_core.py
 # Clean build artifacts
 make clean
 ```
-
----
-
-## Documentation
-
-- [Architecture & System Design](docs/ARCHITECTURE.md)
-- [Tool Reference](docs/TOOLS.md)
-- [Permissions & Security Model](docs/PERMISSIONS.md)
-- [Model Context Protocol (MCP)](docs/MCP.md)
-- [Architectural Reference Matrix](docs/PARITY_REFERENCE.md)
 
 ---
 

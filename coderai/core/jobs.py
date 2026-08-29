@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import threading
 import time
 from dataclasses import dataclass
@@ -120,6 +121,12 @@ class JobStore:
                 return "not-found"
             if job.status in ("completed", "killed", "failed"):
                 return "already-finished"
+            if not job.process_id:
+                job.status = "killed"
+                if reason:
+                    job.detail = reason
+                job.finished_at = int(time.time() * 1000)
+                return "cancellation-requested"
             job.status = "stopping"
             if reason:
                 job.detail = reason
@@ -130,6 +137,22 @@ class JobStore:
             except Exception:
                 pass
         return "cancellation-requested"
+
+    def kill_all(self, session_id: str | None = None, reason: str | None = None) -> list[str]:
+        """Terminate all running background jobs for a session or across all sessions."""
+        killed_ids: list[str] = []
+        with self._lock:
+            target_jobs = [
+                j
+                for j in self._jobs.values()
+                if (session_id is None or j.session_id == session_id)
+                and j.status in ("running", "stopping")
+            ]
+        for j in target_jobs:
+            res = self.kill(j.id, j.session_id, reason=reason or "Terminating background job")
+            if res != "already-finished":
+                killed_ids.append(j.id)
+        return killed_ids
 
     def get(self, job_id: str, session_id: str) -> Job | None:
         with self._lock:
@@ -190,3 +213,6 @@ def status_line(job: Job) -> str:
     if job.detail:
         return f"[status: {job.status}, {job.detail}]"
     return f"[status: {job.status}]"
+
+
+atexit.register(lambda: get_job_store().kill_all(reason="Process shutdown"))

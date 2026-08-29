@@ -311,6 +311,113 @@ class McpManager:
         status = next((s for s in self.server_statuses if s.name == name), None)
         return status.connected if status else False
 
+    async def probe_health(self) -> dict[str, bool]:
+        """Probe health and connection liveness for all configured MCP servers."""
+        health: dict[str, bool] = {}
+        for name in list(self.configured_server_names):
+            client = next((c for c in self.clients if c.server_name == name), None)
+            if client and client.is_connected():
+                try:
+                    alive = await client.ping(timeout_s=3.0)
+                    health[name] = alive
+                except Exception:
+                    health[name] = False
+            else:
+                health[name] = False
+        return health
+
+    async def auto_heal_servers(
+        self,
+        max_retries: int = 3,
+        initial_delay_s: float = 0.1,
+    ) -> dict[str, bool]:
+        """Automatically detect and reconnect unhealthy or disconnected MCP servers with backoff."""
+        if self.disposed:
+            return {}
+
+        healed: dict[str, bool] = {}
+        health = await self.probe_health()
+
+        for name, is_healthy in health.items():
+            if is_healthy:
+                healed[name] = True
+                continue
+
+            config = self.server_configs.get(name)
+            if not config or bool(config.get("disabled")) or config.get("enabled") is False:
+                healed[name] = False
+                continue
+
+            success = False
+            for attempt in range(max_retries):
+                delay = initial_delay_s * (2**attempt)
+                if delay > 0:
+                    import asyncio
+
+                    await asyncio.sleep(delay)
+                try:
+                    ok = await self.reconnect(name, config)
+                    if ok:
+                        success = True
+                        break
+                except Exception:
+                    pass
+
+            healed[name] = success
+
+        if any(healed.values()) and self.on_tools_list_changed:
+            self.on_tools_list_changed()
+
+        return healed
+
+    async def hot_reload_tools(self, server_name: str | None = None) -> list[McpToolEntry]:
+        """Fetch updated tool schemas from active MCP servers without resetting session state."""
+        if self.disposed:
+            return []
+
+        target_clients = (
+            [c for c in self.clients if c.server_name == server_name]
+            if server_name
+            else list(self.clients)
+        )
+
+        for client in target_clients:
+            if not client.is_connected():
+                continue
+            name = client.server_name
+            try:
+                fresh_tools = await client.list_tools(timeout_s=10.0)
+                self.tools = [t for t in self.tools if t.server_name != name]
+                used_names = {t.namespaced_name for t in self.tools}
+                tool_names: list[str] = []
+
+                for tool in fresh_tools:
+                    orig_name = tool.get("name", "")
+                    namespaced = build_mcp_namespaced_name(name, orig_name, used_names)
+                    used_names.add(namespaced)
+                    tool_names.append(namespaced)
+                    self.tools.append(
+                        McpToolEntry(
+                            server_name=name,
+                            original_name=orig_name,
+                            namespaced_name=namespaced,
+                            definition=tool,
+                            client=client,
+                        )
+                    )
+
+                status = next((s for s in self.server_statuses if s.name == name), None)
+                if status:
+                    status.tool_count = len(tool_names)
+                    status.tools = tool_names
+            except Exception:
+                pass
+
+        if self.on_tools_list_changed:
+            self.on_tools_list_changed()
+
+        return list(self.tools)
+
     def list_tools(self, session_id: str | None = None) -> list[McpToolEntry]:
         if session_id:
             return [
@@ -319,6 +426,7 @@ class McpManager:
                 if self.is_tool_enabled_for_session(session_id, t.namespaced_name)
             ]
         return list(self.tools)
+
 
     def get_prompts(self) -> list[dict[str, Any]]:
         return list(self.prompts)

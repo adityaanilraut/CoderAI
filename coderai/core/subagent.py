@@ -19,14 +19,24 @@ from coderai.core.common.message_converter import OpenAIMessageConverter
 from coderai.core.common.openai_thinking import build_thinking_request_options
 from coderai.core.common.usage import extract_usage_dict
 from coderai.core.prompt import get_runtime_context, get_subagent_system_prompt, get_tools
+from coderai.core.spawn import (
+    DEFAULT_MAX_SUBAGENT_DEPTH,
+    DEFAULT_SUBAGENT_MAX_ITERATIONS,
+    DEFAULT_SUBAGENT_TIMEOUT_SECONDS,
+    SubagentDescriptor,
+    check_subagent_depth_quota,
+    cleanup_subagent_scratchpad,
+    parse_subagent_descriptor,
+    setup_subagent_scratchpad,
+)
 from coderai.core.state import clear_session_state
 from coderai.core.tools.types import ToolExecutionHooks
 
 logger = logging.getLogger(__name__)
 
-MAX_SUBAGENT_ITERATIONS = 20
-MAX_SUBAGENT_DEPTH = 3
-DEFAULT_SUBAGENT_TIMEOUT = 90.0
+MAX_SUBAGENT_ITERATIONS = DEFAULT_SUBAGENT_MAX_ITERATIONS
+MAX_SUBAGENT_DEPTH = DEFAULT_MAX_SUBAGENT_DEPTH
+DEFAULT_SUBAGENT_TIMEOUT = DEFAULT_SUBAGENT_TIMEOUT_SECONDS
 
 
 @dataclass
@@ -41,6 +51,12 @@ class SubAgentSpec:
     timeout_seconds: float = DEFAULT_SUBAGENT_TIMEOUT
     max_iterations: int = MAX_SUBAGENT_ITERATIONS
     depth: int = 0
+    max_depth: int = MAX_SUBAGENT_DEPTH
+    token_budget: int | None = None
+    max_tokens: int | None = None
+    isolated_cwd: str | None = None
+    scratchpad_dir: str | None = None
+    dry_run: bool = False
     parent_session_id: str | None = None
     allowed_tools: list[str] | None = None
     extra_context: str | None = None
@@ -51,6 +67,14 @@ class SubAgentSpec:
     handle: Any | None = None
     seed_messages: list[dict[str, Any]] | None = None
     seed_events: list[Any] | None = None
+    descriptor: SubagentDescriptor | None = None
+
+    def __post_init__(self) -> None:
+        if self.token_budget is None and self.max_tokens is not None:
+            self.token_budget = self.max_tokens
+        elif self.max_tokens is None and self.token_budget is not None:
+            self.max_tokens = self.token_budget
+
 
 
 @dataclass
@@ -59,7 +83,7 @@ class SubAgentResult:
 
     task_id: str
     session_id: str
-    status: str  # "completed" | "failed" | "interrupted" | "timeout" | "max_iterations"
+    status: str  # "completed" | "failed" | "interrupted" | "timeout" | "max_iterations" | "budget_exceeded"
     summary: str
     active_tokens: int = 0
     total_tokens: int = 0
@@ -69,6 +93,9 @@ class SubAgentResult:
     duration_seconds: float = 0.0
     error: str | None = None
     artifacts: list[str] = field(default_factory=list)
+    diffs: list[dict[str, Any]] = field(default_factory=list)
+    exit_code: int = 0
+    token_telemetry: dict[str, Any] = field(default_factory=dict)
     parent_agent_id: str | None = None
     root_agent_id: str | None = None
     depth: int = 0
@@ -89,6 +116,9 @@ class SubAgentResult:
             "duration_seconds": self.duration_seconds,
             "error": self.error,
             "artifacts": self.artifacts,
+            "diffs": self.diffs,
+            "exit_code": self.exit_code,
+            "token_telemetry": self.token_telemetry,
             "parent_agent_id": self.parent_agent_id,
             "root_agent_id": self.root_agent_id,
             "depth": self.depth,
@@ -100,7 +130,7 @@ class SubAgentResult:
         status_badge = "✅ COMPLETED" if self.status == "completed" else f"⚠️ {self.status.upper()}"
         lines = [
             f"### Sub-Agent Task Result [{self.task_id}] — {status_badge}",
-            f"**Status**: `{self.status}` | **Iterations**: `{self.iterations}` | **Tokens**: `{self.total_tokens}`",
+            f"**Status**: `{self.status}` | **Exit Code**: `{self.exit_code}` | **Iterations**: `{self.iterations}` | **Tokens**: `{self.total_tokens}`",
         ]
         if self.error:
             lines.append(f"\n> ❌ **Error**: {self.error}\n")
@@ -110,6 +140,11 @@ class SubAgentResult:
             lines.append("\n**Artifacts/Files Examined**:")
             for art in self.artifacts:
                 lines.append(f"- `{art}`")
+        if self.diffs:
+            lines.append(f"\n**Files Modified ({len(self.diffs)})**:")
+            for d in self.diffs:
+                fp = d.get("file_path", "unknown")
+                lines.append(f"- `{fp}`")
         return "\n".join(lines)
 
 
@@ -164,7 +199,7 @@ class SubAgentManager:
             event.set()
 
     async def spawn_subagent(self, spec: SubAgentSpec) -> SubAgentResult:
-        """Spawn and execute a single isolated sub-agent with timeout and error recovery."""
+        """Spawn and execute a single isolated sub-agent with timeout, quota checks, and error recovery."""
         session_id = (
             f"sub_{spec.parent_session_id[:8] if spec.parent_session_id else 'root'}_{spec.task_id}"
         )
@@ -176,25 +211,31 @@ class SubAgentManager:
             {"description": spec.description, "mode": spec.mode, "depth": spec.depth},
         )
 
-        if spec.depth > MAX_SUBAGENT_DEPTH:
+        effective_max_depth = spec.max_depth if spec.max_depth is not None else MAX_SUBAGENT_DEPTH
+        quota_ok, quota_err = check_subagent_depth_quota(spec.depth, effective_max_depth)
+        if not quota_ok:
             self._emit_lifecycle_event(
                 lifecycle_events,
                 "subagent/error",
                 spec,
-                {"error": "RecursionLimitError: Maximum sub-agent nesting depth exceeded."},
+                {"error": quota_err or f"RecursionLimitError: Maximum sub-agent nesting depth exceeded (max {effective_max_depth})."},
             )
             return SubAgentResult(
                 task_id=spec.task_id,
                 session_id=session_id,
                 status="failed",
                 summary="Maximum sub-agent nesting depth exceeded.",
-                error="RecursionLimitError: Sub-agents cannot spawn additional sub-agents.",
+                error=quota_err or f"RecursionLimitError: Sub-agent depth {spec.depth} exceeds max_depth {effective_max_depth}.",
+                exit_code=1,
                 parent_agent_id=spec.parent_agent_id,
                 root_agent_id=spec.root_agent_id,
                 depth=spec.depth,
                 children_ids=list(spec.children_ids),
                 lifecycle_events=lifecycle_events,
             )
+
+        if not spec.scratchpad_dir:
+            spec.scratchpad_dir = setup_subagent_scratchpad(self.project_root, session_id)
 
         abort_event = asyncio.Event()
         self._active_controllers[session_id] = abort_event
@@ -205,6 +246,19 @@ class SubAgentManager:
             spec,
             {"timeout_seconds": spec.timeout_seconds, "max_iterations": spec.max_iterations},
         )
+
+        from coderai.core.hooks import run_on_subagent_spawn
+
+        try:
+            run_on_subagent_spawn(
+                parent_session_id=spec.parent_agent_id or "root",
+                subagent_id=session_id,
+                task=spec.prompt or spec.description,
+                mode=spec.mode,
+                project_root=self.project_root,
+            )
+        except Exception:
+            pass
 
         try:
             if spec.provider == "claude_code":
@@ -219,13 +273,18 @@ class SubAgentManager:
                         cwd=self.project_root,
                     )
                 )
-                raw_res = await claude_driver.execute(spec.prompt, project_root=self.project_root)
+                raw_res = await asyncio.wait_for(
+                    claude_driver.execute(spec.prompt, project_root=self.project_root),
+                    timeout=spec.timeout_seconds,
+                )
+                status = raw_res.get("status", "completed" if raw_res.get("ok") else "failed")
                 result = SubAgentResult(
                     task_id=spec.task_id,
                     session_id=session_id,
-                    status=raw_res.get("status", "completed" if raw_res.get("ok") else "failed"),
+                    status=status,
                     summary=raw_res.get("summary", ""),
                     error=raw_res.get("error"),
+                    exit_code=0 if status == "completed" else 1,
                     duration_seconds=raw_res.get("duration_seconds", 0.0),
                 )
             elif spec.provider == "codex":
@@ -237,13 +296,18 @@ class SubAgentManager:
                         cwd=self.project_root,
                     )
                 )
-                raw_res = await codex_driver.execute(spec.prompt, project_root=self.project_root)
+                raw_res = await asyncio.wait_for(
+                    codex_driver.execute(spec.prompt, project_root=self.project_root),
+                    timeout=spec.timeout_seconds,
+                )
+                status = raw_res.get("status", "completed" if raw_res.get("ok") else "failed")
                 result = SubAgentResult(
                     task_id=spec.task_id,
                     session_id=session_id,
-                    status=raw_res.get("status", "completed" if raw_res.get("ok") else "failed"),
+                    status=status,
                     summary=raw_res.get("summary", ""),
                     error=raw_res.get("error"),
+                    exit_code=0 if status == "completed" else 1,
                     duration_seconds=raw_res.get("duration_seconds", 0.0),
                 )
             elif spec.provider == "acp":
@@ -256,13 +320,18 @@ class SubAgentManager:
                         timeout_seconds=spec.timeout_seconds,
                     )
                 )
-                raw_res = await runner.execute(spec.prompt)
+                raw_res = await asyncio.wait_for(
+                    runner.execute(spec.prompt),
+                    timeout=spec.timeout_seconds,
+                )
+                status = raw_res.get("status", "completed" if raw_res.get("ok") else "failed")
                 result = SubAgentResult(
                     task_id=spec.task_id,
                     session_id=session_id,
-                    status=raw_res.get("status", "completed" if raw_res.get("ok") else "failed"),
+                    status=status,
                     summary=raw_res.get("summary", ""),
                     error=raw_res.get("error"),
+                    exit_code=0 if status == "completed" else 1,
                     duration_seconds=raw_res.get("duration_seconds", 0.0),
                 )
             else:
@@ -290,7 +359,7 @@ class SubAgentManager:
                     {"status": result.status, "error": result.error},
                 )
             return result
-        except asyncio.TimeoutError:
+        except (asyncio.TimeoutError, TimeoutError):
             self._emit_lifecycle_event(
                 lifecycle_events,
                 "subagent/error",
@@ -305,6 +374,7 @@ class SubAgentManager:
                 status="timeout",
                 summary=f"Sub-agent timed out after {spec.timeout_seconds:.1f} seconds.",
                 error=f"TimeoutError: Sub-agent execution exceeded {spec.timeout_seconds}s limit.",
+                exit_code=124,
                 parent_agent_id=spec.parent_agent_id,
                 root_agent_id=spec.root_agent_id,
                 depth=spec.depth,
@@ -324,6 +394,7 @@ class SubAgentManager:
                 status="interrupted",
                 summary="Sub-agent was cancelled.",
                 error="CancelledError: Parent or runner cancelled sub-agent.",
+                exit_code=130,
                 parent_agent_id=spec.parent_agent_id,
                 root_agent_id=spec.root_agent_id,
                 depth=spec.depth,
@@ -344,6 +415,7 @@ class SubAgentManager:
                 status="failed",
                 summary=f"Sub-agent encountered an error: {e}",
                 error=str(e),
+                exit_code=1,
                 parent_agent_id=spec.parent_agent_id,
                 root_agent_id=spec.root_agent_id,
                 depth=spec.depth,
@@ -423,12 +495,14 @@ class SubAgentManager:
         # Setup sandboxed tools
         from coderai.core.tools.executor import ToolExecutor
 
-        tool_executor = ToolExecutor(self.project_root, self.create_openai_client)
+        effective_root = spec.isolated_cwd or self.project_root
+        tool_executor = ToolExecutor(effective_root, self.create_openai_client)
         available_tools = self._get_sandboxed_tools(spec, model)
 
         # Build isolated initial message history with static system prompt
         system_prompt = get_subagent_system_prompt(spec.mode)
-        runtime_context = get_runtime_context(self.project_root, model)
+        runtime_context = get_runtime_context(effective_root, model)
+
 
         initial_user_prompt = spec.prompt
         if spec.description:
@@ -456,6 +530,7 @@ class SubAgentManager:
         tool_calls_count = 0
         last_assistant_reply = ""
         artifacts: list[str] = []
+        diffs: list[dict[str, Any]] = []
 
         for iteration in range(1, spec.max_iterations + 1):
             if abort_event.is_set():
@@ -470,6 +545,15 @@ class SubAgentManager:
                     iterations=iteration,
                     tool_calls_count=tool_calls_count,
                     artifacts=artifacts,
+                    diffs=diffs,
+                    exit_code=130,
+                    token_telemetry={
+                        "prompt_tokens": total_prompt_tokens,
+                        "completion_tokens": total_completion_tokens,
+                        "cached_tokens": total_cached_tokens,
+                        "active_tokens": active_tokens,
+                        "total_tokens": total_prompt_tokens + total_completion_tokens,
+                    },
                     parent_agent_id=spec.parent_agent_id,
                     root_agent_id=spec.root_agent_id,
                     depth=spec.depth,
@@ -533,10 +617,20 @@ class SubAgentManager:
                     summary=f"LLM request error in sub-agent: {e}",
                     active_tokens=active_tokens,
                     total_tokens=total_prompt_tokens + total_completion_tokens,
+                    cached_tokens=total_cached_tokens,
                     iterations=iteration,
                     tool_calls_count=tool_calls_count,
                     error=str(e),
+                    exit_code=1,
+                    token_telemetry={
+                        "prompt_tokens": total_prompt_tokens,
+                        "completion_tokens": total_completion_tokens,
+                        "cached_tokens": total_cached_tokens,
+                        "active_tokens": active_tokens,
+                        "total_tokens": total_prompt_tokens + total_completion_tokens,
+                    },
                     artifacts=artifacts,
+                    diffs=diffs,
                     parent_agent_id=spec.parent_agent_id,
                     root_agent_id=spec.root_agent_id,
                     depth=spec.depth,
@@ -552,6 +646,34 @@ class SubAgentManager:
             total_completion_tokens += c_tok
             total_cached_tokens += cached_tok
             active_tokens = usage.get("total_tokens", p_tok + c_tok)
+
+            if spec.token_budget is not None and (total_prompt_tokens + total_completion_tokens) >= spec.token_budget:
+                return SubAgentResult(
+                    task_id=spec.task_id,
+                    session_id=session_id,
+                    status="budget_exceeded",
+                    summary=last_assistant_reply or f"Sub-agent reached token budget cap ({spec.token_budget} tokens).",
+                    active_tokens=active_tokens,
+                    total_tokens=total_prompt_tokens + total_completion_tokens,
+                    cached_tokens=total_cached_tokens,
+                    iterations=iteration,
+                    tool_calls_count=tool_calls_count,
+                    exit_code=2,
+                    token_telemetry={
+                        "prompt_tokens": total_prompt_tokens,
+                        "completion_tokens": total_completion_tokens,
+                        "cached_tokens": total_cached_tokens,
+                        "active_tokens": active_tokens,
+                        "total_tokens": total_prompt_tokens + total_completion_tokens,
+                    },
+                    artifacts=artifacts,
+                    diffs=diffs,
+                    parent_agent_id=spec.parent_agent_id,
+                    root_agent_id=spec.root_agent_id,
+                    depth=spec.depth,
+                    children_ids=list(spec.children_ids),
+                    lifecycle_events=events,
+                )
 
             choice = (response.get("choices") or [{}])[0]
             msg = choice.get("message") or {}
@@ -575,7 +697,16 @@ class SubAgentManager:
                     iterations=iteration,
                     tool_calls_count=tool_calls_count,
                     error=refusal,
+                    exit_code=1,
+                    token_telemetry={
+                        "prompt_tokens": total_prompt_tokens,
+                        "completion_tokens": total_completion_tokens,
+                        "cached_tokens": total_cached_tokens,
+                        "active_tokens": active_tokens,
+                        "total_tokens": total_prompt_tokens + total_completion_tokens,
+                    },
                     artifacts=artifacts,
+                    diffs=diffs,
                     parent_agent_id=spec.parent_agent_id,
                     root_agent_id=spec.root_agent_id,
                     depth=spec.depth,
@@ -608,7 +739,16 @@ class SubAgentManager:
                     cached_tokens=total_cached_tokens,
                     iterations=iteration,
                     tool_calls_count=tool_calls_count,
+                    exit_code=0,
+                    token_telemetry={
+                        "prompt_tokens": total_prompt_tokens,
+                        "completion_tokens": total_completion_tokens,
+                        "cached_tokens": total_cached_tokens,
+                        "active_tokens": active_tokens,
+                        "total_tokens": total_prompt_tokens + total_completion_tokens,
+                    },
                     artifacts=artifacts,
+                    diffs=diffs,
                     parent_agent_id=spec.parent_agent_id,
                     root_agent_id=spec.root_agent_id,
                     depth=spec.depth,
@@ -648,10 +788,14 @@ class SubAgentManager:
                 else:
                     hooks: ToolExecutionHooks = ToolExecutionHooks(
                         should_stop=lambda: abort_event.is_set(),
+                        isolated_cwd=spec.isolated_cwd or spec.scratchpad_dir,
+                        dry_run=spec.dry_run,
+                        on_after_file_mutation=lambda fp: diffs.append({"file_path": str(fp)}),
                     )
                     executions = await tool_executor.execute_tool_calls(
                         session_id, [tc], hooks=hooks
                     )
+
                     if executions:
                         tool_result_content = executions[0]["content"]
                     else:
@@ -662,7 +806,7 @@ class SubAgentManager:
                 messages.append(
                     {
                         "role": "tool",
-                        "content": tool_result_content,
+                        "content": tool_result_content or "(no output)",
                         "tool_call_id": tc.get("id", ""),
                     }
                 )
@@ -679,7 +823,16 @@ class SubAgentManager:
             cached_tokens=total_cached_tokens,
             iterations=spec.max_iterations,
             tool_calls_count=tool_calls_count,
+            exit_code=2,
+            token_telemetry={
+                "prompt_tokens": total_prompt_tokens,
+                "completion_tokens": total_completion_tokens,
+                "cached_tokens": total_cached_tokens,
+                "active_tokens": active_tokens,
+                "total_tokens": total_prompt_tokens + total_completion_tokens,
+            },
             artifacts=artifacts,
+            diffs=diffs,
             parent_agent_id=spec.parent_agent_id,
             root_agent_id=spec.root_agent_id,
             depth=spec.depth,
@@ -688,7 +841,11 @@ class SubAgentManager:
         )
 
     def _get_sandboxed_tools(self, spec: SubAgentSpec, model: str) -> list[dict[str, Any]]:
-        """Filter tools for subagent execution."""
+        """Filter tools for subagent execution with deterministic ordering and canonicalization."""
+        from coderai.core.prompt import format_tool_definitions
+        from coderai.core.prompt_sections import order_tools
+        from coderai.core.tools.types import canonicalize_tool_schema
+
         all_tools = get_tools({"model": model, "nonInteractive": True, "childAgent": True})
 
         filtered: list[dict[str, Any]] = []
@@ -710,9 +867,17 @@ class SubAgentManager:
             if spec.allowed_tools and name not in spec.allowed_tools:
                 continue
 
+            if (
+                spec.descriptor
+                and spec.descriptor.tool_filter
+                and not spec.descriptor.tool_filter.is_tool_permitted(name)
+            ):
+                continue
+
             filtered.append(tool)
 
-        return filtered
+        formatted = format_tool_definitions(filtered, model=model)
+        return order_tools([canonicalize_tool_schema(t) for t in formatted])
 
 
 def _normalize_subagent_tool_calls(raw: Any) -> list[dict[str, Any]] | None:

@@ -36,11 +36,52 @@ __all__ = [
     "ToolError",
     "ToolExecutionContext",
     "ToolExecutionFollowUpMessage",
-    "ToolExecutionHooks",
+    "SlidingWindowRateLimiter",
     "ToolExecutor",
     "ToolResult",
     "ValidationError",
 ]
+
+
+DEFAULT_TOOL_CONCURRENCY = 8
+
+
+class SlidingWindowRateLimiter:
+    """Thread-safe and async-safe in-memory sliding-window rate limiter per tool key."""
+
+    def __init__(self) -> None:
+        self._history: dict[str, list[float]] = {}
+
+    def acquire(self, key: str, max_requests: int, window_seconds: float) -> tuple[bool, float]:
+        """Attempt to acquire a call permit.
+
+        Returns:
+            tuple of (allowed: bool, retry_after_seconds: float)
+        """
+        if max_requests <= 0 or window_seconds <= 0:
+            return True, 0.0
+
+        now = time.time()
+        window_start = now - window_seconds
+
+        calls = self._history.setdefault(key, [])
+        # Prune calls older than window_start
+        self._history[key] = [t for t in calls if t > window_start]
+        calls = self._history[key]
+
+        if len(calls) < max_requests:
+            calls.append(now)
+            return True, 0.0
+
+        oldest_in_window = calls[0]
+        retry_after = max(0.1, (oldest_in_window + window_seconds) - now)
+        return False, retry_after
+
+    def reset(self, key: str | None = None) -> None:
+        if key:
+            self._history.pop(key, None)
+        else:
+            self._history.clear()
 
 
 class ToolExecutor:
@@ -52,11 +93,15 @@ class ToolExecutor:
         create_openai_client: Callable[[], dict[str, Any]] | None = None,
         mcp_manager: Any = None,
         registry: ToolRegistry | None = None,
+        concurrency_limit: int = DEFAULT_TOOL_CONCURRENCY,
     ) -> None:
         self.project_root = project_root
         self.create_openai_client = create_openai_client
         self.mcp_manager = mcp_manager
         self.registry = registry or get_tool_registry()
+        self.rate_limiter = SlidingWindowRateLimiter()
+        self.concurrency_limit = concurrency_limit
+        self._concurrency_semaphore = asyncio.Semaphore(max(1, concurrency_limit))
 
     async def execute_tool_calls(
         self,
@@ -79,7 +124,7 @@ class ToolExecutor:
             )
 
         if parallel and len(parsed_calls) > 1:
-            # Parallel execution path
+            # Parallel execution path throttled by semaphore to prevent EMFILE
             async def _run_single(tc: dict[str, Any]) -> dict[str, Any]:
                 if should_stop and should_stop():
                     return {
@@ -97,7 +142,8 @@ class ToolExecutor:
                             "error": "Execution interrupted",
                         },
                     }
-                res = await self.execute_tool_call(session_id, tc, hooks)
+                async with self._concurrency_semaphore:
+                    res = await self.execute_tool_call(session_id, tc, hooks)
                 return {
                     "toolCallId": tc["id"],
                     "content": self.format_tool_result(res),
@@ -292,9 +338,12 @@ class ToolExecutor:
             bash_min_timeout_ms=get_hook("bash_min_timeout_ms"),
             permission_decision=get_hook("permission_decision"),
             sandbox_mode=get_hook("sandbox_mode"),
+            isolated_cwd=get_hook("isolated_cwd"),
+            dry_run=bool(get_hook("dry_run")),
             list_session_messages=get_hook("list_session_messages"),
             list_session_events=get_hook("list_session_events"),
         )
+
 
     def _pre_execute_deny(
         self,
@@ -352,6 +401,21 @@ class ToolExecutor:
                     error="GuardDenied: tool call blocked by a monotonic guard.",
                 )
 
+        # Check sliding-window rate limiting on tool definition
+        tool_def = self.registry.get(tool_name, scope=getattr(context, "session_id", None))
+        if tool_def and getattr(tool_def, "rate_limit", None):
+            max_reqs, window_s = tool_def.rate_limit
+            sid = getattr(context, "session_id", "global")
+            limiter_key = f"{sid}:{tool_name}"
+            allowed, retry_after = self.rate_limiter.acquire(limiter_key, max_reqs, window_s)
+            if not allowed:
+                return ToolResult(
+                    ok=False,
+                    name=tool_name,
+                    error=f"ToolRateLimitExceeded: Tool '{tool_name}' exceeded rate limit ({max_reqs} calls per {window_s:.1f}s). Retry in {retry_after:.1f}s.",
+                    metadata={"rateLimited": True, "retryAfterSeconds": retry_after},
+                )
+
         from coderai.core.hooks import HookPoint, run_hook_point
 
         pre_outcome = run_hook_point(
@@ -393,6 +457,14 @@ class ToolExecutor:
             if hook_timeout is not None:
                 timeout_ms = hook_timeout
 
+        target_path = None
+        if tool_def.name.lower() in ("write", "edit", "str_replace_editor", "patch", "apply_patch"):
+            target_path = (
+                validated_args.get("file_path")
+                or validated_args.get("path")
+                or validated_args.get("target_file")
+            )
+
         try:
 
             async def _invoke() -> Any:
@@ -406,10 +478,20 @@ class ToolExecutor:
                     return await res
                 return res
 
-            if timeout_ms and int(timeout_ms) > 0:
-                res = await asyncio.wait_for(_invoke(), timeout=int(timeout_ms) / 1000.0)
+            if target_path and isinstance(target_path, str) and target_path.strip():
+                from coderai.core.tools.path_lock import get_path_lock_manager
+
+                path_lock_mgr = get_path_lock_manager()
+                async with path_lock_mgr.acquire_write_lock(target_path, self.project_root):
+                    if timeout_ms and int(timeout_ms) > 0:
+                        res = await asyncio.wait_for(_invoke(), timeout=int(timeout_ms) / 1000.0)
+                    else:
+                        res = await _invoke()
             else:
-                res = await _invoke()
+                if timeout_ms and int(timeout_ms) > 0:
+                    res = await asyncio.wait_for(_invoke(), timeout=int(timeout_ms) / 1000.0)
+                else:
+                    res = await _invoke()
         except (TimeoutError, asyncio.TimeoutError):
             return ToolResult(
                 ok=False,
@@ -439,14 +521,25 @@ class ToolExecutor:
         hooks: Any,
         session_id: str | None = None,
     ) -> ToolResult:
-        del hooks
+        timeout_ms = None
+        if hooks:
+            timeout_ms = getattr(hooks, "timeout_ms", None) or (
+                hooks.get("timeout_ms") if isinstance(hooks, dict) else None
+            )
         try:
             fn = self.mcp_manager.execute_mcp_tool
             sig = inspect.signature(fn)
-            if "session_id" in sig.parameters:
-                res = await fn(tool_name, raw_args, session_id=session_id)
+
+            async def _invoke_mcp() -> Any:
+                if "session_id" in sig.parameters:
+                    return await fn(tool_name, raw_args, session_id=session_id)
+                return await fn(tool_name, raw_args)
+
+            if timeout_ms and int(timeout_ms) > 0:
+                res = await asyncio.wait_for(_invoke_mcp(), timeout=int(timeout_ms) / 1000.0)
             else:
-                res = await fn(tool_name, raw_args)
+                res = await _invoke_mcp()
+
             if isinstance(res, ToolResult):
                 return res
             if isinstance(res, dict):
@@ -458,6 +551,13 @@ class ToolExecutor:
                     metadata=res.get("metadata"),
                 )
             return ToolResult(ok=True, name=tool_name, output=str(res))
+        except (TimeoutError, asyncio.TimeoutError):
+            return ToolResult(
+                ok=False,
+                name=tool_name,
+                error=f"TOOL_TIMEOUT: MCP tool exceeded {timeout_ms}ms.",
+                metadata={"code": "TOOL_TIMEOUT"},
+            )
         except Exception as e:
             return ToolResult(ok=False, name=tool_name, error=f"McpToolExecutionError: {e}")
 
@@ -490,6 +590,36 @@ class ToolExecutor:
         context: ToolExecutionContext,
         hooks: ToolExecutionHooks | dict[str, Any] | None,
     ) -> ToolResult:
+        from coderai.core.hooks import run_post_tool_use, run_on_tool_error
+
+        try:
+            if not result.ok or result.error:
+                error_outcome = run_on_tool_error(
+                    tool_name=tool_name,
+                    args=args,
+                    error=result.error or "tool_failed",
+                    context=context,
+                )
+                if error_outcome.additional_context:
+                    result.follow_up_messages = list(result.follow_up_messages or []) + list(
+                        error_outcome.additional_context
+                    )
+            else:
+                post_outcome = run_post_tool_use(
+                    tool_name=tool_name,
+                    args=args,
+                    result=result,
+                    context=context,
+                )
+                if post_outcome.additional_context:
+                    result.follow_up_messages = list(result.follow_up_messages or []) + list(
+                        post_outcome.additional_context
+                    )
+                if post_outcome.stop:
+                    result.concludes_turn = True
+        except Exception:
+            pass
+
         if not hooks:
             return result
         post_execute = getattr(hooks, "post_execute", None) or (
@@ -500,13 +630,15 @@ class ToolExecutor:
         updated = post_execute(tool_name, args, result, context)
         return updated if isinstance(updated, ToolResult) else result
 
-    def _parse_tool_arguments(self, raw_arguments: str) -> dict[str, Any]:
+    def _parse_tool_arguments(self, raw_arguments: Any) -> dict[str, Any]:
         """Parse raw arguments string into JSON object with clean error messaging and auto-repair."""
         if not raw_arguments:
             return {"ok": True, "args": {}}
+        if isinstance(raw_arguments, dict):
+            return {"ok": True, "args": raw_arguments}
 
         cleaned = (
-            clean_json_string(raw_arguments) if isinstance(raw_arguments, str) else raw_arguments
+            clean_json_string(raw_arguments) if isinstance(raw_arguments, str) else str(raw_arguments)
         )
         try:
             parsed = json.loads(cleaned)
@@ -523,7 +655,7 @@ class ToolExecutor:
                     ),
                 }
 
-        if not isinstance(parsed, dict) or isinstance(parsed, list):
+        if not isinstance(parsed, dict):
             return {"ok": False, "error": "InputParseError: Tool arguments must be a JSON object."}
 
         return {"ok": True, "args": parsed}

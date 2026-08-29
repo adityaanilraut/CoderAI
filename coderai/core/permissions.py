@@ -86,7 +86,18 @@ PERMISSION_DESCRIBED_TOOLS = {
     "wait_agent",
     "code_mode",
     "session_query",
+    "session_search",
+    "session_trace",
+    "session_event_search",
+    "session_event_read",
+    "browser_navigate",
+    "browser_click",
+    "browser_type",
+    "browser_snapshot",
+    "browser_close",
 }
+
+
 
 # These tools only mutate CoderAI's own in-memory/session bookkeeping or are
 # observational; they do not require a filesystem/network permission scope.
@@ -517,6 +528,24 @@ def describe_tool_permission_request(
             "scopes": ["network"],
         }
 
+    if name == "browser_navigate":
+        url = args.get("url") if isinstance(args.get("url"), str) else "browser_navigate"
+        return {
+            "toolCallId": tool_call["id"],
+            "name": "browser_navigate",
+            "command": url,
+            "scopes": ["network"],
+        }
+
+    if name in ("browser_click", "browser_type", "browser_snapshot", "browser_close"):
+        return {
+            "toolCallId": tool_call["id"],
+            "name": name,
+            "command": f"{name} {args.get('element_ref', '')}".strip(),
+            "scopes": ["network"] if name in ("browser_click", "browser_type") else [],
+        }
+
+
     if name == "UnderstandImage":
         image_path = args.get("image_path") if isinstance(args.get("image_path"), str) else ""
         img_scopes: list[str] = ["network"]
@@ -694,13 +723,13 @@ def describe_tool_permission_request(
             "scopes": ["write-in-cwd"],
         }
 
-    if name == "session_query":
-        query_val = args.get("query")
-        query = query_val if isinstance(query_val, str) else "session_query"
+    if name in ("session_query", "session_search", "session_trace", "session_event_search", "session_event_read"):
+        query_val = args.get("query") or args.get("session_id")
+        query = query_val if isinstance(query_val, str) else name
         return {
             "toolCallId": tool_call["id"],
-            "name": "session_query",
-            "command": f"session_query {query[:30]}",
+            "name": name,
+            "command": f"{name} {query[:30]}",
             "scopes": ["read-in-cwd"],
         }
 
@@ -841,7 +870,7 @@ def compute_tool_call_permissions(
             uncovered_scopes: list[str] = []
             for sc in ask_scopes:
                 if registry.check_and_consume(
-                    session_id, request["name"], sc, target=target, consume=False
+                    session_id, request["name"], sc, target=target, consume=True
                 ):
                     continue
                 uncovered_scopes.append(sc)

@@ -181,3 +181,75 @@ class JsonlSessionStore:
         except OSError:
             return False
         return True
+
+    def replay_events(self, session_id: str) -> list[SessionEvent]:
+        """Deterministically replay and reconstruct event-sourced sequence from log."""
+        return self.list_events(session_id)
+
+    def validate_and_repair_invariants(self, session_id: str) -> list[str]:
+        """Validate session invariants from event stream and automatically synthesize missing aborts if needed."""
+        from coderai.core.common.invariants import (
+            verify_paired_tool_calls,
+            verify_session_invariants,
+        )
+        from coderai.core.tools.types import TOOL_ABORTED_BEFORE_DISPATCH
+
+        rows = self.read_rows(session_id)
+        if not rows:
+            return []
+
+        violations = verify_session_invariants(rows)
+        if not violations:
+            return []
+
+        # Self-healing: check if there are dangling tool calls that need synthetic abort results
+        paired_violations = verify_paired_tool_calls(rows)
+        if paired_violations:
+            repaired_rows: list[dict[str, Any]] = []
+            pending_in_turn: dict[str, dict[str, Any]] = {}
+            for row in rows:
+                role = row.get("role")
+                if role in ("user", "system") and pending_in_turn:
+                    # Synthesize missing tool messages before starting new turn
+                    for tc_id, tc in list(pending_in_turn.items()):
+                        repaired_rows.append({
+                            "id": f"repair_{tc_id}",
+                            "session_id": session_id,
+                            "role": "tool",
+                            "content": json.dumps({
+                                "error": TOOL_ABORTED_BEFORE_DISPATCH,
+                                "message": "Self-healing repair synthesized aborted tool result.",
+                            }),
+                            "tool_call_id": tc_id,
+                            "meta": {"function": tc.get("function")},
+                        })
+                    pending_in_turn.clear()
+
+                repaired_rows.append(row)
+
+                if role == "assistant" and row.get("tool_calls"):
+                    for tc in row.get("tool_calls") or []:
+                        tc_id = tc.get("id")
+                        if tc_id:
+                            pending_in_turn[str(tc_id)] = tc
+                elif role == "tool" and row.get("tool_call_id"):
+                    pending_in_turn.pop(str(row.get("tool_call_id")), None)
+
+            if pending_in_turn:
+                for tc_id, tc in list(pending_in_turn.items()):
+                    repaired_rows.append({
+                        "id": f"repair_{tc_id}",
+                        "session_id": session_id,
+                        "role": "tool",
+                        "content": json.dumps({
+                            "error": TOOL_ABORTED_BEFORE_DISPATCH,
+                            "message": "Self-healing repair synthesized aborted tool result.",
+                        }),
+                        "tool_call_id": tc_id,
+                        "meta": {"function": tc.get("function")},
+                    })
+                pending_in_turn.clear()
+
+            self.replace_rows(session_id, repaired_rows)
+
+        return violations

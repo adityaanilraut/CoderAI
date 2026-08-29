@@ -70,6 +70,11 @@ def test_contextual_help_commands(capsys):
         "image",
         "rename",
         "shortcuts",
+        "continue",
+        "exit",
+        "help",
+        "clear",
+        "skill",
     ]:
         # Test rich
         _render_help_menu(cmd_key)
@@ -86,6 +91,12 @@ def test_contextual_help_commands(capsys):
         _render_help_menu("cost")
         captured = capsys.readouterr().out
         assert "token usage breakdown and cost estimation" in captured
+
+    # Test typo suggestion lookup e.g. /help plann -> suggestion for plan
+    with patch("coderai.cli.app._RICH", False):
+        _render_help_menu("plann")
+        captured = capsys.readouterr().out
+        assert "did you mean '/plan'?" in captured
 
 
 def test_completer_all_commands_and_aliases():
@@ -378,3 +389,115 @@ def test_lsp_and_teams_execution(tmp_path: pathlib.Path, capsys):
     assert tm.name == "architect"
     teammates = team_mgr.list_teammates()
     assert len(teammates) == 1
+
+
+def test_session_prefix_and_checkpoint_resolution(tmp_path: pathlib.Path):
+    """Ensure session lookup resolves full IDs, short prefixes, and checkpoint hashes."""
+    mgr = SessionManager(
+        project_root=str(tmp_path),
+        create_openai_client=lambda: {},
+        get_resolved_settings=lambda: {"model": "gpt-5.6-luna"},
+    )
+    full_id = "5a56d40121ad4160e9477611f7c009d1"
+    mgr._save_index(
+        {
+            "version": 1,
+            "entries": [
+                {
+                    "id": full_id,
+                    "summary": "Implement session resolver",
+                    "active_tokens": 1200,
+                    "plan_mode": False,
+                }
+            ],
+        }
+    )
+
+    # 1. Exact match
+    assert mgr.resolve_session_id(full_id) == full_id
+    assert mgr.get_session(full_id) is not None
+    assert mgr.get_session(full_id).summary == "Implement session resolver"
+
+    # 2. 16-char prefix match (from exit summary display)
+    short_16 = "5a56d40121ad4160"
+    assert mgr.resolve_session_id(short_16) == full_id
+    assert mgr.get_session(short_16) is not None
+    assert mgr.get_session(short_16).id == full_id
+
+    # 3. Short 8-char prefix match
+    short_8 = "5a56d401"
+    assert mgr.resolve_session_id(short_8) == full_id
+    assert mgr.get_session(short_8) is not None
+
+    # 4. Case-insensitive prefix
+    assert mgr.resolve_session_id("5A56D401") == full_id
+
+    # 5. Checkpoint hash resolution via session message metadata
+    mgr.session_store.append_row(
+        full_id,
+        {
+            "id": "msg_1",
+            "role": "user",
+            "content": "Hello",
+            "meta": {"checkpointHash": "ccc7a56827a1b2c3"},
+        },
+    )
+    assert mgr.resolve_session_id("ccc7a56827") == full_id
+    assert mgr.get_session("ccc7a56827") is not None
+    assert mgr.get_session("ccc7a56827").id == full_id
+
+    # 6. Non-existent returns None
+    assert mgr.resolve_session_id("nonexistent_id_12345") is None
+    assert mgr.get_session("nonexistent_id_12345") is None
+
+
+def test_cli_session_flag_aliases():
+    """Ensure --session and -s act as aliases for --resume in CLI argument parser."""
+    from coderai.cli.app import _build_parser
+
+    parser = _build_parser()
+
+    # --resume <id>
+    args1 = parser.parse_args(["--resume", "5a56d40121ad4160"])
+    assert args1.resume == "5a56d40121ad4160"
+
+    # -r <id>
+    args2 = parser.parse_args(["-r", "5a56d40121ad4160"])
+    assert args2.resume == "5a56d40121ad4160"
+
+    # --session <id>
+    args3 = parser.parse_args(["--session", "5a56d40121ad4160"])
+    assert args3.resume == "5a56d40121ad4160"
+
+    # -s <id>
+    args4 = parser.parse_args(["-s", "5a56d40121ad4160"])
+    assert args4.resume == "5a56d40121ad4160"
+
+
+def test_exit_summary_displays_full_session_id(tmp_path: pathlib.Path):
+    """Verify exit summary card renders full session ID for easy resume copy-paste."""
+    from coderai.cli.exit_summary import compute_session_stats
+
+    mgr = SessionManager(
+        project_root=str(tmp_path),
+        create_openai_client=lambda: {},
+        get_resolved_settings=lambda: {"model": "gpt-5.6-luna"},
+    )
+    full_id = "5a56d40121ad4160e9477611f7c009d1"
+    mgr._save_index(
+        {
+            "version": 1,
+            "entries": [
+                {
+                    "id": full_id,
+                    "summary": "Exit summary test",
+                    "active_tokens": 800,
+                    "usage": {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150},
+                }
+            ],
+        }
+    )
+
+    stats = compute_session_stats(mgr, full_id)
+    assert stats["session_id"] == full_id
+

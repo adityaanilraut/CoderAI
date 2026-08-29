@@ -338,8 +338,28 @@ def handle_bash_tool(args: dict[str, Any], context: Any) -> ToolResult:
         return ToolResult(
             ok=False,
             name="bash",
-            error='Missing required "command" string.',
+            error="invalid command: expected a non-empty string",
         )
+    # DSH: description must be non-empty string when provided
+    desc_val = args.get("description")
+    if desc_val is not None and not str(desc_val).strip():
+        return ToolResult(
+            ok=False,
+            name="bash",
+            error="invalid description: expected a non-empty string",
+        )
+    # DSH: timeoutMs must be positive number when provided
+    if args.get("timeout_ms") is not None:
+        try:
+            tm = float(args["timeout_ms"])
+            if not (tm == tm and tm > 0):
+                raise ValueError
+        except Exception:
+            return ToolResult(
+                ok=False,
+                name="bash",
+                error=f"invalid timeoutMs: expected a positive number, got {args['timeout_ms']!r}",
+            )
 
     session_id = getattr(context, "session_id", None) or (
         context.get("session_id", "default") if isinstance(context, dict) else "default"
@@ -363,8 +383,21 @@ def handle_bash_tool(args: dict[str, Any], context: Any) -> ToolResult:
     execution = _execute_shell_command(shell_path, shell_args, start_cwd, command, context)
     cleaned_stdout, cwd = _strip_marker(execution["stdout"], marker)
     combined = _join_output(cleaned_stdout, execution["stderr"])
+    # DSH-style exit/signal/timeout markers appended to body
+    body_with_marker = combined if combined.strip() else "(no output)"
+    if execution["timed_out"]:
+        body_with_marker = f"{body_with_marker}\n[timed out after {execution['timeout_ms']}ms]"
+    elif execution["signal"]:
+        body_with_marker = f"{body_with_marker}\n[killed by signal: {execution['signal']}]"
+    else:
+        body_with_marker = f"{body_with_marker}\n[exit code: {execution['exit_code']}]"
+    # sandbox denial marker (when runner reports sandbox block)
+    if execution.get("sandbox_denied"):
+        mode = execution.get("sandbox_mode") or "unknown"
+        body_with_marker += f"\n[sandbox: file access denied under {mode} mode]"
+
     spilled, spill_ref = apply_spill_policy(
-        combined,
+        body_with_marker,
         session_id=str(session_id),
         tool_name="bash",
         max_inline_bytes=MAX_OUTPUT_CHARS,
@@ -373,7 +406,7 @@ def handle_bash_tool(args: dict[str, Any], context: Any) -> ToolResult:
     if spill_ref is not None:
         truncated_text, is_truncated = spilled, True
     else:
-        truncated_text, is_truncated = _truncate_output(combined)
+        truncated_text, is_truncated = _truncate_output(body_with_marker)
 
     _update_session_cwd(session_id, start_cwd, cwd)
 

@@ -497,3 +497,76 @@ def test_select_with_arrows_custom_numbering_and_selection(monkeypatch: pytest.M
     monkeypatch.setattr("builtins.input", lambda _: "Custom text")
     res_custom = select_with_arrows(console, items, title="Question 2/3", allow_custom=True)
     assert res_custom == "Custom text"
+
+
+def test_prompt_permissions_ui_styling_and_choices(monkeypatch: pytest.MonkeyPatch):
+    """Verify _prompt_permissions handles 2-choice vs 3-choice options, risk levels, and Plan Mode."""
+    from coderai.cli.app import _prompt_permissions
+
+    req_3choice = [
+        {
+            "toolCallId": "call_1",
+            "name": "bash",
+            "command": "git status",
+            "description": "Inspect git status",
+            "scopes": ["query-git-log"],
+            "risk_level": "LOW RISK",
+        }
+    ]
+
+    # 1. Allow once in 3-choice mode
+    monkeypatch.setattr("builtins.input", lambda p: "1")
+    replies, always = _prompt_permissions(req_3choice, yes=False, plan_mode=False)
+    assert len(replies) == 1
+    assert replies[0]["permission"] == "allow"
+    assert len(always) == 0
+
+    # 2. Always allow in 3-choice mode (option 2 / 'a')
+    monkeypatch.setattr("builtins.input", lambda p: "a")
+    replies, always = _prompt_permissions(req_3choice, yes=False, plan_mode=False)
+    assert len(replies) == 1
+    assert replies[0]["permission"] == "allow"
+    assert "query-git-log" in always
+
+    # 3. Deny in 3-choice mode (option 3 / 'n')
+    monkeypatch.setattr("builtins.input", lambda p: "n")
+    replies, always = _prompt_permissions(req_3choice, yes=False, plan_mode=False)
+    assert len(replies) == 1
+    assert replies[0]["permission"] == "deny"
+
+    # 4. 2-choice mode in Plan Mode (where always-allow is disabled)
+    req_plan = [
+        {
+            "toolCallId": "call_2",
+            "name": "bash",
+            "command": "pytest -q",
+            "scopes": ["write-in-cwd"],
+            "risk_level": "MODERATE RISK",
+        }
+    ]
+    prompts_captured = []
+
+    def mock_input_2choice(p):
+        prompts_captured.append(p)
+        return "2"  # Option 2 is No in 2-choice mode
+
+    monkeypatch.setattr("builtins.input", mock_input_2choice)
+    replies, always = _prompt_permissions(req_plan, yes=False, plan_mode=True)
+    assert "[1/2]" in prompts_captured[0]
+    assert len(replies) == 1
+    assert replies[0]["permission"] == "deny"
+
+    # 5. Critical risk level rendering
+    req_crit = [
+        {
+            "toolCallId": "call_3",
+            "name": "bash",
+            "command": "rm -rf /tmp/data",
+            "scopes": ["delete-out-cwd"],
+            "risk_level": "CRITICAL RISK",
+        }
+    ]
+    monkeypatch.setattr("builtins.input", lambda p: "y")
+    replies, _ = _prompt_permissions(req_crit, yes=False, plan_mode=False)
+    assert replies[0]["permission"] == "allow"
+

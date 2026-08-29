@@ -75,13 +75,21 @@ async def handle_team_task_create_tool(
     dependencies = args.get("dependencies") if isinstance(args.get("dependencies"), list) else None
 
     mgr = get_team_manager()
-    task = mgr.task_board.create_task(
-        title=title,
-        description=description,
-        assigned_to=assigned_to,
-        priority=priority,
-        dependencies=dependencies,
-    )
+    from coderai.core.teams.deadlock import CycleDetectedError
+    try:
+        task = mgr.task_board.create_task(
+            title=title,
+            description=description,
+            assigned_to=assigned_to,
+            priority=priority,
+            dependencies=dependencies,
+        )
+    except CycleDetectedError as e:
+        return ToolResult(
+            ok=False,
+            name="team_task_create",
+            error=str(e),
+        )
 
     out = task.to_dict()
     dep_str = ", ".join(task.dependencies) if task.dependencies else "None"
@@ -203,27 +211,37 @@ async def handle_team_task_update_tool(
     assigned_to = as_str(args.get("assigned_to", "")).strip() if "assigned_to" in args else None
     result = as_str(args.get("result", "")).strip() if "result" in args else None
     notes = as_str(args.get("notes", "")).strip() if "notes" in args else None
+    expected_revision_raw = args.get("expected_revision") or args.get("revision")
+    expected_revision = int(expected_revision_raw) if expected_revision_raw is not None else None
 
     mgr = get_team_manager()
-    task = mgr.task_board.update_task(
-        task_id=task_id,
-        status=status,
-        assigned_to=assigned_to,
-        result=result,
-        notes=notes,
-    )
-
-    if not task:
+    try:
+        task = mgr.task_board.update_task(
+            task_id=task_id,
+            status=status,
+            assigned_to=assigned_to,
+            result=result,
+            notes=notes,
+            expected_revision=expected_revision,
+        )
+    except (KeyError, ValueError) as e:
         return ToolResult(
             ok=False,
             name="team_task_update",
-            error=f"Task '{task_id}' not found.",
+            error=str(e),
+        )
+    except Exception as e:
+        return ToolResult(
+            ok=False,
+            name="team_task_update",
+            error=str(e),
         )
 
     out = task.to_dict()
     md = (
         f"### Updated Task [{task.task_id}] {task.title}\n"
         f"- **Status**: `{task.status}`\n"
+        f"- **Revision**: `{task.revision}`\n"
         f"- **Assigned To**: `{task.assigned_to or 'Unassigned'}`\n"
         f"- **Result**: {task.result or 'None'}\n"
         f"- **Notes**: {task.notes or 'None'}"

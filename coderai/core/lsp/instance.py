@@ -151,6 +151,22 @@ class LspInstance:
         )
         self._opened_files.add(abs_path)
 
+    def close_document(self, abs_path: str) -> None:
+        """Send textDocument/didClose to release open buffer in server memory."""
+        canon = str(pathlib.Path(abs_path).resolve())
+        uri = file_to_uri(canon)
+        if canon in self._opened_files or abs_path in self._opened_files:
+            self._opened_files.discard(canon)
+            self._opened_files.discard(abs_path)
+            self.connection.send_notification(
+                "textDocument/didClose",
+                {
+                    "textDocument": {
+                        "uri": uri,
+                    }
+                },
+            )
+
     async def query(
         self,
         operation: str,
@@ -158,6 +174,7 @@ class LspInstance:
         line: int,  # 1-based
         character: int,  # 1-based
         timeout_s: float = 15.0,
+        transient: bool = False,
     ) -> dict[str, Any]:
         """Execute a structured LSP operation against the live server."""
         if not self._initialized or not self.is_alive():
@@ -199,61 +216,65 @@ class LspInstance:
             return {"ok": False, "error": f"Unsupported LSP operation: {operation}"}
 
         try:
-            raw_result = await self.connection.send_request(method, params, timeout_s=timeout_s)
-        except Exception as exc:
-            return {"ok": False, "error": str(exc), "operation": operation}
+            try:
+                raw_result = await self.connection.send_request(method, params, timeout_s=timeout_s)
+            except Exception as exc:
+                return {"ok": False, "error": str(exc), "operation": operation}
 
-        # Normalize outputs
-        if operation in ("goToDefinition", "goToImplementation", "findReferences"):
-            locations: list[LspLocation] = []
-            if isinstance(raw_result, list):
-                for item in raw_result:
-                    norm = normalize_wire_location(item, project_root=self.workspace_root)
+            # Normalize outputs
+            if operation in ("goToDefinition", "goToImplementation", "findReferences"):
+                locations: list[LspLocation] = []
+                if isinstance(raw_result, list):
+                    for item in raw_result:
+                        norm = normalize_wire_location(item, project_root=self.workspace_root)
+                        if norm:
+                            locations.append(norm)
+                elif isinstance(raw_result, dict):
+                    norm = normalize_wire_location(raw_result, project_root=self.workspace_root)
                     if norm:
                         locations.append(norm)
-            elif isinstance(raw_result, dict):
-                norm = normalize_wire_location(raw_result, project_root=self.workspace_root)
-                if norm:
-                    locations.append(norm)
-            return {
-                "ok": True,
-                "operation": operation,
-                "locations": [loc.to_dict() for loc in locations],
-                "mode": "live_lsp",
-            }
-        elif operation == "hover":
-            hover = normalize_wire_hover(raw_result) if isinstance(raw_result, dict) else None
-            return {
-                "ok": True,
-                "operation": operation,
-                "hover": hover.to_dict() if hover else None,
-                "mode": "live_lsp",
-            }
-        elif operation == "documentSymbol":
-            symbols: list[LspSymbol] = []
-            if isinstance(raw_result, list):
-                for item in raw_result:
-                    name = item.get("name", "")
-                    kind = str(item.get("kind", ""))
-                    loc = item.get("location") or {}
-                    norm_loc = normalize_wire_location(loc, project_root=self.workspace_root)
-                    symbols.append(
-                        LspSymbol(
-                            name=name,
-                            kind=kind,
-                            path=norm_loc.path if norm_loc else file_path,
-                            line=norm_loc.line if norm_loc else 1,
-                            character=norm_loc.character if norm_loc else 1,
+                return {
+                    "ok": True,
+                    "operation": operation,
+                    "locations": [loc.to_dict() for loc in locations],
+                    "mode": "live_lsp",
+                }
+            elif operation == "hover":
+                hover = normalize_wire_hover(raw_result) if isinstance(raw_result, dict) else None
+                return {
+                    "ok": True,
+                    "operation": operation,
+                    "hover": hover.to_dict() if hover else None,
+                    "mode": "live_lsp",
+                }
+            elif operation == "documentSymbol":
+                symbols: list[LspSymbol] = []
+                if isinstance(raw_result, list):
+                    for item in raw_result:
+                        name = item.get("name", "")
+                        kind = str(item.get("kind", ""))
+                        loc = item.get("location") or {}
+                        norm_loc = normalize_wire_location(loc, project_root=self.workspace_root)
+                        symbols.append(
+                            LspSymbol(
+                                name=name,
+                                kind=kind,
+                                path=norm_loc.path if norm_loc else file_path,
+                                line=norm_loc.line if norm_loc else 1,
+                                character=norm_loc.character if norm_loc else 1,
+                            )
                         )
-                    )
-            return {
-                "ok": True,
-                "operation": operation,
-                "symbols": [s.to_dict() for s in symbols],
-                "mode": "live_lsp",
-            }
+                return {
+                    "ok": True,
+                    "operation": operation,
+                    "symbols": [s.to_dict() for s in symbols],
+                    "mode": "live_lsp",
+                }
 
-        return {"ok": True, "operation": operation, "result": raw_result, "mode": "live_lsp"}
+            return {"ok": True, "operation": operation, "result": raw_result, "mode": "live_lsp"}
+        finally:
+            if transient:
+                self.close_document(abs_path)
 
     async def close(self) -> None:
         """Close the server and release opened document references."""

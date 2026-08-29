@@ -30,8 +30,11 @@ from coderai.core.common.llm_retry import (
     DEFAULT_MAX_RETRIES,
     classify_llm_failure,
     is_empty_llm_response,
+    is_failover_eligible,
     retry_delay_ms,
 )
+from coderai.core.common.openai_thinking import build_thinking_request_options
+
 from coderai.core.common.message_converter import OpenAIMessageConverter
 from coderai.core.common.repeat_tool_reminder import RepeatToolReminder
 from coderai.core.common.usage import accumulate_usage_dict, extract_usage_dict
@@ -68,6 +71,7 @@ from coderai.core.session_store import get_project_code as get_project_code
 from coderai.core.state import clear_session_state, rebuild_session_state_from_history
 from coderai.core.tools.executor import ToolExecutor
 from coderai.core.tools.types import (
+    TOOL_ABORTED_BEFORE_DISPATCH,
     BackgroundProcessCompletion,
     ToolExecutionFollowUpMessage,
     ToolExecutionHooks,
@@ -261,7 +265,8 @@ class SessionManager:
         sid = session_id or self._active_session_id
         if not sid:
             return ""
-        return self.file_history.get_diff(sid, from_checkpoint=from_checkpoint)
+        target_id = self.resolve_session_id(sid) or sid
+        return self.file_history.get_diff(target_id, from_checkpoint=from_checkpoint)
 
     def grant_permission_ticket(
         self,
@@ -276,8 +281,9 @@ class SessionManager:
         from coderai.core.permissions import get_permission_ticket_registry
 
         sid = session_id or self._active_session_id or ""
+        target_id = self.resolve_session_id(sid) or sid
         return get_permission_ticket_registry().request_escalation(
-            session_id=sid,
+            session_id=target_id,
             tool_name=tool_name,
             scope=scope,
             duration_seconds=duration_seconds,
@@ -292,7 +298,8 @@ class SessionManager:
         from coderai.core.permissions import get_permission_ticket_registry
 
         sid = session_id or self._active_session_id or ""
-        return get_permission_ticket_registry().list_active_tickets(session_id=sid)
+        target_id = self.resolve_session_id(sid) or sid
+        return get_permission_ticket_registry().list_active_tickets(session_id=target_id)
 
     def revoke_permission_ticket(self, ticket_id: str) -> bool:
         """Revoke a capability escalation ticket by ID."""
@@ -306,7 +313,8 @@ class SessionManager:
         return self.session_store.storage_paths()
 
     def _messages_path(self, session_id: str) -> pathlib.Path:
-        return self.session_store.messages_path(session_id)
+        target_id = self.resolve_session_id(session_id) or session_id
+        return self.session_store.messages_path(target_id)
 
     def _ensure_dir(self) -> pathlib.Path:
         self.session_store.project_dir.mkdir(parents=True, exist_ok=True)
@@ -344,24 +352,27 @@ class SessionManager:
         self.session_store.append_row(session_id, event.to_dict())
 
     def _save_messages(self, session_id: str, messages: list[SessionMessage]) -> None:
+        target_id = self.resolve_session_id(session_id) or session_id
         self.session_store.replace_rows(
-            session_id, [self._serialize_message(message) for message in messages]
+            target_id, [self._serialize_message(message) for message in messages]
         )
 
     def list_session_messages(self, session_id: str) -> list[SessionMessage]:
+        target_id = self.resolve_session_id(session_id) or session_id
         messages: list[SessionMessage] = []
-        max_seq = self._seq_counters.get(session_id, 0)
-        for row in self.session_store.read_rows(session_id):
+        max_seq = self._seq_counters.get(target_id, 0)
+        for row in self.session_store.read_rows(target_id):
             if "seq" in row and isinstance(row["seq"], int):
                 max_seq = max(max_seq, row["seq"] + 1)
-            message = self._deserialize_message(row, session_id)
+            message = self._deserialize_message(row, target_id)
             if message is not None:
                 messages.append(message)
-        self._seq_counters[session_id] = max_seq
+        self._seq_counters[target_id] = max_seq
         return messages
 
     def list_session_events(self, session_id: str) -> list[SessionEvent]:
-        return self.session_store.list_events(session_id)
+        target_id = self.resolve_session_id(session_id) or session_id
+        return self.session_store.list_events(target_id)
 
     def _serialize_message(self, m: SessionMessage) -> dict[str, Any]:
         ts = 0
@@ -496,12 +507,77 @@ class SessionManager:
             meta=d.get("meta"),
         )
 
+    def resolve_session_id(self, session_id: str | None) -> str | None:
+        """Resolve a session ID, short prefix, or checkpoint hash to canonical full session ID."""
+        if not session_id or not isinstance(session_id, str):
+            return None
+        sid = session_id.strip()
+        if not sid:
+            return None
+
+        entries = self._load_index().get("entries", [])
+        if not entries:
+            return None
+
+        # 1. Exact match by session ID
+        for entry in entries:
+            eid = entry.get("id", "")
+            if eid == sid:
+                return eid
+
+        # 2. Case-insensitive prefix match by session ID
+        sid_lower = sid.lower()
+        prefix_matches = [
+            entry.get("id", "")
+            for entry in entries
+            if entry.get("id", "").lower().startswith(sid_lower)
+        ]
+        if prefix_matches:
+            return prefix_matches[0]
+
+        # 3. Match by checkpoint hash prefix in Git file history
+        for entry in entries:
+            eid = entry.get("id", "")
+            if not eid:
+                continue
+            try:
+                cur_ref = self.file_history.get_current_checkpoint_hash(eid)
+                if cur_ref and cur_ref.lower().startswith(sid_lower):
+                    return eid
+            except Exception:
+                pass
+
+        # 4. Check in turn message metadata checkpoint hashes
+        for entry in entries:
+            eid = entry.get("id", "")
+            if not eid:
+                continue
+            try:
+                messages = self.session_store.read_rows(eid)
+                for m in messages:
+                    meta = m.get("meta") or {}
+                    ckpt = meta.get("checkpointHash")
+                    if ckpt and str(ckpt).lower().startswith(sid_lower):
+                        return eid
+            except Exception:
+                pass
+
+        # 5. Fuzzy match / substring in session ID if len >= 4
+        if len(sid) >= 4:
+            for entry in entries:
+                eid = entry.get("id", "")
+                if sid_lower in eid.lower():
+                    return eid
+
+        return None
+
     def _update_entry(
         self, session_id: str, mutate: Callable[[dict[str, Any]], dict[str, Any]]
     ) -> bool:
+        target_id = self.resolve_session_id(session_id) or session_id
         index = self._load_index()
-        for i, entry in enumerate(index["entries"]):
-            if entry.get("id") == session_id:
+        for i, entry in enumerate(index.get("entries", [])):
+            if entry.get("id") == target_id:
                 index["entries"][i] = mutate(entry)
                 self._save_index(index)
                 if self.on_session_entry_updated:
@@ -510,8 +586,11 @@ class SessionManager:
         return False
 
     def _get_entry(self, session_id: str) -> dict[str, Any] | None:
-        for entry in self._load_index()["entries"]:
-            if entry.get("id") == session_id:
+        if not session_id:
+            return None
+        target_id = self.resolve_session_id(session_id) or session_id
+        for entry in self._load_index().get("entries", []):
+            if entry.get("id") == target_id:
                 return entry
         return None
 
@@ -828,6 +907,7 @@ class SessionManager:
         skills: list[str] | None = None,
     ) -> str:
         session_id = uuid.uuid4().hex
+        self._repeat_reminders.pop(session_id, None)
         summary = (user_prompt or "[Image Prompt]")[:100]
         now = _now()
         index = self._load_index()
@@ -863,6 +943,7 @@ class SessionManager:
         model = self.get_active_model()
         settings = self.get_resolved_settings()
         sandbox_mode = (settings.get("permissions") or {}).get("sandbox")
+        instructions = load_agent_instructions(self.project_root)
         prompt_options = {
             "model": model,
             "nonInteractive": self.non_interactive,
@@ -871,22 +952,17 @@ class SessionManager:
             "preset": settings.get("preset") or settings.get("toolsPreset"),
             "enabledSkills": settings.get("enabledSkills"),
             "skillScanPaths": settings.get("skillScanPaths"),
+            "instructions": instructions,
+            "planMode": plan_mode,
         }
         self._append_message(
-            self._build_message(session_id, "system", get_system_prompt(prompt_options))
-        )
-        instructions = load_agent_instructions(self.project_root)
-        if instructions:
-            self._append_message(self._build_message(session_id, "system", instructions))
-        if plan_mode:
-            self._append_message(
-                self._build_message(
-                    session_id,
-                    "system",
-                    get_plan_mode_prompt(),
-                    meta={"isPlanMode": True},
-                )
+            self._build_message(
+                session_id,
+                "system",
+                get_system_prompt(prompt_options),
+                meta={"isPlanMode": bool(plan_mode)},
             )
+        )
 
         # Prepend dynamic workspace runtime context to the first user turn (keeping system prompt prefix 100% static)
         runtime_context = get_runtime_context(self.project_root, model)
@@ -989,6 +1065,8 @@ class SessionManager:
             return
 
         if user_prompt and not is_continue:
+            if session_id in self._repeat_reminders:
+                self._repeat_reminders[session_id].reset()
             self.file_history.ensure_session(session_id)
             ckpt_res = self.file_history.record_tracked_files_checkpoint(
                 session_id, "User prompt checkpoint"
@@ -1181,7 +1259,9 @@ class SessionManager:
             tc["id"] = str(tc.get("id") or uuid.uuid4().hex)
             normalized_calls.append(tc)
 
-        # Partition into contiguous execution chunks (parallel read-only vs sequential mutating)
+        completed_tool_call_ids: set[str] = set()
+
+        # Partition into contiguous execution chunks (parallel vs sequential vs barrier)
         chunks: list[tuple[str, list[dict[str, Any]]]] = []
         current_chunk_kind: str | None = None
         current_chunk: list[dict[str, Any]] = []
@@ -1189,16 +1269,46 @@ class SessionManager:
         for tc in normalized_calls:
             fn = tc.get("function") or {}
             fn_name = str(fn.get("name", "") if isinstance(fn, dict) else "")
+            fn_args_raw = fn.get("arguments", "{}") if isinstance(fn, dict) else "{}"
+            parsed_args: dict[str, Any] = {}
+            if isinstance(fn_args_raw, dict):
+                parsed_args = fn_args_raw
+            elif isinstance(fn_args_raw, str) and fn_args_raw.strip():
+                try:
+                    parsed_args = json.loads(fn_args_raw)
+                except Exception:
+                    parsed_args = {}
+
             blocked = build_permission_tool_execution(tc, permission_replies, message_permissions)
 
-            kind = (
-                "blocked"
-                if blocked
-                else "parallel"
-                if fn_name in read_only_tool_names
-                else "sequential"
-            )
-            if current_chunk_kind is None or current_chunk_kind == kind:
+            if blocked:
+                kind = "blocked"
+            else:
+                tool_def = (
+                    self.tool_executor.registry.get(fn_name)
+                    if hasattr(self.tool_executor, "registry") and self.tool_executor.registry
+                    else None
+                )
+                if tool_def:
+                    mode = tool_def.check_execution_mode(parsed_args)
+                    if mode == "barrier":
+                        kind = "barrier"
+                    elif mode == "parallel":
+                        kind = "parallel"
+                    else:
+                        kind = "sequential"
+                elif fn_name in read_only_tool_names:
+                    kind = "parallel"
+                else:
+                    kind = "sequential"
+
+            if kind == "barrier":
+                if current_chunk and current_chunk_kind is not None:
+                    chunks.append((current_chunk_kind, current_chunk))
+                    current_chunk = []
+                    current_chunk_kind = None
+                chunks.append(("barrier", [tc]))
+            elif current_chunk_kind is None or current_chunk_kind == kind:
                 current_chunk_kind = kind
                 current_chunk.append(tc)
             else:
@@ -1209,198 +1319,294 @@ class SessionManager:
         if current_chunk and current_chunk_kind is not None:
             chunks.append((current_chunk_kind, current_chunk))
 
-        for chunk_kind, chunk_tcs in chunks:
-            if ctrl and ctrl.is_set():
-                break
+        should_conclude_turn = False
 
-            if chunk_kind == "blocked":
-                for tc in chunk_tcs:
-                    blocked = build_permission_tool_execution(
-                        tc, permission_replies, message_permissions
-                    )
-                    blocked_content = blocked["content"] if blocked else "Blocked by permission"
-                    tool_msg = self._build_tool_message(
-                        session_id,
-                        tc["id"],
-                        blocked_content,
-                        tc.get("function"),
-                    )
-                    self._append_message(tool_msg)
-                    self.on_assistant_message(tool_msg, True)
-                continue
+        try:
+            for chunk_kind, chunk_tcs in chunks:
+                if ctrl and ctrl.is_set():
+                    break
+                if should_conclude_turn:
+                    break
 
-            # Checkpoints for mutating calls
-            target_paths: dict[str, str] = {}
-            if chunk_kind == "sequential":
-                for tc in chunk_tcs:
-                    func = tc.get("function") if isinstance(tc, dict) else None
-                    name = str(func.get("name", "")) if isinstance(func, dict) else ""
-                    if name in ("edit", "Edit", "write", "Write"):
+                if chunk_kind == "blocked":
+                    for tc in chunk_tcs:
+                        blocked = build_permission_tool_execution(
+                            tc, permission_replies, message_permissions
+                        )
+                        blocked_content = blocked["content"] if blocked else "Blocked by permission"
+                        tool_msg = self._build_tool_message(
+                            session_id,
+                            tc["id"],
+                            blocked_content,
+                            tc.get("function"),
+                        )
+                        self._append_message(tool_msg)
+                        self.on_assistant_message(tool_msg, True)
+                        completed_tool_call_ids.add(tc["id"])
+                    continue
+
+                # Checkpoints for mutating calls
+                target_paths: dict[str, str] = {}
+                if chunk_kind in ("sequential", "barrier"):
+                    for tc in chunk_tcs:
+                        func = tc.get("function") if isinstance(tc, dict) else None
+                        name = str(func.get("name", "")) if isinstance(func, dict) else ""
+                        if name in ("edit", "Edit", "write", "Write"):
+                            try:
+                                tp = _resolve_target_file_path(session_id, self.project_root, tc)
+                                if tp:
+                                    target_paths[tc["id"]] = tp
+                                    self.file_history.record_checkpoint(
+                                        session_id, [tp], f"Before {name} tool execution"
+                                    )
+                            except Exception:
+                                pass
+
+                def _on_before_file_mutation(fp: str) -> None:
+                    if fp:
                         try:
-                            tp = _resolve_target_file_path(session_id, self.project_root, tc)
-                            if tp:
-                                target_paths[tc["id"]] = tp
-                                self.file_history.record_checkpoint(
-                                    session_id, [tp], f"Before {name} tool execution"
-                                )
+                            self.file_history.record_checkpoint(
+                                session_id, [fp], "Before tool execution"
+                            )
                         except Exception:
                             pass
 
-            def _on_before_file_mutation(fp: str) -> None:
-                if fp:
-                    try:
-                        self.file_history.record_checkpoint(
-                            session_id, [fp], "Before tool execution"
-                        )
-                    except Exception:
-                        pass
-
-            def _on_after_file_mutation(fp: str) -> None:
-                if fp:
-                    try:
-                        self.file_history.record_checkpoint(
-                            session_id, [fp], "After tool execution"
-                        )
-                    except Exception:
-                        pass
-
-            def _on_process_start(pid: int | str, cmd: str) -> None:
-                self._track_process_start(session_id, pid, cmd)
-
-            def _on_process_exit(pid: int | str) -> None:
-                self._track_process_exit(session_id, pid)
-
-            def _post_execute(
-                name: str, args: dict[str, Any], result: ToolResult, _ctx: Any
-            ) -> ToolResult:
-                reminder = self._repeat_reminders.setdefault(session_id, RepeatToolReminder())
-                text = reminder.observe(name, args)
-                if text:
-                    result.follow_up_messages.append(
-                        ToolExecutionFollowUpMessage(role="system", content=text)
-                    )
-                return result
-
-            hooks = ToolExecutionHooks(
-                on_before_file_mutation=_on_before_file_mutation,
-                on_after_file_mutation=_on_after_file_mutation,
-                should_stop=lambda: self.is_interrupted(session_id),
-                on_process_start=_on_process_start,
-                on_process_exit=_on_process_exit,
-                on_load_skill=lambda skill_name: self.load_skill_by_name(session_id, skill_name),
-                on_background_process_complete=lambda completion: (
-                    self.add_background_process_completion_message(session_id, completion)
-                ),
-                permission_decision="allow",
-                post_execute=_post_execute,
-                sandbox_mode=(self.get_resolved_settings().get("permissions") or {}).get("sandbox"),
-                list_session_messages=lambda sid: self.list_session_messages(sid),
-                list_session_events=lambda sid: self.list_session_events(sid),
-            )
-
-            is_parallel = chunk_kind == "parallel" and len(chunk_tcs) > 1
-            executions = await self.tool_executor.execute_tool_calls(
-                session_id, chunk_tcs, hooks=hooks, parallel=is_parallel
-            )
-
-            for execution in executions:
-                result = execution["result"]
-                if result.get("awaitUserResponse") is True:
-                    waiting = True
-                result_meta = result.get("metadata") if isinstance(result, dict) else None
-                if isinstance(result_meta, dict) and result_meta.get("exitPlanMode"):
-                    self._update_entry(
-                        session_id,
-                        lambda e: {**e, "planMode": False, "updateTime": _now()},
-                    )
-
-                exec_tc_id = execution["toolCallId"]
-                tool_fn = self.message_converter.find_tool_function(tool_calls, exec_tc_id)
-                if not tool_fn:
-                    matching = [t for t in chunk_tcs if t.get("id") == exec_tc_id]
-                    if matching:
-                        tool_fn = matching[0].get("function")
-
-                tool_msg = self._build_tool_message(
-                    session_id,
-                    exec_tc_id,
-                    execution["content"],
-                    tool_fn,
-                    tool_meta=result_meta if isinstance(result_meta, dict) else None,
-                )
-                self._append_message(tool_msg)
-                self.on_assistant_message(tool_msg, True)
-
-                follow_up_messages: list[SessionMessage] = []
-                for follow_up in result.get("followUpMessages") or []:
-                    role = (
-                        follow_up.get("role", "user")
-                        if isinstance(follow_up, dict)
-                        else getattr(follow_up, "role", "user")
-                    )
-                    content = (
-                        follow_up.get("content", "")
-                        if isinstance(follow_up, dict)
-                        else getattr(follow_up, "content", "")
-                    )
-                    content_params = (
-                        follow_up.get("contentParams")
-                        if isinstance(follow_up, dict)
-                        else getattr(follow_up, "content_params", None)
-                    )
-                    if content:
-                        follow_up_messages.append(
-                            self._build_message(
-                                session_id,
-                                "user",
-                                content,
-                                meta={"contentParams": content_params, "advisoryRole": role}
-                                if content_params
-                                else {"advisoryRole": role},
+                def _on_after_file_mutation(fp: str) -> None:
+                    if fp:
+                        try:
+                            self.file_history.record_checkpoint(
+                                session_id, [fp], "After tool execution"
                             )
+                        except Exception:
+                            pass
+
+                def _on_process_start(pid: int | str, cmd: str) -> None:
+                    self._track_process_start(session_id, pid, cmd)
+
+                def _on_process_exit(pid: int | str) -> None:
+                    self._track_process_exit(session_id, pid)
+
+                def _post_execute(
+                    name: str, args: dict[str, Any], result: ToolResult, _ctx: Any
+                ) -> ToolResult:
+                    reminder = self._repeat_reminders.setdefault(session_id, RepeatToolReminder())
+                    text = reminder.observe(name, args)
+                    if text:
+                        result.follow_up_messages.append(
+                            ToolExecutionFollowUpMessage(role="system", content=text)
+                        )
+                    return result
+
+                hooks = ToolExecutionHooks(
+                    on_before_file_mutation=_on_before_file_mutation,
+                    on_after_file_mutation=_on_after_file_mutation,
+                    should_stop=lambda: self.is_interrupted(session_id),
+                    on_process_start=_on_process_start,
+                    on_process_exit=_on_process_exit,
+                    on_load_skill=lambda skill_name: self.load_skill_by_name(session_id, skill_name),
+                    on_background_process_complete=lambda completion: (
+                        self.add_background_process_completion_message(session_id, completion)
+                    ),
+                    permission_decision="allow",
+                    post_execute=_post_execute,
+                    sandbox_mode=(self.get_resolved_settings().get("permissions") or {}).get("sandbox"),
+                    list_session_messages=lambda sid: self.list_session_messages(sid),
+                    list_session_events=lambda sid: self.list_session_events(sid),
+                )
+
+                is_parallel = chunk_kind == "parallel" and len(chunk_tcs) > 1
+                executions = await self.tool_executor.execute_tool_calls(
+                    session_id, chunk_tcs, hooks=hooks, parallel=is_parallel
+                )
+
+                for execution in executions:
+                    result = execution["result"]
+                    exec_tc_id = execution["toolCallId"]
+                    completed_tool_call_ids.add(exec_tc_id)
+
+                    if result.get("awaitUserResponse") is True:
+                        waiting = True
+                    if result.get("concludesTurn") is True or getattr(result, "concludes_turn", False) is True:
+                        should_conclude_turn = True
+
+                    result_meta = result.get("metadata") if isinstance(result, dict) else None
+                    if isinstance(result_meta, dict) and result_meta.get("exitPlanMode"):
+                        self._update_entry(
+                            session_id,
+                            lambda e: {**e, "planMode": False, "updateTime": _now()},
                         )
 
-                for fum in follow_up_messages:
-                    self._append_message(fum)
+                    tool_fn = self.message_converter.find_tool_function(tool_calls, exec_tc_id)
+                    if not tool_fn:
+                        matching = [t for t in chunk_tcs if t.get("id") == exec_tc_id]
+                        if matching:
+                            tool_fn = matching[0].get("function")
 
-                # Record post-mutation checkpoint for file-editing tools
-                tp = target_paths.get(exec_tc_id)
-                if tp:
-                    try:
-                        self.file_history.record_checkpoint(
-                            session_id, [tp], "After tool execution"
+                    tool_msg = self._build_tool_message(
+                        session_id,
+                        exec_tc_id,
+                        execution["content"],
+                        tool_fn,
+                        tool_meta=result_meta if isinstance(result_meta, dict) else None,
+                    )
+                    self._append_message(tool_msg)
+                    self.on_assistant_message(tool_msg, True)
+
+                    follow_up_messages: list[SessionMessage] = []
+                    for follow_up in result.get("followUpMessages") or []:
+                        role = (
+                            follow_up.get("role", "user")
+                            if isinstance(follow_up, dict)
+                            else getattr(follow_up, "role", "user")
                         )
-                    except Exception:
-                        pass
+                        content = (
+                            follow_up.get("content", "")
+                            if isinstance(follow_up, dict)
+                            else getattr(follow_up, "content", "")
+                        )
+                        content_params = (
+                            follow_up.get("contentParams")
+                            if isinstance(follow_up, dict)
+                            else getattr(follow_up, "content_params", None)
+                        )
+                        if content:
+                            follow_up_messages.append(
+                                self._build_message(
+                                    session_id,
+                                    "user",
+                                    content,
+                                    meta={"contentParams": content_params, "advisoryRole": role}
+                                    if content_params
+                                    else {"advisoryRole": role},
+                                )
+                            )
+
+                    for fum in follow_up_messages:
+                        self._append_message(fum)
+
+                    # Record post-mutation checkpoint for file-editing tools
+                    tp = target_paths.get(exec_tc_id)
+                    if tp:
+                        try:
+                            self.file_history.record_checkpoint(
+                                session_id, [tp], "After tool execution"
+                            )
+                        except Exception:
+                            pass
+        finally:
+            # Emit synthetic abort results for any unexecuted tool calls
+            for tc in normalized_calls:
+                tc_id = tc["id"]
+                if tc_id not in completed_tool_call_ids:
+                    tool_fn = tc.get("function")
+                    tool_msg = self._build_tool_message(
+                        session_id,
+                        tc_id,
+                        json.dumps({
+                            "error": TOOL_ABORTED_BEFORE_DISPATCH,
+                            "message": "Tool execution was aborted before dispatch.",
+                        }),
+                        tool_fn,
+                    )
+                    self._append_message(tool_msg)
+                    self.on_assistant_message(tool_msg, True)
+                    completed_tool_call_ids.add(tc_id)
 
         return waiting
 
     async def _create_completion_with_retry(
         self, session_id: str, client: Any, request: dict[str, Any]
     ) -> dict[str, Any]:
-        """Retry retryable LLM failures as new requests; do not persist failed chunks."""
+        """Retry retryable LLM failures with automated multi-model failover cascade."""
+        settings = self.get_resolved_settings()
+        primary_model = str(request.get("model") or settings.get("model") or "gpt-5.6-luna")
+
+        configured_fallbacks = (
+            request.get("fallback_models")
+            or settings.get("fallbackModels")
+            or settings.get("fallback_models")
+            or []
+        )
+        if isinstance(configured_fallbacks, str):
+            configured_fallbacks = [m.strip() for m in configured_fallbacks.split(",") if m.strip()]
+
+        fallback_chain: list[str] = [primary_model]
+        for fb in configured_fallbacks:
+            if isinstance(fb, str) and fb.strip() and fb.strip() not in fallback_chain:
+                fallback_chain.append(fb.strip())
+
+        attempted_models: list[str] = []
+        fallback_reasons: list[str] = []
         last_error: Exception | None = None
-        for attempt in range(DEFAULT_MAX_RETRIES + 1):
-            if self.is_interrupted(session_id):
-                raise asyncio.CancelledError()
-            try:
-                response = await self._create_completion(client, request)
-            except Exception as err:
-                last_error = err
-                code = classify_llm_failure(err)
-                if code is None or attempt >= DEFAULT_MAX_RETRIES:
-                    raise
-                delay_s = retry_delay_ms(attempt + 1) / 1000.0
-                await asyncio.sleep(delay_s)
-                continue
-            if is_empty_llm_response(response) and attempt < DEFAULT_MAX_RETRIES:
-                delay_s = retry_delay_ms(attempt + 1) / 1000.0
-                await asyncio.sleep(delay_s)
-                continue
-            return response
+
+        thinking_enabled = bool(settings.get("thinkingEnabled"))
+        base_url = settings.get("baseURL")
+        reasoning_effort = settings.get("reasoningEffort") or "max"
+
+        for model_idx, current_model in enumerate(fallback_chain):
+            attempted_models.append(current_model)
+            current_request = dict(request)
+            current_request["model"] = current_model
+
+            if current_model != primary_model:
+                current_request.update(
+                    build_thinking_request_options(
+                        thinking_enabled,
+                        base_url=base_url,
+                        reasoning_effort=reasoning_effort,
+                        model=current_model,
+                        has_tools=bool(current_request.get("tools")),
+                    )
+                )
+                if not current_request.get("tools"):
+                    current_request.pop("tools", None)
+
+            retries_for_model = (
+                DEFAULT_MAX_RETRIES if len(fallback_chain) == 1 else min(2, DEFAULT_MAX_RETRIES)
+            )
+
+            for attempt in range(retries_for_model + 1):
+                if self.is_interrupted(session_id):
+                    raise asyncio.CancelledError()
+                try:
+                    response = await self._create_completion(client, current_request)
+                except Exception as err:
+                    last_error = err
+                    code = classify_llm_failure(err)
+                    if code is None:
+                        if model_idx < len(fallback_chain) - 1 and is_failover_eligible(err):
+                            fallback_reasons.append(f"{current_model}: {err}")
+                            break
+                        raise
+
+                    fallback_reasons.append(f"{current_model} (attempt {attempt+1}): {code} ({err})")
+                    if code == "CONTEXT_OVERFLOW" or attempt >= retries_for_model:
+                        break
+
+                    delay_s = retry_delay_ms(attempt + 1) / 1000.0
+                    await asyncio.sleep(delay_s)
+                    continue
+
+                if is_empty_llm_response(response) and attempt < retries_for_model:
+                    delay_s = retry_delay_ms(attempt + 1) / 1000.0
+                    await asyncio.sleep(delay_s)
+                    continue
+
+                if not is_empty_llm_response(response):
+                    if current_model != primary_model:
+                        response["_fallback_info"] = {
+                            "fallback_used": True,
+                            "primary_model": primary_model,
+                            "active_model": current_model,
+                            "attempted_models": list(attempted_models),
+                            "fallback_reasons": list(fallback_reasons),
+                        }
+                    return response
+
         if last_error is not None:
             raise last_error
-        raise RuntimeError("EMPTY_RESPONSE: model returned no content after retries")
+        raise RuntimeError("EMPTY_RESPONSE: model returned no content after retries and fallback cascade")
+
 
     async def _create_completion(
         self, client: Any, request: dict[str, Any], *, emit_stream: bool = True
@@ -1451,25 +1657,50 @@ class SessionManager:
 
     def delete_session(self, session_id: str) -> bool:
         """Remove session messages and entry from index."""
+        target_id = self.resolve_session_id(session_id) or session_id
         index = self._load_index()
-        initial_len = len(index["entries"])
-        index["entries"] = [e for e in index["entries"] if e.get("id") != session_id]
+        initial_len = len(index.get("entries", []))
+        index["entries"] = [e for e in index.get("entries", []) if e.get("id") != target_id]
         if len(index["entries"]) == initial_len:
             return False
 
         self._save_index(index)
-        msg_file = self._messages_path(session_id)
+        msg_file = self._messages_path(target_id)
         if msg_file.exists():
             try:
                 msg_file.unlink()
             except Exception:
                 pass
 
-        clear_session_state(session_id)
-        ctrl = self.session_controllers.pop(session_id, None)
+        clear_session_state(target_id)
+        from coderai.core.agents import get_task_supervisor
+
+        get_task_supervisor().cleanup_session_tasks(target_id)
+        ctrl = self.session_controllers.pop(target_id, None)
         if ctrl and not ctrl.is_set():
             ctrl.set()
-        images_dir = self._storage()["project_dir"] / "images" / session_id
+
+        # Terminate live subprocesses and background jobs for this session
+        try:
+            self.kill_live_processes(target_id)
+        except Exception:
+            pass
+
+        try:
+            if hasattr(self, "job_store"):
+                self.job_store.kill_all(target_id, reason=f"Session {target_id} deleted")
+        except Exception:
+            pass
+
+        # Purge session spilled output files
+        try:
+            from coderai.core.spill import cleanup_spill_session
+
+            cleanup_spill_session(target_id)
+        except Exception:
+            pass
+
+        images_dir = self._storage()["project_dir"] / "images" / target_id
         if images_dir.exists():
             try:
                 shutil.rmtree(images_dir)
@@ -1482,11 +1713,12 @@ class SessionManager:
         cleaned_title = (new_title or "").strip()
         if not cleaned_title:
             return False
-        entry = self._get_entry(session_id)
+        target_id = self.resolve_session_id(session_id) or session_id
+        entry = self._get_entry(target_id)
         if not entry:
             return False
         self._update_entry(
-            session_id,
+            target_id,
             lambda e: {**e, "summary": cleaned_title, "updateTime": _now()},
         )
         return True
@@ -1497,14 +1729,15 @@ class SessionManager:
         at_message_id_or_seq: str | int | None = None,
     ) -> str | None:
         """Fork an existing session into a new independent session branch with cloned message history, event logs, and file checkpoint."""
-        src_entry = self._get_entry(source_session_id)
+        target_src_id = self.resolve_session_id(source_session_id) or source_session_id
+        src_entry = self._get_entry(target_src_id)
         if not src_entry:
             return None
 
         forked_id = f"ses_{uuid.uuid4().hex[:12]}"
         now = _now()
 
-        raw_lines = self.session_store.read_raw_lines(source_session_id)
+        raw_lines = self.session_store.read_raw_lines(target_src_id)
 
         sliced_lines: list[str] = []
         checkpoint_hash: str | None = None
@@ -1567,7 +1800,7 @@ class SessionManager:
         # Fork file history branch
         self.file_history.ensure_session(forked_id)
         self.file_history.fork_session(
-            source_session_id, forked_id, checkpoint_hash=checkpoint_hash
+            target_src_id, forked_id, checkpoint_hash=checkpoint_hash
         )
 
         # Update sessions index
@@ -1588,8 +1821,8 @@ class SessionManager:
             "createTime": now,
             "updateTime": now,
             "planMode": src_entry.get("planMode", False),
-            "forkOf": source_session_id,
-            "parentSessionId": source_session_id,
+            "forkOf": target_src_id,
+            "parentSessionId": target_src_id,
             "forkPoint": at_message_id_or_seq,
         }
         index["entries"].insert(0, forked_entry)
@@ -1600,7 +1833,8 @@ class SessionManager:
 
     def list_undo_targets(self, session_id: str) -> list[dict[str, Any]]:
         """Return all undoable user turns with checkpoint hashes and prompt previews in chronological order."""
-        messages = self.list_session_messages(session_id)
+        target_id = self.resolve_session_id(session_id) or session_id
+        messages = self.list_session_messages(target_id)
         user_messages = [m for m in messages if m.role == "user" and not m.compacted and m.visible]
         if not user_messages:
             return []
@@ -1609,10 +1843,10 @@ class SessionManager:
         for idx, m in enumerate(user_messages, 1):
             ckpt_hash = (m.meta or {}).get("checkpointHash")
             if not ckpt_hash:
-                ckpt_hash = self.file_history.get_current_checkpoint_hash(session_id)
+                ckpt_hash = self.file_history.get_current_checkpoint_hash(target_id)
 
             can_restore_code = bool(
-                ckpt_hash and self.file_history.can_restore(session_id, ckpt_hash)
+                ckpt_hash and self.file_history.can_restore(target_id, ckpt_hash)
             )
             raw_p = (m.meta or {}).get("rawPrompt")
             if raw_p and isinstance(raw_p, str):
@@ -1651,7 +1885,8 @@ class SessionManager:
           - "restore_conversation_only": Truncates message history without modifying disk files.
           - "restore_code_only": Reverts disk files without truncating message history.
         """
-        messages = self.list_session_messages(session_id)
+        target_id = self.resolve_session_id(session_id) or session_id
+        messages = self.list_session_messages(target_id)
         user_messages = [m for m in messages if m.role == "user" and not m.compacted and m.visible]
         if not user_messages:
             return False
@@ -1665,31 +1900,31 @@ class SessionManager:
 
         checkpoint_hash = (target_user.meta or {}).get("checkpointHash")
         if not checkpoint_hash:
-            checkpoint_hash = self.file_history.get_current_checkpoint_hash(session_id)
+            checkpoint_hash = self.file_history.get_current_checkpoint_hash(target_id)
 
         # Restore code if requested
         if mode in ("restore_both", "restore_code_only"):
             if not checkpoint_hash or not self.file_history.can_restore(
-                session_id, checkpoint_hash
+                target_id, checkpoint_hash
             ):
                 if mode == "restore_code_only":
                     return False
             else:
-                self.file_history.restore(session_id, checkpoint_hash)
+                self.file_history.restore(target_id, checkpoint_hash)
 
         # Restore conversation if requested
         if mode in ("restore_both", "restore_conversation_only"):
             cutoff_idx = next((i for i, m in enumerate(messages) if m.id == target_user.id), -1)
             if cutoff_idx >= 0:
                 retained_messages = messages[:cutoff_idx]
-                self._save_messages(session_id, retained_messages)
-                clear_session_state(session_id)
+                self._save_messages(target_id, retained_messages)
+                clear_session_state(target_id)
                 rebuild_session_state_from_history(
-                    session_id, [self._serialize_message(m) for m in retained_messages]
+                    target_id, [self._serialize_message(m) for m in retained_messages]
                 )
 
         self._update_entry(
-            session_id,
+            target_id,
             lambda e: {
                 **e,
                 "status": "completed",
@@ -1725,6 +1960,27 @@ class SessionManager:
                 event.set()
             except Exception:
                 pass
+        try:
+            self.kill_live_processes()
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "job_store"):
+                self.job_store.kill_all(reason="SessionManager disposed")
+        except Exception:
+            pass
+        try:
+            from coderai.core.terminal.manager import get_terminal_manager
+
+            get_terminal_manager().close_all()
+        except Exception:
+            pass
+        try:
+            from coderai.core.sandbox import cleanup_seatbelt_profiles
+
+            cleanup_seatbelt_profiles()
+        except Exception:
+            pass
         try:
             asyncio.get_running_loop()
         except RuntimeError:
@@ -1904,7 +2160,11 @@ def _call_stream_or_sync(
                     if chunk_usage:
                         usage_dict = extract_usage_dict(chunk_usage)
             except Exception as stream_err:
-                # If stream failed mid-generation or failed with API error, re-raise to avoid duplicate sync request
+                # If stream failed mid-generation, preserve partial reasoning & content for resilience recovery
+                if thinking_parts:
+                    setattr(stream_err, "partial_thinking", "".join(thinking_parts))
+                if content_parts:
+                    setattr(stream_err, "partial_content", "".join(content_parts))
                 raise stream_err
 
             if on_progress:

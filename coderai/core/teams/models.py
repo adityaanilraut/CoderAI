@@ -43,6 +43,7 @@ class TeamTask:
     dependencies: list[str] = field(default_factory=list)
     result: str | None = None
     notes: str | None = None
+    revision: int = 1
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -57,6 +58,7 @@ class TeamTask:
             "dependencies": self.dependencies,
             "result": self.result,
             "notes": self.notes,
+            "revision": self.revision,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }

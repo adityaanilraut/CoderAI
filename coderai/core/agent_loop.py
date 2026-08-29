@@ -69,9 +69,34 @@ class AgentLoop:
         self._turn += 1
         self._step = 0
         self._emit(make_turn_start(self._next_seq(), self._turn))
+        from coderai.core.hooks import run_pre_turn
+
+        try:
+            settings = self.manager.get_resolved_settings()
+            run_pre_turn(
+                turn=self._turn,
+                session_id=self.session_id,
+                project_root=self.manager.project_root,
+                settings=settings,
+            )
+        except Exception:
+            pass
 
     def emit_turn_end(self, reason: str) -> None:
         self._emit(make_turn_end(self._next_seq(), self._turn, reason))
+        from coderai.core.hooks import run_post_turn
+
+        try:
+            settings = self.manager.get_resolved_settings()
+            run_post_turn(
+                turn=self._turn,
+                session_id=self.session_id,
+                project_root=self.manager.project_root,
+                reason=reason,
+                settings=settings,
+            )
+        except Exception:
+            pass
 
     def emit_step_start(self) -> None:
         self._step += 1
@@ -395,6 +420,8 @@ class AgentLoop:
                     )
 
                 if manager.is_interrupted(session_id):
+                    self.emit_step_end()
+                    self.emit_turn_end("interrupted")
                     return
 
                 new_status = (

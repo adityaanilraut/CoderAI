@@ -224,14 +224,26 @@ class OpenAIMessageConverter:
         base: dict[str, Any] = {"role": role, "content": content}
 
         tool_calls = getattr(message, "tool_calls", None)
+        if tool_calls is None and isinstance(message, dict):
+            tool_calls = message.get("tool_calls")
         if tool_calls and isinstance(tool_calls, list):
             base["tool_calls"] = [canonicalize_tool_call(tc) for tc in tool_calls]
 
         tool_call_id = getattr(message, "tool_call_id", None)
+        if tool_call_id is None and isinstance(message, dict):
+            tool_call_id = message.get("tool_call_id")
         if tool_call_id:
             base["tool_call_id"] = str(tool_call_id)
 
-        thinking = getattr(message, "thinking", None)
+        thinking = (
+            getattr(message, "thinking", None)
+            or getattr(message, "reasoning_content", None)
+            or (
+                (message.get("reasoning_content") or message.get("thinking"))
+                if isinstance(message, dict)
+                else None
+            )
+        )
         if isinstance(thinking, str) and thinking:
             base["reasoning_content"] = thinking
 

@@ -114,11 +114,23 @@ def render_skill_resources(skill_file_path: str | None) -> str:
 
 def render_skill_document_block(skill: dict[str, Any]) -> str:
     name = skill.get("name", "skill")
-    path_attr = f' path="{_escape(skill.get("path", ""))}"' if skill.get("path") else ""
+    attrs: list[str] = []
+    if skill.get("path"):
+        attrs.append(f'path="{_escape(skill.get("path", ""))}"')
+    if skill.get("version"):
+        attrs.append(f'version="{_escape(skill.get("version", ""))}"')
+    if skill.get("deprecated"):
+        dep_str = "true" if skill.get("deprecated") is True else str(skill.get("deprecated"))
+        attrs.append(f'deprecated="{_escape(dep_str)}"')
+    path_attr = (" " + " ".join(attrs)) if attrs else ""
     content = strip_skill_prompt_metadata(skill.get("content", ""))
     skill_file_path = skill.get("skillFilePath") or skill.get("path")
     resources = render_skill_resources(skill_file_path)
-    return f"<{name}-skill{path_attr}>\n{content}{resources}\n</{name}-skill>"
+    dep_warning = ""
+    if skill.get("deprecated"):
+        reason = f": {skill.get('deprecated')}" if isinstance(skill.get("deprecated"), str) and skill.get("deprecated") != "true" else ""
+        dep_warning = f"> [!WARNING]\n> This skill is deprecated{reason}.\n\n"
+    return f"<{name}-skill{path_attr}>\n{dep_warning}{content}{resources}\n</{name}-skill>"
 
 
 def build_skill_documents_prompt(skills: list[dict[str, Any]]) -> str:

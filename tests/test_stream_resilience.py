@@ -44,6 +44,39 @@ def test_stream_state_ensure_newline(capsys):
     assert captured.out == "Generating text...\n"
 
 
+def test_stream_state_reasoning_deduplication():
+    from coderai.cli.app import _StreamState
+    state = _StreamState()
+    assert state.thinking_rendered is False
+
+    state.on_thinking_chunk("Analyzing database migrations...")
+    assert state.thinking_streamer.is_active is True
+    assert state.thinking_rendered is False
+
+    # When first content chunk arrives, thinking streamer finalizes and marks thinking_rendered
+    state.on_chunk("Migration plan ready.")
+    assert state.thinking_streamer.is_active is False
+    assert state.thinking_rendered is True
+
+    # Reset clears thinking_rendered
+    state.reset()
+    assert state.thinking_rendered is False
+
+
+def test_stream_state_thinking_only_completion():
+    from coderai.cli.app import _StreamState
+    state = _StreamState()
+
+    state.on_thinking_chunk("Reasoning about next step...")
+    assert state.thinking_streamer.is_active is True
+    assert state.thinking_rendered is False
+
+    # Calling ensure_newline finalizes thinking if no content chunks arrived
+    state.ensure_newline()
+    assert state.thinking_streamer.is_active is False
+    assert state.thinking_rendered is True
+
+
 def test_call_stream_or_sync_passes_stream_options():
     called_requests = []
 

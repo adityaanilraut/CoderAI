@@ -108,23 +108,23 @@ def render_welcome_screen(
 
         col1 = Text()
         col1.append("  Engine: ", style="dim")
-        col1.append(f"v{__version__} ", style="bold white")
+        col1.append(f"v{__version__} ", style="bold")
         col1.append(f"(Py {py_ver} • {sys_tag})  ", style="dim")
         col1.append("•  Model: ", style="dim")
         col1.append(f"{active_model}\n", style="bold cyan")
 
         col1.append("  Reasoning: ", style="dim")
-        col1.append(f"{thinking_str}  ", style="white")
+        col1.append(f"{thinking_str}  ", style="default")
         col1.append("•  Plan Mode: ", style="dim")
-        col1.append(f"{plan_status}", style="bold yellow" if plan_mode else "dim white")
+        col1.append(f"{plan_status}", style="bold yellow" if plan_mode else "dim")
 
         col2 = Text()
         col2.append("Workspace: ", style="dim")
-        col2.append(f"{workspace_str}", style="bold white")
+        col2.append(f"{workspace_str}", style="bold")
         if branch:
             col2.append(f" ({branch}{'*' if is_dirty else ''})", style="bold magenta")
         col2.append("\nCapabilities: ", style="dim")
-        col2.append("Scoped Snippets • Bash • Web", style="white")
+        col2.append("Scoped Snippets • Bash • Web", style="default")
         if mcp_servers_count > 0:
             col2.append(f" • MCP ({mcp_servers_count})", style="bold green")
         if skills_count > 0:
@@ -142,29 +142,32 @@ def render_welcome_screen(
 
         # Quick Actions Bar & Cheat Sheet
         actions = Text()
-        actions.append("  Shortcuts:  ", style="bold white")
+        actions.append("  Shortcuts:  ", style="bold")
+        actions.append("/setup", style="bold green")
+        actions.append(" keys & models  ", style="dim")
+        actions.append("•  ", style="dim")
         actions.append("/help", style="bold cyan")
         actions.append(" manual  ", style="dim")
         actions.append("•  ", style="dim")
-        actions.append("/doctor", style="bold green")
+        actions.append("/doctor", style="bold magenta")
         actions.append(" diagnostics  ", style="dim")
         actions.append("•  ", style="dim")
         actions.append("/plan", style="bold yellow")
         actions.append(" plan mode  ", style="dim")
         actions.append("•  ", style="dim")
-        actions.append("/model", style="bold magenta")
+        actions.append("/model", style="bold cyan")
         actions.append(" switch  ", style="dim")
         actions.append("•  ", style="dim")
         actions.append("@file", style="bold blue")
         actions.append(" context  ", style="dim")
         actions.append("•  ", style="dim")
-        actions.append("Ctrl-R", style="bold white")
+        actions.append("Ctrl-R", style="bold")
         actions.append(" search  ", style="dim")
         actions.append("•  ", style="dim")
         actions.append("Ctrl-C", style="bold red")
         actions.append(" interrupt  ", style="dim")
         actions.append("•  ", style="dim")
-        actions.append("Tab", style="bold white")
+        actions.append("Tab", style="bold")
         actions.append(" complete", style="dim")
         console.print(actions)
         console.print()
@@ -176,5 +179,6 @@ def render_welcome_screen(
             f"Workspace: {workspace_str}{branch_str} | Model: {active_model} | Reasoning: {thinking_str} | Plan: {plan_status}"
         )
         print(
-            "Shortcuts: /help commands • /doctor health • /plan toggle • /model switch • Ctrl-R history • Ctrl-C interrupt • Tab complete • @file context\n"
+            "Shortcuts: /setup keys & models • /help commands • /doctor health • /plan toggle • /model switch • Ctrl-R history • Ctrl-C interrupt • Tab complete • @file context\n"
         )
+

@@ -10,6 +10,7 @@ Provides full event-driven lifecycle interception:
 
 from __future__ import annotations
 
+import asyncio
 import enum
 import fnmatch
 import json
@@ -32,6 +33,9 @@ DEFAULT_HOOK_TIMEOUT_SECONDS = 10.0
 class HookPoint(str, enum.Enum):
     PRE_TOOL_USE = "PreToolUse"
     POST_TOOL_USE = "PostToolUse"
+    ON_TOOL_ERROR = "ToolError"
+    PRE_TURN = "PreTurn"
+    POST_TURN = "PostTurn"
     PRE_STEP = "PreStep"
     POST_STEP = "PostStep"
     PRE_PROMPT = "PrePrompt"
@@ -39,6 +43,56 @@ class HookPoint(str, enum.Enum):
     STOP_CRITERIA = "StopCriteria"
     SESSION_START = "SessionStart"
     SESSION_END = "SessionEnd"
+    ON_SUBAGENT_SPAWN = "SubagentSpawn"
+
+
+HOOK_POINT_ALIASES: dict[str, str] = {
+    # Tool call hooks
+    "pre_tool_call": "PreToolUse",
+    "pretoolcall": "PreToolUse",
+    "pre_tool_use": "PreToolUse",
+    "pretooluse": "PreToolUse",
+    "post_tool_call": "PostToolUse",
+    "posttoolcall": "PostToolUse",
+    "post_tool_use": "PostToolUse",
+    "posttooluse": "PostToolUse",
+    "on_tool_error": "ToolError",
+    "tool_error": "ToolError",
+    "toolerror": "ToolError",
+    "onerror": "ToolError",
+    # Turn hooks
+    "pre_turn": "PreTurn",
+    "preturn": "PreTurn",
+    "post_turn": "PostTurn",
+    "postturn": "PostTurn",
+    # Step hooks
+    "pre_step": "PreStep",
+    "prestep": "PreStep",
+    "post_step": "PostStep",
+    "poststep": "PostStep",
+    # Prompt hooks
+    "pre_prompt": "PrePrompt",
+    "preprompt": "PrePrompt",
+    "post_prompt": "PostPrompt",
+    "postprompt": "PostPrompt",
+    # Stop / Session / Subagent hooks
+    "stop_criteria": "StopCriteria",
+    "stopcriteria": "StopCriteria",
+    "session_start": "SessionStart",
+    "sessionstart": "SessionStart",
+    "session_end": "SessionEnd",
+    "sessionend": "SessionEnd",
+    "on_subagent_spawn": "SubagentSpawn",
+    "subagent_spawn": "SubagentSpawn",
+    "subagentspawn": "SubagentSpawn",
+}
+
+
+def normalize_hook_point(point: HookPoint | str) -> str:
+    """Resolve any canonical HookPoint enum, string, or alias into its canonical name."""
+    raw = point.value if isinstance(point, HookPoint) else str(point)
+    cleaned = raw.strip().lower()
+    return HOOK_POINT_ALIASES.get(cleaned, raw)
 
 
 @dataclass
@@ -213,6 +267,18 @@ def merge_hook_outputs(outputs: list[HookOutput]) -> MergedHookOutcome:
     )
 
 
+def _scrubbed_env(base: dict[str, str] | None = None) -> dict[str, str]:
+    import re as _re
+    pat = _re.compile(r"KEY|PASSWORD|SECRET|TOKEN", _re.I)
+    src = base if base is not None else os.environ
+    out: dict[str, str] = {}
+    for k, v in src.items():
+        if pat.search(k) or k.upper().startswith("DSH_"):
+            continue
+        out[k] = v
+    return out
+
+
 def execute_hook_command(
     command: str,
     payload: dict[str, Any],
@@ -221,13 +287,22 @@ def execute_hook_command(
     env_vars: dict[str, str] | None = None,
 ) -> HookOutput:
     """Execute a single hook shell command with a JSON payload on stdin."""
-    run_env = os.environ.copy()
+    run_env = _scrubbed_env()
+    if env_vars:
+        for k, v in env_vars.items():
+            run_env[k] = v
     point_name = str(payload.get("hook_event_name") or "PreToolUse")
     run_env["CODERAI_HOOK_EVENT"] = point_name
     run_env["CODERAI_PROJECT_DIR"] = project_root
     run_env["CLAUDE_PROJECT_DIR"] = project_root
-    if env_vars:
-        run_env.update(env_vars)
+    from coderai.core.telemetry import get_telemetry_collector
+
+    collector = get_telemetry_collector()
+    span = collector.start_span(
+        name=f"hook:{point_name}",
+        kind="hook",
+        attributes={"command": command, "point": point_name},
+    )
 
     start_time = time.time()
     try:
@@ -244,76 +319,7 @@ def execute_hook_command(
         elapsed_ms = (time.time() - start_time) * 1000.0
         stdout = (proc.stdout or "").strip()
         stderr = (proc.stderr or "").strip()
-
-        if proc.returncode != 0:
-            return HookOutput(
-                decision="deny",
-                reason=f"Hook command exited with non-zero status {proc.returncode}: {stderr or stdout}",
-                exit_code=proc.returncode,
-                duration_ms=elapsed_ms,
-                raw_stdout=stdout,
-                raw_stderr=stderr,
-            )
-
-        if not stdout:
-            return HookOutput(
-                decision="none",
-                exit_code=0,
-                duration_ms=elapsed_ms,
-            )
-
-        try:
-            parsed = json.loads(stdout)
-            if isinstance(parsed, dict):
-                decision_raw = str(parsed.get("decision", "none")).lower()
-                decision = (
-                    "deny"
-                    if decision_raw in ("deny", "block", "reject")
-                    else "ask"
-                    if decision_raw in ("ask", "prompt")
-                    else "allow"
-                    if decision_raw in ("allow", "approve", "accept")
-                    else "none"
-                )
-
-                continue_run = bool(parsed.get("continue", True))
-                if str(parsed.get("action", "")).lower() == "stop":
-                    continue_run = False
-
-                add_ctx = parsed.get("additionalContext") or parsed.get("additional_context") or []
-                if isinstance(add_ctx, str):
-                    add_ctx = [add_ctx]
-
-                sys_msgs = parsed.get("systemMessages") or parsed.get("system_messages") or []
-                if isinstance(sys_msgs, str):
-                    sys_msgs = [sys_msgs]
-
-                return HookOutput(
-                    decision=decision,
-                    reason=parsed.get("reason"),
-                    continue_run=continue_run,
-                    stop_reason=parsed.get("stopReason") or parsed.get("stop_reason"),
-                    additional_context=list(add_ctx),
-                    system_messages=list(sys_msgs),
-                    updated_input=parsed.get("updatedInput") or parsed.get("updated_input"),
-                    exit_code=0,
-                    duration_ms=elapsed_ms,
-                    raw_stdout=stdout,
-                    raw_stderr=stderr,
-                )
-        except json.JSONDecodeError:
-            # Check simple string response
-            if stdout.lower() in ("block", "deny", "reject"):
-                return HookOutput(
-                    decision="deny", exit_code=0, duration_ms=elapsed_ms, raw_stdout=stdout
-                )
-            elif stdout.lower() in ("allow", "approve", "accept"):
-                return HookOutput(
-                    decision="allow", exit_code=0, duration_ms=elapsed_ms, raw_stdout=stdout
-                )
-
-        return HookOutput(decision="none", exit_code=0, duration_ms=elapsed_ms, raw_stdout=stdout)
-
+        return _decode_hook_output(stdout, stderr, proc.returncode, elapsed_ms, collector, span)
     except subprocess.TimeoutExpired:
         elapsed_ms = (time.time() - start_time) * 1000.0
         return HookOutput(
@@ -332,6 +338,172 @@ def execute_hook_command(
         )
 
 
+def _decode_hook_output(
+    stdout: str,
+    stderr: str,
+    returncode: int,
+    elapsed_ms: float,
+    collector: Any,
+    span: Any,
+) -> HookOutput:
+    """Decode raw stdout/stderr/returncode from hook execution with safe containment."""
+    if returncode != 0:
+        if collector and span:
+            collector.end_span(
+                span.span_id,
+                status="error",
+                error=f"Exit {returncode}",
+                extra_attributes={"duration_ms": elapsed_ms},
+            )
+            collector.increment_counter("hook_errors", 1.0)
+        return HookOutput(
+            decision="deny",
+            reason=f"Hook command exited with non-zero status {returncode}: {stderr or stdout}",
+            exit_code=returncode,
+            duration_ms=elapsed_ms,
+            raw_stdout=stdout,
+            raw_stderr=stderr,
+        )
+
+    if collector and span:
+        collector.end_span(
+            span.span_id,
+            status="ok",
+            extra_attributes={"duration_ms": elapsed_ms},
+        )
+        collector.increment_counter("hook_executions", 1.0)
+
+    if not stdout:
+        return HookOutput(
+            decision="none",
+            exit_code=0,
+            duration_ms=elapsed_ms,
+        )
+
+    try:
+        parsed = json.loads(stdout)
+        if isinstance(parsed, dict):
+            decision_raw = str(parsed.get("decision", "none")).lower()
+            decision = (
+                "deny"
+                if decision_raw in ("deny", "block", "reject")
+                else "ask"
+                if decision_raw in ("ask", "prompt")
+                else "allow"
+                if decision_raw in ("allow", "approve", "accept")
+                else "none"
+            )
+
+            continue_run = bool(parsed.get("continue", True))
+            if str(parsed.get("action", "")).lower() == "stop":
+                continue_run = False
+
+            add_ctx = parsed.get("additionalContext") or parsed.get("additional_context") or []
+            if isinstance(add_ctx, str):
+                add_ctx = [add_ctx]
+
+            sys_msgs = parsed.get("systemMessages") or parsed.get("system_messages") or []
+            if isinstance(sys_msgs, str):
+                sys_msgs = [sys_msgs]
+
+            return HookOutput(
+                decision=decision,
+                reason=parsed.get("reason"),
+                continue_run=continue_run,
+                stop_reason=parsed.get("stopReason") or parsed.get("stop_reason"),
+                additional_context=list(add_ctx),
+                system_messages=list(sys_msgs),
+                updated_input=parsed.get("updatedInput") or parsed.get("updated_input"),
+                exit_code=0,
+                duration_ms=elapsed_ms,
+                raw_stdout=stdout,
+                raw_stderr=stderr,
+            )
+    except json.JSONDecodeError:
+        # Check simple string response
+        if stdout.lower() in ("block", "deny", "reject"):
+            return HookOutput(
+                decision="deny", exit_code=0, duration_ms=elapsed_ms, raw_stdout=stdout
+            )
+        elif stdout.lower() in ("allow", "approve", "accept"):
+            return HookOutput(
+                decision="allow", exit_code=0, duration_ms=elapsed_ms, raw_stdout=stdout
+            )
+
+    return HookOutput(decision="none", exit_code=0, duration_ms=elapsed_ms, raw_stdout=stdout)
+
+
+async def execute_hook_command_async(
+    command: str,
+    payload: dict[str, Any],
+    project_root: str,
+    timeout_s: float = DEFAULT_HOOK_TIMEOUT_SECONDS,
+    env_vars: dict[str, str] | None = None,
+) -> HookOutput:
+    """Execute a single hook shell command asynchronously with JSON payload piped to stdin."""
+    run_env = _scrubbed_env()
+    point_name = str(payload.get("hook_event_name") or "PreToolUse")
+    run_env["CODERAI_HOOK_EVENT"] = point_name
+    run_env["CODERAI_PROJECT_DIR"] = project_root
+    run_env["CLAUDE_PROJECT_DIR"] = project_root
+    if env_vars:
+        # allow explicit overrides even if sensitive, but don't re-inject scrubbed keys
+        for k, v in env_vars.items():
+            run_env[k] = v
+
+    from coderai.core.telemetry import get_telemetry_collector
+
+    collector = get_telemetry_collector()
+    span = collector.start_span(
+        name=f"hook_async:{point_name}",
+        kind="hook",
+        attributes={"command": command, "point": point_name},
+    )
+
+    start_time = time.time()
+    try:
+        proc = await asyncio.create_subprocess_shell(
+            command,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=project_root,
+            env=run_env,
+        )
+        input_data = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
+        try:
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                proc.communicate(input=input_data),
+                timeout=timeout_s,
+            )
+        except (asyncio.TimeoutError, TimeoutError):
+            try:
+                proc.kill()
+                await proc.wait()
+            except Exception:
+                pass
+            elapsed_ms = (time.time() - start_time) * 1000.0
+            return HookOutput(
+                decision="deny",
+                reason=f"Hook command timed out after {timeout_s}s",
+                exit_code=-1,
+                duration_ms=elapsed_ms,
+            )
+
+        elapsed_ms = (time.time() - start_time) * 1000.0
+        stdout = (stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else "").strip()
+        stderr = (stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else "").strip()
+        return _decode_hook_output(stdout, stderr, proc.returncode, elapsed_ms, collector, span)
+    except Exception as exc:
+        elapsed_ms = (time.time() - start_time) * 1000.0
+        return HookOutput(
+            decision="deny",
+            reason=f"Hook execution failed: {exc}",
+            exit_code=-1,
+            duration_ms=elapsed_ms,
+        )
+
+
 def run_hook_point(
     point: HookPoint | str,
     payload: dict[str, Any],
@@ -339,15 +511,24 @@ def run_hook_point(
     settings: dict[str, Any] | None = None,
     timeout_s: float = DEFAULT_HOOK_TIMEOUT_SECONDS,
 ) -> MergedHookOutcome:
-    """Run all configured hooks matching the lifecycle point and target name."""
-    point_name = point.value if isinstance(point, HookPoint) else str(point)
+    """Run all configured hooks matching the lifecycle point and target name synchronously."""
+    point_name = normalize_hook_point(point)
     config = load_hook_config(project_root, settings)
     if not config:
         return MergedHookOutcome()
 
-    # Look for matching point configurations
+    possible_keys = {
+        point_name,
+        point_name[0].lower() + point_name[1:],
+        point.value if isinstance(point, HookPoint) else str(point),
+        str(point).lower(),
+    }
+    for alias_k, canonical_v in HOOK_POINT_ALIASES.items():
+        if canonical_v == point_name:
+            possible_keys.add(alias_k)
+
     entries: list[dict[str, Any]] = []
-    for key in (point_name, point_name[0].lower() + point_name[1:]):
+    for key in possible_keys:
         val = config.get(key)
         if isinstance(val, list):
             for item in val:
@@ -359,7 +540,7 @@ def run_hook_point(
     if not entries:
         return MergedHookOutcome()
 
-    target_name = str(payload.get("tool_name") or payload.get("step") or "*")
+    target_name = str(payload.get("tool_name") or payload.get("step") or payload.get("task") or "*")
     payload["hook_event_name"] = point_name
     payload["cwd"] = project_root
 
@@ -369,7 +550,7 @@ def run_hook_point(
         if not matches_hook_pattern(matcher, target_name):
             continue
 
-        hooks = entry.get("hooks") or entry.get("commands") or []
+        hooks = entry.get("hooks") or entry.get("commands") or (entry if "command" in entry else [])
         if isinstance(hooks, (str, dict)):
             hooks = [hooks]
 
@@ -380,6 +561,73 @@ def run_hook_point(
             hook_timeout_raw: Any = hook.get("timeout") if isinstance(hook, dict) else None
             hook_timeout = float(hook_timeout_raw) if hook_timeout_raw else timeout_s
             out = execute_hook_command(
+                command=command,
+                payload=payload,
+                project_root=project_root,
+                timeout_s=hook_timeout,
+            )
+            outputs.append(out)
+
+    return merge_hook_outputs(outputs)
+
+
+async def run_hook_point_async(
+    point: HookPoint | str,
+    payload: dict[str, Any],
+    project_root: str,
+    settings: dict[str, Any] | None = None,
+    timeout_s: float = DEFAULT_HOOK_TIMEOUT_SECONDS,
+) -> MergedHookOutcome:
+    """Run all configured hooks matching the lifecycle point and target name asynchronously."""
+    point_name = normalize_hook_point(point)
+    config = load_hook_config(project_root, settings)
+    if not config:
+        return MergedHookOutcome()
+
+    possible_keys = {
+        point_name,
+        point_name[0].lower() + point_name[1:],
+        point.value if isinstance(point, HookPoint) else str(point),
+        str(point).lower(),
+    }
+    for alias_k, canonical_v in HOOK_POINT_ALIASES.items():
+        if canonical_v == point_name:
+            possible_keys.add(alias_k)
+
+    entries: list[dict[str, Any]] = []
+    for key in possible_keys:
+        val = config.get(key)
+        if isinstance(val, list):
+            for item in val:
+                if isinstance(item, dict):
+                    entries.append(item)
+        elif isinstance(val, dict):
+            entries.append(val)
+
+    if not entries:
+        return MergedHookOutcome()
+
+    target_name = str(payload.get("tool_name") or payload.get("step") or payload.get("task") or "*")
+    payload["hook_event_name"] = point_name
+    payload["cwd"] = project_root
+
+    outputs: list[HookOutput] = []
+    for entry in entries:
+        matcher = str(entry.get("matcher") or "*")
+        if not matches_hook_pattern(matcher, target_name):
+            continue
+
+        hooks = entry.get("hooks") or entry.get("commands") or (entry if "command" in entry else [])
+        if isinstance(hooks, (str, dict)):
+            hooks = [hooks]
+
+        for hook in hooks:
+            command = hook.get("command") if isinstance(hook, dict) else hook
+            if not isinstance(command, str) or not command.strip():
+                continue
+            hook_timeout_raw: Any = hook.get("timeout") if isinstance(hook, dict) else None
+            hook_timeout = float(hook_timeout_raw) if hook_timeout_raw else timeout_s
+            out = await execute_hook_command_async(
                 command=command,
                 payload=payload,
                 project_root=project_root,
@@ -411,3 +659,104 @@ def run_pre_tool_use(
         timeout_s=timeout_s,
     )
     return "deny" if outcome.decision == "deny" else "allow"
+
+
+def run_post_tool_use(
+    tool_name: str,
+    args: dict[str, Any],
+    result: Any,
+    context: ToolExecutionContext,
+    settings: dict[str, Any] | None = None,
+    timeout_s: float = DEFAULT_HOOK_TIMEOUT_SECONDS,
+) -> MergedHookOutcome:
+    """Execute PostToolUse / post_tool_call hook point."""
+    payload = {
+        "tool_name": tool_name,
+        "tool_input": args,
+        "tool_result": result.to_dict() if hasattr(result, "to_dict") else str(result),
+        "session_id": getattr(context, "session_id", "default"),
+    }
+    return run_hook_point(
+        HookPoint.POST_TOOL_USE,
+        payload=payload,
+        project_root=getattr(context, "project_root", "."),
+        settings=settings,
+        timeout_s=timeout_s,
+    )
+
+
+def run_on_tool_error(
+    tool_name: str,
+    args: dict[str, Any],
+    error: str | Exception,
+    context: ToolExecutionContext,
+    settings: dict[str, Any] | None = None,
+    timeout_s: float = DEFAULT_HOOK_TIMEOUT_SECONDS,
+) -> MergedHookOutcome:
+    """Execute ToolError / on_tool_error hook point."""
+    payload = {
+        "tool_name": tool_name,
+        "tool_input": args,
+        "error": str(error),
+        "session_id": getattr(context, "session_id", "default"),
+    }
+    return run_hook_point(
+        HookPoint.ON_TOOL_ERROR,
+        payload=payload,
+        project_root=getattr(context, "project_root", "."),
+        settings=settings,
+        timeout_s=timeout_s,
+    )
+
+
+def run_pre_turn(
+    turn: int,
+    session_id: str,
+    project_root: str,
+    settings: dict[str, Any] | None = None,
+) -> MergedHookOutcome:
+    """Execute PreTurn hook point."""
+    return run_hook_point(
+        HookPoint.PRE_TURN,
+        payload={"turn": turn, "session_id": session_id},
+        project_root=project_root,
+        settings=settings,
+    )
+
+
+def run_post_turn(
+    turn: int,
+    session_id: str,
+    project_root: str,
+    reason: str,
+    settings: dict[str, Any] | None = None,
+) -> MergedHookOutcome:
+    """Execute PostTurn hook point."""
+    return run_hook_point(
+        HookPoint.POST_TURN,
+        payload={"turn": turn, "session_id": session_id, "reason": reason},
+        project_root=project_root,
+        settings=settings,
+    )
+
+
+def run_on_subagent_spawn(
+    parent_session_id: str,
+    subagent_id: str,
+    task: str,
+    mode: str = "read_only",
+    project_root: str = ".",
+    settings: dict[str, Any] | None = None,
+) -> MergedHookOutcome:
+    """Execute SubagentSpawn / on_subagent_spawn hook point."""
+    return run_hook_point(
+        HookPoint.ON_SUBAGENT_SPAWN,
+        payload={
+            "parent_session_id": parent_session_id,
+            "subagent_id": subagent_id,
+            "task": task,
+            "mode": mode,
+        },
+        project_root=project_root,
+        settings=settings,
+    )

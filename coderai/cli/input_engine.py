@@ -49,21 +49,30 @@ def is_multiline_incomplete(buffer_lines: list[str]) -> bool:
 
 
 def normalize_multiline_input(text: str) -> str:
-    """Normalize multi-line input text (strip trailing carriage returns, resolve backslash continuations)."""
+    """Normalize multi-line input text (strip trailing carriage returns, resolve backslash continuations, unwrap clean envelopes)."""
     if not text:
         return ""
 
     # Normalize CRLF to LF
     text = text.replace("\r\n", "\n").replace("\r", "\n")
 
-    # If the text is fully enclosed in triple quotes or fences, unwrap outer shell if user used them as delimiter
+    # If the text is wrapped in an outer triple-quote envelope (exactly 2 triple quotes total at start and end),
+    # unwrap the outer shell used as the interactive multiline delimiter.
     trimmed = text.strip()
-    if trimmed.startswith('"""') and trimmed.endswith('"""') and len(trimmed) >= 6:
-        trimmed = trimmed[3:-3].strip()
-        return trimmed
-    if trimmed.startswith("'''") and trimmed.endswith("'''") and len(trimmed) >= 6:
-        trimmed = trimmed[3:-3].strip()
-        return trimmed
+    if (
+        trimmed.startswith('"""')
+        and trimmed.endswith('"""')
+        and len(trimmed) >= 6
+        and count_triple_quotes(trimmed) == 2
+    ):
+        text = trimmed[3:-3].strip()
+    elif (
+        trimmed.startswith("'''")
+        and trimmed.endswith("'''")
+        and len(trimmed) >= 6
+        and count_triple_quotes(trimmed) == 2
+    ):
+        text = trimmed[3:-3].strip()
 
     lines = text.split("\n")
     processed_lines: list[str] = []
@@ -71,8 +80,10 @@ def normalize_multiline_input(text: str) -> str:
     idx = 0
     while idx < len(lines):
         line = lines[idx]
-        if line.endswith("\\") and not line.endswith("\\\\") and idx + 1 < len(lines):
-            # Line continuation: strip trailing backslash and join with next line
+        # Count trailing backslashes to determine if it is an escaped backslash or a line continuation
+        num_trailing_slashes = len(line) - len(line.rstrip("\\"))
+        if num_trailing_slashes % 2 == 1 and idx + 1 < len(lines):
+            # Odd number of trailing backslashes: line continuation
             joined = line[:-1].rstrip() + " " + lines[idx + 1].lstrip()
             lines[idx + 1] = joined
             idx += 1

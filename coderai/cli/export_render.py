@@ -37,7 +37,10 @@ def export_session_to_markdown(
         completion_tokens = entry.usage.get("completion_tokens", 0)
         total_tokens = entry.usage.get("total_tokens", 0)
         cached_tokens = entry.usage.get("cached_tokens", 0)
-        cached_str = f" | Cached: {cached_tokens:,}" if cached_tokens > 0 else ""
+        hit_rate = (cached_tokens / prompt_tokens * 100.0) if prompt_tokens > 0 else 0.0
+        cached_str = (
+            f" | Cached: {cached_tokens:,} ({hit_rate:.1f}% hit)" if cached_tokens > 0 else ""
+        )
         lines.append(
             f"- **Token Usage**: Prompt: {prompt_tokens:,} | Completion: {completion_tokens:,} | Total: {total_tokens:,}{cached_str}"
         )

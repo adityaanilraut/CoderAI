@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import errno
 import os
 import pty
@@ -213,14 +214,14 @@ class TerminalSession:
                 pass
 
     def close(self) -> None:
-        """Terminate process and close fds."""
+        """Terminate process tree with 3-stage escalation and close fds."""
         if self.is_alive:
             try:
-                self.send_signal("SIGTERM")
-                time.sleep(0.05)
+                from coderai.core.common.process_tree import escalated_kill_process_tree
+
+                escalated_kill_process_tree(self.proc.pid, int_grace_sec=0.2, term_grace_sec=0.3)
                 if self.is_alive:
-                    self.send_signal("SIGKILL")
-                self.proc.wait(timeout=0.5)
+                    self.proc.wait(timeout=0.5)
             except Exception:
                 pass
 
@@ -328,3 +329,16 @@ def get_terminal_manager() -> TerminalManager:
     if _default_terminal_manager is None:
         _default_terminal_manager = TerminalManager()
     return _default_terminal_manager
+
+
+def cleanup_all_terminals() -> None:
+    """Close and terminate all persistent terminal sessions on exit."""
+    global _default_terminal_manager
+    if _default_terminal_manager is not None:
+        try:
+            _default_terminal_manager.close_all()
+        except Exception:
+            pass
+
+
+atexit.register(cleanup_all_terminals)

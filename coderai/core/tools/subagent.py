@@ -54,14 +54,41 @@ async def handle_subagent_tool(args: dict[str, Any], context: ToolExecutionConte
     except (ValueError, TypeError):
         depth = 0
 
+    try:
+        max_depth = int(args.get("max_depth")) if args.get("max_depth") is not None else 3
+    except (ValueError, TypeError):
+        max_depth = 3
+
+    try:
+        token_budget = int(args.get("token_budget")) if args.get("token_budget") is not None else None
+    except (ValueError, TypeError):
+        token_budget = None
+
+    seed_messages = None
+    if (args.get("fork_parent_history") is True or args.get("fork") is True) and context.session_id:
+        from coderai.core.session_store import JsonlSessionStore
+
+        store = JsonlSessionStore(context.project_root)
+        rows = store.read_rows(context.session_id)
+        if rows:
+            seed_messages = []
+            for r in rows:
+                role = r.get("role") or (r.get("data") or {}).get("role")
+                content = r.get("content") or (r.get("data") or {}).get("content")
+                if role in ("user", "assistant") and isinstance(content, str) and content:
+                    seed_messages.append({"role": role, "content": content})
+
     spec = SubAgentSpec(
         description=description,
         prompt=prompt,
         mode=mode,
         depth=depth,
+        max_depth=max_depth,
+        token_budget=token_budget,
         timeout_seconds=timeout_seconds,
         parent_session_id=context.session_id,
         extra_context=as_str(args.get("context", "")).strip() or None,
+        seed_messages=seed_messages,
     )
 
     result = await manager.spawn_subagent(spec)

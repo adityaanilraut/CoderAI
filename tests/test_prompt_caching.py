@@ -974,3 +974,286 @@ def test_message_converter_omits_empty_reasoning():
     converted = converter.convert_session_messages(msgs, "deepseek-v4-pro", thinking_enabled=True)
     assert "reasoning_content" not in converted[1]
     assert "reasoning_content" not in converted[2]
+
+
+@pytest.mark.asyncio
+async def test_system_prompt_single_consolidated_message_with_instructions_and_plan_mode(
+    tmp_path: pathlib.Path,
+):
+    """Verify create_session creates a single consolidated system message with instructions and plan mode."""
+    (tmp_path / "AGENTS.md").write_text("# Project Custom Instructions\nFollow these guidelines.")
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = {
+        "choices": [{"message": {"content": "Plan drafted.", "tool_calls": None}}],
+        "usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
+    }
+
+    mgr = SessionManager(
+        project_root=str(tmp_path),
+        create_openai_client=lambda: {"client": mock_client, "model": "deepseek-v4-pro"},
+        get_resolved_settings=lambda: {"model": "deepseek-v4-pro", "preset": "core"},
+    )
+
+    sid = await mgr.create_session("Plan architecture changes", plan_mode=True)
+    msgs = mgr.list_session_messages(sid)
+
+    system_msgs = [m for m in msgs if m.role == "system"]
+    assert len(system_msgs) == 1
+    sys_text = system_msgs[0].content
+
+    # Verify all sections are in one unified prompt in deterministic order
+    assert "You are a helpful software engineer assistant" in sys_text
+    assert "## bash" in sys_text
+    assert "Project Custom Instructions" in sys_text
+    assert "# Plan Mode" in sys_text
+    assert sys_text.index("You are a helpful software engineer assistant") < sys_text.index("## bash")
+    assert sys_text.index("## bash") < sys_text.index("Project Custom Instructions")
+    assert sys_text.index("Project Custom Instructions") < sys_text.index("# Plan Mode")
+
+
+@pytest.mark.asyncio
+async def test_compaction_replays_warm_prefix_and_tools(tmp_path: pathlib.Path):
+    """Verify compaction sends the conversation prefix and tools so provider KV cache is reused."""
+    captured_requests: list[dict[str, Any]] = []
+
+    def mock_create(**kwargs: Any) -> Any:
+        captured_requests.append(kwargs)
+        if len(captured_requests) == 1:
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "Step 1 done",
+                            "tool_calls": [
+                                {
+                                    "id": "c1",
+                                    "type": "function",
+                                    "function": {"name": "read", "arguments": '{"file_path": "a.txt"}'},
+                                }
+                            ],
+                            "reasoning_content": "Reasoning 1",
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 500, "completion_tokens": 30, "total_tokens": 530},
+            }
+        else:
+            # Compaction response
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "## Primary Request and Intent\n- User goal\n\n## Key Technical Concepts\n- Python\n\n## Critical Decisions & Constraints\n- None\n\n## State of Progress\n- None\n\n## Pending Work & Next Steps\n- Next",
+                            "tool_calls": None,
+                        }
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 600,
+                    "completion_tokens": 80,
+                    "total_tokens": 680,
+                    "prompt_cache_hit_tokens": 500,
+                },
+            }
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create = mock_create
+
+    (tmp_path / "a.txt").write_text("file content")
+
+    mgr = SessionManager(
+        project_root=str(tmp_path),
+        create_openai_client=lambda: {
+            "client": mock_client,
+            "model": "deepseek-v4-pro",
+            "thinkingEnabled": True,
+        },
+        get_resolved_settings=lambda: {
+            "model": "deepseek-v4-pro",
+            "preset": "core",
+            "permissions": {"defaultMode": "allowAll"},
+        },
+    )
+
+    sid = await mgr.create_session("Inspect file", skills=[])
+    # Trigger compaction
+    res = await mgr.compaction_engine.compact_now(sid, trigger="manual")
+    assert res is not None
+
+    assert len(captured_requests) >= 2
+    compaction_req = captured_requests[-1]
+
+    # Compaction request must retain tools and conversation prefix
+    assert "tools" in compaction_req
+    assert compaction_req["tools"] is not None
+    assert len(compaction_req["tools"]) > 0
+    assert compaction_req["messages"][0]["role"] == "system"
+    assert "You are a helpful software engineer assistant" in compaction_req["messages"][0]["content"]
+    assert compaction_req["messages"][-1]["role"] == "user"
+    assert "compaction engine" in compaction_req["messages"][-1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_subagent_tool_ordering_and_reasoning_persistence(tmp_path: pathlib.Path):
+    """Verify subagent execution loop retains reasoning_content and canonical tool ordering."""
+    from coderai.core.subagent import SubAgentManager, SubAgentSpec
+
+    captured_subagent_requests: list[dict[str, Any]] = []
+
+    def mock_create(**kwargs: Any) -> Any:
+        captured_subagent_requests.append(kwargs)
+        step = len(captured_subagent_requests)
+        if step == 1:
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "sub_c1",
+                                    "type": "function",
+                                    "function": {"name": "read", "arguments": '{"file_path": "sub.txt"}'},
+                                }
+                            ],
+                            "reasoning_content": "Subagent step 1 thinking",
+                        }
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 300,
+                    "completion_tokens": 40,
+                    "total_tokens": 340,
+                    "prompt_cache_hit_tokens": 0,
+                },
+            }
+        else:
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "Subagent final findings.",
+                            "tool_calls": None,
+                            "reasoning_content": "Subagent step 2 thinking",
+                        }
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 450,
+                    "completion_tokens": 50,
+                    "total_tokens": 500,
+                    "prompt_cache_hit_tokens": 300,
+                },
+            }
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create = mock_create
+
+    (tmp_path / "sub.txt").write_text("subagent data")
+
+    manager = SubAgentManager(
+        project_root=str(tmp_path),
+        create_openai_client=lambda: {
+            "client": mock_client,
+            "model": "deepseek-v4-pro",
+            "thinkingEnabled": True,
+            "reasoningEffort": "max",
+        },
+    )
+
+    spec = SubAgentSpec(description="Subtask", prompt="Read sub.txt and report", mode="read_only")
+    res = await manager.spawn_subagent(spec)
+    assert res.status == "completed"
+    assert "Subagent final findings" in res.summary
+
+    assert len(captured_subagent_requests) == 2
+    req1 = captured_subagent_requests[0]
+    req2 = captured_subagent_requests[1]
+
+    # Verify tool ordering and schema canonicalization
+    assert req1["tools"] == req2["tools"]
+    tool_names = [t["function"]["name"] for t in req1["tools"]]
+    assert "read" in tool_names
+    assert "AskUserQuestion" not in tool_names
+
+    # Verify step 2 carries assistant reasoning_content from step 1
+    step2_msgs = req2["messages"]
+    assistant_msg = next(m for m in step2_msgs if m["role"] == "assistant")
+    assert assistant_msg.get("reasoning_content") == "Subagent step 1 thinking"
+
+
+def test_cache_hit_rate_analytics(tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]):
+    """Verify cache hit rate calculation, Rich table rendering, plain text rendering, and summary formatting."""
+    from coderai.cli.exit_summary import compute_session_stats, render_exit_summary
+    from coderai.cli.export_render import export_session_to_markdown
+    from coderai.cli.interactive_menu import render_token_breakdown
+    from coderai.core.session import SessionEntry
+
+    mgr = SessionManager(
+        project_root=str(tmp_path),
+        create_openai_client=lambda: {"client": None, "model": "gpt-5.6-luna"},
+        get_resolved_settings=lambda: {"model": "gpt-5.6-luna"},
+    )
+    session_id = "ad2596ec6a41_test"
+    mgr._save_index(
+        {
+            "version": 1,
+            "entries": [
+                {
+                    "id": session_id,
+                    "summary": "Cache hit test",
+                    "active_tokens": 12155,
+                    "usage": {
+                        "prompt_tokens": 30296,
+                        "completion_tokens": 622,
+                        "cached_tokens": 18464,
+                        "total_tokens": 30918,
+                    },
+                    "usage_per_model": {
+                        "gpt-5.6-luna": {
+                            "prompt_tokens": 30296,
+                            "completion_tokens": 622,
+                            "cached_tokens": 18464,
+                            "total_tokens": 30918,
+                        }
+                    },
+                }
+            ],
+        }
+    )
+
+    # 1. Test compute_session_stats cache hit rate
+    stats = compute_session_stats(mgr, session_id)
+    assert stats["cached_tokens"] == 18464
+    assert stats["prompt_tokens"] == 30296
+    assert stats["cache_hit_rate"] == 60.9
+
+    # 2. Test plain text render_token_breakdown
+    render_token_breakdown(None, mgr, session_id)
+    captured = capsys.readouterr().out
+    assert "Cached Tokens:     18,464" in captured
+    assert "Cache Hit Rate:    60.9%" in captured
+
+    # 3. Test Rich console render_token_breakdown
+    from rich.console import Console
+    rich_console = Console(record=True, width=120)
+    render_token_breakdown(rich_console, mgr, session_id)
+    rich_text = rich_console.export_text()
+    assert "Cached Tokens:" in rich_text
+    assert "18,464" in rich_text
+    assert "Cache Hit Rate:" in rich_text
+    assert "60.9%" in rich_text
+
+    # 4. Test render_exit_summary
+    mock_exit_console = MagicMock()
+    render_exit_summary(mock_exit_console, mgr, session_id)
+    assert mock_exit_console.print.called
+
+    # 5. Test export_session_to_markdown
+    mgr._save_messages(session_id, [SessionMessage(id="m1", session_id=session_id, role="user", content="Hi")])
+    md_path = export_session_to_markdown(mgr, session_id)
+    md_text = pathlib.Path(md_path).read_text(encoding="utf-8")
+    assert "Cached: 18,464 (60.9% hit)" in md_text
+
+

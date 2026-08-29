@@ -175,7 +175,7 @@ def _seatbelt_subpath(path: str) -> str:
 
 def build_seatbelt_profile(mode: str, workspace_root: str) -> str:
     """Generate a macOS sandbox-exec (Seatbelt) profile for the given mode."""
-    tmp_paths = ["/tmp", "/private/tmp", "/var/tmp", "/private/var/tmp", "/dev"]
+    parsed = parse_sandbox_mode(mode) or DEFAULT_SANDBOX_MODE
     lines = [
         "(version 1)",
         "(deny default)",
@@ -189,16 +189,27 @@ def build_seatbelt_profile(mode: str, workspace_root: str) -> str:
         "(allow file-read*)",
         "(allow file-ioctl)",
         '(allow file-write-data (literal "/dev/null"))',
+        '(allow file-write-data (literal "/dev/zero"))',
+        '(allow file-write-data (literal "/dev/urandom"))',
+        '(allow file-write-data (literal "/dev/random"))',
+        '(allow file-write-data (literal "/dev/tty"))',
+        '(allow file-write-data (literal "/dev/ptmx"))',
+        '(allow file-write-data (literal "/dev/stdout"))',
+        '(allow file-write-data (literal "/dev/stderr"))',
         '(allow file-write-data (literal "/dev/dtracehelper"))',
         "(allow ipc-posix-shm)",
         "(allow network-outbound)",
         "(allow network-inbound)",
         "(allow network-bind)",
     ]
+    if parsed == "read-only":
+        # ponytail: read-only must not grant /tmp writes; keep only device/null parity with source writableRoots=[]
+        return "\n".join(lines) + "\n"
+    tmp_paths = ["/tmp", "/private/tmp", "/var/tmp", "/private/var/tmp", "/dev"]
     write_roots = list(tmp_paths)
-    if mode == "workspace-write":
+    if parsed == "workspace-write":
         write_roots.append(str(pathlib.Path(workspace_root).resolve()))
-    if mode in ("read-only", "workspace-write"):
+    if parsed in ("read-only", "workspace-write"):
         for root in write_roots:
             lines.append(f"(allow file-write* {_seatbelt_subpath(root)})")
     else:
@@ -294,6 +305,7 @@ def wrap_sandbox_command(
         bwrap = [
             "bwrap",
             "--die-with-parent",
+            "--unshare-pid",
             "--ro-bind",
             "/",
             "/",
@@ -301,9 +313,9 @@ def wrap_sandbox_command(
             "/dev",
             "--proc",
             "/proc",
-            "--tmpfs",
-            "/tmp",
         ]
+        if parsed != "read-only":
+            bwrap.extend(["--tmpfs", "/tmp"])
         if parsed == "workspace-write":
             bwrap.extend(["--bind", root, root])
         workdir = cwd or root
@@ -371,3 +383,38 @@ def check_sandbox_path_access(
                 )
 
     return True, None
+
+
+def validate_sandboxed_path(
+    path: str | pathlib.Path,
+    root: str | pathlib.Path,
+    allow_traversal: bool = False,
+) -> tuple[bool, pathlib.Path, str | None]:
+    """Validate that a path does not escape the sandbox root via traversal or absolute links.
+
+    Returns:
+        tuple of (valid: bool, resolved_path: pathlib.Path, error_message: str | None)
+    """
+    try:
+        root_path = pathlib.Path(root).resolve()
+        raw_path = pathlib.Path(path)
+        if not raw_path.is_absolute():
+            resolved = (root_path / raw_path).resolve()
+        else:
+            resolved = raw_path.resolve()
+
+        if allow_traversal:
+            return True, resolved, None
+
+        try:
+            resolved.relative_to(root_path)
+            return True, resolved, None
+        except ValueError:
+            return (
+                False,
+                resolved,
+                f"SANDBOX_VIOLATION: Path '{path}' escapes isolated sandbox root '{root_path}'.",
+            )
+    except Exception as exc:
+        return False, pathlib.Path(path), f"SANDBOX_VIOLATION: Failed to resolve path '{path}': {exc}"
+

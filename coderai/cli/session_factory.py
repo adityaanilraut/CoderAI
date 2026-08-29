@@ -72,12 +72,23 @@ async def close_session_manager(manager: SessionManager) -> None:
         if job.status in ("running", "stopping"):
             manager.job_store.kill(job.id, job.session_id, reason="CoderAI is shutting down")
 
+    if hasattr(manager, "kill_live_processes"):
+        try:
+            manager.kill_live_processes()
+        except Exception:
+            pass
+
     from coderai.core.lsp import client as lsp_module
     from coderai.core.terminal import manager as terminal_module
+    from coderai.core.sandbox import cleanup_seatbelt_profiles
+    from coderai.core.spill import cleanup_all_spills
 
     terminal_manager = terminal_module._default_terminal_manager
     if terminal_manager is not None:
         terminal_manager.close_all()
+
+    cleanup_seatbelt_profiles()
+    cleanup_all_spills()
 
     lsp_client = lsp_module._default_lsp_client
     if lsp_client is not None:

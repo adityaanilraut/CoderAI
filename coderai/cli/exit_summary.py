@@ -23,6 +23,7 @@ def compute_session_stats(mgr: SessionManager, session_id: str | None) -> dict[s
         "completion_tokens": 0,
         "total_tokens": 0,
         "cached_tokens": 0,
+        "cache_hit_rate": 0.0,
         "active_tokens": 0,
         "estimated_cost": 0.0,
         "checkpoint_hash": None,
@@ -41,6 +42,10 @@ def compute_session_stats(mgr: SessionManager, session_id: str | None) -> dict[s
             stats["completion_tokens"] = entry.usage.get("completion_tokens", 0)
             stats["total_tokens"] = entry.usage.get("total_tokens", 0)
             stats["cached_tokens"] = entry.usage.get("cached_tokens", 0)
+            if stats["prompt_tokens"] > 0 and stats["cached_tokens"] > 0:
+                stats["cache_hit_rate"] = round(
+                    (stats["cached_tokens"] / stats["prompt_tokens"]) * 100.0, 1
+                )
 
     # Count user turns and identify modified files from tool messages
     messages = mgr.list_session_messages(session_id)
@@ -103,13 +108,18 @@ def render_exit_summary(console: Any | None, mgr: SessionManager, session_id: st
     table = Table.grid(padding=(0, 2))
     table.add_column("Key", style="dim cyan", width=18)
     table.add_column("Value", style="bold white")
-    table.add_row("Session ID:", f"[cyan]{stats['session_id'][:16]}[/]")
+    table.add_row("Session ID:", f"[cyan]{stats['session_id']}[/]")
     table.add_row("Active Model:", f"[bold cyan]{stats['model']}[/]")
     table.add_row("Conversation Turns:", f"{stats['turns']}")
     table.add_row("Files Modified:", f"[bold green]{files_str}[/]")
     token_usage_str = f"Prompt: {stats['prompt_tokens']:,} | Comp: {stats['completion_tokens']:,} | Total: {stats['total_tokens']:,}"
     if stats.get("cached_tokens", 0) > 0:
-        token_usage_str += f" | Cached: {stats['cached_tokens']:,}"
+        hit_rate = stats.get("cache_hit_rate", 0.0) or (
+            (stats["cached_tokens"] / stats["prompt_tokens"] * 100.0)
+            if stats["prompt_tokens"] > 0
+            else 0.0
+        )
+        token_usage_str += f" | Cached: {stats['cached_tokens']:,} ({hit_rate:.1f}% hit)"
     table.add_row("Token Usage:", token_usage_str)
     table.add_row("Estimated Cost:", f"[bold green]{cost_str}[/]")
     table.add_row("Active Context:", f"{stats['active_tokens']:,} tokens")

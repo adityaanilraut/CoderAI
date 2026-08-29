@@ -6,9 +6,11 @@ when storage is unavailable.
 
 from __future__ import annotations
 
+import atexit
 import os
 import pathlib
 import secrets
+import shutil
 import tempfile
 from dataclasses import dataclass
 from hashlib import sha256
@@ -19,6 +21,36 @@ DEFAULT_MAX_INLINE_BYTES = 30_000
 RETRIEVAL_HINT = "Use the read tool on that path to inspect the complete result."
 
 _default_root: pathlib.Path | None = None
+
+
+def cleanup_all_spills() -> None:
+    """Clean up the process-scoped default spill root directory on exit."""
+    global _default_root
+    if _default_root is not None:
+        try:
+            if _default_root.exists():
+                shutil.rmtree(_default_root, ignore_errors=True)
+        except Exception:
+            pass
+        _default_root = None
+
+
+atexit.register(cleanup_all_spills)
+
+
+def cleanup_spill_session(session_id: str, root: pathlib.Path | None = None) -> None:
+    """Purge all spilled files for a specific session upon deletion or close."""
+    if not session_id:
+        return
+    base = root or _default_root
+    if base is None or not base.exists():
+        return
+    s_dir = session_dir(base, session_id)
+    if s_dir.exists():
+        try:
+            shutil.rmtree(s_dir, ignore_errors=True)
+        except Exception:
+            pass
 
 
 @dataclass

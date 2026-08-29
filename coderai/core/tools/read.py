@@ -9,7 +9,7 @@ import pathlib
 import re
 from typing import Any
 
-from coderai.core.common.file_utils import read_text_file_with_metadata
+from coderai.core.common.file_utils import is_binary_buffer, read_text_file_with_metadata
 from coderai.core.state import (
     create_full_file_snippet,
     create_snippet,
@@ -26,6 +26,9 @@ from coderai.core.tools.types import (
 DEFAULT_LINE_LIMIT = 2000
 MAX_LINE_LENGTH = 2000
 LINE_NUMBER_WIDTH = 6
+READ_MAX_BYTES = 50 * 1024  # DSH READ_MAX_BYTES cap
+STREAM_MIN_SIZE = 10 * 1024 * 1024  # DSH streaming threshold; Python reads whole but documents ceiling
+# ponytail: whole-file read; streaming via chunked scan if large files cause OOM
 
 DEFAULT_GITIGNORE = [
     "node_modules/",
@@ -96,7 +99,10 @@ def _format_with_line_numbers(lines: list[str], start_line_number: int) -> str:
     formatted: list[str] = []
     for index, line in enumerate(lines):
         line_num = start_line_number + index
-        trimmed = line[:MAX_LINE_LENGTH]
+        if len(line) > MAX_LINE_LENGTH:
+            trimmed = line[:MAX_LINE_LENGTH] + f"... (line truncated to {MAX_LINE_LENGTH} chars)"
+        else:
+            trimmed = line
         formatted.append(f"{str(line_num).rjust(LINE_NUMBER_WIDTH)}\t{trimmed}")
     return "\n".join(formatted)
 
@@ -370,30 +376,65 @@ def _find_suffix_matches(project_root: str, suffix: str) -> list[str]:
 def _parse_line_number(value: Any, label: str) -> tuple[bool, int | None, str | None]:
     if value is None or value == "":
         return True, None, None
+    # DSH: must be integer, not float string. Reject "2.0", "1.5" like Number.isInteger.
+    if isinstance(value, float):
+        return False, None, f"{label} must be a positive integer"
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return True, None, None
+        # reject float strings
+        if "." in s or "e" in s.lower():
+            return False, None, f"{label} must be a positive integer"
+        try:
+            integer = int(s, 10)
+        except (ValueError, TypeError):
+            return False, None, f"{label} must be a positive integer"
+        if integer < 1:
+            return False, None, f"{label} must be a positive integer"
+        return True, integer, None
     try:
-        numeric = float(value)
+        integer = int(value)  # type: ignore[arg-type]
+        # reject booleans (int(True)==1)
+        if isinstance(value, bool) or float(value) != integer:
+            return False, None, f"{label} must be a positive integer"
     except (ValueError, TypeError):
-        return False, None, f"{label} must be a number."
-    if not (numeric == numeric and int(numeric) == numeric):
-        return False, None, f"{label} must be an integer."
-    integer = int(numeric)
+        return False, None, f"{label} must be a positive integer"
     if integer < 1:
-        return False, None, f"{label} must be >= 1."
+        return False, None, f"{label} must be a positive integer"
     return True, integer, None
 
 
 def _parse_line_limit(value: Any) -> tuple[bool, int, str | None]:
     if value is None or value == "":
         return True, DEFAULT_LINE_LIMIT, None
+    if isinstance(value, float):
+        return False, DEFAULT_LINE_LIMIT, "limit must be a positive integer"
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return True, DEFAULT_LINE_LIMIT, None
+        if "." in s or "e" in s.lower():
+            return False, DEFAULT_LINE_LIMIT, "limit must be a positive integer"
+        try:
+            integer = int(s, 10)
+        except (ValueError, TypeError):
+            return False, DEFAULT_LINE_LIMIT, "limit must be a positive integer"
+        if integer <= 0:
+            return False, DEFAULT_LINE_LIMIT, "limit must be a positive integer"
+        if integer > DEFAULT_LINE_LIMIT:
+            return False, DEFAULT_LINE_LIMIT, f"limit must be less than or equal to {DEFAULT_LINE_LIMIT}"
+        return True, integer, None
     try:
-        numeric = float(value)
+        integer = int(value)  # type: ignore[arg-type]
+        if isinstance(value, bool) or float(value) != integer:
+            return False, DEFAULT_LINE_LIMIT, "limit must be a positive integer"
     except (ValueError, TypeError):
-        return False, DEFAULT_LINE_LIMIT, "limit must be a number."
-    if not (numeric == numeric and int(numeric) == numeric):
-        return False, DEFAULT_LINE_LIMIT, "limit must be an integer."
-    integer = int(numeric)
+        return False, DEFAULT_LINE_LIMIT, "limit must be a positive integer"
     if integer <= 0:
-        return False, DEFAULT_LINE_LIMIT, "limit must be > 0."
+        return False, DEFAULT_LINE_LIMIT, "limit must be a positive integer"
+    if integer > DEFAULT_LINE_LIMIT:
+        return False, DEFAULT_LINE_LIMIT, f"limit must be less than or equal to {DEFAULT_LINE_LIMIT}"
     return True, integer, None
 
 
@@ -544,6 +585,24 @@ def handle_read_tool(args: dict[str, Any], context: Any) -> ToolResult:
             follow_up_messages=[follow_up],
         )
 
+    try:
+        raw_bytes = p.read_bytes()
+    except Exception as e:
+        return ToolResult(ok=False, name="read", error=f"Failed to read file: {e}")
+
+    if is_binary_buffer(raw_bytes):
+        mark_file_read(
+            session_id,
+            file_path,
+            {"content": "", "timestamp": int(st.st_mtime * 1000), "is_partial_view": True},
+        )
+        return ToolResult(
+            ok=True,
+            name="read",
+            output="WARNING: File is binary.",
+            metadata={"isBinary": True, "bytes": len(raw_bytes)},
+        )
+
     offset_ok, offset, offset_err = _parse_line_number(args.get("offset"), "offset")
     if not offset_ok:
         return ToolResult(
@@ -576,12 +635,33 @@ def handle_read_tool(args: dict[str, Any], context: Any) -> ToolResult:
         )
 
     total_lines = len(lines)
+    # DSH: offset out of range (except empty+offset1 which already returned)
+    if offset is not None and offset > total_lines:
+        return ToolResult(
+            ok=False,
+            name="read",
+            error=f'offset {offset} is out of range for "{file_path}" ({total_lines} lines)',
+            metadata={"code": "FS_NOT_FOUND"},
+        )
     start_index = (offset - 1) if offset else 0
-    end_index = start_index + limit
-    selected = lines[start_index:end_index]
+    # DSH READ_MAX_BYTES: byte cap like buildWindow — stop adding lines when cap hit
+    # ponytail: linear scan, no streaming; upgrade to chunked scan if large files regress
+    truncated_by_bytes = False
+    selected: list[str] = []
+    output_bytes = 0
+    for idx in range(start_index, min(start_index + limit, total_lines)):
+        raw_line = lines[idx]
+        # apply line truncation first for byte counting (matches DSH truncateLine)
+        display_line = raw_line[:MAX_LINE_LENGTH] + f"... (line truncated to {MAX_LINE_LENGTH} chars)" if len(raw_line) > MAX_LINE_LENGTH else raw_line
+        bsize = len(display_line.encode("utf-8")) + (1 if selected else 0)
+        if output_bytes + bsize > READ_MAX_BYTES:
+            truncated_by_bytes = True
+            break
+        output_bytes += bsize
+        selected.append(raw_line)
     start_line = start_index + 1
     end_line = (start_index + len(selected)) if selected else start_line
-    is_partial_view = start_line != 1 or end_line < total_lines
+    is_partial_view = start_line != 1 or end_line < total_lines or truncated_by_bytes
 
     mark_file_read(
         session_id,
@@ -602,6 +682,17 @@ def handle_read_tool(args: dict[str, Any], context: Any) -> ToolResult:
     get_observation_tracker().record_observation(session_id, file_path, content=raw)
 
     formatted_output = _format_with_line_numbers(selected, start_line)
+
+    # DSH formatReadOutput footers: capped > paged > eof
+    if truncated_by_bytes:
+        formatted_output = (
+            f"{formatted_output}\n\n(Output capped. Showing lines {start_line}-{end_line}. Use offset={end_line + 1} to continue.)"
+        )
+    elif end_line < total_lines:
+        formatted_output = (
+            f"{formatted_output}\n\n(Showing lines {start_line}-{end_line} of {total_lines}. "
+            f"Use offset={end_line + 1} to continue.)"
+        )
 
     if is_partial_view:
         snippet = create_snippet(session_id, file_path, start_line, end_line, formatted_output)

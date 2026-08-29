@@ -9,6 +9,9 @@ import uuid
 from typing import Any
 
 from coderai.core.agents import get_agent_registry
+from coderai.core.teams.concurrency import ConcurrencyConflictError
+from coderai.core.teams.deadlock import assert_acyclic_dependencies
+from coderai.core.teams.mailbox import ActorChannel, AsyncMailbox, MessagePriority
 from coderai.core.teams.models import TeamMessage, TeamTask, Teammate
 
 logger = logging.getLogger(__name__)
@@ -20,6 +23,11 @@ class TeamTaskBoard:
     def __init__(self) -> None:
         self._tasks: dict[str, TeamTask] = {}
 
+    def _validate_dag(self) -> None:
+        """Validate that all registered tasks and their dependencies form a strict DAG."""
+        dep_map = {t_id: list(t.dependencies or []) for t_id, t in self._tasks.items()}
+        assert_acyclic_dependencies(dep_map)
+
     def create_task(
         self,
         title: str,
@@ -29,13 +37,20 @@ class TeamTaskBoard:
         dependencies: list[str] | None = None,
     ) -> TeamTask:
         task_id = f"task_{uuid.uuid4().hex[:8]}"
+        deps = dependencies or []
+
+        # Validate DAG acyclicity
+        candidate_deps = {t_id: list(t.dependencies or []) for t_id, t in self._tasks.items()}
+        candidate_deps[task_id] = list(deps)
+        assert_acyclic_dependencies(candidate_deps)
+
         task = TeamTask(
             task_id=task_id,
             title=title,
             description=description,
             assigned_to=assigned_to,
             priority=priority if priority in ("low", "medium", "high", "critical") else "medium",
-            dependencies=dependencies or [],
+            dependencies=deps,
         )
         self._tasks[task_id] = task
         return task
@@ -62,10 +77,27 @@ class TeamTaskBoard:
         assigned_to: str | None = None,
         result: str | None = None,
         notes: str | None = None,
-    ) -> TeamTask | None:
+        dependencies: list[str] | None = None,
+        expected_revision: int | None = None,
+    ) -> TeamTask:
         task = self._tasks.get(task_id)
         if not task:
-            return None
+            raise KeyError(f"Task '{task_id}' not found on team task board.")
+        if expected_revision is not None and task.revision != expected_revision:
+            raise ConcurrencyConflictError(
+                f"ConcurrencyConflictError: Task '{task_id}' revision mismatch "
+                f"(expected revision {expected_revision}, but current is {task.revision}). Refresh task state before updating.",
+                resource_id=task_id,
+                expected_revision=expected_revision,
+                actual_revision=task.revision,
+            )
+
+        if dependencies is not None:
+            candidate_deps = {t_id: list(t.dependencies or []) for t_id, t in self._tasks.items()}
+            candidate_deps[task_id] = list(dependencies)
+            assert_acyclic_dependencies(candidate_deps)
+            task.dependencies = list(dependencies)
+
         if status:
             task.status = status
         if assigned_to is not None:
@@ -74,6 +106,7 @@ class TeamTaskBoard:
             task.result = result
         if notes is not None:
             task.notes = notes
+        task.revision += 1
         task.updated_at = time.time()
         return task
 
@@ -94,6 +127,7 @@ class TeamManager:
 
     def __init__(self) -> None:
         self.task_board = TeamTaskBoard()
+        self.channel = ActorChannel()
         self._teammates: dict[str, Teammate] = {}
         self._active_tasks: dict[str, asyncio.Task[Any]] = {}
 
@@ -116,6 +150,7 @@ class TeamManager:
             status="idle",
         )
         self._teammates[teammate_id] = teammate
+        self.channel.register_mailbox(teammate_id)
         return teammate
 
     def get_teammate(self, identifier: str) -> Teammate | None:
@@ -146,10 +181,16 @@ class TeamManager:
         if recipient == "all":
             for tm in self._teammates.values():
                 tm.inbox.append(msg)
+                mb = self.channel.get_mailbox(tm.teammate_id)
+                if mb:
+                    mb.send_nowait(msg)
         else:
             target = self.get_teammate(recipient)
             if target:
                 target.inbox.append(msg)
+                mb = self.channel.get_mailbox(target.teammate_id)
+                if mb:
+                    mb.send_nowait(msg)
 
         sender_tm = self.get_teammate(sender)
         if sender_tm:

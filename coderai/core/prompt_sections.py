@@ -84,6 +84,15 @@ TOOL_ORDER = [
     "wait_agent",
     "code_mode",
     "session_query",
+    "session_search",
+    "session_trace",
+    "session_event_search",
+    "session_event_read",
+    "browser_navigate",
+    "browser_click",
+    "browser_type",
+    "browser_snapshot",
+    "browser_close",
     "pwsh",
     TOOL_ORDER_REST,
 ]
@@ -100,7 +109,9 @@ SANDBOX_POLICY_ORDER = 110
 SKILLS_CATALOG_ORDER = 110
 TOOL_WEB_FETCH_ORDER = 111
 TOOL_GOAL_ORDER = 114
-SUBAGENT_DELEGATION_ORDER = 120
+SUBAGENT_DELEGATION_ORDER = 118
+INSTRUCTIONS_ORDER = 120
+PLAN_MODE_ORDER = 125
 
 
 @dataclass(frozen=True)

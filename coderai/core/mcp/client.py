@@ -177,9 +177,20 @@ class McpClient:
                 fut.set_exception(RuntimeError(f"MCP server '{self.server_name}' disconnected."))
         self._pending.clear()
 
+    async def ping(self, timeout_s: float = 5.0) -> bool:
+        """Probe MCP connection liveness by sending a ping request."""
+        if not self.is_connected():
+            return False
+        try:
+            await self._request("ping", {}, timeout_s=timeout_s)
+            return True
+        except Exception:
+            return False
+
     async def list_tools(
         self, cursor: str | None = None, timeout_s: float = 30.0
     ) -> list[dict[str, Any]]:
+
         params: dict[str, Any] = {}
         if cursor:
             params["cursor"] = cursor

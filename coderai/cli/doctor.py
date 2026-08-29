@@ -150,7 +150,7 @@ def run_doctor_diagnostics(project_root: str, mgr: Any) -> DoctorReport:
                 name=f"Active Model ({active_model})",
                 status="error",
                 message=f"No API key resolved for model '{active_model}' (endpoint: {base_url})",
-                remediation="Set DEEPSEEK_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY, or ANTHROPIC_API_KEY in your environment or ~/.coderai/settings.json.",
+                remediation="Run '/setup' or 'coderai setup' to configure keys and models, or set OPENAI_API_KEY, DEEPSEEK_API_KEY, GEMINI_API_KEY, or ANTHROPIC_API_KEY in ~/.coderai/settings.json.",
             )
         )
 

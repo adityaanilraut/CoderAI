@@ -39,7 +39,7 @@ def format_diff_text(diff_text: str) -> Text:
         elif line.startswith("\\"):
             formatted.append(f"{line}\n", style="dim italic")
         else:
-            formatted.append(f"{line}\n", style="dim white")
+            formatted.append(f"{line}\n", style="dim")
 
     return formatted
 
@@ -73,5 +73,5 @@ def render_diff_preview(console: Any | None, diff_text: str, title: str = "Diff 
         elif line.startswith("\\"):
             diff_body.append(f"      {line}\n", style="dim italic")
         else:
-            diff_body.append(f"      {line}\n", style="dim white")
+            diff_body.append(f"      {line}\n", style="dim")
     active_console.print(diff_body)

@@ -114,20 +114,39 @@ def handle_edit_tool(args: dict[str, Any], context: Any) -> ToolResult:
                 return ToolResult(
                     ok=False, name="edit", error="file_path is required when snippet_id is omitted."
                 )
-            project_root = (
+            iso_val = (
+                ctx.get("isolated_cwd")
+                if isinstance(ctx, dict)
+                else getattr(ctx, "isolated_cwd", None)
+            )
+            isolated_cwd = (
+                str(iso_val)
+                if isinstance(iso_val, (str, pathlib.Path)) and "MagicMock" not in str(type(iso_val))
+                else None
+            )
+
+            pr_val = (
                 ctx.get("project_root")
                 if isinstance(ctx, dict)
                 else getattr(ctx, "project_root", None)
-            ) or "."
+            )
+            project_root = (
+                str(pr_val)
+                if isinstance(pr_val, (str, pathlib.Path)) and "MagicMock" not in str(type(pr_val))
+                else "."
+            )
+            effective_root = isolated_cwd or project_root
             file_path = (
                 file_path_arg
                 if is_absolute_file_path(file_path_arg)
-                else str(pathlib.Path(project_root) / file_path_arg)
+                else str(pathlib.Path(effective_root) / file_path_arg)
             )
+
             file_path = normalize_file_path(file_path)
             p_check = pathlib.Path(file_path)
             if not p_check.exists():
                 return ToolResult(ok=False, name="edit", error=f"File not found: {file_path}")
+
             if p_check.is_dir():
                 return ToolResult(ok=False, name="edit", error="file_path points to a directory.")
             try:
@@ -310,6 +329,31 @@ def handle_edit_tool(args: dict[str, Any], context: Any) -> ToolResult:
         )
         diff_preview = build_diff_preview(file_path, raw, updated_content)
 
+        from coderai.core.tools.file_mutation import generate_virtual_patch, is_dry_run
+
+        if is_dry_run(ctx, validated_args):
+            patch = generate_virtual_patch(file_path, raw, updated_content)
+            replaced_count = len(matches) if replace_all else 1
+            return ToolResult(
+                ok=True,
+                name="edit",
+                output=f"[dry-run] Virtual edit preview for {file_path}:\n{patch['diff']}"
+                if patch["diff"]
+                else f"[dry-run] Verified replacement in {file_path}.",
+                metadata={
+                    "file_path": file_path,
+                    "replaced_count": replaced_count,
+                    "dry_run": True,
+                    "diff_preview": diff_preview or patch["diff"],
+                    "virtual_patch": patch,
+                    "lines_added": patch["lines_added"],
+                    "lines_removed": patch["lines_removed"],
+                    "read_scope_type": snippet.scope_type,
+                    "scope": _format_scope_metadata(scope, snippet),
+                    "matched_via": matched_via,
+                },
+            )
+
         try:
             write_file_with_callbacks(
                 ctx, file_path, updated_content, metadata["encoding"], metadata["lineEndings"]
@@ -332,6 +376,7 @@ def handle_edit_tool(args: dict[str, Any], context: Any) -> ToolResult:
             )
         except Exception as e:
             return ToolResult(ok=False, name="edit", error=str(e))
+
 
         replaced_count = len(matches) if replace_all else 1
         return ToolResult(

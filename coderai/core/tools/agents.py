@@ -54,11 +54,22 @@ async def handle_subagent_fork_tool(
         depth = int(args.get("depth", 0))
     except (ValueError, TypeError):
         depth = 0
-    if depth >= MAX_SUBAGENT_DEPTH:
+
+    try:
+        max_depth = int(args.get("max_depth")) if args.get("max_depth") is not None else MAX_SUBAGENT_DEPTH
+    except (ValueError, TypeError):
+        max_depth = MAX_SUBAGENT_DEPTH
+
+    try:
+        token_budget = int(args.get("token_budget")) if args.get("token_budget") is not None else None
+    except (ValueError, TypeError):
+        token_budget = None
+
+    if depth >= max_depth:
         return ToolResult(
             ok=False,
             name="subagent_fork",
-            error=f"RecursionLimitError: sub-agent depth cannot exceed {MAX_SUBAGENT_DEPTH}.",
+            error=f"RecursionLimitError: sub-agent depth cannot exceed {max_depth}.",
         )
 
     timeout_raw = args.get("timeout_seconds")
@@ -78,6 +89,8 @@ async def handle_subagent_fork_tool(
         prompt=prompt,
         mode=mode,
         depth=depth,
+        max_depth=max_depth,
+        token_budget=token_budget,
         timeout_seconds=timeout_seconds,
         parent_session_id=context.session_id,
         extra_context=as_str(args.get("context", "")).strip() or None,
@@ -116,11 +129,20 @@ async def handle_continuable_subagent_tool(
         depth = int(args.get("depth", 0))
     except (ValueError, TypeError):
         depth = 0
-    if depth >= MAX_SUBAGENT_DEPTH:
+    try:
+        max_depth = int(args.get("max_depth")) if args.get("max_depth") is not None else MAX_SUBAGENT_DEPTH
+    except (ValueError, TypeError):
+        max_depth = MAX_SUBAGENT_DEPTH
+    try:
+        token_budget = int(args.get("token_budget")) if args.get("token_budget") is not None else None
+    except (ValueError, TypeError):
+        token_budget = None
+
+    if depth >= max_depth:
         return ToolResult(
             ok=False,
             name="subagent",
-            error=f"RecursionLimitError: sub-agent depth cannot exceed {MAX_SUBAGENT_DEPTH}.",
+            error=f"RecursionLimitError: sub-agent depth cannot exceed {max_depth}.",
         )
     timeout_raw = args.get("timeout_seconds")
     try:
@@ -136,6 +158,8 @@ async def handle_continuable_subagent_tool(
         prompt=prompt,
         mode=mode,
         depth=depth,
+        max_depth=max_depth,
+        token_budget=token_budget,
         timeout_seconds=timeout_seconds,
         parent_session_id=context.session_id,
         extra_context=as_str(args.get("context", "")).strip() or None,
@@ -208,6 +232,9 @@ async def handle_list_agents_tool(
 async def handle_report_tool(args: dict[str, Any], context: ToolExecutionContext) -> ToolResult:
     """Child-only: record the sub-agent's final report for the parent."""
     summary = as_str(args.get("summary") or args.get("result")).strip()
+    delivery = as_str(args.get("delivery") or "next-step").strip().lower()
+    if delivery not in ("next-step", "quiet"):
+        delivery = "next-step"
     if not summary:
         return ToolResult(ok=False, name="report", error="summary is required.")
     session_id = context.session_id
@@ -218,6 +245,6 @@ async def handle_report_tool(args: dict[str, Any], context: ToolExecutionContext
     return ToolResult(
         ok=True,
         name="report",
-        output="Report recorded for the parent agent.",
-        metadata={"summary": summary},
+        output=f"Report recorded for the parent agent (delivery: {delivery}).",
+        metadata={"summary": summary, "delivery": delivery},
     )

@@ -208,7 +208,7 @@ class StatuslineEngine:
 
         # Plan Mode Segment
         bar.append("Plan: ", style="dim")
-        bar.append(plan_label, style="bold yellow" if plan_mode else "dim white")
+        bar.append(plan_label, style="bold yellow" if plan_mode else "dim")
 
         # Divider
         bar.append(" │ ", style="dim")
@@ -220,7 +220,7 @@ class StatuslineEngine:
         # Optional Turns Segment
         if turns > 0:
             bar.append(" │ ", style="dim")
-            bar.append(f"Turns: {turns}", style="bold white")
+            bar.append(f"Turns: {turns}", style="bold")
 
         # Optional MCP Segment
         if mcp_count > 0:

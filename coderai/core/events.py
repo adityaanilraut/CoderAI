@@ -49,6 +49,12 @@ STEERING_MESSAGE = "steering/message"
 TODO_WRITE = "todo/write"
 SESSION_END_SEED = "session/end-seed"
 
+# Telemetry (log-only)
+TELEMETRY_SPAN_START = "telemetry/span-start"
+TELEMETRY_SPAN_END = "telemetry/span-end"
+TELEMETRY_METRIC = "telemetry/metric"
+
+
 # ---------------------------------------------------------------------------
 # Surface / log-only classification
 # ---------------------------------------------------------------------------
@@ -77,6 +83,9 @@ LOG_ONLY_EVENT_TYPES: frozenset[str] = frozenset(
         COMPACTION_PRUNE,
         TODO_WRITE,
         SESSION_END_SEED,
+        TELEMETRY_SPAN_START,
+        TELEMETRY_SPAN_END,
+        TELEMETRY_METRIC,
     }
 )
 

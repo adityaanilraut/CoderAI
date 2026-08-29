@@ -58,16 +58,16 @@ def format_plan_content(plan_text: str) -> Text:
         elif stripped.startswith(("- [ ]", "* [ ]")):
             item_text = stripped[5:].strip()
             formatted.append("  ○ ", style="bold cyan")
-            formatted.append(f"{item_text}\n", style="white")
+            formatted.append(f"{item_text}\n", style="default")
         elif stripped.startswith("#"):
             heading = stripped.lstrip("#").strip()
             formatted.append(f"\n  {heading}\n", style="bold yellow")
         elif stripped.startswith(("-", "*", "•")):
             item_text = stripped.lstrip("-*• ").strip()
             formatted.append("    • ", style="dim cyan")
-            formatted.append(f"{item_text}\n", style="dim white")
+            formatted.append(f"{item_text}\n", style="dim")
         else:
-            formatted.append(f"  {stripped}\n", style="dim white")
+            formatted.append(f"  {stripped}\n", style="dim")
 
     return formatted
 

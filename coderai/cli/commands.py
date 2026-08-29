@@ -37,6 +37,13 @@ _COMMANDS = (
     SlashCommand("undo", "Revert to a previous checkpoint", "Planning & Safety"),
     SlashCommand("diff", "Show the current unified diff", "Planning & Safety"),
     SlashCommand("continue", "Continue agent execution", "Planning & Safety"),
+    SlashCommand(
+        "setup",
+        "Configure API keys, providers, endpoints, and default model",
+        "Models & Reasoning",
+        ("auth", "keys", "configure"),
+        ("quick", "keys", "models", "provider", "test", "status"),
+    ),
     SlashCommand("model", "Select or switch the active model", "Models & Reasoning"),
     SlashCommand(
         "effort",

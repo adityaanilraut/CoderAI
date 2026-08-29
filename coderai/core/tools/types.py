@@ -125,6 +125,8 @@ class ToolExecutionContext:
     bash_min_timeout_ms: int | None = None
     permission_decision: str | None = None
     sandbox_mode: str | None = None
+    isolated_cwd: str | None = None
+    dry_run: bool = False
     list_session_messages: Callable[[str], list[Any]] | None = None
     list_session_events: Callable[[str], list[Any]] | None = None
     deferred_contexts: list[ToolExecutionFollowUpMessage | dict[str, Any]] = field(
@@ -153,6 +155,10 @@ class ToolExecutionHooks:
     on_process_start: Callable[[str | int, str], None] | None = None
     on_process_exit: Callable[[str | int], None] | None = None
     on_process_stdout: Callable[[str | int, str], None] | None = None
+    should_stop: Callable[[], bool] | None = None
+    isolated_cwd: str | None = None
+    dry_run: bool = False
+
     on_process_timeout_control: Callable[[str | int, ProcessTimeoutControl | None], None] | None = (
         None
     )
@@ -161,7 +167,6 @@ class ToolExecutionHooks:
     on_after_file_mutation: Callable[[str], None] | None = None
     on_plugin_rate_limit_exceeded: Callable[[str], None] | None = None
     on_load_skill: Callable[[str], Any] | None = None
-    should_stop: Callable[[], bool] | None = None
     permission_decision: str | None = None
     sandbox_mode: str | None = None
     pre_execute: Callable[[str, dict[str, Any], "ToolExecutionContext"], str] | None = None
@@ -175,6 +180,9 @@ class ToolExecutionHooks:
     timeout_ms: int | None = None
     list_session_messages: Callable[[str], list[Any]] | None = None
     list_session_events: Callable[[str], list[Any]] | None = None
+
+
+TOOL_ABORTED_BEFORE_DISPATCH = "TOOL_ABORTED_BEFORE_DISPATCH"
 
 
 @dataclass
@@ -191,6 +199,8 @@ class ToolDefinition:
     rate_limited_id: PluginRateLimitedTool | None = None
     is_mutating: bool = False
     is_concurrency_safe: bool | Callable[[dict[str, Any]], bool] = False
+    execution_mode: Literal["parallel", "serial", "barrier"] | Callable[[dict[str, Any]], Literal["parallel", "serial", "barrier"]] | None = None
+    rate_limit: tuple[int, float] | None = None
     timeout_ms: int | None = None
     present_result: Callable[[dict[str, Any], ToolResult], dict[str, Any] | None] | None = None
     finalize_content: Callable[[ToolExecutionContext, ToolResult], str | None] | None = None
@@ -203,6 +213,21 @@ class ToolDefinition:
             except Exception:
                 return False
         return bool(self.is_concurrency_safe)
+
+    def check_execution_mode(self, args: dict[str, Any]) -> Literal["parallel", "serial", "barrier"]:
+        """Evaluate dynamic execution mode ('parallel', 'serial', or 'barrier')."""
+        if callable(self.execution_mode):
+            try:
+                mode = self.execution_mode(args)
+                if mode in ("parallel", "serial", "barrier"):
+                    return mode
+            except Exception:
+                pass
+        if isinstance(self.execution_mode, str) and self.execution_mode in ("parallel", "serial", "barrier"):
+            return self.execution_mode
+        if self.check_concurrency_safe(args):
+            return "parallel"
+        return "serial"
 
     def to_openai_schema(self) -> dict[str, Any]:
         """Generate OpenAI function calling JSON schema definition with deterministic key sorting."""

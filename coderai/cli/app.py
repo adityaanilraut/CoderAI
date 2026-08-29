@@ -24,6 +24,7 @@ from coderai.cli.diff_render import render_diff_preview
 from coderai.cli.exit_summary import render_exit_summary
 from coderai.cli.export_render import export_session_to_json, export_session_to_markdown
 from coderai.cli.file_mention import expand_file_mentions
+from coderai.cli.help import COMMAND_HELP_DETAILS, render_help
 from coderai.cli.input_engine import read_user_turn
 from coderai.cli.interactive_menu import (
     prompt_plan_implementation,
@@ -149,11 +150,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--resume",
         "-r",
+        "--session",
+        "-s",
         nargs="?",
         const=True,
         default=None,
         dest="resume",
-        help="Resume a specific session by its ID. Use without an ID to show session picker.",
+        help="Resume a specific session by its ID, prefix, or checkpoint. Use without an ID to show session picker.",
     )
     parser.add_argument(
         "--fork",
@@ -178,6 +181,57 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=list(TOOL_PRESETS),
         default=None,
         help="Tool preset: full, core, or shell_edit",
+    )
+    parser.add_argument(
+        "--setup",
+        dest="setup",
+        action="store_true",
+        default=False,
+        help="Launch interactive setup wizard to configure API keys, endpoints, and models",
+    )
+    parser.add_argument(
+        "--provider",
+        dest="setup_provider",
+        help="Provider to configure in setup (e.g. openai, deepseek, gemini, anthropic, openrouter, ollama)",
+    )
+    parser.add_argument(
+        "--key",
+        dest="setup_key",
+        help="API key to save for the specified provider",
+    )
+    parser.add_argument(
+        "--base-url",
+        dest="setup_base_url",
+        help="Base URL endpoint to configure (for local or custom providers)",
+    )
+    parser.add_argument(
+        "--setup-model",
+        dest="setup_model",
+        help="Default model to configure in setup",
+    )
+    parser.add_argument(
+        "--test",
+        dest="setup_test",
+        action="store_true",
+        help="Test connection and authentication with active or specified provider",
+    )
+    parser.add_argument(
+        "--status",
+        dest="setup_status",
+        action="store_true",
+        help="Display provider credentials and configuration status table",
+    )
+    parser.add_argument(
+        "--project",
+        dest="setup_project",
+        action="store_true",
+        help="Save configuration to project workspace instead of user global",
+    )
+    parser.add_argument(
+        "--global",
+        dest="setup_global",
+        action="store_true",
+        help="Save configuration to user global settings (~/.coderai)",
     )
     parser.add_argument("--plan", action="store_true", help="start session in Plan Mode")
     parser.add_argument("--yes", "-y", action="store_true", help="auto-approve all permissions")
@@ -210,82 +264,163 @@ def _prompt_permissions(
             always_allows.extend(scopes)
             continue
 
+        always_target = next((s for s in scopes if s in ALWAYS_ALLOWED_SCOPES), None)
+        has_always = bool(always_target and not plan_mode)
+
         if console is not None and _RICH:
             scope_items = []
             for sc in scopes:
                 color = get_scope_color(sc)
-                scope_items.append(f"[{color}]{sc}[/] ({describe_scope(sc)})")
+                scope_items.append(f"[{color}]{sc}[/] [dim]({describe_scope(sc)})[/]")
             scopes_str = ", ".join(scope_items) if scope_items else "[green]none[/]"
 
-            risk_style = (
-                "bold white on red"
-                if "CRITICAL" in risk_level
-                else (
-                    "bold red"
-                    if "HIGH" in risk_level
-                    else ("bold yellow" if "MODERATE" in risk_level else "bold green")
-                )
-            )
-            badge_str = f" [{risk_style}] {risk_level} [/]"
+            if "CRITICAL" in risk_level:
+                border_color = "bright_red"
+                badge_style = "bold white on red"
+                risk_icon = "🚨"
+            elif "HIGH" in risk_level:
+                border_color = "red"
+                badge_style = "bold white on red"
+                risk_icon = "⚠️"
+            elif "MODERATE" in risk_level:
+                border_color = "yellow"
+                badge_style = "bold black on yellow"
+                risk_icon = "⚡"
+            else:
+                border_color = "cyan"
+                badge_style = "bold black on green"
+                risk_icon = "🛡️"
 
-            console.print(
-                f"\n  [bold yellow]! Permission Required ({idx}/{len(requests)})[/]{badge_str}"
-            )
-            console.print(f"    [bold cyan]{name}:[/] [bold white]{command}[/]")
+            badge_str = f"[{badge_style}] {risk_icon} {risk_level} [/]"
+
+            card_lines = []
+            if command:
+                card_lines.append(f"  [bold cyan]Action:[/]   [bold white]{name}[/]")
+                card_lines.append(f"  [bold cyan]Command:[/]  [bold white]{command}[/]")
+            else:
+                card_lines.append(f"  [bold cyan]Action:[/]   [bold white]{name}[/]")
+
             if description:
-                console.print(f"    [dim]{description}[/]")
+                card_lines.append(f"  [dim italic]{description}[/]")
+
             if is_forced_plan_scope:
-                console.print(
-                    "    [bold red][WARNING] Mutating action requested while in Plan Mode.[/]"
+                card_lines.append(
+                    "  [bold red]⚠️  Plan Mode Warning:[/] [yellow]Mutating action requested while in Plan Mode.[/]"
                 )
-            console.print(f"    [dim]Scopes:[/] {scopes_str}")
+
+            card_lines.append(f"  [dim]Scopes:[/]   {scopes_str}")
+
+            panel = Panel(
+                "\n".join(card_lines),
+                title=f"[bold yellow]! Permission Required ({idx}/{len(requests)})[/]  {badge_str}",
+                border_style=border_color,
+                padding=(0, 1),
+            )
+            console.print()
+            console.print(panel)
 
             if diff_preview and isinstance(diff_preview, str) and diff_preview.strip():
                 render_diff_preview(console, diff_preview, title=f"Pre-Approval Diff ({name})")
         else:
             print(f"\n! Permission Required ({idx}/{len(requests)}) [{risk_level}]")
-            print(f"  {name}: {command}")
+            print(f"  Action:      {name}")
+            if command:
+                print(f"  Command:     {command}")
             if description:
                 print(f"  Description: {description}")
             if is_forced_plan_scope:
                 print("  [WARNING] Mutating action requested while in Plan Mode.")
             if scopes:
-                print(f"  Scopes: {', '.join(scopes)}")
+                print(f"  Scopes:      {', '.join(scopes)}")
             if diff_preview and isinstance(diff_preview, str) and diff_preview.strip():
                 render_diff_preview(None, diff_preview, title=f"Pre-Approval Diff ({name})")
 
-        options: list[tuple[str, str, str]] = [("allow", "1", "Yes")]
-        always_target = next((s for s in scopes if s in ALWAYS_ALLOWED_SCOPES), None)
-        if always_target and not plan_mode:
+        options: list[tuple[str, str, str]] = [("allow", "1", "Yes (allow action)")]
+        if has_always and always_target:
             options.append(
                 ("always", "2", f"Yes, and always allow {describe_scope(always_target)}")
             )
-        options.append(("deny", "3" if (always_target and not plan_mode) else "2", "No"))
+            options.append(("deny", "3", "No (deny action)"))
+            extra_keys = []
+            if command:
+                options.append(("edit", "e", "Edit command before running"))
+                extra_keys.append("e")
+            if diff_preview and isinstance(diff_preview, str) and diff_preview.strip():
+                options.append(("diff", "d", "View diff preview"))
+                extra_keys.append("d")
+            extra_str = f"/{'/'.join(extra_keys)}" if extra_keys else ""
+            prompt_str = f"  Allow? [1/2/3] (or y/a/n{extra_str}): "
+        else:
+            options.append(("deny", "2", "No (deny action)"))
+            extra_keys = []
+            if command:
+                options.append(("edit", "e", "Edit command before running"))
+                extra_keys.append("e")
+            if diff_preview and isinstance(diff_preview, str) and diff_preview.strip():
+                options.append(("diff", "d", "View diff preview"))
+                extra_keys.append("d")
+            extra_str = f"/{'/'.join(extra_keys)}" if extra_keys else ""
+            prompt_str = f"  Allow? [1/2] (or y/n{extra_str}): "
 
         if console is not None and _RICH:
             for _, key, label in options:
-                console.print(f"    [bold cyan]{key}.[/] {label}")
+                if key == "1":
+                    console.print(f"    [bold green]{key}.[/] [bold white]{label}[/] [dim](or 'y')[/]")
+                elif key == "2" and has_always:
+                    console.print(f"    [bold cyan]{key}.[/] [bold white]{label}[/] [dim](or 'a')[/]")
+                elif key == "e":
+                    console.print(f"    [bold yellow]{key}.[/] [bold white]{label}[/]")
+                elif key == "d":
+                    console.print(f"    [bold magenta]{key}.[/] [bold white]{label}[/]")
+                else:
+                    console.print(f"    [bold red]{key}.[/] [bold white]{label}[/] [dim](or 'n')[/]")
         else:
             print("  Options:")
             for _, key, label in options:
                 print(f"    {key}. {label}")
 
-        prompt_str = "  Allow? [1/2/3] (or y/n/a): "
-        try:
-            raw_choice = input(prompt_str).strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            _clear_task_cancellation()
-            raw_choice = "n"
+        while True:
+            try:
+                raw_choice = input(prompt_str).strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                _clear_task_cancellation()
+                raw_choice = "n"
 
-        if raw_choice in ("2", "a", "always") and always_target and not plan_mode:
-            replies.append({"toolCallId": tool_call_id, "permission": "allow"})
-            always_allows.append(always_target)
-        elif raw_choice in ("3", "n", "no", "deny") or (
-            raw_choice == "2" and (not always_target or plan_mode)
-        ):
-            replies.append({"toolCallId": tool_call_id, "permission": "deny"})
-        else:
-            replies.append({"toolCallId": tool_call_id, "permission": "allow"})
+            if raw_choice in ("d", "diff") and diff_preview and isinstance(diff_preview, str):
+                if console is not None and _RICH:
+                    render_diff_preview(console, diff_preview, title=f"Pre-Approval Diff ({name})")
+                else:
+                    render_diff_preview(None, diff_preview, title=f"Pre-Approval Diff ({name})")
+                continue
+
+            if raw_choice in ("e", "edit") and command:
+                try:
+                    edited_cmd = input(f"  Edit command [{command}]: ").strip()
+                    if edited_cmd:
+                        req["command"] = edited_cmd
+                        if isinstance(req.get("input"), dict) and "command" in req["input"]:
+                            req["input"]["command"] = edited_cmd
+                        if isinstance(req.get("arguments"), dict) and "command" in req["arguments"]:
+                            req["arguments"]["command"] = edited_cmd
+                        command = edited_cmd
+                    replies.append({"toolCallId": tool_call_id, "permission": "allow", "command": command})
+                    break
+                except (EOFError, KeyboardInterrupt):
+                    _clear_task_cancellation()
+                    continue
+
+            if has_always and always_target and raw_choice in ("2", "a", "always"):
+                replies.append({"toolCallId": tool_call_id, "permission": "allow"})
+                always_allows.append(always_target)
+                break
+            elif raw_choice in ("n", "no", "deny", "3") or (
+                raw_choice == "2" and not has_always
+            ):
+                replies.append({"toolCallId": tool_call_id, "permission": "deny"})
+                break
+            else:
+                replies.append({"toolCallId": tool_call_id, "permission": "allow"})
+                break
 
     return replies, always_allows
 
@@ -368,12 +503,14 @@ class _StreamState:
         self.is_streaming: bool = False
         self.thinking_streamer = LiveThinkingStreamer(console)
         self.active_status_spinner: Any | None = None
+        self.thinking_rendered: bool = False
 
     def reset(self) -> None:
         self.streamed_content.clear()
         self.is_streaming = False
         self.thinking_streamer.reset()
         self.stop_spinner()
+        self.thinking_rendered = False
 
     def on_thinking_chunk(self, chunk: str) -> None:
         self.stop_spinner()
@@ -383,6 +520,7 @@ class _StreamState:
         if chunk:
             if self.thinking_streamer.is_active:
                 self.thinking_streamer.finalize(console, expanded=_THINKING_EXPANDED)
+                self.thinking_rendered = True
             self.stop_spinner()
             self.streamed_content.append(chunk)
             self.is_streaming = True
@@ -416,10 +554,12 @@ class _StreamState:
         self.stop_spinner()
         if self.thinking_streamer.is_active:
             self.thinking_streamer.finalize(console, expanded=_THINKING_EXPANDED)
+            self.thinking_rendered = True
         if self.had_streamed():
             sys.stdout.write("\n")
             sys.stdout.flush()
-            self.reset()
+            self.streamed_content.clear()
+            self.is_streaming = False
             return True
         return False
 
@@ -441,7 +581,7 @@ def _on_assistant_message(message: SessionMessage, should_connect: bool) -> None
         render_tool_card(console, message)
         return
 
-    if message.thinking and not _STREAM_STATE.thinking_streamer.thinking_chunks:
+    if message.thinking and not _STREAM_STATE.thinking_rendered:
         render_thinking_block(console, message.thinking, expanded=_THINKING_EXPANDED)
 
     if message.content and not was_streamed:
@@ -469,6 +609,8 @@ async def _drain_pending_interactions(mgr: SessionManager, session_id: str, yes:
             return
 
         if entry.status == "ask_permission":
+            _STREAM_STATE.stop_spinner()
+            _STREAM_STATE.ensure_newline()
             replies, always = _prompt_permissions(
                 entry.ask_permissions or [], yes, plan_mode=bool(entry.plan_mode)
             )
@@ -479,6 +621,8 @@ async def _drain_pending_interactions(mgr: SessionManager, session_id: str, yes:
             continue
 
         if entry.status in ("ask_user_question", "waiting_for_user"):
+            _STREAM_STATE.stop_spinner()
+            _STREAM_STATE.ensure_newline()
             # Extract question items from latest tool message
             messages = mgr.list_session_messages(session_id)
             latest_tool = next(
@@ -506,617 +650,9 @@ async def _drain_pending_interactions(mgr: SessionManager, session_id: str, yes:
         break
 
 
-COMMAND_HELP_DETAILS: dict[str, dict[str, Any]] = {
-    "plan": {
-        "title": "Plan Mode",
-        "syntax": "/plan [on|off|apply|reset]",
-        "summary": "Toggle or manage Plan Mode (strict read-only safety boundary).",
-        "description": (
-            "Plan Mode enforces a strict read-only boundary where the agent analyzes the codebase "
-            "and formulates an architectural implementation plan without mutating files or running destructive commands.\n"
-            "• /plan        — Toggle Plan Mode on/off\n"
-            "• /plan on     — Turn on Plan Mode\n"
-            "• /plan off    — Turn off Plan Mode\n"
-            "• /plan apply  — Approve plan, turn off Plan Mode, and begin implementation\n"
-            "• /plan reset  — Reset plan mode state to default"
-        ),
-        "examples": ["/plan", "/plan on", "/plan apply", "/plan reset"],
-    },
-    "goal": {
-        "title": "Session Goals",
-        "syntax": "/goal [list|add <title>|done <id>|cancel <id>|start <id>]",
-        "summary": "Manage session goals and milestone tracking.",
-        "description": (
-            "Track high-level goals and progress for the current session.\n"
-            "• /goal                      — List all goals for active session\n"
-            "• /goal add <title>          — Add a new goal\n"
-            "• /goal done <id>           — Mark goal as completed\n"
-            "• /goal cancel <id>         — Cancel goal\n"
-            "• /goal start <id>          — Mark goal in-progress"
-        ),
-        "examples": [
-            "/goal",
-            "/goal add Refactor database migration logic",
-            "/goal done 1",
-            "/goal cancel 2",
-        ],
-    },
-    "mcp": {
-        "title": "Model Context Protocol (MCP)",
-        "syntax": "/mcp [prompts|resources [uri]|reconnect <server_name>]",
-        "summary": "Inspect and manage MCP servers, tools, prompts, and resources.",
-        "description": (
-            "Inspect connected MCP servers, tool definitions, prompts, and resources.\n"
-            "• /mcp                      — Open interactive MCP server & tools inspector\n"
-            "• /mcp prompts              — Browse MCP server prompts\n"
-            "• /mcp resources [uri]      — Inspect MCP resources or read resource by URI\n"
-            "• /mcp reconnect <server>   — Reconnect a failed or disconnected MCP server"
-        ),
-        "examples": ["/mcp", "/mcp prompts", "/mcp resources", "/mcp reconnect github"],
-    },
-    "permission": {
-        "title": "Permissions & Sandbox",
-        "syntax": "/permission [preset] (alias: /permissions)",
-        "summary": "Show or set permission preset and sandbox boundary.",
-        "description": (
-            "Configure runtime tool execution permissions for bash and file operations.\n"
-            "Presets:\n"
-            "• read-only            — Only allow read tools; ask before modifications\n"
-            "• workspace-write      — Allow workspace edits; ask for external/dangerous commands\n"
-            "• danger-full-access   — Allow all tools without confirmation prompts\n"
-            "• local-network-read   — Allow local network read operations\n"
-            "• unrestricted-read    — Unrestricted read across filesystem"
-        ),
-        "examples": [
-            "/permission",
-            "/permission workspace-write",
-            "/permission danger-full-access",
-        ],
-    },
-    "doctor": {
-        "title": "System Doctor Diagnostics",
-        "syntax": "/doctor",
-        "summary": "Run comprehensive system health checks across environment, credentials, MCP, and storage.",
-        "description": (
-            "Runs diagnostic probes verifying:\n"
-            "1. Python runtime, version, and virtualenv status\n"
-            "2. Git repository root, branch, and working tree dirty state\n"
-            "3. Active model LLM credentials and endpoint connectivity\n"
-            "4. Connected and failed MCP servers & registered tools\n"
-            "5. Workspace and global discovered skills\n"
-            "6. Storage permissions for .coderai and ~/.coderai\n"
-            "7. Active background jobs and scheduled reminders"
-        ),
-        "examples": ["/doctor"],
-    },
-    "jobs": {
-        "title": "Background Jobs",
-        "syntax": "/jobs or /job [list|kill <id>|logs <id>]",
-        "summary": "Inspect and control async background jobs.",
-        "description": (
-            "View and manage long-running background bash commands and processes.\n"
-            "• /jobs or /job             — List active and recent background jobs\n"
-            "• /job kill <id>            — Terminate a running background job\n"
-            "• /job logs <id>            — View output log tail for a background job"
-        ),
-        "examples": ["/jobs", "/job list", "/job kill job_1", "/job logs job_1"],
-    },
-    "schedule": {
-        "title": "Scheduled Reminders & Timers",
-        "syntax": "/schedule [list|after <sec> <prompt>|at <iso> <prompt>|every <sec> <prompt>|cancel <id>]",
-        "summary": "Schedule one-off reminders or recurring background timers.",
-        "description": (
-            "Manage session-scoped scheduled timers and reminders.\n"
-            "• /schedule                         — List scheduled timers\n"
-            "• /schedule after <sec> <prompt>    — Schedule reminder after N seconds\n"
-            "• /schedule at <iso> <prompt>       — Schedule reminder at ISO datetime\n"
-            "• /schedule every <sec> <prompt>    — Schedule recurring reminder (min 300s)\n"
-            "• /schedule cancel <id>             — Cancel a scheduled reminder"
-        ),
-        "examples": [
-            "/schedule",
-            "/schedule after 300 Check on background build progress",
-            "/schedule cancel 1",
-        ],
-    },
-    "agents": {
-        "title": "Subagents & Multi-Agent Hierarchy",
-        "syntax": "/agents or /subagents [list|tree|report <id>|send <id> <msg>]",
-        "summary": "Inspect hierarchical subagent runs and communicate with child agents.",
-        "description": (
-            "Monitor and interact with delegated subagent tasks.\n"
-            "• /agents                   — List running and completed subagents\n"
-            "• /agents tree              — View hierarchical tree of subagent delegation\n"
-            "• /agents report <id>       — Display final report or findings from subagent\n"
-            "• /agents send <id> <msg>   — Send instruction message into subagent inbox"
-        ),
-        "examples": [
-            "/agents",
-            "/agents tree",
-            "/agents report ag_1",
-            "/agents send ag_1 Please check module B",
-        ],
-    },
-    "teams": {
-        "title": "Multi-Agent Teams",
-        "syntax": "/teams",
-        "summary": "Inspect active agent team members, task allocation, and coordination boards.",
-        "description": "View team configuration, assigned tasks, and message routing among specialized agents.",
-        "examples": ["/teams"],
-    },
-    "lsp": {
-        "title": "Language Server Protocol (LSP)",
-        "syntax": "/lsp",
-        "summary": "Inspect active LSP connections, language servers, and diagnostics.",
-        "description": "View language server instances, connection health, and code diagnostics.",
-        "examples": ["/lsp"],
-    },
-    "image": {
-        "title": "Image Vision Attachment",
-        "syntax": "/image <path> [prompt]",
-        "summary": "Attach an image file for vision analysis accompanying your turn.",
-        "description": (
-            "Encodes and attaches an image (PNG, JPEG, WebP, GIF) to your message with multimodal support.\n"
-            "You can also mention image files directly in your prompts."
-        ),
-        "examples": [
-            "/image docs/diagram.png Explain this architectural design",
-            "/image ./ui-screenshot.png Find visual layout errors",
-        ],
-    },
-    "rename": {
-        "title": "Rename Session",
-        "syntax": "/rename [new_title] or /rename <session_id> <new_title>",
-        "summary": "Rename the summary/title of the active or specified session.",
-        "description": "Updates the session summary displayed in /sessions and history logs.",
-        "examples": [
-            "/rename Implement Auth Service",
-            "/rename sess_abc123 Refactor Database Layer",
-        ],
-    },
-    "editor": {
-        "title": "External $EDITOR Integration",
-        "syntax": "/editor or /edit",
-        "summary": "Compose or edit your prompt in your configured $EDITOR (nano, vim, vi, code, etc.).",
-        "description": (
-            "Opens your system default or configured $EDITOR in a temporary markdown file.\n"
-            "When you save and close the editor, the content is automatically submitted as your prompt."
-        ),
-        "examples": ["/editor", "/edit"],
-    },
-    "paste": {
-        "title": "Multiline Paste Mode",
-        "syntax": "/paste",
-        "summary": "Enter multiline paste mode for long code snippets or text blocks.",
-        "description": (
-            "Enters dedicated multiline capture mode. Paste text freely and type ':::' on a new line "
-            "or press Ctrl-D to complete input.\n"
-            'Tip: You can also wrap prompts directly in """ triple quotes """ or ``` code fences.'
-        ),
-        "examples": ["/paste"],
-    },
-    "model": {
-        "title": "Model Selection",
-        "syntax": "/model [name]",
-        "summary": "Select or switch active LLM model.",
-        "description": "Opens interactive curated model menu or switches to specified model identifier directly.",
-        "examples": [
-            "/model",
-            "/model deepseek-v4-pro",
-            "/model gemini-2.5-pro",
-            "/model claude-3-7-sonnet",
-        ],
-    },
-    "effort": {
-        "title": "Reasoning Effort Selection",
-        "syntax": "/effort [off|low|medium|high|max]",
-        "summary": "Select or switch reasoning effort level (thinking token budget).",
-        "description": "Opens interactive reasoning effort menu or sets effort tier (off, low, medium, high, max).",
-        "examples": [
-            "/effort",
-            "/effort max",
-            "/effort high",
-            "/effort medium",
-            "/effort low",
-            "/effort off",
-        ],
-    },
-    "reasoning": {
-        "title": "Reasoning Effort Selection (Alias)",
-        "syntax": "/reasoning [off|low|medium|high|max]",
-        "summary": "Alias for /effort.",
-        "description": "Select or switch reasoning effort level.",
-        "examples": ["/reasoning", "/reasoning max"],
-    },
-    "sessions": {
-        "title": "Saved Sessions Browser",
-        "syntax": "/sessions [search_query]",
-        "summary": "Paginated interactive session browser with search filter, resume, delete, and fork.",
-        "description": (
-            "Browse saved workspace sessions.\n"
-            "Interactive controls:\n"
-            "• <num>       — Resume session\n"
-            "• d <num>     — Delete session\n"
-            "• f <num>     — Fork session\n"
-            "• s <query>   — Filter sessions\n"
-            "• n / p       — Next / previous page"
-        ),
-        "examples": ["/sessions", "/sessions auth", "/sessions refactor"],
-    },
-    "undo": {
-        "title": "Undo & Checkpoint Rollback",
-        "syntax": "/undo",
-        "summary": "Interactive turn and checkpoint rollback (revert files, conversation, or both).",
-        "description": "Revert code and conversation history to any previous turn checkpoint.",
-        "examples": ["/undo"],
-    },
-    "diff": {
-        "title": "Diff Preview",
-        "syntax": "/diff",
-        "summary": "Display syntax-highlighted unified diff of changes made during the session.",
-        "description": "Renders git diff of workspace modifications since session start.",
-        "examples": ["/diff"],
-    },
-    "export": {
-        "title": "Export Session",
-        "syntax": "/export [file.md|file.json]",
-        "summary": "Export session conversation history to Markdown or JSON.",
-        "description": "Exports turn timeline, tool calls, and assistant replies to a standalone file.",
-        "examples": ["/export", "/export session_notes.md", "/export session_dump.json"],
-    },
-    "tokens": {
-        "title": "Token Usage & Cost Analytics",
-        "syntax": "/tokens (alias: /cost)",
-        "summary": "Display detailed token usage breakdown and cost estimation.",
-        "description": "Inspect prompt tokens, completion tokens, cached tokens, and turn usage.",
-        "examples": ["/tokens", "/cost"],
-    },
-    "config": {
-        "title": "Configuration & Settings",
-        "syntax": "/config (alias: /settings)",
-        "summary": "Inspect resolved workspace and user settings.",
-        "description": "Displays resolved settings from project and user settings files.",
-        "examples": ["/config", "/settings"],
-    },
-    "compact": {
-        "title": "Context Compaction",
-        "syntax": "/compact",
-        "summary": "Compress conversation history to free up active context tokens.",
-        "description": "Summarizes past conversation turns to preserve token budget.",
-        "examples": ["/compact"],
-    },
-    "history": {
-        "title": "Turn Timeline History",
-        "syntax": "/history",
-        "summary": "View turn-by-turn conversation timeline.",
-        "description": "Displays chronological timeline of user prompts, tool executions, and tokens.",
-        "examples": ["/history"],
-    },
-    "skills": {
-        "title": "Skills & Customizations",
-        "syntax": "/skills or /skill <name>",
-        "summary": "Explore and load workspace & global skills.",
-        "description": "Lists available skills or loads specialized skill instructions into current session.",
-        "examples": ["/skills", "/skill agy-customizations"],
-    },
-    "thinking": {
-        "title": "Reasoning Trace Display",
-        "syntax": "/thinking [full|summary|lite|normal|on|off] (alias: /raw)",
-        "summary": "Toggle full reasoning trace or concise summary.",
-        "description": "Controls display mode for model reasoning traces (expanded or compact summary).",
-        "examples": ["/thinking", "/thinking full", "/thinking summary", "/raw"],
-    },
-    "clear": {
-        "title": "Clear Screen",
-        "syntax": "/clear",
-        "summary": "Clear terminal screen and redraw status bar.",
-        "description": "Clears screen buffer while keeping session state intact.",
-        "examples": ["/clear"],
-    },
-    "new": {
-        "title": "New Session",
-        "syntax": "/new",
-        "summary": "Start a fresh session in the workspace.",
-        "description": "Initializes a clean session without carrying over past turn history.",
-        "examples": ["/new"],
-    },
-    "init": {
-        "title": "Initialize Guidelines",
-        "syntax": "/init",
-        "summary": "Initialize or update AGENTS.md contributor guidelines for the project.",
-        "description": "Creates or updates AGENTS.md with architecture and coding standards.",
-        "examples": ["/init"],
-    },
-    "resume": {
-        "title": "Resume Session",
-        "syntax": "/resume <session_id>",
-        "summary": "Resume a saved session by ID directly.",
-        "description": "Loads past conversation history and state for the specified session ID.",
-        "examples": ["/resume sess_0123456789ab"],
-    },
-    "fork": {
-        "title": "Fork Session",
-        "syntax": "/fork [session_id]",
-        "summary": "Fork current or target session into a new branch.",
-        "description": "Creates a new session branch cloning message history and git file checkpoints.",
-        "examples": ["/fork", "/fork sess_0123456789ab"],
-    },
-    "delete": {
-        "title": "Delete Session",
-        "syntax": "/delete <session_id> (alias: /rm)",
-        "summary": "Delete a saved session from workspace.",
-        "description": "Removes session messages and index entry.",
-        "examples": ["/delete sess_0123456789ab", "/rm sess_0123456789ab"],
-    },
-    "shortcuts": {
-        "title": "Keyboard Shortcuts & Controls",
-        "syntax": "/help shortcuts",
-        "summary": "Key bindings and interactive controls cheatsheet.",
-        "description": (
-            "• Ctrl-C       — Interrupt active generation or cancel current input line\n"
-            "• Ctrl-D       — Exit CoderAI REPL session gracefully\n"
-            "• Ctrl-R       — Reverse history search (interactive readline history search)\n"
-            "• Ctrl-L       — Clear terminal screen and redraw status bar\n"
-            "• Tab          — Autocomplete slash commands, models, sub-arguments, and @file paths\n"
-            "• @<filename>  — Mention workspace file with optional line slice (@file.py:10-40)\n"
-            "• \"\"\" or '''   — Multiline block input delimiter\n"
-            "• \\ at end     — Line continuation"
-        ),
-        "examples": ["/help shortcuts"],
-    },
-}
-
-
 def _render_help_menu(cmd_name: str | None = None) -> None:
-    """Display interactive command help table or specific command contextual help."""
-    # Contextual help if cmd_name is provided
-    if cmd_name:
-        key = cmd_name.strip().lstrip("/").lower()
-        command = resolve_command(key)
-        canonical_key = command.name if command else key
-        details = COMMAND_HELP_DETAILS.get(canonical_key)
-        if details:
-            if console is not None and _RICH and Panel is not None:
-                body = (
-                    f"[bold white]{details['summary']}[/]\n\n"
-                    f"[bold cyan]Syntax:[/] [yellow]{details['syntax']}[/]\n\n"
-                    f"[bold white]Details:[/]\n{details['description']}\n"
-                )
-                if details.get("examples"):
-                    body += "\n[bold magenta]Examples:[/]\n"
-                    for ex in details["examples"]:
-                        body += f"  [dim cyan]•[/] [bold green]{ex}[/]\n"
-
-                panel = Panel(
-                    body.strip(),
-                    title=f"[bold cyan]CoderAI Command Help:[/] [bold yellow]/{canonical_key}[/]",
-                    border_style="bright_blue",
-                    padding=(1, 2),
-                )
-                console.print()
-                console.print(panel)
-                console.print()
-            else:
-                print(f"\n--- CoderAI Command Help: /{canonical_key} ---")
-                print(f"Summary: {details['summary']}")
-                print(f"Syntax:  {details['syntax']}\n")
-                print("Details:")
-                print(details["description"])
-                if details.get("examples"):
-                    print("\nExamples:")
-                    for ex in details["examples"]:
-                        print(f"  • {ex}")
-                print()
-            return
-        else:
-            if console is not None and _RICH:
-                console.print(
-                    f"[dim yellow]No specific help found for '{cmd_name}'. Showing full help menu:[/]\n"
-                )
-            else:
-                print(f"No specific help found for '{cmd_name}'. Showing full help menu:\n")
-
-    if console is not None and _RICH and Table is not None:
-        table = Table(
-            title="CoderAI Interactive Slash Commands",
-            border_style="cyan",
-            header_style="bold cyan",
-            expand=True,
-        )
-        table.add_column("Category", style="dim cyan", width=18)
-        table.add_column("Command & Aliases", style="bold white", width=26)
-        table.add_column("Description", style="white")
-
-        table.add_row("Session Management", "/new", "Start a fresh session in the workspace")
-        table.add_row(
-            "Session Management", "/init", "Initialize or update AGENTS.md contributor guidelines"
-        )
-        table.add_row(
-            "Session Management",
-            "/sessions [query]",
-            "Interactive session browser (resume, delete, fork, search)",
-        )
-        table.add_row("Session Management", "/resume <id>", "Resume a saved session by ID directly")
-        table.add_row(
-            "Session Management", "/fork [id]", "Fork current or target session into new branch"
-        )
-        table.add_row(
-            "Session Management", "/delete, /rm <id>", "Delete a saved session from workspace"
-        )
-        table.add_row(
-            "Session Management", "/rename [title]", "Rename active or specified session summary"
-        )
-        table.add_row(
-            "Session Management", "/export [file]", "Export session history to Markdown or JSON"
-        )
-
-        table.add_section()
-        table.add_row(
-            "Planning & Safety",
-            "/plan [on|off|apply]",
-            "Toggle Plan Mode (strict read-only safety boundary)",
-        )
-        table.add_row(
-            "Planning & Safety",
-            "/undo",
-            "Interactive turn & checkpoint rollback (code, conversation, or both)",
-        )
-        table.add_row("Planning & Safety", "/diff", "Show syntax-highlighted diff of changes")
-        table.add_row(
-            "Planning & Safety", "/continue", "Continue bounded multi-step agent execution"
-        )
-
-        table.add_section()
-        table.add_row(
-            "Models & Reasoning", "/model [name]", "Interactive model selector or switch directly"
-        )
-        table.add_row(
-            "Models & Reasoning",
-            "/effort [level]",
-            "Interactive reasoning effort selector (low..max, off)",
-        )
-        table.add_row(
-            "Models & Reasoning",
-            "/thinking, /raw",
-            "Toggle full reasoning trace or summary (lite/normal)",
-        )
-        table.add_row(
-            "Models & Reasoning", "/skills", "Explore active and discovered workspace skills"
-        )
-        table.add_row(
-            "Models & Reasoning", "/skill <name>", "Load a skill into the current session"
-        )
-
-        table.add_section()
-        table.add_row(
-            "Core & Diagnostics", "/doctor", "Run comprehensive system health checks & connectivity"
-        )
-        table.add_row(
-            "Core & Diagnostics", "/jobs, /job [subcmd]", "Inspect and manage background bash jobs"
-        )
-        table.add_row(
-            "Core & Diagnostics", "/schedule [subcmd]", "Manage session-scoped reminders and timers"
-        )
-        table.add_row(
-            "Core & Diagnostics",
-            "/agents, /subagents",
-            "Inspect subagent hierarchy, tree, and reports",
-        )
-        table.add_row(
-            "Core & Diagnostics", "/teams", "Inspect active agent team members and status"
-        )
-        table.add_row(
-            "Core & Diagnostics", "/lsp", "Inspect LSP language servers and code diagnostics"
-        )
-
-        table.add_section()
-        table.add_row(
-            "Tools & Analytics",
-            "/mcp [subcommand]",
-            "Inspect MCP servers/tools, /mcp prompts, /mcp resources, /mcp reconnect",
-        )
-        table.add_row(
-            "Tools & Analytics", "/tokens, /cost", "View detailed token usage and context analytics"
-        )
-        table.add_row(
-            "Tools & Analytics", "/compact", "Compress history to free up active context tokens"
-        )
-        table.add_row("Tools & Analytics", "/history", "View turn-by-turn conversation timeline")
-        table.add_row(
-            "Tools & Analytics", "/config, /settings", "Inspect resolved workspace & user settings"
-        )
-        table.add_row(
-            "Tools & Analytics",
-            "/permission, /permissions",
-            "Show or set permission preset (read-only, workspace-write, danger-full-access)",
-        )
-        table.add_row("Tools & Analytics", "/goal [add|done] ...", "List or update session goals")
-
-        table.add_section()
-        table.add_row(
-            "Input & Media",
-            "/image <path> [prompt]",
-            "Attach image file for multimodal vision analysis",
-        )
-        table.add_row(
-            "Input & Media",
-            "/editor, /edit",
-            "Open external $EDITOR (nano, vim, vi) to compose prompt",
-        )
-        table.add_row("Input & Media", "/paste", "Enter multiline paste mode until ':::' or Ctrl-D")
-
-        table.add_section()
-        table.add_row("Utilities & Controls", "/clear", "Clear terminal screen and redraw status")
-        table.add_row(
-            "Utilities & Controls",
-            "/help, /? [command]",
-            "Show command help menu or detailed contextual help",
-        )
-        table.add_row(
-            "Utilities & Controls", "/exit, /quit", "Exit CoderAI session with summary card"
-        )
-
-        console.print()
-        console.print(table)
-        console.print(
-            "[dim]Shortcuts: [bold cyan]Tab[/] complete • [bold cyan]Ctrl-R[/] history search • [bold cyan]Ctrl-C[/] interrupt • [bold cyan]Ctrl-D[/] exit • [bold cyan]@file.py[:10-30][/] file context[/]"
-        )
-        console.print(
-            "[dim]Type [bold cyan]/help <command>[/] for detailed syntax and examples (e.g. [bold cyan]/help goal[/], [bold cyan]/help plan[/]).[/]\n"
-        )
-    else:
-        print("\n--- CoderAI Slash Commands ---")
-        print("Session Management:")
-        print("  /new                   Start a fresh session")
-        print("  /init                  Initialize or update AGENTS.md guidelines")
-        print("  /sessions [query]      Interactive sessions menu (resume, delete, fork, search)")
-        print("  /resume <id>           Resume session by ID directly")
-        print("  /fork [id]             Fork session into a new branch")
-        print("  /delete, /rm <id>      Delete a saved session")
-        print("  /rename [title]        Rename active or specified session summary")
-        print("  /export [file]         Export session to Markdown/JSON")
-        print("\nPlanning & Safety:")
-        print("  /plan [on|off|apply]   Toggle Plan Mode (strict read-only safety boundary)")
-        print("  /undo                  Revert to previous checkpoint")
-        print("  /diff                  Show unified diff of changes")
-        print("  /continue              Continue agent execution")
-        print("\nModels & Reasoning:")
-        print("  /model [name]          Select or switch active model")
-        print("  /effort [level]        Select reasoning effort (off, low, medium, high, max)")
-        print("  /thinking, /raw        Toggle reasoning trace (full/summary)")
-        print("  /skills                List available workspace skills")
-        print("  /skill <name>          Load skill into current session")
-        print("\nCore & Diagnostics:")
-        print("  /doctor                Run comprehensive system health checks & connectivity")
-        print("  /jobs, /job [subcmd]   Inspect and manage background bash jobs")
-        print("  /schedule [subcmd]     Manage session-scoped reminders and timers")
-        print("  /agents, /subagents    Inspect subagent hierarchy, tree, and reports")
-        print("  /teams                 Inspect active agent team members and status")
-        print("  /lsp                   Inspect LSP language servers and code diagnostics")
-        print("\nTools & Analytics:")
-        print("  /mcp [subcommand]      Inspect MCP servers/tools, prompts, resources, reconnect")
-        print("  /tokens, /cost         Show token usage and cost breakdown")
-        print("  /compact               Compress conversation context")
-        print("  /history               View session timeline")
-        print("  /config, /settings     View active configuration")
-        print(
-            "  /permission [preset]   Show or set permission preset (read-only, workspace-write, danger-full-access)"
-        )
-        print("  /goal [add|done] ...   List or update session goals")
-        print("\nInput & Media:")
-        print("  /image <path> [prompt] Attach image file for multimodal vision analysis")
-        print("  /editor, /edit         Open external $EDITOR (nano, vim, vi) to compose prompt")
-        print("  /paste                 Enter multiline paste mode until ':::' or Ctrl-D")
-        print("\nUtilities & Controls:")
-        print("  /clear                 Clear terminal screen")
-        print("  /help, /? [cmd]        Show command help menu or detailed command help")
-        print("  /exit, /quit           Quit CoderAI\n")
-        print(
-            "Shortcuts: Tab complete | Ctrl-R history search | Ctrl-C interrupt | Ctrl-D exit | @file context"
-        )
-        print(
-            "Type /help <command> for detailed syntax and examples (e.g. /help goal, /help plan).\n"
-        )
+    """Display interactive command help or specific command contextual help."""
+    render_help(cmd_name, console if _RICH else None)
 
 
 def _show_diff(mgr: SessionManager, session_id: str | None) -> None:
@@ -1208,7 +744,9 @@ async def _run_interactive(
     # 2. Handle --fork
     elif fork is not None:
         if isinstance(fork, str) and fork.strip():
-            target_id = fork.strip()
+            raw_target = fork.strip()
+            resolved = mgr.resolve_session_id(raw_target)
+            target_id = resolved or raw_target
         else:
             sessions = mgr.list_sessions()
             if not sessions:
@@ -1240,10 +778,31 @@ async def _run_interactive(
                     else:
                         session_id = chosen_action
         elif isinstance(resume, str) and resume.strip():
-            session_id = resume.strip()
-            if mgr.get_session(session_id) is None:
-                print(f"No saved session with id '{session_id}'.")
+            raw_id = resume.strip()
+            resolved_id = mgr.resolve_session_id(raw_id)
+            if resolved_id is None:
+                all_sessions = mgr.list_sessions()
+                if all_sessions:
+                    if console is not None and _RICH:
+                        console.print(
+                            f"[bold red]No saved session with id, prefix, or checkpoint '[bold white]{raw_id}[/bold white]'.[/]"
+                        )
+                        console.print(
+                            f"[dim]Run [bold cyan]coderai --resume[/bold cyan] to browse and select from {len(all_sessions)} saved session(s).[/dim]\n"
+                        )
+                    else:
+                        print(
+                            f"No saved session with id, prefix, or checkpoint '{raw_id}'. Run 'coderai --resume' to browse saved sessions."
+                        )
+                else:
+                    if console is not None and _RICH:
+                        console.print(
+                            "[yellow]No saved sessions found in this workspace directory.[/]"
+                        )
+                    else:
+                        print("No saved sessions found in this workspace directory.")
                 return 1
+            session_id = resolved_id
 
     if session_id:
         resumed_entry = mgr.get_session(session_id)
@@ -1281,6 +840,27 @@ async def _run_interactive(
         skills_count=len(discovered_skills),
         reasoning_effort=mgr.get_reasoning_effort(),
     )
+
+    # Check if active model has a configured API key
+    active_m = mgr.get_active_model()
+    resolved_settings = mgr.get_resolved_settings()
+    from coderai.core.openai_client import resolve_model_provider_routing
+
+    _, active_key = resolve_model_provider_routing(
+        active_m,
+        explicit_base_url=resolved_settings.get("baseURL"),
+        explicit_api_key=resolved_settings.get("apiKey"),
+    )
+    if not active_key:
+        if console is not None and _RICH:
+            console.print(
+                f"  [bold yellow]! No API key configured for active model '[bold white]{active_m}[/bold white]'.[/] "
+                f"[dim]Run [bold cyan]/setup[/bold cyan] to configure keys & providers.[/dim]\n"
+            )
+        else:
+            print(
+                f"! No API key configured for active model '{active_m}'. Run /setup to configure keys & providers.\n"
+            )
 
     # If an initial prompt was provided alongside interactive launch
     if initial_prompt and initial_prompt.strip():
@@ -1367,6 +947,17 @@ async def _run_interactive(
 
                 if cmd == "/clear":
                     os.system("cls" if os.name == "nt" else "clear")
+                    continue
+
+                if cmd in ("/setup", "/auth", "/keys", "/configure"):
+                    from coderai.cli.setup_wizard import run_setup_wizard
+
+                    run_setup_wizard(
+                        console,
+                        project_root=mgr.project_root,
+                        mgr=mgr,
+                        initial_subcommand=cmd_arg if cmd_arg else None,
+                    )
                     continue
 
                 if cmd == "/doctor":
@@ -2298,14 +1889,18 @@ async def _run_interactive(
                         if not cmd_arg:
                             print("Usage: /resume <session_id>")
                             continue
-                        session_id = cmd_arg
-                        resumed = mgr.get_session(session_id)
+                        target_id = cmd_arg.strip()
+                        resumed = mgr.get_session(target_id)
                         if resumed is None:
-                            print(f"No saved session with id '{session_id}'.")
+                            print(f"No saved session with id '{target_id}'.")
                             session_id = None
                         else:
                             active_plan_mode = resumed.plan_mode
-                            print(f"Resumed session {session_id}.")
+                            session_id = resumed.id
+                            if console is not None and _RICH:
+                                console.print(f"[bold green]Resumed session:[/] {session_id}")
+                            else:
+                                print(f"Resumed session {session_id}.")
                         continue
 
                     skill_alias = cmd.lstrip("/")
@@ -2483,6 +2078,28 @@ def main(argv: list[str] | None = None) -> int:
         if has_prompt_flag
         else (exec_str if exec_str else (" ".join(args.prompt) if has_positional else None))
     )
+
+    # Check if CLI invocation is setup, config, or provider key management
+    is_setup_cmd = (
+        getattr(args, "setup", False)
+        or bool(getattr(args, "setup_provider", None))
+        or bool(getattr(args, "setup_key", None))
+        or bool(getattr(args, "setup_base_url", None))
+        or bool(getattr(args, "setup_model", None))
+        or bool(getattr(args, "setup_test", False))
+        or bool(getattr(args, "setup_status", False))
+        or (
+            prompt_value in ("setup", "configure", "auth", "keys")
+            and not has_exec
+            and not args.resume
+            and not args.fork
+            and not has_prompt_flag
+        )
+    )
+    if is_setup_cmd:
+        from coderai.cli.setup_wizard import run_setup_cli
+
+        return run_setup_cli(args, project_root=project_root)
 
     if has_positional and has_prompt_flag:
         print(

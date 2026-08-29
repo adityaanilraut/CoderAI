@@ -16,14 +16,19 @@ AVAILABLE_SLASH_COMMANDS = completion_entries()
 def _get_saved_session_ids(project_root: str) -> list[str]:
     """Retrieve saved session IDs from workspace index for autocompletion."""
     try:
-        index_path = pathlib.Path(project_root) / ".coderai" / "sessions" / "index.json"
-        if not index_path.is_file():
-            # Check user home directory fallback
-            index_path = pathlib.Path.home() / ".coderai" / "sessions" / "index.json"
-        if index_path.is_file():
-            data = json.loads(index_path.read_text(encoding="utf-8"))
-            entries = data.get("entries", [])
-            return [e["id"] for e in entries if isinstance(e, dict) and "id" in e]
+        from coderai.core.session_store import JsonlSessionStore
+
+        store = JsonlSessionStore(project_root)
+        data = store.load_index()
+        entries = data.get("entries", [])
+        ids: list[str] = []
+        for e in entries:
+            if isinstance(e, dict) and e.get("id"):
+                sid = str(e["id"])
+                ids.append(sid)
+                if len(sid) > 16 and sid[:16] not in ids:
+                    ids.append(sid[:16])
+        return ids
     except Exception:
         pass
     return []

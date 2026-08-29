@@ -28,6 +28,8 @@ from coderai.core.prompt_sections import (
     TOOL_READ_ORDER,
     TOOL_WEB_FETCH_ORDER,
     TOOL_WRITE_ORDER,
+    INSTRUCTIONS_ORDER,
+    PLAN_MODE_ORDER,
     PromptSection,
     assemble_sections,
     get_preset_tools,
@@ -415,6 +417,26 @@ TOOL_GUIDANCE_MAP: dict[str, tuple[str, int, str]] = {
         112,
         "## UnderstandImage\nAnalyze a local image (JPEG/PNG/WebP).",
     ),
+    "session_search": (
+        "tool:session_search",
+        115,
+        "## session_search\nSearch past session metadata, titles, and prompt snippets by keyword.",
+    ),
+    "session_trace": (
+        "tool:session_trace",
+        115,
+        "## session_trace\nInspect session timeline and event history traces.",
+    ),
+    "session_event_search": (
+        "tool:session_event_search",
+        115,
+        "## session_event_search\nSearch specific session event logs by query.",
+    ),
+    "session_event_read": (
+        "tool:session_event_read",
+        115,
+        "## session_event_read\nRead event entries from a specific session event log offset.",
+    ),
 }
 
 
@@ -438,24 +460,30 @@ def render_tool_docs(preset: str | None = None, non_interactive: bool = False) -
 TOOL_DOCS = render_tool_docs()
 
 
+CACHE_BOUNDARY_TOKEN = "<!-- CODERAI_KV_CACHE_PREFIX_BOUNDARY -->"
+
+
 def render_skill_catalog(
     project_root: str | None = None,
     enabled_skills: dict[str, bool] | None = None,
     custom_scan_paths: list[str] | None = None,
 ) -> str | None:
-    """Render a compact catalog of available skills for the system prompt.
+    """Render a compact catalog of available skills for the system prompt with deterministic sorting.
 
     Instead of inlining entire SKILL.md documents into the context window,
     this lists each skill by name and brief description, instructing the model
     to load the full skill instructions on-demand via the `skill` tool.
     """
-    skills = list_skills(
+    raw_skills = list_skills(
         project_root=project_root,
         enabled_skills=enabled_skills,
         custom_scan_paths=custom_scan_paths,
     )
-    if not skills:
+    if not raw_skills:
         return None
+
+    # Deterministic alphabetical ordering by skill name
+    skills = sorted(raw_skills, key=lambda s: str(s.get("name", "")).lower())
 
     entries = []
     for s in skills:
@@ -515,7 +543,63 @@ def get_system_prompt(options: dict[str, Any] | None = None) -> str:
         )
         if skill_catalog:
             sections.append(PromptSection("skills:catalog", SKILLS_CATALOG_ORDER, skill_catalog))
+
+    instructions = options.get("instructions")
+    if instructions and isinstance(instructions, str) and instructions.strip():
+        sections.append(
+            PromptSection("project:instructions", INSTRUCTIONS_ORDER, instructions.strip())
+        )
+    elif workspace_root and options.get("loadInstructions") is True:
+        loaded_inst = load_agent_instructions(workspace_root)
+        if loaded_inst:
+            sections.append(
+                PromptSection("project:instructions", INSTRUCTIONS_ORDER, loaded_inst.strip())
+            )
+
+    plan_mode = options.get("planMode") or options.get("plan_mode")
+    if plan_mode:
+        sections.append(PromptSection("mode:plan", PLAN_MODE_ORDER, get_plan_mode_prompt()))
+
     return assemble_sections(sections)
+
+
+def build_cache_stabilized_messages(
+    messages: list[dict[str, Any]],
+    system_prompt: str,
+    tools: list[dict[str, Any]] | None = None,
+    include_boundary_tag: bool = True,
+    enable_cache_control: bool = True,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]] | None]:
+    """Assemble stabilized prompt prefix and canonicalized tools for maximum KV-cache reuse.
+
+    Guarantees:
+    1. The leading system message contains frozen prompt text + cache boundary marker.
+    2. Anthropic / OpenAI cache_control breakpoints are injected if enabled.
+    3. Tool schemas are deterministically canonicalized and sorted.
+    """
+    stable_system_content = system_prompt.strip()
+    if include_boundary_tag and CACHE_BOUNDARY_TOKEN not in stable_system_content:
+        stable_system_content = f"{stable_system_content}\n\n{CACHE_BOUNDARY_TOKEN}"
+
+    system_msg: dict[str, Any] = {
+        "role": "system",
+        "content": stable_system_content,
+    }
+    if enable_cache_control:
+        system_msg["cache_control"] = {"type": "ephemeral"}
+
+    filtered_messages = [m for m in messages if m.get("role") != "system"]
+    stabilized_messages = [system_msg, *filtered_messages]
+
+    stabilized_tools = None
+    if tools is not None:
+        from coderai.core.prompt_sections import order_tools
+        from coderai.core.tools.types import canonicalize_tool_schema
+
+        stabilized_tools = order_tools([canonicalize_tool_schema(t) for t in tools])
+
+    return stabilized_messages, stabilized_tools
+
 
 
 def get_compact_prompt(session_messages: list[Any]) -> str:
@@ -567,27 +651,55 @@ def get_runtime_context(
 
 
 def load_agent_instructions(project_root: str) -> str | None:
-    """Load AGENTS.md / CODERAI.md / CLAUDE.md as a separate (still-prefix) system message."""
+    """Load AGENTS.md / CODERAI.md / CLAUDE.md and modular rules as system instruction context."""
     root = pathlib.Path(project_root)
     home = pathlib.Path.home()
     candidates = [
         root / ".coderai" / "AGENTS.md",
         root / "AGENTS.md",
+        root / ".agents" / "AGENTS.md",
         root / ".coderai" / "CODERAI.md",
         root / "CODERAI.md",
         root / "CLAUDE.md",
         home / ".coderai" / "AGENTS.md",
     ]
+    parts: list[str] = []
+    seen_files: set[pathlib.Path] = set()
+
     for path in candidates:
-        if not path.is_file():
+        if not path.is_file() or path in seen_files:
             continue
+        seen_files.add(path)
         try:
             content = path.read_text(encoding="utf-8").strip()
         except OSError:
             continue
         if content:
-            return f"--- Project Instructions ({path.name}) ---\n{content[:8000]}"
+            parts.append(f"--- Project Instructions ({path.name}) ---\n{content[:8000]}")
+            break
+
+    # Discover modular rules under .coderai/rules/ and .agents/rules/
+    rule_dirs = [root / ".coderai" / "rules", root / ".agents" / "rules"]
+    rule_parts: list[str] = []
+    for rdir in rule_dirs:
+        if rdir.is_dir():
+            for rfile in sorted(rdir.glob("*.md")):
+                if rfile.is_file() and rfile not in seen_files:
+                    seen_files.add(rfile)
+                    try:
+                        rcontent = rfile.read_text(encoding="utf-8").strip()
+                        if rcontent:
+                            rule_parts.append(f"--- Rule ({rfile.name}) ---\n{rcontent[:4000]}")
+                    except OSError:
+                        continue
+
+    if rule_parts:
+        parts.extend(rule_parts)
+
+    if parts:
+        return "\n\n".join(parts)
     return None
+
 
 
 def get_effective_project_agents_md_file(project_root: str) -> str | None:
@@ -698,5 +810,8 @@ __all__ = [
     "get_subagent_system_prompt",
     "get_plan_mode_prompt",
     "get_model_context_limit",
+    "CACHE_BOUNDARY_TOKEN",
+    "build_cache_stabilized_messages",
     "TOOL_DOCS",
 ]
+

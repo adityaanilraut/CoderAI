@@ -29,6 +29,11 @@ def normalize_content(value: str) -> str:
     return value.replace("\r\n", "\n")
 
 
+def normalize_line_endings(value: str) -> str:
+    """Normalize CRLF and CR to LF."""
+    return value.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def detect_line_endings(value: str) -> str:
     return "CRLF" if "\r\n" in value else "LF"
 
@@ -37,6 +42,20 @@ def detect_encoding(buf: bytes) -> str:
     if len(buf) >= 2 and buf[0] == 0xFF and buf[1] == 0xFE:
         return "utf16le"
     return "utf8"
+
+
+def is_binary_buffer(buf: bytes, sample_size: int = 8192, threshold: float = 0.3) -> bool:
+    """Detect whether a raw byte buffer contains binary data.
+
+    Returns True if null bytes are found or non-printable character ratio exceeds threshold.
+    """
+    if not buf:
+        return False
+    sample = buf[:sample_size]
+    if b"\x00" in sample:
+        return True
+    non_text = sum(1 for b in sample if b < 32 and b not in (9, 10, 13))
+    return (non_text / len(sample)) > threshold
 
 
 def read_text_file_with_metadata(path: str) -> dict[str, Any]:
