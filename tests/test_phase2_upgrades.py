@@ -10,9 +10,7 @@ Covers:
 
 from __future__ import annotations
 
-import json
 import pathlib
-import time
 from typing import Any
 import pytest
 
@@ -305,8 +303,6 @@ async def test_tool_executor_rate_limiting(tmp_path: pathlib.Path):
             rate_limit=(1, 5.0),
         )
     )
-
-    ctx = ToolExecutionContext(project_root=str(tmp_path), session_id="test_session")
 
     # Call 1: should succeed
     res1 = await executor.execute_tool_call(

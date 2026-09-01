@@ -4,15 +4,12 @@ from __future__ import annotations
 
 import io
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from rich.console import Console
 
 from coderai.cli.input_engine import (
-    count_code_fences,
-    count_triple_quotes,
-    is_multiline_incomplete,
     normalize_multiline_input,
 )
 from coderai.cli.interactive_menu import _read_single_key, select_with_arrows

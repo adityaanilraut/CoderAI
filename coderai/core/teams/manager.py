@@ -11,7 +11,7 @@ from typing import Any
 from coderai.core.agents import get_agent_registry
 from coderai.core.teams.concurrency import ConcurrencyConflictError
 from coderai.core.teams.deadlock import assert_acyclic_dependencies
-from coderai.core.teams.mailbox import ActorChannel, AsyncMailbox, MessagePriority
+from coderai.core.teams.mailbox import ActorChannel
 from coderai.core.teams.models import TeamMessage, TeamTask, Teammate
 
 logger = logging.getLogger(__name__)

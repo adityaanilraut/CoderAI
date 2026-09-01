@@ -366,7 +366,7 @@ def select_with_arrows(
         if filter_query:
             print(f"  Filter: '{filter_query}' ({len(filtered_indices)} matches) | Esc: clear filter")
         else:
-            print(f"  ↑/↓: navigate, Type to search, Enter: select, Esc/q: cancel")
+            print("  ↑/↓: navigate, Type to search, Enter: select, Esc/q: cancel")
 
         key = _read_single_key()
         if key == "UP":

@@ -11,16 +11,12 @@ Validates:
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock
 from rich.console import Console
 
 from coderai.cli.tool_card import render_tool_card
 from coderai.core.hooks import (
     HookPoint,
-    HOOK_POINT_ALIASES,
     normalize_hook_point,
-    run_hook_point,
-    run_pre_tool_use,
     run_post_tool_use,
     run_on_tool_error,
     run_pre_turn,
@@ -29,15 +25,12 @@ from coderai.core.hooks import (
 )
 from coderai.core.prompt import (
     build_cache_stabilized_messages,
-    format_tool_definitions,
-    get_system_prompt,
     TOOL_GUIDANCE_MAP,
 )
-from coderai.core.prompt_sections import order_tools, TOOL_ORDER
+from coderai.core.prompt_sections import TOOL_ORDER
 from coderai.core.sandbox import (
     build_seatbelt_profile,
     check_sandbox_path_access,
-    validate_sandboxed_path,
 )
 from coderai.core.session import SessionMessage, _call_stream_or_sync
 from coderai.core.tools.types import ToolExecutionContext, ToolResult

@@ -1,44 +1,33 @@
 """Unit tests for CoderAI /setup wizard, CLI configuration, and provider key management."""
 
-import json
 import os
 import pathlib
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from coderai.cli.app import _build_parser, _render_help_menu, main
+from coderai.cli.app import _build_parser, main
 from coderai.cli.commands import parse_slash_command, resolve_command
 from coderai.cli.completer import CoderAICompleter
 from coderai.cli.setup_wizard import (
     configure_provider_key_interactive,
-    render_setup_status_table,
-    run_connectivity_test_interactive,
     run_quick_setup_wizard,
     run_setup_cli,
     run_setup_wizard,
     select_and_save_model_interactive,
 )
 from coderai.core.openai_client import (
-    clear_client_pool,
     probe_provider_connectivity,
-    resolve_model_provider_routing,
 )
-from coderai.core.session import SessionManager
 from coderai.core.settings import (
-    KNOWN_PROVIDERS,
     get_configured_provider_keys,
     mask_api_key,
     read_project_settings,
     read_settings,
-    resolve_current_settings,
     save_active_model_setting,
     save_base_url_setting,
     save_custom_endpoint_config,
     save_provider_api_key,
-    save_setting_key,
-    write_project_settings,
-    write_settings,
 )
 
 
@@ -339,7 +328,6 @@ def test_prompt_save_scope_cancel():
 
 
 def test_configure_provider_key_cancel():
-    from coderai.cli.setup_wizard import configure_provider_key_interactive
 
     with patch("coderai.cli.setup_wizard.select_with_arrows", return_value=None):
         res = configure_provider_key_interactive(None)

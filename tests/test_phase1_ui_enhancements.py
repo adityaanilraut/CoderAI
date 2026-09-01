@@ -59,7 +59,6 @@ def test_live_thinking_streamer_terminal_width_bounds(monkeypatch):
     streamer._render_inline()
 
     assert len(written_lines) > 0
-    latest = written_lines[-1]
     # Verify no line overflow
     assert streamer._last_line_len <= 60
 

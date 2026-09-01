@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import io
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
-from rich.console import Console
 
 from coderai.cli.app import _prompt_permissions
 from coderai.cli.file_mention import suggest_workspace_files

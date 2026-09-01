@@ -17,12 +17,11 @@ import json
 import pathlib
 import tempfile
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 from coderai.core.common.repeat_tool_reminder import RepeatToolReminder
 from coderai.core.common.session_reference import (
     extract_session_reference_ids,
-    decode_session_uri,
 )
 from coderai.core.events import (
     LOG_ONLY_EVENT_TYPES,
@@ -32,9 +31,9 @@ from coderai.core.events import (
     SessionEvent,
 )
 from coderai.core.prompt import load_agent_instructions
-from coderai.core.subagent import SubAgentManager, SubAgentSpec, SubAgentResult
+from coderai.core.subagent import SubAgentManager, SubAgentSpec
 from coderai.core.tools.executor import ToolExecutor
-from coderai.core.tools.types import ToolExecutionHooks, ToolResult
+from coderai.core.tools.types import ToolExecutionHooks
 
 
 # --- 1. RepeatToolReminder Reset Tests ---

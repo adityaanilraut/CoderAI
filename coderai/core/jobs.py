@@ -9,11 +9,18 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from coderai.core.common.process_tree import kill_process_tree
+from coderai.core.orchestration import (
+    DEFAULT_MAX_RUNNING_JOBS,
+    resolve_max_running_jobs,
+)
 
 JobStatus = Literal["running", "stopping", "completed", "killed", "failed"]
 DEFAULT_WAIT_TIMEOUT_MS = 30_000
 MAX_WAIT_TIMEOUT_MS = 600_000
 _MAX_JOBS_PER_SESSION = 100
+# Default per-session cap on concurrent running background jobs (configurable via
+# CODERAI_MAX_RUNNING_JOBS_PER_SESSION or settings orchestration.maxRunningJobs).
+MAX_RUNNING_JOBS_PER_SESSION = DEFAULT_MAX_RUNNING_JOBS
 
 
 @dataclass
@@ -77,6 +84,17 @@ class JobStore:
             detail=detail,
         )
         with self._lock:
+            max_running = resolve_max_running_jobs()
+            running = [
+                j
+                for j in self._jobs.values()
+                if j.session_id == session_id and j.status in ("running", "stopping")
+            ]
+            if len(running) >= max_running:
+                raise RuntimeError(
+                    f"background job cap reached: at most {max_running} "
+                    "running jobs per session (MAX_RUNNING_JOBS_PER_SESSION)"
+                )
             self._jobs[job_id] = job
             self._evict_locked(session_id)
         return job

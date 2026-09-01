@@ -7,7 +7,6 @@ scriptable CLI options for configuring API keys, providers, custom endpoints, an
 from __future__ import annotations
 
 import getpass
-import os
 import sys
 from typing import Any, Literal
 
@@ -18,7 +17,6 @@ from rich.table import Table
 from coderai.cli.interactive_menu import select_with_arrows
 from coderai.core.common.model_capabilities import (
     CURATED_MODELS,
-    format_capability_badges,
     get_model_badges,
 )
 from coderai.core.openai_client import clear_client_pool, probe_provider_connectivity
@@ -32,10 +30,8 @@ from coderai.core.settings import (
     mask_api_key,
     resolve_current_settings,
     save_active_model_setting,
-    save_base_url_setting,
     save_custom_endpoint_config,
     save_provider_api_key,
-    save_setting_key,
 )
 
 _RICH = True
@@ -492,10 +488,10 @@ def run_connectivity_test_interactive(
 
     if console is not None and _RICH:
         if success:
-            console.print(f"\n  [bold green]✓ Connection Verified![/]")
+            console.print("\n  [bold green]✓ Connection Verified![/]")
             console.print(f"    [dim]{message}[/]\n")
         else:
-            console.print(f"\n  [bold red]✗ Connection Failed![/]")
+            console.print("\n  [bold red]✗ Connection Failed![/]")
             console.print(f"    [red]{message}[/]")
             console.print("    [dim]Tip: Check your API key or endpoint settings via '/setup keys'.[/dim]\n")
     else:

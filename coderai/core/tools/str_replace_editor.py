@@ -367,7 +367,7 @@ def _handle_str_replace(
     start_off, end_off = matches[0]
     new_content = current_content[:start_off] + match_res.replaced_new + current_content[end_off:]
 
-    from coderai.core.tools.file_mutation import generate_virtual_patch, is_dry_run
+    from coderai.core.tools.file_mutation import is_dry_run
 
     if is_dry_run(context, args):
         patch = generate_virtual_patch(target_path, current_content, new_content)
@@ -486,7 +486,7 @@ def _handle_insert(
     else:
         new_content = "".join(lines[:ins_line]) + insert_content + "".join(lines[ins_line:])
 
-    from coderai.core.tools.file_mutation import generate_virtual_patch, is_dry_run
+    from coderai.core.tools.file_mutation import is_dry_run
 
     if is_dry_run(context, args):
         patch = generate_virtual_patch(target_path, current_content, new_content)

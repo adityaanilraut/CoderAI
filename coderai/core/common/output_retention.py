@@ -7,7 +7,8 @@ slicing and standardized omission notices.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Generic, Sequence, TypeVar
+from typing import Generic, TypeVar
+from collections.abc import Sequence
 
 T = TypeVar("T")
 

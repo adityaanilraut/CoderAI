@@ -115,6 +115,9 @@ PERMISSION_EXEMPT_REGISTERED_TOOLS = {
     "todo_write",
     "exit_plan_mode",
     "goal",
+    "get_goal",
+    "create_goal",
+    "update_goal",
 }
 
 PLAN_MODE_FORCE_ASK_SCOPES: list[str] = [

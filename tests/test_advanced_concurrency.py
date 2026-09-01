@@ -9,31 +9,23 @@ import time
 import pytest
 
 from coderai.core.hooks import (
-    HookOutput,
-    HookPoint,
     execute_hook_command_async,
-    run_hook_point_async,
 )
-from coderai.core.lifecycle.cascade import CancellationTree, LifecycleCoordinator
+from coderai.core.lifecycle.cascade import CancellationTree
 from coderai.core.spawn import (
-    SubagentDescriptor,
-    ToolRestriction,
     check_subagent_depth_quota,
     cleanup_subagent_scratchpad,
     parse_subagent_descriptor,
     setup_subagent_scratchpad,
 )
 from coderai.core.subagent import (
-    MAX_SUBAGENT_DEPTH,
     SubAgentManager,
     SubAgentResult,
     SubAgentSpec,
 )
 from coderai.core.teams.concurrency import (
     ConcurrencyConflictError,
-    calculate_backoff_delay,
     cas_retry_async,
-    cas_retry_sync,
 )
 from coderai.core.teams.deadlock import (
     CycleDetectedError,
@@ -47,9 +39,8 @@ from coderai.core.teams.mailbox import (
     AsyncMailbox,
     MessagePriority,
 )
-from coderai.core.teams.manager import TeamManager, TeamTaskBoard
 from coderai.core.tools.executor import ToolExecutor
-from coderai.core.tools.path_lock import PathLockManager, get_path_lock_manager
+from coderai.core.tools.path_lock import PathLockManager
 
 
 # =========================================================================

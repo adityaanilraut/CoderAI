@@ -8,6 +8,16 @@ from typing import Any
 from coderai.core.tools.types import ToolExecutionContext, ToolResult, as_str
 from coderai.core.workflow.engine import WorkflowContext, execute_workflow_script
 
+MAX_RESULT_CHARS = 50_000
+
+
+def _stop_reason_error(result: Any) -> str | None:
+    if result.status == "completed":
+        return None
+    if result.stop_reason == "cancelled":
+        return f"workflow run was cancelled{(' (' + result.error + ')') if result.error else ''}"
+    return f"workflow run failed: {result.error or 'unknown error'}"
+
 
 async def handle_workflow_tool(args: dict[str, Any], context: ToolExecutionContext) -> ToolResult:
     """Execute a structured multi-agent orchestration script."""
@@ -59,7 +69,7 @@ async def handle_workflow_tool(args: dict[str, Any], context: ToolExecutionConte
         return ToolResult(
             ok=False,
             name="workflow",
-            error=result.error or f"Workflow execution {result.status}.",
+            error=_stop_reason_error(result) or f"Workflow execution {result.status}.",
             output=result.format_markdown(),
             metadata=meta_data,
         )

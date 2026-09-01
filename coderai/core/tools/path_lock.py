@@ -5,10 +5,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import os
 import pathlib
 from collections.abc import AsyncIterator
-from typing import Any
 
 logger = logging.getLogger(__name__)
 

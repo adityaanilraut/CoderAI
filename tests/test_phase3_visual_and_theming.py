@@ -3,18 +3,14 @@
 from __future__ import annotations
 
 import io
-from unittest.mock import MagicMock, patch
 
-import pytest
 from rich.console import Console
 
-from coderai.cli.diff_render import format_diff_text, render_diff_preview
-from coderai.cli.plan_render import format_plan_content, render_plan_preview
-from coderai.cli.statusline import format_default_status_bar
+from coderai.cli.diff_render import format_diff_text
+from coderai.cli.plan_render import format_plan_content
 from coderai.cli.thinking import (
     LiveThinkingStreamer,
     render_thinking_block,
-    summarize_thinking,
 )
 from coderai.cli.welcome import render_welcome_screen
 

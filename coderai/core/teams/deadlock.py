@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +35,6 @@ def detect_task_cycles(task_dependencies: dict[str, list[str]]) -> list[str] | N
     """
     # 0 = unvisited, 1 = visiting (in recursion stack), 2 = visited
     state: dict[str, int] = {node: 0 for node in task_dependencies}
-    parent_map: dict[str, str | None] = {node: None for node in task_dependencies}
 
     def _dfs(node: str, stack: list[str]) -> list[str] | None:
         state[node] = 1

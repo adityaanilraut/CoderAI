@@ -1188,7 +1188,6 @@ def test_cache_hit_rate_analytics(tmp_path: pathlib.Path, capsys: pytest.Capture
     from coderai.cli.exit_summary import compute_session_stats, render_exit_summary
     from coderai.cli.export_render import export_session_to_markdown
     from coderai.cli.interactive_menu import render_token_breakdown
-    from coderai.core.session import SessionEntry
 
     mgr = SessionManager(
         project_root=str(tmp_path),

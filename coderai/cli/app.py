@@ -18,13 +18,13 @@ import sys
 from typing import Any
 
 from coderai._version import __version__
-from coderai.cli.commands import parse_slash_command, resolve_command
+from coderai.cli.commands import parse_slash_command
 from coderai.cli.completer import setup_readline
 from coderai.cli.diff_render import render_diff_preview
 from coderai.cli.exit_summary import render_exit_summary
 from coderai.cli.export_render import export_session_to_json, export_session_to_markdown
 from coderai.cli.file_mention import expand_file_mentions
-from coderai.cli.help import COMMAND_HELP_DETAILS, render_help
+from coderai.cli.help import render_help
 from coderai.cli.input_engine import read_user_turn
 from coderai.cli.interactive_menu import (
     prompt_plan_implementation,
@@ -234,6 +234,48 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Save configuration to user global settings (~/.coderai)",
     )
     parser.add_argument("--plan", action="store_true", help="start session in Plan Mode")
+    parser.add_argument(
+        "--max-subagent-depth",
+        type=int,
+        default=None,
+        help="maximum sub-agent nesting depth (default 3; env CODERAI_MAX_SUBAGENT_DEPTH)",
+    )
+    parser.add_argument(
+        "--subagent-timeout",
+        type=float,
+        default=None,
+        help="sub-agent timeout in seconds (default 90; env CODERAI_SUBAGENT_TIMEOUT_SECONDS)",
+    )
+    parser.add_argument(
+        "--workflow-max-agents",
+        type=int,
+        default=None,
+        help="workflow total agent cap per run (default 1000; env CODERAI_WORKFLOW_MAX_TOTAL_AGENTS)",
+    )
+    parser.add_argument(
+        "--workflow-max-concurrency",
+        type=int,
+        default=None,
+        help="workflow concurrent agent slots (default min(16, cores-2); env CODERAI_WORKFLOW_MAX_CONCURRENT_AGENTS)",
+    )
+    parser.add_argument(
+        "--ralph-max-rounds",
+        type=int,
+        default=None,
+        help="Ralph verification round ceiling (default 256; env CODERAI_RALPH_MAX_ROUNDS)",
+    )
+    parser.add_argument(
+        "--max-continuable-agents",
+        type=int,
+        default=None,
+        help="maximum live continuable sub-agents per session (default 50; env CODERAI_MAX_CONTINUABLE_AGENTS_PER_SESSION)",
+    )
+    parser.add_argument(
+        "--max-running-jobs",
+        type=int,
+        default=None,
+        help="maximum concurrent running background jobs per session (default 50; env CODERAI_MAX_RUNNING_JOBS_PER_SESSION)",
+    )
     parser.add_argument("--yes", "-y", action="store_true", help="auto-approve all permissions")
     parser.add_argument("--verbose", "-v", action="store_true", help="print debug information")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -2065,6 +2107,21 @@ def main(argv: list[str] | None = None) -> int:
     """Console entry point for CoderAI CLI."""
     args = _build_parser().parse_args(argv)
     project_root = str(pathlib.Path.cwd().resolve())
+
+    # Forward orchestration flags to the CODERAI_* environment contract so the
+    # shared orchestration layer (and child processes) resolve one source.
+    for flag, env_name in (
+        ("max_subagent_depth", "CODERAI_MAX_SUBAGENT_DEPTH"),
+        ("subagent_timeout", "CODERAI_SUBAGENT_TIMEOUT_SECONDS"),
+        ("workflow_max_agents", "CODERAI_WORKFLOW_MAX_TOTAL_AGENTS"),
+        ("workflow_max_concurrency", "CODERAI_WORKFLOW_MAX_CONCURRENT_AGENTS"),
+        ("ralph_max_rounds", "CODERAI_RALPH_MAX_ROUNDS"),
+        ("max_continuable_agents", "CODERAI_MAX_CONTINUABLE_AGENTS_PER_SESSION"),
+        ("max_running_jobs", "CODERAI_MAX_RUNNING_JOBS_PER_SESSION"),
+    ):
+        value = getattr(args, flag, None)
+        if value is not None:
+            os.environ[env_name] = str(value)
 
     # Check mutual exclusions & argument validity
     has_positional = bool(args.prompt)

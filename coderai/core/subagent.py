@@ -18,6 +18,11 @@ from collections.abc import Callable
 from coderai.core.common.message_converter import OpenAIMessageConverter
 from coderai.core.common.openai_thinking import build_thinking_request_options
 from coderai.core.common.usage import extract_usage_dict
+from coderai.core.orchestration import (
+    publish_subagent_end,
+    publish_subagent_start,
+    status_to_stop_reason,
+)
 from coderai.core.prompt import get_runtime_context, get_subagent_system_prompt, get_tools
 from coderai.core.spawn import (
     DEFAULT_MAX_SUBAGENT_DEPTH,
@@ -25,8 +30,6 @@ from coderai.core.spawn import (
     DEFAULT_SUBAGENT_TIMEOUT_SECONDS,
     SubagentDescriptor,
     check_subagent_depth_quota,
-    cleanup_subagent_scratchpad,
-    parse_subagent_descriptor,
     setup_subagent_scratchpad,
 )
 from coderai.core.state import clear_session_state
@@ -68,6 +71,7 @@ class SubAgentSpec:
     seed_messages: list[dict[str, Any]] | None = None
     seed_events: list[Any] | None = None
     descriptor: SubagentDescriptor | None = None
+    continuable: bool = False  # parked worker loop; survives multiple turns via its handle inbox
 
     def __post_init__(self) -> None:
         if self.token_budget is None and self.max_tokens is not None:
@@ -102,11 +106,21 @@ class SubAgentResult:
     children_ids: list[str] = field(default_factory=list)
     lifecycle_events: list[dict[str, Any]] = field(default_factory=list)
 
+    @property
+    def stop_reason(self) -> str:
+        """Harness stop-reason vocabulary derived from the internal status.
+
+        Mirrors ``SubagentStopReason``: ``completed | aborted | error |
+        max-tokens | refusal``.
+        """
+        return status_to_stop_reason(self.status)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "task_id": self.task_id,
             "session_id": self.session_id,
             "status": self.status,
+            "stopReason": self.stop_reason,
             "summary": self.summary,
             "active_tokens": self.active_tokens,
             "total_tokens": self.total_tokens,
@@ -146,6 +160,9 @@ class SubAgentResult:
                 fp = d.get("file_path", "unknown")
                 lines.append(f"- `{fp}`")
         return "\n".join(lines)
+
+
+_global_active_controllers: dict[str, asyncio.Event] = {}
 
 
 class SubAgentManager:
@@ -188,21 +205,70 @@ class SubAgentManager:
         return evt
 
     def cancel_subagent(self, session_id: str) -> None:
-        """Cancel a running sub-agent session."""
-        event = self._active_controllers.get(session_id)
+        """Cancel a running sub-agent session across all active manager scopes."""
+        event = self._active_controllers.get(session_id) or _global_active_controllers.get(session_id)
         if event is not None:
             event.set()
 
     def cancel_all(self) -> None:
-        """Cancel all running sub-agents."""
+        """Cancel all running sub-agents globally."""
         for event in list(self._active_controllers.values()):
+            event.set()
+        for event in list(_global_active_controllers.values()):
             event.set()
 
     async def spawn_subagent(self, spec: SubAgentSpec) -> SubAgentResult:
-        """Spawn and execute a single isolated sub-agent with timeout, quota checks, and error recovery."""
+        """Spawn and execute a single isolated sub-agent with timeout, quota checks, and error recovery.
+
+        Publishes the harness ``subagent/start`` + ``subagent/end`` lifecycle
+        pair around the run. A start-time quota rejection fails before
+        publication (mirroring the reference's pre-publication rejection), so
+        no lifecycle edge pair is emitted for a child that never existed.
+        """
         session_id = (
             f"sub_{spec.parent_session_id[:8] if spec.parent_session_id else 'root'}_{spec.task_id}"
         )
+        effective_max_depth = spec.max_depth if spec.max_depth is not None else MAX_SUBAGENT_DEPTH
+        quota_ok, _quota_err = check_subagent_depth_quota(spec.depth, effective_max_depth)
+        provider = spec.provider or "in_process"
+        local = provider == "in_process"
+        run_id = uuid.uuid4().hex
+        if quota_ok:
+            publish_subagent_start(
+                run_id=run_id,
+                provider=provider,
+                child_id=session_id,
+                local=local,
+                parent_session_id=spec.parent_session_id,
+            )
+        result = await self._spawn_subagent_inner(spec, session_id)
+        if quota_ok:
+            partial_ok = result.status in (
+                "completed",
+                "refusal",
+                "max_iterations",
+                "budget_exceeded",
+            )
+            last_message = (
+                [{"type": "text", "text": result.summary}]
+                if result.summary and partial_ok
+                else None
+            )
+            publish_subagent_end(
+                run_id=run_id,
+                provider=provider,
+                child_id=session_id,
+                local=local,
+                stop_reason=result.stop_reason,
+                last_assistant_message=last_message,
+                parent_session_id=spec.parent_session_id,
+            )
+        return result
+
+    async def _spawn_subagent_inner(
+        self, spec: SubAgentSpec, session_id: str
+    ) -> SubAgentResult:
+        """Unpublished spawn body: quota, scratchpad, controller, backend run."""
         lifecycle_events: list[dict[str, Any]] = []
         self._emit_lifecycle_event(
             lifecycle_events,
@@ -239,6 +305,7 @@ class SubAgentManager:
 
         abort_event = asyncio.Event()
         self._active_controllers[session_id] = abort_event
+        _global_active_controllers[session_id] = abort_event
 
         self._emit_lifecycle_event(
             lifecycle_events,
@@ -424,6 +491,7 @@ class SubAgentManager:
             )
         finally:
             self._active_controllers.pop(session_id, None)
+            _global_active_controllers.pop(session_id, None)
             clear_session_state(session_id)
 
     async def run_parallel_subagents(
@@ -461,14 +529,136 @@ class SubAgentManager:
 
         return final_results
 
+    async def run_continuable(self, spec: SubAgentSpec, session_id: str) -> SubAgentResult:
+        """Drive a parked continuable worker: turn → settle-notice → park → repeat.
+
+        Mirrors the harness continuable-Activation semantics on CoderAI's
+        in-memory primitives: one durable conversation, FIFO turns queued
+        through the handle inbox, current-turn-only interruption (queued
+        messages stay parked), and a one-shot settlement notice when a turn
+        finishes with no queued follow-up work.
+        """
+        from coderai.core.orchestration import settlement_summary
+
+        handle = spec.handle
+        if handle is None:
+            return await self._spawn_subagent_inner(spec, session_id)
+
+        state: dict[str, Any] = {}
+        abort_event = asyncio.Event()
+        self._active_controllers[session_id] = abort_event
+        last_result: SubAgentResult | None = None
+        try:
+            while True:
+                abort_event.clear()
+                waiter = getattr(handle, "inbox_waiter", None)
+                if waiter is not None:
+                    waiter.clear()
+                try:
+                    result = await asyncio.wait_for(
+                        self._run_subagent_loop(
+                            spec,
+                            session_id,
+                            abort_event,
+                            lifecycle_events=None,
+                            continuable=True,
+                            messages=state.get("messages"),
+                            state=state,
+                        ),
+                        timeout=spec.timeout_seconds,
+                    )
+                except asyncio.CancelledError:
+                    result = SubAgentResult(
+                        task_id=spec.task_id,
+                        session_id=session_id,
+                        status="interrupted",
+                        summary="Sub-agent was cancelled.",
+                        error="CancelledError: Parent or runner cancelled sub-agent.",
+                        exit_code=130,
+                        parent_agent_id=spec.parent_agent_id,
+                        root_agent_id=spec.root_agent_id,
+                        depth=spec.depth,
+                        children_ids=list(spec.children_ids),
+                    )
+                except (asyncio.TimeoutError, TimeoutError):
+                    result = SubAgentResult(
+                        task_id=spec.task_id,
+                        session_id=session_id,
+                        status="timeout",
+                        summary=f"Sub-agent timed out after {spec.timeout_seconds:.1f} seconds.",
+                        error=f"TimeoutError: Sub-agent execution exceeded {spec.timeout_seconds}s limit.",
+                        exit_code=124,
+                        parent_agent_id=spec.parent_agent_id,
+                        root_agent_id=spec.root_agent_id,
+                        depth=spec.depth,
+                        children_ids=list(spec.children_ids),
+                    )
+                last_result = result
+                handle.result = result
+                if handle.status != "interrupted":
+                    handle.status = result.status
+                handle.last_stop_reason = result.stop_reason
+
+                # One-shot settlement notice when a turn finishes with no
+                # queued follow-up work (harness subagent-settled notice).
+                if (
+                    result.status == "completed"
+                    and not getattr(handle, "settled_notified", False)
+                    and not (getattr(handle, "inbox", None) or [])
+                ):
+                    notice = getattr(handle, "parent_notice", None)
+                    if notice is not None:
+                        try:
+                            outcome_text = handle.report or result.summary
+                            notice(
+                                spec.parent_session_id,
+                                settlement_summary(
+                                    handle.id, "completed", outcome=outcome_text
+                                ),
+                            )
+                        except Exception:
+                            logger.debug("continuable settlement notice failed", exc_info=True)
+                    handle.settled_notified = True
+
+                # Park until send_message wakes us or the handle is killed.
+                waiter = getattr(handle, "inbox_waiter", None)
+                if waiter is None:
+                    return result
+                await waiter.wait()
+        finally:
+            self._active_controllers.pop(session_id, None)
+            clear_session_state(session_id)
+        return last_result or SubAgentResult(
+            task_id=spec.task_id,
+            session_id=session_id,
+            status="interrupted",
+            summary="Sub-agent was cancelled.",
+            error="CancelledError: Parent or runner cancelled sub-agent.",
+            exit_code=130,
+            parent_agent_id=spec.parent_agent_id,
+            root_agent_id=spec.root_agent_id,
+            depth=spec.depth,
+            children_ids=list(spec.children_ids),
+        )
+
     async def _run_subagent_loop(
         self,
         spec: SubAgentSpec,
         session_id: str,
         abort_event: asyncio.Event,
         lifecycle_events: list[dict[str, Any]] | None = None,
+        *,
+        continuable: bool = False,
+        messages: list[dict[str, Any]] | None = None,
+        state: dict[str, Any] | None = None,
     ) -> SubAgentResult:
-        """Run the isolated agentic loop for the sub-agent."""
+        """Run the isolated agentic loop for the sub-agent.
+
+        ``continuable=True`` keeps the run alive across turns: the supplied
+        ``messages`` conversation is reused, the terminal result is parked
+        (the caller owns re-entry), and the conversation is stashed on
+        ``state["messages"]`` for the next turn.
+        """
         events = lifecycle_events if lifecycle_events is not None else []
         client_info = self.create_openai_client()
         client = client_info.get("client")
@@ -499,29 +689,32 @@ class SubAgentManager:
         tool_executor = ToolExecutor(effective_root, self.create_openai_client)
         available_tools = self._get_sandboxed_tools(spec, model)
 
-        # Build isolated initial message history with static system prompt
-        system_prompt = get_subagent_system_prompt(spec.mode)
-        runtime_context = get_runtime_context(effective_root, model)
+        if messages is None:
+            # Build isolated initial message history with static system prompt
+            system_prompt = get_subagent_system_prompt(spec.mode)
+            runtime_context = get_runtime_context(effective_root, model)
 
+            initial_user_prompt = spec.prompt
+            if spec.description:
+                initial_user_prompt = f"Goal: {spec.description}\n\n{initial_user_prompt}"
+            if spec.extra_context:
+                initial_user_prompt += f"\n\nAdditional Context:\n{spec.extra_context}"
+            if runtime_context:
+                initial_user_prompt = f"{runtime_context}\n\n---\n\n{initial_user_prompt}"
 
-        initial_user_prompt = spec.prompt
-        if spec.description:
-            initial_user_prompt = f"Goal: {spec.description}\n\n{initial_user_prompt}"
-        if spec.extra_context:
-            initial_user_prompt += f"\n\nAdditional Context:\n{spec.extra_context}"
-        if runtime_context:
-            initial_user_prompt = f"{runtime_context}\n\n---\n\n{initial_user_prompt}"
+            messages = [
+                {"role": "system", "content": system_prompt},
+            ]
+            if spec.seed_messages:
+                for sm in spec.seed_messages:
+                    role = sm.get("role")
+                    if role and role != "system":
+                        messages.append(dict(sm))
 
-        messages: list[dict[str, Any]] = [
-            {"role": "system", "content": system_prompt},
-        ]
-        if spec.seed_messages:
-            for sm in spec.seed_messages:
-                role = sm.get("role")
-                if role and role != "system":
-                    messages.append(dict(sm))
+            messages.append({"role": "user", "content": initial_user_prompt})
 
-        messages.append({"role": "user", "content": initial_user_prompt})
+        if state is not None:
+            state["messages"] = messages
 
         total_prompt_tokens = 0
         total_completion_tokens = 0
@@ -604,23 +797,79 @@ class SubAgentManager:
             if not request.get("tools"):
                 request.pop("tools", None)
 
-            # LLM invocation
-            try:
-                response = await asyncio.to_thread(_call_llm_sync, client, request)
-            except (asyncio.CancelledError, TimeoutError):
-                raise
-            except Exception as e:
+            # LLM invocation with retryable-failure backoff (harness retry
+            # policy: 429/5xx/timeout/transport retried with jittered backoff)
+            from coderai.core.common.llm_retry import (
+                classify_llm_failure,
+                provider_retry_after_ms,
+                retry_delay_ms,
+            )
+
+            response: dict[str, Any] | None = None
+            last_error: Exception | None = None
+            for _attempt in range(1, 6):
+                if abort_event.is_set():
+                    break
+                try:
+                    response = await asyncio.to_thread(_call_llm_sync, client, request)
+                    break
+                except (asyncio.CancelledError, TimeoutError):
+                    raise
+                except Exception as e:
+                    last_error = e
+                    if classify_llm_failure(e) is None or _attempt >= 5:
+                        break
+                    provider_ms = provider_retry_after_ms(e)
+                    if provider_ms is not None and provider_ms / 1000.0 > 10.0:
+                        break  # over-cap Retry-After gives up in normal mode
+                    delay = max(
+                        retry_delay_ms(_attempt) / 1000.0,
+                        (provider_ms or 0.0) / 1000.0,
+                    )
+                    try:
+                        await asyncio.sleep(delay)
+                    except asyncio.CancelledError:
+                        raise
+
+            if abort_event.is_set():
                 return SubAgentResult(
                     task_id=spec.task_id,
                     session_id=session_id,
-                    status="failed",
-                    summary=f"LLM request error in sub-agent: {e}",
+                    status="interrupted",
+                    summary=last_assistant_reply or "Sub-agent was interrupted.",
                     active_tokens=active_tokens,
                     total_tokens=total_prompt_tokens + total_completion_tokens,
                     cached_tokens=total_cached_tokens,
                     iterations=iteration,
                     tool_calls_count=tool_calls_count,
-                    error=str(e),
+                    artifacts=artifacts,
+                    diffs=diffs,
+                    exit_code=130,
+                    token_telemetry={
+                        "prompt_tokens": total_prompt_tokens,
+                        "completion_tokens": total_completion_tokens,
+                        "cached_tokens": total_cached_tokens,
+                        "active_tokens": active_tokens,
+                        "total_tokens": total_prompt_tokens + total_completion_tokens,
+                    },
+                    parent_agent_id=spec.parent_agent_id,
+                    root_agent_id=spec.root_agent_id,
+                    depth=spec.depth,
+                    children_ids=list(spec.children_ids),
+                    lifecycle_events=events,
+                )
+            if response is None:
+                return SubAgentResult(
+                    task_id=spec.task_id,
+                    session_id=session_id,
+                    status="failed",
+                    summary=f"LLM request error in sub-agent: {last_error}",
+                    active_tokens=active_tokens,
+                    total_tokens=total_prompt_tokens + total_completion_tokens,
+                    cached_tokens=total_cached_tokens,
+                    iterations=iteration,
+                    tool_calls_count=tool_calls_count,
+                    error=str(last_error),
                     exit_code=1,
                     token_telemetry={
                         "prompt_tokens": total_prompt_tokens,
@@ -689,7 +938,7 @@ class SubAgentManager:
                 return SubAgentResult(
                     task_id=spec.task_id,
                     session_id=session_id,
-                    status="failed",
+                    status="refusal",
                     summary=f"Model refused request: {refusal}",
                     active_tokens=active_tokens,
                     total_tokens=total_prompt_tokens + total_completion_tokens,

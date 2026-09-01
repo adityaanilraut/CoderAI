@@ -50,6 +50,9 @@ class GitFileHistory:
         env.setdefault("GIT_AUTHOR_EMAIL", FILE_HISTORY_AUTHOR_EMAIL)
         env.setdefault("GIT_COMMITTER_NAME", FILE_HISTORY_AUTHOR_NAME)
         env.setdefault("GIT_COMMITTER_EMAIL", FILE_HISTORY_AUTHOR_EMAIL)
+        env.setdefault("GIT_CONFIG_NOSYSTEM", "1")
+        env.setdefault("GIT_CONFIG_GLOBAL", "/dev/null")
+        env.setdefault("GIT_CONFIG_SYSTEM", "/dev/null")
         return env
 
     def _spawn_git(
@@ -90,6 +93,7 @@ class GitFileHistory:
         res = subprocess.run(
             ["git", "init", "--bare", self.git_dir],
             capture_output=True,
+            env=self._get_git_env(),
         )
         if res.returncode != 0:
             err = (res.stderr or b"").decode("utf-8", errors="replace").strip()

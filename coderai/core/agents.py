@@ -9,7 +9,77 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+from coderai.core.orchestration import (
+    DEFAULT_MAX_CONTINUABLE_AGENTS,
+    publish_subagent_end,
+    publish_subagent_start,
+    resolve_max_continuable_agents,
+)
 from coderai.core.subagent import SubAgentManager, SubAgentResult, SubAgentSpec
+
+# Default per-session cap on live continuable children (configurable via
+# CODERAI_MAX_CONTINUABLE_AGENTS_PER_SESSION or settings orchestration.maxContinuableAgents).
+MAX_CONTINUABLE_AGENTS_PER_SESSION = DEFAULT_MAX_CONTINUABLE_AGENTS
+
+# Parent-session notice sinks: the CLI SessionManager registers an appender so
+# background settlement notices (harness `subagent-settled` / job completion
+# notices) land in the live parent conversation. Missing sink = notice dropped.
+_notice_sinks: dict[str, Any] = {}
+
+
+def register_session_notice_sink(session_id: str, sink: Any) -> None:
+    """Register an appender callable ``sink(session_id, text)`` for a session."""
+    if session_id:
+        _notice_sinks[session_id] = sink
+
+
+def unregister_session_notice_sink(session_id: str) -> None:
+    _notice_sinks.pop(session_id, None)
+
+
+def notify_parent_session(session_id: str | None, text: str) -> bool:
+    """Deliver a background notice into the parent session when a sink exists."""
+    if not session_id:
+        return False
+    sink = _notice_sinks.get(session_id)
+    if sink is None:
+        return False
+    try:
+        sink(session_id, text)
+        return True
+    except Exception:
+        return False
+
+
+def append_parent_session_notice(
+    project_root: str,
+    session_id: str | None,
+    text: str,
+    source: str = "subagent-settled",
+) -> bool:
+    """Durably append a parent-facing notice as a user message (no live sink)."""
+    if not session_id:
+        return False
+    try:
+        from coderai.core.events import make_user_message
+        from coderai.core.session_store import JsonlSessionStore
+
+        store = JsonlSessionStore(project_root)
+        max_seq = 0
+        for row in store.read_rows(session_id):
+            seq = row.get("seq")
+            if isinstance(seq, int):
+                max_seq = max(max_seq, seq + 1)
+        event = make_user_message(
+            max_seq,
+            text,
+            source="user",
+            meta={"advisoryRole": "user", "source": source},
+        )
+        store.append_row(session_id, event.to_dict())
+        return True
+    except Exception:
+        return False
 
 
 @dataclass
@@ -31,8 +101,17 @@ class AgentHandle:
     lifecycle_history: list[dict[str, Any]] = field(default_factory=list)
     started_at: float = field(default_factory=time.time)
     last_heartbeat_at: float = field(default_factory=time.time)
+    # Continuable runtime wiring (set by spawn_background_agent)
+    inbox_waiter: asyncio.Event | None = None
+    manager: SubAgentManager | None = None
+    run_session_id: str | None = None
+    parent_notice: Any = None
+    settled_notified: bool = False
+    last_stop_reason: str | None = None
+    conversation: list[dict[str, Any]] | None = None
 
     def to_public_dict(self) -> dict[str, Any]:
+        summary = self.report or (self.result.summary if self.result else None)
         return {
             "id": self.id,
             "description": self.description,
@@ -45,6 +124,9 @@ class AgentHandle:
             "children_ids": list(self.children_ids),
             "started_at": self.started_at,
             "last_heartbeat_at": self.last_heartbeat_at,
+            "stopReason": self.last_stop_reason,
+            "report": self.report,
+            "summary": summary,
         }
 
 
@@ -71,6 +153,18 @@ class AgentRegistry:
         if not parent:
             return []
         return [self._agents[cid] for cid in parent.children_ids if cid in self._agents]
+
+    def list_descendants(self, root_id: str) -> builtins.list[AgentHandle]:
+        """Stable pre-order walk of the complete tree below ``root_id``."""
+        out: builtins.list[AgentHandle] = []
+
+        def _walk(agent_id: str) -> None:
+            for child in self.get_children(agent_id):
+                out.append(child)
+                _walk(child.id)
+
+        _walk(root_id)
+        return out
 
     def get_tree(self, agent_id: str) -> dict[str, Any] | None:
         """Return recursive tree dict of agent and all its descendants."""
@@ -102,13 +196,31 @@ class AgentRegistry:
         if handle is None:
             return None
         handle.inbox.append(message)
+        # Wake a parked continuable worker; its FIFO inbox becomes its next turn.
+        if handle.inbox_waiter is not None:
+            handle.inbox_waiter.set()
+        if handle.status in ("completed", "interrupted", "timeout", "failed") and handle.task and not handle.task.done():
+            handle.status = "running"
         return handle
 
     def interrupt(self, agent_id: str) -> AgentHandle | None:
+        """Stop the agent's CURRENT turn while keeping it available for follow-ups.
+
+        Mirrors the harness ``interrupt_agent`` semantics: only the current
+        turn stops; queued messages stay parked until a later ``send``; the
+        agent itself remains live. Handles without continuable wiring fall
+        back to full task cancellation (legacy behavior).
+        """
         handle = self._agents.get(agent_id)
         if handle is None:
             return None
         handle.status = "interrupted"
+        manager = getattr(handle, "manager", None)
+        session_id = getattr(handle, "run_session_id", None)
+        if manager is not None and session_id:
+            # Abort the in-flight turn; the parked loop keeps the inbox.
+            manager.cancel_subagent(session_id)
+            return handle
         if handle.task and not handle.task.done():
             handle.task.cancel()
         return handle
@@ -169,6 +281,8 @@ class TaskSupervisor:
                 "parent_agent_id": handle.parent_agent_id,
                 "children_ids": list(handle.children_ids),
                 "has_result": handle.result is not None,
+                "report": handle.report,
+                "summary": handle.report or (handle.result.summary if handle.result else None),
             }
 
         from coderai.core.jobs import get_job_store
@@ -211,6 +325,8 @@ class TaskSupervisor:
                     "last_heartbeat_at": handle.last_heartbeat_at,
                     "parent_agent_id": handle.parent_agent_id,
                     "children_ids": list(handle.children_ids),
+                    "report": handle.report,
+                    "summary": handle.report or (handle.result.summary if handle.result else None),
                 }
             )
 
@@ -313,6 +429,7 @@ async def spawn_background_agent(
     registry = get_agent_registry()
     agent_id = new_agent_id()
     spec.agent_id = agent_id
+    spec.continuable = True
 
     # Lineage propagation
     parent_handle = registry.get(parent_agent_id) if parent_agent_id else None
@@ -332,6 +449,19 @@ async def spawn_background_agent(
     else:
         spec.root_agent_id = agent_id
 
+    # Per-session spawn cap (configurable via CODERAI_MAX_CONTINUABLE_AGENTS_PER_SESSION).
+    max_continuable = resolve_max_continuable_agents()
+    siblings = [
+        h
+        for h in registry.list(parent_session_id=spec.parent_session_id)
+        if h.id != agent_id and h.status in ("running", "interrupted")
+    ]
+    if len(siblings) >= max_continuable:
+        raise RuntimeError(
+            f"subagent spawn cap reached: at most {max_continuable} "
+            "live sub-agents per session (MAX_CONTINUABLE_AGENTS_PER_SESSION)"
+        )
+
     now = time.time()
     handle = AgentHandle(
         id=agent_id,
@@ -345,23 +475,62 @@ async def spawn_background_agent(
         children_ids=[],
         started_at=now,
         last_heartbeat_at=now,
+        inbox_waiter=asyncio.Event(),
+        manager=manager,
+        run_session_id=(
+            f"sub_{spec.parent_session_id[:8] if spec.parent_session_id else 'root'}_{spec.task_id}"
+        ),
     )
     spec.handle = handle
     registry.register(handle)
 
+    def _parent_notice(session_id: str, text: str) -> None:
+        if notify_parent_session(session_id, text):
+            return
+        append_parent_session_notice(
+            getattr(manager, "project_root", "."), session_id, text
+        )
+
+    handle.parent_notice = _parent_notice
+
     async def _run() -> None:
+        run_id = uuid.uuid4().hex
+        session_id = handle.run_session_id or ""
+        provider = spec.provider or "in_process"
+        publish_subagent_start(
+            run_id=run_id,
+            provider=provider,
+            child_id=agent_id,
+            local=provider == "in_process",
+            parent_session_id=spec.parent_session_id,
+        )
         try:
-            result = await manager.spawn_subagent(spec)
+            result = await manager.run_continuable(spec, session_id)
             handle.result = result
             if handle.status != "interrupted":
                 handle.status = result.status
+            handle.last_stop_reason = result.stop_reason
         except asyncio.CancelledError:
             handle.status = "interrupted"
-        except Exception as exc:
-            handle.status = "failed"
+            handle.last_stop_reason = "aborted"
             handle.result = SubAgentResult(
                 task_id=spec.task_id,
-                session_id="",
+                session_id=session_id,
+                status="interrupted",
+                summary="Sub-agent was cancelled.",
+                error="CancelledError: Parent or runner cancelled sub-agent.",
+                exit_code=130,
+                parent_agent_id=spec.parent_agent_id,
+                root_agent_id=spec.root_agent_id,
+                depth=spec.depth,
+                children_ids=list(spec.children_ids),
+            )
+        except Exception as exc:
+            handle.status = "failed"
+            handle.last_stop_reason = "error"
+            handle.result = SubAgentResult(
+                task_id=spec.task_id,
+                session_id=session_id,
                 status="failed",
                 summary=str(exc),
                 error=str(exc),
@@ -369,6 +538,20 @@ async def spawn_background_agent(
                 root_agent_id=spec.root_agent_id,
                 depth=spec.depth,
                 children_ids=list(spec.children_ids),
+            )
+        finally:
+            publish_subagent_end(
+                run_id=run_id,
+                provider=provider,
+                child_id=agent_id,
+                local=provider == "in_process",
+                stop_reason=handle.last_stop_reason or "aborted",
+                last_assistant_message=(
+                    [{"type": "text", "text": handle.result.summary}]
+                    if handle.result and handle.result.summary
+                    else None
+                ),
+                parent_session_id=spec.parent_session_id,
             )
 
     handle.task = asyncio.create_task(_run())

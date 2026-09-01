@@ -88,6 +88,20 @@ async def handle_job_kill_tool(
     reason = as_str(args.get("reason")).strip() or None
     store = get_job_store()
     session_id = _session_id(context)
+
+    # Subagent-kind jobs own a live worker task; stop it before the store kill.
+    try:
+        from coderai.core.tools.agents import subagent_job_tasks
+
+        entry = subagent_job_tasks().get(job_id)
+        if entry is not None:
+            manager, sub_session_id, task = entry
+            manager.cancel_subagent(sub_session_id)
+            if task and not task.done():
+                task.cancel()
+    except Exception:
+        pass
+
     outcome = store.kill(job_id, session_id, reason)
     job = store.get(job_id, session_id)
     if outcome == "not-found" or job is None:

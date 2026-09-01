@@ -29,6 +29,11 @@ from coderai.core.tools import browser as _browser
 from coderai.core.tools import write as _write
 
 from coderai.core.goals import handle_goal_tool as _goal_handle
+from coderai.core.tools.goal_dsh import (
+    handle_create_goal_tool as _create_goal_handle,
+    handle_get_goal_tool as _get_goal_handle,
+    handle_update_goal_tool as _update_goal_handle,
+)
 from coderai.core.workflow import handle_workflow_tool as _workflow_handle
 from coderai.core.code_mode import handle_code_mode_tool as _code_mode_handle
 from coderai.core.tools.session_query import (
@@ -975,6 +980,10 @@ class ToolRegistry:
                         "type": "integer",
                         "description": "Maximum cumulative token budget for the subagent run.",
                     },
+                    "run_in_background": {
+                        "type": "boolean",
+                        "description": "Whether to run as a background job and return its job id (collect with job_output, stop with job_kill). Defaults to false.",
+                    },
                 },
                 required=["description", "prompt"],
                 handler=_subagent.handle_subagent_tool,
@@ -1020,6 +1029,10 @@ class ToolRegistry:
                     "token_budget": {
                         "type": "integer",
                         "description": "Maximum cumulative token budget for the subagent run.",
+                    },
+                    "run_in_background": {
+                        "type": "boolean",
+                        "description": "Whether to run in the background and return a durable subagent id immediately. Defaults to true. Set false to wait for the result when your next action depends on it.",
                     },
                 },
                 required=["description", "prompt"],
@@ -1067,6 +1080,10 @@ class ToolRegistry:
                         "type": "integer",
                         "description": "Maximum cumulative token budget for the subagent run.",
                     },
+                    "run_in_background": {
+                        "type": "boolean",
+                        "description": "Whether to run as a background job and return its job id (collect with job_output, stop with job_kill). Defaults to false.",
+                    },
                 },
                 required=["description", "prompt"],
                 handler=_agents.handle_subagent_fork_tool,
@@ -1078,18 +1095,22 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="send_message",
-                description="Send a follow-up message to a running or parked sub-agent by agent id.",
+                description="Send a follow-up message to a background sub-agent by its subagent id. It becomes the subagent's next turn; if it is still working, the message waits until its current turn finishes.",
                 parameters={
+                    "subagent_id": {
+                        "type": "string",
+                        "description": "The subagent id returned when the background sub-agent was started (alias: agent_id).",
+                    },
                     "agent_id": {
                         "type": "string",
-                        "description": "Target agent id.",
+                        "description": "Alias for subagent_id.",
                     },
                     "message": {
                         "type": "string",
                         "description": "Follow-up message or instructions.",
                     },
                 },
-                required=["agent_id", "message"],
+                required=["message"],
                 handler=_agents.handle_send_message_tool,
                 category="subagent",
                 is_mutating=True,
@@ -1474,9 +1495,45 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="workflow",
-                description="Execute declarative multi-step workflows with dependencies and verification.",
+                description=(
+                    "Run a workflow script that orchestrates subagents at scale. Use for work that "
+                    "fans out across many independent pieces — an audit over many files, a migration, "
+                    "multi-angle research — where you write the orchestration as a script instead of "
+                    "delegating turn by turn. Script hooks: agent(prompt, opts?), "
+                    "pipeline(items, ...stages) (no barrier between stages; stage throw drops the item "
+                    "to null), parallel(thunks) (barrier; thunk throw resolves null), phase(title), "
+                    "log(message), args. The run executes in the foreground."
+                ),
                 parameters={
-                    "workflow": {"type": "object", "description": "Workflow definition schema."},
+                    "script": {
+                        "type": "string",
+                        "description": "The workflow script body (top-level await and `return <value>` allowed).",
+                    },
+                    "meta": {
+                        "type": "object",
+                        "additionalProperties": True,
+                        "description": "Workflow identity block: required name (short kebab-case) and description strings, optional whenToUse string and phases array.",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "description": {"type": "string"},
+                            "whenToUse": {"type": "string"},
+                            "phases": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "additionalProperties": True,
+                                    "properties": {"title": {"type": "string"}},
+                                },
+                            },
+                        },
+                    },
+                    "args": {
+                        "type": "object",
+                        "additionalProperties": True,
+                        "description": "Optional JSON input exposed to the script as the `args` global.",
+                    },
+                    # Legacy declarative-workflow parameters (backward compatible)
+                    "workflow": {"type": "object", "description": "Legacy workflow definition schema."},
                     "action": {"type": "string", "enum": ["run", "status", "cancel", "list"]},
                     "workflow_id": {"type": "string"},
                 },
@@ -1505,6 +1562,77 @@ class ToolRegistry:
                 },
                 required=["title", "description"],
                 handler=_goal_handle,
+                category="meta",
+                is_mutating=True,
+                is_concurrency_safe=False,
+            )
+        )
+        # 15a. Harness goal controls (get_goal / create_goal / update_goal)
+        self.register(
+            define_tool(
+                name="get_goal",
+                description=(
+                    "Read the current same-session goal, including its exact id/revision, objective, "
+                    "phase, completed continuation rounds, round limit, blocker reason when present, "
+                    "and whether another continuation is armed. Call this before updating a goal."
+                ),
+                parameters={},
+                required=[],
+                handler=_get_goal_handle,
+                category="meta",
+                is_mutating=False,
+                is_concurrency_safe=True,
+            )
+        )
+        self.register(
+            define_tool(
+                name="create_goal",
+                description=(
+                    "Create one persisted same-session completion goal when the current direct human "
+                    "request is a long-running objective that should continue across autonomous goal "
+                    "rounds. Do not use this for trivial single-turn work."
+                ),
+                parameters={
+                    "objective": {"type": "string", "description": "The concrete completion objective."},
+                    "max_goal_rounds": {
+                        "type": "integer",
+                        "description": "Optional positive safe-integer limit on automatic continuation rounds.",
+                    },
+                },
+                required=["objective"],
+                handler=_create_goal_handle,
+                category="meta",
+                is_mutating=True,
+                is_concurrency_safe=False,
+            )
+        )
+        self.register(
+            define_tool(
+                name="update_goal",
+                description=(
+                    "Update the exact current goal revision. edit, pause, and resume require a direct "
+                    "top-level human request. blocked requires a concrete blocked_reason and at least "
+                    "the configured minimum number of consecutive goal rounds."
+                ),
+                parameters={
+                    "goal_id": {"type": "string", "description": "Exact id returned by get_goal."},
+                    "revision": {"type": "integer", "description": "Exact positive revision returned by get_goal."},
+                    "action": {
+                        "type": "string",
+                        "enum": ["edit", "pause", "resume", "complete", "blocked"],
+                    },
+                    "objective": {"type": "string", "description": "Replacement objective; valid only with action edit."},
+                    "max_goal_rounds": {
+                        "type": "integer",
+                        "description": "Replacement cap; valid only with action edit.",
+                    },
+                    "blocked_reason": {
+                        "type": "string",
+                        "description": "Concrete blocking condition; required only with action blocked.",
+                    },
+                },
+                required=["goal_id", "revision", "action"],
+                handler=_update_goal_handle,
                 category="meta",
                 is_mutating=True,
                 is_concurrency_safe=False,

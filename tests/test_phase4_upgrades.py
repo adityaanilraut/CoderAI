@@ -21,24 +21,18 @@ Covers:
 
 from __future__ import annotations
 
-import asyncio
 import time
-from typing import Any
 import pytest
 
 from coderai.core.mcp.client import McpClient
-from coderai.core.mcp.manager import McpManager, McpServerStatus, McpToolEntry
+from coderai.core.mcp.manager import McpManager
 from coderai.core.telemetry import (
     ExecutionSpan,
     TelemetryCollector,
-    get_telemetry_collector,
 )
 from coderai.core.tools.browser import (
-    BrowserState,
     DOMExtractor,
     HeadlessBrowserDriver,
-    InteractiveElement,
-    get_browser_driver,
     handle_browser_click_tool,
     handle_browser_close_tool,
     handle_browser_navigate_tool,

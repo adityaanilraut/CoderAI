@@ -49,10 +49,9 @@ async def handle_subagent_tool(args: dict[str, Any], context: ToolExecutionConte
         create_openai_client=context.create_openai_client,
     )
 
-    try:
-        depth = int(args.get("depth", 0))
-    except (ValueError, TypeError):
-        depth = 0
+    from coderai.core.tools.agents import _derive_depth
+
+    depth = _derive_depth(context, args)
 
     try:
         max_depth = int(args.get("max_depth")) if args.get("max_depth") is not None else 3
@@ -90,6 +89,17 @@ async def handle_subagent_tool(args: dict[str, Any], context: ToolExecutionConte
         extra_context=as_str(args.get("context", "")).strip() or None,
         seed_messages=seed_messages,
     )
+
+    if args.get("run_in_background") is True:
+        from coderai.core.tools.agents import _start_subagent_job
+
+        return _start_subagent_job(
+            context=context,
+            manager=manager,
+            spec=spec,
+            label=description,
+            tool_name="Task",
+        )
 
     result = await manager.spawn_subagent(spec)
 

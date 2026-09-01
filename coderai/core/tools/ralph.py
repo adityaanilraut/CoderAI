@@ -1,8 +1,9 @@
 """Ralph Automated Verification Engine — multi-round adversarial verification.
 
-Mirrors packages/workflow/tool-ralph from deepseek-harness.
-Executes multi-round verification by presenting an immutable objective to a sequence
-of fresh child agents with a structured handoff protocol.
+Mirrors packages/workflow/tool-ralph from deepseek-harness: a foreground
+fresh-agent loop toward one immutable objective. Each round opens a fresh
+child with no conversation seed; only a bounded structured handoff crosses
+rounds. Run statuses: ``complete | blocked | budget-limited | round-failed``.
 """
 
 from __future__ import annotations
@@ -15,18 +16,32 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+from coderai.core.orchestration import resolve_ralph_max_rounds
 from coderai.core.subagent import SubAgentManager, SubAgentResult, SubAgentSpec
 from coderai.core.tools.types import ToolExecutionContext, ToolResult, as_str
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MAX_ROUNDS = 5
+DEFAULT_MAX_ROUNDS = 256  # deployment default + ceiling (harness parity)
 DEFAULT_TIMEOUT_PER_ROUND = 90.0
+MAX_HANDOFF_CHARS = 16_384
+MAX_RESULT_CHARS = 16_384
+TRUNCATION_NOTICE = "\n… [truncated]"
+
+ROUND_STATUSES = ("continue", "complete", "blocked")
+RUN_STATUSES = ("complete", "blocked", "budget-limited", "round-failed")
+# Legacy statuses retained for backward-compatible metadata consumers.
+LEGACY_RUN_ALIASES = {"max_rounds_reached": "budget-limited"}
 
 
 @dataclass
 class RalphHandoff:
-    """Structured handoff payload produced at the end of a verification round."""
+    """Structured handoff payload produced at the end of a verification round.
+
+    ``evidence``/``next_steps`` are kept as strings for backward compatibility
+    with the pinned parser; the harness report uses arrays and this tool
+    normalizes to arrays for validation.
+    """
 
     status: str  # "continue" | "complete" | "blocked"
     summary: str
@@ -39,6 +54,7 @@ class RalphHandoff:
             "status": self.status,
             "summary": self.summary,
             "evidence": self.evidence,
+            "nextSteps": self.next_steps,
             "next_steps": self.next_steps,
             "blocker": self.blocker,
         }
@@ -72,17 +88,22 @@ class RalphResult:
     """Aggregated result of the Ralph verification run."""
 
     objective: str
-    status: str  # "complete" | "blocked" | "max_rounds_reached" | "failed"
+    status: str  # "complete" | "blocked" | "budget-limited" | "round-failed"
     total_rounds: int
     rounds: list[RalphRound] = field(default_factory=list)
     total_tokens: int = 0
     duration_seconds: float = 0.0
     final_verdict: str = ""
 
+    @property
+    def rounds_started(self) -> int:
+        return self.total_rounds
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "objective": self.objective,
             "status": self.status,
+            "roundsStarted": self.total_rounds,
             "total_rounds": self.total_rounds,
             "rounds": [r.to_dict() for r in self.rounds],
             "total_tokens": self.total_tokens,
@@ -94,8 +115,8 @@ class RalphResult:
         status_badge = {
             "complete": "✅ VERIFIED COMPLETE",
             "blocked": "🚫 BLOCKED",
-            "max_rounds_reached": "⚠️ MAX ROUNDS REACHED",
-            "failed": "❌ FAILED",
+            "budget-limited": "⚠️ MAX ROUNDS REACHED",
+            "round-failed": "❌ FAILED",
         }.get(self.status, f"⚠️ {self.status.upper()}")
 
         lines = [
@@ -131,6 +152,15 @@ class RalphResult:
         return "\n".join(lines)
 
 
+def _bound_result(text: str, max_chars: int = MAX_RESULT_CHARS) -> str:
+    """Bound terminal text, including the truncation marker (harness rule)."""
+    if len(text) <= max_chars:
+        return text
+    if max_chars <= len(TRUNCATION_NOTICE):
+        return TRUNCATION_NOTICE[:max_chars]
+    return f"{text[: max_chars - len(TRUNCATION_NOTICE)]}{TRUNCATION_NOTICE}"
+
+
 def _parse_handoff(raw_text: str) -> RalphHandoff:
     """Parse structured Ralph handoff from JSON or markdown fallback."""
     raw_text = raw_text.strip()
@@ -145,11 +175,17 @@ def _parse_handoff(raw_text: str) -> RalphHandoff:
             status = str(data.get("status", "continue")).strip().lower()
             if status not in ("continue", "complete", "blocked"):
                 status = "continue"
+            evidence = data.get("evidence") or data.get("evidence_text") or ""
+            next_steps = data.get("nextSteps") or data.get("next_steps") or ""
+            if isinstance(evidence, list):
+                evidence = "\n".join(str(e) for e in evidence)
+            if isinstance(next_steps, list):
+                next_steps = "\n".join(str(n) for n in next_steps)
             return RalphHandoff(
                 status=status,
                 summary=str(data.get("summary", "")).strip(),
-                evidence=str(data.get("evidence", "")).strip(),
-                next_steps=str(data.get("next_steps", "")).strip(),
+                evidence=str(evidence).strip(),
+                next_steps=str(next_steps).strip(),
                 blocker=str(data.get("blocker", "")).strip(),
             )
     except Exception:
@@ -165,11 +201,17 @@ def _parse_handoff(raw_text: str) -> RalphHandoff:
                 status = str(data.get("status", "continue")).strip().lower()
                 if status not in ("continue", "complete", "blocked"):
                     status = "continue"
+                evidence = data.get("evidence") or ""
+                next_steps = data.get("nextSteps") or data.get("next_steps") or ""
+                if isinstance(evidence, list):
+                    evidence = "\n".join(str(e) for e in evidence)
+                if isinstance(next_steps, list):
+                    next_steps = "\n".join(str(n) for n in next_steps)
                 return RalphHandoff(
                     status=status,
                     summary=str(data.get("summary", "")).strip(),
-                    evidence=str(data.get("evidence", "")).strip(),
-                    next_steps=str(data.get("next_steps", "")).strip(),
+                    evidence=str(evidence).strip(),
+                    next_steps=str(next_steps).strip(),
                     blocker=str(data.get("blocker", "")).strip(),
                 )
         except Exception:
@@ -231,6 +273,56 @@ def _parse_handoff(raw_text: str) -> RalphHandoff:
     )
 
 
+def _validate_report(handoff: RalphHandoff) -> str | None:
+    """Harness per-status report validation; returns a failure message or None.
+
+    Rules: a continuing report needs next steps and an empty blocker; a
+    complete report needs evidence, no next steps, and an empty blocker; a
+    blocked report needs a concrete blocker. The serialized handoff must stay
+    under ``MAX_HANDOFF_CHARS``.
+    """
+    if not handoff.summary or handoff.summary != handoff.summary.strip():
+        return "Ralph round report summary must be non-empty and normalized"
+    if handoff.status == "continue":
+        if not handoff.next_steps or handoff.blocker:
+            return "a continuing Ralph report needs nextSteps and an empty blocker"
+    elif handoff.status == "complete":
+        if not handoff.evidence or handoff.next_steps or handoff.blocker:
+            return "a complete Ralph report needs evidence, no nextSteps, and an empty blocker"
+    elif handoff.status == "blocked":
+        if not handoff.blocker:
+            return "a blocked Ralph report needs a concrete blocker"
+    else:
+        return "Ralph round report status is invalid"
+    serialized = json.dumps(handoff.to_dict())
+    if len(serialized) > MAX_HANDOFF_CHARS:
+        return f"Ralph round report exceeds maxHandoffChars ({len(serialized)} > {MAX_HANDOFF_CHARS})"
+    return None
+
+
+def _render_round_failure(rounds_started: int, last_handoff: RalphHandoff | None) -> str:
+    header = f"Ralph round {rounds_started} child failed before producing a structured report."
+    text = (
+        f"{header}\nNo previous handoff was available."
+        if last_handoff is None
+        else f"{header}\nLast successful handoff:\n{json.dumps(last_handoff.to_dict(), indent=2)}"
+    )
+    return _bound_result(text)
+
+
+def _render_run_result(result: RalphResult) -> str:
+    rounds = f"{result.rounds_started} round{'' if result.rounds_started == 1 else 's'}"
+    last = result.rounds[-1].handoff if result.rounds else None
+    report_json = json.dumps(last.to_dict(), indent=2) if last else "null"
+    if result.status == "complete":
+        text = f"Ralph worker reported completion after {rounds}.\nFinal report:\n{report_json}"
+    elif result.status == "blocked":
+        text = f"Ralph worker reported a blocker after {rounds}.\nFinal report:\n{report_json}"
+    else:
+        text = f"Ralph reached its {rounds} limit; the worker reported work remaining.\nFinal report:\n{report_json}"
+    return _bound_result(text)
+
+
 async def handle_ralph_tool(args: dict[str, Any], context: ToolExecutionContext) -> ToolResult:
     """Execute multi-round adversarial verification on an immutable objective."""
     objective = as_str(args.get("objective") or args.get("prompt", "")).strip()
@@ -241,13 +333,20 @@ async def handle_ralph_tool(args: dict[str, Any], context: ToolExecutionContext)
             error="Missing required argument 'objective' (or 'prompt').",
         )
 
+    ceiling = resolve_ralph_max_rounds()
     try:
-        raw_rounds = args.get("max_rounds") or args.get("max_iterations")
-        max_rounds = int(raw_rounds) if raw_rounds is not None else DEFAULT_MAX_ROUNDS
+        raw_rounds = args.get("max_rounds") or args.get("maxRounds") or args.get("max_iterations")
+        max_rounds = int(raw_rounds) if raw_rounds is not None else ceiling
         if max_rounds <= 0:
-            max_rounds = DEFAULT_MAX_ROUNDS
+            max_rounds = ceiling
     except (ValueError, TypeError):
-        max_rounds = DEFAULT_MAX_ROUNDS
+        max_rounds = ceiling
+    if max_rounds > ceiling:
+        return ToolResult(
+            ok=False,
+            name="ralph",
+            error=f"Ralph maxRounds {max_rounds} exceeds the deployment ceiling {ceiling}",
+        )
 
     try:
         timeout_per_round = float(args.get("timeout_per_round", DEFAULT_TIMEOUT_PER_ROUND))
@@ -275,7 +374,7 @@ async def handle_ralph_tool(args: dict[str, Any], context: ToolExecutionContext)
     start_time = time.time()
     rounds: list[RalphRound] = []
     total_tokens = 0
-    final_status = "max_rounds_reached"
+    final_status = "budget-limited"
     final_verdict = ""
 
     handoff_history: list[dict[str, Any]] = []
@@ -316,7 +415,7 @@ async def handle_ralph_tool(args: dict[str, Any], context: ToolExecutionContext)
             '  "status": "continue" | "complete" | "blocked",\n'
             '  "summary": "Clear summary of findings in this round",\n'
             '  "evidence": "Concrete verification evidence (test outputs, commands run, inspected files)",\n'
-            '  "next_steps": "Specific guidance for the next round if continuing",\n'
+            '  "nextSteps": "Specific guidance for the next round if continuing",\n'
             '  "blocker": "Details of blocker if blocked"\n'
             "}\n"
             "```"
@@ -339,7 +438,50 @@ async def handle_ralph_tool(args: dict[str, Any], context: ToolExecutionContext)
         round_duration = max(0.0, time.time() - round_start)
         total_tokens += round_result.total_tokens
 
+        # A child that failed before producing a structured report ends the
+        # loop as round-failed, carrying the most recent durable handoff.
+        if round_result.status not in ("completed",):
+            final_status = "round-failed"
+            last_handoff = rounds[-1].handoff if rounds else None
+            final_verdict = _render_round_failure(round_num, last_handoff)
+            rounds.append(
+                RalphRound(
+                    round_number=round_num,
+                    task_id=task_id,
+                    handoff=RalphHandoff(status="blocked", summary=round_result.summary, blocker=str(round_result.error or "")),
+                    raw_summary=round_result.summary,
+                    tokens=round_result.total_tokens,
+                    duration_seconds=round_duration,
+                    error=round_result.error,
+                )
+            )
+            break
+
         handoff = _parse_handoff(round_result.summary)
+        validation_error = _validate_report(handoff)
+        if validation_error:
+            final_status = "round-failed"
+            last_handoff = rounds[-1].handoff if rounds else None
+            final_verdict = _bound_result(
+                f"Ralph round {round_num} returned an invalid structured report: {validation_error}."
+                + (
+                    f"\nLast successful handoff:\n{json.dumps(last_handoff.to_dict(), indent=2)}"
+                    if last_handoff
+                    else "\nNo previous handoff was available."
+                )
+            )
+            rounds.append(
+                RalphRound(
+                    round_number=round_num,
+                    task_id=task_id,
+                    handoff=handoff,
+                    raw_summary=round_result.summary,
+                    tokens=round_result.total_tokens,
+                    duration_seconds=round_duration,
+                    error=validation_error,
+                )
+            )
+            break
 
         round_record = RalphRound(
             round_number=round_num,
@@ -365,32 +507,10 @@ async def handle_ralph_tool(args: dict[str, Any], context: ToolExecutionContext)
 
         if handoff.status == "complete":
             final_status = "complete"
-            final_verdict = handoff.summary + (
-                f"\n\n**Evidence**:\n{handoff.evidence}" if handoff.evidence else ""
-            )
             break
         elif handoff.status == "blocked":
             final_status = "blocked"
-            final_verdict = (
-                f"Verification blocked in round {round_num}: {handoff.blocker or handoff.summary}"
-            )
             break
-        elif round_result.status in ("failed", "timeout", "interrupted"):
-            if round_num == max_rounds:
-                final_status = "failed"
-                final_verdict = (
-                    f"Round {round_num} failed: {round_result.error or round_result.summary}"
-                )
-                break
-
-    if final_status == "max_rounds_reached":
-        last_round = rounds[-1] if rounds else None
-        last_summary = (
-            last_round.handoff.summary if last_round else "Maximum verification rounds reached."
-        )
-        final_verdict = (
-            f"Reached maximum round limit ({max_rounds}). Latest findings: {last_summary}"
-        )
 
     total_duration = max(0.0, time.time() - start_time)
     ralph_res = RalphResult(
@@ -403,6 +523,24 @@ async def handle_ralph_tool(args: dict[str, Any], context: ToolExecutionContext)
         final_verdict=final_verdict,
     )
 
+    # Final verdicts for terminal statuses not set inside the loop.
+    if final_status == "budget-limited":
+        last_round = rounds[-1] if rounds else None
+        last_summary = (
+            last_round.handoff.summary if last_round else "Maximum verification rounds reached."
+        )
+        ralph_res.final_verdict = (
+            f"Reached maximum round limit ({max_rounds}). Latest findings: {last_summary}"
+        )
+    elif final_status == "complete" and not ralph_res.final_verdict and rounds:
+        h = rounds[-1].handoff
+        ralph_res.final_verdict = h.summary + (f"\n\n**Evidence**:\n{h.evidence}" if h.evidence else "")
+    elif final_status == "blocked" and not ralph_res.final_verdict and rounds:
+        h = rounds[-1].handoff
+        ralph_res.final_verdict = (
+            f"Verification blocked in round {rounds[-1].round_number}: {h.blocker or h.summary}"
+        )
+
     run_id = f"ralph_{uuid.uuid4().hex[:8]}"
     meta_dict = {
         "runId": run_id,
@@ -411,11 +549,16 @@ async def handle_ralph_tool(args: dict[str, Any], context: ToolExecutionContext)
         **ralph_res.to_dict(),
     }
 
-    is_ok = final_status == "complete"
+    is_ok = final_status in ("complete", "budget-limited")
+    output = (
+        ralph_res.format_markdown()
+        if final_status != "round-failed"
+        else ralph_res.final_verdict
+    )
     return ToolResult(
         ok=is_ok,
         name="ralph",
-        output=ralph_res.format_markdown(),
+        output=output,
         metadata=meta_dict,
         error=None if is_ok else f"Ralph verification status: {final_status}",
     )

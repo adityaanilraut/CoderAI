@@ -135,3 +135,45 @@ def retry_delay_ms(
     exponential = min(initial_delay_ms * (2**exponent), max_delay_ms)
     jitter = 1 - jitter_ratio + 2 * jitter_ratio * float(random_fn())
     return min(exponential * jitter, max_delay_ms)
+
+
+def provider_retry_after_ms(error: Any) -> float | None:
+    """Parse a provider ``Retry-After`` header (seconds or HTTP-date), or None.
+
+    Mirrors the harness ``providerRetryAfterMs``: honored when a positive
+    finite value; callers treat an over-cap value as a give-up in normal mode.
+    """
+    response = getattr(error, "response", None)
+    headers = getattr(response, "headers", None) if response is not None else None
+    if headers is None:
+        return None
+    if not isinstance(headers, dict):
+        try:
+            headers = dict(headers)
+        except Exception:
+            return None
+    raw = headers.get("retry-after-ms") or headers.get("Retry-After-Ms")
+    if raw is None:
+        raw = headers.get("retry-after") or headers.get("Retry-After")
+    if raw is None:
+        return None
+    try:
+        value = float(str(raw))
+        if not (0 < value <= 1_000_000):
+            return None
+        return value
+    except (TypeError, ValueError):
+        pass
+    # HTTP-date form (RFC 7231)
+    try:
+        import datetime
+        import email.utils
+
+        parsed = email.utils.parsedate_to_datetime(str(raw))
+        now = datetime.datetime.now(datetime.timezone.utc)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+        delay_ms = (parsed - now).total_seconds() * 1000.0
+        return delay_ms if 0 < delay_ms <= 1_000_000 else None
+    except Exception:
+        return None

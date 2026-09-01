@@ -710,14 +710,23 @@ def _start_background_shell_command(
     if on_process_start and pid:
         on_process_start(pid, command)
 
-    get_job_store().start(
-        job_id=task_id,
-        session_id=str(session_id),
-        kind="bash",
-        label=command,
-        process_id=pid if pid else None,
-        output_path=str(output_path),
-    )
+    try:
+        get_job_store().start(
+            job_id=task_id,
+            session_id=str(session_id),
+            kind="bash",
+            label=command,
+            process_id=pid if pid else None,
+            output_path=str(output_path),
+        )
+    except RuntimeError as exc:
+        # Job cap rejection: do not orphan the just-spawned process.
+        if pid:
+            try:
+                kill_process_tree(int(pid))
+            except Exception:
+                pass
+        return ToolResult(ok=False, name="bash", error=str(exc))
 
     # Background worker thread to stream output to file and notify completion
     def bg_worker() -> None:

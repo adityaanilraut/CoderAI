@@ -30,7 +30,6 @@ Covers:
 
 from __future__ import annotations
 
-import asyncio
 import json
 import pathlib
 import time
@@ -41,40 +40,28 @@ from coderai.core.agents import (
     AgentHandle,
     AgentRegistry,
     TaskSupervisor,
-    get_task_supervisor,
-    spawn_background_agent,
 )
 from coderai.core.common.llm_retry import (
     classify_llm_failure,
     is_failover_eligible,
 )
 from coderai.core.common.validate import repair_json_string
-from coderai.core.permissions import (
-    PermissionTicket,
-    PermissionTicketRegistry,
-    compute_tool_call_permissions,
-)
 from coderai.core.prompt import (
     CACHE_BOUNDARY_TOKEN,
     build_cache_stabilized_messages,
-    format_tool_definitions,
     get_system_prompt,
     render_skill_catalog,
 )
 from coderai.core.sandbox import validate_sandboxed_path
 from coderai.core.session import SessionManager
 from coderai.core.subagent import (
-    MAX_SUBAGENT_DEPTH,
-    SubAgentManager,
-    SubAgentResult,
     SubAgentSpec,
 )
 from coderai.core.tools.edit import handle_edit_tool
-from coderai.core.tools.executor import ToolExecutor
 from coderai.core.tools.file_mutation import generate_virtual_patch
 from coderai.core.tools.sanitizer import sanitize_text, sanitize_tool_output
 from coderai.core.tools.str_replace_editor import handle_str_replace_editor_tool
-from coderai.core.tools.types import ToolExecutionContext, ToolExecutionHooks, ToolResult
+from coderai.core.tools.types import ToolExecutionContext, ToolResult
 from coderai.core.tools.write import handle_write_tool
 
 

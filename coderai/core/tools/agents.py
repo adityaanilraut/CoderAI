@@ -2,11 +2,41 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
-from coderai.core.agents import get_agent_registry, spawn_background_agent
+from coderai.core.agents import (
+    append_parent_session_notice,
+    get_agent_registry,
+    spawn_background_agent,
+)
+from coderai.core.orchestration import status_to_stop_reason
 from coderai.core.subagent import MAX_SUBAGENT_DEPTH, SubAgentManager, SubAgentSpec
 from coderai.core.tools.types import ToolExecutionContext, ToolResult, as_str
+
+# job_id -> (manager, subagent_session_id, task) for background one-shot
+# subagent jobs, so job_kill can stop the underlying worker.
+_SUBAGENT_JOB_TASKS: dict[str, tuple[SubAgentManager, str, asyncio.Task[Any]]] = {}
+
+
+def subagent_job_tasks() -> dict[str, tuple[SubAgentManager, str, asyncio.Task[Any]]]:
+    return _SUBAGENT_JOB_TASKS
+
+
+def _derive_depth(context: ToolExecutionContext, args: dict[str, Any]) -> int:
+    """Lineage-derived delegation depth (parent + 1); monotone via the registry.
+
+    The model-supplied ``depth`` argument remains a fallback for callers
+    without a live registry handle (mirrors the harness: the persisted
+    lineage is the authoritative floor, a child can never reset to zero).
+    """
+    for handle in get_agent_registry().list():
+        if getattr(handle, "run_session_id", None) == context.session_id:
+            return handle.depth + 1
+    try:
+        return int(args.get("depth", 0))
+    except (ValueError, TypeError):
+        return 0
 
 
 def _extract_seed_messages(context: ToolExecutionContext) -> list[dict[str, Any]]:
@@ -25,6 +55,81 @@ def _extract_seed_messages(context: ToolExecutionContext) -> list[dict[str, Any]
         except Exception:
             pass
     return seed_messages
+
+
+def _start_subagent_job(
+    *,
+    context: ToolExecutionContext,
+    manager: SubAgentManager,
+    spec: SubAgentSpec,
+    label: str,
+    tool_name: str,
+) -> ToolResult:
+    """Start a background ONE-SHOT subagent as a ``subagent`` job.
+
+    Mirrors the harness: the background child owns a job record collected
+    with ``job_output`` and stopped with ``job_kill``; the completion notice
+    is delivered to the parent session once.
+    """
+    from coderai.core.jobs import get_job_store
+
+    store = get_job_store()
+    session_id = context.session_id or ""
+    with store._lock:
+        counter = (
+            sum(1 for j in store._jobs.values() if j.kind == "subagent")
+            + 1
+        )
+        job_id = f"subagent-{counter}"
+    store.start(
+        job_id=job_id,
+        session_id=session_id,
+        kind="subagent",
+        label=label[:240],
+    )
+
+    async def _run_job() -> None:
+        try:
+            result = await manager.spawn_subagent(spec)
+        except asyncio.CancelledError:
+            store.complete(job_id, ok=False, signal="SIGINT", detail="killed")
+            return
+        except Exception as exc:  # pragma: no cover - defensive
+            store.complete(job_id, ok=False, detail=str(exc))
+            return
+        store.complete(
+            job_id,
+            ok=result.status == "completed",
+            detail=result.status,
+        )
+        _SUBAGENT_JOB_TASKS.pop(job_id, None)
+        notice = (
+            f"Background job {job_id} finished [status: {result.status}, "
+            f"{status_to_stop_reason(result.status)}]."
+        )
+        if result.summary:
+            notice += f"\nResult: {result.summary}"
+        from coderai.core.agents import notify_parent_session
+
+        if not notify_parent_session(session_id, notice):
+            append_parent_session_notice(
+                context.project_root, session_id, notice, source="job-completion"
+            )
+
+    task = asyncio.create_task(_run_job())
+    _SUBAGENT_JOB_TASKS[job_id] = (manager, spec_task_session(manager, spec), task)
+    return ToolResult(
+        ok=True,
+        name=tool_name,
+        output=f"started background subagent job {job_id}",
+        metadata={"kind": "background", "jobId": job_id},
+    )
+
+
+def spec_task_session(manager: SubAgentManager, spec: SubAgentSpec) -> str:
+    return (
+        f"sub_{spec.parent_session_id[:8] if spec.parent_session_id else 'root'}_{spec.task_id}"
+    )
 
 
 async def handle_subagent_fork_tool(
@@ -50,10 +155,7 @@ async def handle_subagent_fork_tool(
     if mode not in ("read_only", "general"):
         mode = "read_only"
 
-    try:
-        depth = int(args.get("depth", 0))
-    except (ValueError, TypeError):
-        depth = 0
+    depth = _derive_depth(context, args)
 
     try:
         max_depth = int(args.get("max_depth")) if args.get("max_depth") is not None else MAX_SUBAGENT_DEPTH
@@ -97,6 +199,15 @@ async def handle_subagent_fork_tool(
         seed_messages=seed_messages if seed_messages else None,
     )
 
+    if args.get("run_in_background") is True:
+        return _start_subagent_job(
+            context=context,
+            manager=manager,
+            spec=spec,
+            label=description,
+            tool_name="subagent_fork",
+        )
+
     result = await manager.spawn_subagent(spec)
     is_ok = result.status == "completed"
     return ToolResult(
@@ -125,10 +236,7 @@ async def handle_continuable_subagent_tool(
     mode = str(args.get("mode") or "read_only").strip().lower()
     if mode not in ("read_only", "general"):
         mode = "read_only"
-    try:
-        depth = int(args.get("depth", 0))
-    except (ValueError, TypeError):
-        depth = 0
+    depth = _derive_depth(context, args)
     try:
         max_depth = int(args.get("max_depth")) if args.get("max_depth") is not None else MAX_SUBAGENT_DEPTH
     except (ValueError, TypeError):
@@ -164,7 +272,24 @@ async def handle_continuable_subagent_tool(
         parent_session_id=context.session_id,
         extra_context=as_str(args.get("context", "")).strip() or None,
     )
-    handle = await spawn_background_agent(manager, spec)
+
+    # run_in_background: false → one-shot foreground result (harness contract);
+    # default true → durable continuable child id, resolved at inbox acceptance.
+    if args.get("run_in_background") is False:
+        result = await manager.spawn_subagent(spec)
+        is_ok = result.status == "completed"
+        return ToolResult(
+            ok=is_ok,
+            name="subagent",
+            output=result.format_markdown(),
+            error=result.error if not is_ok else None,
+            metadata={"kind": "foreground", **result.to_dict()},
+        )
+
+    try:
+        handle = await spawn_background_agent(manager, spec)
+    except RuntimeError as exc:
+        return ToolResult(ok=False, name="subagent", error=str(exc))
     return ToolResult(
         ok=True,
         name="subagent",
@@ -172,21 +297,51 @@ async def handle_continuable_subagent_tool(
             f"Started background sub-agent {handle.id} ({description}). "
             "Use send_message to continue it, list_agents to inspect, interrupt_agent to cancel."
         ),
-        metadata=handle.to_public_dict(),
+        metadata={"kind": "continuable", "subagentId": handle.id, **handle.to_public_dict()},
     )
+
+
+def _caller_owns_target(context: ToolExecutionContext, target: Any) -> bool:
+    """Authorize a control call: the caller must be the target's direct parent
+    session (follow-up authority) or a live ancestor session (interrupt
+    authority), mirroring the harness lineage checks."""
+    registry = get_agent_registry()
+    caller_session = str(getattr(context, "session_id", "") or "")
+    if not caller_session or not target:
+        return False
+    if getattr(target, "parent_session_id", "") == caller_session:
+        return True
+    # Walk the recorded parent chain: an ancestor agent whose run session is
+    # the caller's session may also control the target.
+    current = registry.get(getattr(target, "parent_agent_id", "") or "")
+    seen: set[str] = set()
+    while current is not None and current.id not in seen:
+        seen.add(current.id)
+        if getattr(current, "run_session_id", None) == caller_session:
+            return True
+        current = registry.get(current.parent_agent_id or "")
+    return False
 
 
 async def handle_send_message_tool(
     args: dict[str, Any], context: ToolExecutionContext
 ) -> ToolResult:
-    del context
-    agent_id = as_str(args.get("agent_id") or args.get("id")).strip()
+    agent_id = as_str(
+        args.get("subagent_id") or args.get("agent_id") or args.get("id")
+    ).strip()
     message = as_str(args.get("message") or args.get("prompt")).strip()
     if not agent_id or not message:
-        return ToolResult(ok=False, name="send_message", error="agent_id and message are required.")
-    handle = get_agent_registry().send(agent_id, message)
+        return ToolResult(ok=False, name="send_message", error="subagent_id and message are required.")
+    handle = get_agent_registry().get(agent_id)
     if handle is None:
         return ToolResult(ok=False, name="send_message", error=f"Unknown agent '{agent_id}'.")
+    if not _caller_owns_target(context, handle):
+        return ToolResult(
+            ok=False,
+            name="send_message",
+            error=f"UNAUTHORIZED: agent '{agent_id}' is not a child of this session.",
+        )
+    get_agent_registry().send(agent_id, message)
     return ToolResult(
         ok=True,
         name="send_message",
@@ -198,13 +353,19 @@ async def handle_send_message_tool(
 async def handle_interrupt_agent_tool(
     args: dict[str, Any], context: ToolExecutionContext
 ) -> ToolResult:
-    del context
     agent_id = as_str(args.get("agent_id") or args.get("id")).strip()
     if not agent_id:
         return ToolResult(ok=False, name="interrupt_agent", error="agent_id is required.")
-    handle = get_agent_registry().interrupt(agent_id)
+    handle = get_agent_registry().get(agent_id)
     if handle is None:
         return ToolResult(ok=False, name="interrupt_agent", error=f"Unknown agent '{agent_id}'.")
+    if not _caller_owns_target(context, handle):
+        return ToolResult(
+            ok=False,
+            name="interrupt_agent",
+            error=f"UNAUTHORIZED: agent '{agent_id}' is not a live descendant of this session.",
+        )
+    get_agent_registry().interrupt(agent_id)
     return ToolResult(
         ok=True,
         name="interrupt_agent",
@@ -220,7 +381,13 @@ async def handle_list_agents_tool(
     agents = get_agent_registry().list(context.session_id)
     if not agents:
         return ToolResult(ok=True, name="list_agents", output="(no sub-agents)")
-    lines = [f"{a.id} [{a.status}] {a.mode} — {a.description}" for a in agents]
+    lines = []
+    for a in agents:
+        line = f"{a.id} [{a.status}] {a.mode} — {a.description}"
+        summary = a.report or (a.result.summary if a.result else None)
+        if summary:
+            line += f"\n  Result: {summary}"
+        lines.append(line)
     return ToolResult(
         ok=True,
         name="list_agents",

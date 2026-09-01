@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import subprocess
@@ -18,6 +19,8 @@ import requests
 
 from coderai.core.common.process_tree import kill_process_tree
 from coderai.core.network.security import check_outbound_url
+
+logger = logging.getLogger(__name__)
 
 CMD_METACHARS_PATTERN = re.compile(r'[\s&<>()|^"%]')
 
@@ -227,7 +230,9 @@ class SseMcpTransport(McpTransport):
         self.policy = policy
         self._post_endpoint: str | None = None
         self._session: requests.Session | None = None
+        self._post_session: requests.Session | None = None
         self._response: requests.Response | None = None
+        self._connect_error: Exception | None = None
         self._reader_thread: threading.Thread | None = None
         self._running = False
         self._disconnected = False
@@ -241,8 +246,11 @@ class SseMcpTransport(McpTransport):
         self._loop = asyncio.get_running_loop()
         self._session = requests.Session()
         self._session.headers.update(self.headers)
+        self._post_session = requests.Session()
+        self._post_session.headers.update(self.headers)
         self._disconnected = False
         self._running = True
+        self._connect_error = None
 
         endpoint_ready = asyncio.Event()
 
@@ -280,8 +288,9 @@ class SseMcpTransport(McpTransport):
                     elif line.startswith("data:"):
                         data_buffer.append(line[len("data:") :].strip())
 
-            except Exception:
-                pass
+            except Exception as exc:
+                self._connect_error = exc
+                logger.warning("SSE worker error: %s", exc)
             finally:
                 self._running = False
                 if not endpoint_ready.is_set() and self._loop:
@@ -302,6 +311,12 @@ class SseMcpTransport(McpTransport):
             raise RuntimeError(
                 f"Timeout waiting for SSE endpoint from '{self.server_name}' at {self.url}"
             )
+
+        if self._connect_error is not None:
+            await self.disconnect()
+            raise RuntimeError(
+                f"SSE connection failed for '{self.server_name}': {self._connect_error}"
+            ) from self._connect_error
 
         if not self._post_endpoint:
             # If no custom endpoint event received, default POST endpoint is same URL or /message
@@ -336,13 +351,13 @@ class SseMcpTransport(McpTransport):
                 pass
 
     def send(self, message: dict[str, Any]) -> None:
-        if not self._post_endpoint or self._disconnected or not self._session:
+        if not self._post_endpoint or self._disconnected or not self._post_session:
             return
 
         def _do_post() -> None:
             try:
-                assert self._session is not None and self._post_endpoint is not None
-                self._session.post(self._post_endpoint, json=message, timeout=30.0)
+                assert self._post_session is not None and self._post_endpoint is not None
+                self._post_session.post(self._post_endpoint, json=message, timeout=30.0)
             except Exception:
                 pass
 
@@ -363,6 +378,12 @@ class SseMcpTransport(McpTransport):
             except Exception:
                 pass
             self._session = None
+        if self._post_session:
+            try:
+                self._post_session.close()
+            except Exception:
+                pass
+            self._post_session = None
 
 
 class StreamableHttpMcpTransport(McpTransport):

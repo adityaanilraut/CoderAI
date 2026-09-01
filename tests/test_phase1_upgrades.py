@@ -10,7 +10,6 @@ Verifies:
 
 from __future__ import annotations
 
-import asyncio
 import json
 import pathlib
 import pytest
@@ -33,11 +32,9 @@ from coderai.cli.file_mention import expand_file_mentions
 from coderai.core.session import SessionManager
 from coderai.core.session_store import JsonlSessionStore
 from coderai.core.tools.agents import handle_report_tool
-from coderai.core.tools.registry import ToolRegistry, get_tool_registry
 from coderai.core.tools.schema import define_tool
 from coderai.core.tools.types import (
     TOOL_ABORTED_BEFORE_DISPATCH,
-    ToolDefinition,
     ToolExecutionContext,
     ToolResult,
 )

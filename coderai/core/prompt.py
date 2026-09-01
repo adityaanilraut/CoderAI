@@ -370,7 +370,12 @@ TOOL_GUIDANCE_MAP: dict[str, tuple[str, int, str]] = {
     "subagent": (
         "tool:subagent",
         SUBAGENT_DELEGATION_ORDER,
-        "## subagent\nStart a continuable background sub-agent and get an agent id. Steer it with `send_message`, inspect with `list_agents`, cancel with `interrupt_agent`. One-shot work uses `Task` / `subagent_fork`.",
+        "## subagent\nDelegate a task to a background sub-agent (durable id, returned immediately). "
+        "Start independent delegations together in one assistant message and continue useful work "
+        "while they run. The runtime sends you a notice when a run settles. Steer children with "
+        "`send_message`, inspect with `list_agents`, stop the current turn with `interrupt_agent`. "
+        "Set `run_in_background: false` only when your next action depends on the result. "
+        "One-shot foreground work uses `Task` / `subagent_fork`.",
     ),
     "todo_write": (
         "tool:todo_write",
@@ -386,6 +391,21 @@ TOOL_GUIDANCE_MAP: dict[str, tuple[str, int, str]] = {
         "tool:goal",
         TOOL_GOAL_ORDER,
         "## goal\nTrack session goals (`list` / `add` / `update` / `done`).",
+    ),
+    "get_goal": (
+        "tool:get_goal",
+        TOOL_GOAL_ORDER,
+        "## get_goal\nRead the current same-session goal (id/revision, phase, rounds, cap, blocker, armed state). Call before `update_goal`.",
+    ),
+    "create_goal": (
+        "tool:create_goal",
+        TOOL_GOAL_ORDER,
+        "## create_goal\nCreate one long-running completion goal for automatic same-session continuation rounds. Do not use for trivial single-turn work.",
+    ),
+    "update_goal": (
+        "tool:update_goal",
+        TOOL_GOAL_ORDER,
+        "## update_goal\nUpdate the exact goal revision (`edit`/`pause`/`resume`/`complete`/`blocked`). `blocked` needs a concrete reason after the minimum round count; `resume` rearms a disarmed goal.",
     ),
     "AskUserQuestion": (
         "tool:AskUserQuestion",

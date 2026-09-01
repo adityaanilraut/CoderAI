@@ -12,30 +12,24 @@ Validates:
 
 from __future__ import annotations
 
-import os
 import pathlib
 import tempfile
-import pytest
 
 from coderai.core.common.file_utils import is_binary_buffer, normalize_line_endings
 from coderai.core.common.invariants import (
     verify_paired_tool_calls,
-    verify_monotonic_sequence_numbers,
-    verify_turn_step_boundaries,
-    verify_session_invariants,
 )
-from coderai.core.jobs import JobStore, get_job_store
+from coderai.core.jobs import JobStore
 from coderai.core.spill import (
     save_text,
     cleanup_spill_session,
     cleanup_all_spills,
     private_root,
-    session_dir,
 )
-from coderai.core.terminal.manager import TerminalManager, get_terminal_manager
+from coderai.core.terminal.manager import TerminalManager
 from coderai.core.tools.executor import ToolExecutor
 from coderai.core.tools.read import handle_read_tool
-from coderai.core.tools.types import ToolExecutionContext, ToolExecutionHooks, ToolResult
+from coderai.core.tools.types import ToolExecutionContext
 
 
 # --- 1. Spill Store Lifecycle Tests ---

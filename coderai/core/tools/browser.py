@@ -10,7 +10,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Any
 
-from coderai.core.tools.types import ToolExecutionContext, ToolResult
+from coderai.core.tools.types import ToolResult
 
 
 @dataclass

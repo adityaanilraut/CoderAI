@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import atexit
-import json
 import pathlib
 from typing import Any
 

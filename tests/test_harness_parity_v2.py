@@ -6,17 +6,12 @@ import pytest
 
 from coderai.core.common.output_retention import ItemRetainer, TextRetainer
 from coderai.core.common.process_tree import (
-    escalated_kill_process_tree,
-    is_process_alive,
     scrubbed_parent_env,
 )
-from coderai.core.lsp.instance import LspInstance
 from coderai.core.session_query.engine import SessionQueryEngine
 from coderai.core.session_store import JsonlSessionStore
-from coderai.core.subagent import SubAgentManager, SubAgentSpec
 from coderai.core.subagent_backends.acp import AcpSubagentDriver
-from coderai.core.teams.manager import TeamManager, TeamTaskBoard
-from coderai.core.teams.models import TeamTask
+from coderai.core.teams.manager import TeamTaskBoard
 from coderai.core.tools.observation import FileObservationTracker
 from coderai.core.tools.registry import ToolRegistry
 

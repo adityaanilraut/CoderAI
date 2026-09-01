@@ -27,10 +27,12 @@ from coderai.core.common.debug_logger import log_openai_chat_completion_debug
 from coderai.core.common.file_history import GitFileHistory
 from coderai.core.common.file_utils import read_text_file_tail
 from coderai.core.common.llm_retry import (
+    DEFAULT_MAX_DELAY_MS,
     DEFAULT_MAX_RETRIES,
     classify_llm_failure,
     is_empty_llm_response,
     is_failover_eligible,
+    provider_retry_after_ms,
     retry_delay_ms,
 )
 from coderai.core.common.openai_thinking import build_thinking_request_options
@@ -52,7 +54,6 @@ from coderai.core.compaction import (
 )
 from coderai.core.prompt import (
     get_init_command_prompt,
-    get_plan_mode_prompt,
     get_runtime_context,
     get_system_prompt,
     load_agent_instructions,
@@ -1090,6 +1091,36 @@ class SessionManager:
 
         self._active_session_id = session_id
         await self._activate(session_id)
+        await self._maybe_drive_goal_rounds(session_id)
+
+    async def _maybe_drive_goal_rounds(self, session_id: str, _depth: int = 0) -> None:
+        """Automatic same-session goal continuation (harness goal-round driver).
+
+        After a clean turn end, queue the next goal round and re-activate;
+        permission waits, interruptions, and exhausted caps stop the loop.
+        """
+        from coderai.core.goal_round_driver import (
+            finish_goal_round,
+            maybe_queue_goal_round,
+        )
+
+        guard = 0
+        while guard < 64:
+            guard += 1
+            if self.is_interrupted(session_id):
+                finish_goal_round(session_id, self.project_root)
+                return
+            entry = self._get_entry(session_id) or {}
+            entry_status = entry.get("status")
+            if entry_status not in ("completed",):
+                finish_goal_round(
+                    session_id, self.project_root, entry_status=entry_status
+                )
+                return
+            if not maybe_queue_goal_round(self, session_id):
+                return
+            await self._activate(session_id)
+        finish_goal_round(session_id, self.project_root)
 
     def list_available_skills(self, session_id: str | None = None) -> list[dict[str, Any]]:
         """Discover skills with enabledSkills filtering, custom scan paths, and loaded flags."""
@@ -1205,11 +1236,34 @@ class SessionManager:
         deferred_prompt: str | None = None,
     ) -> None:
         from coderai.core.agent_loop import AgentLoop
-
-        await AgentLoop(self, session_id).run(
-            permission_replies=permission_replies,
-            deferred_prompt=deferred_prompt,
+        from coderai.core.agents import (
+            register_session_notice_sink,
+            unregister_session_notice_sink,
         )
+
+        def _notice_sink(sid: str, text: str) -> None:
+            # Live-manager notice appender: routes background settlement
+            # notices into the parent conversation (harness subagent-settled /
+            # job completion notices).
+            try:
+                message = self._build_message(
+                    sid,
+                    "user",
+                    text,
+                    meta={"advisoryRole": "user", "source": "subagent-settled"},
+                )
+                self._append_message(message)
+            except Exception:
+                pass
+
+        register_session_notice_sink(session_id, _notice_sink)
+        try:
+            await AgentLoop(self, session_id).run(
+                permission_replies=permission_replies,
+                deferred_prompt=deferred_prompt,
+            )
+        finally:
+            unregister_session_notice_sink(session_id)
 
     async def _append_tool_messages(
         self,
@@ -1583,7 +1637,17 @@ class SessionManager:
                     if code == "CONTEXT_OVERFLOW" or attempt >= retries_for_model:
                         break
 
-                    delay_s = retry_delay_ms(attempt + 1) / 1000.0
+                    # Honor a provider Retry-After (seconds or HTTP-date); an
+                    # over-cap value gives up in normal mode (harness rule).
+                    provider_delay_ms = provider_retry_after_ms(err)
+                    local_s = retry_delay_ms(attempt + 1) / 1000.0
+                    if provider_delay_ms is not None:
+                        provider_s = provider_delay_ms / 1000.0
+                        if provider_s > DEFAULT_MAX_DELAY_MS / 1000.0:
+                            break
+                        delay_s = max(local_s, provider_s)
+                    else:
+                        delay_s = local_s
                     await asyncio.sleep(delay_s)
                     continue
 
