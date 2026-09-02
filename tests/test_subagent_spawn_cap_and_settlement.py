@@ -3,18 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import pathlib
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 from coderai.core.agents import (
-    AgentRegistry,
-    get_agent_registry,
     get_task_supervisor,
     spawn_background_agent,
 )
-from coderai.core.jobs import JobStore
 from coderai.core.orchestration import (
     DEFAULT_MAX_CONTINUABLE_AGENTS,
     DEFAULT_MAX_RUNNING_JOBS,
@@ -57,9 +53,7 @@ def test_settlement_summary_with_outcome():
     assert "Outcome:" not in summary1
 
     # With outcome / report
-    summary2 = settlement_summary(
-        "agent_123", "completed", outcome="Found Aardvark and Acacia."
-    )
+    summary2 = settlement_summary("agent_123", "completed", outcome="Found Aardvark and Acacia.")
     assert "Background subagent agent_123 finished" in summary2
     assert "Outcome:\nFound Aardvark and Acacia." in summary2
 
@@ -67,7 +61,6 @@ def test_settlement_summary_with_outcome():
 @pytest.mark.asyncio
 async def test_spawn_26_subagents_a_to_z(tmp_path: pathlib.Path):
     """Verify spawning 26 subagents (A-Z) concurrently succeeds without hitting a 10-agent cap."""
-    registry = get_agent_registry()
     session_id = "test_session_a_to_z"
 
     # Create dummy manager with mock client
@@ -112,7 +105,6 @@ async def test_spawn_26_subagents_a_to_z(tmp_path: pathlib.Path):
 @pytest.mark.asyncio
 async def test_list_agents_displays_results_and_supervisor(tmp_path: pathlib.Path):
     """Verify list_agents tool and TaskSupervisor return the result summary when completed."""
-    registry = get_agent_registry()
     session_id = "test_session_list_results"
     context = ToolExecutionContext(
         session_id=session_id,

@@ -359,6 +359,49 @@ def resolve_current_settings(project_root: str = ".") -> dict[str, Any]:
         context_window,
     )
 
+    # Kimi parity: loop_control knobs (defaults match kimi LoopControl)
+    def _parse_int(v: Any) -> int | None:
+        try:
+            iv = int(str(v).strip())
+            return iv if iv > 0 else None
+        except Exception:
+            return None
+
+    def _parse_float(v: Any) -> float | None:
+        try:
+            fv = float(str(v).strip())
+            return fv if 0 < fv < 1 else None
+        except Exception:
+            return None
+
+    max_steps_per_turn = (
+        first_parsed(
+            _parse_int,
+            system_env.get("MAX_STEPS_PER_TURN"),
+            project.get("maxStepsPerTurn"),
+            user.get("maxStepsPerTurn"),
+        )
+        or 1000
+    )
+    reserved_context_size = (
+        first_parsed(
+            _parse_int,
+            system_env.get("RESERVED_CONTEXT_SIZE"),
+            project.get("reservedContextSize"),
+            user.get("reservedContextSize"),
+        )
+        or 50_000
+    )
+    compaction_trigger_ratio = (
+        first_parsed(
+            _parse_float,
+            system_env.get("COMPACTION_TRIGGER_RATIO"),
+            project.get("compactionTriggerRatio"),
+            user.get("compactionTriggerRatio"),
+        )
+        or 0.85
+    )
+
     configured_thinking = first_parsed(
         _parse_bool,
         system_env.get("THINKING_ENABLED"),
@@ -439,8 +482,10 @@ def resolve_current_settings(project_root: str = ".") -> dict[str, Any]:
         "fallbackModels": _resolve_fallback_models(user, project, system_env),
         "fallback_models": _resolve_fallback_models(user, project, system_env),
         "statusline": _merge_statusline(user, project),
+        "maxStepsPerTurn": max_steps_per_turn,
+        "reservedContextSize": reserved_context_size,
+        "compactionTriggerRatio": compaction_trigger_ratio,
     }
-
 
 
 def _normalize_model_list(value: Any) -> list[str]:
@@ -468,7 +513,6 @@ def _resolve_fallback_models(
     if user_models:
         return user_models
     return []
-
 
 
 def _resolve_multimodal_mode(val: Any) -> str | None:

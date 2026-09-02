@@ -134,7 +134,10 @@ class SkillRegistry:
                     "description": meta.get("description", ""),
                     "allowImplicitInvocation": _implicit_invocation_allowed(meta),
                     "version": str(meta.get("version", "")).strip() or None,
-                    "minRuntimeVersion": str(meta.get("min_runtime_version") or meta.get("minruntimeversion", "")).strip() or None,
+                    "minRuntimeVersion": str(
+                        meta.get("min_runtime_version") or meta.get("minruntimeversion", "")
+                    ).strip()
+                    or None,
                     "deprecated": meta.get("deprecated"),
                 }
         return sorted(skills_by_name.values(), key=lambda s: str(s["name"]))

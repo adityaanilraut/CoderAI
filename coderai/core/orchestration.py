@@ -69,9 +69,7 @@ def stop_reason_error(stop_reason: str) -> str:
     }.get(stop_reason, f"subagent run ended abnormally ({stop_reason})")
 
 
-def settlement_summary(
-    child_id: str, stop_reason: str, outcome: str | None = None
-) -> str:
+def settlement_summary(child_id: str, stop_reason: str, outcome: str | None = None) -> str:
     """One line telling a parent a background child settled and why."""
     subject = f"Background subagent {child_id}"
     base = {
@@ -128,13 +126,15 @@ class OrchestrationEventBus:
                 returned = listener(event_name, payload)
                 if returned is not None and hasattr(returned, "add_done_callback"):
                     returned.add_done_callback(
-                        lambda fut: logger.warning(
-                            "orchestration: %s listener rejected: %s",
-                            event_name,
-                            _render_thrown(fut.exception() if fut.exception() else ""),
+                        lambda fut: (
+                            logger.warning(
+                                "orchestration: %s listener rejected: %s",
+                                event_name,
+                                _render_thrown(fut.exception() if fut.exception() else ""),
+                            )
+                            if fut.exception()
+                            else None
                         )
-                        if fut.exception()
-                        else None
                     )
             except Exception as exc:  # pragma: no cover - containment guard
                 logger.warning(
@@ -269,19 +269,11 @@ def resolve_workflow_limits(settings: dict[str, Any] | None = None) -> WorkflowL
             return from_settings
         return _env_int(env_name, default)
 
-    concurrent = _pick(
-        "maxConcurrentAgents", "CODERAI_WORKFLOW_MAX_CONCURRENT_AGENTS", 0
-    )
+    concurrent = _pick("maxConcurrentAgents", "CODERAI_WORKFLOW_MAX_CONCURRENT_AGENTS", 0)
     return WorkflowLimits(
-        max_concurrent_agents=(
-            auto_max_concurrent_agents() if concurrent <= 0 else concurrent
-        ),
-        max_total_agents=_pick(
-            "maxTotalAgents", "CODERAI_WORKFLOW_MAX_TOTAL_AGENTS", 1000
-        ),
-        max_items_per_call=_pick(
-            "maxItemsPerCall", "CODERAI_WORKFLOW_MAX_ITEMS_PER_CALL", 4096
-        ),
+        max_concurrent_agents=(auto_max_concurrent_agents() if concurrent <= 0 else concurrent),
+        max_total_agents=_pick("maxTotalAgents", "CODERAI_WORKFLOW_MAX_TOTAL_AGENTS", 1000),
+        max_items_per_call=_pick("maxItemsPerCall", "CODERAI_WORKFLOW_MAX_ITEMS_PER_CALL", 4096),
     )
 
 
@@ -308,10 +300,10 @@ def resolve_subagent_defaults(settings: dict[str, Any] | None = None) -> dict[st
         return _env_int(env_name, default)
 
     return {
-        "max_depth": _int_pick("maxDepth", "CODERAI_MAX_SUBAGENT_DEPTH", DEFAULT_MAX_SUBAGENT_DEPTH),
-        "timeout_seconds": _float_pick(
-            "timeoutSeconds", "CODERAI_SUBAGENT_TIMEOUT_SECONDS", 90.0
+        "max_depth": _int_pick(
+            "maxDepth", "CODERAI_MAX_SUBAGENT_DEPTH", DEFAULT_MAX_SUBAGENT_DEPTH
         ),
+        "timeout_seconds": _float_pick("timeoutSeconds", "CODERAI_SUBAGENT_TIMEOUT_SECONDS", 90.0),
         "max_iterations": _int_pick("maxIterations", "CODERAI_SUBAGENT_MAX_ITERATIONS", 20),
     }
 

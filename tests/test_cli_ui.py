@@ -570,3 +570,177 @@ def test_prompt_permissions_ui_styling_and_choices(monkeypatch: pytest.MonkeyPat
     replies, _ = _prompt_permissions(req_crit, yes=False, plan_mode=False)
     assert replies[0]["permission"] == "allow"
 
+
+def test_nested_plan_indentation():
+    """Verify that nested sub-tasks retain their hierarchical indentation levels."""
+    nested_plan = """# Root Plan
+- [x] Phase 1: Core Engine
+  - [x] Step 1.1: Add parser
+    - [ ] Step 1.1.1: Add tokenizer
+  - [ ] Step 1.2: Add lexer
+- [ ] Phase 2: CLI
+"""
+    formatted = format_plan_content(nested_plan)
+    text_content = str(formatted)
+    assert "Step 1.1: Add parser" in text_content
+    assert "Step 1.1.1: Add tokenizer" in text_content
+    assert "Step 1.2: Add lexer" in text_content
+
+
+def test_responsive_status_bar():
+    """Verify that the status bar adapts cleanly to narrow and wide terminal widths."""
+    from coderai.cli.statusline import format_default_status_bar
+
+    # Wide terminal (>= 80 cols)
+    wide_bar = format_default_status_bar(
+        model="gpt-5.6-luna",
+        active_tokens=4000,
+        plan_mode=True,
+        branch="main",
+        turns=5,
+        mcp_count=2,
+        term_width=120,
+    )
+    wide_text = str(wide_bar)
+    assert "gpt-5.6-luna" in wide_text
+    assert "Plan: ON" in wide_text
+    assert "Git: main" in wide_text
+    assert "Turns: 5" in wide_text
+    assert "MCP: 2" in wide_text
+
+    # Narrow terminal (< 80 cols) - collapses optional turns/mcp
+    narrow_bar = format_default_status_bar(
+        model="gpt-5.6-luna",
+        active_tokens=4000,
+        plan_mode=False,
+        branch="main",
+        turns=5,
+        mcp_count=2,
+        term_width=70,
+    )
+    narrow_text = str(narrow_bar)
+    assert "gpt-5.6-luna" in narrow_text
+    assert "Plan: OFF" in narrow_text
+    assert "Turns: 5" not in narrow_text
+
+
+def test_tool_card_markup_escaping():
+    """Verify that tool outputs containing bracket characters like List[int] are escaped safely."""
+    from coderai.cli.tool_card import render_tool_card
+    import json
+
+    mock_console = MagicMock()
+    msg = SessionMessage(
+        id="msg_tool_1",
+        session_id="sess_test_1",
+        role="tool",
+        content=json.dumps(
+            {
+                "name": "bash",
+                "ok": True,
+                "output": "def process(items: list[str], count: int) -> dict[str, Any]:",
+                "metadata": {
+                    "command": "cat types.py | grep 'list[str]'",
+                    "exit_code": 0,
+                },
+            }
+        ),
+    )
+    # Should render without raising MarkupError
+    render_tool_card(mock_console, msg)
+    assert mock_console.print.called
+
+
+def test_redesigned_todo_list_rendering():
+    """Verify modern Todo list formatting with in-progress (●), pending (○), completed (✓), and cancelled (-)."""
+    from coderai.cli.plan_render import (
+        TodoDisplayBlock,
+        TodoItem,
+        format_todo_content,
+        format_todo_item,
+        render_todo_list,
+    )
+
+    # Test individual item formatting
+    item_active = format_todo_item("Scaffold Vite React project", "in_progress")
+    assert "●" in item_active.plain
+    assert "Scaffold Vite React project" in item_active.plain
+
+    item_pending = format_todo_item("Set up site shell", "pending")
+    assert "○" in item_pending.plain
+
+    item_done = format_todo_item("Build navbar", "completed")
+    assert "✓" in item_done.plain
+
+    item_cancelled = format_todo_item("Old task", "cancelled")
+    assert "-" in item_cancelled.plain
+
+    # Test structured todo list formatting
+    todos = [
+        {"content": "Scaffold Vite React project", "status": "in_progress"},
+        {"content": "Set up site shell", "status": "pending"},
+        {"content": "Build components", "status": "completed"},
+    ]
+    formatted = format_todo_content(todos)
+    assert "●" in formatted.plain
+    assert "○" in formatted.plain
+    assert "✓" in formatted.plain
+
+    # Test rendering to console
+    mock_console = MagicMock()
+    render_todo_list(mock_console, todos, title="Todo")
+    assert mock_console.print.called
+
+    # Test with TodoDisplayBlock
+    block = TodoDisplayBlock(
+        items=[
+            TodoItem(title="Task 1", status="in_progress"),
+            TodoItem(title="Task 2", status="pending"),
+        ],
+        title="Todo",
+    )
+    from coderai.cli.stream_blocks import TodoBlock
+
+    tb = TodoBlock(block)
+    comp = tb.compose()
+    assert comp is not None
+
+
+def test_redesigned_approval_panel():
+    """Verify modern approval panel with amber header rule and cyan option highlights."""
+    from coderai.cli.approval_panel import ApprovalRequestPanel
+
+    req = {
+        "name": "bash",
+        "command": "find ember-and-oak -type f -not -path '*/node_modules/*' | sort",
+        "cwd": "/workspace/demo-project",
+        "description": "List scaffolded project files",
+        "scopes": ["read-in-cwd"],
+    }
+    panel = ApprovalRequestPanel(req)
+    rendered = panel.render()
+    assert rendered is not None
+    # Test navigation
+    panel.move_down()
+    assert panel.selected_index == 1
+    panel.move_up()
+    assert panel.selected_index == 0
+
+
+def test_streamlined_status_bar():
+    """Verify streamlined status bar with model, thinking, project path, shortcut tips, and context info."""
+    from coderai.cli.status_bar import format_streamlined_status_bar
+
+    bar = format_streamlined_status_bar(
+        model="DeepSeek V4 Flash",
+        active_tokens=24300,
+        project_root="/workspace/demo-project",
+        thinking_level="high",
+        plan_mode=False,
+        term_width=100,
+    )
+    text = bar.plain
+    assert "DeepSeek V4 Flash" in text
+    assert "thinking: high" in text
+    assert "@: mention files" in text
+    assert "context:" in text

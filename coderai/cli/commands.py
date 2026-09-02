@@ -32,11 +32,19 @@ _COMMANDS = (
         "plan",
         "Toggle or apply Plan Mode",
         "Planning & Safety",
-        subcommands=("on", "off", "apply", "reset"),
+        subcommands=("on", "off", "view", "clear", "apply", "reset"),
     ),
     SlashCommand("undo", "Revert to a previous checkpoint", "Planning & Safety"),
     SlashCommand("diff", "Show the current unified diff", "Planning & Safety"),
     SlashCommand("continue", "Continue agent execution", "Planning & Safety"),
+    SlashCommand("yolo", "Toggle YOLO auto-approve all actions", "Planning & Safety"),
+    SlashCommand("afk", "Toggle AFK auto-dismiss questions & approvals", "Planning & Safety"),
+    SlashCommand(
+        "add-dir",
+        "Add directory to workspace",
+        "Planning & Safety",
+        aliases=("add_dir",),
+    ),
     SlashCommand(
         "setup",
         "Configure API keys, providers, endpoints, and default model",
@@ -91,8 +99,11 @@ _COMMANDS = (
         subcommands=("reconnect", "prompts", "resources"),
     ),
     SlashCommand("tokens", "Show token usage", "Tools & Analytics", ("cost",)),
-    SlashCommand("compact", "Compress conversation context", "Tools & Analytics"),
+    SlashCommand(
+        "compact", "Compress conversation context", "Tools & Analytics", subcommands=("keep",)
+    ),
     SlashCommand("history", "Show the session timeline", "Tools & Analytics"),
+    SlashCommand("import", "Import context from file or session", "Tools & Analytics"),
     SlashCommand("config", "Show resolved configuration", "Tools & Analytics", ("settings",)),
     SlashCommand(
         "permission",
@@ -117,6 +128,11 @@ _COMMANDS = (
     SlashCommand("editor", "Compose a prompt in $EDITOR", "Input & Media", ("edit",)),
     SlashCommand("paste", "Enter multiline paste mode", "Input & Media"),
     SlashCommand("clear", "Clear the terminal", "Utilities"),
+    SlashCommand("reset", "Clear conversation context and reset session state", "Utilities"),
+    SlashCommand("cost", "Show token cost breakdown", "Tools & Analytics", ("usage",)),
+    SlashCommand("context", "Inspect live context window utilization", "Tools & Analytics"),
+    SlashCommand("theme", "Switch theme dark/light", "Utilities", subcommands=("dark", "light")),
+    SlashCommand("btw", "Side question (BTW modal)", "Utilities"),
     SlashCommand("help", "Show command help", "Utilities", ("?",)),
     SlashCommand("exit", "Exit CoderAI", "Utilities", ("quit",)),
 )

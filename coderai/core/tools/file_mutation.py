@@ -49,8 +49,12 @@ def generate_virtual_patch(
     )
     diff_text = "\n".join(diff_lines)
 
-    lines_added = sum(1 for line in diff_lines if line.startswith("+") and not line.startswith("+++"))
-    lines_removed = sum(1 for line in diff_lines if line.startswith("-") and not line.startswith("---"))
+    lines_added = sum(
+        1 for line in diff_lines if line.startswith("+") and not line.startswith("+++")
+    )
+    lines_removed = sum(
+        1 for line in diff_lines if line.startswith("-") and not line.startswith("---")
+    )
 
     return {
         "file_path": file_path,
@@ -87,7 +91,6 @@ def check_file_write_access(context: Any, file_path: str) -> str | None:
         workspace_root=ws_str,
     )
     return None if allowed else error
-
 
 
 def write_file_with_callbacks(

@@ -44,6 +44,7 @@ from coderai.core.tools.types import (
 # 1. Dynamic Tool Concurrency & Barrier Scheduling
 # ==============================================================================
 
+
 def test_tool_definition_execution_mode():
     """Verify ToolDefinition execution mode evaluation."""
     tool_barrier = define_tool(
@@ -113,11 +114,27 @@ async def test_session_barrier_tool_chunking_and_concludes_turn(tmp_path: pathli
     )
 
     tool_calls = [
-        {"id": "tc1", "type": "function", "function": {"name": "read_test", "arguments": json.dumps({"path": "a.py"})}},
-        {"id": "tc2", "type": "function", "function": {"name": "read_test", "arguments": json.dumps({"path": "b.py"})}},
-        {"id": "tc3", "type": "function", "function": {"name": "barrier_test", "arguments": json.dumps({"op": "sync"})}},
+        {
+            "id": "tc1",
+            "type": "function",
+            "function": {"name": "read_test", "arguments": json.dumps({"path": "a.py"})},
+        },
+        {
+            "id": "tc2",
+            "type": "function",
+            "function": {"name": "read_test", "arguments": json.dumps({"path": "b.py"})},
+        },
+        {
+            "id": "tc3",
+            "type": "function",
+            "function": {"name": "barrier_test", "arguments": json.dumps({"op": "sync"})},
+        },
         {"id": "tc4", "type": "function", "function": {"name": "conclude_test", "arguments": "{}"}},
-        {"id": "tc5", "type": "function", "function": {"name": "read_test", "arguments": json.dumps({"path": "c.py"})}},
+        {
+            "id": "tc5",
+            "type": "function",
+            "function": {"name": "read_test", "arguments": json.dumps({"path": "c.py"})},
+        },
     ]
 
     await mgr._append_tool_messages(sid, tool_calls)
@@ -139,6 +156,7 @@ async def test_session_barrier_tool_chunking_and_concludes_turn(tmp_path: pathli
 # ==============================================================================
 # 2. Synthetic Abort Tool Results on Interrupt
 # ==============================================================================
+
 
 @pytest.mark.asyncio
 async def test_synthetic_abort_results_on_session_interrupt(tmp_path: pathlib.Path):
@@ -196,6 +214,7 @@ async def test_synthetic_abort_results_on_session_interrupt(tmp_path: pathlib.Pa
 # 3. Subagent Report Delivery Modes
 # ==============================================================================
 
+
 @pytest.mark.asyncio
 async def test_subagent_report_tool_delivery_modes(tmp_path: pathlib.Path):
     """Verify handle_report_tool supports next-step and quiet delivery."""
@@ -208,7 +227,9 @@ async def test_subagent_report_tool_delivery_modes(tmp_path: pathlib.Path):
     assert res1.metadata["summary"] == "Exploration finished"
 
     # Test quiet delivery
-    res2 = await handle_report_tool({"summary": "Background metric cached", "delivery": "quiet"}, ctx)
+    res2 = await handle_report_tool(
+        {"summary": "Background metric cached", "delivery": "quiet"}, ctx
+    )
     assert res2.ok
     assert res2.metadata["delivery"] == "quiet"
 
@@ -216,6 +237,7 @@ async def test_subagent_report_tool_delivery_modes(tmp_path: pathlib.Path):
 # ==============================================================================
 # 4. Cross-Session Reference Injection (@session:<id>)
 # ==============================================================================
+
 
 def test_extract_session_reference_ids():
     """Verify extracting @session:id and session:id tokens."""
@@ -236,11 +258,25 @@ def test_render_and_resolve_session_references(tmp_path: pathlib.Path):
 
     # Seed a past session
     events = [
-        {"seq": 1, "type": "session/created", "sessionId": sid, "timestamp": "2026-08-27T00:00:00Z"},
+        {
+            "seq": 1,
+            "type": "session/created",
+            "sessionId": sid,
+            "timestamp": "2026-08-27T00:00:00Z",
+        },
         {"seq": 2, "role": "user", "content": "Implement user authentication with JWT tokens"},
-        {"seq": 3, "role": "assistant", "tool_calls": [{"id": "t1", "function": {"name": "write"}}], "content": "Creating auth handler"},
+        {
+            "seq": 3,
+            "role": "assistant",
+            "tool_calls": [{"id": "t1", "function": {"name": "write"}}],
+            "content": "Creating auth handler",
+        },
         {"seq": 4, "role": "tool", "tool_call_id": "t1", "content": "File written"},
-        {"seq": 5, "role": "assistant", "content": "Successfully implemented JWT auth in auth.py with refresh rotation."},
+        {
+            "seq": 5,
+            "role": "assistant",
+            "content": "Successfully implemented JWT auth in auth.py with refresh rotation.",
+        },
     ]
     msg_path = store.messages_path(sid)
     msg_path.parent.mkdir(parents=True, exist_ok=True)
@@ -273,6 +309,7 @@ def test_render_and_resolve_session_references(tmp_path: pathlib.Path):
 # 5. Runtime Invariant Verification
 # ==============================================================================
 
+
 def test_runtime_invariants_verification():
     """Verify runtime invariant checker catches sequence gaps, dangling calls, and broken boundaries."""
     # 1. Valid session
@@ -280,7 +317,12 @@ def test_runtime_invariants_verification():
         {"seq": 1, "type": "turn/start"},
         {"seq": 2, "type": "step/start"},
         {"seq": 3, "role": "user", "content": "hello"},
-        {"seq": 4, "role": "assistant", "tool_calls": [{"id": "t1", "function": {"name": "read"}}], "content": ""},
+        {
+            "seq": 4,
+            "role": "assistant",
+            "tool_calls": [{"id": "t1", "function": {"name": "read"}}],
+            "content": "",
+        },
         {"seq": 5, "role": "tool", "tool_call_id": "t1", "content": "ok"},
         {"seq": 6, "role": "assistant", "content": "Hi there!"},
         {"seq": 7, "type": "step/end"},
@@ -301,7 +343,11 @@ def test_runtime_invariants_verification():
 
     # 3. Dangling tool call without result
     dangling_calls = [
-        {"role": "assistant", "tool_calls": [{"id": "call_orphan", "function": {"name": "read"}}], "content": ""},
+        {
+            "role": "assistant",
+            "tool_calls": [{"id": "call_orphan", "function": {"name": "read"}}],
+            "content": "",
+        },
         {"role": "user", "content": "Next turn prompt"},
     ]
     v_calls = verify_paired_tool_calls(dangling_calls)

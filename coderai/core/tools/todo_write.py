@@ -17,7 +17,14 @@ def todos_to_plan(todos: list[dict[str, Any]]) -> str:
         if not content:
             continue
         status = str(item.get("status") or "pending").strip().lower()
-        mark = "x" if status in ("completed", "done") else " "
+        if status in ("completed", "done"):
+            mark = "x"
+        elif status in ("in_progress", "active"):
+            mark = ">"
+        elif status in ("cancelled", "skipped"):
+            mark = "-"
+        else:
+            mark = " "
         ident = str(item.get("id") or "").strip()
         prefix = f"{ident}: " if ident else ""
         lines.append(f"- [{mark}] {prefix}{content}")

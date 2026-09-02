@@ -71,8 +71,7 @@ def maybe_queue_goal_round(manager: Any, session_id: str) -> bool:
                 GoalBlockReason(
                     code=BLOCK_CODE_ROUND_LIMIT,
                     message=(
-                        f"Goal reached its configured limit of "
-                        f"{goal.max_goal_rounds} rounds."
+                        f"Goal reached its configured limit of {goal.max_goal_rounds} rounds."
                     ),
                 ),
             )

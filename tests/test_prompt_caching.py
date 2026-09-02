@@ -1007,7 +1007,9 @@ async def test_system_prompt_single_consolidated_message_with_instructions_and_p
     assert "## bash" in sys_text
     assert "Project Custom Instructions" in sys_text
     assert "# Plan Mode" in sys_text
-    assert sys_text.index("You are a helpful software engineer assistant") < sys_text.index("## bash")
+    assert sys_text.index("You are a helpful software engineer assistant") < sys_text.index(
+        "## bash"
+    )
     assert sys_text.index("## bash") < sys_text.index("Project Custom Instructions")
     assert sys_text.index("Project Custom Instructions") < sys_text.index("# Plan Mode")
 
@@ -1029,7 +1031,10 @@ async def test_compaction_replays_warm_prefix_and_tools(tmp_path: pathlib.Path):
                                 {
                                     "id": "c1",
                                     "type": "function",
-                                    "function": {"name": "read", "arguments": '{"file_path": "a.txt"}'},
+                                    "function": {
+                                        "name": "read",
+                                        "arguments": '{"file_path": "a.txt"}',
+                                    },
                                 }
                             ],
                             "reasoning_content": "Reasoning 1",
@@ -1089,7 +1094,9 @@ async def test_compaction_replays_warm_prefix_and_tools(tmp_path: pathlib.Path):
     assert compaction_req["tools"] is not None
     assert len(compaction_req["tools"]) > 0
     assert compaction_req["messages"][0]["role"] == "system"
-    assert "You are a helpful software engineer assistant" in compaction_req["messages"][0]["content"]
+    assert (
+        "You are a helpful software engineer assistant" in compaction_req["messages"][0]["content"]
+    )
     assert compaction_req["messages"][-1]["role"] == "user"
     assert "compaction engine" in compaction_req["messages"][-1]["content"]
 
@@ -1114,7 +1121,10 @@ async def test_subagent_tool_ordering_and_reasoning_persistence(tmp_path: pathli
                                 {
                                     "id": "sub_c1",
                                     "type": "function",
-                                    "function": {"name": "read", "arguments": '{"file_path": "sub.txt"}'},
+                                    "function": {
+                                        "name": "read",
+                                        "arguments": '{"file_path": "sub.txt"}',
+                                    },
                                 }
                             ],
                             "reasoning_content": "Subagent step 1 thinking",
@@ -1236,6 +1246,7 @@ def test_cache_hit_rate_analytics(tmp_path: pathlib.Path, capsys: pytest.Capture
 
     # 3. Test Rich console render_token_breakdown
     from rich.console import Console
+
     rich_console = Console(record=True, width=120)
     render_token_breakdown(rich_console, mgr, session_id)
     rich_text = rich_console.export_text()
@@ -1250,9 +1261,9 @@ def test_cache_hit_rate_analytics(tmp_path: pathlib.Path, capsys: pytest.Capture
     assert mock_exit_console.print.called
 
     # 5. Test export_session_to_markdown
-    mgr._save_messages(session_id, [SessionMessage(id="m1", session_id=session_id, role="user", content="Hi")])
+    mgr._save_messages(
+        session_id, [SessionMessage(id="m1", session_id=session_id, role="user", content="Hi")]
+    )
     md_path = export_session_to_markdown(mgr, session_id)
     md_text = pathlib.Path(md_path).read_text(encoding="utf-8")
     assert "Cached: 18,464 (60.9% hit)" in md_text
-
-

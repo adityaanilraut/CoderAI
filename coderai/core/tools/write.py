@@ -92,8 +92,6 @@ def handle_write_tool(args: dict[str, Any], context: Any) -> ToolResult:
         else:
             file_path = normalize_file_path(raw_fp)
 
-
-
         if not is_absolute_file_path(file_path):
             return ToolResult(
                 ok=False,
@@ -225,7 +223,6 @@ def handle_write_tool(args: dict[str, Any], context: Any) -> ToolResult:
                 metadata=meta,
             )
         except Exception as e:
-
             return ToolResult(ok=False, name="write", error=str(e))
 
     return execute_validated_tool(

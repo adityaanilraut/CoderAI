@@ -46,6 +46,7 @@ def test_stream_state_ensure_newline(capsys):
 
 def test_stream_state_reasoning_deduplication():
     from coderai.cli.app import _StreamState
+
     state = _StreamState()
     assert state.thinking_rendered is False
 
@@ -65,6 +66,7 @@ def test_stream_state_reasoning_deduplication():
 
 def test_stream_state_thinking_only_completion():
     from coderai.cli.app import _StreamState
+
     state = _StreamState()
 
     state.on_thinking_chunk("Reasoning about next step...")

@@ -76,6 +76,7 @@ async def handle_team_task_create_tool(
 
     mgr = get_team_manager()
     from coderai.core.teams.deadlock import CycleDetectedError
+
     try:
         task = mgr.task_board.create_task(
             title=title,

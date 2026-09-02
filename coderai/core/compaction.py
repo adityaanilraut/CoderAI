@@ -99,15 +99,40 @@ def evaluate_compaction_trigger(
     context_limit: int,
     pressure_ratio: float = 0.75,
     overflow_ratio: float = 0.95,
+    reserved_context_size: int | None = None,
 ) -> str | None:
-    """Evaluate whether active tokens meet dual-trigger thresholds ('overflow' vs 'pressure')."""
+    """Evaluate whether active tokens meet dual-trigger thresholds ('overflow' vs 'pressure').
+
+    Mirrors Kimi CLI should_auto_compact: triggers when either
+    active_tokens >= context_limit * ratio OR active_tokens + reserved >= context_limit.
+    """
     if context_limit <= 0 or active_tokens <= 0:
         return None
+    # Kimi parity: reserved budget guard
+    if reserved_context_size and reserved_context_size > 0:
+        if active_tokens + reserved_context_size >= context_limit:
+            return (
+                "overflow" if active_tokens >= int(context_limit * overflow_ratio) else "pressure"
+            )
     if active_tokens >= int(context_limit * overflow_ratio):
         return "overflow"
     if active_tokens >= int(context_limit * pressure_ratio):
         return "pressure"
     return None
+
+
+def should_auto_compact(
+    token_count: int,
+    max_context_size: int,
+    *,
+    trigger_ratio: float = 0.85,
+    reserved_context_size: int = 50_000,
+) -> bool:
+    """Kimi-parity adapter: True when token_count triggers compaction (either condition)."""
+    return (
+        token_count >= max_context_size * trigger_ratio
+        or token_count + reserved_context_size >= max_context_size
+    )
 
 
 class CompactionEngine(abc.ABC):
@@ -252,6 +277,11 @@ class BasicCompaction(CompactionEngine):
             thinking_enabled=thinking_enabled,
         )
 
+        _custom = getattr(self, "_pending_custom_instruction", None)
+        if _custom:
+            extra = f"\n\nAdditional focus instruction from user: {_custom}\nPay extra attention to this focus while keeping all sections."
+        else:
+            extra = ""
         compaction_directive = (
             "You are now acting as a compaction engine for this AI coding assistant. "
             "Condense the conversation ABOVE into a structured checkpoint that lets another model resume the work with no loss of essential context.\n\n"
@@ -266,7 +296,7 @@ class BasicCompaction(CompactionEngine):
             "- [completed tasks, modified files, and verified behaviors]\n\n"
             "## Pending Work & Next Steps\n"
             "- [immediate next actions and known open questions]\n\n"
-            "Do not include conversational filler before or after the summary."
+            f"Do not include conversational filler before or after the summary.{extra}"
         )
 
         if converted_prefix:
@@ -359,14 +389,22 @@ class BasicCompaction(CompactionEngine):
         session_id: str,
         trigger: str = "manual",
         preserve_ids: set[str] | None = None,
+        custom_instruction: str | None = None,
     ) -> CompactionResult | None:
         messages = self.manager.list_session_messages(session_id)
         region = self._find_safe_region(messages, preserve_ids=preserve_ids)
         if not region:
             return None
-        return await self.compact_region(
-            session_id, region[0], region[1], trigger=trigger, preserve_ids=preserve_ids
-        )
+        # Kimi parity: custom instruction appended to directive when /compact <focus>
+        if custom_instruction:
+            # Inject via temporary directive augmentation in compact_region
+            self._pending_custom_instruction = custom_instruction  # type: ignore
+        try:
+            return await self.compact_region(
+                session_id, region[0], region[1], trigger=trigger, preserve_ids=preserve_ids
+            )
+        finally:
+            self._pending_custom_instruction = None  # type: ignore
 
     async def compact_if_needed(
         self,
@@ -394,6 +432,10 @@ class BasicCompaction(CompactionEngine):
             if not region:
                 return None
             return await self.compact_region(
-                session_id, region[0], region[1], trigger=effective_trigger, preserve_ids=preserve_ids
+                session_id,
+                region[0],
+                region[1],
+                trigger=effective_trigger,
+                preserve_ids=preserve_ids,
             )
         return None

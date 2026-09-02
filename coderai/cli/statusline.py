@@ -32,32 +32,87 @@ def strip_ansi(text: str) -> str:
     return ANSI_ESCAPE_PATTERN.sub("", text)
 
 
-def get_git_branch_cached(project_root: str) -> str:
-    """Get the active git branch name with dirty status marker if uncommitted changes exist, or 'no-git'."""
+_GIT_STATUS_CACHE: dict[str, tuple[float, str | None, bool, int, int]] = {}
+_GIT_CACHE_TTL = 3.0  # seconds
+
+
+def get_git_status(project_root: str) -> tuple[str | None, bool]:
+    """Retrieve the current active git branch and dirty status with TTL caching."""
+    now = time.monotonic()
+    cached = _GIT_STATUS_CACHE.get(project_root)
+    if cached and now - cached[0] < _GIT_CACHE_TTL:
+        return cached[1], cached[2]
+
+    branch: str | None = None
+    is_dirty = False
+    ahead = behind = 0
     try:
         res = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            ["git", "status", "--porcelain", "-b"],
             cwd=project_root,
             capture_output=True,
             text=True,
-            timeout=1,
+            timeout=1.5,
         )
-        if res.returncode == 0 and res.stdout.strip():
-            branch = res.stdout.strip()
-            # Check dirty status
-            res_dirty = subprocess.run(
-                ["git", "status", "--porcelain"],
+        if res.returncode == 0:
+            lines = res.stdout.splitlines()
+            if lines:
+                first = lines[0]
+                if first.startswith("## "):
+                    header = first[3:].strip()
+                    # e.g. "main...origin/main [ahead 1, behind 2]" or "main" or "HEAD (no branch)"
+                    if "..." in header:
+                        branch_part = header.split("...", 1)[0].strip()
+                    else:
+                        branch_part = header.split(" ", 1)[0].strip()
+                    if branch_part and branch_part != "HEAD (no branch)":
+                        branch = branch_part
+
+                    m = re.search(r"\[(?:ahead (\d+))?(?:, )?(?:behind (\d+))?\]", first)
+                    if m:
+                        ahead = int(m.group(1) or 0)
+                        behind = int(m.group(2) or 0)
+                if len(lines) > 1 or (len(lines) == 1 and not lines[0].startswith("## ")):
+                    is_dirty = True
+        else:
+            # Fallback simple branch query
+            res_b = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
                 cwd=project_root,
                 capture_output=True,
                 text=True,
-                timeout=1,
+                timeout=1.0,
             )
-            if res_dirty.returncode == 0 and res_dirty.stdout.strip():
-                return f"{branch}*"
-            return branch
+            if res_b.returncode == 0 and res_b.stdout.strip():
+                branch = res_b.stdout.strip()
     except Exception:
         pass
-    return "no-git"
+
+    _GIT_STATUS_CACHE[project_root] = (now, branch, is_dirty, ahead, behind)
+    return branch, is_dirty
+
+
+def get_git_branch(project_root: str) -> str | None:
+    """Retrieve the current active git branch name formatted with dirty flag, or None."""
+    branch, is_dirty = get_git_status(project_root)
+    if branch:
+        return f"{branch}*" if is_dirty else branch
+    return None
+
+
+def get_git_branch_cached(project_root: str) -> str:
+    """Get the active git branch name with dirty status marker if uncommitted changes exist, or 'no-git'."""
+    b = get_git_branch(project_root)
+    return b if b else "no-git"
+
+
+def get_git_detailed_status(project_root: str) -> tuple[str | None, bool, int, int]:
+    """Retrieve branch, dirty, ahead, behind with caching."""
+    get_git_status(project_root)
+    cached = _GIT_STATUS_CACHE.get(project_root)
+    if cached:
+        return cached[1], cached[2], cached[3], cached[4]
+    return None, False, 0, 0
 
 
 def make_mini_bar(pct: float, width: int = 8) -> str:
@@ -184,11 +239,15 @@ class StatuslineEngine:
         branch: str,
         turns: int = 0,
         mcp_count: int = 0,
+        term_width: int = 80,
     ) -> Text:
-        """Format the default dynamic powerline gauge."""
+        """Format the default dynamic powerline gauge, adapting gracefully to terminal width."""
         plan_label = "ON" if plan_mode else "OFF"
         tokens_display, token_style, pct = compute_token_gauge(active_tokens, model)
-        mini_bar = make_mini_bar(pct, width=6)
+        mini_bar = make_mini_bar(pct, width=5)
+
+        is_compact = term_width < 80
+        is_very_compact = term_width < 60
 
         bar = Text()
         # Model Segment
@@ -200,30 +259,32 @@ class StatuslineEngine:
 
         # Tokens Segment with Mini Bar
         base_color = token_style.replace("bold ", "")
-        bar.append(f"Tokens: {tokens_display}", style=f"bold {base_color}")
-        bar.append(f" [{mini_bar}]", style=f"dim {base_color}")
-
-        # Divider
-        bar.append(" │ ", style="dim")
+        if is_very_compact:
+            bar.append(f"{pct:.0f}% ctx", style=f"bold {base_color}")
+        elif is_compact:
+            bar.append(f"Tokens: {tokens_display}", style=f"bold {base_color}")
+        else:
+            bar.append(f"Tokens: {tokens_display}", style=f"bold {base_color}")
+            bar.append(f" [{mini_bar}]", style=f"dim {base_color}")
 
         # Plan Mode Segment
+        bar.append(" │ ", style="dim")
         bar.append("Plan: ", style="dim")
         bar.append(plan_label, style="bold yellow" if plan_mode else "dim")
 
-        # Divider
-        bar.append(" │ ", style="dim")
-
         # Git Branch Segment
-        bar.append("Git: ", style="dim magenta")
-        bar.append(branch, style="bold magenta")
+        if branch and branch != "no-git":
+            bar.append(" │ ", style="dim")
+            bar.append("Git: ", style="dim magenta")
+            bar.append(branch, style="bold magenta")
 
-        # Optional Turns Segment
-        if turns > 0:
+        # Optional Turns Segment (only if ample width)
+        if turns > 0 and not is_compact:
             bar.append(" │ ", style="dim")
             bar.append(f"Turns: {turns}", style="bold")
 
-        # Optional MCP Segment
-        if mcp_count > 0:
+        # Optional MCP Segment (only if ample width)
+        if mcp_count > 0 and not is_compact:
             bar.append(" │ ", style="dim")
             bar.append(f"MCP: {mcp_count}", style="bold green")
 
@@ -271,9 +332,27 @@ class StatuslineEngine:
                     return
 
         # Fallback to default statusline
+        import shutil
+
+        term_width = 80
+        if (
+            active_console is not None
+            and isinstance(getattr(active_console, "width", None), int)
+            and active_console.width > 0
+        ):
+            term_width = active_console.width
+        else:
+            term_width = shutil.get_terminal_size(fallback=(80, 24)).columns
+
         branch = get_git_branch_cached(project_root)
         bar = self.format_default_status_bar(
-            model, active_tokens, plan_mode, branch, turns=turns, mcp_count=mcp_count
+            model,
+            active_tokens,
+            plan_mode,
+            branch,
+            turns=turns,
+            mcp_count=mcp_count,
+            term_width=term_width,
         )
         active_console.print(bar)
 
@@ -288,11 +367,76 @@ def format_default_status_bar(
     branch: str,
     turns: int = 0,
     mcp_count: int = 0,
+    term_width: int = 80,
 ) -> Text:
     """Format the default dynamic gauge via module helper."""
     return _DEFAULT_ENGINE.format_default_status_bar(
-        model, active_tokens, plan_mode, branch, turns=turns, mcp_count=mcp_count
+        model,
+        active_tokens,
+        plan_mode,
+        branch,
+        turns=turns,
+        mcp_count=mcp_count,
+        term_width=term_width,
     )
+
+
+def format_streamlined_status_bar(
+    model: str,
+    active_tokens: int,
+    project_root: str,
+    thinking_level: str = "high",
+    plan_mode: bool = False,
+    branch: str = "",
+    term_width: int = 80,
+) -> Text:
+    """Format a clean, gold-standard 2-row or 1-row status bar matching screenshot aesthetics."""
+    # Shorten CWD: replace user home with ~
+    import os
+
+    home = os.path.expanduser("~")
+    display_cwd = project_root
+    if project_root.startswith(home):
+        display_cwd = "~" + project_root[len(home) :]
+
+    ctx_window = get_default_context_window(model)
+    pct = (active_tokens / ctx_window * 100) if ctx_window > 0 else 0.0
+
+    if ctx_window >= 1024 * 1024:
+        max_str = f"{ctx_window // (1024 * 1024)}M"
+    elif ctx_window >= 1024:
+        max_str = f"{ctx_window // 1024}k"
+    else:
+        max_str = str(ctx_window)
+
+    tok_str = f"{active_tokens / 1000:.1f}k" if active_tokens >= 1000 else str(active_tokens)
+
+    bar = Text()
+    # Left segment: Model, thinking, cwd, git branch
+    bar.append(f"{model} ", style="bold white")
+    if thinking_level:
+        bar.append(f"thinking: {thinking_level} ", style="dim")
+    if plan_mode:
+        bar.append("plan ", style="bold #38bdf8")
+    bar.append(f"{display_cwd}", style="dim cyan")
+    if branch and branch != "no-git":
+        bar.append(f" ({branch})", style="dim magenta")
+
+    # Right segment: Shortcut hints
+    hints = "@: mention files | ! to run a shell command"
+    left_len = len(bar.plain)
+    hints_len = len(hints)
+    gap = max(2, term_width - left_len - hints_len)
+    bar.append(" " * gap)
+    bar.append(hints, style="dim")
+
+    # Second line: context gauge right-aligned
+    ctx_info = f"context: {pct:.0f}% ({tok_str}/{max_str})"
+    ctx_gap = max(0, term_width - len(ctx_info))
+    bar.append("\n" + " " * ctx_gap)
+    bar.append(ctx_info, style="dim")
+
+    return bar
 
 
 def render_statusline(

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import os
 import pathlib
 import platform
 import subprocess
@@ -43,6 +44,13 @@ from coderai.core.skill import (
 
 SYSTEM_PROMPT_BASE = """You are a helpful software engineer assistant.
 
+# Core Operating Principles
+- **Decisive, Turn-Efficient Execution**: Understand the task and the provided project directory structure. Act decisively in minimal turns.
+- **Parallel Tool Batching**: When exploring or inspecting code, batch multiple independent tool calls together in a single turn (e.g. read multiple source and test files in parallel in Turn 1).
+- **Single-Pass Modifications**: Implement reproduction tests or code edits directly and decisively. Do not perform speculative patch trials or run temporary mock commands in subshells.
+- **Consolidated Verification**: After modifying files, verify in a single step (running the test suite and inspecting `git diff`), then conclude immediately.
+- **Minimal Changes**: Make only the minimal changes necessary to satisfy the requirement without collateral modifications.
+
 ## Test Generation & Invariant Reasoning Rules
 When writing, modifying, or analyzing reproduction tests and unit tests:
 1. **Mental Post-Fix Trace**: Before writing test assertions, mentally trace what every assertion will evaluate to AFTER the bug is fixed. Never include assertions that assume, assert, or validate buggy behavior.
@@ -52,7 +60,7 @@ When writing, modifying, or analyzing reproduction tests and unit tests:
 ## Step Verification Loop Before Task Completion
 Before concluding your task or issuing your final response:
 1. **Inspect Git Diff**: Inspect `git diff` on modified files to verify you modified only the intended files without collateral changes or syntax errors.
-2. **Run Regression Test Suite**: Run the relevant test suite (e.g. `pytest` or test runner) to verify:
+2. **Run Regression Test Suite**: Run the relevant test suite (e.g. `pytest` or `unittest`) to verify:
    - Your reproduction test fails specifically due to the reported issue (and not an import error or syntax bug).
    - All existing passing tests continue to pass without regression.
 3. **Verify Expected States**: Confirm all test assertions specifically target the issue without assuming broken invariants."""
@@ -621,7 +629,6 @@ def build_cache_stabilized_messages(
     return stabilized_messages, stabilized_tools
 
 
-
 def get_compact_prompt(session_messages: list[Any]) -> str:
     lines = []
     for m in session_messages:
@@ -643,12 +650,96 @@ def json_dumps(obj: Any) -> str:
     return json.dumps(obj, ensure_ascii=False)
 
 
+def render_directory_tree(
+    root_path: str | pathlib.Path,
+    max_depth: int = 2,
+    max_entries_per_dir: int = 25,
+) -> str:
+    """Render a compact, bounded 2-level directory tree of the workspace root.
+
+    Excludes VCS directories (.git), caches (__pycache__, .pytest_cache, .ruff_cache),
+    virtual environments (.venv, venv), agent metadata (.coderai, .kimi, .claude),
+    and build artifacts to keep context compact and cache-friendly.
+    """
+    del max_depth
+    root = pathlib.Path(root_path).resolve()
+    if not root.is_dir():
+        return ""
+
+    ignored_names = {
+        ".git",
+        ".venv",
+        "venv",
+        "env",
+        ".env",
+        "node_modules",
+        "__pycache__",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".coderai",
+        ".kimi",
+        ".kimi-code",
+        ".claude",
+        ".benchmarks",
+        "scratch",
+        "dist",
+        "build",
+        ".DS_Store",
+    }
+
+    def _collect_dir_entries(dir_path: pathlib.Path) -> tuple[list[tuple[str, bool]], int]:
+        items: list[tuple[str, bool]] = []
+        try:
+            with os.scandir(dir_path) as it:
+                for entry in it:
+                    name = entry.name
+                    if name in ignored_names or name.endswith(".egg-info"):
+                        continue
+                    try:
+                        is_dir = entry.is_dir(follow_symlinks=False)
+                    except OSError:
+                        is_dir = False
+                    items.append((name, is_dir))
+        except OSError:
+            return [], 0
+        items.sort(key=lambda e: (not e[1], e[0].lower()))
+        return items[:max_entries_per_dir], len(items)
+
+    lines: list[str] = []
+    top_entries, total_top = _collect_dir_entries(root)
+    top_remaining = total_top - len(top_entries)
+
+    for i, (name, is_dir) in enumerate(top_entries):
+        is_last_top = (i == len(top_entries) - 1) and top_remaining == 0
+        connector = "└── " if is_last_top else "├── "
+
+        if is_dir:
+            lines.append(f"{connector}{name}/")
+            child_prefix = "    " if is_last_top else "│   "
+            child_entries, total_child = _collect_dir_entries(root / name)
+            child_remaining = total_child - len(child_entries)
+            for j, (child_name, child_is_dir) in enumerate(child_entries):
+                is_last_child = (j == len(child_entries) - 1) and child_remaining == 0
+                child_connector = "└── " if is_last_child else "├── "
+                suffix = "/" if child_is_dir else ""
+                lines.append(f"{child_prefix}{child_connector}{child_name}{suffix}")
+            if child_remaining > 0:
+                lines.append(f"{child_prefix}└── ... and {child_remaining} more")
+        else:
+            lines.append(f"{connector}{name}")
+
+    if top_remaining > 0:
+        lines.append(f"└── ... and {top_remaining} more entries")
+
+    return "\n".join(lines) if lines else "(empty directory)"
+
+
 def get_runtime_context(
     project_root: str,
     model: str | None = None,
     suppress_dynamic_time: bool = False,
 ) -> str:
-    """Stable workspace env prefix (no git status / project docs — those are volatile)."""
+    """Stable workspace env prefix including directory tree structure."""
     header_parts: list[str] = []
     if model:
         header_parts.append(f"Current LLM model: {model}.")
@@ -666,8 +757,11 @@ def get_runtime_context(
     py = _version("python3", ["--version"])
     if py:
         env["python3 version"] = py
+
+    tree = render_directory_tree(project_root)
+    tree_section = f"\n\nProject Structure:\n```\n{tree}\n```" if tree else ""
     header_str = f"{header}\n\n" if header else ""
-    return f"{header_str}# Local Workspace Environment\n\n```json\n{json.dumps(env, indent=2, sort_keys=True)}\n```"
+    return f"{header_str}# Local Workspace Environment\n\n```json\n{json.dumps(env, indent=2, sort_keys=True)}\n```{tree_section}"
 
 
 def load_agent_instructions(project_root: str) -> str | None:
@@ -719,7 +813,6 @@ def load_agent_instructions(project_root: str) -> str | None:
     if parts:
         return "\n\n".join(parts)
     return None
-
 
 
 def get_effective_project_agents_md_file(project_root: str) -> str | None:
@@ -817,6 +910,7 @@ def _version(command: str, args: list[str]) -> str | None:
 
 __all__ = [
     "render_skill_catalog",
+    "render_directory_tree",
     "get_tools",
     "format_tool_definitions",
     "get_system_prompt",
@@ -834,4 +928,3 @@ __all__ = [
     "build_cache_stabilized_messages",
     "TOOL_DOCS",
 ]
-

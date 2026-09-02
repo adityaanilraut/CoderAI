@@ -296,7 +296,9 @@ def _validate_report(handoff: RalphHandoff) -> str | None:
         return "Ralph round report status is invalid"
     serialized = json.dumps(handoff.to_dict())
     if len(serialized) > MAX_HANDOFF_CHARS:
-        return f"Ralph round report exceeds maxHandoffChars ({len(serialized)} > {MAX_HANDOFF_CHARS})"
+        return (
+            f"Ralph round report exceeds maxHandoffChars ({len(serialized)} > {MAX_HANDOFF_CHARS})"
+        )
     return None
 
 
@@ -448,7 +450,11 @@ async def handle_ralph_tool(args: dict[str, Any], context: ToolExecutionContext)
                 RalphRound(
                     round_number=round_num,
                     task_id=task_id,
-                    handoff=RalphHandoff(status="blocked", summary=round_result.summary, blocker=str(round_result.error or "")),
+                    handoff=RalphHandoff(
+                        status="blocked",
+                        summary=round_result.summary,
+                        blocker=str(round_result.error or ""),
+                    ),
                     raw_summary=round_result.summary,
                     tokens=round_result.total_tokens,
                     duration_seconds=round_duration,
@@ -534,7 +540,9 @@ async def handle_ralph_tool(args: dict[str, Any], context: ToolExecutionContext)
         )
     elif final_status == "complete" and not ralph_res.final_verdict and rounds:
         h = rounds[-1].handoff
-        ralph_res.final_verdict = h.summary + (f"\n\n**Evidence**:\n{h.evidence}" if h.evidence else "")
+        ralph_res.final_verdict = h.summary + (
+            f"\n\n**Evidence**:\n{h.evidence}" if h.evidence else ""
+        )
     elif final_status == "blocked" and not ralph_res.final_verdict and rounds:
         h = rounds[-1].handoff
         ralph_res.final_verdict = (
@@ -551,9 +559,7 @@ async def handle_ralph_tool(args: dict[str, Any], context: ToolExecutionContext)
 
     is_ok = final_status in ("complete", "budget-limited")
     output = (
-        ralph_res.format_markdown()
-        if final_status != "round-failed"
-        else ralph_res.final_verdict
+        ralph_res.format_markdown() if final_status != "round-failed" else ralph_res.final_verdict
     )
     return ToolResult(
         ok=is_ok,

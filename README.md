@@ -150,8 +150,7 @@ CoderAI executes file discovery and regex searches using native bundled `ripgrep
 
 ### 🔬 Reproducing the Benchmark
 
-To run the automated SWT-Bench and Local benchmark suite:
-have not included benchmark files in this repo check my other repo
+To run the automated SWT-Bench and Local benchmark suite using the benchmarking harness:
 
 ```bash
 # Run 10 benchmark tasks comparing CoderAI, Claude Code, and OpenCode

@@ -118,24 +118,91 @@ def expand_file_mentions(prompt: str, project_root: str) -> tuple[str, list[str]
     return expanded_prompt, attached_files
 
 
+def _list_files_git(project_root: str, limit: int = 1000) -> list[str] | None:
+    """Fast git ls-files path with index mtime cache (Kimi LocalFileMentionCompleter parity)."""
+    import subprocess
+    import time as _t
+
+    try:
+        git_index = pathlib.Path(project_root) / ".git" / "index"
+        idx_mtime = git_index.stat().st_mtime if git_index.exists() else None
+        cached = getattr(_list_files_git, "_cached", None)
+        if (
+            cached
+            and cached.get("idx_mtime") == idx_mtime
+            and _t.monotonic() - cached.get("ts", 0) < 5
+        ):
+            return cached["files"][:limit]
+        res = subprocess.run(
+            ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        if res.returncode != 0:
+            return None
+        files = [file_path.strip() for file_path in res.stdout.splitlines() if file_path.strip()][
+            :limit
+        ]
+        setattr(
+            _list_files_git,
+            "_cached",
+            {"files": files, "idx_mtime": idx_mtime, "ts": _t.monotonic()},
+        )
+        return files
+    except Exception:
+        return None
+
+
 def suggest_workspace_files(query: str, project_root: str, limit: int = 15) -> list[str]:
-    """Search and fuzzy rank workspace files for autocompletion."""
+    """Search and fuzzy rank workspace files for autocompletion.
+
+    Phase2: git-aware fast path + basename re-rank (Kimi parity).
+    """
     root = pathlib.Path(project_root).resolve()
     query_clean = query.lstrip("@")
-    all_files: list[str] = []
+    # Try git first
+    all_files: list[str] | None = _list_files_git(project_root, limit=1000)
+    if all_files is None:
+        all_files = []
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if d not in IGNORED_DIRS and not d.startswith(".")]
+            for f in filenames:
+                if f.startswith(".") and not query_clean.startswith("."):
+                    continue
+                full = pathlib.Path(dirpath) / f
+                rel = str(full.relative_to(root))
+                all_files.append(rel)
+                if len(all_files) >= 1000:
+                    break
+            if len(all_files) >= 1000:
+                break
 
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in IGNORED_DIRS and not d.startswith(".")]
-        for f in filenames:
-            if f.startswith(".") and not query_clean.startswith("."):
-                continue
-            full = pathlib.Path(dirpath) / f
-            rel = str(full.relative_to(root))
-            all_files.append(rel)
-
-    # Prioritize shallow files in workspace hierarchy
+    # Prioritize shallow files
     all_files.sort(key=lambda p: (p.count(os.sep), len(p)))
 
     from coderai.cli.fuzzy import fuzzy_filter
 
-    return fuzzy_filter(query_clean, all_files, limit=limit)
+    # Initial fuzzy filter
+    candidates = (
+        fuzzy_filter(query_clean, all_files, limit=limit * 2)
+        if query_clean
+        else all_files[: limit * 2]
+    )
+
+    # Basename re-rank: exact basename == query -> top, prefix -> next (Kimi parity)
+    if query_clean:
+        ql = query_clean.lower()
+
+        def _rank(f: str) -> tuple[int, int, int, str]:
+            base = os.path.basename(f).lower()
+            exact = 0 if base == ql else 1
+            prefix = 0 if base.startswith(ql) else 1
+            # also boost if query without path matches basename substring
+            sub = 0 if ql in base else 1
+            return (exact, prefix, sub, f)
+
+        candidates = sorted(candidates, key=_rank)
+
+    return candidates[:limit]

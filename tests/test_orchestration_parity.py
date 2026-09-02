@@ -179,9 +179,7 @@ async def test_continuable_subagent_parking_and_settlement_notice(
 ):
     _cleanup_agents()
     notices: list[str] = []
-    register_session_notice_sink(
-        "parity_session", lambda _sid, text: notices.append(text)
-    )
+    register_session_notice_sink("parity_session", lambda _sid, text: notices.append(text))
     try:
         res = await handle_continuable_subagent_tool(
             {"description": "Verify", "prompt": "Check the tree"}, tool_context
@@ -334,9 +332,7 @@ async def test_workflow_agent_cap(tmp_path: pathlib.Path):
         name="cap",
         project_root=str(tmp_path),
         create_openai_client=_simple_client_factory(),
-        limits=WorkflowLimits(
-            max_concurrent_agents=2, max_total_agents=2, max_items_per_call=4096
-        ),
+        limits=WorkflowLimits(max_concurrent_agents=2, max_total_agents=2, max_items_per_call=4096),
     )
     script = """
 a = await agent("one")
@@ -352,9 +348,7 @@ return [a, b, c]
 @pytest.mark.asyncio
 async def test_workflow_item_cap(tmp_path: pathlib.Path):
     ctx = WorkflowContext(workflow_id="wf_items", name="items", project_root=str(tmp_path))
-    result = await execute_workflow_script(
-        "await parallel([lambda: 1] * 5000)", None, ctx
-    )
+    result = await execute_workflow_script("await parallel([lambda: 1] * 5000)", None, ctx)
     assert result.status == "failed"
     assert "per-call cap" in str(result.error)
 
@@ -432,10 +426,7 @@ return a
     ctx.cancel("parent step aborted")
     await asyncio.wait_for(task, timeout=10)
     # The run settles cancelled via the rejected queued waiter.
-    events = [
-        p
-        for p in getattr(ctx, "_last_result_events", [])
-    ]
+    events = [p for p in getattr(ctx, "_last_result_events", [])]
     del events
 
 
@@ -482,21 +473,26 @@ async def test_workflow_lifecycle_events(tmp_path: pathlib.Path):
 
 
 def test_ralph_report_validation_rules():
-    assert _validate_report(
-        RalphHandoff(status="continue", summary="working", next_steps="run tests")
-    ) is None
-    assert _validate_report(
-        RalphHandoff(status="continue", summary="working", next_steps="")
-    ) is not None
-    assert _validate_report(
-        RalphHandoff(status="complete", summary="done", evidence="tests pass")
-    ) is None
-    assert _validate_report(
-        RalphHandoff(status="complete", summary="done", next_steps="more")
-    ) is not None
-    assert _validate_report(
-        RalphHandoff(status="blocked", summary="stuck", blocker="no docker")
-    ) is None
+    assert (
+        _validate_report(RalphHandoff(status="continue", summary="working", next_steps="run tests"))
+        is None
+    )
+    assert (
+        _validate_report(RalphHandoff(status="continue", summary="working", next_steps=""))
+        is not None
+    )
+    assert (
+        _validate_report(RalphHandoff(status="complete", summary="done", evidence="tests pass"))
+        is None
+    )
+    assert (
+        _validate_report(RalphHandoff(status="complete", summary="done", next_steps="more"))
+        is not None
+    )
+    assert (
+        _validate_report(RalphHandoff(status="blocked", summary="stuck", blocker="no docker"))
+        is None
+    )
     assert _validate_report(RalphHandoff(status="blocked", summary="stuck")) is not None
 
 
@@ -597,7 +593,9 @@ async def test_goal_tools_and_authority(tmp_path: pathlib.Path, goal_store: DSHG
 
 
 @pytest.mark.asyncio
-async def test_goal_blocked_threshold_during_goal_round(tmp_path: pathlib.Path, goal_store: DSHGoalStore):
+async def test_goal_blocked_threshold_during_goal_round(
+    tmp_path: pathlib.Path, goal_store: DSHGoalStore
+):
     ctx = ToolExecutionContext(session_id="sess5", project_root=str(tmp_path))
     created = await handle_create_goal_tool({"objective": "Long goal"}, ctx)
     goal_id = created.metadata["goal"]["id"]
@@ -654,7 +652,12 @@ def test_goal_round_driver_queues_and_blocks_at_limit(
             return type(
                 "M",
                 (),
-                {"session_id": session_id, "role": role, "content": content, "meta": kwargs.get("meta")},
+                {
+                    "session_id": session_id,
+                    "role": role,
+                    "content": content,
+                    "meta": kwargs.get("meta"),
+                },
             )()
 
     goal_store.create("sess6", "Drive to completion", max_goal_rounds=2)
@@ -742,4 +745,3 @@ def test_git_file_history_hermetic_env(tmp_path: pathlib.Path):
     head = history.ensure_session("hermetic_test_session")
     assert head is not None
     assert len(head) == 40
-

@@ -247,9 +247,7 @@ def configure_provider_key_interactive(
             is_conf = status_info.get("configured", False)
             masked = status_info.get("masked_key", "Not Set")
             st = (
-                f"[bold green]Configured ({masked})[/]"
-                if is_conf
-                else "[dim red]Not configured[/]"
+                f"[bold green]Configured ({masked})[/]" if is_conf else "[dim red]Not configured[/]"
             )
             items.append((pkey, f"{p['name']:<18} — {st}", f"Env: {p['env_var']} • {p['doc_url']}"))
         items.append(("cancel", "Cancel / Return", "Back to previous menu without modifying keys"))
@@ -277,9 +275,7 @@ def configure_provider_key_interactive(
 
     if console is not None and _RICH:
         console.print()
-        console.print(
-            f"  [bold cyan]Configuring API Key for:[/] [bold yellow]{info['name']}[/]"
-        )
+        console.print(f"  [bold cyan]Configuring API Key for:[/] [bold yellow]{info['name']}[/]")
         if current_key_raw:
             console.print(f"  [dim]Current Key:[/] [bold green]{current_masked}[/]")
         if info["doc_url"]:
@@ -330,7 +326,9 @@ def configure_custom_endpoint_interactive(
         (preset[0], f"{preset[1]:<24}", f"{preset[5]} ({preset[2] or 'custom'})")
         for preset in LOCAL_PRESETS
     ]
-    items.append(("cancel", "Cancel / Return", "Back to previous menu without configuring endpoint"))
+    items.append(
+        ("cancel", "Cancel / Return", "Back to previous menu without configuring endpoint")
+    )
 
     res = select_with_arrows(
         console,
@@ -355,21 +353,27 @@ def configure_custom_endpoint_interactive(
         console.print(f"  [bold cyan]Configuring Custom Endpoint:[/] [bold yellow]{name}[/]")
         console.print(f"  [dim]{desc}[/]\n")
 
-    base_url = _read_input("Base URL (e.g. http://localhost:11434/v1)", default=default_url, allow_cancel=True)
+    base_url = _read_input(
+        "Base URL (e.g. http://localhost:11434/v1)", default=default_url, allow_cancel=True
+    )
     if not base_url:
         if console is not None and _RICH:
             console.print("  [dim]Base URL entry cancelled. Aborting.[/dim]")
         return None
 
     api_key = _read_input(
-        "API Key (enter 'not-needed' or press enter for local)", default=default_key or "not-needed", allow_cancel=True
+        "API Key (enter 'not-needed' or press enter for local)",
+        default=default_key or "not-needed",
+        allow_cancel=True,
     )
     if api_key is None:
         if console is not None and _RICH:
             console.print("  [dim]Configuration cancelled.[/dim]")
         return None
 
-    model_name = _read_input("Default Model Identifier", default=default_mod or "default", allow_cancel=True)
+    model_name = _read_input(
+        "Default Model Identifier", default=default_mod or "default", allow_cancel=True
+    )
     if model_name is None:
         if console is not None and _RICH:
             console.print("  [dim]Configuration cancelled.[/dim]")
@@ -421,7 +425,13 @@ def select_and_save_model_interactive(
         if name == current_model:
             default_idx = idx
 
-    items.append(("cancel", "Cancel (Keep Current Model)", f"Retain '{current_model}' and return without changes"))
+    items.append(
+        (
+            "cancel",
+            "Cancel (Keep Current Model)",
+            f"Retain '{current_model}' and return without changes",
+        )
+    )
 
     res = select_with_arrows(
         console,
@@ -434,14 +444,24 @@ def select_and_save_model_interactive(
 
     if res is None or (isinstance(res, int) and items[res][0] == "cancel"):
         if console is not None and _RICH:
-            console.print(f"  [dim]Model selection cancelled. Retaining current model '{current_model}'.[/dim]")
+            console.print(
+                f"  [dim]Model selection cancelled. Retaining current model '{current_model}'.[/dim]"
+            )
         return current_model
 
     chosen_model = current_model
     if isinstance(res, int) and 0 <= res < len(CURATED_MODELS):
         chosen_model = CURATED_MODELS[res][0]
     elif isinstance(res, str) and res.strip():
-        chosen_model = res.strip()
+        val = res.strip()
+        from coderai.cli.fuzzy import fuzzy_filter
+
+        model_names = [name for name, _, _ in CURATED_MODELS]
+        fuzzy_models = fuzzy_filter(val, model_names, limit=1)
+        if fuzzy_models:
+            chosen_model = fuzzy_models[0]
+        else:
+            chosen_model = val
 
     if chosen_model != current_model:
         scope = prompt_save_scope(console)
@@ -474,9 +494,7 @@ def run_connectivity_test_interactive(
     api_key = resolved.get("apiKey")
 
     if console is not None and _RICH:
-        console.print(
-            f"\n  [bold cyan]Testing connection to:[/] [bold yellow]{active_model}[/]"
-        )
+        console.print(f"\n  [bold cyan]Testing connection to:[/] [bold yellow]{active_model}[/]")
         console.print("  [dim]Sending probe request...[/]")
 
     success, message = probe_provider_connectivity(
@@ -493,7 +511,9 @@ def run_connectivity_test_interactive(
         else:
             console.print("\n  [bold red]✗ Connection Failed![/]")
             console.print(f"    [red]{message}[/]")
-            console.print("    [dim]Tip: Check your API key or endpoint settings via '/setup keys'.[/dim]\n")
+            console.print(
+                "    [dim]Tip: Check your API key or endpoint settings via '/setup keys'.[/dim]\n"
+            )
     else:
         status_sym = "✓" if success else "✗"
         print(f"\n[{status_sym}] {message}\n")
@@ -521,12 +541,32 @@ def run_quick_setup_wizard(
 
     # Step 1: Provider selection
     provider_options = [
-        ("openai", "OpenAI (GPT-5.6 Sol / Luna / o3-mini)", "Official OpenAI frontier models & reasoning"),
-        ("deepseek", "DeepSeek (V4 Pro / Flash / Reasoner)", "1M context, state-of-the-art coding & low cost"),
-        ("gemini", "Google Gemini (3.7 Flash / 2.5 Pro)", "Next-gen hybrid reasoning & multi-modal"),
+        (
+            "openai",
+            "OpenAI (GPT-5.6 Sol / Luna / o3-mini)",
+            "Official OpenAI frontier models & reasoning",
+        ),
+        (
+            "deepseek",
+            "DeepSeek (V4 Pro / Flash / Reasoner)",
+            "1M context, state-of-the-art coding & low cost",
+        ),
+        (
+            "gemini",
+            "Google Gemini (3.7 Flash / 2.5 Pro)",
+            "Next-gen hybrid reasoning & multi-modal",
+        ),
         ("anthropic", "Anthropic Claude (3.7 Sonnet)", "Frontier tool use & deep hybrid reasoning"),
-        ("openrouter", "OpenRouter (All Providers Aggregator)", "Unified API key access to 100+ models"),
-        ("local", "Local / Custom Endpoint (Ollama, LM Studio, vLLM)", "Run locally on your own GPU/CPU offline"),
+        (
+            "openrouter",
+            "OpenRouter (All Providers Aggregator)",
+            "Unified API key access to 100+ models",
+        ),
+        (
+            "local",
+            "Local / Custom Endpoint (Ollama, LM Studio, vLLM)",
+            "Run locally on your own GPU/CPU offline",
+        ),
         ("cancel", "Cancel / Exit Quick Setup", "Return to previous menu"),
     ]
 

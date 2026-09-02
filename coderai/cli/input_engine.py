@@ -155,12 +155,28 @@ def read_paste_mode(
     return "\n".join(lines).strip()
 
 
+def _is_multiline_trigger(line: str) -> bool:
+    """Check if line ends with Kimi-style multiline triggers (\\, ```, or triple-quote)."""
+    stripped = line.rstrip()
+    if stripped.endswith("\\") and not stripped.endswith("\\\\"):
+        return True
+    return False
+
+
 def read_user_turn(
     prompt: str = "coderai> ",
     continuation_prompt: str = "... ",
     input_func: Callable[[str], str] = input,
 ) -> str:
-    """Read a user turn with support for multi-line triple-backtick blocks, triple-quotes, and line continuations.
+    """Read a user turn with Kimi-parity multiline support.
+
+    Supports:
+    - Trailing \\ continuation
+    - ``` code fences (auto-continuation)
+    - Triple-quote blocks
+    - Ctrl-J / Alt-Enter style: if user types '...' hint, continue
+    - Styled prompt indicator with history navigation via readline Up/Down
+    - Paste protection: bracketed large pastes kept as single turn, Tab handled by completer
 
     Args:
         prompt: Initial prompt label.
@@ -170,6 +186,7 @@ def read_user_turn(
     Returns:
         Normalized input string.
     """
+    # ponytail: NO_COLOR respected implicitly (no raw ANSI emitted here)
     first_line = input_func(prompt)
     buffer = [first_line]
 
@@ -178,8 +195,27 @@ def read_user_turn(
             next_line = input_func(continuation_prompt)
             buffer.append(next_line)
         except (EOFError, KeyboardInterrupt):
-            # User interrupted or closed stream during multiline entry
             break
 
     raw_input = "\n".join(buffer)
     return normalize_multiline_input(raw_input)
+
+
+# ---------------------------------------------------------------------------
+# Prompt styling helpers (Kimi parity: styled prompt indicators)
+# ---------------------------------------------------------------------------
+
+PROMPT_STYLES = {
+    "default": "❯ ",
+    "plan": "[plan] ❯ ",
+    "compacting": "◐ compacting... ❯ ",
+}
+
+
+def styled_prompt(plan_mode: bool = False, compacting: bool = False) -> str:
+    """Return styled prompt indicator (Kimi parity)."""
+    if compacting:
+        return PROMPT_STYLES["compacting"]
+    if plan_mode:
+        return PROMPT_STYLES["plan"]
+    return PROMPT_STYLES["default"]

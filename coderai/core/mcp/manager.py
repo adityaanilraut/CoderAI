@@ -427,7 +427,6 @@ class McpManager:
             ]
         return list(self.tools)
 
-
     def get_prompts(self) -> list[dict[str, Any]]:
         return list(self.prompts)
 

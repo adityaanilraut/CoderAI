@@ -89,6 +89,43 @@ def handle_ask_user_question_tool(args: dict[str, Any], context: Any) -> ToolRes
             error=err or "Invalid questions payload.",
         )
 
+    # AFK parity: auto-dismiss AskUserQuestion when AFK/YOLO is enabled
+    try:
+        from coderai.core.session import _global_afk_check  # type: ignore
+
+        if _global_afk_check():
+            return ToolResult(
+                ok=True,
+                name="AskUserQuestion",
+                output="Auto-dismissed (afk mode enabled). Proceed with best assumption.",
+                metadata={
+                    "kind": "ask_user_question",
+                    "questions": questions,
+                    "afk_dismissed": True,
+                },
+            )
+    except Exception:
+        pass
+    # Direct context check (session manager afk)
+    try:
+        sid = getattr(context, "session_id", "")
+        if sid:
+            from coderai.core.session import _check_afk_for_session
+
+            if _check_afk_for_session(sid):
+                return ToolResult(
+                    ok=True,
+                    name="AskUserQuestion",
+                    output="Auto-dismissed (afk mode enabled). Proceed with best assumption.",
+                    metadata={
+                        "kind": "ask_user_question",
+                        "questions": questions,
+                        "afk_dismissed": True,
+                    },
+                )
+    except Exception:
+        pass
+
     metadata: dict[str, Any] = {
         "kind": "ask_user_question",
         "questions": questions,

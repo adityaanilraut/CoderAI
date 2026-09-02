@@ -76,10 +76,7 @@ def _start_subagent_job(
     store = get_job_store()
     session_id = context.session_id or ""
     with store._lock:
-        counter = (
-            sum(1 for j in store._jobs.values() if j.kind == "subagent")
-            + 1
-        )
+        counter = sum(1 for j in store._jobs.values() if j.kind == "subagent") + 1
         job_id = f"subagent-{counter}"
     store.start(
         job_id=job_id,
@@ -127,9 +124,7 @@ def _start_subagent_job(
 
 
 def spec_task_session(manager: SubAgentManager, spec: SubAgentSpec) -> str:
-    return (
-        f"sub_{spec.parent_session_id[:8] if spec.parent_session_id else 'root'}_{spec.task_id}"
-    )
+    return f"sub_{spec.parent_session_id[:8] if spec.parent_session_id else 'root'}_{spec.task_id}"
 
 
 async def handle_subagent_fork_tool(
@@ -158,14 +153,23 @@ async def handle_subagent_fork_tool(
     depth = _derive_depth(context, args)
 
     try:
-        max_depth = int(args.get("max_depth")) if args.get("max_depth") is not None else MAX_SUBAGENT_DEPTH
+        max_depth = (
+            int(args.get("max_depth")) if args.get("max_depth") is not None else MAX_SUBAGENT_DEPTH
+        )
     except (ValueError, TypeError):
         max_depth = MAX_SUBAGENT_DEPTH
 
     try:
-        token_budget = int(args.get("token_budget")) if args.get("token_budget") is not None else None
+        token_budget = (
+            int(args.get("token_budget")) if args.get("token_budget") is not None else None
+        )
     except (ValueError, TypeError):
         token_budget = None
+
+    try:
+        max_tokens = int(args.get("max_tokens")) if args.get("max_tokens") is not None else None
+    except (ValueError, TypeError):
+        max_tokens = None
 
     if depth >= max_depth:
         return ToolResult(
@@ -193,6 +197,7 @@ async def handle_subagent_fork_tool(
         depth=depth,
         max_depth=max_depth,
         token_budget=token_budget,
+        max_tokens=max_tokens,
         timeout_seconds=timeout_seconds,
         parent_session_id=context.session_id,
         extra_context=as_str(args.get("context", "")).strip() or None,
@@ -238,13 +243,21 @@ async def handle_continuable_subagent_tool(
         mode = "read_only"
     depth = _derive_depth(context, args)
     try:
-        max_depth = int(args.get("max_depth")) if args.get("max_depth") is not None else MAX_SUBAGENT_DEPTH
+        max_depth = (
+            int(args.get("max_depth")) if args.get("max_depth") is not None else MAX_SUBAGENT_DEPTH
+        )
     except (ValueError, TypeError):
         max_depth = MAX_SUBAGENT_DEPTH
     try:
-        token_budget = int(args.get("token_budget")) if args.get("token_budget") is not None else None
+        token_budget = (
+            int(args.get("token_budget")) if args.get("token_budget") is not None else None
+        )
     except (ValueError, TypeError):
         token_budget = None
+    try:
+        max_tokens = int(args.get("max_tokens")) if args.get("max_tokens") is not None else None
+    except (ValueError, TypeError):
+        max_tokens = None
 
     if depth >= max_depth:
         return ToolResult(
@@ -268,6 +281,7 @@ async def handle_continuable_subagent_tool(
         depth=depth,
         max_depth=max_depth,
         token_budget=token_budget,
+        max_tokens=max_tokens,
         timeout_seconds=timeout_seconds,
         parent_session_id=context.session_id,
         extra_context=as_str(args.get("context", "")).strip() or None,
@@ -326,12 +340,12 @@ def _caller_owns_target(context: ToolExecutionContext, target: Any) -> bool:
 async def handle_send_message_tool(
     args: dict[str, Any], context: ToolExecutionContext
 ) -> ToolResult:
-    agent_id = as_str(
-        args.get("subagent_id") or args.get("agent_id") or args.get("id")
-    ).strip()
+    agent_id = as_str(args.get("subagent_id") or args.get("agent_id") or args.get("id")).strip()
     message = as_str(args.get("message") or args.get("prompt")).strip()
     if not agent_id or not message:
-        return ToolResult(ok=False, name="send_message", error="subagent_id and message are required.")
+        return ToolResult(
+            ok=False, name="send_message", error="subagent_id and message are required."
+        )
     handle = get_agent_registry().get(agent_id)
     if handle is None:
         return ToolResult(ok=False, name="send_message", error=f"Unknown agent '{agent_id}'.")

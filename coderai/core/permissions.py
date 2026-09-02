@@ -98,7 +98,6 @@ PERMISSION_DESCRIBED_TOOLS = {
 }
 
 
-
 # These tools only mutate CoderAI's own in-memory/session bookkeeping or are
 # observational; they do not require a filesystem/network permission scope.
 PERMISSION_EXEMPT_REGISTERED_TOOLS = {
@@ -548,7 +547,6 @@ def describe_tool_permission_request(
             "scopes": ["network"] if name in ("browser_click", "browser_type") else [],
         }
 
-
     if name == "UnderstandImage":
         image_path = args.get("image_path") if isinstance(args.get("image_path"), str) else ""
         img_scopes: list[str] = ["network"]
@@ -726,7 +724,13 @@ def describe_tool_permission_request(
             "scopes": ["write-in-cwd"],
         }
 
-    if name in ("session_query", "session_search", "session_trace", "session_event_search", "session_event_read"):
+    if name in (
+        "session_query",
+        "session_search",
+        "session_trace",
+        "session_event_search",
+        "session_event_read",
+    ):
         query_val = args.get("query") or args.get("session_id")
         query = query_val if isinstance(query_val, str) else name
         return {

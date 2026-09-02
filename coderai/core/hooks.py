@@ -269,6 +269,7 @@ def merge_hook_outputs(outputs: list[HookOutput]) -> MergedHookOutcome:
 
 def _scrubbed_env(base: dict[str, str] | None = None) -> dict[str, str]:
     import re as _re
+
     pat = _re.compile(r"KEY|PASSWORD|SECRET|TOKEN", _re.I)
     src = base if base is not None else os.environ
     out: dict[str, str] = {}

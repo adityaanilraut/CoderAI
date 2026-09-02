@@ -148,15 +148,18 @@ def handle_str_replace_editor_tool(args: dict[str, Any], context: Any) -> ToolRe
     effective_root = isolated_cwd or project_root
     target_path = _resolve_path(path_arg, effective_root)
 
-
     if command == "view":
         return _handle_view(target_path, args.get("view_range"), project_root, context)
     elif command == "create":
         return _handle_create(target_path, args.get("file_text"), context, args=args)
     elif command == "str_replace":
-        return _handle_str_replace(target_path, args.get("old_str"), args.get("new_str"), context, args=args)
+        return _handle_str_replace(
+            target_path, args.get("old_str"), args.get("new_str"), context, args=args
+        )
     elif command == "insert":
-        return _handle_insert(target_path, args.get("insert_line"), args.get("new_str"), context, args=args)
+        return _handle_insert(
+            target_path, args.get("insert_line"), args.get("new_str"), context, args=args
+        )
     elif command in ("undo_edit", "undo_command"):
         return _handle_undo(target_path, context)
     else:
@@ -165,7 +168,6 @@ def handle_str_replace_editor_tool(args: dict[str, Any], context: Any) -> ToolRe
             name="str_replace_editor",
             error=f"Unrecognized command `{command}`. Allowed commands are: `view`, `create`, `str_replace`, `insert`, `undo_edit` (or `undo_command`).",
         )
-
 
 
 def _handle_view(
@@ -345,7 +347,6 @@ def _handle_str_replace(
                 error=obs_err,
             )
 
-
     match_res = match_multistage(current_content, old_s, new_s)
     matches = match_res.matches
 
@@ -479,7 +480,6 @@ def _handle_insert(
                 error=obs_err,
             )
 
-
     insert_content = new_s if new_s.endswith("\n") else new_s + "\n"
     if ins_line == 0:
         new_content = insert_content + "".join(lines)
@@ -516,7 +516,6 @@ def _handle_insert(
         name="str_replace_editor",
         output=f"The file {target_path} has been edited successfully (inserted text after line {ins_line}).",
     )
-
 
 
 def _handle_undo(target_path: str, context: Any) -> ToolResult:

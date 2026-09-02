@@ -34,6 +34,7 @@ from coderai.core.tools.types import ToolExecutionContext
 
 # --- 1. Spill Store Lifecycle Tests ---
 
+
 def test_spill_session_cleanup():
     """Verify that cleanup_spill_session purges spilled files for target session."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -75,6 +76,7 @@ def test_cleanup_all_spills():
 
 # --- 2. JobStore kill_all Tests ---
 
+
 def test_job_store_kill_all_session_scoped():
     """Verify JobStore.kill_all cancels only specified session jobs or all jobs."""
     store = JobStore()
@@ -100,6 +102,7 @@ def test_job_store_kill_all_session_scoped():
 
 
 # --- 3. Binary File Detection & Safe Read Tests ---
+
 
 def test_is_binary_buffer_detection():
     """Verify binary vs text detection on raw byte buffers."""
@@ -131,6 +134,7 @@ def test_read_tool_handles_binary_files_safely(tmp_path):
 
 # --- 4. Invariant Verification & Typing Tests ---
 
+
 def test_invariants_verification_contracts():
     """Verify session invariant checkers report correct diagnostics."""
     # Paired tool calls check
@@ -161,6 +165,7 @@ def test_normalize_line_endings():
 
 
 # --- 5. Tool Executor Argument Resilience Tests ---
+
 
 def test_tool_executor_parse_arguments():
     """Verify ToolExecutor._parse_tool_arguments handles dicts, valid JSON, and repaired JSON."""
@@ -199,6 +204,7 @@ def test_tool_executor_parse_arguments():
 
 # --- 6. TerminalManager Lifecycle Tests ---
 
+
 def test_terminal_manager_close_all():
     """Verify TerminalManager closes all sessions properly."""
     mgr = TerminalManager()
@@ -210,6 +216,7 @@ def test_terminal_manager_close_all():
 
 
 # --- 7. Session Manager Lifecycle Teardown Tests ---
+
 
 def test_session_manager_dispose_cleans_resources():
     """Verify SessionManager.dispose() cleans jobs, terminals, and controller events."""
@@ -243,4 +250,3 @@ def test_session_delete_cleans_spill_and_jobs():
         assert deleted is True
         assert not pathlib.Path(spill_ref.locator).exists()
         assert sm.job_store.get(f"job_{ses_id}", ses_id).status in ("stopping", "killed")
-

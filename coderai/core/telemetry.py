@@ -178,10 +178,9 @@ class TelemetryCollector:
         total_spans = len(self._spans)
         ok_spans = sum(1 for s in self._spans.values() if s.status == "ok")
         error_spans = sum(1 for s in self._spans.values() if s.status == "error")
-        avg_duration = (
-            sum(s.duration_ms for s in self._spans.values() if s.end_time_ms is not None)
-            / max(1, sum(1 for s in self._spans.values() if s.end_time_ms is not None))
-        )
+        avg_duration = sum(
+            s.duration_ms for s in self._spans.values() if s.end_time_ms is not None
+        ) / max(1, sum(1 for s in self._spans.values() if s.end_time_ms is not None))
 
         return {
             "total_spans": total_spans,

@@ -70,11 +70,11 @@ async def test_tool_registry_validation_types_and_enums():
         registry.validate_arguments("read", {"file_path": "foo.py", "offset": "not-a-number"})
     assert "must be a number" in str(exc.value)
 
-    # Enum mismatch in Task mode
+    # Enum mismatch in str_replace_editor command
     with pytest.raises(ValidationError) as exc:
         registry.validate_arguments(
-            "Task",
-            {"description": "test", "prompt": "do something", "mode": "invalid_mode"},
+            "str_replace_editor",
+            {"path": "foo.py", "command": "invalid_command"},
         )
     assert "invalid value" in str(exc.value)
 

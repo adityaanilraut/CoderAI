@@ -26,9 +26,7 @@ def test_render_thinking_block_escapes_brackets():
     console = Console(file=buf)
 
     # Thinking text with unclosed or special markdown/bracket tags
-    thinking_with_tags = (
-        "Planning [Step 1]: Query database for [user_id] and check [bold] tags."
-    )
+    thinking_with_tags = "Planning [Step 1]: Query database for [user_id] and check [bold] tags."
 
     # Should not raise MarkupError
     render_thinking_block(console, thinking_with_tags, elapsed_seconds=2.5, expanded=False)
@@ -92,12 +90,7 @@ def test_welcome_screen_adaptive_rendering():
 def test_diff_render_adaptive_styles():
     """Verify diff context lines format cleanly."""
     diff_sample = (
-        "--- a/test.py\n"
-        "+++ b/test.py\n"
-        "@@ -1,3 +1,3 @@\n"
-        " context line\n"
-        "-old line\n"
-        "+new line\n"
+        "--- a/test.py\n+++ b/test.py\n@@ -1,3 +1,3 @@\n context line\n-old line\n+new line\n"
     )
     text = format_diff_text(diff_sample)
     plain = text.plain

@@ -63,7 +63,6 @@ def extract_session_reference_ids(text: str) -> list[str]:
     return ids
 
 
-
 def render_session_snapshot(
     session_id: str,
     project_root: str,
@@ -105,7 +104,9 @@ def render_session_snapshot(
                 tcs = data.get("tool_calls") or data.get("toolCalls")
                 if tcs and isinstance(tcs, list):
                     for tc in tcs:
-                        fn_name = tc.get("function", {}).get("name") if isinstance(tc, dict) else "tool"
+                        fn_name = (
+                            tc.get("function", {}).get("name") if isinstance(tc, dict) else "tool"
+                        )
                         if fn_name:
                             tool_calls_summary.append(fn_name)
             elif ev_type == "session/created":
@@ -143,7 +144,9 @@ def render_session_snapshot(
 
     if tool_calls_summary:
         unique_tools = sorted(set(tool_calls_summary))
-        output_lines.append(f"\n*Tools executed in session*: `{', '.join(unique_tools)}` ({len(tool_calls_summary)} total calls)")
+        output_lines.append(
+            f"\n*Tools executed in session*: `{', '.join(unique_tools)}` ({len(tool_calls_summary)} total calls)"
+        )
 
     rendered = "\n".join(output_lines)
     if len(rendered.encode("utf-8")) > max_bytes:
@@ -187,9 +190,8 @@ def resolve_session_references(
 
     context_block = ""
     if snapshots:
-        context_block = (
-            "\n\n## Context from Referenced Prior Sessions\n"
-            + "\n\n---\n\n".join(snapshots)
+        context_block = "\n\n## Context from Referenced Prior Sessions\n" + "\n\n---\n\n".join(
+            snapshots
         )
 
     return text, refs, context_block

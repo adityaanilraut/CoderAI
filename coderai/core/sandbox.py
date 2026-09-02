@@ -416,5 +416,8 @@ def validate_sandboxed_path(
                 f"SANDBOX_VIOLATION: Path '{path}' escapes isolated sandbox root '{root_path}'.",
             )
     except Exception as exc:
-        return False, pathlib.Path(path), f"SANDBOX_VIOLATION: Failed to resolve path '{path}': {exc}"
-
+        return (
+            False,
+            pathlib.Path(path),
+            f"SANDBOX_VIOLATION: Failed to resolve path '{path}': {exc}",
+        )

@@ -50,13 +50,9 @@ def _validated_ref(args: dict[str, Any]) -> tuple[str, int]:
     try:
         revision = int(raw_revision)
     except (TypeError, ValueError):
-        raise GoalError(
-            "revision must be a positive safe integer", "GOAL_TOOL_INVALID_UPDATE"
-        )
+        raise GoalError("revision must be a positive safe integer", "GOAL_TOOL_INVALID_UPDATE")
     if revision < 1:
-        raise GoalError(
-            "revision must be a positive safe integer", "GOAL_TOOL_INVALID_UPDATE"
-        )
+        raise GoalError("revision must be a positive safe integer", "GOAL_TOOL_INVALID_UPDATE")
     return goal_id, revision
 
 

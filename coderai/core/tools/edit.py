@@ -121,7 +121,8 @@ def handle_edit_tool(args: dict[str, Any], context: Any) -> ToolResult:
             )
             isolated_cwd = (
                 str(iso_val)
-                if isinstance(iso_val, (str, pathlib.Path)) and "MagicMock" not in str(type(iso_val))
+                if isinstance(iso_val, (str, pathlib.Path))
+                and "MagicMock" not in str(type(iso_val))
                 else None
             )
 
@@ -376,7 +377,6 @@ def handle_edit_tool(args: dict[str, Any], context: Any) -> ToolResult:
             )
         except Exception as e:
             return ToolResult(ok=False, name="edit", error=str(e))
-
 
         replaced_count = len(matches) if replace_all else 1
         return ToolResult(

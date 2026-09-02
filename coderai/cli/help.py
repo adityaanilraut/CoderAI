@@ -429,11 +429,26 @@ COMMAND_HELP_DETAILS: dict[str, dict[str, Any]] = {
             "• Ctrl-R       — Reverse history search (interactive readline history search)\n"
             "• Ctrl-L       — Clear terminal screen and redraw status bar\n"
             "• Tab          — Autocomplete slash commands, models, sub-arguments, and @file paths\n"
+            "• Shift-Tab    — Toggle Plan Mode / Build Mode\n"
             "• @<filename>  — Mention workspace file with optional line slice (@file.py:10-40)\n"
             "• \"\"\" or '''   — Multiline block input delimiter\n"
             "• \\ at end     — Line continuation"
         ),
         "examples": ["/help shortcuts"],
+    },
+    "theme": {
+        "title": "Theme Switch",
+        "syntax": "/theme [dark|light]",
+        "summary": "Switch terminal theme (dark/light) for diff background colors.",
+        "description": "Toggles diff background colors via theme.set_active_theme. • /theme dark — dark diff bg • /theme light — light diff bg • /theme — show current",
+        "examples": ["/theme", "/theme dark", "/theme light"],
+    },
+    "btw": {
+        "title": "Side Question (BTW)",
+        "syntax": "/btw <question>",
+        "summary": "Ask a side question without interrupting current turn (BTW modal).",
+        "description": "Routes to PromptPlaceholderManager + BtwPanel (modal_priority=5). While streaming, queues as BTW modal not ❯ queue. Resolves via TextPart/ImageURLPart wrap_media_part.",
+        "examples": ["/btw What does this error mean?", "/btw Summarize the file"],
     },
 }
 
@@ -450,6 +465,7 @@ HELP_GROUPS: list[tuple[str, list[tuple[str, str, str]]]] = [
             ("/rename", "[title]", "Rename active or specified session summary"),
             ("/export", "[file]", "Export session history to Markdown or JSON"),
             ("/init", "", "Initialize or update AGENTS.md contributor guidelines"),
+            ("/btw", "<question>", "Side question (BTW modal, not queued)"),
         ],
     ),
     (
@@ -476,8 +492,16 @@ HELP_GROUPS: list[tuple[str, list[tuple[str, str, str]]]] = [
         "Diagnostics & Tools",
         [
             ("/doctor", "", "Run comprehensive system health checks & connectivity"),
-            ("/permission, /permissions", "", "Show or set permission preset (read-only, workspace-write, danger-full-access)"),
-            ("/mcp", "[subcommand]", "Inspect MCP servers/tools, /mcp prompts, /mcp resources, /mcp reconnect"),
+            (
+                "/permission, /permissions",
+                "",
+                "Show or set permission preset (read-only, workspace-write, danger-full-access)",
+            ),
+            (
+                "/mcp",
+                "[subcommand]",
+                "Inspect MCP servers/tools, /mcp prompts, /mcp resources, /mcp reconnect",
+            ),
             ("/goal", "[add|done] ...", "List or update session goals"),
             ("/jobs, /job", "[subcmd]", "Inspect and manage background bash jobs"),
             ("/schedule", "[subcmd]", "Manage session-scoped reminders and timers"),
@@ -503,6 +527,7 @@ HELP_GROUPS: list[tuple[str, list[tuple[str, str, str]]]] = [
         [
             ("/clear", "", "Clear terminal screen and redraw status"),
             ("/help, /?", "[command]", "Show command help menu or detailed contextual help"),
+            ("/theme", "[dark|light]", "Switch diff theme (dark/light)"),
             ("/exit, /quit", "", "Exit CoderAI session with summary card"),
         ],
     ),
@@ -626,5 +651,7 @@ def _render_plain_overview() -> None:
             full_cmd = f"{cmd} {arg}".strip() if arg else cmd
             print(f"  {full_cmd:<30} {desc}")
 
-    print("\nShortcuts: Tab complete | Ctrl-R history search | Ctrl-C interrupt | Ctrl-D exit | @file context")
+    print(
+        "\nShortcuts: Tab complete | Ctrl-R history search | Ctrl-C interrupt | Ctrl-D exit | @file context"
+    )
     print("Type /help <command> for detailed syntax and examples (e.g. /help goal, /help plan).\n")

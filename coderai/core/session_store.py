@@ -107,7 +107,10 @@ class JsonlSessionStore:
                 reverse=True,
             )[: self.max_entries]
         index["entries"] = entries
-        self.index_path.write_text(json.dumps(index, indent=2), encoding="utf-8")
+        # ponytail: atomic tmp→replace prevents corruption on SIGINT mid-write
+        tmp_path = self.index_path.with_suffix(".tmp")
+        tmp_path.write_text(json.dumps(index, indent=2), encoding="utf-8")
+        tmp_path.replace(self.index_path)
 
     def append_row(self, session_id: str, row: dict[str, Any]) -> None:
         self.project_dir.mkdir(parents=True, exist_ok=True)
@@ -212,17 +215,21 @@ class JsonlSessionStore:
                 if role in ("user", "system") and pending_in_turn:
                     # Synthesize missing tool messages before starting new turn
                     for tc_id, tc in list(pending_in_turn.items()):
-                        repaired_rows.append({
-                            "id": f"repair_{tc_id}",
-                            "session_id": session_id,
-                            "role": "tool",
-                            "content": json.dumps({
-                                "error": TOOL_ABORTED_BEFORE_DISPATCH,
-                                "message": "Self-healing repair synthesized aborted tool result.",
-                            }),
-                            "tool_call_id": tc_id,
-                            "meta": {"function": tc.get("function")},
-                        })
+                        repaired_rows.append(
+                            {
+                                "id": f"repair_{tc_id}",
+                                "session_id": session_id,
+                                "role": "tool",
+                                "content": json.dumps(
+                                    {
+                                        "error": TOOL_ABORTED_BEFORE_DISPATCH,
+                                        "message": "Self-healing repair synthesized aborted tool result.",
+                                    }
+                                ),
+                                "tool_call_id": tc_id,
+                                "meta": {"function": tc.get("function")},
+                            }
+                        )
                     pending_in_turn.clear()
 
                 repaired_rows.append(row)
@@ -237,17 +244,21 @@ class JsonlSessionStore:
 
             if pending_in_turn:
                 for tc_id, tc in list(pending_in_turn.items()):
-                    repaired_rows.append({
-                        "id": f"repair_{tc_id}",
-                        "session_id": session_id,
-                        "role": "tool",
-                        "content": json.dumps({
-                            "error": TOOL_ABORTED_BEFORE_DISPATCH,
-                            "message": "Self-healing repair synthesized aborted tool result.",
-                        }),
-                        "tool_call_id": tc_id,
-                        "meta": {"function": tc.get("function")},
-                    })
+                    repaired_rows.append(
+                        {
+                            "id": f"repair_{tc_id}",
+                            "session_id": session_id,
+                            "role": "tool",
+                            "content": json.dumps(
+                                {
+                                    "error": TOOL_ABORTED_BEFORE_DISPATCH,
+                                    "message": "Self-healing repair synthesized aborted tool result.",
+                                }
+                            ),
+                            "tool_call_id": tc_id,
+                            "meta": {"function": tc.get("function")},
+                        }
+                    )
                 pending_in_turn.clear()
 
             self.replace_rows(session_id, repaired_rows)

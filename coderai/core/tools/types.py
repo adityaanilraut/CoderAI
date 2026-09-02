@@ -199,7 +199,11 @@ class ToolDefinition:
     rate_limited_id: PluginRateLimitedTool | None = None
     is_mutating: bool = False
     is_concurrency_safe: bool | Callable[[dict[str, Any]], bool] = False
-    execution_mode: Literal["parallel", "serial", "barrier"] | Callable[[dict[str, Any]], Literal["parallel", "serial", "barrier"]] | None = None
+    execution_mode: (
+        Literal["parallel", "serial", "barrier"]
+        | Callable[[dict[str, Any]], Literal["parallel", "serial", "barrier"]]
+        | None
+    ) = None
     rate_limit: tuple[int, float] | None = None
     timeout_ms: int | None = None
     present_result: Callable[[dict[str, Any], ToolResult], dict[str, Any] | None] | None = None
@@ -214,7 +218,9 @@ class ToolDefinition:
                 return False
         return bool(self.is_concurrency_safe)
 
-    def check_execution_mode(self, args: dict[str, Any]) -> Literal["parallel", "serial", "barrier"]:
+    def check_execution_mode(
+        self, args: dict[str, Any]
+    ) -> Literal["parallel", "serial", "barrier"]:
         """Evaluate dynamic execution mode ('parallel', 'serial', or 'barrier')."""
         if callable(self.execution_mode):
             try:
@@ -223,7 +229,11 @@ class ToolDefinition:
                     return mode
             except Exception:
                 pass
-        if isinstance(self.execution_mode, str) and self.execution_mode in ("parallel", "serial", "barrier"):
+        if isinstance(self.execution_mode, str) and self.execution_mode in (
+            "parallel",
+            "serial",
+            "barrier",
+        ):
             return self.execution_mode
         if self.check_concurrency_safe(args):
             return "parallel"

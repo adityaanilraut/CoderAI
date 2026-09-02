@@ -135,7 +135,9 @@ class ActorChannel:
         self._mailboxes: dict[str, AsyncMailbox] = {}
         self._lock = asyncio.Lock()
 
-    def register_mailbox(self, agent_id: str, max_size: int = DEFAULT_MAILBOX_CAPACITY) -> AsyncMailbox:
+    def register_mailbox(
+        self, agent_id: str, max_size: int = DEFAULT_MAILBOX_CAPACITY
+    ) -> AsyncMailbox:
         if agent_id not in self._mailboxes:
             self._mailboxes[agent_id] = AsyncMailbox(agent_id=agent_id, max_size=max_size)
         return self._mailboxes[agent_id]

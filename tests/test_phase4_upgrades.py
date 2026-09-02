@@ -118,7 +118,11 @@ def test_headless_browser_type_and_click():
     assert "Typed text into" in msg
 
     # Click navigation link to docs
-    link_elem = next(e for e in driver.state.elements if e.tag == "a" and "Docs" in e.text or "docs" in (e.href or ""))
+    link_elem = next(
+        e
+        for e in driver.state.elements
+        if e.tag == "a" and "Docs" in e.text or "docs" in (e.href or "")
+    )
     ok_click, msg_click, state_click = driver.click(link_elem.ref_id)
     assert ok_click is True
     assert "https://example.com/docs" in state_click.url or "docs" in state_click.url

@@ -282,8 +282,7 @@ async def test_cas_concurrency_retry_with_jitter():
 
     # Run 5 concurrent CAS updaters with automatic retry and jitter
     tasks = [
-        cas_retry_async(_failing_cas_updater, max_retries=10, initial_delay=0.01)
-        for _ in range(5)
+        cas_retry_async(_failing_cas_updater, max_retries=10, initial_delay=0.01) for _ in range(5)
     ]
     results = await asyncio.gather(*tasks)
     assert len(results) == 5
@@ -332,6 +331,7 @@ async def test_path_lock_manager_concurrency():
 
     # Verify disjoint paths do not block each other
     t0 = time.time()
+
     async def _writer_a():
         async with lock_mgr.acquire_write_lock(path_a):
             await asyncio.sleep(0.05)
@@ -363,11 +363,16 @@ async def test_tool_executor_semaphore_throttling(tmp_path: pathlib.Path):
         return {"ok": True, "res": "done"}
 
     from coderai.core.tools.types import ToolDefinition
+
     mock_def = ToolDefinition(name="test_concurrency_tool", handler=_mock_tool)
     executor.registry.register(mock_def)
 
     tool_calls = [
-        {"id": f"tc_{i}", "type": "function", "function": {"name": "test_concurrency_tool", "arguments": "{}"}}
+        {
+            "id": f"tc_{i}",
+            "type": "function",
+            "function": {"name": "test_concurrency_tool", "arguments": "{}"},
+        }
         for i in range(6)
     ]
 
@@ -438,7 +443,7 @@ async def test_async_hook_execution(tmp_path: pathlib.Path):
     assert "Async context test" in out.additional_context
 
     # Test hook with timeout
-    slow_cmd = "python3 -c \"import time; time.sleep(5)\""
+    slow_cmd = 'python3 -c "import time; time.sleep(5)"'
     out_timeout = await execute_hook_command_async(slow_cmd, payload, str(tmp_path), timeout_s=0.2)
     assert out_timeout.decision == "deny"
     assert "timed out" in (out_timeout.reason or "")

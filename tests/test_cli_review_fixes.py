@@ -500,4 +500,3 @@ def test_exit_summary_displays_full_session_id(tmp_path: pathlib.Path):
 
     stats = compute_session_stats(mgr, full_id)
     assert stats["session_id"] == full_id
-

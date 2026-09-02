@@ -261,7 +261,9 @@ def test_probe_provider_connectivity_no_key(monkeypatch: pytest.MonkeyPatch):
     assert "No API key" in msg
 
 
-def test_interactive_setup_wizard_subcommands(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch):
+def test_interactive_setup_wizard_subcommands(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+):
     fake_home = tmp_path / "fake_home"
     fake_home.mkdir()
     monkeypatch.setattr("coderai.core.settings._home", lambda: fake_home)
@@ -279,7 +281,9 @@ def test_interactive_setup_wizard_subcommands(tmp_path: pathlib.Path, monkeypatc
         run_setup_wizard(console, project_root=str(tmp_path), initial_subcommand="test")
 
 
-def test_main_cli_positional_setup_dispatch(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch):
+def test_main_cli_positional_setup_dispatch(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+):
     fake_home = tmp_path / "fake_home"
     fake_home.mkdir()
     monkeypatch.setattr("coderai.core.settings._home", lambda: fake_home)
@@ -355,4 +359,3 @@ def test_run_setup_wizard_exit_option():
     # Selecting the last item (exit option) or None (Esc/q)
     with patch("coderai.cli.setup_wizard.select_with_arrows", side_effect=[None]):
         run_setup_wizard(console)
-

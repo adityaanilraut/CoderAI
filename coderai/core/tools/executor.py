@@ -344,7 +344,6 @@ class ToolExecutor:
             list_session_events=get_hook("list_session_events"),
         )
 
-
     def _pre_execute_deny(
         self,
         tool_name: str,
@@ -541,16 +540,25 @@ class ToolExecutor:
                 res = await _invoke_mcp()
 
             if isinstance(res, ToolResult):
+                # ponytail: Kimi MCP_MAX_OUTPUT_CHARS=100k budget
+                if res.output and len(res.output) > 100_000:
+                    res.output = res.output[:100_000] + "\n...[truncated MCP output >100k]..."
                 return res
             if isinstance(res, dict):
+                out = res.get("output")
+                if isinstance(out, str) and len(out) > 100_000:
+                    out = out[:100_000] + "\n...[truncated MCP output >100k]..."
                 return ToolResult(
                     ok=res.get("ok", True),
                     name=tool_name,
-                    output=res.get("output"),
+                    output=out,
                     error=res.get("error"),
                     metadata=res.get("metadata"),
                 )
-            return ToolResult(ok=True, name=tool_name, output=str(res))
+            text = str(res)
+            if len(text) > 100_000:
+                text = text[:100_000] + "\n...[truncated MCP output >100k]..."
+            return ToolResult(ok=True, name=tool_name, output=text)
         except (TimeoutError, asyncio.TimeoutError):
             return ToolResult(
                 ok=False,
@@ -638,7 +646,9 @@ class ToolExecutor:
             return {"ok": True, "args": raw_arguments}
 
         cleaned = (
-            clean_json_string(raw_arguments) if isinstance(raw_arguments, str) else str(raw_arguments)
+            clean_json_string(raw_arguments)
+            if isinstance(raw_arguments, str)
+            else str(raw_arguments)
         )
         try:
             parsed = json.loads(cleaned)

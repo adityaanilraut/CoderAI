@@ -36,6 +36,7 @@ from coderai.core.tools.types import (
 # 1. Subagent Nesting Depth Limits & Token Budget Caps
 # ==============================================================================
 
+
 @pytest.mark.asyncio
 async def test_subagent_depth_limit(tmp_path: pathlib.Path):
     """Verify subagent spawning fails with recursion limit when depth > max_depth."""
@@ -112,6 +113,7 @@ async def test_subagent_token_budget_cap(tmp_path: pathlib.Path):
 # 2. Session Compaction Preservation Directives
 # ==============================================================================
 
+
 @pytest.mark.asyncio
 async def test_compaction_preservation_directives(tmp_path: pathlib.Path):
     """Verify preserved and pinned messages are excluded from shadowed IDs during compaction."""
@@ -141,7 +143,9 @@ async def test_compaction_preservation_directives(tmp_path: pathlib.Path):
             session_id=sid,
             role="assistant",
             content="Let me read files",
-            tool_calls=[{"id": "tc1", "type": "function", "function": {"name": "read", "arguments": "{}"}}],
+            tool_calls=[
+                {"id": "tc1", "type": "function", "function": {"name": "read", "arguments": "{}"}}
+            ],
         ),
         SessionMessage(
             id="msg_3",
@@ -158,7 +162,9 @@ async def test_compaction_preservation_directives(tmp_path: pathlib.Path):
     mgr.session_store.replace_rows(sid, [m.to_dict() for m in messages])
 
     # Mock _create_completion on manager to avoid external API calls
-    async def mock_create_completion(client: Any, request: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+    async def mock_create_completion(
+        client: Any, request: dict[str, Any], **kwargs: Any
+    ) -> dict[str, Any]:
         return {
             "choices": [{"message": {"content": "## Primary Request and Intent\n- Goal"}}],
             "usage": {"total_tokens": 150},
@@ -182,6 +188,7 @@ async def test_compaction_preservation_directives(tmp_path: pathlib.Path):
 # 3. Session Store Event Replay & Invariant Self-Healing
 # ==============================================================================
 
+
 def test_session_store_replay_and_invariant_repair(tmp_path: pathlib.Path):
     """Verify session store replays events and self-heals unfulfilled tool calls."""
     store = JsonlSessionStore(project_root=str(tmp_path))
@@ -195,7 +202,13 @@ def test_session_store_replay_and_invariant_repair(tmp_path: pathlib.Path):
             "session_id": sid,
             "role": "assistant",
             "content": "calling tool",
-            "tool_calls": [{"id": "tc_dangling", "type": "function", "function": {"name": "test_fn", "arguments": "{}"}}],
+            "tool_calls": [
+                {
+                    "id": "tc_dangling",
+                    "type": "function",
+                    "function": {"name": "test_fn", "arguments": "{}"},
+                }
+            ],
         },
         # Missing tool result for tc_dangling!
         {"id": "m3", "session_id": sid, "role": "user", "content": "next turn prompt"},
@@ -229,6 +242,7 @@ def test_session_store_replay_and_invariant_repair(tmp_path: pathlib.Path):
 # 4. Skill Deprecation & Version Negotiation
 # ==============================================================================
 
+
 def test_skill_frontmatter_version_and_deprecation():
     """Verify skill frontmatter parses version, min_runtime_version, and deprecated fields."""
     skill_content = """---
@@ -247,12 +261,14 @@ Do some SQL.
     assert meta.get("min_runtime_version") == "1.5.0"
     assert meta.get("deprecated") == "Use modern-sql-pipeline instead"
 
-    rendered = render_skill_document_block({
-        "name": "legacy-sql-tool",
-        "content": skill_content,
-        "version": meta.get("version"),
-        "deprecated": meta.get("deprecated"),
-    })
+    rendered = render_skill_document_block(
+        {
+            "name": "legacy-sql-tool",
+            "content": skill_content,
+            "version": meta.get("version"),
+            "deprecated": meta.get("deprecated"),
+        }
+    )
 
     assert 'version="2.1.0"' in rendered
     assert 'deprecated="Use modern-sql-pipeline instead"' in rendered
@@ -262,6 +278,7 @@ Do some SQL.
 # ==============================================================================
 # 5. Tool Sliding-Window Rate Limiting
 # ==============================================================================
+
 
 @pytest.mark.asyncio
 async def test_sliding_window_rate_limiter():
@@ -307,7 +324,11 @@ async def test_tool_executor_rate_limiting(tmp_path: pathlib.Path):
     # Call 1: should succeed
     res1 = await executor.execute_tool_call(
         "test_session",
-        {"id": "c1", "type": "function", "function": {"name": "rate_limited_fn", "arguments": "{}"}},
+        {
+            "id": "c1",
+            "type": "function",
+            "function": {"name": "rate_limited_fn", "arguments": "{}"},
+        },
     )
     assert res1.ok is True
     assert "success 1" in (res1.output or "")
@@ -315,7 +336,11 @@ async def test_tool_executor_rate_limiting(tmp_path: pathlib.Path):
     # Call 2: immediately afterwards should be rate limited
     res2 = await executor.execute_tool_call(
         "test_session",
-        {"id": "c2", "type": "function", "function": {"name": "rate_limited_fn", "arguments": "{}"}},
+        {
+            "id": "c2",
+            "type": "function",
+            "function": {"name": "rate_limited_fn", "arguments": "{}"},
+        },
     )
     assert res2.ok is False
     assert "ToolRateLimitExceeded" in (res2.error or "")

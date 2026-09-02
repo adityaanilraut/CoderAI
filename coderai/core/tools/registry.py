@@ -305,7 +305,6 @@ class ToolRegistry:
         """Check if a tool exists and is permitted in the given scope."""
         return self.get(name, scope=scope) is not None
 
-
     def resolve_name(self, name: str) -> str | None:
         """Return the canonical registered name for a name or alias."""
         canonical = self._global_layer.aliases.get(name, name)
@@ -945,7 +944,7 @@ class ToolRegistry:
         self.register(
             define_tool(
                 name="Task",
-                description="Spawn an isolated sub-agent session for complex, modular, or exploratory tasks.",
+                description="Spawn an isolated sub-agent session for complex, modular, or exploratory tasks. Give it a complete, standalone prompt: it does not share this conversation's context.",
                 parameters={
                     "description": {
                         "type": "string",
@@ -953,32 +952,7 @@ class ToolRegistry:
                     },
                     "prompt": {
                         "type": "string",
-                        "description": "Detailed instructions and context for the sub-agent.",
-                    },
-                    "mode": {
-                        "type": "string",
-                        "enum": ["read_only", "general"],
-                        "description": "Execution permissions mode for the sub-agent (default: 'read_only').",
-                    },
-                    "timeout_seconds": {
-                        "type": "number",
-                        "description": "Maximum execution time in seconds (default: 90).",
-                    },
-                    "context": {
-                        "type": "string",
-                        "description": "Optional additional context or code snippets.",
-                    },
-                    "depth": {
-                        "type": "integer",
-                        "description": "Current subagent nesting depth.",
-                    },
-                    "max_depth": {
-                        "type": "integer",
-                        "description": "Maximum allowed subagent nesting depth.",
-                    },
-                    "token_budget": {
-                        "type": "integer",
-                        "description": "Maximum cumulative token budget for the subagent run.",
+                        "description": "The complete, self-contained task for the subagent. It does not share this conversation's context, so include everything it needs.",
                     },
                     "run_in_background": {
                         "type": "boolean",
@@ -1005,31 +979,6 @@ class ToolRegistry:
                         "type": "string",
                         "description": "Detailed instructions for the sub-agent.",
                     },
-                    "mode": {
-                        "type": "string",
-                        "enum": ["read_only", "general"],
-                        "description": "Execution permissions mode for the sub-agent (default: 'read_only').",
-                    },
-                    "timeout_seconds": {
-                        "type": "number",
-                        "description": "Optional timeout in seconds for sub-agent completion (default: 90).",
-                    },
-                    "context": {
-                        "type": "string",
-                        "description": "Optional additional context snippets or file excerpts.",
-                    },
-                    "depth": {
-                        "type": "integer",
-                        "description": "Current subagent nesting depth.",
-                    },
-                    "max_depth": {
-                        "type": "integer",
-                        "description": "Maximum allowed subagent nesting depth.",
-                    },
-                    "token_budget": {
-                        "type": "integer",
-                        "description": "Maximum cumulative token budget for the subagent run.",
-                    },
                     "run_in_background": {
                         "type": "boolean",
                         "description": "Whether to run in the background and return a durable subagent id immediately. Defaults to true. Set false to wait for the result when your next action depends on it.",
@@ -1054,31 +1003,6 @@ class ToolRegistry:
                     "prompt": {
                         "type": "string",
                         "description": "Detailed instructions for the sub-agent.",
-                    },
-                    "mode": {
-                        "type": "string",
-                        "enum": ["read_only", "general"],
-                        "description": "Execution permissions mode for the sub-agent (default: 'read_only').",
-                    },
-                    "timeout_seconds": {
-                        "type": "number",
-                        "description": "Optional timeout in seconds for sub-agent completion (default: 90).",
-                    },
-                    "context": {
-                        "type": "string",
-                        "description": "Optional additional context snippets or file excerpts.",
-                    },
-                    "depth": {
-                        "type": "integer",
-                        "description": "Current subagent nesting depth.",
-                    },
-                    "max_depth": {
-                        "type": "integer",
-                        "description": "Maximum allowed subagent nesting depth.",
-                    },
-                    "token_budget": {
-                        "type": "integer",
-                        "description": "Maximum cumulative token budget for the subagent run.",
                     },
                     "run_in_background": {
                         "type": "boolean",
@@ -1533,7 +1457,10 @@ class ToolRegistry:
                         "description": "Optional JSON input exposed to the script as the `args` global.",
                     },
                     # Legacy declarative-workflow parameters (backward compatible)
-                    "workflow": {"type": "object", "description": "Legacy workflow definition schema."},
+                    "workflow": {
+                        "type": "object",
+                        "description": "Legacy workflow definition schema.",
+                    },
                     "action": {"type": "string", "enum": ["run", "status", "cancel", "list"]},
                     "workflow_id": {"type": "string"},
                 },
@@ -1593,7 +1520,10 @@ class ToolRegistry:
                     "rounds. Do not use this for trivial single-turn work."
                 ),
                 parameters={
-                    "objective": {"type": "string", "description": "The concrete completion objective."},
+                    "objective": {
+                        "type": "string",
+                        "description": "The concrete completion objective.",
+                    },
                     "max_goal_rounds": {
                         "type": "integer",
                         "description": "Optional positive safe-integer limit on automatic continuation rounds.",
@@ -1616,12 +1546,18 @@ class ToolRegistry:
                 ),
                 parameters={
                     "goal_id": {"type": "string", "description": "Exact id returned by get_goal."},
-                    "revision": {"type": "integer", "description": "Exact positive revision returned by get_goal."},
+                    "revision": {
+                        "type": "integer",
+                        "description": "Exact positive revision returned by get_goal.",
+                    },
                     "action": {
                         "type": "string",
                         "enum": ["edit", "pause", "resume", "complete", "blocked"],
                     },
-                    "objective": {"type": "string", "description": "Replacement objective; valid only with action edit."},
+                    "objective": {
+                        "type": "string",
+                        "description": "Replacement objective; valid only with action edit.",
+                    },
                     "max_goal_rounds": {
                         "type": "integer",
                         "description": "Replacement cap; valid only with action edit.",

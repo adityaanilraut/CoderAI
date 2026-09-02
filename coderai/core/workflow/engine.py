@@ -379,8 +379,7 @@ def _call_with_arity(stage: Callable[..., Any], value: Any, item: Any, index: in
             [
                 p
                 for p in sig.parameters.values()
-                if p.kind
-                in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+                if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
             ]
         )
     except (TypeError, ValueError):
@@ -453,7 +452,9 @@ class WorkflowEngine:
         if raw_opts is None:
             return {}
         if not isinstance(raw_opts, dict):
-            raise WorkflowError("agent() options must be an object", WorkflowErrorCode.INVALID_ARGUMENT)
+            raise WorkflowError(
+                "agent() options must be an object", WorkflowErrorCode.INVALID_ARGUMENT
+            )
         opts: dict[str, Any] = {}
         for key, value in raw_opts.items():
             if key in SUPPORTED_AGENT_OPTIONS:
@@ -530,7 +531,9 @@ class WorkflowEngine:
                 mode=opts.get("mode", "general"),
                 timeout_seconds=float(opts.get("timeout_seconds", 90.0)),
                 max_iterations=int(opts.get("max_iterations", 20)),
-                depth=opts.get("depth") if isinstance(opts.get("depth"), int) else self._child_depth(),
+                depth=opts.get("depth")
+                if isinstance(opts.get("depth"), int)
+                else self._child_depth(),
                 parent_session_id=self.context.parent_session_id,
                 allowed_tools=opts.get("allowed_tools"),
                 extra_context=opts.get("extra_context"),
@@ -607,9 +610,7 @@ class WorkflowEngine:
                 self._emit_agent_end(info, "cancelled")
                 raise self.context.cancelled_error()
             self._emit_agent_end(info, "failed")
-            raise WorkflowError(
-                f"child agent run failed: {exc}", WorkflowErrorCode.AGENT_RESULT
-            )
+            raise WorkflowError(f"child agent run failed: {exc}", WorkflowErrorCode.AGENT_RESULT)
 
     async def agent(self, prompt: str, opts: dict[str, Any] | None = None) -> dict[str, Any]:
         """Legacy dict-returning agent primitive (backward-compatible view over
@@ -793,7 +794,9 @@ class WorkflowEngine:
 # ---------------------------------------------------------------------------
 
 
-def _workflow_globals(engine: WorkflowEngine, context: WorkflowContext, args_dict: dict[str, Any]) -> dict[str, Any]:
+def _workflow_globals(
+    engine: WorkflowEngine, context: WorkflowContext, args_dict: dict[str, Any]
+) -> dict[str, Any]:
     return {
         "__name__": "__workflow__",
         "__doc__": None,

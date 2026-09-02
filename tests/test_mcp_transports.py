@@ -14,6 +14,7 @@ from coderai.core.mcp.manager import McpManager
 
 class MockSseServerHandler(http.server.BaseHTTPRequestHandler):
     """Mock HTTP SSE server for testing SseMcpTransport."""
+
     protocol_version = "HTTP/1.1"
 
     def log_message(self, format, *args):

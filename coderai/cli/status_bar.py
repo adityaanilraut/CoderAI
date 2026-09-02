@@ -6,9 +6,18 @@ from typing import Any
 
 from rich.text import Text
 
-from coderai.cli.statusline import StatuslineEngine, compute_token_gauge
+from coderai.cli.statusline import (
+    StatuslineEngine,
+    compute_token_gauge,
+    format_streamlined_status_bar,
+)
 
-__all__ = ["compute_token_gauge", "format_status_bar", "render_status_bar"]
+__all__ = [
+    "compute_token_gauge",
+    "format_status_bar",
+    "format_streamlined_status_bar",
+    "render_status_bar",
+]
 
 _ENGINE = StatuslineEngine()
 

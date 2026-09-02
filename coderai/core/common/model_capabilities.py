@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 THINKING_CAPABLE_MODELS = {
-    "deepseek-v4-flash",
     "deepseek-v4-pro",
     "gemini-3.7-flash",
     "gpt-5.6-sol",
@@ -37,8 +36,10 @@ ALL_REASONING_EFFORTS = ["off", "low", "medium", "high", "max"]
 
 
 def defaults_to_thinking_mode(model: str) -> bool:
-    """Return True if the model defaults to or supports deep thinking/reasoning mode."""
+    """Return True if the model defaults to deep thinking/reasoning mode."""
     m = model.strip().lower()
+    if m in ("deepseek-v4-flash", "gpt-5.6-luna"):
+        return False
     if m in THINKING_CAPABLE_MODELS:
         return True
     if any(
@@ -50,7 +51,7 @@ def defaults_to_thinking_mode(model: str) -> bool:
             "deepseek-reasoner",
             "deepseek-r1",
             "claude-3-7",
-            "deepseek-v4",
+            "deepseek-v4-pro",
         )
     ):
         return True
@@ -59,7 +60,12 @@ def defaults_to_thinking_mode(model: str) -> bool:
 
 def get_supported_reasoning_efforts(model: str) -> list[str]:
     """Return the list of supported reasoning efforts for a given model."""
-    if defaults_to_thinking_mode(model):
+    m = model.strip().lower()
+    if defaults_to_thinking_mode(model) or m in (
+        "deepseek-v4-flash",
+        "gemini-3.7-flash",
+        "deepseek-v4-pro",
+    ):
         return ["off", "low", "medium", "high", "max"]
     return ["off"]
 
@@ -93,9 +99,6 @@ def resolve_adaptive_reasoning_effort(
       to avoid 500+ token reasoning stalls during routine inspection and file updates.
     """
     m = model.strip().lower()
-    if not defaults_to_thinking_mode(m):
-        return "off"
-
     if explicit_effort and explicit_effort not in ("adaptive", "auto"):
         return explicit_effort
 

@@ -70,21 +70,18 @@ def classify_llm_failure(error: Any) -> str | None:
         or "too many requests" in combined
     ):
         return "RATE_LIMIT"
-    if (
-        (isinstance(status, int) and 500 <= status <= 599)
-        or any(
-            tok in combined
-            for tok in (
-                "500",
-                "502",
-                "503",
-                "504",
-                "internal server error",
-                "service unavailable",
-                "bad gateway",
-                "gateway timeout",
-                "server_error",
-            )
+    if (isinstance(status, int) and 500 <= status <= 599) or any(
+        tok in combined
+        for tok in (
+            "500",
+            "502",
+            "503",
+            "504",
+            "internal server error",
+            "service unavailable",
+            "bad gateway",
+            "gateway timeout",
+            "server_error",
         )
     ):
         return "SERVER"
@@ -103,7 +100,6 @@ def is_failover_eligible(error: Any) -> bool:
     """Check if an LLM error qualifies for multi-model failover cascade."""
     code = classify_llm_failure(error)
     return code in FAILOVER_ELIGIBLE_CODES
-
 
 
 def is_empty_llm_response(response: dict[str, Any] | None) -> bool:

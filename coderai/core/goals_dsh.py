@@ -226,7 +226,9 @@ class DSHGoalStore:
         if max_goal_rounds is None:
             max_goal_rounds = defaults["max_goal_rounds"]
         if not isinstance(max_goal_rounds, int) or max_goal_rounds < 1:
-            raise GoalError("maxGoalRounds must be a positive safe integer", "GOAL_INVALID_MAX_ROUNDS")
+            raise GoalError(
+                "maxGoalRounds must be a positive safe integer", "GOAL_INVALID_MAX_ROUNDS"
+            )
         objective = (objective or "").strip()
         if not objective:
             raise GoalError("objective must be a non-empty string", "GOAL_INVALID_OBJECTIVE")
@@ -256,7 +258,9 @@ class DSHGoalStore:
     ) -> DSHGoal:
         goal = self.get_ref(session_id, ref.id, ref.revision)
         if objective is None and max_goal_rounds is None:
-            raise GoalError("goal edit requires objective and/or maxGoalRounds", "GOAL_INVALID_EDIT")
+            raise GoalError(
+                "goal edit requires objective and/or maxGoalRounds", "GOAL_INVALID_EDIT"
+            )
         changes: dict[str, Any] = {}
         if objective is not None:
             stripped = objective.strip()

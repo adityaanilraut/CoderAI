@@ -128,7 +128,11 @@ def render_skill_document_block(skill: dict[str, Any]) -> str:
     resources = render_skill_resources(skill_file_path)
     dep_warning = ""
     if skill.get("deprecated"):
-        reason = f": {skill.get('deprecated')}" if isinstance(skill.get("deprecated"), str) and skill.get("deprecated") != "true" else ""
+        reason = (
+            f": {skill.get('deprecated')}"
+            if isinstance(skill.get("deprecated"), str) and skill.get("deprecated") != "true"
+            else ""
+        )
         dep_warning = f"> [!WARNING]\n> This skill is deprecated{reason}.\n\n"
     return f"<{name}-skill{path_attr}>\n{dep_warning}{content}{resources}\n</{name}-skill>"
 

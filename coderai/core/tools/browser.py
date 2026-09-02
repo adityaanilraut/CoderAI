@@ -189,7 +189,6 @@ class DOMExtractor(html.parser.HTMLParser):
             self._current_attrs = {}
             self._current_elem_text = []
 
-
     def handle_data(self, data: str) -> None:
         if self._in_script_or_style:
             return
@@ -268,7 +267,11 @@ class HeadlessBrowserDriver:
         if elem.href:
             target_url = urllib.parse.urljoin(self.state.url, elem.href)
             self.navigate(target_url)
-            return True, f"Clicked [#{elem.ref_id}] <{elem.tag}> and navigated to {target_url}", self.state
+            return (
+                True,
+                f"Clicked [#{elem.ref_id}] <{elem.tag}> and navigated to {target_url}",
+                self.state,
+            )
 
         return True, f"Clicked [#{elem.ref_id}] <{elem.tag}> '{elem.text}'", self.state
 

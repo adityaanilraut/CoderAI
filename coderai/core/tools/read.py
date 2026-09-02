@@ -27,7 +27,9 @@ DEFAULT_LINE_LIMIT = 2000
 MAX_LINE_LENGTH = 2000
 LINE_NUMBER_WIDTH = 6
 READ_MAX_BYTES = 50 * 1024  # DSH READ_MAX_BYTES cap
-STREAM_MIN_SIZE = 10 * 1024 * 1024  # DSH streaming threshold; Python reads whole but documents ceiling
+STREAM_MIN_SIZE = (
+    10 * 1024 * 1024
+)  # DSH streaming threshold; Python reads whole but documents ceiling
 # ponytail: whole-file read; streaming via chunked scan if large files cause OOM
 
 DEFAULT_GITIGNORE = [
@@ -423,7 +425,11 @@ def _parse_line_limit(value: Any) -> tuple[bool, int, str | None]:
         if integer <= 0:
             return False, DEFAULT_LINE_LIMIT, "limit must be a positive integer"
         if integer > DEFAULT_LINE_LIMIT:
-            return False, DEFAULT_LINE_LIMIT, f"limit must be less than or equal to {DEFAULT_LINE_LIMIT}"
+            return (
+                False,
+                DEFAULT_LINE_LIMIT,
+                f"limit must be less than or equal to {DEFAULT_LINE_LIMIT}",
+            )
         return True, integer, None
     try:
         integer = int(value)  # type: ignore[arg-type]
@@ -434,7 +440,11 @@ def _parse_line_limit(value: Any) -> tuple[bool, int, str | None]:
     if integer <= 0:
         return False, DEFAULT_LINE_LIMIT, "limit must be a positive integer"
     if integer > DEFAULT_LINE_LIMIT:
-        return False, DEFAULT_LINE_LIMIT, f"limit must be less than or equal to {DEFAULT_LINE_LIMIT}"
+        return (
+            False,
+            DEFAULT_LINE_LIMIT,
+            f"limit must be less than or equal to {DEFAULT_LINE_LIMIT}",
+        )
     return True, integer, None
 
 
@@ -652,7 +662,11 @@ def handle_read_tool(args: dict[str, Any], context: Any) -> ToolResult:
     for idx in range(start_index, min(start_index + limit, total_lines)):
         raw_line = lines[idx]
         # apply line truncation first for byte counting (matches DSH truncateLine)
-        display_line = raw_line[:MAX_LINE_LENGTH] + f"... (line truncated to {MAX_LINE_LENGTH} chars)" if len(raw_line) > MAX_LINE_LENGTH else raw_line
+        display_line = (
+            raw_line[:MAX_LINE_LENGTH] + f"... (line truncated to {MAX_LINE_LENGTH} chars)"
+            if len(raw_line) > MAX_LINE_LENGTH
+            else raw_line
+        )
         bsize = len(display_line.encode("utf-8")) + (1 if selected else 0)
         if output_bytes + bsize > READ_MAX_BYTES:
             truncated_by_bytes = True
@@ -685,9 +699,7 @@ def handle_read_tool(args: dict[str, Any], context: Any) -> ToolResult:
 
     # DSH formatReadOutput footers: capped > paged > eof
     if truncated_by_bytes:
-        formatted_output = (
-            f"{formatted_output}\n\n(Output capped. Showing lines {start_line}-{end_line}. Use offset={end_line + 1} to continue.)"
-        )
+        formatted_output = f"{formatted_output}\n\n(Output capped. Showing lines {start_line}-{end_line}. Use offset={end_line + 1} to continue.)"
     elif end_line < total_lines:
         formatted_output = (
             f"{formatted_output}\n\n(Showing lines {start_line}-{end_line} of {total_lines}. "

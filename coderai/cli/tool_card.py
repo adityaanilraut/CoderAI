@@ -6,8 +6,10 @@ import json
 from typing import Any
 
 
+from rich.markup import escape
+
 from coderai.cli.diff_render import render_diff_preview
-from coderai.cli.plan_render import render_plan_preview
+from coderai.cli.plan_render import render_todo_list
 from coderai.core.session import SessionMessage
 
 _RICH = True
@@ -37,6 +39,28 @@ def parse_tool_message(message: SessionMessage) -> tuple[str, str, bool, dict[st
         return "tool", content[:120], True, metadata
 
 
+def _render_collapsible_block(
+    console: Any,
+    lines: list[str],
+    preview_limit: int = 8,
+    indent: str = "      [dim]│[/] ",
+) -> None:
+    """Render lines with collapsible preview (changed-lines-only style).
+
+    Shows first preview_limit lines + hint for remaining (Kimi-style).
+    """
+    if not lines:
+        return
+    shown = lines[:preview_limit]
+    for line in shown:
+        # Escape unless already styled
+        text = line if line.startswith("[") and line.endswith("]") else escape(line)
+        console.print(f"{indent}{text}")
+    remaining = len(lines) - len(shown)
+    if remaining > 0:
+        console.print(f"      [dim italic]... {remaining} more lines (press Enter to expand)[/]")
+
+
 def _render_bash_card(
     console: Any,
     output_text: str | None,
@@ -44,37 +68,34 @@ def _render_bash_card(
     metadata: dict[str, Any],
     ok: bool,
 ) -> None:
-    """Render a compact terminal command output event."""
+    """Render a compact terminal command output event with collapsible streaming."""
     cmd = metadata.get("command") or ""
     exit_code = metadata.get("exit_code") if "exit_code" in metadata else (0 if ok else 1)
     status_style = "bold green" if ok else "bold red"
     status_text = f"exit {exit_code}" if exit_code is not None else ("ok" if ok else "failed")
+    elapsed = metadata.get("duration_ms") or metadata.get("elapsed_ms")
+    elapsed_str = f" [dim]({elapsed:.0f}ms)[/]" if isinstance(elapsed, (int, float)) else ""
 
     header_text = (
-        f"    ↳ [bold cyan]$ {cmd}[/] [{status_style}]({status_text})[/]"
+        f"    ↳ [bold cyan]$ {escape(cmd)}[/] [{status_style}]({status_text})[/]{elapsed_str}"
         if cmd
-        else f"    ↳ [{status_style}]Shell Output ({status_text})[/]"
+        else f"    ↳ [{status_style}]Shell Output ({status_text})[/]{elapsed_str}"
     )
 
     if console is not None and _RICH:
+        # Grouped block with side border (Kimi-style)
+
         console.print(header_text)
         content_lines: list[str] = []
         if output_text and output_text.strip():
             content_lines.extend(output_text.strip().splitlines())
         if error_text and error_text.strip():
             content_lines.extend(
-                f"[bold red]Error:[/] {line}" for line in error_text.strip().splitlines()
+                f"[bold red]Error:[/] {escape(line)}" for line in error_text.strip().splitlines()
             )
 
         if content_lines:
-            limit = 20
-            displayed = content_lines[:limit]
-            for line in displayed:
-                console.print(f"      [dim]│[/] {line}")
-            if len(content_lines) > limit:
-                console.print(
-                    f"      [dim]... ({len(content_lines) - limit} more lines truncated)[/]"
-                )
+            _render_collapsible_block(console, content_lines, preview_limit=12)
     else:
         plain_header = (
             f"    ↳ $ {cmd} ({status_text})" if cmd else f"    ↳ Shell Output ({status_text})"
@@ -184,7 +205,7 @@ def _render_fetch_card(
 def _render_read_card(
     console: Any, file_path: str, metadata: dict[str, Any], output_text: str | None
 ) -> None:
-    """Render a compact file slice inspection event."""
+    """Render a compact file slice inspection event with syntax highlighting."""
     snip_id = metadata.get("snippet_id")
     lines_cnt = metadata.get("line_count")
     offset = metadata.get("offset", 1)
@@ -207,12 +228,24 @@ def _render_read_card(
         if output_text and output_text.strip():
             lines = output_text.strip().splitlines()
             display_limit = 15
-            for idx, line in enumerate(lines[:display_limit]):
-                line_no = (offset or 1) + idx
-                console.print(f"      [dim]{line_no:>4} │[/] {line}")
+            # Try syntax highlighting per file extension
+            try:
+                from coderai.cli.syntax_theme import KimiSyntax
+
+                ext = file_path.rsplit(".", 1)[-1] if "." in file_path else "text"
+                # Highlight as a block for better token colors
+                code = "\n".join(lines[:display_limit])
+                syntax = KimiSyntax(
+                    code, ext, theme="kimi-ansi", line_numbers=True, start_line=offset or 1
+                )
+                console.print(syntax)
+            except Exception:
+                for idx, line in enumerate(lines[:display_limit]):
+                    line_no = (offset or 1) + idx
+                    console.print(f"      [dim]{line_no:>4} │[/] {escape(line)}")
             if len(lines) > display_limit:
                 console.print(
-                    f"      [dim]... ({len(lines) - display_limit} more lines truncated)[/]"
+                    f"      [dim italic]... ({len(lines) - display_limit} more lines hidden — press Enter to expand)[/]"
                 )
     else:
         print(
@@ -230,9 +263,9 @@ def _render_search_grep_card(
         len(output_text.splitlines()) if output_text else 0
     )
 
-    title = f"    ↳ [bold cyan]Search:[/] [bold yellow]'{query}'[/]"
+    title = f"    ↳ [bold cyan]Search:[/] [bold yellow]'{escape(query)}'[/]"
     if path:
-        title += f" in [dim]{path}[/]"
+        title += f" in [dim]{escape(path)}[/]"
     title += f" [dim]({matches_count} matches)[/]"
 
     if console is not None and _RICH:
@@ -240,9 +273,9 @@ def _render_search_grep_card(
         if output_text and output_text.strip():
             lines = output_text.strip().splitlines()
             for line in lines[:15]:
-                console.print(f"      [dim]│[/] {line}")
+                console.print(f"      [dim]│[/] {escape(line)}")
             if len(lines) > 15:
-                console.print(f"      [dim]... ({len(lines) - 15} more matches truncated)[/]")
+                console.print(f"      [dim]... ({len(lines) - 15} more matches hidden)[/]")
     elif output_text:
         print(f"    ↳ Search '{query}': {matches_count} matches")
 
@@ -257,7 +290,7 @@ def _render_lsp_card(
     if console is not None and _RICH:
         diag_count = len(diagnostics) if diagnostics else (1 if output_text else 0)
         console.print(
-            f"    ↳ [bold yellow]LSP Diagnostics:[/] [bold cyan]{file_path}[/] [dim]({diag_count} issues)[/]"
+            f"    ↳ [bold yellow]LSP Diagnostics:[/] [bold cyan]{escape(file_path)}[/] [dim]({diag_count} issues)[/]"
         )
         if diagnostics:
             for diag in diagnostics[:10]:
@@ -268,11 +301,11 @@ def _render_lsp_card(
                     else ("[bold yellow]WARN[/]" if "warn" in sev else "[dim cyan]INFO[/]")
                 )
                 line_col = f"L{diag.get('line', 1)}:C{diag.get('col', 1)}"
-                msg = diag.get("message", "")
-                code = f" [dim]({diag.get('code')})[/]" if diag.get("code") else ""
+                msg = escape(str(diag.get("message", "")))
+                code = f" [dim]({escape(str(diag.get('code')))})[/]" if diag.get("code") else ""
                 console.print(f"      {sev_badge} [dim cyan]{line_col}[/] {msg}{code}")
         elif output_text and output_text.strip():
-            console.print(f"      {output_text.strip()}")
+            console.print(f"      {escape(output_text.strip())}")
     elif output_text:
         print(f"    ↳ LSP: {file_path}\n      {output_text.strip()}")
 
@@ -286,7 +319,7 @@ def _render_subagent_card(
     status = "completed" if ok else "failed"
     status_style = "bold green" if ok else "bold red"
 
-    title = f"    ↳ [bold magenta]Subagent:[/] [white]{task_name}[/] [{status_style}]({status})[/]"
+    title = f"    ↳ [bold magenta]Subagent:[/] [white]{escape(task_name)}[/] [{status_style}]({status})[/]"
     if agent_id:
         title += f" [dim]id:{agent_id[:8]}[/]"
 
@@ -295,7 +328,7 @@ def _render_subagent_card(
         if output_text and output_text.strip():
             lines = output_text.strip().splitlines()[:10]
             for line in lines:
-                console.print(f"      [dim]│[/] {line}")
+                console.print(f"      [dim]│[/] {escape(line)}")
     elif output_text:
         print(f"    ↳ Subagent {task_name}: {status}")
 
@@ -308,13 +341,17 @@ def _render_session_card(
     results_count = metadata.get("count") or (len(output_text.splitlines()) if output_text else 0)
     status_style = "bold green" if ok else "bold red"
 
-    title = f"    ↳ [bold cyan]Session Query:[/] [bold yellow]'{query}'[/] [{status_style}]({results_count} events)[/]" if query else f"    ↳ [bold cyan]Session Query[/] [{status_style}]({results_count} events)[/]"
+    title = (
+        f"    ↳ [bold cyan]Session Query:[/] [bold yellow]'{escape(query)}'[/] [{status_style}]({results_count} events)[/]"
+        if query
+        else f"    ↳ [bold cyan]Session Query[/] [{status_style}]({results_count} events)[/]"
+    )
 
     if console is not None and _RICH:
         console.print(title)
         if output_text and output_text.strip():
             for line in output_text.strip().splitlines()[:10]:
-                console.print(f"      [dim]│[/] {line}")
+                console.print(f"      [dim]│[/] {escape(line)}")
     elif output_text:
         print(f"    ↳ Session Query: {results_count} events")
 
@@ -334,14 +371,15 @@ def _render_code_mode_card(
         console.print(title)
         if output_text and output_text.strip():
             for line in output_text.strip().splitlines()[:15]:
-                console.print(f"      [dim]│[/] {line}")
+                console.print(f"      [dim]│[/] {escape(line)}")
     elif output_text:
         print(f"    ↳ Python Code Mode: {status}")
 
 
 def render_tool_card(console: Any | None, message: SessionMessage) -> None:
-    """Render a compact sequential tool result event with status, diffs, terminal outputs, and checklists."""
+    """Render a compact sequential tool result event with grouped blocks, collapsible output, and status."""
     name, summary_text, ok, metadata = parse_tool_message(message)
+    # Kimi-style bullet: green dot ok, dark_red error, with spinner semantics
     bullet = "[bold green]●[/]" if ok else "[bold red]✗[/]"
 
     raw_output: str | None = None
@@ -355,7 +393,7 @@ def render_tool_card(console: Any | None, message: SessionMessage) -> None:
 
     if console is not None and _RICH:
         # Display main tool status line
-        console.print(f"  {bullet} [bold cyan]{name}[/] [dim]•[/] [white]{summary_text}[/]")
+        console.print(f"  {bullet} [bold cyan]{name}[/] [dim]•[/] [white]{escape(summary_text)}[/]")
 
         # Tool-specific compact events
         if metadata:
@@ -367,14 +405,21 @@ def render_tool_card(console: Any | None, message: SessionMessage) -> None:
                 card_title = f"{name}: {file_path}" if file_path else f"{name} Changes"
                 render_diff_preview(console, diff_text, title=card_title)
 
-            # Plan preview for UpdatePlan
+            # Plan / Todo preview for UpdatePlan / todo_write / SetTodoList
+            todos_data = metadata.get("todos")
             plan_text = metadata.get("plan")
-            if (
-                name in ("UpdatePlan", "update_plan", "write_plan")
-                and isinstance(plan_text, str)
-                and plan_text.strip()
+            if name in (
+                "todo_write",
+                "SetTodoList",
+                "set_todo_list",
+                "UpdatePlan",
+                "update_plan",
+                "write_plan",
             ):
-                render_plan_preview(console, plan_text, title="Updated Plan")
+                if todos_data and isinstance(todos_data, list):
+                    render_todo_list(console, todos_data, title="Todo")
+                elif isinstance(plan_text, str) and plan_text.strip():
+                    render_todo_list(console, plan_text, title="Todo")
 
             # Bash tool card
             if name in ("bash", "Bash", "terminal"):
@@ -401,7 +446,13 @@ def render_tool_card(console: Any | None, message: SessionMessage) -> None:
                 _render_subagent_card(console, raw_output, metadata, ok)
 
             # Session query / trace card
-            elif name in ("session_query", "session_search", "session_trace", "session_event_search", "session_event_read"):
+            elif name in (
+                "session_query",
+                "session_search",
+                "session_trace",
+                "session_event_search",
+                "session_event_read",
+            ):
                 _render_session_card(console, raw_output, metadata, ok)
 
             # Code mode card
@@ -418,10 +469,17 @@ def render_tool_card(console: Any | None, message: SessionMessage) -> None:
             diff_text = metadata.get("diff_preview")
             if isinstance(diff_text, str) and diff_text.strip():
                 render_diff_preview(None, diff_text, title=f"{name} Changes")
+            todos_data = metadata.get("todos")
             plan_text = metadata.get("plan")
-            if (
-                name in ("UpdatePlan", "update_plan")
-                and isinstance(plan_text, str)
-                and plan_text.strip()
+            if name in (
+                "todo_write",
+                "SetTodoList",
+                "set_todo_list",
+                "UpdatePlan",
+                "update_plan",
+                "write_plan",
             ):
-                render_plan_preview(None, plan_text, title="Updated Plan")
+                if todos_data and isinstance(todos_data, list):
+                    render_todo_list(None, todos_data, title="Todo")
+                elif isinstance(plan_text, str) and plan_text.strip():
+                    render_todo_list(None, plan_text, title="Todo")

@@ -212,7 +212,9 @@ async def test_subagent_spec_isolated_cwd_and_dry_run(tmp_path: pathlib.Path):
 def test_llm_failure_classification_and_failover_eligibility():
     """Verify error classification for CONTEXT_OVERFLOW, QUOTA_EXCEEDED, RATE_LIMIT, and SERVER."""
     # Context length exceeded
-    err_context = Exception("Error: context_length_exceeded: maximum context length is 128000 tokens")
+    err_context = Exception(
+        "Error: context_length_exceeded: maximum context length is 128000 tokens"
+    )
     assert classify_llm_failure(err_context) == "CONTEXT_OVERFLOW"
     assert is_failover_eligible(err_context) is True
 
@@ -251,7 +253,9 @@ async def test_session_manager_multi_model_fallback_cascade(tmp_path: pathlib.Pa
 
     models_called: list[str] = []
 
-    async def mock_create_completion(client: Any, req: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+    async def mock_create_completion(
+        client: Any, req: dict[str, Any], **kwargs: Any
+    ) -> dict[str, Any]:
         called_model = req.get("model", "")
         models_called.append(called_model)
         if called_model == "primary-model":

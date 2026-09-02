@@ -155,7 +155,9 @@ class LifecycleCoordinator:
         self._active_sessions.discard(session_id)
         self.tree.unregister_node(session_id)
 
-    async def cancel_session_cascade(self, session_id: str, reason: str = "SIGINT") -> dict[str, Any]:
+    async def cancel_session_cascade(
+        self, session_id: str, reason: str = "SIGINT"
+    ) -> dict[str, Any]:
         """Trigger cascading cancellation for a session and all its child tasks/subagents."""
         return await self.tree.cancel_subtree(session_id, reason=reason)
 

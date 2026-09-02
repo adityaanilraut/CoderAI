@@ -13,6 +13,7 @@ when the model is interrupted/cancelled.
 from __future__ import annotations
 
 import asyncio
+import datetime
 import time
 from typing import Any, TYPE_CHECKING
 
@@ -235,7 +236,32 @@ class AgentLoop:
                 auto_compact_threshold = (
                     settings.get("autoCompactWindow") or budget["pressure_threshold"]
                 )
-                trigger = evaluate_compaction_trigger(active_tokens, budget["context_limit"])
+                # Kimi parity: dual trigger with reserved budget + ratio
+                trigger = evaluate_compaction_trigger(
+                    active_tokens,
+                    budget["context_limit"],
+                    pressure_ratio=settings.get("compactionTriggerRatio", 0.85),
+                    overflow_ratio=0.95,
+                    reserved_context_size=settings.get("reservedContextSize", 50000),
+                )
+                # ponytail: max_steps_per_turn guard prevents cost bomb (Kimi LoopControl=1000)
+                max_steps = int(settings.get("maxStepsPerTurn") or 1000)
+                if self._step >= max_steps:
+                    self.emit_turn_end("max_steps")
+                    now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    manager._update_entry(
+                        session_id,
+                        lambda e: {**e, "status": "completed", "updateTime": now_iso},
+                    )
+                    manager.on_assistant_message(
+                        manager._build_message(
+                            session_id,
+                            "assistant",
+                            f"Reached max steps per turn ({max_steps}). Continuing requires a new turn.",
+                        ),
+                        False,
+                    )
+                    return
                 if active_tokens > auto_compact_threshold or trigger is not None:
                     effective_trigger = trigger or "pressure"
                     compact_notice = manager._build_assistant(
@@ -374,6 +400,26 @@ class AgentLoop:
                     if tool_calls
                     else None
                 )
+                # YOLO/AFK parity: auto-approve suppresses askPermissions
+                if (
+                    manager.is_auto_approve()
+                    and permission_plan
+                    and permission_plan.get("askPermissions")
+                ):
+                    # Convert ask -> allow for all tool calls
+                    permission_plan = {
+                        "permissions": [
+                            {"toolCallId": p.get("toolCallId"), "permission": "allow"}
+                            for p in permission_plan.get("permissions", [])
+                        ],
+                        "askPermissions": None,
+                    }
+                    assistant_message.meta = {
+                        **(assistant_message.meta or {}),
+                        "permissions": permission_plan["permissions"],
+                        "askPermissions": None,
+                    }
+
                 if permission_plan and permission_plan.get("permissions"):
                     assistant_message.meta = {
                         **(assistant_message.meta or {}),

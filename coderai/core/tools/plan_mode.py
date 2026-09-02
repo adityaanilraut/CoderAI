@@ -28,7 +28,9 @@ def handle_exit_plan_mode_tool(args: dict[str, Any], context: Any) -> ToolResult
     if isinstance(context, dict):
         is_plan_mode = bool(context.get("plan_mode") or context.get("planMode"))
     else:
-        is_plan_mode = bool(getattr(context, "plan_mode", None) or getattr(context, "planMode", None))
+        is_plan_mode = bool(
+            getattr(context, "plan_mode", None) or getattr(context, "planMode", None)
+        )
         # also check session manager entry if available
         if not is_plan_mode:
             mgr = getattr(context, "manager", None) or getattr(context, "session_manager", None)

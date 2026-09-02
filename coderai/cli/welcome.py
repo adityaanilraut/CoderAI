@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import pathlib
-import platform
-import subprocess
 import sys
 from typing import Any
 
@@ -15,48 +13,10 @@ from rich.text import Text
 
 from coderai._version import __version__
 from coderai.cli.ascii_art import get_gradient_ascii_logo
+from coderai.cli.statusline import get_git_status
 from coderai.core.common.model_capabilities import defaults_to_thinking_mode
 
 _RICH = True
-
-
-def get_git_status(project_root: str) -> tuple[str | None, bool]:
-    """Retrieve the current active git branch and dirty status."""
-    branch: str | None = None
-    is_dirty = False
-    try:
-        res = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=project_root,
-            capture_output=True,
-            text=True,
-            timeout=2,
-        )
-        if res.returncode == 0:
-            b = res.stdout.strip()
-            if b:
-                branch = b
-        if branch:
-            res_dirty = subprocess.run(
-                ["git", "status", "--porcelain"],
-                cwd=project_root,
-                capture_output=True,
-                text=True,
-                timeout=2,
-            )
-            if res_dirty.returncode == 0 and res_dirty.stdout.strip():
-                is_dirty = True
-    except Exception:
-        pass
-    return branch, is_dirty
-
-
-def get_git_branch(project_root: str) -> str | None:
-    """Retrieve the current active git branch name if available (backward compatible)."""
-    branch, is_dirty = get_git_status(project_root)
-    if branch:
-        return f"{branch}*" if is_dirty else branch
-    return None
 
 
 def _format_workspace_path(project_root: str) -> str:
@@ -75,7 +35,7 @@ def render_welcome_screen(
     skills_count: int = 0,
     reasoning_effort: str = "max",
 ) -> None:
-    """Render the stylish CoderAI welcome screen."""
+    """Render the stylish CoderAI welcome screen with connection status and focused shortcuts."""
     branch, is_dirty = get_git_status(project_root)
     workspace_str = _format_workspace_path(project_root)
     effort_norm = (reasoning_effort or "max").capitalize()
@@ -84,7 +44,22 @@ def render_welcome_screen(
     )
     plan_status = "ON" if plan_mode else "OFF"
     py_ver = f"{sys.version_info.major}.{sys.version_info.minor}"
-    sys_tag = platform.system()
+
+    # Check API key configuration status
+    has_api_key = False
+    try:
+        from coderai.core.openai_client import resolve_model_provider_routing
+        from coderai.core.settings import resolve_current_settings
+
+        cur_settings = resolve_current_settings(project_root)
+        _, resolved_key = resolve_model_provider_routing(
+            active_model,
+            explicit_base_url=cur_settings.get("baseURL"),
+            explicit_api_key=cur_settings.get("apiKey"),
+        )
+        has_api_key = bool(resolved_key)
+    except Exception:
+        pass
 
     if (
         console is not None
@@ -109,7 +84,7 @@ def render_welcome_screen(
         col1 = Text()
         col1.append("  Engine: ", style="dim")
         col1.append(f"v{__version__} ", style="bold")
-        col1.append(f"(Py {py_ver} • {sys_tag})  ", style="dim")
+        col1.append(f"(Py {py_ver})  ", style="dim")
         col1.append("•  Model: ", style="dim")
         col1.append(f"{active_model}\n", style="bold cyan")
 
@@ -123,8 +98,12 @@ def render_welcome_screen(
         col2.append(f"{workspace_str}", style="bold")
         if branch:
             col2.append(f" ({branch}{'*' if is_dirty else ''})", style="bold magenta")
-        col2.append("\nCapabilities: ", style="dim")
-        col2.append("Scoped Snippets • Bash • Web", style="default")
+        col2.append("\nStatus: ", style="dim")
+        if has_api_key:
+            col2.append("● Connected", style="bold green")
+        else:
+            col2.append("○ No API Key (Run /setup)", style="bold yellow")
+
         if mcp_servers_count > 0:
             col2.append(f" • MCP ({mcp_servers_count})", style="bold green")
         if skills_count > 0:
@@ -140,11 +119,11 @@ def render_welcome_screen(
         )
         console.print(panel)
 
-        # Quick Actions Bar & Cheat Sheet
+        # Streamlined Quick Actions Bar
         actions = Text()
         actions.append("  Shortcuts:  ", style="bold")
         actions.append("/setup", style="bold green")
-        actions.append(" keys & models  ", style="dim")
+        actions.append(" configure  ", style="dim")
         actions.append("•  ", style="dim")
         actions.append("/help", style="bold cyan")
         actions.append(" manual  ", style="dim")
@@ -153,10 +132,7 @@ def render_welcome_screen(
         actions.append(" diagnostics  ", style="dim")
         actions.append("•  ", style="dim")
         actions.append("/plan", style="bold yellow")
-        actions.append(" plan mode  ", style="dim")
-        actions.append("•  ", style="dim")
-        actions.append("/model", style="bold cyan")
-        actions.append(" switch  ", style="dim")
+        actions.append(" safety  ", style="dim")
         actions.append("•  ", style="dim")
         actions.append("@file", style="bold blue")
         actions.append(" context  ", style="dim")
@@ -174,11 +150,11 @@ def render_welcome_screen(
     else:
         print("\n" + str(get_gradient_ascii_logo()))
         branch_str = f" ({branch}{'*' if is_dirty else ''})" if branch else ""
+        conn_str = "Connected" if has_api_key else "No API Key (Run /setup)"
         print(f"CoderAI v{__version__} — AI Pair Programming in your Terminal")
         print(
-            f"Workspace: {workspace_str}{branch_str} | Model: {active_model} | Reasoning: {thinking_str} | Plan: {plan_status}"
+            f"Workspace: {workspace_str}{branch_str} | Model: {active_model} | Status: {conn_str} | Plan: {plan_status}"
         )
         print(
-            "Shortcuts: /setup keys & models • /help commands • /doctor health • /plan toggle • /model switch • Ctrl-R history • Ctrl-C interrupt • Tab complete • @file context\n"
+            "Shortcuts: /setup configure • /help manual • /doctor diagnostics • /plan safety • @file context • Ctrl-R search • Ctrl-C interrupt • Tab complete\n"
         )
-

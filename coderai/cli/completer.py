@@ -149,8 +149,21 @@ class CoderAICompleter:
         return None
 
 
-def get_history_file_path() -> pathlib.Path:
-    """Return path to persistent history file in user home directory."""
+def get_history_file_path(project_root: str | None = None) -> pathlib.Path:
+    """Return path to persistent history file.
+
+    Kimi parity: per-workspace history via md5(project_root) hash, fallback to global.
+    """
+    if project_root:
+        import hashlib
+
+        try:
+            h = hashlib.md5(str(project_root).encode()).hexdigest()[:12]
+            hist_dir = pathlib.Path.home() / ".coderai" / "history"
+            hist_dir.mkdir(parents=True, exist_ok=True)
+            return hist_dir / f"{h}.history"
+        except Exception:
+            pass
     hist_dir = pathlib.Path.home() / ".coderai"
     try:
         hist_dir.mkdir(parents=True, exist_ok=True)

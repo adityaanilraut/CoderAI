@@ -199,7 +199,11 @@ class AgentRegistry:
         # Wake a parked continuable worker; its FIFO inbox becomes its next turn.
         if handle.inbox_waiter is not None:
             handle.inbox_waiter.set()
-        if handle.status in ("completed", "interrupted", "timeout", "failed") and handle.task and not handle.task.done():
+        if (
+            handle.status in ("completed", "interrupted", "timeout", "failed")
+            and handle.task
+            and not handle.task.done()
+        ):
             handle.status = "running"
         return handle
 
@@ -487,9 +491,7 @@ async def spawn_background_agent(
     def _parent_notice(session_id: str, text: str) -> None:
         if notify_parent_session(session_id, text):
             return
-        append_parent_session_notice(
-            getattr(manager, "project_root", "."), session_id, text
-        )
+        append_parent_session_notice(getattr(manager, "project_root", "."), session_id, text)
 
     handle.parent_notice = _parent_notice
 

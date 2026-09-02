@@ -210,7 +210,10 @@ def probe_provider_connectivity(
     )
 
     if not resolved_key:
-        return False, f"No API key provided or resolved for model '{model}' (endpoint: {resolved_url})."
+        return (
+            False,
+            f"No API key provided or resolved for model '{model}' (endpoint: {resolved_url}).",
+        )
 
     try:
         from openai import OpenAI
@@ -235,7 +238,9 @@ def probe_provider_connectivity(
             )
         except Exception as e_comp:
             probe_errors.append(str(e_comp))
-            if any(k in str(e_comp) for k in ("max_completion_tokens", "Unsupported parameter", "400")):
+            if any(
+                k in str(e_comp) for k in ("max_completion_tokens", "Unsupported parameter", "400")
+            ):
                 try:
                     resp = client.chat.completions.create(
                         model=model,
@@ -262,7 +267,10 @@ def probe_provider_connectivity(
         if "AuthenticationError" in type(e).__name__ or "401" in err_str:
             return False, "Authentication Failed: Invalid API key (401 Unauthorized)."
         if "NotFoundError" in type(e).__name__ or "404" in err_str:
-            return False, f"Model Not Found (404): Endpoint '{resolved_url}' does not recognize '{model}'."
+            return (
+                False,
+                f"Model Not Found (404): Endpoint '{resolved_url}' does not recognize '{model}'.",
+            )
         if "RateLimitError" in type(e).__name__ or "429" in err_str:
             return False, "Rate Limit Exceeded (429): Quota or rate limit reached on provider."
         if "APIConnectionError" in type(e).__name__ or "ConnectError" in err_str:
@@ -272,5 +280,3 @@ def probe_provider_connectivity(
 
 # Alias for backward compatibility
 check_provider_connectivity = probe_provider_connectivity
-
-

@@ -238,6 +238,12 @@ class SessionManager:
         self.schedule_manager = ScheduleManager(sched_storage)
         self.agent_registry = AgentRegistry()
 
+        # YOLO/AFK approval mode (Kimi parity: yolo auto-approves all, afk auto-dismisses questions)
+        self._yolo_mode: bool = False
+        self._afk_mode: bool = False
+        self.additional_dirs: list[str] = []
+        _session_managers.append(self)
+
         # Event-model state: per-session turn/step/seq counters
         self._turn_counters: dict[str, int] = {}
         self._step_counters: dict[str, int] = {}
@@ -261,6 +267,22 @@ class SessionManager:
         if self._override_reasoning_effort:
             return self._override_reasoning_effort
         return str(self.get_resolved_settings().get("reasoningEffort") or "max")
+
+    # ---- YOLO / AFK (Kimi parity) ----
+    def is_yolo(self) -> bool:
+        return self._yolo_mode
+
+    def set_yolo(self, enabled: bool) -> None:
+        self._yolo_mode = bool(enabled)
+
+    def is_afk(self) -> bool:
+        return self._afk_mode
+
+    def set_afk(self, enabled: bool) -> None:
+        self._afk_mode = bool(enabled)
+
+    def is_auto_approve(self) -> bool:
+        return self._yolo_mode or self._afk_mode
 
     def get_diff(self, session_id: str | None = None, from_checkpoint: str | None = None) -> str:
         sid = session_id or self._active_session_id
@@ -1113,9 +1135,7 @@ class SessionManager:
             entry = self._get_entry(session_id) or {}
             entry_status = entry.get("status")
             if entry_status not in ("completed",):
-                finish_goal_round(
-                    session_id, self.project_root, entry_status=entry_status
-                )
+                finish_goal_round(session_id, self.project_root, entry_status=entry_status)
                 return
             if not maybe_queue_goal_round(self, session_id):
                 return
@@ -1399,22 +1419,18 @@ class SessionManager:
                         completed_tool_call_ids.add(tc["id"])
                     continue
 
-                # Checkpoints for mutating calls
+                # Hooks for mutating calls and execution lifecycle
                 target_paths: dict[str, str] = {}
-                if chunk_kind in ("sequential", "barrier"):
-                    for tc in chunk_tcs:
-                        func = tc.get("function") if isinstance(tc, dict) else None
-                        name = str(func.get("name", "")) if isinstance(func, dict) else ""
-                        if name in ("edit", "Edit", "write", "Write"):
-                            try:
-                                tp = _resolve_target_file_path(session_id, self.project_root, tc)
-                                if tp:
-                                    target_paths[tc["id"]] = tp
-                                    self.file_history.record_checkpoint(
-                                        session_id, [tp], f"Before {name} tool execution"
-                                    )
-                            except Exception:
-                                pass
+                for tc in chunk_tcs:
+                    func = tc.get("function") if isinstance(tc, dict) else None
+                    name = str(func.get("name", "")) if isinstance(func, dict) else ""
+                    if name in ("edit", "Edit", "write", "Write"):
+                        try:
+                            tp = _resolve_target_file_path(session_id, self.project_root, tc)
+                            if tp:
+                                target_paths[tc["id"]] = tp
+                        except Exception:
+                            pass
 
                 def _on_before_file_mutation(fp: str) -> None:
                     if fp:
@@ -1444,11 +1460,15 @@ class SessionManager:
                     name: str, args: dict[str, Any], result: ToolResult, _ctx: Any
                 ) -> ToolResult:
                     reminder = self._repeat_reminders.setdefault(session_id, RepeatToolReminder())
-                    text = reminder.observe(name, args)
+                    text, action = reminder.observe_with_action(name, args)
                     if text:
                         result.follow_up_messages.append(
                             ToolExecutionFollowUpMessage(role="system", content=text)
                         )
+                    if action in ("r3", "stop"):
+                        result.concludes_turn = True
+                    if action == "stop":
+                        result._force_stop_turn = True  # type: ignore[attr-defined]
                     return result
 
                 hooks = ToolExecutionHooks(
@@ -1457,13 +1477,17 @@ class SessionManager:
                     should_stop=lambda: self.is_interrupted(session_id),
                     on_process_start=_on_process_start,
                     on_process_exit=_on_process_exit,
-                    on_load_skill=lambda skill_name: self.load_skill_by_name(session_id, skill_name),
+                    on_load_skill=lambda skill_name: self.load_skill_by_name(
+                        session_id, skill_name
+                    ),
                     on_background_process_complete=lambda completion: (
                         self.add_background_process_completion_message(session_id, completion)
                     ),
                     permission_decision="allow",
                     post_execute=_post_execute,
-                    sandbox_mode=(self.get_resolved_settings().get("permissions") or {}).get("sandbox"),
+                    sandbox_mode=(self.get_resolved_settings().get("permissions") or {}).get(
+                        "sandbox"
+                    ),
                     list_session_messages=lambda sid: self.list_session_messages(sid),
                     list_session_events=lambda sid: self.list_session_events(sid),
                 )
@@ -1480,7 +1504,10 @@ class SessionManager:
 
                     if result.get("awaitUserResponse") is True:
                         waiting = True
-                    if result.get("concludesTurn") is True or getattr(result, "concludes_turn", False) is True:
+                    if (
+                        result.get("concludesTurn") is True
+                        or getattr(result, "concludes_turn", False) is True
+                    ):
                         should_conclude_turn = True
 
                     result_meta = result.get("metadata") if isinstance(result, dict) else None
@@ -1556,10 +1583,12 @@ class SessionManager:
                     tool_msg = self._build_tool_message(
                         session_id,
                         tc_id,
-                        json.dumps({
-                            "error": TOOL_ABORTED_BEFORE_DISPATCH,
-                            "message": "Tool execution was aborted before dispatch.",
-                        }),
+                        json.dumps(
+                            {
+                                "error": TOOL_ABORTED_BEFORE_DISPATCH,
+                                "message": "Tool execution was aborted before dispatch.",
+                            }
+                        ),
                         tool_fn,
                     )
                     self._append_message(tool_msg)
@@ -1633,7 +1662,9 @@ class SessionManager:
                             break
                         raise
 
-                    fallback_reasons.append(f"{current_model} (attempt {attempt+1}): {code} ({err})")
+                    fallback_reasons.append(
+                        f"{current_model} (attempt {attempt + 1}): {code} ({err})"
+                    )
                     if code == "CONTEXT_OVERFLOW" or attempt >= retries_for_model:
                         break
 
@@ -1669,8 +1700,9 @@ class SessionManager:
 
         if last_error is not None:
             raise last_error
-        raise RuntimeError("EMPTY_RESPONSE: model returned no content after retries and fallback cascade")
-
+        raise RuntimeError(
+            "EMPTY_RESPONSE: model returned no content after retries and fallback cascade"
+        )
 
     async def _create_completion(
         self, client: Any, request: dict[str, Any], *, emit_stream: bool = True
@@ -1697,11 +1729,19 @@ class SessionManager:
             )
         return result
 
-    async def _compact_session(self, session_id: str, trigger: str = "pressure") -> None:
+    async def _compact_session(
+        self, session_id: str, trigger: str = "pressure", custom_instruction: str | None = None
+    ) -> None:
         """Execute session compaction through the pluggable CompactionEngine."""
         res = await self.compaction_engine.compact_if_needed(session_id, trigger=trigger)
         if not res:
-            res = await self.compaction_engine.compact_now(session_id, trigger=trigger)
+            # Forward custom_instruction if engine supports it
+            try:
+                res = await self.compaction_engine.compact_now(
+                    session_id, trigger=trigger, custom_instruction=custom_instruction
+                )  # type: ignore[call-arg]
+            except TypeError:
+                res = await self.compaction_engine.compact_now(session_id, trigger=trigger)
         if res:
             now = _now()
             self._update_entry(
@@ -1713,9 +1753,13 @@ class SessionManager:
                 },
             )
 
-    async def compact_session(self, session_id: str, trigger: str = "manual") -> None:
+    async def compact_session(
+        self, session_id: str, trigger: str = "manual", custom_instruction: str | None = None
+    ) -> None:
         """Public method to compact long session context history."""
-        await self._compact_session(session_id, trigger=trigger)
+        await self._compact_session(
+            session_id, trigger=trigger, custom_instruction=custom_instruction
+        )
 
     # ---- queries, delete, fork & undo ----
 
@@ -1863,9 +1907,7 @@ class SessionManager:
 
         # Fork file history branch
         self.file_history.ensure_session(forked_id)
-        self.file_history.fork_session(
-            target_src_id, forked_id, checkpoint_hash=checkpoint_hash
-        )
+        self.file_history.fork_session(target_src_id, forked_id, checkpoint_hash=checkpoint_hash)
 
         # Update sessions index
         index = self._load_index()
@@ -1968,9 +2010,7 @@ class SessionManager:
 
         # Restore code if requested
         if mode in ("restore_both", "restore_code_only"):
-            if not checkpoint_hash or not self.file_history.can_restore(
-                target_id, checkpoint_hash
-            ):
+            if not checkpoint_hash or not self.file_history.can_restore(target_id, checkpoint_hash):
                 if mode == "restore_code_only":
                     return False
             else:
@@ -2414,3 +2454,30 @@ def _build_tool_result_snippet(content: str) -> str:
         return f"Error: {err[:100]}"
     except Exception:
         return content[:100]
+
+
+# Global AFK helpers for tool-layer access without importing SessionManager instance
+_session_managers: list[Any] = []
+
+
+def _global_afk_check() -> bool:
+    for m in _session_managers:
+        try:
+            if m.is_afk() or m.is_yolo():
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _check_afk_for_session(session_id: str) -> bool:
+    for m in _session_managers:
+        try:
+            if session_id in getattr(m, "session_controllers", {}) or session_id == getattr(
+                m, "_active_session_id", None
+            ):
+                if m.is_afk() or m.is_yolo():
+                    return True
+        except Exception:
+            continue
+    return False

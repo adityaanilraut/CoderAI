@@ -74,11 +74,7 @@ class SubAgentSpec:
     continuable: bool = False  # parked worker loop; survives multiple turns via its handle inbox
 
     def __post_init__(self) -> None:
-        if self.token_budget is None and self.max_tokens is not None:
-            self.token_budget = self.max_tokens
-        elif self.max_tokens is None and self.token_budget is not None:
-            self.max_tokens = self.token_budget
-
+        pass
 
 
 @dataclass
@@ -206,7 +202,9 @@ class SubAgentManager:
 
     def cancel_subagent(self, session_id: str) -> None:
         """Cancel a running sub-agent session across all active manager scopes."""
-        event = self._active_controllers.get(session_id) or _global_active_controllers.get(session_id)
+        event = self._active_controllers.get(session_id) or _global_active_controllers.get(
+            session_id
+        )
         if event is not None:
             event.set()
 
@@ -265,9 +263,7 @@ class SubAgentManager:
             )
         return result
 
-    async def _spawn_subagent_inner(
-        self, spec: SubAgentSpec, session_id: str
-    ) -> SubAgentResult:
+    async def _spawn_subagent_inner(self, spec: SubAgentSpec, session_id: str) -> SubAgentResult:
         """Unpublished spawn body: quota, scratchpad, controller, backend run."""
         lifecycle_events: list[dict[str, Any]] = []
         self._emit_lifecycle_event(
@@ -284,14 +280,18 @@ class SubAgentManager:
                 lifecycle_events,
                 "subagent/error",
                 spec,
-                {"error": quota_err or f"RecursionLimitError: Maximum sub-agent nesting depth exceeded (max {effective_max_depth})."},
+                {
+                    "error": quota_err
+                    or f"RecursionLimitError: Maximum sub-agent nesting depth exceeded (max {effective_max_depth})."
+                },
             )
             return SubAgentResult(
                 task_id=spec.task_id,
                 session_id=session_id,
                 status="failed",
                 summary="Maximum sub-agent nesting depth exceeded.",
-                error=quota_err or f"RecursionLimitError: Sub-agent depth {spec.depth} exceeds max_depth {effective_max_depth}.",
+                error=quota_err
+                or f"RecursionLimitError: Sub-agent depth {spec.depth} exceeds max_depth {effective_max_depth}.",
                 exit_code=1,
                 parent_agent_id=spec.parent_agent_id,
                 root_agent_id=spec.root_agent_id,
@@ -612,9 +612,7 @@ class SubAgentManager:
                             outcome_text = handle.report or result.summary
                             notice(
                                 spec.parent_session_id,
-                                settlement_summary(
-                                    handle.id, "completed", outcome=outcome_text
-                                ),
+                                settlement_summary(handle.id, "completed", outcome=outcome_text),
                             )
                         except Exception:
                             logger.debug("continuable settlement notice failed", exc_info=True)
@@ -785,6 +783,8 @@ class SubAgentManager:
             }
             if temperature is not None:
                 request["temperature"] = temperature
+            if spec.max_tokens is not None:
+                request["max_tokens"] = spec.max_tokens
             request.update(
                 build_thinking_request_options(
                     thinking_enabled,
@@ -896,12 +896,16 @@ class SubAgentManager:
             total_cached_tokens += cached_tok
             active_tokens = usage.get("total_tokens", p_tok + c_tok)
 
-            if spec.token_budget is not None and (total_prompt_tokens + total_completion_tokens) >= spec.token_budget:
+            if (
+                spec.token_budget is not None
+                and (total_prompt_tokens + total_completion_tokens) >= spec.token_budget
+            ):
                 return SubAgentResult(
                     task_id=spec.task_id,
                     session_id=session_id,
                     status="budget_exceeded",
-                    summary=last_assistant_reply or f"Sub-agent reached token budget cap ({spec.token_budget} tokens).",
+                    summary=last_assistant_reply
+                    or f"Sub-agent reached token budget cap ({spec.token_budget} tokens).",
                     active_tokens=active_tokens,
                     total_tokens=total_prompt_tokens + total_completion_tokens,
                     cached_tokens=total_cached_tokens,
