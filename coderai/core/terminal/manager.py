@@ -5,13 +5,17 @@ from __future__ import annotations
 import atexit
 import errno
 import os
-import pty
 import select
 import signal
 import subprocess
 import time
 from dataclasses import dataclass, field
 from typing import Any
+
+try:
+    import pty
+except (ImportError, ModuleNotFoundError):
+    pty = None  # type: ignore[assignment]
 
 DEFAULT_MAX_BUFFER_CHARS = 500_000
 
