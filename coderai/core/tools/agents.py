@@ -39,6 +39,15 @@ def _derive_depth(context: ToolExecutionContext, args: dict[str, Any]) -> int:
         return 0
 
 
+def _parse_opt_int(val: Any, default: int | None = None) -> int | None:
+    if val is None:
+        return default
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        return default
+
+
 def _extract_seed_messages(context: ToolExecutionContext) -> list[dict[str, Any]]:
     """Extract completed conversation history from parent session to seed a forked sub-agent."""
     seed_messages: list[dict[str, Any]] = []
@@ -152,24 +161,9 @@ async def handle_subagent_fork_tool(
 
     depth = _derive_depth(context, args)
 
-    try:
-        max_depth = (
-            int(args.get("max_depth")) if args.get("max_depth") is not None else MAX_SUBAGENT_DEPTH
-        )
-    except (ValueError, TypeError):
-        max_depth = MAX_SUBAGENT_DEPTH
-
-    try:
-        token_budget = (
-            int(args.get("token_budget")) if args.get("token_budget") is not None else None
-        )
-    except (ValueError, TypeError):
-        token_budget = None
-
-    try:
-        max_tokens = int(args.get("max_tokens")) if args.get("max_tokens") is not None else None
-    except (ValueError, TypeError):
-        max_tokens = None
+    max_depth = _parse_opt_int(args.get("max_depth"), MAX_SUBAGENT_DEPTH) or MAX_SUBAGENT_DEPTH
+    token_budget = _parse_opt_int(args.get("token_budget"))
+    max_tokens = _parse_opt_int(args.get("max_tokens"))
 
     if depth >= max_depth:
         return ToolResult(
@@ -242,22 +236,9 @@ async def handle_continuable_subagent_tool(
     if mode not in ("read_only", "general"):
         mode = "read_only"
     depth = _derive_depth(context, args)
-    try:
-        max_depth = (
-            int(args.get("max_depth")) if args.get("max_depth") is not None else MAX_SUBAGENT_DEPTH
-        )
-    except (ValueError, TypeError):
-        max_depth = MAX_SUBAGENT_DEPTH
-    try:
-        token_budget = (
-            int(args.get("token_budget")) if args.get("token_budget") is not None else None
-        )
-    except (ValueError, TypeError):
-        token_budget = None
-    try:
-        max_tokens = int(args.get("max_tokens")) if args.get("max_tokens") is not None else None
-    except (ValueError, TypeError):
-        max_tokens = None
+    max_depth = _parse_opt_int(args.get("max_depth"), MAX_SUBAGENT_DEPTH) or MAX_SUBAGENT_DEPTH
+    token_budget = _parse_opt_int(args.get("token_budget"))
+    max_tokens = _parse_opt_int(args.get("max_tokens"))
 
     if depth >= max_depth:
         return ToolResult(

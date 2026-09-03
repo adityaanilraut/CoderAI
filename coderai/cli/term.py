@@ -120,7 +120,7 @@ def _cursor_position_windows() -> tuple[int, int] | None:
     import ctypes
     from ctypes import wintypes
 
-    kernel32 = ctypes.windll.kernel32
+    kernel32 = getattr(ctypes, "windll").kernel32
     _STD_OUTPUT_HANDLE = -11
     handle = kernel32.GetStdHandle(_STD_OUTPUT_HANDLE)
     invalid_handle_value = ctypes.c_void_p(-1).value

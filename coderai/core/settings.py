@@ -821,7 +821,7 @@ def save_provider_api_key(
     """
     prov_key = provider.strip().lower()
     info = KNOWN_PROVIDERS.get(prov_key)
-    env_var = info["env_var"] if info else f"{provider.upper()}_API_KEY"
+    env_var = str(info["env_var"]) if info else f"{provider.upper()}_API_KEY"
     api_key_clean = api_key.strip()
 
     # Determine target settings
@@ -927,7 +927,7 @@ def get_configured_provider_keys(project_root: str = ".") -> dict[str, dict[str,
     status_map: dict[str, dict[str, Any]] = {}
 
     for prov_key, info in KNOWN_PROVIDERS.items():
-        var_name = info["env_var"]
+        var_name = str(info["env_var"])
         # Check env_map then os.environ
         key_val = (
             env_map.get(var_name)

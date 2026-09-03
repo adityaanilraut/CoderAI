@@ -47,6 +47,8 @@ def _validated_ref(args: dict[str, Any]) -> tuple[str, int]:
     raw_revision = args.get("revision")
     if not goal_id or goal_id != goal_id.strip():
         raise GoalError("goal_id must be non-empty", "GOAL_TOOL_INVALID_UPDATE")
+    if raw_revision is None:
+        raise GoalError("revision must be a positive safe integer", "GOAL_TOOL_INVALID_UPDATE")
     try:
         revision = int(raw_revision)
     except (TypeError, ValueError):

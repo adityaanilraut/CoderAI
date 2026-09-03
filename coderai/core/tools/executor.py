@@ -402,7 +402,7 @@ class ToolExecutor:
 
         # Check sliding-window rate limiting on tool definition
         tool_def = self.registry.get(tool_name, scope=getattr(context, "session_id", None))
-        if tool_def and getattr(tool_def, "rate_limit", None):
+        if tool_def and tool_def.rate_limit is not None:
             max_reqs, window_s = tool_def.rate_limit
             sid = getattr(context, "session_id", "global")
             limiter_key = f"{sid}:{tool_name}"
@@ -609,8 +609,11 @@ class ToolExecutor:
                     context=context,
                 )
                 if error_outcome.additional_context:
-                    result.follow_up_messages = list(result.follow_up_messages or []) + list(
-                        error_outcome.additional_context
+                    err_follow_ups: list[ToolExecutionFollowUpMessage | dict[str, Any]] = [
+                        {"role": "user", "content": ctx} for ctx in error_outcome.additional_context
+                    ]
+                    result.follow_up_messages = (
+                        list(result.follow_up_messages or []) + err_follow_ups
                     )
             else:
                 post_outcome = run_post_tool_use(
@@ -620,8 +623,11 @@ class ToolExecutor:
                     context=context,
                 )
                 if post_outcome.additional_context:
-                    result.follow_up_messages = list(result.follow_up_messages or []) + list(
-                        post_outcome.additional_context
+                    post_follow_ups: list[ToolExecutionFollowUpMessage | dict[str, Any]] = [
+                        {"role": "user", "content": ctx} for ctx in post_outcome.additional_context
+                    ]
+                    result.follow_up_messages = (
+                        list(result.follow_up_messages or []) + post_follow_ups
                     )
                 if post_outcome.stop:
                     result.concludes_turn = True

@@ -30,9 +30,12 @@ def _read_single_key() -> str:
         try:
             import msvcrt
 
-            ch = msvcrt.getch()
+            getch_fn = getattr(msvcrt, "getch", None)
+            if getch_fn is None:
+                return ""
+            ch = getch_fn()
             if ch in (b"\x00", b"\xe0"):
-                ch2 = msvcrt.getch()
+                ch2 = getch_fn()
                 win_map = {
                     b"H": "UP",
                     b"P": "DOWN",
@@ -76,7 +79,7 @@ def _read_single_key() -> str:
                 is_mock_or_patched = (
                     "mock" in type(sys.stdin).__module__.lower()
                     or type(sys.stdin).__name__ in ("MagicMock", "Mock")
-                    or getattr(sys.stdin.read, "__class__", None).__name__
+                    or getattr(getattr(sys.stdin.read, "__class__", None), "__name__", "")
                     != "builtin_function_or_method"
                 )
                 if is_mock_or_patched:
@@ -331,6 +334,7 @@ def select_with_arrows(
             transient=True,
             auto_refresh=False,
         ) as live:
+            res: int | None = None
             while True:
                 selectable = _get_selectable(filter_query)
                 filtered_indices = _get_filtered(filter_query)
@@ -803,8 +807,8 @@ def select_session_interactive(console: Any | None, sessions: list[SessionEntry]
         if matched_sessions:
             return matched_sessions[0].id
 
-        matched = next((s.id for s in sessions if s.id.startswith(raw_choice)), None)
-        return matched
+        matched_prefix = next((s.id for s in sessions if s.id.startswith(raw_choice)), None)
+        return matched_prefix
 
 
 def prompt_plan_implementation(console: Any | None, plan_text: str = "") -> str:

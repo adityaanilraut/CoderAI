@@ -21,7 +21,7 @@ try:
 except Exception:  # fallback for tests
     from rich.console import Console
 
-    console = Console()  # type: ignore[no-redef]
+    console = Console()  # type: ignore[no-redef,assignment]
 
 from coderai.cli.columns import BulletColumns
 from coderai.cli.elapsed import (
@@ -135,7 +135,7 @@ except Exception:
     try:
         from rich.markdown import Markdown  # type: ignore[no-redef]
     except Exception:
-        Markdown = None  # type: ignore[assignment]
+        Markdown = None  # type: ignore[assignment,misc]
 
 
 # ---------------------------------------------------------------------------

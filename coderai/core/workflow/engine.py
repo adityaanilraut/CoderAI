@@ -531,7 +531,7 @@ class WorkflowEngine:
                 mode=opts.get("mode", "general"),
                 timeout_seconds=float(opts.get("timeout_seconds", 90.0)),
                 max_iterations=int(opts.get("max_iterations", 20)),
-                depth=opts.get("depth")
+                depth=int(opts["depth"])
                 if isinstance(opts.get("depth"), int)
                 else self._child_depth(),
                 parent_session_id=self.context.parent_session_id,

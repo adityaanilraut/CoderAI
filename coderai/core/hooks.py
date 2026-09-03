@@ -494,7 +494,14 @@ async def execute_hook_command_async(
         elapsed_ms = (time.time() - start_time) * 1000.0
         stdout = (stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else "").strip()
         stderr = (stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else "").strip()
-        return _decode_hook_output(stdout, stderr, proc.returncode, elapsed_ms, collector, span)
+        return _decode_hook_output(
+            stdout,
+            stderr,
+            proc.returncode if proc.returncode is not None else 0,
+            elapsed_ms,
+            collector,
+            span,
+        )
     except Exception as exc:
         elapsed_ms = (time.time() - start_time) * 1000.0
         return HookOutput(

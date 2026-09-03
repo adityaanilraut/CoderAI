@@ -61,6 +61,7 @@ from coderai.cli.term import ensure_new_line, ensure_tty_sane
 
 _RICH = True
 # Phase0: neutral-themed console with MANPAGER-safe pager (Kimi parity: ui/shell/console.py:63)
+console: Any
 try:
     from coderai.cli.console import console as _kimi_console  # type: ignore[assignment]
 
@@ -529,14 +530,14 @@ def _prompt_permissions(
 
             card_lines.append(f"  [dim]Scopes:[/]   {scopes_str}")
 
-            panel = Panel(
+            rich_panel = Panel(
                 "\n".join(card_lines),
                 title=f"[bold yellow]! Permission Required ({idx}/{len(requests)})[/]  {badge_str}",
                 border_style=border_color,
                 padding=(0, 1),
             )
             console.print()
-            console.print(panel)
+            console.print(rich_panel)
 
             if diff_preview and isinstance(diff_preview, str) and diff_preview.strip():
                 render_diff_preview(console, diff_preview, title=f"Pre-Approval Diff ({name})")
@@ -1251,15 +1252,7 @@ class _StreamState:
 
                 renderable = Text("")
             # ponytail: single Live, shared state, reuse progress SIGWINCH helper
-            try:
-                from coderai.cli.progress import _install_sigwinch, _reset_live_shape
-            except Exception:
-
-                def _install_sigwinch(*_args: Any) -> None:
-                    pass
-
-                def _reset_live_shape(*_args: Any) -> None:
-                    pass
+            from coderai.cli.progress import _install_sigwinch, _reset_live_shape
 
             live = Live(
                 renderable,
@@ -1845,9 +1838,9 @@ async def _run_interactive(
                         print("Job store subsystem is not initialized.")
                         continue
                     tokens_sub = cmd_arg.split(None, 1)
-                    action = tokens_sub[0].lower() if tokens_sub else "list"
+                    sub_action = tokens_sub[0].lower() if tokens_sub else "list"
                     job_target = tokens_sub[1].strip() if len(tokens_sub) > 1 else ""
-                    if action in ("", "list"):
+                    if sub_action in ("", "list"):
                         jobs = [
                             j
                             for j in getattr(job_store, "_jobs", {}).values()
@@ -1882,14 +1875,14 @@ async def _run_interactive(
                                     print(
                                         f"[{j.status.upper():9}] {j.id:12} {j.kind:8} {j.label[:60]}"
                                     )
-                    elif action == "kill" and job_target:
+                    elif sub_action == "kill" and job_target:
                         res = job_store.cancel(job_target)
                         print(
                             f"Cancelled job {job_target}"
                             if res
                             else f"Job '{job_target}' not found or already stopped."
                         )
-                    elif action == "logs" and job_target:
+                    elif sub_action == "logs" and job_target:
                         j = getattr(job_store, "_jobs", {}).get(job_target)
                         if j and j.output_path and os.path.exists(j.output_path):
                             with open(j.output_path, "r", encoding="utf-8", errors="replace") as f:
@@ -1907,8 +1900,8 @@ async def _run_interactive(
                         print("Schedule manager subsystem is not initialized.")
                         continue
                     tokens_sub = cmd_arg.split(None, 2)
-                    action = tokens_sub[0].lower() if tokens_sub else "list"
-                    if action in ("", "list"):
+                    sched_action = tokens_sub[0].lower() if tokens_sub else "list"
+                    if sched_action in ("", "list"):
                         records = list(getattr(sched_mgr, "_schedules", {}).values())
                         if not records:
                             print("No scheduled timers or reminders in workspace.")
@@ -1941,17 +1934,27 @@ async def _run_interactive(
                                     print(
                                         f"[{r.state:10}] ID:{r.id:4} Kind:{r.kind:6} At:{r.scheduled_at[:19]} -> {r.prompt[:50]}"
                                     )
-                    elif action == "after" and len(tokens_sub) >= 3 and tokens_sub[1].isdigit():
+                    elif (
+                        sched_action == "after" and len(tokens_sub) >= 3 and tokens_sub[1].isdigit()
+                    ):
                         sec = int(tokens_sub[1])
-                        p = tokens_sub[2]
-                        rec = sched_mgr.create(prompt=p, after_seconds=sec, session_id=session_id)
-                        print(f"✓ Scheduled reminder #{rec.id} in {sec}s: {p}")
-                    elif action == "every" and len(tokens_sub) >= 3 and tokens_sub[1].isdigit():
+                        sched_prompt = tokens_sub[2]
+                        rec = sched_mgr.create(
+                            prompt=sched_prompt, after_seconds=sec, session_id=session_id
+                        )
+                        print(f"✓ Scheduled reminder #{rec.id} in {sec}s: {sched_prompt}")
+                    elif (
+                        sched_action == "every" and len(tokens_sub) >= 3 and tokens_sub[1].isdigit()
+                    ):
                         sec = int(tokens_sub[1])
-                        p = tokens_sub[2]
-                        rec = sched_mgr.create(prompt=p, every_seconds=sec, session_id=session_id)
-                        print(f"✓ Scheduled recurring reminder #{rec.id} every {sec}s: {p}")
-                    elif action in ("cancel", "rm", "delete") and len(tokens_sub) >= 2:
+                        sched_prompt = tokens_sub[2]
+                        rec = sched_mgr.create(
+                            prompt=sched_prompt, every_seconds=sec, session_id=session_id
+                        )
+                        print(
+                            f"✓ Scheduled recurring reminder #{rec.id} every {sec}s: {sched_prompt}"
+                        )
+                    elif sched_action in ("cancel", "rm", "delete") and len(tokens_sub) >= 2:
                         cid = tokens_sub[1]
                         res = sched_mgr.delete(cid)
                         print(
@@ -1969,8 +1972,8 @@ async def _run_interactive(
                         print("Agent registry subsystem is not initialized.")
                         continue
                     tokens_sub = cmd_arg.split(None, 2)
-                    action = tokens_sub[0].lower() if tokens_sub else "list"
-                    if action in ("", "list"):
+                    agent_action = tokens_sub[0].lower() if tokens_sub else "list"
+                    if agent_action in ("", "list"):
                         agents = agent_reg.list(session_id)
                         if not agents:
                             print("No subagents registered in active session.")
@@ -2003,7 +2006,7 @@ async def _run_interactive(
                                     print(
                                         f"[{a.status.upper():11}] ID:{a.id:12} Mode:{a.mode:8} Depth:{a.depth} Inbox:{len(a.inbox)} -> {a.description[:50]}"
                                     )
-                    elif action == "tree":
+                    elif agent_action == "tree":
                         agents = agent_reg.list(session_id)
                         roots = [
                             a
@@ -2016,7 +2019,7 @@ async def _run_interactive(
                             for r in roots:
                                 tree = agent_reg.get_tree(r.id)
                                 print(json.dumps(tree, indent=2))
-                    elif action == "report" and len(tokens_sub) >= 2:
+                    elif agent_action == "report" and len(tokens_sub) >= 2:
                         aid = tokens_sub[1]
                         a = agent_reg.get(aid)
                         if a and a.report:
@@ -2025,7 +2028,7 @@ async def _run_interactive(
                             print(f"Subagent '{aid}' has status '{a.status}' with no final report.")
                         else:
                             print(f"Unknown subagent ID '{aid}'.")
-                    elif action == "send" and len(tokens_sub) >= 3:
+                    elif agent_action == "send" and len(tokens_sub) >= 3:
                         aid = tokens_sub[1]
                         msg = tokens_sub[2]
                         res = agent_reg.send(aid, msg)
@@ -2349,14 +2352,14 @@ async def _run_interactive(
                         store = get_goal_store(mgr.project_root)
                         sid = session_id or "default"
                         tokens = cmd_arg.split(None, 1)
-                        action = tokens[0].lower() if tokens else "list"
+                        goal_action = tokens[0].lower() if tokens else "list"
                         rest = tokens[1].strip() if len(tokens) > 1 else ""
-                        if action in ("", "list"):
+                        if goal_action in ("", "list"):
                             print(store.format(sid))
-                        elif action == "add" and rest:
+                        elif goal_action == "add" and rest:
                             goal = store.add(sid, rest)
                             print(f"Added goal {goal.id}: {goal.objective}")
-                        elif action in ("done", "cancel", "start") and rest:
+                        elif goal_action in ("done", "cancel", "start") and rest:
                             updated = store.update(
                                 sid,
                                 rest,
@@ -2364,7 +2367,7 @@ async def _run_interactive(
                                     "done": "done",
                                     "cancel": "cancelled",
                                     "start": "in_progress",
-                                }[action],
+                                }[goal_action],
                             )
                             print(f"Updated {updated.id}" if updated else f"Unknown goal '{rest}'")
                         else:
@@ -2843,10 +2846,10 @@ async def _run_interactive(
                         if not targets:
                             print("Nothing to undo in the active session.")
                             continue
-                        target, mode = select_undo_interactive(console, targets)
-                        if target:
+                        undo_target, mode = select_undo_interactive(console, targets)
+                        if undo_target:
                             success = mgr.undo(
-                                session_id, target_message_id=target["message_id"], mode=mode
+                                session_id, target_message_id=undo_target["message_id"], mode=mode
                             )
                             if success:
                                 mode_desc = {
@@ -2856,14 +2859,14 @@ async def _run_interactive(
                                 }.get(mode, "reverted")
                                 if console is not None and _RICH:
                                     console.print(
-                                        f"[bold green]✓ Successfully {mode_desc} to Turn #{target['turn_index']}.[/]"
+                                        f"[bold green]✓ Successfully {mode_desc} to Turn #{undo_target['turn_index']}.[/]"
                                     )
                                 else:
                                     print(
-                                        f"✓ Successfully {mode_desc} to Turn #{target['turn_index']}."
+                                        f"✓ Successfully {mode_desc} to Turn #{undo_target['turn_index']}."
                                     )
                             else:
-                                print(f"Failed to undo to Turn #{target['turn_index']}.")
+                                print(f"Failed to undo to Turn #{undo_target['turn_index']}.")
                         continue
 
                     if cmd == "/new":
@@ -2988,8 +2991,8 @@ async def _run_interactive(
                     if cmd in ("/add-dir", "/add_dir"):
                         import pathlib as _pl
 
-                        target = cmd_arg.strip()
-                        if not target:
+                        dir_target = cmd_arg.strip()
+                        if not dir_target:
                             if mgr.additional_dirs:
                                 lines = ["Additional directories:"] + [
                                     f"  - {d}" for d in mgr.additional_dirs
@@ -2998,59 +3001,63 @@ async def _run_interactive(
                             else:
                                 print("No additional directories. Usage: /add-dir <path>")
                             continue
-                        p = _pl.Path(target).expanduser().resolve()
-                        if not p.exists():
-                            print(f"Directory does not exist: {p}")
+                        dir_path = _pl.Path(dir_target).expanduser().resolve()
+                        if not dir_path.exists():
+                            print(f"Directory does not exist: {dir_path}")
                             continue
-                        if not p.is_dir():
-                            print(f"Not a directory: {p}")
+                        if not dir_path.is_dir():
+                            print(f"Not a directory: {dir_path}")
                             continue
-                        if str(p) in mgr.additional_dirs:
-                            print(f"Directory already in workspace: {p}")
+                        if str(dir_path) in mgr.additional_dirs:
+                            print(f"Directory already in workspace: {dir_path}")
                             continue
                         work_dir = _pl.Path(mgr.project_root).resolve()
                         try:
-                            p.relative_to(work_dir)
-                            print(f"Directory is already within the working directory: {p}")
+                            dir_path.relative_to(work_dir)
+                            print(f"Directory is already within the working directory: {dir_path}")
                             continue
                         except ValueError:
                             pass
                         # Check readable
                         try:
-                            list(p.iterdir())
+                            list(dir_path.iterdir())
                         except OSError as e:
-                            print(f"Cannot read directory: {p} ({e})")
+                            print(f"Cannot read directory: {dir_path} ({e})")
                             continue
-                        mgr.additional_dirs.append(str(p))
+                        mgr.additional_dirs.append(str(dir_path))
                         # Inject system message about new directory
                         if session_id:
                             try:
-                                ls_out = "\n".join(sorted([x.name for x in p.iterdir()][:50]))
+                                ls_out = "\n".join(
+                                    sorted([x.name for x in dir_path.iterdir()][:50])
+                                )
                                 mgr._append_message(
                                     mgr._build_message(
                                         session_id,
                                         "user",
-                                        f"The user has added an additional directory to the workspace: `{p}`\n\nDirectory listing:\n```\n{ls_out}\n```\n\nYou can now read and search files in this directory.",
+                                        f"The user has added an additional directory to the workspace: `{dir_path}`\n\nDirectory listing:\n```\n{ls_out}\n```\n\nYou can now read and search files in this directory.",
                                     )
                                 )
                             except Exception:
                                 pass
                         if console is not None and _RICH:
-                            console.print(f"[bold green]✓ Added directory to workspace:[/] {p}")
+                            console.print(
+                                f"[bold green]✓ Added directory to workspace:[/] {dir_path}"
+                            )
                         else:
-                            print(f"Added directory to workspace: {p}")
+                            print(f"Added directory to workspace: {dir_path}")
                         continue
 
                     if cmd == "/import":
                         import pathlib as _pl2
 
-                        target = cmd_arg.strip()
-                        if not target:
+                        import_target = cmd_arg.strip()
+                        if not import_target:
                             print("Usage: /import <file_path or session_id>")
                             continue
                         # Try as session ID first
-                        if mgr.get_session(target):
-                            source_id = mgr.resolve_session_id(target) or target
+                        if mgr.get_session(import_target):
+                            source_id = mgr.resolve_session_id(import_target) or import_target
                             msgs = mgr.list_session_messages(source_id)
                             imported_content = "\n\n".join(
                                 [
@@ -3060,7 +3067,7 @@ async def _run_interactive(
                                 ][:20]
                             )
                             if not imported_content:
-                                print(f"Session '{target}' has no importable content.")
+                                print(f"Session '{import_target}' has no importable content.")
                                 continue
                             if session_id is None:
                                 session_id = await mgr.create_session(
@@ -3091,11 +3098,11 @@ async def _run_interactive(
                                     )
                             continue
                         # Try as file path
-                        fp = _pl2.Path(target).expanduser()
+                        fp = _pl2.Path(import_target).expanduser()
                         if not fp.is_absolute():
                             fp = _pl2.Path(mgr.project_root) / fp
                         if not fp.is_file():
-                            print(f"File not found: {target}")
+                            print(f"File not found: {import_target}")
                             continue
                         try:
                             text = fp.read_text(encoding="utf-8", errors="replace")
@@ -3196,15 +3203,15 @@ async def _run_interactive(
                     except Exception:
                         pass
                     # resolved for LLM is original text (expand back)
-                    resolved = pm.resolve_command(display_command)
-                    raw_for_llm = resolved.resolved_text
+                    resolved_cmd = pm.resolve_command(display_command)
+                    raw_for_llm = resolved_cmd.resolved_text
                 else:
                     raw_for_llm = raw
                     # also check if raw already contains pasted tokens (e.g. re-edited)
                     if "[Pasted text #" in raw or "[image:" in raw:
                         try:
-                            resolved = pm.resolve_command(raw)
-                            raw_for_llm = resolved.resolved_text
+                            resolved_cmd = pm.resolve_command(raw)
+                            raw_for_llm = resolved_cmd.resolved_text
                         except Exception:
                             pass
             except Exception:
@@ -3326,8 +3333,8 @@ async def _run_interactive(
                         reply = last_asst.content if last_asst else ""
 
                     if "<proposed_plan>" in reply:
-                        action = prompt_plan_implementation(console)
-                        if action == "execute":
+                        plan_action = prompt_plan_implementation(console)
+                        if plan_action == "execute":
                             active_plan_mode = False
                             if console is not None and _RICH:
                                 console.print(

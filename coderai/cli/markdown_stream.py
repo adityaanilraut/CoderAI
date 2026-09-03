@@ -75,7 +75,7 @@ if _heading_leaks_background():
 
         pass
 else:
-    Markdown = _RichMarkdown  # type: ignore[assignment]
+    Markdown = _RichMarkdown  # type: ignore[assignment,misc]
 
 _md_parser: Any | None = None  # kept for import compat, unused
 
@@ -176,8 +176,13 @@ class MarkdownStreamRenderer:
                 refresh_per_second=10,
             )
             self._live.start()
+
+            def _on_sigwinch(*_args: Any) -> None:
+                if self._live:
+                    self._live.refresh()
+
             try:
-                signal.signal(signal.SIGWINCH, lambda *_: self._live and self._live.refresh())  # type: ignore[arg-type]
+                signal.signal(signal.SIGWINCH, _on_sigwinch)
             except Exception:
                 pass
         except Exception:

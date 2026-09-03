@@ -17,35 +17,9 @@ from rich.panel import Panel
 from rich.spinner import Spinner
 from rich.text import Text
 
-try:
-    from coderai.cli.console import console, render_to_ansi  # type: ignore
-except Exception:
-    from rich.console import Console
-
-    console = Console()  # type: ignore
-
-    def render_to_ansi(r: Any, columns: int = 80) -> str:  # fallback
-        from io import StringIO
-
-        buf = StringIO()
-        c = Console(file=buf, force_terminal=True, width=max(20, columns))
-        c.print(r, end="")
-        return buf.getvalue()
-
-
-try:
-    from rich.markdown import Markdown  # type: ignore
-except Exception:
-    Markdown = None  # type: ignore
-
-try:
-    from coderai.cli.elapsed import format_elapsed
-except Exception:
-
-    def format_elapsed(s: float) -> str:
-        if s < 1:
-            return "<1s"
-        return f"{int(s)}s"
+from coderai.cli.console import render_to_ansi
+from coderai.cli.elapsed import format_elapsed
+from rich.markdown import Markdown
 
 
 _LEFT_BORDER_RE = re.compile(r"((?:\x1b\[[^m]*m)*│(?:\x1b\[[^m]*m)* )")
@@ -84,6 +58,10 @@ class BtwPanel:
         self._scroll_offset: int = 0
         self._auto_scroll: bool = True
         self._start_time: float = 0.0
+
+    @property
+    def question(self) -> str:
+        return self._question
 
     def set_question(self, q: str) -> None:
         self._question = q
@@ -145,26 +123,20 @@ class BtwPanel:
             parts.append(Text(f"Q: {self.question}", style="cyan"))
             parts.append(Text("─" * min(columns - 4, 60), style="dim"))
         # Answer
-        if self._is_streaming:
+        if self._is_loading:
             if not self._response:
                 spinner = Spinner("dots", text=Text("Thinking...", style="yellow italic"))
                 parts.append(spinner)
             else:
-                from coderai.cli.markdown_stream import render_markdown_chunk
-
-                md = render_markdown_chunk(self._response)
-                if md is not None:
-                    parts.append(md)
-                else:
+                try:
+                    parts.append(Markdown(self._response))
+                except Exception:
                     parts.append(Text(self._response))
                 parts.append(Text("Composing...", style="yellow italic"))
         elif self._response:
-            from coderai.cli.markdown_stream import render_markdown_chunk
-
-            md = render_markdown_chunk(self._response)
-            if md is not None:
-                parts.append(md)
-            else:
+            try:
+                parts.append(Markdown(self._response))
+            except Exception:
                 parts.append(Text(self._response))
             parts.append(Text(""))
             parts.append(Text("↑/↓ scroll · Escape dismiss", style="dim"))

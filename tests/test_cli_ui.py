@@ -352,13 +352,21 @@ async def test_clear_task_cancellation():
     import asyncio
     from coderai.cli.app import _clear_task_cancellation
 
-    task = asyncio.current_task()
-    assert task is not None
-    task.cancel()
-    assert task.cancelling() > 0
+    async def _sample_task():
+        task = asyncio.current_task()
+        assert task is not None
+        task.cancel()
+        assert task.cancelling() > 0
+        try:
+            await asyncio.sleep(0)
+        except asyncio.CancelledError:
+            _clear_task_cancellation()
+        assert task.cancelling() == 0
+        return True
 
-    _clear_task_cancellation()
-    assert task.cancelling() == 0
+    task = asyncio.create_task(_sample_task())
+    res = await task
+    assert res is True
 
 
 def test_claude_style_tool_events_and_stream_transitions():

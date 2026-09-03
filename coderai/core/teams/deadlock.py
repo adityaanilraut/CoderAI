@@ -54,9 +54,9 @@ def detect_task_cycles(task_dependencies: dict[str, list[str]]) -> list[str] | N
                 except ValueError:
                     return [node, dep, node]
             elif state[dep] == 0:
-                cycle = _dfs(dep, stack)
-                if cycle is not None:
-                    return cycle
+                found_cycle = _dfs(dep, stack)
+                if found_cycle is not None:
+                    return found_cycle
 
         stack.pop()
         state[node] = 2

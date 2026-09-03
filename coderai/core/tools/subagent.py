@@ -53,22 +53,17 @@ async def handle_subagent_tool(args: dict[str, Any], context: ToolExecutionConte
 
     depth = _derive_depth(context, args)
 
-    try:
-        max_depth = int(args.get("max_depth")) if args.get("max_depth") is not None else 3
-    except (ValueError, TypeError):
-        max_depth = 3
+    def _to_int(val: Any, default: int | None = None) -> int | None:
+        if val is None:
+            return default
+        try:
+            return int(val)
+        except (ValueError, TypeError):
+            return default
 
-    try:
-        token_budget = (
-            int(args.get("token_budget")) if args.get("token_budget") is not None else None
-        )
-    except (ValueError, TypeError):
-        token_budget = None
-
-    try:
-        max_tokens = int(args.get("max_tokens")) if args.get("max_tokens") is not None else None
-    except (ValueError, TypeError):
-        max_tokens = None
+    max_depth = _to_int(args.get("max_depth"), 3) or 3
+    token_budget = _to_int(args.get("token_budget"))
+    max_tokens = _to_int(args.get("max_tokens"))
 
     seed_messages = None
     if (args.get("fork_parent_history") is True or args.get("fork") is True) and context.session_id:

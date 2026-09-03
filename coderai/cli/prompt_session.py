@@ -223,12 +223,12 @@ if HAS_PTK:
             token = text[last_space + 1 :]
             typed = token[1:]
             mention_doc = Document(text=typed, cursor_position=len(typed))
-            candidates = list(self._fuzzy.get_completions(mention_doc, complete_event))
+            fuzzy_candidates = list(self._fuzzy.get_completions(mention_doc, complete_event))
             seen: set[str] = set()
             candidate_triggers: list[str] = []
             if typed and typed in self._command_lookup:
                 candidate_triggers.append(typed)
-            for cand in candidates:
+            for cand in fuzzy_candidates:
                 if cand.text not in candidate_triggers:
                     candidate_triggers.append(cand.text)
             for trigger in candidate_triggers:
@@ -483,6 +483,7 @@ if HAS_PTK:
             self._mcp_count: int = 0
 
             # Build completers — pass canonical SlashCommand objects with aliases (Kimi prompt.py:97)
+            slash_objs: list[Any]
             try:
                 from coderai.cli.commands import _COMMANDS
 
@@ -605,14 +606,14 @@ if HAS_PTK:
                     mcp_count=mcp_cnt,
                 )
 
-            self._session = PromptSession(
+            self._session: PromptSession[Any] = PromptSession(
                 completer=self._completer,
                 history=self._history,
                 key_bindings=kb,
                 style=self._style,
                 complete_in_thread=True,
                 complete_while_typing=True,
-                bottom_toolbar=_toolbar_callback,
+                bottom_toolbar=_toolbar_callback,  # type: ignore[arg-type]
             )
 
         def update_plan_mode(self, plan_mode: bool) -> None:
@@ -649,7 +650,7 @@ if HAS_PTK:
 
                 msg = self._get_prompt_message if message in (None, "❯ ", "[plan] ❯ ") else message
                 with patch_stdout():
-                    text = await self._session.prompt_async(msg)
+                    text = await self._session.prompt_async(msg)  # type: ignore[arg-type]
                     return text
             except (KeyboardInterrupt, EOFError):
                 raise
@@ -657,7 +658,7 @@ if HAS_PTK:
         def prompt(self, message: Any = None) -> str:
             try:
                 msg = self._get_prompt_message if message in (None, "❯ ", "[plan] ❯ ") else message
-                return self._session.prompt(msg)
+                return self._session.prompt(msg)  # type: ignore[arg-type]
             except (KeyboardInterrupt, EOFError):
                 raise
 

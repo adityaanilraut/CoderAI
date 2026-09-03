@@ -204,7 +204,7 @@ def handle_write_tool(args: dict[str, Any], context: Any) -> ToolResult:
                 session_id, file_path, content=fresh_metadata["content"]
             )
 
-            meta: dict[str, Any] = {
+            meta = {
                 "type": "update" if existing_metadata else "create",
                 "file_path": file_path,
                 "bytes": bytes_written,

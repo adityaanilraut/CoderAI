@@ -73,10 +73,13 @@ class StatusSpinner:
                 vertical_overflow="visible",
             )
             self._live.start()
-            # SIGWINCH: force Live reflow on resize with shape reset
-            _install_sigwinch(
-                lambda *_: self._live and (_reset_live_shape(self._live), self._live.refresh())
-            )  # type: ignore[func-returns-value]
+
+            def _on_resize(*_args: Any) -> None:
+                if self._live:
+                    _reset_live_shape(self._live)
+                    self._live.refresh()
+
+            _install_sigwinch(_on_resize)
         except Exception:
             self._live = None
 
