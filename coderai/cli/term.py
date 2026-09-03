@@ -67,21 +67,37 @@ def ensure_tty_sane() -> None:
 
 
 def _cursor_position_unix() -> tuple[int, int] | None:
-    assert sys.platform != "win32"
+    if sys.platform == "win32":
+        return None
     import select
-    import termios
-    import tty
+
+    try:
+        import termios
+        import tty
+    except ImportError:
+        return None
 
     _CURSOR_QUERY = "\x1b[6n"
     _CURSOR_POSITION_RE = re.compile(r"\x1b\[(\d+);(\d+)R")
 
     fd = sys.stdin.fileno()
-    oldterm = termios.tcgetattr(fd)
+    tcgetattr = getattr(termios, "tcgetattr", None)
+    tcsetattr = getattr(termios, "tcsetattr", None)
+    tcsadrain = getattr(termios, "TCSADRAIN", None)
+    setcbreak = getattr(tty, "setcbreak", None)
+    get_blocking = getattr(os, "get_blocking", None)
+    set_blocking = getattr(os, "set_blocking", None)
+
+    if not (tcgetattr and tcsetattr and setcbreak and tcsadrain is not None):
+        return None
+
+    oldterm = tcgetattr(fd)
     was_blocking = True
     try:
-        tty.setcbreak(fd)
-        was_blocking = os.get_blocking(fd)
-        os.set_blocking(fd, False)
+        setcbreak(fd)
+        if callable(get_blocking) and callable(set_blocking):
+            was_blocking = get_blocking(fd)
+            set_blocking(fd, False)
         sys.stdout.write(_CURSOR_QUERY)
         sys.stdout.flush()
         response = ""
@@ -104,9 +120,10 @@ def _cursor_position_unix() -> tuple[int, int] | None:
             if match:
                 return int(match.group(1)), int(match.group(2))
     finally:
-        with contextlib.suppress(OSError):
-            os.set_blocking(fd, was_blocking)
-        termios.tcsetattr(fd, termios.TCSADRAIN, oldterm)
+        if callable(set_blocking):
+            with contextlib.suppress(OSError):
+                set_blocking(fd, was_blocking)
+        tcsetattr(fd, tcsadrain, oldterm)
     return None
 
 

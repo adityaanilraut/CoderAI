@@ -85,10 +85,15 @@ class TerminalSession:
             )
 
         # Open pseudo-terminal pair
-        self.master_fd, self.slave_fd = pty.openpty()
+        openpty_fn = getattr(pty, "openpty", None)
+        if callable(openpty_fn):
+            self.master_fd, self.slave_fd = openpty_fn()
+        else:
+            raise RuntimeError("Pseudo-terminals (pty) are not supported on this platform")
 
         # Spawn subprocess attached to slave fd
         try:
+            preexec = getattr(os, "setsid", None)
             self.proc = subprocess.Popen(
                 cmd_args,
                 stdin=self.slave_fd,
@@ -96,7 +101,7 @@ class TerminalSession:
                 stderr=self.slave_fd,
                 cwd=self.cwd,
                 env=run_env,
-                preexec_fn=os.setsid,
+                preexec_fn=preexec,
                 close_fds=True,
             )
         except Exception:
@@ -117,7 +122,9 @@ class TerminalSession:
         self.slave_fd = -1
 
         # Set master_fd to non-blocking
-        os.set_blocking(self.master_fd, False)
+        set_blocking_fn = getattr(os, "set_blocking", None)
+        if callable(set_blocking_fn):
+            set_blocking_fn(self.master_fd, False)
 
     @property
     def pid(self) -> int:
@@ -204,10 +211,18 @@ class TerminalSession:
         if sig is None:
             raise ValueError(f"Unknown signal: {sig_name}")
 
-        try:
-            pgid = os.getpgid(self.proc.pid)
-            os.killpg(pgid, sig)
-        except OSError:
+        getpgid_fn = getattr(os, "getpgid", None)
+        killpg_fn = getattr(os, "killpg", None)
+        if callable(getpgid_fn) and callable(killpg_fn):
+            try:
+                pgid = getpgid_fn(self.proc.pid)
+                killpg_fn(pgid, sig)
+            except OSError:
+                try:
+                    self.proc.send_signal(sig)
+                except OSError:
+                    pass
+        else:
             try:
                 self.proc.send_signal(sig)
             except OSError:

@@ -181,10 +181,12 @@ class MarkdownStreamRenderer:
                 if self._live:
                     self._live.refresh()
 
-            try:
-                signal.signal(signal.SIGWINCH, _on_sigwinch)
-            except Exception:
-                pass
+            sigwinch = getattr(signal, "SIGWINCH", None)
+            if sigwinch is not None:
+                try:
+                    signal.signal(sigwinch, _on_sigwinch)
+                except Exception:
+                    pass
         except Exception:
             self._live = None
 

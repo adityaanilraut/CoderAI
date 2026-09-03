@@ -421,8 +421,8 @@ async def test_cancellation_tree_cascades():
     assert "turn_1" in cleaned_up_nodes
 
     await asyncio.sleep(0.01)
-    assert (t2.cancelled() or t2.cancelling() > 0) is True
-    assert (t3.cancelled() or t3.cancelling() > 0) is True
+    assert (t2.cancelled() or getattr(t2, "cancelling", lambda: 0)() > 0) is True
+    assert (t3.cancelled() or getattr(t3, "cancelling", lambda: 0)() > 0) is True
     assert t1.cancelled() is False
 
     t1.cancel()

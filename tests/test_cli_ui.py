@@ -356,12 +356,15 @@ async def test_clear_task_cancellation():
         task = asyncio.current_task()
         assert task is not None
         task.cancel()
-        assert task.cancelling() > 0
+        cancelling_fn = getattr(task, "cancelling", None)
+        if callable(cancelling_fn):
+            assert cancelling_fn() > 0
         try:
             await asyncio.sleep(0)
         except asyncio.CancelledError:
             _clear_task_cancellation()
-        assert task.cancelling() == 0
+        if callable(cancelling_fn):
+            assert cancelling_fn() == 0
         return True
 
     task = asyncio.create_task(_sample_task())

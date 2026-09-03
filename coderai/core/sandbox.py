@@ -353,13 +353,6 @@ def check_sandbox_path_access(
             )
 
         if parsed == "workspace-write":
-            # Allow workspace paths and standard temporary directories (/tmp, /private/tmp)
-            tmp_candidates = [
-                "/tmp",
-                "/private/tmp",
-            ]
-            tmp_paths = [pathlib.Path(t).resolve() for t in tmp_candidates if os.path.exists(t)]
-
             is_under_ws = False
             try:
                 p.relative_to(ws_root)
@@ -367,16 +360,7 @@ def check_sandbox_path_access(
             except ValueError:
                 is_under_ws = False
 
-            is_under_tmp = False
-            for t in tmp_paths:
-                try:
-                    p.relative_to(t)
-                    is_under_tmp = True
-                    break
-                except ValueError:
-                    continue
-
-            if not is_under_ws and not is_under_tmp:
+            if not is_under_ws:
                 return (
                     False,
                     f"SANDBOX_VIOLATION: Write/delete operation to '{target_path}' outside workspace root '{ws_root}' is blocked under 'workspace-write' sandbox policy.",

@@ -70,10 +70,23 @@ def _read_single_key() -> str:
         import termios
         import tty
 
+        tcgetattr = getattr(termios, "tcgetattr", None)
+        tcsetattr = getattr(termios, "tcsetattr", None)
+        tcsadrain = getattr(termios, "TCSADRAIN", None)
+        setraw = getattr(tty, "setraw", None)
+
+        if not (
+            callable(tcgetattr)
+            and callable(tcsetattr)
+            and callable(setraw)
+            and tcsadrain is not None
+        ):
+            return ""
+
         fd = sys.stdin.fileno()
-        old_settings = termios.tcgetattr(fd)
+        old_settings = tcgetattr(fd)
         try:
-            tty.setraw(fd)
+            setraw(fd)
 
             def _read_bytes(n: int) -> bytes:
                 is_mock_or_patched = (
@@ -194,7 +207,8 @@ def _read_single_key() -> str:
 
             return b.decode("utf-8", errors="ignore")
         finally:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+            if callable(tcsetattr) and tcsadrain is not None:
+                tcsetattr(fd, tcsadrain, old_settings)
     except Exception:
         return ""
 

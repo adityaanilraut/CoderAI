@@ -172,10 +172,12 @@ class JobStore:
                 killed_ids.append(j.id)
         return killed_ids
 
-    def get(self, job_id: str, session_id: str) -> Job | None:
+    def get(self, job_id: str, session_id: str | None = None) -> Job | None:
         with self._lock:
             job = self._jobs.get(job_id)
-            if job is None or job.session_id != session_id:
+            if job is None:
+                return None
+            if session_id is not None and job.session_id != session_id:
                 return None
             return job
 

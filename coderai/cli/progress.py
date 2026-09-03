@@ -31,7 +31,9 @@ def _install_sigwinch(handler) -> None:  # type: ignore[no-untyped-def]
             except Exception:
                 pass
 
-        signal.signal(signal.SIGWINCH, _wrapped)  # type: ignore[arg-type]
+        sigwinch = getattr(signal, "SIGWINCH", None)
+        if sigwinch is not None:
+            signal.signal(sigwinch, _wrapped)
     except Exception:
         pass
 

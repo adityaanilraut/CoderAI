@@ -276,7 +276,7 @@ async def test_pwsh_tool_execution(tool_context):
         assert bg_res.ok is True
         assert "job_pwsh_" in bg_res.output
         job_id = bg_res.metadata["job_id"]
-        job_rec = get_job_store().get(job_id)
+        job_rec = get_job_store().get(job_id, tool_context.session_id)
         assert job_rec is not None
         assert job_rec.kind == "pwsh"
 
