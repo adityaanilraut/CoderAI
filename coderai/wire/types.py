@@ -13,10 +13,27 @@ import dataclasses
 from dataclasses import dataclass, field
 from typing import Any, Literal, Union
 
-
-# ---------------------------------------------------------------------------
-# Content parts (minimal kosong ContentPart parity)
-# ---------------------------------------------------------------------------
+from kosong.message import (
+    AudioURLPart,
+    ContentPart,
+    ImageURLPart,
+    ToolCall,
+    VideoURLPart,
+)
+from kosong.tooling import (
+    BriefDisplayBlock,
+    DisplayBlock,
+    ToolResult,
+    ToolReturnValue,
+    UnknownDisplayBlock,
+)
+from coderai.tools.display import (
+    BackgroundTaskDisplayBlock,
+    DiffDisplayBlock,
+    ShellDisplayBlock,
+    TodoDisplayBlock,
+    TodoDisplayItem,
+)
 
 @dataclass
 class TextPart:

@@ -1018,3 +1018,96 @@ async def handle_pwsh_tool(args: dict[str, Any], context: Any) -> ToolResult:
     finally:
         if profile_path:
             delete_seatbelt_profile(profile_path)
+
+
+# --- Kimi parity: Params and Shell callable tool ---
+from typing import Self
+from pydantic import BaseModel, Field, model_validator
+from kosong.tooling import CallableTool2, ToolReturnValue
+from coderai.tools.utils import ToolResultBuilder
+from coderai.tools.display import ShellDisplayBlock
+
+MAX_FOREGROUND_TIMEOUT = 5 * 60
+MAX_BACKGROUND_TIMEOUT = 24 * 60 * 60
+
+
+class Params(BaseModel):
+    command: str = Field(description="The command to execute.")
+    timeout: int = Field(
+        description=(
+            "The timeout in seconds for the command to execute. "
+            "If the command takes longer than this, it will be killed."
+        ),
+        default=60,
+        ge=1,
+        le=MAX_BACKGROUND_TIMEOUT,
+    )
+    run_in_background: bool = Field(
+        default=False,
+        description="Whether to run the command as a background task.",
+    )
+    description: str = Field(
+        default="",
+        description=(
+            "A short description for the background task. Required when run_in_background=true."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_background_fields(self) -> Self:
+        if self.run_in_background and not self.description.strip():
+            raise ValueError("description is required when run_in_background is true")
+        if not self.run_in_background and self.timeout > MAX_FOREGROUND_TIMEOUT:
+            raise ValueError(
+                f"timeout must be <= {MAX_FOREGROUND_TIMEOUT}s for foreground commands; "
+                f"use run_in_background=true for longer timeouts (up to {MAX_BACKGROUND_TIMEOUT}s)"
+            )
+        return self
+
+
+class Shell(CallableTool2[Params]):
+    name: str = "Shell"
+    params: type[Params] = Params
+
+    def __init__(
+        self,
+        approval: Any = None,
+        environment: Any = None,
+        runtime: Any = None,
+        description: str = "Run shell commands.",
+    ):
+        super().__init__(
+            description=description,
+        )
+        self._approval = approval
+        self._environment = environment
+        self._runtime = runtime
+
+    async def __call__(self, params: Params) -> ToolReturnValue:
+        builder = ToolResultBuilder()
+        if not params.command:
+            return builder.error("Command cannot be empty.", brief="Empty command")
+
+        if self._approval is not None and hasattr(self._approval, "request"):
+            approval_result = await self._approval.request(
+                self.name,
+                "run command",
+                f"Run command `{params.command}`",
+                display=[ShellDisplayBlock(language="bash", command=params.command)],
+            )
+            if not approval_result:
+                return approval_result.rejection_error()
+
+        res = await asyncio.to_thread(
+            execute_bash,
+            params.command,
+            timeout_ms=params.timeout * 1000,
+            run_in_background=params.run_in_background,
+            description=params.description,
+        )
+        if not res.ok:
+            builder.write(res.output or "")
+            return builder.error(res.error or "Command failed", brief=f"Failed: {params.command[:40]}")
+        builder.write(res.output or "")
+        return builder.ok("Command executed successfully.")
+

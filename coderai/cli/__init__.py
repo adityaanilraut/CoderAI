@@ -1,8 +1,20 @@
 """coderai.cli — thin UI layer over coderai.core."""
 
-from typing import Any
+from typing import Any, Literal
 
-__all__ = ["main"]
+UIMode = Literal["shell", "print", "acp", "wire"]
+
+
+class ExitCode:
+    SUCCESS = 0
+    FAILURE = 1
+    RETRYABLE = 75  # EX_TEMPFAIL from sysexits.h
+
+
+InputFormat = Literal["text", "stream-json"]
+OutputFormat = Literal["text", "stream-json"]
+
+__all__ = ["main", "UIMode", "ExitCode", "InputFormat", "OutputFormat"]
 
 
 def __getattr__(name: str) -> Any:

@@ -1029,3 +1029,150 @@ VALID_WRITE_SCOPES = {
 def resolve_snippet_file_path(session_id: str, snippet_id: str) -> str | None:
     snippet = get_snippet(session_id, snippet_id)
     return snippet.file_path if snippet else None
+
+
+# --- Kimi parity: Approval, ApprovalResult, ApprovalState, ApprovalRuntime ---
+class ApprovalResult:
+    """Result of an approval request. Behaves as bool for backward compatibility."""
+
+    __slots__ = ("approved", "feedback")
+
+    def __init__(self, approved: bool, feedback: str = ""):
+        self.approved = approved
+        self.feedback = feedback
+
+    def __bool__(self) -> bool:
+        return self.approved
+
+    def rejection_error(self) -> Any:
+        from coderai.tools.utils import ToolRejectedError
+
+        if self.feedback:
+            return ToolRejectedError(
+                message=f"The tool call is rejected by the user. User feedback: {self.feedback}",
+                brief=f"Rejected: {self.feedback}",
+                has_feedback=True,
+            )
+        return ToolRejectedError()
+
+
+class ApprovalState:
+    def __init__(
+        self,
+        yolo: bool = False,
+        afk: bool = False,
+        runtime_afk: bool = False,
+        auto_approve_actions: set[str] | None = None,
+        on_change: Any | None = None,
+    ):
+        self.yolo = yolo
+        self.afk = afk
+        self.runtime_afk = runtime_afk
+        self.auto_approve_actions: set[str] = auto_approve_actions or set()
+        self._on_change = on_change
+
+    def notify_change(self) -> None:
+        if self._on_change is not None:
+            self._on_change()
+
+
+class ApprovalRuntime:
+    """In-memory coordinator bridging pending approval requests."""
+
+    def __init__(self) -> None:
+        self._waiters: dict[str, asyncio.Future[ApprovalResult]] = {}
+
+    def resolve(self, request_id: str, outcome: Any, feedback: str = "") -> None:
+        fut = self._waiters.pop(request_id, None)
+        if fut and not fut.done():
+            approved = outcome in (True, "approve", "approve_for_session", "allow")
+            fut.set_result(ApprovalResult(approved, feedback=feedback))
+
+    async def wait_for(self, request_id: str) -> ApprovalResult:
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[ApprovalResult] = loop.create_future()
+        self._waiters[request_id] = fut
+        return await fut
+
+
+class Approval:
+    """Approval controller for tool executions."""
+
+    def __init__(
+        self,
+        yolo: bool = False,
+        *,
+        state: ApprovalState | None = None,
+        runtime: ApprovalRuntime | None = None,
+    ):
+        self._state = state or ApprovalState(yolo=yolo)
+        self._runtime = runtime or ApprovalRuntime()
+
+    def share(self) -> Approval:
+        return Approval(state=self._state, runtime=self._runtime)
+
+    def set_runtime(self, runtime: ApprovalRuntime) -> None:
+        self._runtime = runtime
+
+    @property
+    def runtime(self) -> ApprovalRuntime:
+        return self._runtime
+
+    def set_yolo(self, yolo: bool) -> None:
+        self._state.yolo = yolo
+        self._state.notify_change()
+
+    def set_afk(self, afk: bool) -> None:
+        self._state.afk = afk
+        if not afk:
+            self._state.runtime_afk = False
+        self._state.notify_change()
+
+    def set_runtime_afk(self, afk: bool) -> None:
+        self._state.runtime_afk = afk
+
+    def is_auto_approve(self) -> bool:
+        return self._state.yolo or self.is_afk()
+
+    def is_yolo(self) -> bool:
+        return self._state.yolo
+
+    def is_afk(self) -> bool:
+        return self._state.afk or self._state.runtime_afk
+
+    async def request(
+        self,
+        sender: str,
+        action: str,
+        description: str,
+        display: list[Any] | None = None,
+    ) -> ApprovalResult:
+        if self.is_auto_approve() or action in self._state.auto_approve_actions:
+            return ApprovalResult(True)
+
+        from coderai.soul import get_wire_or_none
+        from coderai.soul.toolset import get_current_tool_call_or_none
+        from coderai.wire.types import ApprovalRequest
+
+        wire = get_wire_or_none()
+        tool_call = get_current_tool_call_or_none()
+        tool_call_id = tool_call.id if tool_call else str(uuid.uuid4())
+        req_id = str(uuid.uuid4())
+
+        req = ApprovalRequest(
+            id=req_id,
+            action=action,
+            description=description,
+            tool_call_id=tool_call_id,
+            sender=sender,
+            display=display or [],
+        )
+
+        if wire is not None:
+            wire.soul_side.send(req)
+            outcome = await req.wait()
+            approved = outcome in (True, "approve", "approve_for_session", "allow")
+            return ApprovalResult(approved, feedback=getattr(req, "feedback", ""))
+
+        return ApprovalResult(True)
+

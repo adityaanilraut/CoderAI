@@ -37,11 +37,9 @@ dependencies = [
     "pykaos==0.9.0",
     "typer>=0.21",
     "fastmcp>=3.2",
-    "tenacity>=9",
+    "streamingjson==0.0.5",
     "jinja2>=3.1",
     "aiofiles>=24",
-    "fastapi>=0.115",
-    "uvicorn[standard]>=0.32",
     "agent-client-protocol>=0.8",
     # Phase 1 (PORT_PLAN.md): clipboard (pillow/pyperclip) + telemetry transport (aiohttp).
     "pillow>=10",

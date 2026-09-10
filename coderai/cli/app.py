@@ -2942,6 +2942,14 @@ async def _run_interactive(
                             if chosen_model and chosen_model != mgr.get_active_model():
                                 mgr.set_model(chosen_model)
                                 clear_client_pool()
+                                try:
+                                    from coderai.config import save_active_model_setting
+
+                                    save_active_model_setting(
+                                        chosen_model, scope="user", project_root=mgr.project_root
+                                    )
+                                except Exception:
+                                    pass
                                 if console is not None and _RICH:
                                     console.print(
                                         f"[bold green]Switched active model to:[/] [bold cyan]{chosen_model}[/]"
@@ -2950,21 +2958,30 @@ async def _run_interactive(
                                     print(f"Switched active model to: {chosen_model}")
                         else:
                             target_model = cmd_arg.strip()
-                            from coderai.cli.interactive_menu import CURATED_MODELS
+                            from coderai.ui.shell.session_picker import get_available_models
 
+                            available = get_available_models(mgr.get_active_model())
                             if target_model.isdigit():
                                 idx = int(target_model)
-                                if 1 <= idx <= len(CURATED_MODELS):
-                                    target_model = CURATED_MODELS[idx - 1][0]
+                                if 1 <= idx <= len(available):
+                                    target_model = available[idx - 1][0]
                             else:
                                 from coderai.cli.fuzzy import fuzzy_filter
 
-                                model_names = [name for name, _, _ in CURATED_MODELS]
+                                model_names = [name for name, _, _ in available]
                                 fuzzy_models = fuzzy_filter(target_model, model_names, limit=1)
                                 if fuzzy_models:
                                     target_model = fuzzy_models[0]
                             mgr.set_model(target_model)
                             clear_client_pool()
+                            try:
+                                from coderai.config import save_active_model_setting
+
+                                save_active_model_setting(
+                                    target_model, scope="user", project_root=mgr.project_root
+                                )
+                            except Exception:
+                                pass
                             if console is not None and _RICH:
                                 console.print(
                                     f"[bold green]Switched active model to:[/] [bold cyan]{target_model}[/]"
@@ -3458,16 +3475,15 @@ async def _run_interactive(
                         run_task_browser(console, mgr, session_id)
                         continue
 
-                    if cmd == "/web":
-                        from coderai.cli.web_cmd import cmd_web
-
-                        cmd_web(console, mgr, session_id, cmd_arg)
-                        continue
-
-                    if cmd == "/vis":
-                        from coderai.cli.web_cmd import cmd_vis
-
-                        cmd_vis(console, mgr, session_id, cmd_arg)
+                    if cmd in ("/web", "/vis"):
+                        msg = "CoderAI is a pure CLI application. Web UI and browser visualizers have been removed."
+                        if console is not None:
+                            try:
+                                console.print(f"[yellow]{msg}[/]")
+                            except Exception:
+                                print(msg)
+                        else:
+                            print(msg)
                         continue
 
                     if cmd.startswith("/skill:"):

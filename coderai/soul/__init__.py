@@ -138,4 +138,82 @@ __all__ = [
     "InjectionRegistry",
     "default_registry",
     "wrap_as_reminder",
+    "StatusSnapshot",
+    "format_context_status",
+    "Soul",
+    "get_wire_or_none",
+    "wire_send",
 ]
+
+from coderai.cli.elapsed import format_context_status
+
+from contextvars import ContextVar
+from dataclasses import dataclass
+from typing import Any, Protocol, runtime_checkable
+from coderai.wire.types import MCPStatusSnapshot, WireMessage
+from coderai.wire import Wire
+
+
+@dataclass(frozen=True, slots=True)
+class StatusSnapshot:
+    context_usage: float
+    yolo_enabled: bool = False
+    afk_enabled: bool = False
+    plan_mode: bool = False
+    context_tokens: int = 0
+    max_context_tokens: int = 0
+    mcp_status: MCPStatusSnapshot | None = None
+
+
+@runtime_checkable
+class Soul(Protocol):
+    @property
+    def name(self) -> str: ...
+    @property
+    def model_name(self) -> str: ...
+
+
+_current_wire: ContextVar[Any | None] = ContextVar("current_wire", default=None)
+
+
+def get_wire_or_none() -> Any | None:
+    """Get the current wire or None."""
+    return _current_wire.get()
+
+
+def wire_send(msg: Any) -> None:
+    """Send a wire message to the current wire."""
+    wire = get_wire_or_none()
+    if wire is not None:
+        wire.soul_side.send(msg)
+
+
+class LLMNotSet(Exception):
+    """Raised when the LLM is not set."""
+
+    def __init__(self) -> None:
+        super().__init__("LLM not set")
+
+
+class LLMNotSupported(Exception):
+    """Raised when the LLM does not have required capabilities."""
+
+    def __init__(self, llm: Any = None, capabilities: list[Any] | None = None):
+        name = getattr(llm, "model_name", "unknown") if llm else "unknown"
+        caps = capabilities or []
+        super().__init__(
+            f"LLM model '{name}' does not support required capabilities: {', '.join(str(c) for c in caps)}."
+        )
+
+
+class MaxStepsReached(Exception):
+    """Raised when the maximum number of steps is reached."""
+
+    def __init__(self, n_steps: int):
+        super().__init__(f"Max number of steps reached: {n_steps}")
+        self.n_steps = n_steps
+
+
+class RunCancelled(Exception):
+    """The run was cancelled by the cancel event."""
+

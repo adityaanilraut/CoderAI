@@ -447,3 +447,249 @@ async def run_hook_point_async(
             outputs.append(out)
 
     return merge_hook_outputs(outputs)
+
+
+# ---------------------------------------------------------------------------
+# Kimi-parity HookEngine class for agent lifecycle
+# ---------------------------------------------------------------------------
+
+from collections.abc import Awaitable, Callable
+from coderai.hooks.config import HookDef, HookEventType
+from coderai.hooks.runner import HookResult, run_hook
+
+OnTriggered = Callable[[str, str, int], None]
+OnResolved = Callable[[str, str, str, str, int], None]
+OnWireHookRequest = Callable[["WireHookHandle"], Awaitable[None]]
+
+
+@dataclass
+class WireHookSubscription:
+    """A client-side hook subscription registered via wire initialize."""
+
+    id: str
+    event: str
+    matcher: str = ""
+    timeout: int = 30
+
+
+@dataclass
+class WireHookHandle:
+    """A pending wire hook request waiting for client response."""
+
+    id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+    subscription_id: str = ""
+    event: str = ""
+    target: str = ""
+    input_data: dict[str, Any] = field(default_factory=lambda: {})
+    _future: asyncio.Future[HookResult] | None = field(default=None, repr=False)
+
+    def _get_future(self) -> asyncio.Future[HookResult]:
+        if self._future is None:
+            self._future = asyncio.get_event_loop().create_future()
+        return self._future
+
+    async def wait(self) -> HookResult:
+        return await self._get_future()
+
+    def resolve(self, action: str = "allow", reason: str = "") -> None:
+        result = HookResult(action=action, reason=reason)
+        future = self._get_future()
+        if not future.done():
+            future.set_result(result)
+
+
+class HookEngine:
+    """Loads hook definitions and executes matching hooks in parallel."""
+
+    def __init__(
+        self,
+        hooks: list[HookDef] | None = None,
+        cwd: str | None = None,
+        *,
+        on_triggered: OnTriggered | None = None,
+        on_resolved: OnResolved | None = None,
+        on_wire_hook: OnWireHookRequest | None = None,
+    ):
+        self._hooks: list[HookDef] = list(hooks) if hooks else []
+        self._wire_subs: list[WireHookSubscription] = []
+        self._cwd = cwd
+        self._on_triggered = on_triggered
+        self._on_resolved = on_resolved
+        self._on_wire_hook = on_wire_hook
+        self._by_event: dict[str, list[HookDef]] = {}
+        self._wire_by_event: dict[str, list[WireHookSubscription]] = {}
+        self._pending_fire_and_forget: set[asyncio.Task[Any]] = set()
+        self._rebuild_index()
+
+    def fire_and_forget_trigger(
+        self,
+        event: HookEventType,
+        *,
+        matcher_value: str = "",
+        input_data: dict[str, Any],
+    ) -> asyncio.Task[list[HookResult]]:
+        task: asyncio.Task[list[HookResult]] = asyncio.create_task(
+            self.trigger(event, matcher_value=matcher_value, input_data=input_data)
+        )
+        self._pending_fire_and_forget.add(task)
+        task.add_done_callback(self._pending_fire_and_forget.discard)
+        return task
+
+    def _rebuild_index(self) -> None:
+        self._by_event.clear()
+        for h in self._hooks:
+            self._by_event.setdefault(h.event, []).append(h)
+        self._wire_by_event.clear()
+        for s in self._wire_subs:
+            self._wire_by_event.setdefault(s.event, []).append(s)
+
+    def add_hooks(self, hooks: list[HookDef]) -> None:
+        self._hooks.extend(hooks)
+        self._rebuild_index()
+
+    def add_wire_subscriptions(self, subs: list[WireHookSubscription]) -> None:
+        self._wire_subs.extend(subs)
+        self._rebuild_index()
+
+    def set_callbacks(
+        self,
+        on_triggered: OnTriggered | None = None,
+        on_resolved: OnResolved | None = None,
+        on_wire_hook: OnWireHookRequest | None = None,
+    ) -> None:
+        self._on_triggered = on_triggered
+        self._on_resolved = on_resolved
+        self._on_wire_hook = on_wire_hook
+
+    @property
+    def has_hooks(self) -> bool:
+        return bool(self._hooks) or bool(self._wire_subs)
+
+    def has_hooks_for(self, event: HookEventType) -> bool:
+        return bool(self._by_event.get(event)) or bool(self._wire_by_event.get(event))
+
+    def _match_regex(self, pattern: str, value: str) -> bool:
+        if not pattern:
+            return True
+        try:
+            return bool(re.search(pattern, value))
+        except re.error:
+            return False
+
+    async def trigger(
+        self,
+        event: HookEventType,
+        *,
+        matcher_value: str = "",
+        input_data: dict[str, Any],
+    ) -> list[HookResult]:
+        seen_commands: set[str] = set()
+        server_matched: list[HookDef] = []
+        for h in self._by_event.get(event, []):
+            if not self._match_regex(h.matcher, matcher_value):
+                continue
+            if h.command in seen_commands:
+                continue
+            seen_commands.add(h.command)
+            server_matched.append(h)
+
+        wire_matched: list[WireHookSubscription] = []
+        for s in self._wire_by_event.get(event, []):
+            if not self._match_regex(s.matcher, matcher_value):
+                continue
+            wire_matched.append(s)
+
+        total = len(server_matched) + len(wire_matched)
+        if total == 0:
+            return []
+
+        try:
+            results = await self._execute_hooks(
+                event, matcher_value, server_matched, wire_matched, input_data
+            )
+        except Exception:
+            logger.warning("Hook engine error for %s, failing open", event)
+            return []
+
+        return results
+
+    async def _execute_hooks(
+        self,
+        event: str,
+        matcher_value: str,
+        server_matched: list[HookDef],
+        wire_matched: list[WireHookSubscription],
+        input_data: dict[str, Any],
+    ) -> list[HookResult]:
+        total = len(server_matched) + len(wire_matched)
+        if self._on_triggered:
+            try:
+                self._on_triggered(event, matcher_value, total)
+            except Exception:
+                pass
+
+        t0 = time.monotonic()
+        tasks: list[asyncio.Task[HookResult]] = []
+
+        for h in server_matched:
+            tasks.append(
+                asyncio.create_task(
+                    run_hook(h.command, input_data, timeout=h.timeout, cwd=self._cwd)
+                )
+            )
+
+        for s in wire_matched:
+            tasks.append(
+                asyncio.create_task(
+                    self._dispatch_wire_hook(
+                        s.id, event, matcher_value, input_data, timeout=s.timeout
+                    )
+                )
+            )
+
+        results = list(await asyncio.gather(*tasks))
+        duration_ms = int((time.monotonic() - t0) * 1000)
+
+        action = "allow"
+        reason = ""
+        for r in results:
+            if r.action == "block":
+                action = "block"
+                reason = r.reason
+                break
+
+        if self._on_resolved:
+            try:
+                self._on_resolved(event, matcher_value, action, reason, duration_ms)
+            except Exception:
+                pass
+
+        return results
+
+    async def _dispatch_wire_hook(
+        self,
+        subscription_id: str,
+        event: str,
+        target: str,
+        input_data: dict[str, Any],
+        *,
+        timeout: int = 30,
+    ) -> HookResult:
+        if not self._on_wire_hook:
+            return HookResult(action="allow")
+
+        handle = WireHookHandle(
+            subscription_id=subscription_id,
+            event=event,
+            target=target,
+            input_data=input_data,
+        )
+        hook_task = asyncio.ensure_future(self._on_wire_hook(handle))
+        try:
+            return await asyncio.wait_for(handle.wait(), timeout=timeout)
+        except (TimeoutError, asyncio.TimeoutError):
+            hook_task.cancel()
+            return HookResult(action="allow", timed_out=True)
+        except Exception:
+            hook_task.cancel()
+            return HookResult(action="allow")

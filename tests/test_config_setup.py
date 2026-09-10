@@ -39,6 +39,8 @@ def fake_home(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> pathli
     """Redirect settings home at a temp dir and strip credential env vars."""
     home = tmp_path / "fake_home"
     home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("CODERAI_SHARE_DIR", str(home / ".coderai"))
     monkeypatch.setattr("coderai.core.settings._home", lambda: home)
     for var in (
         "OPENAI_API_KEY",
@@ -280,3 +282,114 @@ def test_config_model_picker_number_selects_curated(monkeypatch: pytest.MonkeyPa
 
     monkeypatch.setattr("builtins.input", lambda _: "1")
     assert select_model_interactive(None, "gpt-5.6-luna") == "gpt-5.6-sol"
+
+
+def test_typed_config_normalizes_wire_model_and_allows_curated() -> None:
+    """TypedConfig normalizes wire model names to configured keys and allows external models."""
+    from coderai.config import LLMModel, LLMProvider, TypedConfig
+    from pydantic import SecretStr
+
+    # 1. Normalizes wire model name to matching key
+    cfg = TypedConfig(
+        default_model="kimi-for-coding",
+        providers={
+            "managed:kimi-code": LLMProvider(
+                type="kimi", base_url="https://api.kimi.com/coding/v1", api_key=SecretStr("")
+            )
+        },
+        models={
+            "kimi-code/kimi-for-coding": LLMModel(
+                provider="managed:kimi-code", model="kimi-for-coding", max_context_size=262144
+            )
+        },
+    )
+    assert cfg.default_model == "kimi-code/kimi-for-coding"
+
+    # 2. Allows unconfigured standard curated models without error
+    cfg2 = TypedConfig(
+        default_model="gpt-5.6-luna",
+        providers={
+            "managed:kimi-code": LLMProvider(
+                type="kimi", base_url="https://api.kimi.com/coding/v1", api_key=SecretStr("")
+            )
+        },
+        models={
+            "kimi-code/kimi-for-coding": LLMModel(
+                provider="managed:kimi-code", model="kimi-for-coding", max_context_size=262144
+            )
+        },
+    )
+    assert cfg2.default_model == "gpt-5.6-luna"
+
+
+def test_typed_config_rejects_missing_provider() -> None:
+    """TypedConfig still enforces that models must point to a declared provider."""
+    from coderai.config import LLMModel, TypedConfig
+    import pytest
+
+    with pytest.raises(ValueError, match="not found in providers"):
+        TypedConfig(
+            models={"custom": LLMModel(provider="nonexistent", model="gpt-4", max_context_size=64000)},
+            providers={},
+        )
+
+
+def test_create_openai_client_resilient_to_typed_config_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """create_openai_client does not raise UnboundLocalError when load_typed_config fails."""
+    from coderai.core.openai_client import create_openai_client
+
+    def mock_broken_load():
+        raise RuntimeError("simulated config failure")
+
+    monkeypatch.setattr("coderai.config.load_typed_config", mock_broken_load)
+    info = create_openai_client()
+    assert info is not None
+    assert "model" in info
+    assert info["model"] == "gpt-5.6-luna" or info.get("displayModel")
+
+
+def test_resolve_model_provider_routing_kimi_prefers_oauth_over_openai_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Routing for Kimi models prioritizes OAuth token over generic sk-proj OpenAI keys."""
+    from coderai.llm import resolve_model_provider_routing
+    from coderai.auth.oauth import OAuthToken
+
+    mock_tok = OAuthToken(
+        access_token="kimi_test_access_token",
+        refresh_token="rf",
+        expires_at=9999999999.0,
+        scope="kimi-code",
+        token_type="Bearer",
+        expires_in=900.0,
+    )
+    monkeypatch.setattr("coderai.auth.oauth.load_token", lambda _: mock_tok)
+
+    base_url, api_key = resolve_model_provider_routing(
+        model="kimi-for-coding",
+        explicit_api_key="sk-proj-openai-key-that-should-not-be-sent-to-kimi",
+    )
+    assert base_url == "https://api.kimi.com/coding/v1"
+    assert api_key == "kimi_test_access_token"
+
+
+def test_test_api_connection_handles_403_quota(monkeypatch: pytest.MonkeyPatch) -> None:
+    """probe_provider_connectivity returns clear quota message on HTTP 403 limit errors."""
+    from coderai.llm import probe_provider_connectivity
+
+    class MockPermissionDeniedError(Exception):
+        pass
+
+    def mock_create(*args, **kwargs):
+        raise MockPermissionDeniedError("Error code: 403 - You've reached your monthly usage limit for this billing cycle.")
+
+    class MockChat:
+        completions = type("Comp", (), {"create": staticmethod(mock_create)})()
+
+    class MockOpenAI:
+        def __init__(self, *args, **kwargs):
+            self.chat = MockChat()
+
+    monkeypatch.setattr("openai.OpenAI", MockOpenAI)
+    success, msg = probe_provider_connectivity(model="kimi-for-coding", api_key="tok", base_url="https://api.kimi.com/coding/v1")
+    assert success is False
+    assert "Quota Exceeded (403)" in msg
+

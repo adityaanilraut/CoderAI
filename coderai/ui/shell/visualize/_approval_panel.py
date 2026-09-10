@@ -1,27 +1,48 @@
-# Ported from coderai/cli/approval_panel.py - kimi structure (ui/shell/visualize/_approval_panel.py).
-"""Approval modal panel for tool and permission confirmation.
-
-Groups same-file diff previews truncated to MAX_PREVIEW_LINES=4,
-displays styled approval options, and supports interactive paging.
-"""
-
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Callable
+from typing import NamedTuple
 
+from prompt_toolkit.application.run_in_terminal import run_in_terminal
+from prompt_toolkit.buffer import Buffer
+from prompt_toolkit.document import Document
+from prompt_toolkit.formatted_text import ANSI
+from prompt_toolkit.key_binding import KeyPressEvent
 from rich.console import Group, RenderableType
 from rich.markup import escape
 from rich.padding import Padding
+from rich.panel import Panel
 from rich.text import Text
 
-try:
-    from coderai.ui.shell.console import console  # type: ignore
-except Exception:
-    from rich.console import Console
+from coderai.ui.shell.console import console, render_to_ansi
+from coderai.ui.shell.keyboard import KeyEvent
+from coderai.utils.rich.diff_render import (
+    collect_diff_hunks,
+    render_diff_panel,
+    render_diff_preview,
+    render_diff_summary_panel,
+    render_diff_summary_preview,
+)
+from coderai.utils.rich.syntax import KimiSyntax
+from coderai.wire.types import (
+    ApprovalRequest,
+    ApprovalResponse,
+    BriefDisplayBlock,
+    DiffDisplayBlock,
+    ShellDisplayBlock,
+)
 
-    console = Console()  # type: ignore
-
+# Truncation limits for approval request display
 MAX_PREVIEW_LINES = 4
+
+
+class ApprovalContentBlock(NamedTuple):
+    """A pre-rendered content block for approval request with line count."""
+
+    text: str
+    lines: int
+    style: str = ""
+    lexer: str = ""
 
 
 def _render_feedback_with_cursor(text: str, cursor: int | None) -> Text:
@@ -29,281 +50,459 @@ def _render_feedback_with_cursor(text: str, cursor: int | None) -> Text:
         return Text(text + "\u2588")
     cursor = max(cursor, 0)
     return Text.assemble(
-        Text(text[:cursor]), Text(text[cursor], style="reverse"), Text(text[cursor + 1 :])
+        Text(text[:cursor]),
+        Text(text[cursor], style="reverse"),
+        Text(text[cursor + 1 :]),
     )
 
 
 class ApprovalRequestPanel:
-    """Per-request approval panel for CoderAI dict requests."""
-
     FEEDBACK_OPTION_INDEX = 3
-    modal_priority = 20
 
-    def __init__(self, request: dict[str, Any]):
+    def __init__(self, request: ApprovalRequest):
         self.request = request
+        self.options: list[tuple[str, ApprovalResponse.Kind]] = [
+            ("Approve once", "approve"),
+            ("Approve for this session", "approve_for_session"),
+            ("Reject", "reject"),
+            ("Reject, tell the model what to do instead", "reject"),
+        ]
+        self.selected_index = 0
+
+        # Pre-render content for the preview.
+        # All blocks (diff and non-diff) are rendered in original display order
+        # into a single list of renderables to preserve interleaving.
         self._preview_renderables: list[RenderableType] = []
         self._has_diff = False
         self._non_diff_truncated = False
-        self._content_blocks: list[dict[str, Any]] = []
+        # Legacy content blocks for non-diff blocks (used by render_full fallback)
+        self._content_blocks: list[ApprovalContentBlock] = []
 
-        command = str(request.get("command", "")).strip()
-        scopes: list[str] = request.get("scopes") or []
-        diff_preview = request.get("diff_preview")
-        description = request.get("description", "")
+        # Line budget for non-diff blocks
+        non_diff_budget = MAX_PREVIEW_LINES
 
-        # Determine always target — duplicate set to avoid circular import (ponytail)
-        _ALWAYS = {
-            "read-in-cwd",
-            "read-out-cwd",
-            "write-in-cwd",
-            "write-out-cwd",
-            "delete-in-cwd",
-            "delete-out-cwd",
-            "query-git-log",
-            "mutate-git-log",
-            "network",
-            "mcp",
-        }
-        always_target = next((s for s in scopes if s in _ALWAYS), None)
-        has_always = bool(always_target)
+        # Handle description (only if no display blocks)
+        if request.description and not request.display:
+            text = request.description.rstrip("\n")
+            line_count = text.count("\n") + 1
+            self._content_blocks.append(ApprovalContentBlock(text=text, lines=line_count))
+            preview_text = text
+            if line_count > non_diff_budget:
+                preview_text = "\n".join(text.split("\n")[:non_diff_budget])
+                self._non_diff_truncated = True
+            self._preview_renderables.append(Text(preview_text))
+            non_diff_budget -= min(line_count, non_diff_budget)
 
-        _SCOPE_DESC = {
-            "read-in-cwd": "reads inside this workspace",
-            "read-out-cwd": "reads outside this workspace",
-            "write-in-cwd": "writes inside this workspace",
-            "write-out-cwd": "writes outside this workspace",
-            "delete-in-cwd": "deletes inside this workspace",
-            "delete-out-cwd": "deletes outside this workspace",
-            "query-git-log": "Git history queries",
-            "mutate-git-log": "Git history changes",
-            "network": "network access",
-            "mcp": "MCP tool access",
-        }
-        # Build options
-        self.options: list[tuple[str, str]] = [("Approve once", "approve")]
-        if has_always and always_target:
-            label = f"Approve for session ({_SCOPE_DESC.get(always_target, always_target)})"
-            self.options.append((label, "approve_for_session"))
-            self.options.append(("Reject", "reject"))
-            self.options.append(("Reject, tell the model what to do instead", "reject"))
-        else:
-            self.options.append(("Reject", "reject"))
-            # still keep feedback option for parity (3 options + feedback)
-            # Kimi always has 4 options; for has_always=False we show 3 + feedback = 4 but second is reject?
-            # To keep 4 entries, insert approve_for_session only when has_always; otherwise 3 entries but FEEDBACK index 2?
-            # For consistency with Kimi 4-options, pad if needed:
-            if len(self.options) == 2:
-                # options are [approve, reject] -> add feedback as 3rd (index 2)
-                self.options.append(("Reject, tell the model what to do instead", "reject"))
-                self.FEEDBACK_OPTION_INDEX = 2  # type: ignore
-            else:
-                self.FEEDBACK_OPTION_INDEX = 3
-        # ensure index valid
-        if len(self.options) <= self.FEEDBACK_OPTION_INDEX:
-            self.FEEDBACK_OPTION_INDEX = len(self.options) - 1
-
-        self.selected_index = 0
-
-        # Build preview renderables
-        # 1. Description if no diff
-        # 2. Diff grouping: same-file hunks MAX_PREVIEW_LINES=4 (Kimi collect_diff_hunks parity)
-        if diff_preview and isinstance(diff_preview, str) and diff_preview.strip():
-            self._has_diff = True
-            try:
-                from coderai.utils.rich.diff_render import (
-                    parse_unified_diff_to_hunks,
-                    render_diff_preview_structured,
-                )
-
-                hunks, added, removed, path = parse_unified_diff_to_hunks(diff_preview)
-                if hunks:
-                    # Group same-file: hunks already grouped; render structured preview limited to 4
-                    renderables, remaining = render_diff_preview_structured(
-                        path, hunks, added, removed, max_lines=MAX_PREVIEW_LINES
-                    )
-                    self._preview_renderables.extend(renderables)
-                    if remaining > 0 or len(diff_preview.splitlines()) > MAX_PREVIEW_LINES:
-                        self._non_diff_truncated = False
-                        self.has_expandable_content = True
-                    else:
-                        self.has_expandable_content = (
-                            len(diff_preview.splitlines()) > MAX_PREVIEW_LINES
+        # Handle display blocks — group consecutive same-file DiffDisplayBlocks
+        display = request.display
+        idx = 0
+        while idx < len(display):
+            block = display[idx]
+            if isinstance(block, DiffDisplayBlock):
+                path = block.path
+                diff_blocks: list[DiffDisplayBlock] = []
+                while idx < len(display):
+                    b = display[idx]
+                    if not isinstance(b, DiffDisplayBlock) or b.path != path:
+                        break
+                    diff_blocks.append(b)
+                    idx += 1
+                if any(b.is_summary for b in diff_blocks):
+                    self._has_diff = True
+                    self._preview_renderables.extend(render_diff_summary_preview(path, diff_blocks))
+                else:
+                    hunks, added, removed = collect_diff_hunks(diff_blocks)
+                    if hunks:
+                        self._has_diff = True
+                        renderables, _remaining = render_diff_preview(
+                            path,
+                            hunks,
+                            added,
+                            removed,
                         )
-                    # Keep full content for pager
-                    self._content_blocks.append({"diff_preview": diff_preview, "path": path})
-                else:
-                    # Fallback truncated text preview
-                    lines = diff_preview.strip().splitlines()[:MAX_PREVIEW_LINES]
-                    self._preview_renderables.append(Text("\n".join(lines)))
-                    self.has_expandable_content = len(diff_preview.splitlines()) > MAX_PREVIEW_LINES
-                    self._content_blocks.append({"diff_preview": diff_preview})
-            except Exception:
-                lines = diff_preview.strip().splitlines()[:MAX_PREVIEW_LINES]
-                self._preview_renderables.append(Text("\n".join(lines)))
-                self.has_expandable_content = len(diff_preview.splitlines()) > MAX_PREVIEW_LINES
-        else:
-            # Non-diff content: command + description
-            combined = ""
-            if command:
-                combined = command
-            if description:
-                combined = f"{combined}\n{description}" if combined else description
-            if combined:
-                lines = combined.strip().splitlines()
-                truncated = "\n".join(lines[:MAX_PREVIEW_LINES])
-                self._preview_renderables.append(Text(truncated))
-                if len(lines) > MAX_PREVIEW_LINES:
-                    self._non_diff_truncated = True
-                    self.has_expandable_content = True
-                else:
-                    self.has_expandable_content = False
-            else:
-                # scopes only
-                self._preview_renderables.append(
-                    Text(f"Scopes: {', '.join(scopes) or 'none'}", style="grey50")
+                        self._preview_renderables.extend(renderables)
+            elif isinstance(block, ShellDisplayBlock):
+                text = block.command.rstrip("\n")
+                line_count = text.count("\n") + 1
+                self._content_blocks.append(
+                    ApprovalContentBlock(text=text, lines=line_count, lexer=block.language)
                 )
-                self.has_expandable_content = False
-        # ensure attribute exists
-        if not hasattr(self, "has_expandable_content"):
-            self.has_expandable_content = self._has_diff or self._non_diff_truncated
+                if non_diff_budget > 0:
+                    truncated = text
+                    if line_count > non_diff_budget:
+                        truncated = "\n".join(text.split("\n")[:non_diff_budget])
+                        self._non_diff_truncated = True
+                    self._preview_renderables.append(KimiSyntax(truncated, block.language))
+                    non_diff_budget -= min(line_count, non_diff_budget)
+                else:
+                    self._non_diff_truncated = True
+                idx += 1
+            elif isinstance(block, BriefDisplayBlock) and block.text:
+                text = block.text.rstrip("\n")
+                line_count = text.count("\n") + 1
+                self._content_blocks.append(
+                    ApprovalContentBlock(text=text, lines=line_count, style="grey50")
+                )
+                if non_diff_budget > 0:
+                    truncated = text
+                    if line_count > non_diff_budget:
+                        truncated = "\n".join(text.split("\n")[:non_diff_budget])
+                        self._non_diff_truncated = True
+                    self._preview_renderables.append(Text(truncated, style="grey50"))
+                    non_diff_budget -= min(line_count, non_diff_budget)
+                else:
+                    self._non_diff_truncated = True
+                idx += 1
+            else:
+                idx += 1
+
+        # P1: diff pager always has context lines not shown in preview
+        # P2: non-diff blocks may have been truncated
+        self.has_expandable_content = self._has_diff or self._non_diff_truncated
 
     def render(
-        self, *, feedback_text: str | None = None, feedback_cursor: int | None = None
+        self,
+        *,
+        feedback_text: str | None = None,
+        feedback_cursor: int | None = None,
     ) -> RenderableType:
-        req = self.request
-        name = str(req.get("name", "Tool")).lower()
-        command = str(req.get("command", "")).strip()
-        cwd = req.get("cwd") or req.get("project_root") or ""
-        description = req.get("description", "")
+        """Render the approval menu as a bordered panel."""
+        content_lines: list[RenderableType] = [
+            Text.from_markup(
+                "[yellow]"
+                f"{escape(self.request.sender)} is requesting approval to "
+                f"{escape(self.request.action)}:[/yellow]"
+            )
+        ]
+        content_lines.extend(self._render_source_metadata_lines())
+        content_lines.append(Text(""))
 
-        # Action title matching screenshot
-        if "bash" in name or "terminal" in name or command:
-            title_text = "Run this command?"
-        elif "write" in name or "edit" in name or "patch" in name:
-            target = req.get("file_path") or req.get("target_path") or "file"
-            title_text = f"Edit {target}?" if "edit" in name else f"Write to {target}?"
-        else:
-            title_text = f"Execute {req.get('name', 'action')}?"
-
-        # Header with amber/orange arrow and horizontal rule across width
-        header = Text()
-        header.append("▶ ", style="bold #f59e0b")
-        header.append(f"{title_text} ", style="bold #f59e0b")
-        header_len = len(header.plain)
-        rule_len = max(10, (console.width if getattr(console, "width", 0) else 80) - header_len - 2)
-        header.append("─" * rule_len, style="#d97706")
-
-        content_lines: list[RenderableType] = [header]
-
-        # Context details
-        if cwd:
-            content_lines.append(Text(f"  cwd: {cwd}", style="dim"))
-        if command:
-            cmd_text = Text()
-            cmd_text.append("  $ ", style="dim")
-            cmd_text.append(command, style="bold cyan")
-            content_lines.append(cmd_text)
-        if description and description != command:
-            content_lines.append(Text(f"    {description.strip()}", style="dim"))
-
-        # Previews (diffs, etc.)
-        if self._preview_renderables:
-            content_lines.append(Text(""))
-            for r in self._preview_renderables:
-                content_lines.append(Padding(r, (0, 0, 0, 2)))
+        # Render preview (diff + non-diff in original display order)
+        content_lines.extend(self._preview_renderables)
 
         if self.has_expandable_content and self._non_diff_truncated:
-            content_lines.append(Text("  ... (truncated, ctrl-e to expand)", style="dim italic"))
+            content_lines.append(Text("... (truncated, ctrl-e to expand)", style="dim italic"))
 
-        # Menu options
+        lines: list[RenderableType] = []
+        if content_lines:
+            lines.append(Padding(Group(*content_lines), (0, 0, 0, 1)))
+
+        # Whether inline feedback input is active
         show_inline_feedback = feedback_text is not None and self.is_feedback_selected
-        content_lines.append(Text(""))
 
+        # Add menu options with number key labels
+        if lines:
+            lines.append(Text(""))
         for i, (option_text, _) in enumerate(self.options):
             num = i + 1
-            is_feedback = i == self.FEEDBACK_OPTION_INDEX
+            is_feedback_option = i == self.FEEDBACK_OPTION_INDEX
             if i == self.selected_index:
-                if is_feedback and show_inline_feedback:
-                    inp = _render_feedback_with_cursor(feedback_text or "", feedback_cursor)
-                    opt_line = Text.assemble(Text(f"▶ {num}. Reject: "), inp, style="bold cyan")
-                    content_lines.append(opt_line)
+                if is_feedback_option and show_inline_feedback:
+                    input_display = _render_feedback_with_cursor(
+                        feedback_text or "", feedback_cursor
+                    )
+                    lines.append(
+                        Text.assemble(
+                            Text(f"\u2192 [{num}] Reject: "),
+                            input_display,
+                            style="cyan",
+                        )
+                    )
                 else:
-                    content_lines.append(Text(f"▶ {num}. {option_text}", style="bold cyan"))
+                    lines.append(Text(f"\u2192 [{num}] {option_text}", style="cyan"))
             else:
-                content_lines.append(Text(f"  {num}. {option_text}", style="white"))
+                lines.append(Text(f"  [{num}] {option_text}", style="grey50"))
 
-        # Footer hint bar
-        content_lines.append(Text(""))
+        # Keyboard hints
+        lines.append(Text(""))
         if show_inline_feedback:
             hint = "  Type your feedback, then press Enter to submit."
         else:
-            hint = "  ↑/↓ select · 1/2/3/4 choose · ↵ confirm"
+            hint = "  \u25b2/\u25bc select  1/2/3/4 choose  \u21b5 confirm"
             if self.has_expandable_content:
-                hint += " · ctrl-e expand"
-        content_lines.append(Text(hint, style="dim"))
+                hint += "  ctrl-e expand"
+        lines.append(Text(hint, style="dim"))
 
-        return Group(*content_lines)
+        return Panel(
+            Group(*lines),
+            border_style="yellow",
+            title="[bold]approval[/bold]",
+            title_align="left",
+            padding=(0, 1),
+        )
+
+    def _render_block(
+        self, block: ApprovalContentBlock, max_lines: int | None = None
+    ) -> RenderableType:
+        """Render a content block, optionally truncated."""
+        text = block.text
+        if max_lines is not None and block.lines > max_lines:
+            text = "\n".join(text.split("\n")[:max_lines])
+
+        if block.lexer:
+            return KimiSyntax(text, block.lexer)
+        return Text(text, style=block.style)
 
     def render_full(self) -> list[RenderableType]:
-        out: list[RenderableType] = []
-        for cb in self._content_blocks:
-            dp = cb.get("diff_preview")
-            if dp:
-                out.append(Text(dp))
-        return out
+        """Render full content for pager (no truncation)."""
+        return [self._render_block(block) for block in self._content_blocks]
 
-    def move_up(self) -> None:
+    def _render_source_metadata_lines(self) -> list[RenderableType]:
+        lines: list[RenderableType] = []
+        if self.request.subagent_type is not None or self.request.agent_id is not None:
+            if self.request.subagent_type is not None and self.request.agent_id is not None:
+                subagent_text = f"{self.request.subagent_type} ({self.request.agent_id})"
+            elif self.request.subagent_type is not None:
+                subagent_text = self.request.subagent_type
+            else:
+                assert self.request.agent_id is not None
+                subagent_text = self.request.agent_id
+            lines.append(Text(f"Subagent: {subagent_text}", style="grey50"))
+        if self.request.source_description:
+            lines.append(Text(f"Task: {self.request.source_description}", style="grey50"))
+        return lines
+
+    def move_up(self):
+        """Move selection up."""
         self.selected_index = (self.selected_index - 1) % len(self.options)
 
-    def move_down(self) -> None:
+    def move_down(self):
+        """Move selection down."""
         self.selected_index = (self.selected_index + 1) % len(self.options)
 
     @property
     def is_feedback_selected(self) -> bool:
         return self.selected_index == self.FEEDBACK_OPTION_INDEX
 
-    def get_selected_response(self) -> str:
+    def get_selected_response(self) -> ApprovalResponse.Kind:
+        """Get the approval response based on selected option."""
         return self.options[self.selected_index][1]
 
 
 def show_approval_in_pager(panel: ApprovalRequestPanel) -> None:
-    """Show full approval content in pager (console.screen()+pager)."""
+    """Show the full approval request content in a pager."""
     with console.screen(), console.pager(styles=True):
-        req = panel.request
-        sender = req.get("name", "Agent")
-        action = req.get("command") or req.get("name", "action")
         console.print(
             Text.from_markup(
-                f"[yellow]⚠ {escape(str(sender))} is requesting approval to {escape(str(action))}:[/yellow]"
+                "[yellow]⚠ "
+                f"{escape(panel.request.sender)} is requesting approval to "
+                f"{escape(panel.request.action)}:[/yellow]"
             )
         )
         console.print()
-        # Render full diff via structured panel if available
-        diff_preview = req.get("diff_preview")
-        if diff_preview and isinstance(diff_preview, str) and diff_preview.strip():
-            try:
-                from coderai.utils.rich.diff_render import parse_unified_diff_to_hunks, render_diff_panel
 
-                hunks, added, removed, path = parse_unified_diff_to_hunks(diff_preview)
-                if hunks:
-                    console.print(render_diff_panel(path, hunks, added, removed))
+        # Render display blocks with the unified diff renderer.
+        display = panel.request.display
+        rendered_any = False
+        idx = 0
+        while idx < len(display):
+            block = display[idx]
+            if isinstance(block, DiffDisplayBlock):
+                path = block.path
+                diff_blocks: list[DiffDisplayBlock] = []
+                while idx < len(display):
+                    b = display[idx]
+                    if not isinstance(b, DiffDisplayBlock) or b.path != path:
+                        break
+                    diff_blocks.append(b)
+                    idx += 1
+                if any(b.is_summary for b in diff_blocks):
+                    console.print(render_diff_summary_panel(path, diff_blocks))
+                    rendered_any = True
                 else:
-                    console.print(Text(diff_preview))
-            except Exception:
-                console.print(Text(diff_preview))
-        else:
-            for r in panel.render_full():
-                console.print(r)
+                    hunks, added, removed = collect_diff_hunks(diff_blocks)
+                    if hunks:
+                        console.print(render_diff_panel(path, hunks, added, removed))
+                        rendered_any = True
+            elif isinstance(block, ShellDisplayBlock):
+                console.print(KimiSyntax(block.command.rstrip("\n"), block.language))
+                rendered_any = True
+                idx += 1
+            elif isinstance(block, BriefDisplayBlock) and block.text:
+                console.print(Text(block.text.rstrip("\n"), style="grey50"))
+                rendered_any = True
+                idx += 1
+            else:
+                idx += 1
+
+        # Fallback: if nothing was rendered (e.g. type mismatch after deserialization),
+        # use legacy pre-rendered content blocks.
+        if not rendered_any:
+            for renderable in panel.render_full():
+                console.print(renderable)
 
 
-# --- from coderai/cli/plan_review.py ---
-"""Plan review panel (Kimi plan-mode approval parity).
+class ApprovalPromptDelegate:
+    modal_priority = 20
+    _KEY_MAP: dict[str, KeyEvent] = {
+        "up": KeyEvent.UP,
+        "down": KeyEvent.DOWN,
+        "enter": KeyEvent.ENTER,
+        "1": KeyEvent.NUM_1,
+        "2": KeyEvent.NUM_2,
+        "3": KeyEvent.NUM_3,
+        "4": KeyEvent.NUM_4,
+        "escape": KeyEvent.ESCAPE,
+        "c-c": KeyEvent.ESCAPE,
+        "c-d": KeyEvent.ESCAPE,
+    }
 
-Parses ``## Option A/B/C`` sections out of a proposed plan. Single-path
-plans show an Approve action; multi-option plans offer per-option selection.
-Actions: approve/option, revise (feedback loop), reject (stay), reject-exit.
-Ctrl-E expands the full plan in a pager.
-"""
+    def __init__(
+        self,
+        request: ApprovalRequest,
+        *,
+        on_response: Callable[[ApprovalRequest, ApprovalResponse.Kind, str], None],
+        buffer_state_provider: Callable[[], tuple[str, int]] | None = None,
+        text_expander: Callable[[str], str] | None = None,
+    ) -> None:
+        self._panel = ApprovalRequestPanel(request)
+        self._on_response = on_response
+        self._buffer_state_provider = buffer_state_provider
+        self._text_expander = text_expander
+        self._feedback_draft: str = ""
+
+    @property
+    def request(self) -> ApprovalRequest:
+        return self._panel.request
+
+    def set_request(self, request: ApprovalRequest) -> None:
+        self._panel = ApprovalRequestPanel(request)
+        self._feedback_draft = ""
+
+    def _is_inline_feedback_active(self) -> bool:
+        return self._panel.is_feedback_selected and self._buffer_state_provider is not None
+
+    def render_running_prompt_body(self, columns: int) -> ANSI:
+        feedback_text: str | None = None
+        feedback_cursor: int | None = None
+        if self._is_inline_feedback_active() and self._buffer_state_provider is not None:
+            feedback_text, feedback_cursor = self._buffer_state_provider()
+        body = render_to_ansi(
+            self._panel.render(
+                feedback_text=feedback_text,
+                feedback_cursor=feedback_cursor,
+            ),
+            columns=columns,
+        ).rstrip("\n")
+        return ANSI(body)
+
+    def running_prompt_placeholder(self) -> str | None:
+        return None
+
+    def running_prompt_allows_text_input(self) -> bool:
+        return self._is_inline_feedback_active()
+
+    def running_prompt_hides_input_buffer(self) -> bool:
+        return True
+
+    def running_prompt_accepts_submission(self) -> bool:
+        return False
+
+    def should_handle_running_prompt_key(self, key: str) -> bool:
+        if key == "c-e":
+            return self._panel.has_expandable_content
+        if self._is_inline_feedback_active():
+            return key in {"enter", "escape", "c-c", "c-d", "up", "down"}
+        return key in {
+            "up",
+            "down",
+            "enter",
+            "1",
+            "2",
+            "3",
+            "4",
+            "escape",
+            "c-c",
+            "c-d",
+            "c-e",
+        }
+
+    def handle_running_prompt_key(self, key: str, event: KeyPressEvent) -> None:
+        if key == "c-e":
+            event.app.create_background_task(self._show_panel_in_pager())
+            return
+
+        # Inline feedback mode: user is typing in the "Reject + feedback" field
+        if self._is_inline_feedback_active():
+            mapped = self._KEY_MAP.get(key)
+            if key == "enter" or mapped == KeyEvent.ENTER:
+                text = event.current_buffer.text.strip()
+                if text:
+                    if self._text_expander is not None:
+                        text = self._text_expander(text)
+                    self._clear_buffer(event.current_buffer)
+                    self._feedback_draft = ""
+                    self._panel.request.resolve("reject")
+                    self._on_response(self._panel.request, "reject", text)
+                # Empty enter: do nothing (keep editing)
+                return
+            if mapped == KeyEvent.ESCAPE:
+                self._clear_buffer(event.current_buffer)
+                self._feedback_draft = ""
+                self._panel.request.resolve("reject")
+                self._on_response(self._panel.request, "reject", "")
+                return
+            if mapped in {KeyEvent.UP, KeyEvent.DOWN}:
+                self._feedback_draft = event.current_buffer.text
+                self._clear_buffer(event.current_buffer)
+                if mapped == KeyEvent.UP:
+                    self._panel.move_up()
+                else:
+                    self._panel.move_down()
+                return
+            return
+
+        mapped = self._KEY_MAP.get(key)
+        if mapped is None:
+            return
+        match mapped:
+            case KeyEvent.UP:
+                self._panel.move_up()
+                self._maybe_restore_feedback_draft(event.current_buffer)
+            case KeyEvent.DOWN:
+                self._panel.move_down()
+                self._maybe_restore_feedback_draft(event.current_buffer)
+            case KeyEvent.ENTER:
+                self._submit_current_request(event.current_buffer)
+            case KeyEvent.ESCAPE:
+                self._panel.request.resolve("reject")
+                self._on_response(self._panel.request, "reject", "")
+            case KeyEvent.NUM_1 | KeyEvent.NUM_2 | KeyEvent.NUM_3 | KeyEvent.NUM_4:
+                num_map = {
+                    KeyEvent.NUM_1: 0,
+                    KeyEvent.NUM_2: 1,
+                    KeyEvent.NUM_3: 2,
+                    KeyEvent.NUM_4: 3,
+                }
+                idx = num_map[mapped]
+                if idx < len(self._panel.options):
+                    self._panel.selected_index = idx
+                    if not self._is_inline_feedback_active():
+                        self._submit_current_request(event.current_buffer)
+            case _:
+                pass
+
+    async def _show_panel_in_pager(self) -> None:
+        await run_in_terminal(lambda: show_approval_in_pager(self._panel))
+
+    def _maybe_restore_feedback_draft(self, buffer: Buffer) -> None:
+        if self._is_inline_feedback_active() and self._feedback_draft:
+            buffer.set_document(
+                Document(text=self._feedback_draft, cursor_position=len(self._feedback_draft)),
+                bypass_readonly=True,
+            )
+
+    @staticmethod
+    def _clear_buffer(buffer: Buffer) -> None:
+        if buffer.text:
+            buffer.set_document(Document(text="", cursor_position=0), bypass_readonly=True)
+
+    def _submit_current_request(self, buffer: Buffer) -> None:
+        self._clear_buffer(buffer)
+        self._feedback_draft = ""
+        response = self._panel.get_selected_response()
+        self._panel.request.resolve(response)
+        self._on_response(self._panel.request, response, "")
 
 
 import re
@@ -331,7 +530,7 @@ def is_recommended(title: str) -> bool:
 
 
 def prompt_plan_review(
-    console: Any | None, plan_text: str, select_fn: Any | None = None
+    console_obj: Any | None, plan_text: str, select_fn: Any | None = None
 ) -> dict[str, Any]:
     """Show the plan review menu. Returns {action, option?, feedback?}.
 
@@ -356,11 +555,9 @@ def prompt_plan_review(
         ("reject-exit", "Reject and exit", "Decline plan and leave plan mode"),
     ]
     try:
-        if console is not None:
+        if console_obj is not None:
             try:
-                from rich.panel import Panel
-
-                console.print(
+                console_obj.print(
                     Panel(
                         (plan_text or "(empty plan)")[:3000],
                         title="[bold cyan]Proposed Plan[/] [dim](Ctrl-E full view)[/]",
@@ -370,7 +567,7 @@ def prompt_plan_review(
             except Exception:
                 print(plan_text[:3000])
         res = choose(
-            console, items, title="Plan Review — Approve, Revise, or Reject", default_idx=0
+            console_obj, items, title="Plan Review — Approve, Revise, or Reject", default_idx=0
         )
     except Exception:
         return {"action": "reject", "feedback": ""}
@@ -398,3 +595,4 @@ def expand_plan_in_pager(plan_text: str) -> None:
         pydoc.pager(plan_text)
     except Exception:
         print(plan_text)
+

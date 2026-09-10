@@ -1,16 +1,9 @@
-# Ported from coderai/cli/diff_render.py - kimi structure (utils/rich/diff_render.py).
-"""Unified diff renderer — enhanced parity with Kimi CLI utils/rich/diff_render.py.
+"""Unified diff rendering for CLI tool results and approval panels.
 
-Provides:
-- parse_diff_stats (legacy unified diff string)
-- format_diff_text (legacy)
-- render_diff_preview (legacy string path, now with enhanced styling)
-- collect_diff_hunks / _build_diff_lines (structured path via SequenceMatcher)
-- render_diff_panel (full Panel/Table with line numbers, background colors, syntax highlight, inline diff)
-- render_diff_preview_structured (changed-lines-only preview)
-- render_diff_summary_panel (large file summary)
-
-Pure CLI, no browser.
+All diff rendering flows through this module:
+- ``render_diff_panel``  — full diff with Panel, Table, background colors (tool results & pager)
+- ``render_diff_preview`` — compact changed-lines-only preview (approval panel)
+- ``collect_diff_hunks``  — shared data preparation from DiffDisplayBlocks
 """
 
 from __future__ import annotations
@@ -18,16 +11,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from enum import Enum, auto
-from typing import Any
 
-from rich.console import Console, RenderableType
+from rich.console import RenderableType
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-# ---------------------------------------------------------------------------
-# Legacy unified-string helpers (kept for backward compat)
-# ---------------------------------------------------------------------------
+from coderai.tools.display import DiffDisplayBlock
+from coderai.ui.theme import get_diff_colors
+from coderai.utils.rich.syntax import KimiSyntax
+
+_INLINE_DIFF_MIN_RATIO = 0.5  # skip inline diff when lines are too dissimilar
+
+MAX_PREVIEW_CHANGED_LINES = 6
 
 
 def parse_diff_stats(diff_text: str) -> tuple[int, int]:
@@ -65,11 +61,8 @@ def format_diff_text(diff_text: str) -> Text:
 
 
 # ---------------------------------------------------------------------------
-# Structured diff model (ported from Kimi)
+# Data model — parsed diff lines
 # ---------------------------------------------------------------------------
-
-MAX_PREVIEW_CHANGED_LINES = 6
-_INLINE_DIFF_MIN_RATIO = 0.5
 
 
 class DiffLineKind(Enum):
@@ -81,16 +74,16 @@ class DiffLineKind(Enum):
 @dataclass(slots=True)
 class DiffLine:
     kind: DiffLineKind
-    old_num: int
-    new_num: int
+    old_num: int  # 0 means "not applicable" (e.g. added line has no old number)
+    new_num: int  # 0 means "not applicable" (e.g. deleted line has no new number)
     code: str
-    content: Text | None = None
-    is_inline_paired: bool = False
+    content: Text | None = None  # filled after highlighting
+    is_inline_paired: bool = False  # True if this line was paired for inline diff
 
 
-@dataclass(slots=True)
-class DiffHunk:
-    lines: list[DiffLine]
+# ---------------------------------------------------------------------------
+# Core: build DiffLines directly from old_text / new_text via SequenceMatcher
+# ---------------------------------------------------------------------------
 
 
 def _build_diff_lines(
@@ -100,9 +93,15 @@ def _build_diff_lines(
     new_start: int,
     n_context: int = 3,
 ) -> list[list[DiffLine]]:
+    """Build grouped DiffLine hunks directly from old/new text.
+
+    Returns a list of hunks, where each hunk is a list of DiffLine objects.
+    This replaces the format_unified_diff → parse roundtrip.
+    """
     old_lines = old_text.splitlines()
     new_lines = new_text.splitlines()
     matcher = SequenceMatcher(None, old_lines, new_lines, autojunk=False)
+
     hunks: list[list[DiffLine]] = []
     for group in matcher.get_grouped_opcodes(n=n_context):
         hunk: list[DiffLine] = []
@@ -111,59 +110,88 @@ def _build_diff_lines(
                 for k in range(i2 - i1):
                     hunk.append(
                         DiffLine(
-                            DiffLineKind.CONTEXT,
-                            old_start + i1 + k,
-                            new_start + j1 + k,
-                            old_lines[i1 + k],
+                            kind=DiffLineKind.CONTEXT,
+                            old_num=old_start + i1 + k,
+                            new_num=new_start + j1 + k,
+                            code=old_lines[i1 + k],
                         )
                     )
             elif tag == "delete":
                 for k in range(i2 - i1):
                     hunk.append(
-                        DiffLine(DiffLineKind.DELETE, old_start + i1 + k, 0, old_lines[i1 + k])
+                        DiffLine(
+                            kind=DiffLineKind.DELETE,
+                            old_num=old_start + i1 + k,
+                            new_num=0,
+                            code=old_lines[i1 + k],
+                        )
                     )
             elif tag == "insert":
                 for k in range(j2 - j1):
                     hunk.append(
-                        DiffLine(DiffLineKind.ADD, 0, new_start + j1 + k, new_lines[j1 + k])
+                        DiffLine(
+                            kind=DiffLineKind.ADD,
+                            old_num=0,
+                            new_num=new_start + j1 + k,
+                            code=new_lines[j1 + k],
+                        )
                     )
             elif tag == "replace":
                 for k in range(i2 - i1):
                     hunk.append(
-                        DiffLine(DiffLineKind.DELETE, old_start + i1 + k, 0, old_lines[i1 + k])
+                        DiffLine(
+                            kind=DiffLineKind.DELETE,
+                            old_num=old_start + i1 + k,
+                            new_num=0,
+                            code=old_lines[i1 + k],
+                        )
                     )
                 for k in range(j2 - j1):
                     hunk.append(
-                        DiffLine(DiffLineKind.ADD, 0, new_start + j1 + k, new_lines[j1 + k])
+                        DiffLine(
+                            kind=DiffLineKind.ADD,
+                            old_num=0,
+                            new_num=new_start + j1 + k,
+                            code=new_lines[j1 + k],
+                        )
                     )
         if hunk:
             hunks.append(hunk)
     return hunks
 
 
-def _make_highlighter(path: str):  # type: ignore[no-untyped-def]
+# ---------------------------------------------------------------------------
+# Syntax highlighting & inline diff
+# ---------------------------------------------------------------------------
+
+
+def _make_highlighter(path: str) -> KimiSyntax:
+    """Create a KimiSyntax instance for highlighting code by file extension."""
     ext = path.rsplit(".", 1)[-1] if "." in path else ""
-    try:
-        from coderai.utils.rich.syntax import KimiSyntax
-
-        return KimiSyntax("", ext if ext else "text")
-    except Exception:
-        from rich.syntax import Syntax
-
-        return Syntax("", ext if ext else "text")
+    return KimiSyntax("", ext if ext else "text")
 
 
-def _highlight(highlighter: Any, code: str) -> Text:
-    try:
-        t = highlighter.highlight(code)  # type: ignore[union-attr]
-        if t.plain.endswith("\n"):
-            t.right_crop(1)
-        return t
-    except Exception:
-        return Text(code)
+def _highlight(highlighter: KimiSyntax, code: str) -> Text:
+    t = highlighter.highlight(code)
+    # Pygments appends a trailing newline (ensurenl=True); strip only that,
+    # not trailing whitespace which may be meaningful in diffs.
+    if t.plain.endswith("\n"):
+        t.right_crop(1)
+    return t
 
 
 def _build_offset_map(raw: str, rendered: str, tab_size: int) -> list[int]:
+    """Build a mapping from raw-string indices to rendered-string indices.
+
+    The highlighter expands tabs via ``str.expandtabs(tab_size)`` before
+    tokenising.  We replicate the same column-aware expansion that the
+    Python builtin defines (the only parameter is *tab_size*; the behaviour
+    is fully specified in the language docs and has no external
+    configurability).
+
+    Returns a list of length ``len(raw) + 1`` where ``result[i]`` is the
+    rendered offset corresponding to raw position *i*.
+    """
     if raw == rendered:
         return list(range(len(raw) + 1))
     offsets: list[int] = []
@@ -176,6 +204,9 @@ def _build_offset_map(raw: str, rendered: str, tab_size: int) -> list[int]:
             col += 1
     offsets.append(col)
     if col != len(rendered):
+        # The highlighter transformed the text in a way we didn't expect.
+        # Return a bounded, monotonic best-effort map so inline stylizing
+        # can proceed without crashing or producing out-of-range offsets.
         rendered_len = len(rendered)
         raw_len = len(raw)
         if raw_len == 0:
@@ -185,21 +216,24 @@ def _build_offset_map(raw: str, rendered: str, tab_size: int) -> list[int]:
 
 
 def _apply_inline_diff(
-    highlighter: Any, del_lines: list[DiffLine], add_lines: list[DiffLine]
+    highlighter: KimiSyntax,
+    del_lines: list[DiffLine],
+    add_lines: list[DiffLine],
 ) -> None:
-    try:
-        from coderai.ui.theme import get_diff_colors
+    """Pair delete/add lines and apply word-level inline diff highlighting.
 
-        colors = get_diff_colors()
-    except Exception:
-        return
-    tab_size = getattr(highlighter, "tab_size", 4)
+    Modifies DiffLine.content in place for paired lines.
+    """
+    colors = get_diff_colors()
+    tab_size = highlighter.tab_size
     paired = min(len(del_lines), len(add_lines))
     for j in range(paired):
         old_code = del_lines[j].code
         new_code = add_lines[j].code
         old_text = _highlight(highlighter, old_code)
         new_text = _highlight(highlighter, new_code)
+        # Store highlighted content even when skipping inline pairing,
+        # so _highlight_hunk's second pass doesn't re-highlight these lines.
         del_lines[j].content = old_text
         add_lines[j].content = new_text
         sm = SequenceMatcher(None, old_code, new_code)
@@ -209,22 +243,18 @@ def _apply_inline_diff(
         new_map = _build_offset_map(new_code, new_text.plain, tab_size)
         for op, i1, i2, j1, j2 in sm.get_opcodes():
             if op in ("delete", "replace"):
-                try:
-                    old_text.stylize(colors.del_hl, old_map[i1], old_map[i2])
-                except Exception:
-                    pass
+                old_text.stylize(colors.del_hl, old_map[i1], old_map[i2])
             if op in ("insert", "replace"):
-                try:
-                    new_text.stylize(colors.add_hl, new_map[j1], new_map[j2])
-                except Exception:
-                    pass
+                new_text.stylize(colors.add_hl, new_map[j1], new_map[j2])
         del_lines[j].content = old_text
         del_lines[j].is_inline_paired = True
         add_lines[j].content = new_text
         add_lines[j].is_inline_paired = True
 
 
-def _highlight_hunk(highlighter: Any, hunk: list[DiffLine]) -> None:
+def _highlight_hunk(highlighter: KimiSyntax, hunk: list[DiffLine]) -> None:
+    """Highlight all lines in a hunk, applying inline diff for paired -/+ blocks."""
+    # First pass: find consecutive -/+ blocks and apply inline diff
     i = 0
     while i < len(hunk):
         if hunk[i].kind == DiffLineKind.DELETE:
@@ -234,121 +264,71 @@ def _highlight_hunk(highlighter: Any, hunk: list[DiffLine]) -> None:
             add_start = i
             while i < len(hunk) and hunk[i].kind == DiffLineKind.ADD:
                 i += 1
-            _apply_inline_diff(highlighter, hunk[del_start:add_start], hunk[add_start:i])
+            _apply_inline_diff(
+                highlighter,
+                hunk[del_start:add_start],
+                hunk[add_start:i],
+            )
         else:
             i += 1
+
+    # Second pass: highlight any lines not yet highlighted by inline diff
     for dl in hunk:
         if dl.content is None:
             dl.content = _highlight(highlighter, dl.code)
 
 
-def _build_diff_header(path: str, added: int, removed: int) -> Text:
-    header = Text()
-    if added > 0 and removed == 0:
-        header.append("[CREATED] ", style="bold green")
-    elif added == 0 and removed > 0:
-        header.append("[DELETED] ", style="bold red")
-    elif added > 0 or removed > 0:
-        header.append("[MODIFIED] ", style="bold yellow")
+# ---------------------------------------------------------------------------
+# Shared header builder
+# ---------------------------------------------------------------------------
 
-    header.append(path, style="bold white")
-    if added > 0 or removed > 0:
-        header.append(" (", style="dim")
-        if added > 0:
-            header.append(f"+{added}", style="bold green")
-        if added > 0 and removed > 0:
-            header.append(" ", style="dim")
-        if removed > 0:
-            header.append(f"-{removed}", style="bold red")
-        header.append(")", style="dim")
+
+def _build_diff_header(path: str, added: int, removed: int) -> Text:
+    """Build the file header text: stats + path."""
+    header = Text()
+    if added > 0:
+        header.append(f"+{added} ", style="bold green")
+    if removed > 0:
+        header.append(f"-{removed} ", style="bold red")
+    header.append(path)
     return header
 
 
 # ---------------------------------------------------------------------------
-# Public: collect hunks from text pair or diff string
+# Public: collect hunks from DiffDisplayBlocks
 # ---------------------------------------------------------------------------
 
 
-def collect_diff_hunks_from_texts(
-    old_text: str,
-    new_text: str,
-    old_start: int = 1,
-    new_start: int = 1,
+def collect_diff_hunks(
+    blocks: list[DiffDisplayBlock],
 ) -> tuple[list[list[DiffLine]], int, int]:
-    hunks = _build_diff_lines(old_text, new_text, old_start, new_start)
-    added = sum(1 for h in hunks for dl in h if dl.kind == DiffLineKind.ADD)
-    removed = sum(1 for h in hunks for dl in h if dl.kind == DiffLineKind.DELETE)
-    return hunks, added, removed
+    """Build parsed DiffLine hunks and stats from a list of same-file DiffDisplayBlocks.
 
-
-def parse_unified_diff_to_hunks(diff_text: str) -> tuple[list[list[DiffLine]], int, int, str]:
-    """Best-effort: derive a file path and hunks from a unified diff string.
-
-    For simple single-file diffs without headers, falls back to treating
-    '+'/'-' lines as add/delete without line numbers.
+    Returns:
+        (hunks, added_total, removed_total) where each hunk is a list of DiffLine.
     """
-    path = "diff"
-    for line in diff_text.splitlines():
-        if line.startswith("+++ "):
-            path = line[4:].strip().lstrip("a/").lstrip("b/")
-            break
-    # If no old/new_text split, synthesize from +/- lines
-    added = sum(
-        1
-        for line_item in diff_text.splitlines()
-        if line_item.startswith("+") and not line_item.startswith("+++")
-    )
-    removed = sum(
-        1
-        for line_item in diff_text.splitlines()
-        if line_item.startswith("-") and not line_item.startswith("---")
-    )
-    # Build pseudo hunks for preview
-    hunks: list[list[DiffLine]] = []
-    hunk: list[DiffLine] = []
-    old_num = 1
-    new_num = 1
-    for line in diff_text.splitlines():
-        if line.startswith("@@"):
-            if hunk:
-                hunks.append(hunk)
-                hunk = []
-            # parse @@ -a,b +c,d @@
-            try:
-                parts = line.split()
-                old_part = parts[1]  # -a,b
-                new_part = parts[2]  # +c,d
-                old_num = int(old_part[1:].split(",")[0])
-                new_num = int(new_part[1:].split(",")[0])
-            except Exception:
-                pass
-            continue
-        if line.startswith("--- ") or line.startswith("+++ "):
-            continue
-        if line.startswith("+"):
-            hunk.append(DiffLine(DiffLineKind.ADD, 0, new_num, line[1:]))
-            new_num += 1
-        elif line.startswith("-"):
-            hunk.append(DiffLine(DiffLineKind.DELETE, old_num, 0, line[1:]))
-            old_num += 1
-        elif line.startswith(" ") or line.startswith("\\"):
-            hunk.append(
-                DiffLine(
-                    DiffLineKind.CONTEXT,
-                    old_num,
-                    new_num,
-                    line[1:] if line.startswith(" ") else line,
-                )
-            )
-            old_num += 1
-            new_num += 1
-    if hunk:
-        hunks.append(hunk)
-    return hunks, added, removed, path
+    all_hunks: list[list[DiffLine]] = []
+    added = 0
+    removed = 0
+    for b in blocks:
+        block_hunks = _build_diff_lines(
+            b.old_text,
+            b.new_text,
+            b.old_start,
+            b.new_start,
+        )
+        for hunk in block_hunks:
+            for dl in hunk:
+                if dl.kind == DiffLineKind.ADD:
+                    added += 1
+                elif dl.kind == DiffLineKind.DELETE:
+                    removed += 1
+            all_hunks.append(hunk)
+    return all_hunks, added, removed
 
 
 # ---------------------------------------------------------------------------
-# Public: full diff panel
+# Public: full diff panel (tool results & pager)
 # ---------------------------------------------------------------------------
 
 
@@ -358,34 +338,40 @@ def render_diff_panel(
     added: int,
     removed: int,
 ) -> RenderableType:
+    """Render a diff as a bordered Panel with line numbers, background colors,
+    syntax highlighting, and inline change markers."""
     title = Text()
     title.append(" ")
     title.append_text(_build_diff_header(path, added, removed))
     title.append(" ")
+
     highlighter = _make_highlighter(path)
     for hunk in hunks:
         _highlight_hunk(highlighter, hunk)
+
+    # Compute line number column width
     max_ln = 0
     for hunk in hunks:
         for dl in hunk:
             max_ln = max(max_ln, dl.old_num, dl.new_num)
     num_width = max(len(str(max_ln)), 2)
-    table = Table(show_header=False, box=None, padding=(0, 0), show_edge=False, expand=True)
+
+    table = Table(
+        show_header=False,
+        box=None,
+        padding=(0, 0),
+        show_edge=False,
+        expand=True,
+    )
     table.add_column(justify="right", width=num_width, no_wrap=True)
     table.add_column(width=3, no_wrap=True)
     table.add_column(ratio=1)
-    try:
-        from coderai.ui.theme import get_diff_colors
 
-        colors = get_diff_colors()
-    except Exception:
-        from rich.style import Style
-
-        colors = type("C", (), {"add_bg": Style(), "del_bg": Style()})()  # type: ignore[assignment]
-
+    colors = get_diff_colors()
     for hunk_idx, hunk in enumerate(hunks):
         if hunk_idx > 0:
             table.add_row(Text("⋮", style="dim"), Text(""), Text(""))
+
         for dl in hunk:
             assert dl.content is not None
             if dl.kind == DiffLineKind.ADD:
@@ -397,11 +383,30 @@ def render_diff_panel(
                 )
             elif dl.kind == DiffLineKind.DELETE:
                 table.add_row(
-                    Text(str(dl.old_num)), Text(" - ", style="red"), dl.content, style=colors.del_bg
+                    Text(str(dl.old_num)),
+                    Text(" - ", style="red"),
+                    dl.content,
+                    style=colors.del_bg,
                 )
             else:
-                table.add_row(Text(str(dl.new_num), style="dim"), Text("   "), dl.content)
-    return Panel(table, title=title, title_align="left", border_style="dim", padding=(0, 1))
+                table.add_row(
+                    Text(str(dl.new_num), style="dim"),
+                    Text("   "),
+                    dl.content,
+                )
+
+    return Panel(
+        table,
+        title=title,
+        title_align="left",
+        border_style="dim",
+        padding=(0, 1),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Public: compact preview (approval panels)
+# ---------------------------------------------------------------------------
 
 
 def render_diff_preview_structured(
@@ -411,22 +416,36 @@ def render_diff_preview_structured(
     removed: int,
     max_lines: int = MAX_PREVIEW_CHANGED_LINES,
 ) -> tuple[list[RenderableType], int]:
+    """Render a compact diff preview showing only changed lines (no context).
+
+    Returns:
+        (renderables, remaining_count) — list of Rich renderables and number of
+        changed lines not shown.
+    """
     highlighter = _make_highlighter(path)
     for hunk in hunks:
         _highlight_hunk(highlighter, hunk)
+
+    # Collect only changed lines across all hunks
     changed: list[DiffLine] = []
     for hunk in hunks:
         for dl in hunk:
             if dl.kind != DiffLineKind.CONTEXT:
                 changed.append(dl)
+
     total = len(changed)
     shown = changed[:max_lines]
     remaining = total - len(shown)
+
+    # Compute line number width from shown lines
     max_ln = max(
-        (dl.old_num if dl.kind == DiffLineKind.DELETE else dl.new_num for dl in shown), default=0
+        (dl.old_num if dl.kind == DiffLineKind.DELETE else dl.new_num for dl in shown),
+        default=0,
     )
     num_width = max(len(str(max_ln)), 2)
+
     result: list[RenderableType] = [_build_diff_header(path, added, removed)]
+
     for dl in shown:
         assert dl.content is not None
         line = Text()
@@ -437,91 +456,45 @@ def render_diff_preview_structured(
         line.append(f" {marker_char} ", style=marker_style)
         line.append_text(dl.content)
         result.append(line)
+
     if remaining > 0:
-        result.append(
-            Text(f"... {remaining} more lines (press Enter to expand)", style="dim italic")
-        )
+        result.append(Text(f"... {remaining} more lines (ctrl-e to expand)", style="dim italic"))
+
     return result, remaining
 
 
-def render_diff_summary_panel(path: str, description: str) -> RenderableType:
-    title = Text()
-    title.append(" ")
-    title.append(path)
-    title.append(" ")
-    body = Text()
-    body.append("File too large for inline diff", style="dim italic")
-    body.append("\n")
-    body.append(description, style="dim")
-    return Panel(body, title=title, title_align="left", border_style="dim", padding=(1, 2))
+def render_diff_preview(*args: Any, **kwargs: Any) -> Any:
+    """Render diff preview supporting both structured hunks and legacy console printing."""
+    if len(args) >= 2 and isinstance(args[0], str) and isinstance(args[1], list):
+        return render_diff_preview_structured(*args, **kwargs)
 
+    console = args[0] if len(args) > 0 else kwargs.get("console")
+    diff_text = args[1] if len(args) > 1 else kwargs.get("diff_text", "")
+    title = args[2] if len(args) > 2 else kwargs.get("title", "Diff Preview")
 
-# ---------------------------------------------------------------------------
-# Legacy render_diff_preview (string path) — now enhanced with Panel
-# ---------------------------------------------------------------------------
+    if not isinstance(diff_text, str) or not diff_text.strip():
+        return None
 
-
-MAX_DIFF_LINES = 500  # ponytail: guard large diffs, show summary if exceeded
-
-
-def render_diff_preview(console: Any | None, diff_text: str, title: str = "Diff Preview") -> None:
-    """Render a clean, compact diff preview. Enhanced: uses structured panel when possible."""
-    if not diff_text.strip():
-        return
-    # Truncation safeguard for large files
     lines = diff_text.splitlines()
-    if len(lines) > MAX_DIFF_LINES:
-        diff_text = "\n".join(lines[:MAX_DIFF_LINES])
-        diff_text += (
-            f"\n... truncated {len(lines) - MAX_DIFF_LINES} lines (file too large for inline diff)"
-        )
-    # ANSI leak guard: ensure we don't emit raw escapes from file content via format_diff_text
-    # (format_diff_text already styles, but caller may have raw ANSI in diff lines — strip at render)
-    try:
-        from coderai.ui.shell.prompt import strip_ansi
+    if len(lines) > 500:
+        diff_text = "\n".join(lines[:500]) + f"\n... truncated {len(lines) - 500} lines"
 
-        diff_text = strip_ansi(diff_text)
-    except Exception:
-        pass
-    active_console = console or Console()
-    # Try structured rendering
-    try:
-        hunks, added, removed, path = parse_unified_diff_to_hunks(diff_text)
-        if hunks:
-            # Use preview (changed-only) with fallback to full panel for small diffs
-            preview_lines, remaining = render_diff_preview_structured(path, hunks, added, removed)
-            header = Text()
-            header.append("    ↳ ", style="dim cyan")
-            header.append(title, style="bold cyan")
-            if added > 0 or removed > 0:
-                header.append(f" +{added}", style="bold green")
-                header.append(f" -{removed}", style="bold red")
-            active_console.print(header)
-            for item in preview_lines:
-                # indent
-                if isinstance(item, Text):
-                    # Wrap in indented text
-                    indented = Text("      ")
-                    indented.append_text(item)
-                    active_console.print(indented)
-                else:
-                    active_console.print(item)
-            if remaining == 0 and len(hunks) == 1 and len(hunks[0]) <= 20:
-                # Also show full panel for tiny diffs
-                pass
-            return
-    except Exception:
-        pass
+    from rich.console import Console
 
-    # Fallback: legacy flat rendering
+    active_console = console if console is not None else Console()
+
     added, removed = parse_diff_stats(diff_text)
     header = Text()
     header.append("    ↳ ", style="dim cyan")
-    header.append(title, style="bold cyan")
+    header.append(str(title), style="bold cyan")
     if added > 0 or removed > 0:
         header.append(f" +{added}", style="bold green")
         header.append(f" -{removed}", style="bold red")
-    active_console.print(header)
+    try:
+        active_console.print(header)
+    except Exception:
+        pass
+
     diff_body = Text()
     for line in diff_text.splitlines():
         if line.startswith("--- ") or line.startswith("+++ "):
@@ -536,4 +509,64 @@ def render_diff_preview(console: Any | None, diff_text: str, title: str = "Diff 
             diff_body.append(f"      {line}\n", style="dim italic")
         else:
             diff_body.append(f"      {line}\n", style="dim")
-    active_console.print(diff_body)
+    try:
+        active_console.print(diff_body)
+    except Exception:
+        pass
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Public: summary renderers for huge files
+# ---------------------------------------------------------------------------
+
+
+def _summary_description(blocks: list[DiffDisplayBlock]) -> str:
+    """Build a human-readable size description from summary blocks."""
+    block = blocks[0]
+    if block.old_text == "(0 lines)":
+        return f"New file with {block.new_text.strip('()')}"
+    if block.old_text == block.new_text:
+        return block.old_text.strip("()")
+    return f"{block.old_text.strip('()')} \u2192 {block.new_text.strip('()')}"
+
+
+def render_diff_summary_panel(
+    path: str,
+    blocks: list[DiffDisplayBlock],
+) -> RenderableType:
+    """Render a summary panel for files too large for inline diff."""
+    title = Text()
+    title.append(" ")
+    title.append(path)
+    title.append(" ")
+
+    body = Text()
+    body.append("File too large for inline diff", style="dim italic")
+    body.append("\n")
+    body.append(_summary_description(blocks), style="dim")
+
+    return Panel(
+        body,
+        title=title,
+        title_align="left",
+        border_style="dim",
+        padding=(1, 2),
+    )
+
+
+def render_diff_summary_preview(
+    path: str,
+    blocks: list[DiffDisplayBlock],
+) -> list[RenderableType]:
+    """Render a compact summary preview for approval panels."""
+    header = Text()
+    header.append(path)
+    desc = Text()
+    summary = _summary_description(blocks)
+    desc.append(f"  File too large for inline diff ({summary})", style="dim italic")
+    return [header, desc]
+
+
+# Backward compatibility alias
+render_diff_preview_structured = render_diff_preview

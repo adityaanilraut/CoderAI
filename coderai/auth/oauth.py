@@ -304,6 +304,19 @@ def delete_token(key: str) -> None:
         credentials_path(key).unlink()
 
 
+# Kimi parity aliases
+def load_tokens(ref: Any) -> OAuthToken | None:
+    key = getattr(ref, "key", ref) if not isinstance(ref, str) else ref
+    return load_token(str(key))
+
+
+def save_tokens(ref: Any, token: OAuthToken) -> Any:
+    key = getattr(ref, "key", ref) if not isinstance(ref, str) else ref
+    save_token(str(key), token)
+    return ref
+
+
+
 # -- device flow HTTP --------------------------------------------------------
 
 
@@ -667,6 +680,7 @@ def apply_login_config(models: list[RemoteModelInfo]) -> str:
         LLMModel,
         LLMProvider,
         OAuthRef,
+        get_default_config,
         load_typed_config,
         save_typed_config,
     )
@@ -674,7 +688,10 @@ def apply_login_config(models: list[RemoteModelInfo]) -> str:
     platform = get_platform_by_id(KIMI_CODE_PLATFORM_ID)
     if platform is None:  # pragma: no cover - static table above
         raise OAuthError("Login platform is unavailable.")
-    config = load_typed_config()
+    try:
+        config = load_typed_config()
+    except Exception:
+        config = get_default_config()
     provider_key = managed_provider_key(platform.id)
     oauth_ref = OAuthRef(storage="file", key=KIMI_CODE_OAUTH_KEY)
     config.providers[provider_key] = LLMProvider(
@@ -697,14 +714,26 @@ def apply_login_config(models: list[RemoteModelInfo]) -> str:
     default = managed_model_key(platform.id, models[0].id)
     config.default_model = default
     save_typed_config(config)
+
+    # Sync to user settings and environment so active model immediately changes
+    try:
+        from coderai.config import save_active_model_setting, save_setting_key
+
+        save_active_model_setting(default, scope="user")
+        save_setting_key("providerType", "kimi", scope="user")
+        save_setting_key("baseURL", platform.base_url, scope="user")
+    except Exception:
+        pass
+
     return default
 
 
 def clear_login_config() -> bool:
     """Remove the managed provider + models from the typed config."""
-    from coderai.config import load_typed_config, save_typed_config
-
-    config = load_typed_config()
+    try:
+        config = load_typed_config()
+    except Exception:
+        return False
     provider_key = managed_provider_key(KIMI_CODE_PLATFORM_ID)
     if provider_key not in config.providers:
         return False

@@ -121,6 +121,27 @@ def evaluate_compaction_trigger(
         return "pressure"
     return None
 
+def estimate_text_tokens(messages: Any) -> int:
+    """Estimate tokens from message text content using a character-based heuristic."""
+    total_chars = 0
+    for msg in messages:
+        content = getattr(msg, "content", None)
+        if isinstance(content, str):
+            total_chars += len(content)
+        elif isinstance(content, (list, tuple)):
+            for part in content:
+                if hasattr(part, "text"):
+                    total_chars += len(getattr(part, "text", "") or "")
+                elif isinstance(part, dict) and "text" in part:
+                    total_chars += len(part["text"])
+                elif isinstance(part, str):
+                    total_chars += len(part)
+        elif isinstance(msg, dict) and "content" in msg:
+            raw_c = msg["content"]
+            if isinstance(raw_c, str):
+                total_chars += len(raw_c)
+    return total_chars // 4
+
 
 def should_auto_compact(
     token_count: int,

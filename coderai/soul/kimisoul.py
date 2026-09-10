@@ -189,6 +189,7 @@ class AgentLoop:
         client_info = manager.create_openai_client()
         client = client_info.get("client")
         model = manager.get_active_model()
+        wire_model = client_info.get("model") or model
         base_url = client_info.get("baseURL")
         temperature = client_info.get("temperature")
         thinking_enabled = bool(client_info.get("thinkingEnabled"))
@@ -370,7 +371,7 @@ class AgentLoop:
                 except Exception:
                     pass
                 request: dict[str, Any] = {
-                    "model": model,
+                    "model": wire_model,
                     "messages": converted,
                     "tools": tools if tools else None,
                 }
@@ -625,3 +626,38 @@ class AgentLoop:
     @property
     def step(self) -> int:
         return self._step
+
+
+class KimiSoul:
+    """Soul controller coordinating the agent, context, and runtime."""
+
+    def __init__(self, agent: Any, context: Any = None) -> None:
+        self.agent = agent
+        self.context = context
+        self.plan_mode = False
+        self._hook_engine: Any = None
+
+    @property
+    def runtime(self) -> Any:
+        return getattr(self.agent, "runtime", None)
+
+    def set_hook_engine(self, hook_engine: Any) -> None:
+        self._hook_engine = hook_engine
+
+    def schedule_plan_activation_reminder(self) -> None:
+        pass
+
+    async def set_plan_mode_from_manual(self, enabled: bool) -> None:
+        self.plan_mode = enabled
+
+    async def run(
+        self,
+        user_input: Any,
+        *,
+        skip_user_prompt_hook: bool = False,
+    ) -> None:
+        pass
+
+
+SessionSoul = KimiSoul
+

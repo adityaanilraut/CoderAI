@@ -30,6 +30,50 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_HOOK_TIMEOUT_SECONDS = 10.0
 
+from typing import Literal
+from pydantic import BaseModel, Field
+
+HookEventType = Literal[
+    "PreToolUse",
+    "PostToolUse",
+    "PostToolUseFailure",
+    "UserPromptSubmit",
+    "Stop",
+    "StopFailure",
+    "SessionStart",
+    "SessionEnd",
+    "SubagentStart",
+    "SubagentStop",
+    "PreCompact",
+    "PostCompact",
+    "Notification",
+]
+
+HOOK_EVENT_TYPES: list[str] = [
+    "PreToolUse",
+    "PostToolUse",
+    "PostToolUseFailure",
+    "UserPromptSubmit",
+    "Stop",
+    "StopFailure",
+    "SessionStart",
+    "SessionEnd",
+    "SubagentStart",
+    "SubagentStop",
+    "PreCompact",
+    "PostCompact",
+    "Notification",
+]
+
+
+class HookDef(BaseModel):
+    """A single hook definition in config.toml."""
+
+    event: HookEventType
+    command: str
+    matcher: str = ""
+    timeout: int = Field(default=30, ge=1, le=600)
+
 
 @dataclass
 class HookOutput:

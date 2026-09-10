@@ -410,19 +410,21 @@ def configure_custom_endpoint_interactive(
 
 
 def select_and_save_model_interactive(
-    console: Any | None,
-    project_root: str = ".",
+    console: Any | None, project_root: str = "."
 ) -> str:
     """Prompt user to select a default model and save it to configuration."""
+    from coderai.ui.shell.session_picker import get_available_models
+
     resolved = resolve_current_settings(project_root)
     current_model = resolved.get("model", DEFAULT_MODEL)
 
+    all_models = get_available_models(current_model)
     items: list[tuple[str, str, str]] = []
     default_idx = 0
-    for idx, (name, desc, category) in enumerate(CURATED_MODELS):
+    for idx, (name, desc, category) in enumerate(all_models):
         badges = get_model_badges(name)
         badges_str = " ".join(f"[{b}]" for b in badges)
-        items.append((name, f"{name:<20} {badges_str}", f"[{category}] {desc}"))
+        items.append((name, f"{name:<26} {badges_str}", f"[{category}] {desc}"))
         if name == current_model:
             default_idx = idx
 
@@ -451,13 +453,13 @@ def select_and_save_model_interactive(
         return current_model
 
     chosen_model = current_model
-    if isinstance(res, int) and 0 <= res < len(CURATED_MODELS):
-        chosen_model = CURATED_MODELS[res][0]
+    if isinstance(res, int) and 0 <= res < len(all_models):
+        chosen_model = all_models[res][0]
     elif isinstance(res, str) and res.strip():
         val = res.strip()
         from coderai.ui.shell.prompt import fuzzy_filter
 
-        model_names = [name for name, _, _ in CURATED_MODELS]
+        model_names = [name for name, _, _ in all_models]
         fuzzy_models = fuzzy_filter(val, model_names, limit=1)
         if fuzzy_models:
             chosen_model = fuzzy_models[0]
@@ -491,8 +493,12 @@ def run_connectivity_test_interactive(
     """Run a live connectivity and authentication test for the active or specified model."""
     resolved = resolve_current_settings(project_root)
     active_model = model_override or resolved.get("model", DEFAULT_MODEL)
-    base_url = resolved.get("baseURL")
-    api_key = resolved.get("apiKey")
+    if model_override and model_override != resolved.get("model"):
+        base_url = None
+        api_key = None
+    else:
+        base_url = resolved.get("baseURL")
+        api_key = resolved.get("apiKey")
 
     if console is not None and _RICH:
         console.print(f"\n  [bold cyan]Testing connection to:[/] [bold yellow]{active_model}[/]")
@@ -525,18 +531,17 @@ def run_connectivity_test_interactive(
 def run_quick_setup_wizard(
     console: Any | None,
     project_root: str = ".",
-    mgr: Any | None = None,
+    mgr: Any = None,
 ) -> None:
-    """Guided 3-step quick onboarding setup wizard."""
+    """Guided 3-step walkthrough: select provider, set API key/endpoint, pick default model."""
     if console is not None and _RICH:
         panel = Panel(
             "[bold white]Welcome to CoderAI Setup Wizard[/]\n"
-            "[dim]Let's get your AI coding environment ready in 3 simple steps.[/]",
+            "[dim]Let's get your AI coding environment ready in 3 simple steps.[/dim]",
             title="[bold cyan]CoderAI Quick Setup[/]",
             border_style="cyan",
-            padding=(0, 2),
+            expand=False,
         )
-        console.print()
         console.print(panel)
         console.print()
 
@@ -603,15 +608,24 @@ def run_quick_setup_wizard(
             return
         clear_client_pool()
         try:
+            from coderai.config import load_typed_config
+
+            typed = load_typed_config()
+            chosen_model = typed.default_model or DEFAULT_MODEL
+        except Exception:
             resolved = resolve_current_settings(project_root)
             chosen_model = resolved.get("model", DEFAULT_MODEL)
-        except Exception:
-            chosen_model = DEFAULT_MODEL
+
+        save_active_model_setting(chosen_model, scope="user", project_root=project_root)
+        if mgr is not None:
+            if hasattr(mgr, "set_model"):
+                mgr.set_model(chosen_model)
+            if hasattr(mgr, "set_active_model"):
+                mgr.set_active_model(chosen_model)
+
         if console is not None and _RICH:
             console.print("  [bold cyan]Validating Provider Connection...[/]")
         run_connectivity_test_interactive(console, project_root, model_override=chosen_model)
-        if mgr is not None and hasattr(mgr, "set_model"):
-            mgr.set_model(chosen_model)
         if console is not None and _RICH:
             console.print(
                 "  [bold green]● Setup complete![/] You are ready to start pair-programming with CoderAI.\n"

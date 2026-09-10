@@ -122,3 +122,18 @@ def apply_bearer_auth(
     if not token:
         return config
     return {**config, "headers": {**headers, "Authorization": f"Bearer {token}"}}
+
+
+def create_mcp_oauth(server_url: str) -> Any:
+    """Create fastmcp OAuth adapter for server URL if available."""
+    try:
+        from fastmcp.client.auth.oauth import OAuth
+        return OAuth(mcp_url=server_url)
+    except Exception:
+        return None
+
+
+async def has_mcp_oauth_tokens(server_url: str) -> bool:
+    """Check whether OAuth tokens exist for this MCP server."""
+    token = _token_from_file(server_token_path(server_url))
+    return token is not None

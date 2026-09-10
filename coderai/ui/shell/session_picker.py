@@ -527,14 +527,54 @@ def _format_badges_markup(badges: list[str]) -> str:
     return " ".join(parts)
 
 
+def get_available_models(current_model: str = "") -> list[tuple[str, str, str]]:
+    """Return comprehensive list of models from curated catalog, typed config, and OAuth."""
+    models: list[tuple[str, str, str]] = []
+    seen: set[str] = set()
+
+    # 1. Curated catalog entries (OpenAI, Kimi, Gemini, DeepSeek, Anthropic)
+    for key, desc, cat in CURATED_MODELS:
+        if key not in seen:
+            seen.add(key)
+            models.append((key, desc, cat))
+
+    # 2. Configured models in config.toml (including custom & OAuth-synced models)
+    try:
+        from coderai.config import load_typed_config
+
+        cfg = load_typed_config()
+        for key, m in cfg.models.items():
+            if key not in seen:
+                seen.add(key)
+                provider = cfg.providers.get(m.provider)
+                p_type = (provider.type if provider else m.provider) or "custom"
+                category = (
+                    "Kimi Code"
+                    if "kimi" in p_type.lower() or "kimi" in key.lower()
+                    else f"Configured ({p_type})"
+                )
+                desc = m.display_name or f"Configured model ({m.model})"
+                models.append((key, desc, category))
+    except Exception:
+        pass
+
+    # 3. Current model if not yet seen
+    if current_model and current_model not in seen:
+        seen.add(current_model)
+        models.append((current_model, f"Active model ({current_model})", "Active"))
+
+    return models
+
+
 def select_model_interactive(console: Any | None, current_model: str) -> str:
     """Prompt the user with an interactive model selection menu with arrow-key navigation."""
+    all_models = get_available_models(current_model)
     items: list[tuple[str, str, str]] = []
     default_idx = 0
-    for idx, (name, desc, category) in enumerate(CURATED_MODELS):
+    for idx, (name, desc, category) in enumerate(all_models):
         badges = get_model_badges(name)
         badges_str = " ".join(f"[{b}]" for b in badges)
-        items.append((name, f"{name:<20} {badges_str}", f"[{category}] {desc}"))
+        items.append((name, f"{name:<26} {badges_str}", f"[{category}] {desc}"))
         if name == current_model:
             default_idx = idx
 
@@ -548,13 +588,13 @@ def select_model_interactive(console: Any | None, current_model: str) -> str:
     )
     if res is None:
         return current_model
-    if isinstance(res, int) and 0 <= res < len(CURATED_MODELS):
-        return CURATED_MODELS[res][0]
+    if isinstance(res, int) and 0 <= res < len(all_models):
+        return all_models[res][0]
     elif isinstance(res, str) and res.strip():
         val = res.strip()
         from coderai.ui.shell.prompt import fuzzy_filter
 
-        model_names = [name for name, _, _ in CURATED_MODELS]
+        model_names = [name for name, _, _ in all_models]
         fuzzy_models = fuzzy_filter(val, model_names, limit=1)
         if fuzzy_models:
             return fuzzy_models[0]

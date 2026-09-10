@@ -244,3 +244,84 @@ def read_text_file_tail(path: str, max_chars: int = 4000) -> dict[str, Any] | No
         }
     except Exception:
         return None
+
+
+import asyncio
+import re
+import aiofiles.os
+from pathlib import Path, PurePath
+from kaos.path import KaosPath
+
+_ROTATION_OPEN_FLAGS = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+_ROTATION_FILE_MODE = 0o600
+
+
+async def _reserve_rotation_path(path: Path) -> bool:
+    """Atomically create an empty file as a reservation for *path*."""
+    def _create() -> None:
+        fd = os.open(str(path), _ROTATION_OPEN_FLAGS, _ROTATION_FILE_MODE)
+        os.close(fd)
+
+    try:
+        await asyncio.to_thread(_create)
+    except FileExistsError:
+        return False
+    return True
+
+
+async def next_available_rotation(path: Path) -> Path | None:
+    """Return a reserved rotation path for *path* or ``None`` if parent is missing."""
+    if not path.parent.exists():
+        return None
+
+    base_name = path.stem
+    suffix = path.suffix
+    pattern = re.compile(rf"^{re.escape(base_name)}_(\d+){re.escape(suffix)}$")
+    max_num = 0
+    try:
+        for entry in await aiofiles.os.listdir(path.parent):
+            if match := pattern.match(entry):
+                max_num = max(max_num, int(match.group(1)))
+    except Exception:
+        pass
+
+    next_num = max_num + 1
+    while True:
+        next_path = path.parent / f"{base_name}_{next_num}{suffix}"
+        if await _reserve_rotation_path(next_path):
+            return next_path
+        next_num += 1
+
+
+def shorten_home(path: Any) -> Any:
+    """Convert absolute path to use `~` for home directory."""
+    try:
+        if isinstance(path, KaosPath):
+            home = KaosPath.home()
+            p = path.relative_to(home)
+            return KaosPath("~") / p
+        p_obj = Path(str(path))
+        home_obj = Path.home()
+        rel = p_obj.relative_to(home_obj)
+        return Path("~") / rel
+    except Exception:
+        return path
+
+
+def sanitize_cli_path(raw: str) -> str:
+    """Strip surrounding quotes from a CLI path argument."""
+    raw = raw.strip()
+    if len(raw) >= 2 and ((raw[0] == "'" and raw[-1] == "'") or (raw[0] == '"' and raw[-1] == '"')):
+        raw = raw[1:-1]
+    return raw
+
+
+def is_within_directory(path: Any, directory: Any) -> bool:
+    """Check whether path is contained within directory using pure path semantics."""
+    candidate = PurePath(str(path))
+    base = PurePath(str(directory))
+    try:
+        candidate.relative_to(base)
+        return True
+    except ValueError:
+        return False

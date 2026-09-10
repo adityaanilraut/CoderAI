@@ -7,14 +7,24 @@ markdown commitment, thinking pulses, and status/notification blocks.
 
 from __future__ import annotations
 
+import json
 import time
+from collections import deque
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NamedTuple, cast
 
+import streamingjson
+from kosong.tooling import BriefDisplayBlock, ToolReturnValue
 from rich.console import Group, RenderableType
+from rich.markdown import Markdown
 from rich.spinner import Spinner
 from rich.style import Style
 from rich.text import Text
+
+from coderai.tools import extract_key_argument
+from coderai.tools.display import BackgroundTaskDisplayBlock, DiffDisplayBlock, TodoDisplayBlock
+from coderai.utils.rich.diff_render import collect_diff_hunks, render_diff_panel, render_diff_summary_panel
+from coderai.wire.types import ToolCall, ToolCallPart, ToolResult
 
 # reuse CoderAI console (MANPAGER-safe, neutral theme)
 try:
@@ -306,6 +316,233 @@ class _ContentBlock:
 
 # Alias for external importers
 ContentBlock = _ContentBlock
+
+
+class _ToolCallBlock:
+    class FinishedSubCall(NamedTuple):
+        call: ToolCall
+        result: ToolReturnValue
+
+    def __init__(self, tool_call: ToolCall):
+        self._tool_name = tool_call.function.name
+        self._lexer = streamingjson.Lexer()
+        if tool_call.function.arguments is not None:
+            self._lexer.append_string(tool_call.function.arguments)
+
+        self._argument = extract_key_argument(self._lexer, self._tool_name)
+        self._full_url = self._extract_full_url(tool_call.function.arguments, self._tool_name)
+        self._result: ToolReturnValue | None = None
+        self._subagent_id: str | None = None
+        self._subagent_type: str | None = None
+
+        self._ongoing_subagent_tool_calls: dict[str, ToolCall] = {}
+        self._last_subagent_tool_call: ToolCall | None = None
+        self._n_finished_subagent_tool_calls = 0
+        self._finished_subagent_tool_calls = deque[_ToolCallBlock.FinishedSubCall](
+            maxlen=MAX_SUBAGENT_TOOL_CALLS_TO_SHOW
+        )
+
+        self._spinning_dots = Spinner("dots", text="")
+        self._renderable: RenderableType = self._compose()
+
+    def compose(self) -> RenderableType:
+        return self._renderable
+
+    @property
+    def finished(self) -> bool:
+        return self._result is not None
+
+    def append_args_part(self, args_part: str):
+        if self.finished:
+            return
+        self._lexer.append_string(args_part)
+        argument = extract_key_argument(self._lexer, self._tool_name)
+        if argument and argument != self._argument:
+            self._argument = argument
+            self._full_url = self._extract_full_url(self._lexer.complete_json(), self._tool_name)
+            self._renderable = BulletColumns(
+                self._build_headline_text(),
+                bullet=self._spinning_dots,
+            )
+
+    def finish(self, result: ToolReturnValue):
+        self._result = result
+        self._renderable = self._compose()
+
+    def append_sub_tool_call(self, tool_call: ToolCall):
+        self._ongoing_subagent_tool_calls[tool_call.id] = tool_call
+        self._last_subagent_tool_call = tool_call
+
+    def append_sub_tool_call_part(self, tool_call_part: ToolCallPart):
+        if self._last_subagent_tool_call is None:
+            return
+        if not tool_call_part.arguments_part:
+            return
+        if self._last_subagent_tool_call.function.arguments is None:
+            self._last_subagent_tool_call.function.arguments = tool_call_part.arguments_part
+        else:
+            self._last_subagent_tool_call.function.arguments += tool_call_part.arguments_part
+
+    def finish_sub_tool_call(self, tool_result: ToolResult):
+        self._last_subagent_tool_call = None
+        sub_tool_call = self._ongoing_subagent_tool_calls.pop(tool_result.tool_call_id, None)
+        if sub_tool_call is None:
+            return
+
+        self._finished_subagent_tool_calls.append(
+            _ToolCallBlock.FinishedSubCall(
+                call=sub_tool_call,
+                result=tool_result.return_value,
+            )
+        )
+        self._n_finished_subagent_tool_calls += 1
+        self._renderable = self._compose()
+
+    def set_subagent_metadata(self, agent_id: str, subagent_type: str) -> None:
+        changed = (self._subagent_id, self._subagent_type) != (agent_id, subagent_type)
+        self._subagent_id = agent_id
+        self._subagent_type = subagent_type
+        if changed:
+            self._renderable = self._compose()
+
+    def _compose(self) -> RenderableType:
+        lines: list[RenderableType] = [
+            self._build_headline_text(),
+        ]
+        if self._subagent_id is not None and self._subagent_type is not None:
+            lines.append(
+                BulletColumns(
+                    Text(
+                        f"subagent {self._subagent_type} ({self._subagent_id})",
+                        style="grey50",
+                    ),
+                    bullet_style="grey50",
+                )
+            )
+
+        if self._n_finished_subagent_tool_calls > MAX_SUBAGENT_TOOL_CALLS_TO_SHOW:
+            n_hidden = self._n_finished_subagent_tool_calls - MAX_SUBAGENT_TOOL_CALLS_TO_SHOW
+            lines.append(
+                BulletColumns(
+                    Text(
+                        f"{n_hidden} more tool call{'s' if n_hidden > 1 else ''} ...",
+                        style="grey50 italic",
+                    ),
+                    bullet_style="grey50",
+                )
+            )
+        for sub_call, sub_result in self._finished_subagent_tool_calls:
+            argument = extract_key_argument(
+                sub_call.function.arguments or "", sub_call.function.name
+            )
+            sub_url = self._extract_full_url(sub_call.function.arguments, sub_call.function.name)
+            sub_text = Text()
+            sub_text.append("Used ")
+            sub_text.append(sub_call.function.name, style="blue")
+            if argument:
+                sub_text.append(" (", style="grey50")
+                arg_style = Style(color="grey50", link=sub_url) if sub_url else "grey50"
+                sub_text.append(argument, style=arg_style)
+                sub_text.append(")", style="grey50")
+            lines.append(
+                BulletColumns(
+                    sub_text,
+                    bullet_style="green" if not sub_result.is_error else "dark_red",
+                )
+            )
+
+        if self._result is not None:
+            display = self._result.display
+            idx = 0
+            while idx < len(display):
+                block = display[idx]
+                if isinstance(block, DiffDisplayBlock):
+                    path = block.path
+                    diff_blocks: list[DiffDisplayBlock] = []
+                    while idx < len(display):
+                        b = display[idx]
+                        if not isinstance(b, DiffDisplayBlock) or b.path != path:
+                            break
+                        diff_blocks.append(b)
+                        idx += 1
+                    if any(b.is_summary for b in diff_blocks):
+                        lines.append(render_diff_summary_panel(path, diff_blocks))
+                    else:
+                        hunks, added_total, removed_total = collect_diff_hunks(diff_blocks)
+                        if hunks:
+                            lines.append(render_diff_panel(path, hunks, added_total, removed_total))
+                elif isinstance(block, BriefDisplayBlock):
+                    style = "grey50" if not self._result.is_error else "dark_red"
+                    if block.text:
+                        lines.append(Text(block.text.rstrip("\n"), style=style))
+                    idx += 1
+                elif isinstance(block, TodoDisplayBlock):
+                    markdown = self._render_todo_markdown(block)
+                    if markdown:
+                        lines.append(Markdown(markdown, style="grey50"))
+                    idx += 1
+                elif isinstance(block, BackgroundTaskDisplayBlock):
+                    lines.append(
+                        Markdown(
+                            (f"`{block.task_id}` [{block.status}] {block.description}"),
+                            style="grey50",
+                        )
+                    )
+                    idx += 1
+                else:
+                    idx += 1
+
+        if self.finished:
+            assert self._result is not None
+            return BulletColumns(
+                Group(*lines),
+                bullet_style="green" if not self._result.is_error else "dark_red",
+            )
+        else:
+            return BulletColumns(
+                Group(*lines),
+                bullet=self._spinning_dots,
+            )
+
+    @staticmethod
+    def _extract_full_url(arguments: str | None, tool_name: str) -> str | None:
+        if tool_name != "FetchURL" or not arguments:
+            return None
+        try:
+            args = json.loads(arguments, strict=False)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if isinstance(args, dict):
+            url = cast(dict[str, Any], args).get("url")
+            if url:
+                return str(url)
+        return None
+
+    def _build_headline_text(self) -> Text:
+        text = Text()
+        text.append("Used " if self.finished else "Using ")
+        text.append(self._tool_name, style="blue")
+        if self._argument:
+            text.append(" (", style="grey50")
+            arg_style = Style(color="grey50", link=self._full_url) if self._full_url else "grey50"
+            text.append(self._argument, style=arg_style)
+            text.append(")", style="grey50")
+        return text
+
+    def _render_todo_markdown(self, block: TodoDisplayBlock) -> str:
+        lines: list[str] = []
+        for todo in block.items:
+            normalized = todo.status.replace("_", " ").lower()
+            match normalized:
+                case "pending":
+                    lines.append(f"- {todo.title}")
+                case "in progress":
+                    lines.append(f"- {todo.title} ←")
+                case "done":
+                    lines.append(f"- ~~{todo.title}~~")
+                case _:
+                    lines.append(f"- {todo.title}")
+        return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------

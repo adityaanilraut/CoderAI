@@ -9,6 +9,7 @@ import pathlib
 from typing import Any
 
 from coderai.core.session import SessionEntry, SessionManager, SessionMessage
+from coderai.utils.sensitive import is_sensitive_file, sensitive_file_warning
 
 
 def export_session_to_markdown(

@@ -5,6 +5,14 @@ from __future__ import annotations
 
 import json
 import pathlib
+from coderai.core.log import (
+    logger,
+    enable_logging,
+    redirect_stderr_to_logger,
+    restore_stderr,
+    open_original_stderr,
+    StderrRedirector,
+)
 
 DEBUG_LOG_FILE = "debug.log"
 

@@ -1,226 +1,568 @@
-# Ported from coderai/core/acp/runner.py - kimi structure (kimi_cli/acp/session.py).
-"""Out-of-process ACP Subagent Runner.
-
-Drives a child ACP agent in a spawned subprocess over the Agent Control Protocol (ndjson stdio).
-"""
+# Ported from kimi_cli/acp/session.py - kimi structure.
+"""In-process ACP Session coordinating wire messages, tool execution, and client updates."""
 
 from __future__ import annotations
 
 import asyncio
-import logging
-import os
-import subprocess
-import threading
-import time
 import uuid
-from dataclasses import dataclass, field
-from typing import Any
+from contextvars import ContextVar
+from typing import TYPE_CHECKING, Any
 
-from coderai.acp.convert import AcpNdjsonParser
-from coderai.acp.types import AcpMessage, PROTOCOL_VERSION
+import acp
+import streamingjson
+from kaos import Kaos, reset_current_kaos, set_current_kaos
+from kosong.chat_provider import APIStatusError, ChatProviderError
 
-logger = logging.getLogger(__name__)
+from coderai.acp.convert import (
+    acp_blocks_to_content_parts,
+    display_block_to_acp_content,
+    tool_result_to_acp_content,
+)
+from coderai.acp.types import ACPContentBlock
+from coderai.soul import LLMNotSet, LLMNotSupported, MaxStepsReached, RunCancelled
+from coderai.tools import extract_key_argument
+from coderai.tools.display import TodoDisplayBlock
+from coderai.utils.logging import logger
+from coderai.wire.file import WireFile
+from coderai.wire.types import (
+    ApprovalRequest,
+    ApprovalResponse,
+    CompactionBegin,
+    CompactionEnd,
+    ContentPart,
+    MCPLoadingBegin,
+    MCPLoadingEnd,
+    Notification,
+    PlanDisplay,
+    QuestionRequest,
+    StatusUpdate,
+    SteerInput,
+    StepBegin,
+    StepInterrupted,
+    StepRetry,
+    SubagentEvent,
+    TextPart,
+    ThinkPart,
+    ToolCall,
+    ToolCallPart,
+    ToolCallRequest,
+    ToolResult,
+    TurnBegin,
+    TurnEnd,
+)
+
+# Backward-compatible re-exports from core runner
+from coderai.core.acp.runner import AcpRunConfig, AcpSubagentRunner
+
+if TYPE_CHECKING:
+    from coderai.app import KimiCLI
 
 
-@dataclass
-class AcpRunConfig:
-    command: str
-    args: list[str] = field(default_factory=list)
-    cwd: str = "."
-    permission_policy: str = "allow"  # "allow" | "reject"
-    timeout_seconds: float = 120.0
-    env: dict[str, str] | None = None
+_current_turn_id = ContextVar[str | None]("current_turn_id", default=None)
+_terminal_tool_call_ids = ContextVar[set[str] | None]("terminal_tool_call_ids", default=None)
 
 
-class AcpSubagentRunner:
-    """Drives one isolated child session over ACP protocol in a subprocess."""
+def get_current_acp_tool_call_id_or_none() -> str | None:
+    """See `_ToolCallState.acp_tool_call_id`."""
+    from coderai.soul.toolset import get_current_tool_call_or_none
 
-    def __init__(self, config: AcpRunConfig) -> None:
-        self.config = config
-        self.process: subprocess.Popen[bytes] | None = None
-        self._parser = AcpNdjsonParser()
-        self._next_id = 1
-        self._pending_requests: dict[str | int, asyncio.Future[AcpMessage]] = {}
-        self._accumulated_text: list[str] = []
-        self._reader_thread: threading.Thread | None = None
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._closed = False
-        self._lock = threading.Lock()
-        self.session_id: str | None = None
+    turn_id = _current_turn_id.get()
+    if turn_id is None:
+        return None
+    tool_call = get_current_tool_call_or_none()
+    if tool_call is None:
+        return None
+    return f"{turn_id}/{tool_call.id}"
 
-    def _start_process(self) -> None:
-        run_env = os.environ.copy()
-        if self.config.env:
-            run_env.update(self.config.env)
 
-        cmd = [self.config.command] + self.config.args
-        self.process = subprocess.Popen(
-            cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            cwd=self.config.cwd,
-            env=run_env,
-        )
+def register_terminal_tool_call_id(tool_call_id: str) -> None:
+    calls = _terminal_tool_call_ids.get()
+    if calls is not None:
+        calls.add(tool_call_id)
 
+
+def should_hide_terminal_output(tool_call_id: str) -> bool:
+    calls = _terminal_tool_call_ids.get()
+    return calls is not None and tool_call_id in calls
+
+
+class _ToolCallState:
+    """Manages the state of a single tool call for streaming updates."""
+
+    def __init__(self, tool_call: ToolCall):
+        self.tool_call = tool_call
+        self.args = tool_call.function.arguments or ""
+        self.lexer = streamingjson.Lexer()
+        if tool_call.function.arguments is not None:
+            self.lexer.append_string(tool_call.function.arguments)
+
+    @property
+    def acp_tool_call_id(self) -> str:
+        turn_id = _current_turn_id.get()
+        assert turn_id is not None
+        return f"{turn_id}/{self.tool_call.id}"
+
+    def append_args_part(self, args_part: str) -> None:
+        """Append a new arguments part to the accumulated args and lexer."""
+        self.args += args_part
+        self.lexer.append_string(args_part)
+
+    def get_title(self) -> str:
+        """Get the current title with subtitle if available."""
+        tool_name = self.tool_call.function.name
+        subtitle = extract_key_argument(self.lexer, tool_name)
+        if subtitle:
+            return f"{tool_name}: {subtitle}"
+        return tool_name
+
+
+class _TurnState:
+    def __init__(self) -> None:
+        self.id = str(uuid.uuid4())
+        self.tool_calls: dict[str, _ToolCallState] = {}
+        self.last_tool_call: _ToolCallState | None = None
+        self.cancel_event = asyncio.Event()
+
+
+class ACPSession:
+    def __init__(
+        self,
+        id: str,
+        cli: Any,
+        acp_conn: acp.Client,
+        kaos: Kaos | None = None,
+    ) -> None:
+        self._id = id
+        self._cli = cli
+        self._conn = acp_conn
+        self._kaos = kaos
+        self._turn_state: _TurnState | None = None
+
+    @property
+    def id(self) -> str:
+        """The ID of the ACP session."""
+        return self._id
+
+    @property
+    def cli(self) -> Any:
+        """The CLI instance bound to this ACP session."""
+        return self._cli
+
+    def _is_oauth_session(self) -> bool:
+        """Return True if the current session uses OAuth-based authentication."""
         try:
-            self._loop = asyncio.get_running_loop()
-        except RuntimeError:
-            self._loop = asyncio.get_event_loop()
+            llm = self._cli.soul.runtime.llm
+            return llm is not None and getattr(llm.provider_config, "oauth", None) is not None
+        except (AttributeError, TypeError):
+            return False
 
-        self._reader_thread = threading.Thread(
-            target=self._read_loop,
-            name=f"acp-reader-{self.config.command}",
-            daemon=True,
-        )
-        self._reader_thread.start()
-
-    def _read_loop(self) -> None:
-        stdout = self.process.stdout if self.process else None
-        if not stdout:
-            return
-
-        while not self._closed and self.process and self.process.poll() is None:
-            try:
-                line = stdout.readline()
-                if not line:
-                    break
-                messages = self._parser.feed(line)
-                for msg in messages:
-                    self._handle_incoming_message(msg)
-            except Exception as exc:
-                logger.debug(f"ACP read error: {exc}")
-                break
-
-    def _handle_incoming_message(self, msg: AcpMessage) -> None:
-        # 1. Response to a pending request
-        if msg.id is not None and (msg.result is not None or msg.error is not None):
-            with self._lock:
-                fut = self._pending_requests.pop(msg.id, None)
-            if fut and not fut.done() and self._loop:
-                self._loop.call_soon_threadsafe(fut.set_result, msg)
-            return
-
-        # 2. Server request to client (e.g. session/request_permission)
-        if msg.method == "session/request_permission" and msg.id is not None:
-            self._handle_permission_request(msg)
-            return
-
-        # 3. Server notification (e.g. session/update)
-        if msg.method == "session/update":
-            params = msg.params or {}
-            content = params.get("content") or {}
-            text = content.get("text") or params.get("text", "")
-            if text:
-                self._accumulated_text.append(str(text))
-
-    def _handle_permission_request(self, msg: AcpMessage) -> None:
-        decision = "allow" if self.config.permission_policy == "allow" else "reject"
-        response_msg = AcpMessage(
-            jsonrpc="2.0",
-            id=msg.id,
-            result={
-                "decision": decision,
-                "reason": f"Auto-resolved by ACP runner policy: {decision}",
-            },
-        )
-        self._write_message(response_msg)
-
-    def _write_message(self, msg: AcpMessage) -> None:
-        if not self.process or not self.process.stdin or self._closed:
-            return
+    async def prompt(self, prompt: list[ACPContentBlock]) -> acp.PromptResponse:
+        user_input = acp_blocks_to_content_parts(prompt)
+        self._turn_state = _TurnState()
+        token = _current_turn_id.set(self._turn_state.id)
+        kaos_token = set_current_kaos(self._kaos) if self._kaos is not None else None
+        terminal_tool_calls_token = _terminal_tool_call_ids.set(set())
         try:
-            self.process.stdin.write(msg.encode_ndjson())
-            self.process.stdin.flush()
-        except Exception:
-            pass
-
-    async def _send_request(
-        self, method: str, params: dict[str, Any], timeout_s: float = 30.0
-    ) -> Any:
-        with self._lock:
-            req_id = self._next_id
-            self._next_id += 1
-            loop = asyncio.get_running_loop()
-            fut: asyncio.Future[AcpMessage] = loop.create_future()
-            self._pending_requests[req_id] = fut
-
-        msg = AcpMessage(jsonrpc="2.0", id=req_id, method=method, params=params)
-        self._write_message(msg)
-
-        try:
-            resp = await asyncio.wait_for(fut, timeout=timeout_s)
-            if resp.error:
-                raise RuntimeError(f"ACP error on {method}: {resp.error}")
-            return resp.result
-        except asyncio.TimeoutError:
-            with self._lock:
-                self._pending_requests.pop(req_id, None)
-            raise TimeoutError(f"ACP request '{method}' timed out after {timeout_s}s")
-
-    async def execute(self, prompt: str) -> dict[str, Any]:
-        """Execute a full task turn over ACP lifecycle."""
-        start_t = time.time()
-        try:
-            self._start_process()
-
-            await self._send_request(
-                "initialize",
-                {
-                    "protocolVersion": PROTOCOL_VERSION,
-                    "clientInfo": {"name": "CoderAI", "version": "1.0"},
-                    "capabilities": {"permission": True, "fs": True},
-                },
-                timeout_s=15.0,
-            )
-
-            # 2. Session Create
-            session_res = await self._send_request(
-                "session/create",
-                {"cwd": self.config.cwd, "meta": {"prompt": prompt[:100]}},
-                timeout_s=15.0,
-            )
-            self.session_id = session_res.get("sessionId", str(uuid.uuid4()))
-
-            # 3. Session Prompt
-            prompt_res = await self._send_request(
-                "session/prompt",
-                {"sessionId": self.session_id, "prompt": prompt},
-                timeout_s=self.config.timeout_seconds,
-            )
-
-            elapsed = time.time() - start_t
-            final_text = "".join(self._accumulated_text).strip()
-            if not final_text and isinstance(prompt_res, dict):
-                final_text = str(prompt_res.get("response") or prompt_res.get("text") or "")
-
-            return {
-                "ok": True,
-                "status": "completed",
-                "summary": final_text or "Task completed via ACP agent.",
-                "duration_seconds": elapsed,
-                "session_id": self.session_id,
-            }
-        except Exception as exc:
-            elapsed = time.time() - start_t
-            return {
-                "ok": False,
-                "status": "failed",
-                "summary": f"ACP execution failed: {exc}",
-                "error": str(exc),
-                "duration_seconds": elapsed,
-            }
+            async for msg in self._cli.run(user_input, self._turn_state.cancel_event):
+                match msg:
+                    case TurnBegin():
+                        pass
+                    case SteerInput():
+                        pass
+                    case TurnEnd():
+                        pass
+                    case StepBegin():
+                        pass
+                    case StepInterrupted():
+                        break
+                    case StepRetry():
+                        pass
+                    case CompactionBegin():
+                        pass
+                    case CompactionEnd():
+                        pass
+                    case MCPLoadingBegin():
+                        pass
+                    case MCPLoadingEnd():
+                        pass
+                    case StatusUpdate():
+                        pass
+                    case Notification():
+                        await self._send_notification(msg)
+                    case ThinkPart(think=think):
+                        await self._send_thinking(think)
+                    case TextPart(text=text):
+                        await self._send_text(text)
+                    case ContentPart():
+                        logger.warning("Unsupported content part: %s", msg)
+                        await self._send_text(f"[{msg.__class__.__name__}]")
+                    case ToolCall():
+                        await self._send_tool_call(msg)
+                    case ToolCallPart():
+                        await self._send_tool_call_part(msg)
+                    case ToolResult():
+                        await self._send_tool_result(msg)
+                    case ApprovalResponse():
+                        pass
+                    case SubagentEvent():
+                        pass
+                    case PlanDisplay():
+                        pass
+                    case ApprovalRequest():
+                        await self._handle_approval_request(msg)
+                    case ToolCallRequest():
+                        logger.warning("Unexpected ToolCallRequest in ACP session: %s", msg)
+                    case QuestionRequest():
+                        logger.warning(
+                            "QuestionRequest is unsupported in ACP session; resolving empty answer."
+                        )
+                        msg.resolve({})
+                    case _:
+                        pass
+        except LLMNotSet as e:
+            logger.exception("LLM not set:")
+            raise acp.RequestError.auth_required() from e
+        except LLMNotSupported as e:
+            logger.exception("LLM not supported:")
+            raise acp.RequestError.internal_error({"error": str(e)}) from e
+        except APIStatusError as e:
+            if e.status_code == 401 and self._is_oauth_session():
+                logger.warning("Authentication failed (401), prompting re-login")
+                raise acp.RequestError.auth_required() from e
+            logger.exception("LLM API status error:")
+            raise acp.RequestError.internal_error({"error": str(e)}) from e
+        except ChatProviderError as e:
+            logger.exception("LLM provider error:")
+            raise acp.RequestError.internal_error({"error": str(e)}) from e
+        except MaxStepsReached as e:
+            logger.warning("Max steps reached: %s", e.n_steps)
+            return acp.PromptResponse(stop_reason="max_turn_requests")
+        except RunCancelled:
+            logger.info("Prompt cancelled by user")
+            return acp.PromptResponse(stop_reason="cancelled")
+        except Exception as e:
+            logger.exception("Unexpected error during prompt:")
+            raise acp.RequestError.internal_error({"error": str(e)}) from e
         finally:
-            await self.close()
+            self._turn_state = None
+            if kaos_token is not None:
+                reset_current_kaos(kaos_token)
+            _terminal_tool_call_ids.reset(terminal_tool_calls_token)
+            _current_turn_id.reset(token)
+        return acp.PromptResponse(stop_reason="end_turn")
 
-    async def close(self) -> None:
-        self._closed = True
+    async def replay_history(self, wire_file: WireFile) -> None:
+        """Replay persisted wire history to an ACP client during session/load."""
+        token = _current_turn_id.set(None)
+        terminal_tool_calls_token = _terminal_tool_call_ids.set(set())
         try:
-            if self.process and self.process.poll() is None:
-                self.process.terminate()
-                try:
-                    self.process.wait(timeout=2.0)
-                except subprocess.TimeoutExpired:
-                    self.process.kill()
+            async for record in wire_file.iter_records():
+                wire_msg = record.to_wire_message()
+                match wire_msg:
+                    case TurnBegin(user_input=user_input) | SteerInput(user_input=user_input):
+                        self._turn_state = _TurnState()
+                        _current_turn_id.set(self._turn_state.id)
+                        await self._send_user_input(user_input)
+                    case TurnEnd() | StepInterrupted():
+                        self._turn_state = None
+                        _current_turn_id.set(None)
+                    case StepBegin():
+                        pass
+                    case CompactionBegin() | CompactionEnd():
+                        pass
+                    case MCPLoadingBegin() | MCPLoadingEnd():
+                        pass
+                    case StatusUpdate():
+                        pass
+                    case Notification():
+                        await self._send_notification(wire_msg)
+                    case ThinkPart(think=think):
+                        await self._send_thinking(think)
+                    case TextPart(text=text):
+                        await self._send_text(text)
+                    case ContentPart():
+                        await self._send_text(f"[{wire_msg.__class__.__name__}]")
+                    case ToolCall():
+                        self._ensure_turn_state()
+                        await self._send_tool_call(wire_msg)
+                    case ToolCallPart():
+                        if self._turn_state is not None:
+                            await self._send_tool_call_part(wire_msg)
+                    case ToolResult():
+                        if self._turn_state is not None:
+                            await self._send_tool_result(wire_msg)
+                    case PlanDisplay():
+                        pass
+                    case ApprovalResponse() | SubagentEvent():
+                        pass
+                    case ApprovalRequest() | ToolCallRequest() | QuestionRequest():
+                        pass
+                    case _:
+                        pass
         except Exception:
-            pass
+            logger.exception("Failed to replay ACP session history from %s", getattr(wire_file, "path", ""))
+        finally:
+            self._turn_state = None
+            _terminal_tool_call_ids.reset(terminal_tool_calls_token)
+            _current_turn_id.reset(token)
+
+    async def cancel(self) -> None:
+        if self._turn_state is None:
+            logger.warning("Cancel requested but no prompt is running")
+            return
+
+        self._turn_state.cancel_event.set()
+
+    def _ensure_turn_state(self) -> None:
+        if self._turn_state is None:
+            self._turn_state = _TurnState()
+            _current_turn_id.set(self._turn_state.id)
+
+    async def _send_user_input(self, user_input: str | list[ContentPart]) -> None:
+        if not self._id or not self._conn:
+            return
+
+        parts = [TextPart(text=user_input)] if isinstance(user_input, str) else user_input
+        for part in parts:
+            if isinstance(part, TextPart):
+                content: ACPContentBlock = acp.schema.TextContentBlock(type="text", text=part.text)
+            else:
+                logger.warning("Unsupported replay user input part: %s", part)
+                content = acp.schema.TextContentBlock(
+                    type="text", text=f"[{part.__class__.__name__}]"
+                )
+            await self._conn.session_update(
+                session_id=self._id,
+                update=acp.schema.UserMessageChunk(
+                    content=content,
+                    session_update="user_message_chunk",
+                ),
+            )
+
+    async def _send_thinking(self, think: str) -> None:
+        if not self._id or not self._conn:
+            return
+
+        await self._conn.session_update(
+            session_id=self._id,
+            update=acp.schema.AgentThoughtChunk(
+                content=acp.schema.TextContentBlock(type="text", text=think),
+                session_update="agent_thought_chunk",
+            ),
+        )
+
+    async def _send_text(self, text: str) -> None:
+        if not self._id or not self._conn:
+            return
+
+        await self._conn.session_update(
+            session_id=self._id,
+            update=acp.schema.AgentMessageChunk(
+                content=acp.schema.TextContentBlock(type="text", text=text),
+                session_update="agent_message_chunk",
+            ),
+        )
+
+    async def _send_notification(self, notification: Notification) -> None:
+        body = notification.body.strip()
+        text = f"[Notification] {notification.title}"
+        if body:
+            text = f"{text}\n{body}"
+        await self._send_text(text)
+
+    async def _send_tool_call(self, tool_call: ToolCall) -> None:
+        assert self._turn_state is not None
+        if not self._id or not self._conn:
+            return
+
+        state = _ToolCallState(tool_call)
+        self._turn_state.tool_calls[tool_call.id] = state
+        self._turn_state.last_tool_call = state
+
+        await self._conn.session_update(
+            session_id=self._id,
+            update=acp.schema.ToolCallStart(
+                session_update="tool_call",
+                tool_call_id=state.acp_tool_call_id,
+                title=state.get_title(),
+                status="in_progress",
+                content=[
+                    acp.schema.ContentToolCallContent(
+                        type="content",
+                        content=acp.schema.TextContentBlock(type="text", text=state.args),
+                    )
+                ],
+            ),
+        )
+
+    async def _send_tool_call_part(self, part: ToolCallPart) -> None:
+        assert self._turn_state is not None
+        if (
+            not self._id
+            or not self._conn
+            or not part.arguments_part
+            or self._turn_state.last_tool_call is None
+        ):
+            return
+
+        self._turn_state.last_tool_call.append_args_part(part.arguments_part)
+
+        update = acp.schema.ToolCallProgress(
+            session_update="tool_call_update",
+            tool_call_id=self._turn_state.last_tool_call.acp_tool_call_id,
+            title=self._turn_state.last_tool_call.get_title(),
+            status="in_progress",
+            content=[
+                acp.schema.ContentToolCallContent(
+                    type="content",
+                    content=acp.schema.TextContentBlock(
+                        type="text", text=self._turn_state.last_tool_call.args
+                    ),
+                )
+            ],
+        )
+
+        await self._conn.session_update(session_id=self._id, update=update)
+
+    async def _send_tool_result(self, result: ToolResult) -> None:
+        assert self._turn_state is not None
+        if not self._id or not self._conn:
+            return
+
+        tool_ret = result.return_value
+
+        state = self._turn_state.tool_calls.pop(result.tool_call_id, None)
+        if state is None:
+            logger.warning("Tool call not found: %s", result.tool_call_id)
+            return
+
+        update = acp.schema.ToolCallProgress(
+            session_update="tool_call_update",
+            tool_call_id=state.acp_tool_call_id,
+            status="failed" if tool_ret.is_error else "completed",
+        )
+
+        contents = (
+            []
+            if should_hide_terminal_output(state.acp_tool_call_id)
+            else tool_result_to_acp_content(tool_ret)
+        )
+        if contents:
+            update.content = contents
+
+        await self._conn.session_update(session_id=self._id, update=update)
+
+        for block in tool_ret.display:
+            if isinstance(block, TodoDisplayBlock):
+                await self._send_plan_update(block)
+
+    async def _handle_approval_request(self, request: ApprovalRequest) -> None:
+        assert self._turn_state is not None
+        if not self._id or not self._conn:
+            logger.warning("No session ID, auto-rejecting approval request")
+            request.resolve("reject")
+            return
+
+        state = self._turn_state.tool_calls.get(request.tool_call_id, None)
+        if state is None:
+            logger.warning("Tool call not found: %s", request.tool_call_id)
+            request.resolve("reject")
+            return
+
+        try:
+            content: list[
+                acp.schema.ContentToolCallContent
+                | acp.schema.FileEditToolCallContent
+                | acp.schema.TerminalToolCallContent
+            ] = []
+            if request.display:
+                for block in request.display:
+                    diff_content = display_block_to_acp_content(block)
+                    if diff_content is not None:
+                        content.append(diff_content)
+            if not content:
+                content.append(
+                    acp.schema.ContentToolCallContent(
+                        type="content",
+                        content=acp.schema.TextContentBlock(
+                            type="text",
+                            text=f"Requesting approval to perform: {request.description}",
+                        ),
+                    )
+                )
+
+            response = await self._conn.request_permission(
+                [
+                    acp.schema.PermissionOption(
+                        option_id="approve",
+                        name="Approve once",
+                        kind="allow_once",
+                    ),
+                    acp.schema.PermissionOption(
+                        option_id="approve_for_session",
+                        name="Approve for this session",
+                        kind="allow_always",
+                    ),
+                    acp.schema.PermissionOption(
+                        option_id="reject",
+                        name="Reject",
+                        kind="reject_once",
+                    ),
+                ],
+                self._id,
+                acp.schema.ToolCallUpdate(
+                    tool_call_id=state.acp_tool_call_id,
+                    title=state.get_title(),
+                    content=content,
+                ),
+            )
+
+            if isinstance(response.outcome, acp.schema.AllowedOutcome):
+                option_id = response.outcome.option_id
+                if option_id == "approve":
+                    request.resolve("approve")
+                elif option_id == "approve_for_session":
+                    request.resolve("approve_for_session")
+                else:
+                    request.resolve("reject")
+            else:
+                request.resolve("reject")
+        except Exception:
+            logger.exception("Error handling approval request:")
+            request.resolve("reject")
+
+    async def _send_plan_update(self, block: TodoDisplayBlock) -> None:
+        status_map: dict[str, acp.schema.PlanEntryStatus] = {
+            "pending": "pending",
+            "in progress": "in_progress",
+            "in_progress": "in_progress",
+            "done": "completed",
+            "completed": "completed",
+        }
+        entries: list[acp.schema.PlanEntry] = [
+            acp.schema.PlanEntry(
+                content=todo.title,
+                priority="medium",
+                status=status_map.get(todo.status.lower(), "pending"),
+            )
+            for todo in block.items
+            if todo.title
+        ]
+
+        if not entries:
+            return
+
+        await self._conn.session_update(
+            session_id=self._id,
+            update=acp.schema.AgentPlanUpdate(session_update="plan", entries=entries),
+        )
+
+
+__all__ = [
+    "ACPSession",
+    "AcpRunConfig",
+    "AcpSubagentRunner",
+    "get_current_acp_tool_call_id_or_none",
+    "register_terminal_tool_call_id",
+    "should_hide_terminal_output",
+]

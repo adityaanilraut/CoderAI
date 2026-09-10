@@ -141,8 +141,6 @@ _COMMANDS = (
     SlashCommand("context", "Inspect live context window utilization", "Tools & Analytics"),
     SlashCommand("theme", "Switch theme dark/light", "Utilities", subcommands=("dark", "light")),
     SlashCommand("task", "Open interactive background-task browser", "Utilities"),
-    SlashCommand("web", "Open current session in Web UI", "Utilities"),
-    SlashCommand("vis", "Open agent tracing visualizer", "Utilities"),
     SlashCommand("upgrade", "Install the new Kimi Code successor", "Utilities"),
     SlashCommand("hooks", "Show configured hooks", "Utilities"),
     SlashCommand("btw", "Side question (BTW modal)", "Utilities"),
@@ -691,20 +689,6 @@ COMMAND_HELP_DETAILS: dict[str, dict[str, Any]] = {
         "description": "Three-column TUI: list | detail | output preview. Enter/O output, S stop, Tab filter, R refresh, Q exit.",
         "examples": ["/task"],
     },
-    "web": {
-        "title": "Web UI",
-        "syntax": "/web [port]",
-        "summary": "Open the current session in the Web UI (snapshot preview).",
-        "description": "Exports a session snapshot and opens it in the browser. Full embedded server planned.",
-        "examples": ["/web"],
-    },
-    "vis": {
-        "title": "Tracing Visualizer",
-        "syntax": "/vis",
-        "summary": "Open the agent tracing visualizer (role timeline).",
-        "description": "Shows per-role message counts and opens the session snapshot.",
-        "examples": ["/vis"],
-    },
     "upgrade": {
         "title": "Upgrade",
         "syntax": "/upgrade",
@@ -803,8 +787,6 @@ HELP_GROUPS: list[tuple[str, list[tuple[str, str, str]]]] = [
             ("/help, /?", "[command]", "Show command help menu or detailed contextual help"),
             ("/theme", "[dark|light]", "Switch diff theme (dark/light)"),
             ("/task", "", "Interactive background-task browser (list/detail/output)"),
-            ("/web", "[port]", "Open current session in Web UI (snapshot preview)"),
-            ("/vis", "", "Open agent tracing visualizer"),
             ("/upgrade", "", "Upgrade coderai-agent via pip"),
             ("/exit, /quit", "", "Exit CoderAI session with summary card"),
         ],
@@ -1089,11 +1071,17 @@ def cmd_reload(mgr: Any, console: Any = None) -> bool:
 
         settings = resolve_current_settings(getattr(mgr, "project_root", "."))
         model = settings.get("model") or settings.get("active_model")
-        if model and hasattr(mgr, "set_active_model"):
-            try:
-                mgr.set_active_model(str(model))
-            except Exception:
-                pass
+        if model:
+            if hasattr(mgr, "set_model"):
+                try:
+                    mgr.set_model(str(model))
+                except Exception:
+                    pass
+            if hasattr(mgr, "set_active_model"):
+                try:
+                    mgr.set_active_model(str(model))
+                except Exception:
+                    pass
         msg = "Configuration reloaded."
         if console is not None:
             try:
@@ -1214,34 +1202,26 @@ def cmd_hooks(console: Any = None, project_root: str = ".") -> dict[str, Any]:
 
 
 def cmd_upgrade(console: Any = None) -> str:
-    """Show the successor install command (Kimi ``/upgrade`` parity).
+    """Run upgrade check and package upgrade (delegates to coderai.ui.shell.update)."""
+    from coderai.ui.shell.update import UPGRADE_COMMAND, do_update
 
-    NOTE: CoderAI has no successor product; this surfaces the upgrade-check
-    command and verification step instead of a third-party installer.
-    """
-    install_cmd = "pip install -U coderai-agent"
-    verify_cmd = "coderai --version"
-    if console is not None:
-        try:
-            console.print("[bold cyan]Upgrade CoderAI[/]")
-            console.print(f"  Install: [bold white]{install_cmd}[/]")
-            console.print(f"  Verify:  [dim]{verify_cmd}[/]")
-        except Exception:
-            print(f"Install: {install_cmd}\nVerify: {verify_cmd}")
-    else:
-        print(f"Install: {install_cmd}\nVerify: {verify_cmd}")
     try:
-        choice = input("Run upgrade now? [y/N]: ").strip().lower() if sys.stdin.isatty() else "n"
-    except (EOFError, KeyboardInterrupt):
-        choice = "n"
-    if choice in ("y", "yes"):
-        import subprocess
+        import asyncio
 
         try:
-            subprocess.run([sys.executable, "-m", "pip", "install", "-U", "coderai-agent"])
-        except Exception as e:
-            print(f"Upgrade failed: {e}")
-    return install_cmd
+            loop = asyncio.get_running_loop()
+            import concurrent.futures
+
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                pool.submit(lambda: asyncio.run(do_update(print=True))).result()
+        except RuntimeError:
+            asyncio.run(do_update(print=True))
+    except Exception as e:
+        if console is not None:
+            console.print(f"[red]Upgrade check failed: {e}[/red]")
+        else:
+            print(f"Upgrade check failed: {e}")
+    return UPGRADE_COMMAND
 
 
 def cmd_login(

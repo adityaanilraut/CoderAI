@@ -6,6 +6,9 @@ THINKING_CAPABLE_MODELS = {
     "deepseek-v4-pro",
     "gemini-3.7-flash",
     "gpt-5.6-sol",
+    "kimi-for-coding",
+    "kimi-code",
+    "kimi-k2.5",
 }
 
 DEEPSEEK_MODELS = {
@@ -19,6 +22,10 @@ MULTIMODAL_MODELS = {
     "gpt-5.6-luna",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
+    "kimi-for-coding",
+    "kimi-code",
+    "kimi-k2.5",
+    "kimi-k1.5",
 }
 
 NON_MULTIMODAL_MODELS = {
@@ -30,6 +37,7 @@ FAST_MODELS = {
     "deepseek-v4-flash",
     "gemini-3.7-flash",
     "gpt-5.6-luna",
+    "kimi-k1.5",
 }
 
 ALL_REASONING_EFFORTS = ["off", "low", "medium", "high", "max"]
@@ -38,7 +46,7 @@ ALL_REASONING_EFFORTS = ["off", "low", "medium", "high", "max"]
 def defaults_to_thinking_mode(model: str) -> bool:
     """Return True if the model defaults to deep thinking/reasoning mode."""
     m = model.strip().lower()
-    if m in ("deepseek-v4-flash", "gpt-5.6-luna"):
+    if m in ("deepseek-v4-flash", "gpt-5.6-luna", "kimi-k1.5"):
         return False
     if m in THINKING_CAPABLE_MODELS:
         return True
@@ -52,8 +60,9 @@ def defaults_to_thinking_mode(model: str) -> bool:
             "deepseek-r1",
             "claude-3-7",
             "deepseek-v4-pro",
+            "kimi",
         )
-    ):
+    ) or "thinking" in m or "reason" in m or "kimi-code" in m or "kimi-for-coding" in m:
         return True
     return False
 
@@ -65,7 +74,7 @@ def get_supported_reasoning_efforts(model: str) -> list[str]:
         "deepseek-v4-flash",
         "gemini-3.7-flash",
         "deepseek-v4-pro",
-    ):
+    ) or "kimi" in m:
         return ["off", "low", "medium", "high", "max"]
     return ["off"]
 
@@ -183,6 +192,27 @@ CURATED_MODELS: list[tuple[str, str, str]] = [
         "gpt-5.6-luna",
         "Fast Tier: Ultra-low latency, inline edits & suggestions (Default)",
         "OpenAI GPT-5.6",
+    ),
+    # Kimi Code / Moonshot
+    (
+        "kimi-code/kimi-for-coding",
+        "Kimi Code Flagship: Frontier agentic coding with thinking & multimodal",
+        "Kimi Code",
+    ),
+    (
+        "kimi-for-coding",
+        "Kimi Code: Direct flagship coding model",
+        "Kimi Code",
+    ),
+    (
+        "kimi-k2.5",
+        "Kimi K2.5: High capability reasoning & coding model",
+        "Kimi / Moonshot",
+    ),
+    (
+        "kimi-k1.5",
+        "Kimi K1.5: Fast reasoning & 128k long context",
+        "Kimi / Moonshot",
     ),
     # Google Gemini
     (

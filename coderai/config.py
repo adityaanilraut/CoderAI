@@ -998,6 +998,20 @@ def save_active_model_setting(
     model_clean = model.strip()
     save_setting_key("model", model_clean, scope=scope, project_root=project_root)
     os.environ["CODERAI_MODEL"] = model_clean
+    try:
+        from coderai.config import load_typed_config, save_typed_config
+
+        cfg = load_typed_config()
+        target_model = model_clean
+        if target_model not in cfg.models:
+            for key, m in cfg.models.items():
+                if m.model == model_clean:
+                    target_model = key
+                    break
+        cfg.default_model = target_model
+        save_typed_config(cfg)
+    except Exception:
+        pass
 
 
 def save_base_url_setting(
@@ -1272,13 +1286,20 @@ class TypedConfig(BaseModel):
     @model_validator(mode="after")
     def validate_model(self) -> Self:
         if self.default_model and self.default_model not in self.models:
-            raise ValueError(f"Default model {self.default_model} not found in models")
+            for key, model in self.models.items():
+                if model.model == self.default_model:
+                    self.default_model = key
+                    break
         for name, model in self.models.items():
             if model.provider not in self.providers:
                 raise ValueError(
                     f"Model {name!r}: provider {model.provider!r} not found in providers"
                 )
         return self
+
+
+# Kimi parity alias
+Config = TypedConfig
 
 
 def get_config_file() -> Path:
@@ -1367,6 +1388,11 @@ def save_typed_config(config: TypedConfig, config_file: Path | None = None) -> N
         target.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     else:
         target.write_text(tomlkit.dumps(data), encoding="utf-8")
+
+
+# Kimi parity aliases
+load_config = load_typed_config
+save_config = save_typed_config
 
 
 def _migrate_legacy_settings_once() -> None:

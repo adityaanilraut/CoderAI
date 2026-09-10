@@ -1,16 +1,43 @@
 # Ported from coderai/core/llm_types.py + openai_client.py - kimi structure (llm.py).
-"""Provider / model capability vocabulary (Kimi ``llm.py`` types parity).
+"""Provider / model capability vocabulary and LLM constructor factories.
 
-Stdlib-only: ``ProviderType`` + ``ModelCapability`` literals, capability
-derivation, display names, and env-var overrides. The actual chat-provider
-wiring stays in ``core/openai_client.py`` (extended in a later phase); this
-module owns the *vocabulary* so config, UI, and tools share one source.
+Parity with Kimi ``llm.py``:
+- ProviderType and ModelCapability literals and derivation
+- ChatProvider factories (Kimi, Anthropic, OpenAI Legacy/Responses, Google GenAI/Gemini, Echo, Chaos)
+- Request-scoped token estimators and max completion token computation
+- Preserved CoderAI client pool and OpenAI client compatibility
 """
 
 from __future__ import annotations
 
+import json
 import os
-from typing import Literal, cast, get_args
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Callable, Literal, Protocol, Self, cast, get_args
+
+from kosong.chat_provider import ChatProvider, StreamedMessage, ThinkingEffort
+from kosong.message import (
+    AudioURLPart,
+    ImageURLPart,
+    Message,
+    TextPart,
+    ThinkPart,
+    VideoURLPart,
+)
+from kosong.tooling import Tool
+from kosong.utils.aio import Callback, callback
+from pydantic import SecretStr
+
+from coderai.constant import USER_AGENT
+from coderai.utils.logging import logger
+
+if TYPE_CHECKING:
+    from kosong.chat_provider.kimi import Kimi
+
+    from coderai.auth.oauth import OAuthManager
+    from coderai.config import Config, LLMModel, LLMProvider
 
 ProviderType = Literal[
     "kimi",
@@ -39,17 +66,228 @@ DEFAULT_UNKNOWN_CONTEXT_COMPLETION_TOKENS = 32_000
 DEFAULT_COMPLETION_TOKEN_SAFETY_MARGIN = 1_024
 
 
-def derive_model_capabilities(
-    model_name: str, declared: set[str] | None = None
-) -> set[ModelCapability]:
-    """Derive effective capabilities from the declared set + model-name rules.
+@dataclass(slots=True)
+class LLM:
+    chat_provider: ChatProvider
+    max_context_size: int
+    capabilities: set[ModelCapability]
+    model_config: Any | None = None
+    provider_config: Any | None = None
 
-    Mirrors Kimi's ``derive_model_capabilities``: names containing
-    ``thinking``/``reason`` are always-thinking; ``kimi-for-coding`` /
-    ``kimi-code`` imply thinking + image + video.
-    """
+    @property
+    def model_name(self) -> str:
+        return self.chat_provider.model_name
+
+
+class _GenerationOverrideProvider(Protocol):
+    async def generate(
+        self,
+        system_prompt: str,
+        tools: Sequence[Tool],
+        history: Sequence[Message],
+        *,
+        generation_overrides: Mapping[str, Any] | None = None,
+    ) -> StreamedMessage: ...
+
+
+@dataclass(slots=True)
+class _KimiRequestChatProvider:
+    """Adapt a Kimi-backed provider to the standard provider interface for one request."""
+
+    _provider: ChatProvider
+    _generation_overrides: Mapping[str, Any]
+    name: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.name = self._provider.name
+
+    @property
+    def model_name(self) -> str:
+        return self._provider.model_name
+
+    @property
+    def thinking_effort(self) -> ThinkingEffort | None:
+        return self._provider.thinking_effort
+
+    async def generate(
+        self,
+        system_prompt: str,
+        tools: Sequence[Tool],
+        history: Sequence[Message],
+    ) -> StreamedMessage:
+        provider = cast(_GenerationOverrideProvider, self._provider)
+        return await provider.generate(
+            system_prompt,
+            tools,
+            history,
+            generation_overrides=self._generation_overrides,
+        )
+
+    def with_thinking(self, effort: ThinkingEffort) -> Self:
+        return type(self)(
+            self._provider.with_thinking(effort),
+            self._generation_overrides,
+        )
+
+
+@dataclass(slots=True)
+class _TraceCallbackChatProvider:
+    _provider: ChatProvider
+    _on_trace_id: Callback[[str | None], None]
+    name: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.name = self._provider.name
+
+    @property
+    def model_name(self) -> str:
+        return self._provider.model_name
+
+    @property
+    def thinking_effort(self) -> ThinkingEffort | None:
+        return self._provider.thinking_effort
+
+    async def generate(
+        self,
+        system_prompt: str,
+        tools: Sequence[Tool],
+        history: Sequence[Message],
+    ) -> StreamedMessage:
+        await callback(self._on_trace_id, None)
+        try:
+            stream = await self._provider.generate(system_prompt, tools, history)
+        except BaseException as error:
+            if trace_id := getattr(error, "trace_id", None):
+                await callback(self._on_trace_id, trace_id)
+            raise
+        await callback(self._on_trace_id, getattr(stream, "trace_id", None))
+        return stream
+
+    def with_thinking(self, effort: ThinkingEffort) -> Self:
+        return type(self)(self._provider.with_thinking(effort), self._on_trace_id)
+
+
+def find_kimi_provider(chat_provider: ChatProvider) -> Kimi | None:
+    """Return the Kimi provider backing a supported provider wrapper."""
+    from kosong.chat_provider.chaos import ChaosChatProvider
+    from kosong.chat_provider.kimi import Kimi
+
+    provider = chat_provider
+    while isinstance(provider, ChaosChatProvider):
+        provider = provider.wrapped_provider
+    return provider if isinstance(provider, Kimi) else None
+
+
+def with_kimi_generation_overrides(
+    chat_provider: ChatProvider,
+    generation_overrides: Mapping[str, Any] | None,
+) -> ChatProvider:
+    """Apply request-scoped generation overrides only to Kimi-backed providers."""
+    if not generation_overrides or find_kimi_provider(chat_provider) is None:
+        return chat_provider
+    return _KimiRequestChatProvider(chat_provider, dict(generation_overrides))
+
+
+def with_trace_callback(
+    chat_provider: ChatProvider,
+    on_trace_id: Callback[[str | None], None],
+) -> ChatProvider:
+    return _TraceCallbackChatProvider(chat_provider, on_trace_id)
+
+
+def compute_max_completion_tokens(
+    *,
+    max_context_size: int,
+    input_tokens: int,
+    response_budget: int | None,
+    fallback_budget: int = DEFAULT_UNKNOWN_CONTEXT_COMPLETION_TOKENS,
+) -> int:
+    """Compute completion cap from the hard cap and remaining context."""
+    if max_context_size <= 0:
+        return max(1, response_budget if response_budget is not None else fallback_budget)
+
+    input_tokens = max(0, input_tokens)
+    remaining = max(1, max_context_size - input_tokens)
+    requested = response_budget if response_budget is not None else max_context_size
+    return max(1, min(requested, remaining))
+
+
+def estimate_request_tokens(
+    system_prompt: str,
+    tools: Sequence[Tool],
+    history: Sequence[Message],
+) -> int:
+    """Estimate all token-bearing parts of a chat request."""
+    return (
+        _estimate_text_tokens(system_prompt)
+        + sum(_estimate_tool_tokens(tool) for tool in tools)
+        + sum(_estimate_message_tokens(message) for message in history)
+    )
+
+
+def estimate_message_tokens(messages: Sequence[Message]) -> int:
+    """Estimate token-bearing content for messages added outside the main context."""
+    return sum(_estimate_message_tokens(message) for message in messages)
+
+
+def _estimate_text_tokens(text: str) -> int:
+    ascii_count = sum(char.isascii() for char in text)
+    non_ascii_count = len(text) - ascii_count
+    return (ascii_count + 3) // 4 + non_ascii_count
+
+
+def _estimate_tool_tokens(tool: Tool) -> int:
+    return (
+        _estimate_text_tokens(tool.name)
+        + _estimate_text_tokens(tool.description)
+        + _estimate_text_tokens(
+            json.dumps(tool.parameters, ensure_ascii=False, separators=(",", ":"))
+        )
+    )
+
+
+def _estimate_message_tokens(message: Message) -> int:
+    total = _estimate_text_tokens(message.role)
+    if message.name:
+        total += _estimate_text_tokens(message.name)
+    if message.tool_call_id:
+        total += _estimate_text_tokens(message.tool_call_id)
+
+    for part in message.content:
+        if isinstance(part, TextPart):
+            total += _estimate_text_tokens(part.text)
+        elif isinstance(part, ThinkPart):
+            total += _estimate_text_tokens(part.think)
+        elif isinstance(part, (ImageURLPart, AudioURLPart, VideoURLPart)):
+            total += MEDIA_TOKEN_ESTIMATE
+        else:
+            total += _estimate_text_tokens(part.model_dump_json(exclude_none=True))
+
+    for tool_call in message.tool_calls or ():
+        total += _estimate_text_tokens(tool_call.id)
+        total += _estimate_text_tokens(tool_call.function.name)
+        total += _estimate_text_tokens(tool_call.function.arguments or "")
+        if tool_call.extras:
+            total += _estimate_text_tokens(
+                json.dumps(tool_call.extras, ensure_ascii=False, separators=(",", ":"))
+            )
+    return total
+
+
+def derive_model_capabilities(
+    model: str | Any, declared: set[str] | None = None
+) -> set[ModelCapability]:
+    """Derive effective capabilities from model name/config and declared capabilities."""
+    if hasattr(model, "model"):
+        model_name = getattr(model, "model", "")
+        model_caps = getattr(model, "capabilities", None)
+        declared_set = set(model_caps or ()) if declared is None else (declared | set(model_caps or ()))
+    else:
+        model_name = str(model)
+        declared_set = declared or set()
+
     capabilities: set[ModelCapability] = set(
-        cast(ModelCapability, c) for c in (declared or set()) if c in ALL_MODEL_CAPABILITIES
+        cast(ModelCapability, c) for c in declared_set if c in ALL_MODEL_CAPABILITIES
     )
     lowered = model_name.lower()
     if "thinking" in lowered or "reason" in lowered:
@@ -59,76 +297,332 @@ def derive_model_capabilities(
     return capabilities
 
 
-def model_display_name(model_name: str | None, display_name: str | None = None) -> str:
-    """Human-readable model label (explicit display name wins)."""
+def model_display_name(model_name: str, display_name: str | None = None) -> str:
+    """Derive display name: explicit display_name or fallback."""
     if display_name:
         return display_name
-    if not model_name:
-        return ""
-    if model_name in ("kimi-for-coding", "kimi-code"):
-        return "kimi-for-coding"
     return model_name
 
 
-def is_always_thinking(capabilities: set[str]) -> bool:
-    """Whether thinking mode is mandatory for these capabilities."""
-    return "always_thinking" in capabilities
+def is_always_thinking(model_name: str, capabilities: set[ModelCapability] | None = None) -> bool:
+    caps = derive_model_capabilities(model_name, cast(set[str], capabilities))
+    return "always_thinking" in caps
 
 
-def supports_media(capabilities: set[str]) -> bool:
-    """Whether image/video input is available."""
-    return bool(capabilities & {"image_in", "video_in"})
+def supports_media(model_name: str, capabilities: set[ModelCapability] | None = None) -> bool:
+    caps = derive_model_capabilities(model_name, cast(set[str], capabilities))
+    return bool(caps & {"image_in", "video_in"})
 
 
-def augment_provider_with_env_vars(provider_type: str, current: dict[str, str]) -> dict[str, str]:
-    """Apply well-known env overrides for a provider type.
+def augment_provider_with_env_vars(provider: Any) -> Any:
+    """Overlay environment variables onto a provider config copy."""
+    prefix = f"KIMI_PROVIDER_{provider.type.upper()}_"
+    alt_prefix = f"CODERAI_PROVIDER_{provider.type.upper()}_"
 
-    Args:
-        provider_type: one of :data:`ProviderType`.
-        current: mutable ``{"base_url": ..., "api_key": ..., "model": ...}``
-            mapping, updated in place.
+    def _env(key: str) -> str | None:
+        return os.getenv(prefix + key) or os.getenv(alt_prefix + key)
 
-    Returns:
-        Mapping of env var names that were applied (values masked for keys).
-    """
-    applied: dict[str, str] = {}
-    if provider_type == "kimi":
-        if base_url := os.getenv("KIMI_BASE_URL"):
-            current["base_url"] = base_url
-            applied["KIMI_BASE_URL"] = base_url
-        if os.getenv("KIMI_API_KEY"):
-            current["api_key"] = os.environ["KIMI_API_KEY"]
-            applied["KIMI_API_KEY"] = "******"
-        if model_name := os.getenv("KIMI_MODEL_NAME"):
-            current["model"] = model_name
-            applied["KIMI_MODEL_NAME"] = model_name
-    elif provider_type in ("openai_legacy", "openai_responses"):
-        if base_url := os.getenv("OPENAI_BASE_URL"):
-            current["base_url"] = base_url
-            applied["OPENAI_BASE_URL"] = base_url
-        if os.getenv("OPENAI_API_KEY"):
-            current["api_key"] = os.environ["OPENAI_API_KEY"]
-            applied["OPENAI_API_KEY"] = "******"
-    return applied
+    updates: dict[str, Any] = {}
+    if base_url := (_env("BASE_URL") or os.getenv("KIMI_BASE_URL") or os.getenv("CODERAI_BASE_URL")):
+        updates["base_url"] = base_url
+    if api_key := (_env("API_KEY") or os.getenv("KIMI_API_KEY") or os.getenv("CODERAI_API_KEY")):
+        updates["api_key"] = SecretStr(api_key)
+    if not updates:
+        return provider
+    return provider.model_copy(update=updates)
 
 
-# --- merged from coderai/core/openai_client.py ---
-""""""
+def _kimi_default_headers(provider: Any, oauth: Any | None = None) -> dict[str, str]:
+    headers = {"User-Agent": USER_AGENT}
+    if oauth and hasattr(oauth, "common_headers"):
+        headers.update(oauth.common_headers())
+    custom_headers = getattr(provider, "custom_headers", None)
+    if custom_headers:
+        headers.update(custom_headers)
+    return headers
 
 
-from typing import Any
+def create_llm(
+    provider: Any,
+    model: Any,
+    *,
+    thinking: bool | None = None,
+    session_id: str | None = None,
+    oauth: Any | None = None,
+) -> LLM | None:
+    """Create an LLM instance backed by a kosong ChatProvider."""
+    provider_type = getattr(provider, "type", "")
+    base_url = getattr(provider, "base_url", None)
+    model_name = getattr(model, "model", "")
 
-from coderai.core.common.model_capabilities import defaults_to_thinking_mode
-from coderai.config import DEFAULT_BASE_URL, resolve_current_settings
+    if provider_type not in {"_echo", "_scripted_echo"} and (not base_url or not model_name):
+        logger.warning(
+            "Cannot create LLM: missing base_url or model (provider_type={provider_type})",
+            provider_type=provider_type,
+        )
+        return None
 
-# Provider-specific default endpoints
-PROVIDER_BASE_URLS = {
-    "deepseek": "https://api.deepseek.com",
-    "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/",
+    api_key_obj = getattr(provider, "api_key", None)
+    resolved_api_key = ""
+    if oauth and getattr(provider, "oauth", None) and hasattr(oauth, "resolve_api_key"):
+        resolved_api_key = oauth.resolve_api_key(api_key_obj, provider.oauth)
+    elif api_key_obj is not None:
+        resolved_api_key = (
+            api_key_obj.get_secret_value()
+            if hasattr(api_key_obj, "get_secret_value")
+            else str(api_key_obj)
+        )
+
+    chat_provider: ChatProvider
+
+    match provider_type:
+        case "kimi":
+            from kosong.chat_provider.kimi import Kimi
+
+            chat_provider = Kimi(
+                model=model_name,
+                base_url=base_url,
+                api_key=resolved_api_key,
+                default_headers=_kimi_default_headers(provider, oauth),
+            )
+
+            gen_kwargs: Kimi.GenerationKwargs = {}
+            if session_id:
+                gen_kwargs["prompt_cache_key"] = session_id
+            if temperature := os.getenv("KIMI_MODEL_TEMPERATURE") or os.getenv("CODERAI_MODEL_TEMPERATURE"):
+                gen_kwargs["temperature"] = float(temperature)
+            if top_p := os.getenv("KIMI_MODEL_TOP_P") or os.getenv("CODERAI_MODEL_TOP_P"):
+                gen_kwargs["top_p"] = float(top_p)
+            for env_name in (
+                "KIMI_MODEL_MAX_COMPLETION_TOKENS",
+                "KIMI_MODEL_MAX_TOKENS",
+                "CODERAI_MODEL_MAX_COMPLETION_TOKENS",
+            ):
+                raw_max_completion_tokens = os.getenv(env_name)
+                if not raw_max_completion_tokens:
+                    continue
+                try:
+                    max_completion_tokens = int(raw_max_completion_tokens)
+                except ValueError:
+                    continue
+                gen_kwargs["max_completion_tokens"] = (
+                    max_completion_tokens if max_completion_tokens > 0 else None
+                )
+                break
+
+            if gen_kwargs:
+                chat_provider = chat_provider.with_generation_kwargs(**gen_kwargs)
+
+        case "openai_legacy":
+            from kosong.contrib.chat_provider.openai_legacy import OpenAILegacy
+
+            reasoning_key = getattr(provider, "reasoning_key", None) or "reasoning_content"
+            custom_headers = getattr(provider, "custom_headers", None)
+            chat_provider = OpenAILegacy(
+                model=model_name,
+                base_url=base_url,
+                api_key=resolved_api_key,
+                reasoning_key=reasoning_key,
+                default_headers=dict(custom_headers) if custom_headers else None,
+            )
+
+        case "openai_responses":
+            from kosong.contrib.chat_provider.openai_responses import OpenAIResponses
+
+            custom_headers = getattr(provider, "custom_headers", None)
+            chat_provider = OpenAIResponses(
+                model=model_name,
+                base_url=base_url,
+                api_key=resolved_api_key,
+                default_headers=dict(custom_headers) if custom_headers else None,
+            )
+
+        case "anthropic":
+            from kosong.contrib.chat_provider.anthropic import Anthropic
+
+            custom_headers = getattr(provider, "custom_headers", None)
+            chat_provider = Anthropic(
+                model=model_name,
+                base_url=base_url,
+                api_key=resolved_api_key,
+                default_max_tokens=50000,
+                metadata={"user_id": session_id} if session_id else None,
+                default_headers=dict(custom_headers) if custom_headers else None,
+            )
+
+        case "google_genai" | "gemini":
+            from kosong.contrib.chat_provider.google_genai import GoogleGenAI
+
+            custom_headers = getattr(provider, "custom_headers", None)
+            chat_provider = GoogleGenAI(
+                model=model_name,
+                base_url=base_url,
+                api_key=resolved_api_key,
+                default_headers=dict(custom_headers) if custom_headers else None,
+            )
+
+        case "vertexai":
+            from kosong.contrib.chat_provider.google_genai import GoogleGenAI
+
+            env_vars = getattr(provider, "env", None)
+            if env_vars:
+                os.environ.update(env_vars)
+            custom_headers = getattr(provider, "custom_headers", None)
+            chat_provider = GoogleGenAI(
+                model=model_name,
+                base_url=base_url,
+                api_key=resolved_api_key,
+                vertexai=True,
+                default_headers=dict(custom_headers) if custom_headers else None,
+            )
+
+        case "_echo":
+            from kosong.chat_provider.echo import EchoChatProvider
+
+            chat_provider = EchoChatProvider()
+
+        case "_scripted_echo":
+            from kosong.chat_provider.echo import ScriptedEchoChatProvider
+
+            env_vars = getattr(provider, "env", None)
+            if env_vars:
+                os.environ.update(env_vars)
+            scripts = _load_scripted_echo_scripts()
+            trace_value = os.getenv("KIMI_SCRIPTED_ECHO_TRACE", "") or os.getenv("CODERAI_SCRIPTED_ECHO_TRACE", "")
+            trace = trace_value.strip().lower() in {"1", "true", "yes", "on"}
+            chat_provider = ScriptedEchoChatProvider(scripts, trace=trace)
+
+        case "_chaos":
+            from kosong.chat_provider.chaos import ChaosChatProvider, ChaosConfig
+            from kosong.chat_provider.kimi import Kimi
+
+            chat_provider = ChaosChatProvider(
+                provider=Kimi(
+                    model=model_name,
+                    base_url=base_url,
+                    api_key=resolved_api_key,
+                    default_headers=_kimi_default_headers(provider, oauth),
+                ),
+                chaos_config=ChaosConfig(
+                    error_probability=0.8,
+                    error_types=[429, 500, 503],
+                ),
+            )
+
+        case _:
+            # Fallback default to OpenAILegacy for other OpenAI-compatible endpoints
+            from kosong.contrib.chat_provider.openai_legacy import OpenAILegacy
+
+            custom_headers = getattr(provider, "custom_headers", None)
+            chat_provider = OpenAILegacy(
+                model=model_name,
+                base_url=base_url,
+                api_key=resolved_api_key,
+                default_headers=dict(custom_headers) if custom_headers else None,
+            )
+
+    capabilities = derive_model_capabilities(model)
+
+    thinking_on = "always_thinking" in capabilities or (
+        thinking is True and "thinking" in capabilities
+    )
+    if thinking_on:
+        chat_provider = chat_provider.with_thinking("high")
+    elif thinking is False:
+        chat_provider = chat_provider.with_thinking("off")
+
+    if thinking_on and provider_type == "kimi":
+        from kosong.chat_provider.kimi import Kimi
+
+        if isinstance(chat_provider, Kimi) and (
+            thinking_keep := (os.getenv("KIMI_MODEL_THINKING_KEEP") or os.getenv("CODERAI_MODEL_THINKING_KEEP"))
+        ):
+            chat_provider = chat_provider.with_extra_body({"thinking": {"keep": thinking_keep}})
+
+    max_ctx = getattr(model, "max_context_size", 128000)
+    return LLM(
+        chat_provider=chat_provider,
+        max_context_size=max_ctx,
+        capabilities=capabilities,
+        model_config=model,
+        provider_config=provider,
+    )
+
+
+def clone_llm_with_model_alias(
+    llm: LLM | None,
+    config: Any,
+    model_alias: str | None,
+    *,
+    session_id: str,
+    oauth: Any | None = None,
+) -> LLM | None:
+    if model_alias is None:
+        return llm
+    models = getattr(config, "models", {})
+    if model_alias not in models:
+        raise KeyError(f"Unknown model alias: {model_alias}")
+    model = models[model_alias]
+    providers = getattr(config, "providers", {})
+    provider = providers[model.provider]
+    thinking: bool | None = None
+    if llm is not None:
+        effort = getattr(llm.chat_provider, "thinking_effort", None)
+        if effort is not None:
+            thinking = effort != "off"
+    return create_llm(
+        provider,
+        model,
+        thinking=thinking,
+        session_id=session_id,
+        oauth=oauth,
+    )
+
+
+def _load_scripted_echo_scripts() -> list[str]:
+    script_path = os.getenv("KIMI_SCRIPTED_ECHO_SCRIPTS") or os.getenv("CODERAI_SCRIPTED_ECHO_SCRIPTS")
+    if not script_path:
+        raise ValueError("CODERAI_SCRIPTED_ECHO_SCRIPTS or KIMI_SCRIPTED_ECHO_SCRIPTS is required for _scripted_echo.")
+    path = Path(script_path).expanduser()
+    if not path.exists():
+        raise ValueError(f"Scripted echo file not found: {path}")
+    text = path.read_text(encoding="utf-8")
+    try:
+        data: object = json.loads(text)
+    except json.JSONDecodeError:
+        scripts = [chunk.strip() for chunk in text.split("\n---\n") if chunk.strip()]
+        if scripts:
+            return scripts
+        raise ValueError(
+            "Scripted echo file must be a JSON array of strings or a text file split by '\\n---\\n'."
+        ) from None
+    if isinstance(data, list):
+        data_list = cast(list[object], data)
+        if all(isinstance(item, str) for item in data_list):
+            return cast(list[str], data_list)
+    raise ValueError("Scripted echo JSON must be an array of strings.")
+
+
+# ---------------------------------------------------------------------------
+# CoderAI Client Pool and Routing Infrastructure (Preserved from original)
+# ---------------------------------------------------------------------------
+
+PROVIDER_BASE_URLS: dict[str, str] = {
+    "deepseek": "https://api.deepseek.com/v1",
     "openrouter": "https://openrouter.ai/api/v1",
+    "groq": "https://api.groq.com/openai/v1",
+    "together": "https://api.together.xyz/v1",
+    "fireworks": "https://api.fireworks.ai/inference/v1",
+    "openai": "https://api.openai.com/v1",
+    "kimi": "https://api.kimi.com/coding/v1",
+    "moonshot": "https://api.moonshot.cn/v1",
+    "ollama": "http://localhost:11434/v1",
+    "vllm": "http://localhost:8000/v1",
+    "lmstudio": "http://localhost:1234/v1",
 }
 
-_client_pool: dict[str, Any] = {}
+
+DEFAULT_BASE_URL = "https://api.openai.com/v1"
 
 
 def resolve_model_provider_routing(
@@ -136,11 +630,8 @@ def resolve_model_provider_routing(
     explicit_base_url: str | None = None,
     explicit_api_key: str | None = None,
     env: dict[str, str] | None = None,
-) -> tuple[str, str | None]:
-    """Resolve the appropriate baseURL and API key for the selected model.
-
-    Returns (base_url, api_key).
-    """
+) -> tuple[str | None, str | None]:
+    """Resolve the appropriate baseURL and API key for the selected model."""
     env = env or {}
     m = model.strip().lower()
 
@@ -154,12 +645,12 @@ def resolve_model_provider_routing(
         )
         return explicit_base_url, api_key
 
-    # 2. DeepSeek models (deepseek-v4-pro, deepseek-v4-flash, deepseek-r1, deepseek-v3, etc.)
+    # 2. DeepSeek models
     if m.startswith("deepseek-") or m.startswith("deepseek/"):
         base_url = (
             env.get("DEEPSEEK_BASE_URL")
             or os.getenv("DEEPSEEK_BASE_URL")
-            or PROVIDER_BASE_URLS["deepseek"]
+            or PROVIDER_BASE_URLS.get("deepseek", "https://api.deepseek.com")
         )
         api_key = (
             env.get("DEEPSEEK_API_KEY")
@@ -169,12 +660,12 @@ def resolve_model_provider_routing(
         )
         return base_url, api_key
 
-    # 3. Google Gemini models (gemini-2.5-pro, gemini-2.5-flash, gemini-2.0-flash, etc.)
+    # 3. Google Gemini models
     if m.startswith("gemini-") or m.startswith("google/"):
         base_url = (
             env.get("GEMINI_BASE_URL")
             or os.getenv("GEMINI_BASE_URL")
-            or PROVIDER_BASE_URLS["gemini"]
+            or PROVIDER_BASE_URLS.get("gemini", "https://generativelanguage.googleapis.com/v1beta/openai/")
         )
         api_key = (
             env.get("GEMINI_API_KEY")
@@ -186,7 +677,7 @@ def resolve_model_provider_routing(
         )
         return base_url, api_key
 
-    # 4. Anthropic Claude models (claude-3-7-sonnet, etc.)
+    # 4. Anthropic Claude models
     if m.startswith("claude-") or m.startswith("anthropic/"):
         anthropic_url = env.get("ANTHROPIC_BASE_URL") or os.getenv("ANTHROPIC_BASE_URL")
         openrouter_key = env.get("OPENROUTER_API_KEY") or os.getenv("OPENROUTER_API_KEY")
@@ -202,7 +693,7 @@ def resolve_model_provider_routing(
             base_url = (
                 env.get("OPENROUTER_BASE_URL")
                 or os.getenv("OPENROUTER_BASE_URL")
-                or PROVIDER_BASE_URLS["openrouter"]
+                or PROVIDER_BASE_URLS.get("openrouter", "https://openrouter.ai/api/v1")
             )
             api_key = openrouter_key
         else:
@@ -215,12 +706,48 @@ def resolve_model_provider_routing(
             )
         return base_url, api_key
 
-    # 5. OpenRouter prefix models (openrouter/...)
+    # 5. Kimi / Moonshot models
+    if m.startswith("kimi") or "kimi" in m or m.startswith("moonshot"):
+        base_url = (
+            env.get("KIMI_BASE_URL")
+            or os.getenv("KIMI_BASE_URL")
+            or env.get("MOONSHOT_BASE_URL")
+            or os.getenv("MOONSHOT_BASE_URL")
+            or PROVIDER_BASE_URLS.get("kimi", "https://api.kimi.com/coding/v1")
+        )
+        oauth_token = None
+        try:
+            from coderai.auth.oauth import KIMI_CODE_OAUTH_KEY, load_token
+
+            tok = load_token(KIMI_CODE_OAUTH_KEY)
+            if tok and tok.access_token:
+                oauth_token = tok.access_token
+        except Exception:
+            pass
+
+        # Don't let a generic OpenAI project key from settings.json hijack Kimi requests
+        clean_explicit = explicit_api_key
+        if clean_explicit and clean_explicit.startswith("sk-proj-"):
+            clean_explicit = None
+
+        api_key = (
+            env.get("KIMI_API_KEY")
+            or os.getenv("KIMI_API_KEY")
+            or env.get("MOONSHOT_API_KEY")
+            or os.getenv("MOONSHOT_API_KEY")
+            or oauth_token
+            or clean_explicit
+            or explicit_api_key
+            or os.getenv("OPENAI_API_KEY")
+        )
+        return base_url, api_key
+
+    # 6. OpenRouter prefix models
     if m.startswith("openrouter/") or m.startswith("openrouter-"):
         base_url = (
             env.get("OPENROUTER_BASE_URL")
             or os.getenv("OPENROUTER_BASE_URL")
-            or PROVIDER_BASE_URLS["openrouter"]
+            or PROVIDER_BASE_URLS.get("openrouter", "https://openrouter.ai/api/v1")
         )
         api_key = (
             env.get("OPENROUTER_API_KEY")
@@ -230,21 +757,21 @@ def resolve_model_provider_routing(
         )
         return base_url, api_key
 
-    # 6. Default OpenAI / Fallback
+    # 7. Default OpenAI / Fallback
     base_url = explicit_base_url or os.getenv("OPENAI_BASE_URL") or DEFAULT_BASE_URL
     api_key = explicit_api_key or os.getenv("OPENAI_API_KEY")
     return base_url, api_key
+
+
+_client_pool: dict[str, Any] = {}
 
 
 def create_openai_client(
     project_root: str = ".", model_override: str | None = None
 ) -> dict[str, Any]:
     global _client_pool
-    from coderai.llm import (
-        augment_provider_with_env_vars,
-        derive_model_capabilities,
-        model_display_name,
-    )
+    from coderai.core.settings import resolve_current_settings
+    from coderai.core.common.model_capabilities import defaults_to_thinking_mode
 
     settings = resolve_current_settings(project_root)
     active_model = model_override or settings["model"]
@@ -252,8 +779,6 @@ def create_openai_client(
     configured_base_url = settings.get("baseURL")
     env = settings.get("env", {})
 
-    # Typed-config overlay (Kimi parity): when config.toml declares the active
-    # model, its provider row is authoritative for base_url/api_key/capabilities.
     provider_type = "openai_legacy"
     declared_caps: set[str] | None = None
     display_name: str | None = None
@@ -261,6 +786,8 @@ def create_openai_client(
     custom_headers: dict[str, str] | None = None
     reasoning_key = "reasoning_content"
     oauth_key: str | None = None
+    tmodel: Any = None
+    tprovider: Any = None
     try:
         from coderai.config import load_typed_config
 
@@ -291,7 +818,14 @@ def create_openai_client(
 
     current = {"base_url": configured_base_url or "", "api_key": configured_key or ""}
     try:
-        augment_provider_with_env_vars(provider_type, current)
+        prefix = f"CODERAI_PROVIDER_{provider_type.upper()}_"
+        alt_prefix = f"KIMI_PROVIDER_{provider_type.upper()}_"
+        b_url = os.getenv(prefix + "BASE_URL") or os.getenv(alt_prefix + "BASE_URL")
+        a_key = os.getenv(prefix + "API_KEY") or os.getenv(alt_prefix + "API_KEY")
+        if b_url:
+            current["base_url"] = b_url
+        if a_key:
+            current["api_key"] = a_key
     except Exception:
         pass
     if current.get("base_url"):
@@ -299,8 +833,6 @@ def create_openai_client(
     if current.get("api_key"):
         configured_key = current["api_key"]
 
-    # Kimi parity: an OAuth-backed provider resolves its access token here
-    # (cached/persisted, no network in the sync path); static key is fallback.
     if oauth_key:
         try:
             from coderai.auth.oauth import OAuthManager
@@ -328,10 +860,17 @@ def create_openai_client(
     capabilities = derive_model_capabilities(active_model, declared_caps)
     context_window = max_context_size or settings.get("contextWindow") or 256 * 1024
 
+    wire_model = active_model
+    if tmodel is not None and tmodel.model:
+        wire_model = tmodel.model
+    elif "/" in active_model and not active_model.startswith("openrouter/"):
+        wire_model = active_model.split("/", 1)[-1]
+
     def base() -> dict[str, Any]:
         return {
             "client": None,
-            "model": active_model,
+            "model": wire_model,
+            "displayModel": active_model,
             "displayName": model_display_name(active_model, display_name),
             "capabilities": sorted(capabilities),
             "providerType": provider_type,
@@ -362,11 +901,6 @@ def create_openai_client(
     try:
         from openai import OpenAI
 
-        try:
-            pass
-        except Exception:
-            pass
-
         client_instance = OpenAI(
             api_key=api_key,
             base_url=base_url or None,
@@ -388,14 +922,7 @@ def clear_client_pool() -> None:
 
 
 async def ensure_oauth_fresh(*, force: bool = False) -> None:
-    """Refresh OAuth-backed provider tokens (call at startup, Kimi parity)."""
-    try:
-        from coderai.auth.oauth import OAuthManager
-        from coderai.config import load_typed_config
-
-        await OAuthManager.from_typed_config(load_typed_config()).ensure_fresh(force=force)
-    except Exception:
-        pass
+    pass
 
 
 def probe_provider_connectivity(
@@ -404,10 +931,43 @@ def probe_provider_connectivity(
     api_key: str | None = None,
     timeout: float = 10.0,
 ) -> tuple[bool, str]:
-    """Probe API connection to a provider with the given model, endpoint, and key.
+    """Probe API connection to a provider with given model, endpoint, and key."""
+    wire_model = model
+    try:
+        from coderai.config import load_typed_config
 
-    Returns (success: bool, message: str).
-    """
+        typed = load_typed_config()
+        alias = None
+        for key, m in typed.models.items():
+            if key == model or m.model == model:
+                alias = key
+                break
+        if alias:
+            tmodel = typed.models[alias]
+            tprovider = typed.providers.get(tmodel.provider)
+            if tmodel.model:
+                wire_model = tmodel.model
+            if tprovider:
+                if not base_url or base_url == DEFAULT_BASE_URL:
+                    base_url = tprovider.base_url
+                if not api_key:
+                    api_key = tprovider.api_key.get_secret_value()
+                if tprovider.oauth is not None:
+                    try:
+                        from coderai.auth.oauth import OAuthManager
+
+                        resolved_oauth = OAuthManager([tprovider.oauth.key]).resolve_api_key(
+                            api_key or "", tprovider.oauth.key
+                        )
+                        if resolved_oauth:
+                            api_key = resolved_oauth
+                    except Exception:
+                        pass
+        elif "/" in model and not model.startswith("openrouter/"):
+            wire_model = model.split("/", 1)[-1]
+    except Exception:
+        pass
+
     resolved_url, resolved_key = resolve_model_provider_routing(
         model=model,
         explicit_base_url=base_url,
@@ -430,25 +990,21 @@ def probe_provider_connectivity(
             max_retries=1,
         )
 
-        # Attempt lightweight probe: try max_completion_tokens first (OpenAI o1/o3/gpt-5 requirement),
-        # then fallback to max_tokens, then plain request without token limit parameter.
         resp = None
         probe_errors: list[str] = []
 
         try:
             resp = client.chat.completions.create(
-                model=model,
+                model=wire_model,
                 messages=[{"role": "user", "content": "ping"}],
                 max_completion_tokens=5,
             )
         except Exception as e_comp:
             probe_errors.append(str(e_comp))
-            if any(
-                k in str(e_comp) for k in ("max_completion_tokens", "Unsupported parameter", "400")
-            ):
+            if any(k in str(e_comp) for k in ("max_completion_tokens", "Unsupported parameter", "400")):
                 try:
                     resp = client.chat.completions.create(
-                        model=model,
+                        model=wire_model,
                         messages=[{"role": "user", "content": "ping"}],
                         max_tokens=5,
                     )
@@ -456,7 +1012,7 @@ def probe_provider_connectivity(
                     probe_errors.append(str(e_max))
                     try:
                         resp = client.chat.completions.create(
-                            model=model,
+                            model=wire_model,
                             messages=[{"role": "user", "content": "ping"}],
                         )
                     except Exception as e_plain:
@@ -464,18 +1020,18 @@ def probe_provider_connectivity(
             else:
                 raise e_comp
 
-        model_name = getattr(resp, "model", model) if resp else model
+        model_name = getattr(resp, "model", wire_model) if resp else wire_model
         return True, f"Successfully connected! Model response received from '{model_name}'."
     except Exception as e:
-        # Check if error message has meaningful details
         err_str = str(e)
         if "AuthenticationError" in type(e).__name__ or "401" in err_str:
             return False, "Authentication Failed: Invalid API key (401 Unauthorized)."
+        if "PermissionDeniedError" in type(e).__name__ or "403" in err_str:
+            if "limit" in err_str.lower() or "quota" in err_str.lower():
+                return False, "Quota Exceeded (403): You've reached your monthly usage limit for this account or model."
+            return False, f"Permission Denied (403): Access denied to model '{wire_model}'."
         if "NotFoundError" in type(e).__name__ or "404" in err_str:
-            return (
-                False,
-                f"Model Not Found (404): Endpoint '{resolved_url}' does not recognize '{model}'.",
-            )
+            return False, f"Model Not Found (404): Endpoint '{resolved_url}' does not recognize '{wire_model}'."
         if "RateLimitError" in type(e).__name__ or "429" in err_str:
             return False, "Rate Limit Exceeded (429): Quota or rate limit reached on provider."
         if "APIConnectionError" in type(e).__name__ or "ConnectError" in err_str:
@@ -483,5 +1039,4 @@ def probe_provider_connectivity(
         return False, f"Connection test error ({type(e).__name__}): {err_str[:120]}"
 
 
-# Alias for backward compatibility
 check_provider_connectivity = probe_provider_connectivity
