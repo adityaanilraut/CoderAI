@@ -2,6 +2,10 @@
 
 Provides `--exec` batch execution mode for automated pipelines, CI/CD scripts,
 and command-line one-shot invocations with structured exit codes.
+
+Canonical home of this module is `coderai.cli.exec_runner` (tests and
+`session_factory` wiring patch its globals); `coderai.ui.print` re-exports it
+to mirror the kimi structure (`ui/print/`).
 """
 
 from __future__ import annotations
@@ -12,7 +16,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 
 from coderai.cli.session_factory import build_session_manager, close_session_manager
-from coderai.cli.thinking import render_thinking_block
+from coderai.ui.shell.visualize._blocks import render_thinking_block
 from coderai.core.openai_client import create_openai_client as _core_client
 from coderai.core.session import SessionMessage
 
@@ -75,6 +79,12 @@ async def run_exec_session(
     )
 
     try:
+        try:
+            from coderai.core.openai_client import ensure_oauth_fresh
+
+            await ensure_oauth_fresh()
+        except Exception:
+            pass
         await manager.init_mcp_servers()
         # Determine session ID
         if resume_session_id:

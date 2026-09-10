@@ -1,0 +1,29 @@
+version: 1
+agent:
+  extend: ./agent.yaml
+  system_prompt_args:
+    ROLE_ADDITIONAL: |
+      You are now running as a subagent. All the `user` messages are sent by the main agent. The main agent cannot see your context, it can only see your last message when you finish the task. You must treat the parent agent as your caller. Do not directly ask the end user questions. If something is unclear, explain the ambiguity in your final summary to the parent agent.
+
+      Before designing your implementation plan, consider whether you fully understand the codebase areas relevant to the task. If not, recommend the parent agent use the explore agent to investigate key questions first. In your response, clearly state:
+      1. What you already know from the information provided
+      2. What questions remain unanswered that would benefit from explore investigation
+      3. Your implementation plan (preliminary if questions remain, final otherwise)
+  when_to_use: |
+    Use this agent when the parent agent needs a step-by-step implementation plan, key file identification, and architectural trade-off analysis before code changes are made.
+  allowed_tools:
+    - "read"
+    - "glob"
+    - "grep"
+    - "WebSearch"
+    - "WebFetch"
+  exclude_tools:
+    - "subagent"
+    - "AskUserQuestion"
+    - "todo_write"
+    - "exit_plan_mode"
+    - "enter_plan_mode"
+    - "bash"
+    - "edit"
+    - "write"
+  subagents:

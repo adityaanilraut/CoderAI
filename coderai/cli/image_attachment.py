@@ -117,3 +117,57 @@ def parse_and_attach_image(
         "file_path": str(resolved),
     }
     return param, None
+
+
+def paste_clipboard_images(
+    project_root: str,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Grab images/files from the OS clipboard and build attach params.
+
+    Clipboard bitmaps are PNG-encoded in memory; clipboard file paths go
+    through :func:`parse_and_attach_image` (non-image files are skipped).
+    Returns ``(params, error_message)``; empty params with no error means
+    the clipboard held no attachable media.
+    """
+    from coderai.utils.clipboard import grab_media_from_clipboard
+
+    result = grab_media_from_clipboard()
+    if result is None:
+        return [], None
+
+    import io
+
+    params: list[dict[str, Any]] = []
+    for index, image in enumerate(result.images):
+        try:
+            buffer = io.BytesIO()
+            image.save(buffer, format="PNG")
+            data = buffer.getvalue()
+        except Exception as err:
+            return [], f"Failed to encode clipboard image {index + 1}: {err}"
+        if len(data) > MAX_IMAGE_BYTES:
+            mb = len(data) / (1024 * 1024)
+            return [], f"Clipboard image {index + 1} is too large ({mb:.1f}MB). Maximum is 20MB."
+        media_type = SUPPORTED_IMAGE_EXTENSIONS[".png"]
+        data_url = f"data:{media_type};base64,{base64.b64encode(data).decode('utf-8')}"
+        width, height = detect_image_dimensions(data, media_type)
+        params.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": data_url},
+                "name": f"clipboard-{index + 1}.png",
+                "bytes": len(data),
+                "media_type": media_type,
+                "width": width,
+                "height": height,
+                "file_path": None,
+            }
+        )
+
+    for path in result.file_paths:
+        param, error = parse_and_attach_image(str(path), project_root)
+        if error is not None:
+            continue
+        if param is not None:
+            params.append(param)
+    return params, None

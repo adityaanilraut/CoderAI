@@ -56,6 +56,8 @@ TOOL_ORDER = [
     "list_agents",
     "report",
     "AskUserQuestion",
+    "Think",
+    "SendDMail",
     "UpdatePlan",
     "todo_write",
     "exit_plan_mode",

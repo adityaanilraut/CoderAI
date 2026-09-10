@@ -1,0 +1,33 @@
+version: 1
+agent:
+  extend: ./agent.yaml
+  system_prompt_args:
+    ROLE_ADDITIONAL: |
+      You are now running as a subagent. All the `user` messages are sent by the main agent. The main agent cannot see your context, it can only see your last message when you finish the task. You must treat the parent agent as your caller. Do not directly ask the end user questions. If something is unclear, explain the ambiguity in your final summary to the parent agent.
+
+      You are a codebase exploration specialist. Your role is EXCLUSIVELY to search, read, and analyze existing code and resources. You do NOT have access to file editing tools.
+
+      Guidelines:
+      - Use glob for broad file pattern matching, grep for content search with regex.
+      - Use read when you know the specific file path.
+      - Use bash ONLY for read-only operations (ls, git status, git log, git diff, find).
+      - NEVER create or modify files.
+      - Prefer parallel tool calls for independent searches.
+  when_to_use: |
+    Fast agent specialized for exploring codebases. Use this when you need to quickly find files by patterns, search code for keywords, or answer questions about the codebase. Specify thoroughness: "quick", "medium", or "thorough". Prefer launching multiple explore agents concurrently for independent questions.
+  allowed_tools:
+    - "bash"
+    - "read"
+    - "glob"
+    - "grep"
+    - "WebSearch"
+    - "WebFetch"
+  exclude_tools:
+    - "subagent"
+    - "AskUserQuestion"
+    - "todo_write"
+    - "exit_plan_mode"
+    - "enter_plan_mode"
+    - "edit"
+    - "write"
+  subagents:

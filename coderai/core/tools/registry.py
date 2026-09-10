@@ -8,7 +8,9 @@ from collections.abc import Callable, Sequence
 from coderai.core.tools import ask_user_question as _ask
 from coderai.core.tools import agents as _agents
 from coderai.core.tools import bash as _bash
+from coderai.core.tools import dmail as _dmail
 from coderai.core.tools import edit as _edit
+from coderai.core.tools import think as _think
 from coderai.core.tools import jobs as _jobs
 from coderai.core.tools import lsp as _lsp
 from coderai.core.tools import plan_mode as _plan_mode
@@ -551,16 +553,28 @@ class ToolRegistry:
                         "type": "string",
                         "description": "Job id returned when the background work started.",
                     },
+                    "task_id": {
+                        "type": "string",
+                        "description": "Alias of job_id (Kimi TaskOutput parity).",
+                    },
                     "wait": {
                         "type": "boolean",
                         "description": "Block until the job reaches a terminal status or the timeout expires.",
+                    },
+                    "block": {
+                        "type": "boolean",
+                        "description": "Alias of wait (Kimi TaskOutput parity).",
                     },
                     "timeout_ms": {
                         "type": "number",
                         "description": "Max wait in milliseconds when wait is true (default 30000, cap 600000).",
                     },
+                    "timeout": {
+                        "type": "number",
+                        "description": "Max wait in seconds (Kimi TaskOutput parity; converted to ms).",
+                    },
                 },
-                required=["job_id"],
+                required=[],
                 handler=_jobs.handle_job_output_tool,
                 category="meta",
                 is_mutating=False,
@@ -954,6 +968,10 @@ class ToolRegistry:
                         "type": "string",
                         "description": "The complete, self-contained task for the subagent. It does not share this conversation's context, so include everything it needs.",
                     },
+                    "subagent_type": {
+                        "type": "string",
+                        "description": "Builtin agent flavor: coder (general engineering), explore (read-only research), plan (implementation planning).",
+                    },
                     "run_in_background": {
                         "type": "boolean",
                         "description": "Whether to run as a background job and return its job id (collect with job_output, stop with job_kill). Defaults to false.",
@@ -979,6 +997,10 @@ class ToolRegistry:
                         "type": "string",
                         "description": "Detailed instructions for the sub-agent.",
                     },
+                    "subagent_type": {
+                        "type": "string",
+                        "description": "Builtin agent flavor: coder, explore, or plan.",
+                    },
                     "run_in_background": {
                         "type": "boolean",
                         "description": "Whether to run in the background and return a durable subagent id immediately. Defaults to true. Set false to wait for the result when your next action depends on it.",
@@ -1003,6 +1025,10 @@ class ToolRegistry:
                     "prompt": {
                         "type": "string",
                         "description": "Detailed instructions for the sub-agent.",
+                    },
+                    "subagent_type": {
+                        "type": "string",
+                        "description": "Builtin agent flavor: coder, explore, or plan.",
                     },
                     "run_in_background": {
                         "type": "boolean",
@@ -1314,6 +1340,44 @@ class ToolRegistry:
         )
         self.register(
             define_tool(
+                name="Think",
+                description="Think about something without obtaining new information or changing state. Appends the thought to the log. Use for complex reasoning or scratch memory.",
+                parameters={
+                    "thought": {
+                        "type": "string",
+                        "description": "A thought to think about.",
+                    },
+                },
+                required=["thought"],
+                handler=_think.handle_think_tool,
+                category="meta",
+                is_mutating=False,
+                is_concurrency_safe=True,
+            )
+        )
+        self.register(
+            define_tool(
+                name="SendDMail",
+                description="Send a D-Mail: inject a time-leap directive into the running turn that the agent must obey immediately. El Psy Kongroo.",
+                parameters={
+                    "message": {
+                        "type": "string",
+                        "description": "The directive to inject into the running turn.",
+                    },
+                    "checkpoint_id": {
+                        "type": "integer",
+                        "description": "Checkpoint to steer back to (0 = latest). Validated against recorded checkpoints.",
+                    },
+                },
+                required=["message"],
+                handler=_dmail.handle_send_dmail_tool,
+                category="meta",
+                is_mutating=False,
+                is_concurrency_safe=False,
+            )
+        )
+        self.register(
+            define_tool(
                 name="exit_plan_mode",
                 description="Leave Plan Mode while mutation tools stay active.",
                 parameters={
@@ -1324,6 +1388,18 @@ class ToolRegistry:
                 },
                 required=[],
                 handler=_plan_mode.handle_exit_plan_mode_tool,
+                category="meta",
+                is_mutating=False,
+                is_concurrency_safe=False,
+            )
+        )
+        self.register(
+            define_tool(
+                name="enter_plan_mode",
+                description=_plan_mode.ENTER_PLAN_MODE_DESCRIPTION,
+                parameters={},
+                required=[],
+                handler=_plan_mode.handle_enter_plan_mode_tool,
                 category="meta",
                 is_mutating=False,
                 is_concurrency_safe=False,

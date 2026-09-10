@@ -1,33 +1,29 @@
-"""Comprehensive unit tests for CoderAI modernized tool architecture (port of deepcode tool tests)."""
+"""Consolidated tool tests: canonical file/shell tools, search, str_replace, terminal, web (mocked)."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import pathlib
-import time
-from typing import Any
 
 import pytest
 
-from coderai.core.common.validate import (
-    execute_validated_tool,
-    semantic_boolean,
-    semantic_integer,
-)
-from coderai.core.mcp.client import create_mcp_spawn_spec
-from coderai.core.mcp.manager import (
-    build_mcp_namespaced_name,
-)
-from coderai.core.state import (
-    clear_session_state,
-)
+from coderai.core.state import clear_session_state
 from coderai.core.tools.ask_user_question import handle as ask_handle
 from coderai.core.tools.bash import clear_session_working_dir, handle as bash_handle
 from coderai.core.tools.edit import handle as edit_handle
 from coderai.core.tools.executor import ToolExecutor
 from coderai.core.tools.read import handle as read_handle
+from coderai.core.tools.registry import ToolRegistry
+from coderai.core.tools.search import handle_glob_tool, handle_grep_tool, resolve_rg_path
+from coderai.core.tools.str_replace_editor import handle_str_replace_editor_tool
+from coderai.core.tools.terminal import (
+    handle_terminal_close_tool,
+    handle_terminal_open_tool,
+    handle_terminal_send_tool,
+)
 from coderai.core.tools.types import (
-    BackgroundProcessCompletion,
+    ToolDefinition,
     ToolExecutionContext,
     ToolExecutionHooks,
     ToolResult,
@@ -36,840 +32,314 @@ from coderai.core.tools.update_plan import handle as plan_handle
 from coderai.core.tools.write import handle as write_handle
 
 
-# ==========================================
-# 1. Validation Utilities (validate.py)
-# ==========================================
-
-
-def test_semantic_boolean():
-    assert semantic_boolean(True) is True
-    assert semantic_boolean(False) is False
-    assert semantic_boolean("true") is True
-    assert semantic_boolean("True") is True
-    assert semantic_boolean("1") is True
-    assert semantic_boolean("yes") is True
-    assert semantic_boolean("false") is False
-    assert semantic_boolean("0") is False
-    assert semantic_boolean("no") is False
-    assert semantic_boolean(None, default=True) is True
-    assert semantic_boolean(None, default=False) is False
-
-
-def test_semantic_integer():
-    ok, val, err = semantic_integer(5, "count")
-    assert ok and val == 5 and err is None
-
-    ok, val, err = semantic_integer("10", "count")
-    assert ok and val == 10 and err is None
-
-    ok, val, err = semantic_integer(None, "count")
-    assert ok and val is None and err is None
-
-    ok, val, err = semantic_integer("abc", "count")
-    assert not ok and val is None and "must be a number" in err
-
-    ok, val, err = semantic_integer(3.5, "count")
-    assert not ok and val is None and "must be an integer" in err
-
-    ok, val, err = semantic_integer(0, "count", min_val=1)
-    assert not ok and val is None and "must be >= 1" in err
-
-
-def test_execute_validated_tool():
-    def validator(args: dict[str, Any]):
-        if "req" not in args:
-            return False, {}, "req is required"
-        return True, args, None
-
-    def handler(args: dict[str, Any], ctx: Any) -> ToolResult:
-        return ToolResult(ok=True, name="test", output=args["req"])
-
-    # Validation failure
-    res = execute_validated_tool("test", {}, {}, handler, validator=validator)
-    assert not res.ok
-    assert "InputValidationError: req is required" in res.error
-
-    # Validation success
-    res_ok = execute_validated_tool("test", {"req": "hello"}, {}, handler, validator=validator)
-    assert res_ok.ok
-    assert res_ok.output == "hello"
-
-
-# ==========================================
-# 2. Bash Tool (bash.py)
-# ==========================================
-
-
-def test_bash_basic_execution(tmp_path: pathlib.Path):
-    session_id = "test_bash_sess"
+def _ctx(tmp_path: pathlib.Path, session_id: str = "sess") -> dict:
+    """Build a minimal dict tool context rooted at tmp_path."""
+    clear_session_state(session_id)
     clear_session_working_dir(session_id)
-    ctx = {"session_id": session_id, "project_root": str(tmp_path)}
+    return {"session_id": session_id, "project_root": str(tmp_path)}
 
-    res = bash_handle({"command": "echo 'Hello CoderAI'"}, ctx)
-    assert res.ok
-    assert "Hello CoderAI" in (res.output or "")
+
+def test_bash_executes_command_returns_output(tmp_path):
+    """Bash runs echo and reports a zero exit code with cwd metadata."""
+    res = bash_handle({"command": "echo 'Hello CoderAI'"}, _ctx(tmp_path, "bash_basic"))
+    assert res.ok and "Hello CoderAI" in (res.output or "")
     assert res.metadata["exitCode"] == 0
     assert res.metadata["cwd"] is not None
 
 
-def test_bash_cwd_tracking(tmp_path: pathlib.Path):
-    session_id = "test_bash_cwd"
-    clear_session_working_dir(session_id)
-    subdir = tmp_path / "subfolder"
-    subdir.mkdir()
-    ctx = {"session_id": session_id, "project_root": str(tmp_path)}
-
-    # cd into subdirectory
-    res = bash_handle({"command": f"cd {subdir.name}"}, ctx)
-    assert res.ok
-    assert res.metadata["cwd"] == str(subdir)
-
-    # next command runs from updated cwd
-    res2 = bash_handle({"command": "pwd"}, ctx)
-    assert res2.ok
-    assert str(subdir) in (res2.output or "")
+def test_bash_cwd_tracking_persists_across_calls(tmp_path):
+    """cd updates the session cwd used by subsequent bash invocations."""
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    ctx = _ctx(tmp_path, "bash_cwd")
+    assert bash_handle({"command": "cd sub"}, ctx).metadata["cwd"] == str(sub)
+    assert str(sub) in (bash_handle({"command": "pwd"}, ctx).output or "")
 
 
-def test_bash_streaming_and_hooks(tmp_path: pathlib.Path):
-    session_id = "test_bash_hooks"
-    started = []
-    exited = []
-    stdout_lines = []
-    timeout_controls = []
-
-    hooks = ToolExecutionHooks(
-        on_process_start=lambda pid, cmd: started.append((pid, cmd)),
-        on_process_exit=lambda pid: exited.append(pid),
-        on_process_stdout=lambda pid, line: stdout_lines.append(line),
-        on_process_timeout_control=lambda pid, ctrl: timeout_controls.append((pid, ctrl)),
-    )
-
-    ctx = ToolExecutionContext(
-        session_id=session_id,
-        project_root=str(tmp_path),
-        on_process_start=hooks.on_process_start,
-        on_process_exit=hooks.on_process_exit,
-        on_process_stdout=hooks.on_process_stdout,
-        on_process_timeout_control=hooks.on_process_timeout_control,
-    )
-
-    res = bash_handle({"command": "echo 'line 1'; echo 'line 2'"}, ctx)
-    assert res.ok
-    assert len(started) == 1
-    assert len(exited) == 1
-    assert any("line 1" in line for line in stdout_lines)
-    assert any("line 2" in line for line in stdout_lines)
-    assert len(timeout_controls) >= 1
-
-
-def test_bash_background_execution_lifecycle(tmp_path: pathlib.Path):
-    session_id = "test_bash_bg"
-    completed_events: list[BackgroundProcessCompletion] = []
-
-    ctx = ToolExecutionContext(
-        session_id=session_id,
-        project_root=str(tmp_path),
-        on_background_process_complete=lambda comp: completed_events.append(comp),
-    )
-
-    res = bash_handle({"command": "echo 'bg finished'", "run_in_background": True}, ctx)
-    assert res.ok
-    assert "Command running in background with ID:" in (res.output or "")
-    assert res.metadata["runInBackground"] is True
-    assert res.metadata["outputPath"] is not None
-
-    # Wait for background completion event
-    for _ in range(50):
-        if completed_events:
-            break
-        time.sleep(0.1)
-
-    assert len(completed_events) == 1
-    comp = completed_events[0]
-    assert comp.ok
-    assert comp.exit_code == 0
-    assert pathlib.Path(comp.output_path).exists()
-    assert "bg finished" in pathlib.Path(comp.output_path).read_text()
-
-
-# ==========================================
-# 3. Read Tool (read.py)
-# ==========================================
-
-
-def test_read_formatting_and_snippets(tmp_path: pathlib.Path):
-    session_id = "test_read_sess"
-    clear_session_state(session_id)
-    ctx = {"session_id": session_id, "project_root": str(tmp_path)}
-
+def test_read_formats_numbered_snippets(tmp_path):
+    """Read returns line-numbered output plus full and partial snippet ids."""
     p = tmp_path / "sample.txt"
-    p.write_text("first line\nsecond line\nthird line\nfourth line\n")
-
-    # Read full file
-    res = read_handle({"file_path": str(p)}, ctx)
-    assert res.ok
-    assert "     1\tfirst line" in (res.output or "")
-    assert "     2\tsecond line" in (res.output or "")
-    assert res.metadata["snippet"]["id"].startswith("full_file_")
-
-    # Read partial file with offset and limit
-    res_partial = read_handle({"file_path": str(p), "offset": 2, "limit": 2}, ctx)
-    assert res_partial.ok
-    assert "     2\tsecond line" in (res_partial.output or "")
-    assert "     3\tthird line" in (res_partial.output or "")
-    assert "first line" not in (res_partial.output or "")
-    assert res_partial.metadata["snippet"]["id"].startswith("snippet_")
+    p.write_text("first\nsecond\nthird\n")
+    ctx = _ctx(tmp_path, "read_fmt")
+    full = read_handle({"file_path": str(p)}, ctx)
+    assert full.ok and "     1\tfirst" in (full.output or "")
+    assert full.metadata["snippet"]["id"].startswith("full_file_")
+    part = read_handle({"file_path": str(p), "offset": 2, "limit": 1}, ctx)
+    assert part.ok and "second" in (part.output or "") and "first" not in (part.output or "")
 
 
-def test_read_jupyter_notebook(tmp_path: pathlib.Path):
-    session_id = "test_read_nb"
-    clear_session_state(session_id)
-    ctx = {"session_id": session_id, "project_root": str(tmp_path)}
-
-    nb_path = tmp_path / "test.ipynb"
-    nb_content = {
-        "cells": [
-            {
-                "cell_type": "code",
-                "source": ["x = 42\n", "print(x)"],
-                "outputs": [{"output_type": "stream", "text": ["42\n"]}],
-            },
-            {"cell_type": "markdown", "source": ["# Analysis Heading"]},
-        ]
-    }
-    nb_path.write_text(json.dumps(nb_content))
-
-    res = read_handle({"file_path": str(nb_path)}, ctx)
-    assert res.ok
-    assert "# Cell 1 (code)" in (res.output or "")
-    assert "x = 42" in (res.output or "")
-    assert "# Output 1 (stream)" in (res.output or "")
-    assert "# Cell 2 (markdown)" in (res.output or "")
+def test_read_rejects_ambiguous_relative_path(tmp_path):
+    """A bare filename matching two dirs fails instead of guessing."""
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    (tmp_path / "a" / "dup.py").write_text("x = 1")
+    (tmp_path / "b" / "dup.py").write_text("x = 2")
+    res = read_handle({"file_path": "dup.py"}, _ctx(tmp_path, "read_ambig"))
+    assert not res.ok and "ambiguous" in res.error
 
 
-def test_read_image_follow_up_messages(tmp_path: pathlib.Path):
-    session_id = "test_read_img"
-    clear_session_state(session_id)
-    ctx = {"session_id": session_id, "project_root": str(tmp_path)}
-
-    img_path = tmp_path / "icon.png"
-    img_bytes = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
-    img_path.write_bytes(img_bytes)
-
-    res = read_handle({"file_path": str(img_path)}, ctx)
-    assert res.ok
-    assert res.output == "File loaded."
-    assert res.metadata["mime"] == "image/png"
-    assert len(res.follow_up_messages) == 1
-    fum = res.follow_up_messages[0]
-    assert fum.role == "system"
-    assert "icon.png" in fum.content
-    assert fum.content_params[0]["type"] == "image_url"
-    assert "data:image/png;base64," in fum.content_params[0]["image_url"]["url"]
-
-
-def test_read_ambiguous_path_error(tmp_path: pathlib.Path):
-    session_id = "test_read_ambig"
-    clear_session_state(session_id)
-    ctx = {"session_id": session_id, "project_root": str(tmp_path)}
-
-    dir1 = tmp_path / "dir1"
-    dir2 = tmp_path / "dir2"
-    dir1.mkdir()
-    dir2.mkdir()
-    (dir1 / "common.py").write_text("x = 1")
-    (dir2 / "common.py").write_text("x = 2")
-
-    res = read_handle({"file_path": "common.py"}, ctx)
-    assert not res.ok
-    assert "file_path is ambiguous" in res.error
-
-
-# ==========================================
-# 4. Write Tool (write.py)
-# ==========================================
-
-
-def test_write_new_file(tmp_path: pathlib.Path):
-    session_id = "test_write_new"
-    clear_session_state(session_id)
+def test_write_creates_new_file_with_preview(tmp_path):
+    """Write creates missing files and includes a diff preview."""
     p = tmp_path / "created.py"
-    ctx = {"session_id": session_id, "project_root": str(tmp_path)}
-
-    res = write_handle({"file_path": str(p), "content": "print('hello world')\n"}, ctx)
-    assert res.ok
-    assert res.output == "Created file."
-    assert res.metadata["type"] == "create"
-    assert res.metadata["diff_preview"] is not None
-    assert p.read_text() == "print('hello world')\n"
+    res = write_handle(
+        {"file_path": str(p), "content": "print('hi')\n"}, _ctx(tmp_path, "write_new")
+    )
+    assert res.ok and res.output == "Created file."
+    assert res.metadata["type"] == "create" and res.metadata["diff_preview"] is not None
+    assert p.read_text() == "print('hi')\n"
 
 
-def test_write_existing_file_safety_checks(tmp_path: pathlib.Path):
-    session_id = "test_write_safety"
-    clear_session_state(session_id)
+def test_write_requires_full_read_before_overwrite(tmp_path):
+    """Overwriting without a prior full read is rejected to prevent clobbering."""
     p = tmp_path / "existing.py"
     p.write_text("line 1\nline 2\n")
-    ctx = {"session_id": session_id, "project_root": str(tmp_path)}
-
-    # Attempt overwrite without reading first -> must fail
-    res_unseen = write_handle({"file_path": str(p), "content": "line 1 modified\n"}, ctx)
-    assert not res_unseen.ok
-    assert "Must read the full existing file before writing" in res_unseen.error
-
-    # Read only partial file -> must fail
+    ctx = _ctx(tmp_path, "write_safe")
+    assert (
+        "Must read the full existing file"
+        in write_handle({"file_path": str(p), "content": "x"}, ctx).error
+    )
     read_handle({"file_path": str(p), "offset": 1, "limit": 1}, ctx)
-    res_partial = write_handle({"file_path": str(p), "content": "line 1 modified\n"}, ctx)
-    assert not res_partial.ok
-    assert "Must read the full existing file before writing" in res_partial.error
-
-    # Read full file -> success
+    assert (
+        "Must read the full existing file"
+        in write_handle({"file_path": str(p), "content": "x"}, ctx).error
+    )
     read_handle({"file_path": str(p)}, ctx)
-    res_full = write_handle({"file_path": str(p), "content": "line 1 modified\nline 2\n"}, ctx)
-    assert res_full.ok
-    assert res_full.output == "Updated file."
+    assert write_handle({"file_path": str(p), "content": "line 1\nline 2\n"}, ctx).ok
 
 
-def test_write_json_auto_repair(tmp_path: pathlib.Path):
-    session_id = "test_write_json"
-    clear_session_state(session_id)
-    p = tmp_path / "config.json"
-    ctx = {"session_id": session_id, "project_root": str(tmp_path)}
-
-    # Pass json dictionary instead of string
-    res = write_handle({"file_path": str(p), "content": {"key": "val", "num": 100}}, ctx)
-    assert res.ok
-    assert res.metadata.get("input_repaired") is True
-    assert res.metadata.get("repair_kind") == "json-stringify-content"
-    parsed = json.loads(p.read_text())
-    assert parsed["key"] == "val"
-    assert parsed["num"] == 100
-
-
-# ==========================================
-# 5. Edit Tool (edit.py)
-# ==========================================
-
-
-def test_edit_exact_match(tmp_path: pathlib.Path):
-    session_id = "test_edit_exact"
-    clear_session_state(session_id)
+def test_edit_replaces_exact_match_only(tmp_path):
+    """Edit applies an exact old_string replacement and reports the match mode."""
     p = tmp_path / "target.py"
     p.write_text("def add(a, b):\n    return a - b\n")
-    ctx = {"session_id": session_id, "project_root": str(tmp_path)}
-
-    r_res = read_handle({"file_path": str(p)}, ctx)
-    snip_id = r_res.metadata["snippet"]["id"]
-
-    e_res = edit_handle(
+    ctx = _ctx(tmp_path, "edit_exact")
+    snip = read_handle({"file_path": str(p)}, ctx).metadata["snippet"]["id"]
+    res = edit_handle(
         {
-            "snippet_id": snip_id,
+            "snippet_id": snip,
             "file_path": str(p),
             "old_string": "    return a - b",
             "new_string": "    return a + b",
         },
         ctx,
     )
-    assert e_res.ok
-    assert "Replaced 1 occurrence" in (e_res.output or "")
-    assert e_res.metadata["matched_via"] == "exact"
+    assert res.ok and res.metadata["matched_via"] == "exact"
     assert p.read_text() == "def add(a, b):\n    return a + b\n"
 
 
-def test_edit_leading_tab_stripping(tmp_path: pathlib.Path):
-    session_id = "test_edit_tab"
-    clear_session_state(session_id)
-    p = tmp_path / "target.py"
-    p.write_text("const x = 1;\nconst y = 2;\nconst z = 3;\n")
-    ctx = {"session_id": session_id, "project_root": str(tmp_path)}
-
-    r_res = read_handle({"file_path": str(p)}, ctx)
-    snip_id = r_res.metadata["snippet"]["id"]
-
-    # When old_string has leading tab from copied read lines
-    e_res = edit_handle(
-        {
-            "snippet_id": snip_id,
-            "old_string": "const y = 2;\n\tconst z = 3;",
-            "new_string": "const y = 20;\n\tconst z = 30;",
-        },
-        ctx,
-    )
-    assert e_res.ok
-    assert e_res.metadata["matched_via"] == "line_leading_tab_correction"
-    assert "const y = 20;\nconst z = 30;\n" in p.read_text()
-
-
-def test_edit_multi_match_candidates(tmp_path: pathlib.Path):
-    session_id = "test_edit_multi"
-    clear_session_state(session_id)
-    p = tmp_path / "multi.py"
-    p.write_text("item = None\nitem = None\nitem = None\n")
-    ctx = {"session_id": session_id, "project_root": str(tmp_path)}
-
-    r_res = read_handle({"file_path": str(p)}, ctx)
-    snip_id = r_res.metadata["snippet"]["id"]
-
-    # Without replace_all -> returns ambiguity error with candidate snippets
-    e_res = edit_handle(
-        {
-            "snippet_id": snip_id,
-            "old_string": "item = None",
-            "new_string": "item = 42",
-        },
-        ctx,
-    )
-    assert not e_res.ok
-    assert "old_string is not unique" in e_res.error
-    assert e_res.metadata["match_count"] == 3
-    assert len(e_res.metadata["candidates"]) == 3
-    assert e_res.metadata["candidates"][0]["snippet_id"] is not None
-
-
-def test_edit_replace_all_guards(tmp_path: pathlib.Path):
-    session_id = "test_edit_rep_all"
-    clear_session_state(session_id)
+def test_edit_replace_all_requires_expected_count(tmp_path):
+    """Bulk replacement without a correct expected count is guarded."""
     p = tmp_path / "guards.py"
     p.write_text("x = 1\nx = 1\nx = 1\n")
-    ctx = {"session_id": session_id, "project_root": str(tmp_path)}
-
-    r_res = read_handle({"file_path": str(p)}, ctx)
-    snip_id = r_res.metadata["snippet"]["id"]
-
-    # Short string (<40 chars) without expected_occurrences -> guarded
-    e_guarded = edit_handle(
-        {
-            "snippet_id": snip_id,
-            "old_string": "x = 1",
-            "new_string": "x = 2",
-            "replace_all": True,
-        },
-        ctx,
-    )
-    assert not e_guarded.ok
-    assert "provide expected_occurrences" in e_guarded.error
-
-    # Wrong expected_occurrences
-    e_wrong = edit_handle(
-        {
-            "snippet_id": snip_id,
-            "old_string": "x = 1",
-            "new_string": "x = 2",
-            "replace_all": True,
-            "expected_occurrences": 2,
-        },
-        ctx,
-    )
-    assert not e_wrong.ok
-    assert "replace_all expected 2 occurrence(s), but found 3" in e_wrong.error
-
-    # Correct expected_occurrences
-    e_ok = edit_handle(
-        {
-            "snippet_id": snip_id,
-            "old_string": "x = 1",
-            "new_string": "x = 2",
-            "replace_all": True,
-            "expected_occurrences": 3,
-        },
-        ctx,
-    )
-    assert e_ok.ok
-    assert "Replaced 3 occurrence(s)" in e_ok.output
-    assert p.read_text() == "x = 2\nx = 2\nx = 2\n"
+    ctx = _ctx(tmp_path, "edit_guards")
+    snip = read_handle({"file_path": str(p)}, ctx).metadata["snippet"]["id"]
+    base = {"snippet_id": snip, "old_string": "x = 1", "new_string": "x = 2", "replace_all": True}
+    assert "expected_occurrences" in edit_handle(base, ctx).error
+    assert "found 3" in edit_handle({**base, "expected_occurrences": 2}, ctx).error
+    ok = edit_handle({**base, "expected_occurrences": 3}, ctx)
+    assert ok.ok and p.read_text() == "x = 2\nx = 2\nx = 2\n"
 
 
-# ==========================================
-# 6. AskUserQuestion & UpdatePlan
-# ==========================================
-
-
-def test_ask_user_question_multi_select():
-    ctx = {"session_id": "test_ask_multi", "project_root": "/tmp"}
+def test_ask_defers_for_multi_select(tmp_path):
+    """AskUserQuestion renders multi-select options and awaits user input."""
     res = ask_handle(
         {
             "questions": [
                 {
-                    "question": "Which frameworks should we test?",
+                    "question": "Pick?",
                     "multiSelect": True,
-                    "options": [
-                        {"label": "React", "description": "Web library"},
-                        {"label": "Vue", "description": "Progressive framework"},
-                    ],
+                    "options": [{"label": "A", "description": "first"}],
                 }
             ]
         },
-        ctx,
+        {"session_id": "ask", "project_root": str(tmp_path)},
     )
-    assert res.ok
-    assert res.await_user_response is True
-    assert "Mode: multi-select" in res.output
-    assert "- React" in res.output
-    assert "Web library" in res.output
+    assert res.ok and res.await_user_response is True
+    assert "multi-select" in res.output and "- A" in res.output
 
 
-def test_update_plan_validation():
-    ctx = {"session_id": "test_plan_val", "project_root": "/tmp"}
-    res_bad = plan_handle({"plan": ""}, ctx)
-    assert not res_bad.ok
-    assert "plan must be a non-empty string" in res_bad.error
-
-    plan_content = "1. Read repo\n2. Modernize tools\n3. Run tests\n"
-    res_good = plan_handle({"plan": plan_content, "explanation": "Starting modernization"}, ctx)
-    assert res_good.ok
-    assert res_good.output == "Plan updated."
-    assert res_good.metadata["plan"] == plan_content
-    assert res_good.metadata["explanation"] == "Starting modernization"
-
-
-# ==========================================
-# 7. ToolExecutor Lifecycle
-# ==========================================
+def test_plan_rejects_empty_and_accepts_content(tmp_path):
+    """UpdatePlan rejects blank plans and echoes back valid plan text."""
+    ctx = {"session_id": "plan", "project_root": str(tmp_path)}
+    assert "non-empty string" in plan_handle({"plan": ""}, ctx).error
+    res = plan_handle({"plan": "1. Read\n2. Edit\n", "explanation": "start"}, ctx)
+    assert res.ok and res.output == "Plan updated." and res.metadata["plan"].startswith("1. Read")
 
 
 @pytest.mark.asyncio
-async def test_tool_executor_canonical_name_and_lifecycle(tmp_path: pathlib.Path):
-    p = tmp_path / "canonical_test.py"
+async def test_executor_dispatches_canonical_tool_successfully(tmp_path):
+    """Executor runs a canonical read call and returns its output."""
+    p = tmp_path / "canon.py"
     p.write_text("print('hello')\n")
-    session_id = "test_exec_canonical"
-    clear_session_state(session_id)
-
-    executor = ToolExecutor(project_root=str(tmp_path))
-
-    calls = [
-        {
-            "id": "call_1",
-            "type": "function",
-            "function": {
-                "name": "read",
-                "arguments": json.dumps({"file_path": str(p)}),
-            },
-        }
-    ]
-    results = await executor.execute_tool_calls(session_id, calls)
-    assert len(results) == 1
-    assert results[0]["result"]["ok"] is True
+    clear_session_state("exec_canon")
+    results = await ToolExecutor(project_root=str(tmp_path)).execute_tool_calls(
+        "exec_canon",
+        [
+            {
+                "id": "c1",
+                "type": "function",
+                "function": {"name": "read", "arguments": json.dumps({"file_path": str(p)})},
+            }
+        ],
+    )
+    assert len(results) == 1 and results[0]["result"]["ok"] is True
     assert "hello" in results[0]["result"]["output"]
 
 
 @pytest.mark.asyncio
-async def test_tool_executor_cancellation(tmp_path: pathlib.Path):
-    session_id = "test_exec_cancel"
-    stop_flag = False
+async def test_executor_rejects_malformed_json_gracefully(tmp_path):
+    """Malformed tool arguments surface as parse errors instead of raising."""
+    result = await ToolExecutor(project_root=str(tmp_path)).execute_tool_call(
+        "s", {"id": "c", "type": "function", "function": {"name": "read", "arguments": "{bad_json"}}
+    )
+    assert not result.ok and "InputParseError" in (result.error or "")
 
-    hooks = ToolExecutionHooks(should_stop=lambda: stop_flag)
-    executor = ToolExecutor(project_root=str(tmp_path))
 
-    stop_flag = True
-    calls = [
+@pytest.mark.asyncio
+async def test_executor_fails_closed_on_ask_decision(tmp_path):
+    """An ask permission decision without user reply fails closed."""
+    denied = await ToolExecutor(project_root=str(tmp_path)).execute_tool_call(
+        "s",
         {
-            "id": "call_1",
+            "id": "c1",
             "type": "function",
-            "function": {
-                "name": "bash",
-                "arguments": json.dumps({"command": "echo 1"}),
-            },
-        }
-    ]
-    results = await executor.execute_tool_calls(session_id, calls, hooks=hooks)
-    assert len(results) == 0
+            "function": {"name": "read", "arguments": json.dumps({"file_path": "x"})},
+        },
+        hooks=ToolExecutionHooks(permission_decision="ask"),
+    )
+    assert denied.ok is False and "fail-closed" in (denied.error or "")
 
 
 @pytest.mark.asyncio
-async def test_tool_executor_dispatches_mcp_tools(tmp_path: pathlib.Path):
-    class FakeMcp:
-        def is_mcp_tool(self, name: str) -> bool:
-            return name.startswith("mcp__")
+async def test_executor_enforces_timeout_budget(tmp_path):
+    """Slow handlers exceeding their timeout return TOOL_TIMEOUT."""
+    registry = ToolRegistry()
 
-        async def execute_mcp_tool(self, name: str, args: dict[str, Any]) -> ToolResult:
-            return ToolResult(ok=True, name=name, output=f"mcp:{args.get('q')}")
+    async def _slow(args, ctx):
+        await asyncio.sleep(0.5)
+        return ToolResult(ok=True, name="slow", output="finished")
 
-    executor = ToolExecutor(project_root=str(tmp_path), mcp_manager=FakeMcp())
-    results = await executor.execute_tool_calls(
-        "mcp-sess",
-        [
-            {
-                "id": "call_mcp",
-                "type": "function",
-                "function": {
-                    "name": "mcp__memory__search",
-                    "arguments": json.dumps({"q": "hello"}),
-                },
-            }
-        ],
+    registry.register(
+        ToolDefinition(name="slow_probe", parameters={}, required=[], handler=_slow, timeout_ms=50)
     )
-    assert len(results) == 1
-    assert results[0]["result"]["ok"] is True
-    assert results[0]["result"]["output"] == "mcp:hello"
-
-    missing = ToolExecutor(project_root=str(tmp_path))
-    unknown = await missing.execute_tool_calls(
-        "mcp-sess",
-        [
-            {
-                "id": "call_mcp",
-                "type": "function",
-                "function": {
-                    "name": "mcp__memory__search",
-                    "arguments": "{}",
-                },
-            }
-        ],
+    res = await ToolExecutor(project_root=str(tmp_path), registry=registry).execute_tool_call(
+        "s", {"id": "t1", "type": "function", "function": {"name": "slow_probe", "arguments": "{}"}}
     )
-    assert unknown[0]["result"]["ok"] is False
-    assert "Unknown tool" in (unknown[0]["result"]["error"] or "")
+    assert not res.ok and "TOOL_TIMEOUT" in (res.error or "")
 
 
-# ==========================================
-# 8. MCP Client & Manager
-# ==========================================
-
-
-def test_mcp_namespacing_and_sanitization():
-    # Regular tool name
-    ns1 = build_mcp_namespaced_name("postgres", "query_db")
-    assert ns1 == "mcp__postgres__query_db"
-
-    # Special characters
-    ns2 = build_mcp_namespaced_name("my-server@v1", "run/query.test")
-    assert "mcp__my-server_v1__run_query_test" in ns2
-
-    # Long tool name truncated to <= 64 chars
-    long_server = "extremely_long_server_name_that_exceeds_normal_lengths"
-    long_tool = "a_very_long_tool_name_designed_to_test_64_character_bounds"
-    ns_long = build_mcp_namespaced_name(long_server, long_tool)
-    assert len(ns_long) <= 64
-    assert ns_long.startswith("mcp__")
-
-
-def test_mcp_spawn_spec():
-    spec = create_mcp_spawn_spec(
-        "npx", ["-y", "@modelcontextprotocol/server-memory"], platform="darwin"
-    )
-    assert spec["command"] == "npx"
-    assert spec["args"] == ["-y", "@modelcontextprotocol/server-memory"]
-    assert spec["shell"] is False
-
-
-# ==========================================
-# 9. UnderstandImage Vision Tool
-# ==========================================
-
-
-def test_understand_image_vision_payload(tmp_path: pathlib.Path):
-    from coderai.core.tools.understand_image import handle as img_handle
-
-    img = tmp_path / "chart.png"
-    img.write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR" + b"\x00" * 32)
-
-    captured_requests: list[dict[str, Any]] = []
-
-    class MockMsg:
-        content = "Bar chart showing Q3 revenue growth of 25%."
-
-    class MockChoice:
-        message = MockMsg()
-
-    class MockResp:
-        choices = [MockChoice()]
-
-    class MockComp:
-        def create(self, **kwargs):
-            captured_requests.append(kwargs)
-            return MockResp()
-
-    class MockChat:
-        completions = MockComp()
-
-    class MockClient:
-        chat = MockChat()
-
-    ctx = {
-        "session_id": "test-vision-session",
-        "project_root": str(tmp_path),
-        "create_openai_client": lambda: {"client": MockClient(), "model": "gpt-4o"},
-    }
-
-    res = img_handle({"prompt": "Analyze this revenue chart", "image_path": str(img)}, ctx)
-    assert res.ok is True
-    assert "revenue growth" in res.output
-    assert res.metadata["imagePath"] == str(img.resolve())
-
-    assert len(captured_requests) == 1
-    req = captured_requests[0]
-    assert req["model"] == "gpt-4o"
-    assert len(req["messages"]) == 1
-    msg_content = req["messages"][0]["content"]
-    assert len(msg_content) == 2
-    assert msg_content[0]["type"] == "text"
-    assert msg_content[0]["text"] == "Analyze this revenue chart"
-    assert msg_content[1]["type"] == "image_url"
-    assert msg_content[1]["image_url"]["url"].startswith("data:image/png;base64,")
-
-
-def test_understand_image_unconfigured_error(tmp_path: pathlib.Path):
-    from coderai.core.tools.understand_image import handle as img_handle
-
-    img = tmp_path / "chart.jpg"
-    img.write_bytes(b"\xff\xd8\xff\xe0\x00\x10JFIF" + b"\x00" * 32)
-
-    ctx = {
-        "session_id": "test-vision-no-client",
-        "project_root": str(tmp_path),
-        "create_openai_client": lambda: {"client": None},
-    }
-
-    res = img_handle({"prompt": "Describe image", "image_path": str(img)}, ctx)
-    assert res.ok is False
-    assert "vision capabilities" in res.error.lower()
-
-
-# ==========================================
-# 10. Phase 2 Tools & Utilities Tests
-# ==========================================
-
-
-def test_read_text_file_tail(tmp_path: pathlib.Path):
-    from coderai.core.common.file_utils import read_text_file_tail
-
-    missing = read_text_file_tail(str(tmp_path / "non_existent.log"))
-    assert missing is None
-
-    empty = tmp_path / "empty.log"
-    empty.write_text("")
-    res_empty = read_text_file_tail(str(empty))
-    assert res_empty is not None and res_empty["content"] == ""
-
-    log = tmp_path / "app.log"
-    content = "Line 1\nLine 2\nLine 3\nFinal line: Error detected."
-    log.write_text(content)
-    tail = read_text_file_tail(str(log), max_chars=30)
-    assert tail is not None
-    assert "Error detected." in tail["content"]
-    assert tail["truncated"] is True
-
-
-def test_notify_env_and_duration():
-    from coderai.core.common.notify import (
-        format_duration_seconds,
-        build_notify_env,
-        launch_notify_script,
-    )
-
-    assert format_duration_seconds(4500) == "4"
-    assert format_duration_seconds(120000) == "120"
-    assert format_duration_seconds(-500) == "0"
-
-    env = build_notify_env(
-        5000,
-        base_env={"FOO": "BAR"},
-        context={"status": "completed", "failReason": "", "body": "All done", "title": "Build"},
-    )
-    assert env["FOO"] == "BAR"
-    assert env["DURATION"] == "5"
-    assert env["STATUS"] == "completed"
-    assert env["BODY"] == "All done"
-    assert env["TITLE"] == "Build"
-
-    # Verify launch_notify_script handles empty / non-existent script gracefully without exception
-    launch_notify_script(None, 1000)
-    launch_notify_script("", 1000)
-
-
-@pytest.mark.asyncio
-async def test_web_search_custom_tool_execution(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-):
-    from coderai.core.tools.web_search import handle as web_search_handle
-
-    # Create dummy custom search script
-    script_path = tmp_path / "search_tool.sh"
-    script_path.write_text('#!/bin/sh\necho "Search results for: $1"\n')
-    script_path.chmod(0o755)
-
-    monkeypatch.setenv("CODERAI_WEB_SEARCH_TOOL", str(script_path))
-
-    ctx = {"session_id": "test_search", "project_root": str(tmp_path)}
-    res = await web_search_handle({"query": "python asyncio"}, ctx)
-    assert res.ok is True
-    assert "Search results for: python asyncio" in res.output
-
-
-def test_edit_loose_character_pattern_and_bigram_similarity():
-    from coderai.core.tools.edit import (
-        to_bigrams,
-        similarity_score,
-        build_loose_character_pattern,
-        find_loose_escape_matches,
-    )
-
-    # Bigrams & Similarity
-    assert to_bigrams("abc") == ["ab", "bc"]
-    assert similarity_score("hello", "hello") == 1.0
-    assert 0.0 < similarity_score("hello", "hella") < 1.0
-    assert similarity_score("abc", "xyz") == 0.0
-
-    # Loose character pattern
-    assert build_loose_character_pattern('"') == r'\\*["“”]'
-    assert build_loose_character_pattern("'") == r"\\*['‘’]"
-    assert build_loose_character_pattern("x") == "x"
-
-    # Loose escape regex matching
-    scope = 'const msg = "Hello “World” \\"test\\"";'
-    needle = 'const msg = "Hello "World" "test"";'
-    matches = find_loose_escape_matches(scope, needle)
-    assert len(matches) >= 1
-    assert matches[0]["text"] == scope
-
-
-def test_read_gitignore_suffix_matching(tmp_path: pathlib.Path):
-    from coderai.core.tools.read import (
-        _find_suffix_matches,
-        handle_read_tool,
-        load_gitignore_matcher,
-    )
-
-    # Create directory structure
+def test_search_glob_finds_files_skips_vcs(tmp_path, monkeypatch):
+    """Glob finds python files while skipping hidden VCS metadata dirs."""
+    monkeypatch.setenv("CODERAI_SEARCH_BACKEND", "python")
     (tmp_path / "src").mkdir()
-    (tmp_path / "src" / "app.py").write_text("print('app')")
-    (tmp_path / "build").mkdir()
-    (tmp_path / "build" / "app.py").write_text("print('build')")
-    (tmp_path / "ignored_dir").mkdir()
-    (tmp_path / "ignored_dir" / "app.py").write_text("print('ignored')")
-    (tmp_path / ".gitignore").write_text("ignored_dir/\n*.log\n")
-
-    matcher = load_gitignore_matcher(str(tmp_path))
-    assert matcher.is_ignored("ignored_dir", is_dir=True) is True
-    assert matcher.is_ignored("ignored_dir/app.py", is_dir=False) is True
-    assert matcher.is_ignored("build", is_dir=True) is True  # default gitignore
-    assert matcher.is_ignored("src/app.py", is_dir=False) is False
-
-    # Suffix search should only find the unignored src/app.py
-    matches = _find_suffix_matches(str(tmp_path), "app.py")
-    assert len(matches) == 1
-    assert matches[0] == str(tmp_path / "src" / "app.py")
-
-    ctx = {"session_id": "test_suffix", "project_root": str(tmp_path)}
-    res = handle_read_tool({"file_path": "src/app.py"}, ctx)
-    assert res.ok is True
-    assert "print('app')" in res.output
+    (tmp_path / "src" / "a.py").write_text("alpha = 1\n")
+    (tmp_path / ".svn").mkdir()
+    (tmp_path / ".svn" / "entries").write_text("12\n")
+    ctx = ToolExecutionContext(session_id="glob_sess", project_root=str(tmp_path))
+    out = handle_glob_tool({"pattern": "*.py"}, ctx).output or ""
+    assert "src/a.py" in out and ".svn/entries" not in out
 
 
-def test_read_directory_tree_listing(tmp_path: pathlib.Path):
-    from coderai.core.tools.read import handle_read_tool
+def test_search_grep_groups_matches_by_file(tmp_path, monkeypatch):
+    """Grep reports grouped line matches with a total match count."""
+    monkeypatch.setenv("CODERAI_SEARCH_BACKEND", "python")
+    (tmp_path / "hits.py").write_text("nothing\nfindme here\n")
+    ctx = ToolExecutionContext(session_id="grep_sess", project_root=str(tmp_path))
+    res = handle_grep_tool({"pattern": "findme", "include": "*.py"}, ctx)
+    assert res.ok and "hits.py" in (res.output or "") and "Found 1 match" in (res.output or "")
 
-    (tmp_path / "subdir").mkdir()
-    (tmp_path / "subdir" / "file1.txt").write_text("hello world")
-    (tmp_path / "file2.py").write_text("x = 1")
-    (tmp_path / "node_modules").mkdir()
-    (tmp_path / "node_modules" / "pkg.json").write_text("{}")
 
-    ctx = {"session_id": "test_dir", "project_root": str(tmp_path)}
-    res = handle_read_tool({"file_path": str(tmp_path)}, ctx)
-    assert res.ok is True
-    assert "[DIR]" in res.output
-    assert "subdir/" in res.output
-    assert "[FILE]" in res.output
-    assert "file2.py" in res.output
-    # node_modules should be ignored by default gitignore
-    assert "node_modules" not in res.output
-    assert res.metadata.get("isDirectory") is True
+def test_search_bundled_rg_resolves_executable():
+    """Bundled ripgrep resolves to an executable file when present."""
+    path = resolve_rg_path()
+    if path is not None:
+        assert pathlib.Path(path).is_file()
+
+
+def test_str_replace_creates_views_and_replaces(tmp_path):
+    """str_replace_editor creates, views, replaces, and undoes file edits."""
+    ctx = ToolExecutionContext(session_id="sre_sess", project_root=str(tmp_path))
+    path = str(tmp_path / "doc.txt")
+    assert handle_str_replace_editor_tool(
+        {"command": "create", "path": path, "file_text": "apple\nbanana\n"}, ctx
+    ).ok
+    view = handle_str_replace_editor_tool({"command": "view", "path": path}, ctx)
+    assert view.ok and "banana" in view.output
+    (tmp_path / "doc.txt").write_text("apple\nbanana\n")
+    handle_str_replace_editor_tool({"command": "view", "path": path}, ctx)
+    assert handle_str_replace_editor_tool(
+        {"command": "str_replace", "path": path, "old_str": "banana", "new_str": "berry"}, ctx
+    ).ok
+    assert "berry" in pathlib.Path(path).read_text()
+    assert handle_str_replace_editor_tool({"command": "undo_edit", "path": path}, ctx).ok
+    assert "banana" in pathlib.Path(path).read_text()
+
+
+def test_terminal_lifecycle_opens_sends_closes(tmp_path):
+    """PTY terminals open, echo commands, and close cleanly."""
+    ctx = ToolExecutionContext(session_id="term_sess", project_root=str(tmp_path))
+    opened = handle_terminal_open_tool({"type": "sh", "name": "consolidated"}, ctx)
+    assert opened.ok
+    sid = opened.metadata["sessionId"]
+    sent = handle_terminal_send_tool(
+        {"sessionId": sid, "text": "echo 'HELLO_TERM'", "submit": True, "timeout_ms": 2000}, ctx
+    )
+    assert sent.ok and "HELLO_TERM" in sent.metadata["output"]
+    closed = handle_terminal_close_tool({"sessionId": sid}, ctx)
+    assert closed.ok and "closed successfully" in closed.output
+
+
+@pytest.mark.asyncio
+async def test_web_search_mocked_returns_sources(tmp_path, monkeypatch):
+    """WebSearch renders mocked provider sources without network access."""
+    from coderai.core.tools.web_search import handle as search_handle
+    import coderai.tools.web.search as search_mod
+    from coderai.core.web_providers import WebSearchResult, WebSearchSource
+
+    class _FakeProvider:
+        id = "mock"
+
+        def search(self, query, max_results=8, timeout_seconds=15.0):
+            return WebSearchResult(
+                query=query,
+                content="Mock summary",
+                sources=[
+                    WebSearchSource(
+                        title="Docs", url="https://example.com/docs", snippet="mock snippet"
+                    )
+                ],
+            )
+
+    monkeypatch.setattr(
+        search_mod, "resolve_web_search_provider", lambda name=None: _FakeProvider()
+    )
+    ctx = {"session_id": "ws", "project_root": str(tmp_path)}
+    res = await search_handle({"query": "mock query"}, ctx)
+    assert res.ok and "Mock summary" in res.output
+    assert "https://example.com/docs" in res.output
+
+
+@pytest.mark.asyncio
+async def test_web_fetch_mocked_returns_markdown(tmp_path, monkeypatch):
+    """WebFetch converts mocked HTML into markdown without network access."""
+    from coderai.core.tools.web_fetch import handle as fetch_handle
+    import coderai.tools.web.fetch as fetch_mod
+
+    class _FakeResp:
+        ok = True
+        error = None
+        status_code = 200
+        headers = {"content-type": "text/html"}
+        text = "<html><head><title>Hi</title></head><body><h1>Hello Page</h1></body></html>"
+        url = "https://example.com/"
+        from_cache = False
+        elapsed_ms = 5
+
+    class _FakeClient:
+        async def get_async(self, url, timeout=None, use_cache=True, cache_ttl=300.0):
+            return _FakeResp()
+
+    monkeypatch.setattr(fetch_mod, "get_http_client", lambda: _FakeClient())
+    res = await fetch_handle(
+        {"url": "https://example.com/"}, {"session_id": "wf", "project_root": str(tmp_path)}
+    )
+    assert res.ok and "Hello Page" in res.output

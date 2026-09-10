@@ -284,6 +284,19 @@ When running `coderai`, you enter an interactive REPL featuring an ASCII banner,
 | `/thinking [mode]`     | Toggle reasoning traces between full trace and concise summary                        |
 | `/raw [mode]`          | Alias of `/thinking` for lite / normal / raw-scrollback display                       |
 | `/clear`               | Clear terminal screen and refresh prompt status                                       |
+| `/login` / `/logout`   | Log in (platform + key + model) / log out (clear credentials)                         |
+| `/version`             | Show CLI version                                                                      |
+| `/changelog`           | Show recent changelog (`/release-notes`)                                              |
+| `/feedback [text]`     | Submit feedback (falls back to GitHub Issues)                                         |
+| `/reload`              | Reload configuration without exiting                                                  |
+| `/debug`               | Context debug info (messages/tokens/checkpoints/history)                              |
+| `/usage`               | API usage / quota with progress bar (`/status`, `/quota`)                             |
+| `/hooks`               | Show configured hooks                                                                 |
+| `/task`                | Interactive background-task browser (list/detail/output)                              |
+| `/web [port]`          | Open current session in Web UI (snapshot preview)                                     |
+| `/vis`                 | Open agent tracing visualizer                                                         |
+| `/upgrade`             | Upgrade coderai-agent via pip                                                         |
+| `/skill:<name>`        | Load a skill via colon syntax (args passthrough)                                      |
 | `/help`, `/?`          | Display categorized interactive command help menu                                     |
 | `/exit`, `/quit`       | Exit session and display the exit summary card                                        |
 
@@ -334,7 +347,9 @@ CoderAI provides a rich, versatile tool surface:
 | **`WebSearch` / `WebFetch`**               | Web          | Live web search and URL fetching with SSRF protection and Markdown conversion.                                                                 |
 | **`UnderstandImage`**                      | Media        | Image understanding for local visual assets.                                                                                                   |
 | **`AskUserQuestion`**                      | User         | Interactive questionnaires and user decision modals.                                                                                           |
-| **`skill`**                                | Skills       | Loads discovered workspace skills (`SKILL.md`).                                                                                                |
+| **`Think`**                                | Reasoning    | Scratch-pad reasoning notes appended to the log (no I/O).                                                                                     |
+| **`SendDMail`**                            | Steering     | Inject a directive into the running turn (time-leap steering).                                                                                 |
+| **`skill`**                                | Skills       | Loads discovered workspace skills (`SKILL.md`; `/skill:<name>` colon syntax).                                                                  |
 
 ---
 

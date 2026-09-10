@@ -237,6 +237,7 @@ class SseMcpTransport(McpTransport):
         self._running = False
         self._disconnected = False
         self._loop: asyncio.AbstractEventLoop | None = None
+        self.last_http_status: int | None = None
 
     def is_connected(self) -> bool:
         return self._running and not self._disconnected
@@ -259,6 +260,7 @@ class SseMcpTransport(McpTransport):
                 assert self._session is not None
                 self._response = self._session.get(self.url, stream=True, timeout=(timeout_s, None))
                 response = self._response
+                self.last_http_status = response.status_code
                 if not response.ok:
                     if not endpoint_ready.is_set():
                         if self._loop:

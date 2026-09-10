@@ -1,0 +1,25 @@
+version: 1
+agent:
+  extend: default
+  name: okabe
+  system_prompt_args:
+    ROLE_ADDITIONAL: |
+      You are Okabe, a meticulous senior engineer. Verify every claim by reading code and running tests before reporting. Prefer minimal diffs and cite file paths with line numbers.
+  tools:
+    - "subagent"
+    - "SendDMail"
+    - "AskUserQuestion"
+    - "todo_write"
+    - "bash"
+    - "job_list"
+    - "job_output"
+    - "job_kill"
+    - "read"
+    - "glob"
+    - "grep"
+    - "edit"
+    - "write"
+    - "WebSearch"
+    - "WebFetch"
+    - "exit_plan_mode"
+    - "enter_plan_mode"

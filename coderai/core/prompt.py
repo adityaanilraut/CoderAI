@@ -395,6 +395,11 @@ TOOL_GUIDANCE_MAP: dict[str, tuple[str, int, str]] = {
         PERSONA_ORDER + 1,
         "## exit_plan_mode\nLeave Plan Mode after the plan is approved. Mutation tools stay in the schema for KV-cache stability.",
     ),
+    "enter_plan_mode": (
+        "tool:enter_plan_mode",
+        PERSONA_ORDER + 1,
+        "## enter_plan_mode\nEnter Plan Mode to explore and design before implementing. Use for non-trivial multi-file tasks.",
+    ),
     "goal": (
         "tool:goal",
         TOOL_GOAL_ORDER,

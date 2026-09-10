@@ -211,9 +211,11 @@ class SessionManager:
         self.mcp_manager = McpManager()
         self.mcp_manager.prepare(self.get_resolved_settings().get("mcpServers"))
         self.mcp_manager.set_on_tools_list_changed(self._refresh_mcp_tool_definitions)
+        self._mcp_load_task: Any = None
         self.tool_executor = ToolExecutor(
             self.project_root, create_openai_client, mcp_manager=self.mcp_manager
         )
+        self.refresh_plugin_tools()
         self.mcp_tool_definitions: list[dict[str, Any]] = []
         self.message_converter = OpenAIMessageConverter(
             render_init_prompt=lambda: get_init_command_prompt(self.project_root)
@@ -242,6 +244,38 @@ class SessionManager:
         self._yolo_mode: bool = False
         self._afk_mode: bool = False
         self.additional_dirs: list[str] = []
+        # Phase 2: per-session persisted state + soul views + approval runtime.
+        from coderai.core.approval import ApprovalRuntime
+
+        self.approval_runtime = ApprovalRuntime()
+        # Kimi parity: session-level wire hub (approval/notifications fan-out)
+        # + persistent notification manager (llm/wire/shell sinks).
+        from coderai.core.wire.hub import RootWireHub
+
+        self.root_wire_hub = RootWireHub()
+        self.approval_runtime.bind_root_wire_hub(self.root_wire_hub)
+        from coderai.core.notifications import NotificationManager
+
+        try:
+            _stale_ms = int(
+                self.get_resolved_settings().get("notificationsClaimStaleAfterMs")
+                or 15_000
+            )
+        except (TypeError, ValueError):
+            _stale_ms = 15_000
+        self.notification_manager = NotificationManager(
+            self._storage()["project_dir"] / "notifications",
+            claim_stale_after_s=max(1.0, _stale_ms / 1000.0),
+        )
+        try:
+            _mcp_timeout_ms = int(
+                self.get_resolved_settings().get("mcpToolCallTimeoutMs") or 60_000
+            )
+        except (TypeError, ValueError):
+            _mcp_timeout_ms = 60_000
+        self.mcp_manager.default_tool_timeout_s = max(1.0, _mcp_timeout_ms / 1000.0)
+        self._session_states: dict[str, Any] = {}
+        self._souls: dict[str, Any] = {}
         _session_managers.append(self)
 
         # Event-model state: per-session turn/step/seq counters
@@ -274,15 +308,104 @@ class SessionManager:
 
     def set_yolo(self, enabled: bool) -> None:
         self._yolo_mode = bool(enabled)
+        for sid, state in self._session_states.items():
+            try:
+                state.approval.yolo = bool(enabled)
+                self._save_session_state(sid)
+            except Exception:
+                continue
 
     def is_afk(self) -> bool:
         return self._afk_mode
 
     def set_afk(self, enabled: bool) -> None:
-        self._afk_mode = bool(enabled)
+        enabled = bool(enabled)
+        changed = enabled != self._afk_mode
+        self._afk_mode = enabled
+        for sid, state in self._session_states.items():
+            try:
+                state.approval.afk = enabled
+                self._save_session_state(sid)
+            except Exception:
+                continue
+        if changed:
+            for soul in self._souls.values():
+                try:
+                    import asyncio as _asyncio
+
+                    try:
+                        loop = _asyncio.get_running_loop()
+                        loop.create_task(soul.notify_afk_changed(enabled))
+                    except RuntimeError:
+                        pass
+                except Exception:
+                    continue
 
     def is_auto_approve(self) -> bool:
         return self._yolo_mode or self._afk_mode
+
+    # ---- Phase 2: persisted session state + soul views ----
+    def _session_dir(self, session_id: str) -> pathlib.Path:
+        return self._storage()["project_dir"] / str(session_id)
+
+    def get_session_state(self, session_id: str) -> Any:
+        """Load (caching) the persisted :class:`SessionState` for a session."""
+        from coderai.core.session_state import SessionState, load_session_state
+
+        target = self.resolve_session_id(session_id) or session_id
+        cached = self._session_states.get(target)
+        if isinstance(cached, SessionState):
+            return cached
+        state = load_session_state(self._session_dir(target))
+        # Adopt live manager flags on first load so resume restores behavior.
+        state.approval.yolo = self._yolo_mode or state.approval.yolo
+        state.approval.afk = self._afk_mode or state.approval.afk
+        entry = self._get_entry(target) or {}
+        if entry.get("planMode") and not state.plan_mode:
+            state.plan_mode = True
+        if self.additional_dirs:
+            for extra in self.additional_dirs:
+                if extra not in state.additional_dirs:
+                    state.additional_dirs.append(extra)
+        self._session_states[target] = state
+        return state
+
+    def _save_session_state(self, session_id: str) -> None:
+        """Persist the cached state for a session (best-effort)."""
+        from coderai.core.session_state import save_session_state
+
+        target = self.resolve_session_id(session_id) or session_id
+        state = self._session_states.get(target)
+        if state is None:
+            return
+        try:
+            save_session_state(state, self._session_dir(target))
+        except Exception:
+            pass
+
+    def get_soul(self, session_id: str, *, is_subagent: bool = False) -> Any:
+        """Return the cached :class:`SessionSoul` for a session."""
+        from coderai.core.soul import SessionSoul
+
+        target = self.resolve_session_id(session_id) or session_id
+        key = f"{target}:{'sub' if is_subagent else 'root'}"
+        soul = self._souls.get(key)
+        if soul is None:
+            soul = SessionSoul(self, target, is_subagent=is_subagent)
+            self._souls[key] = soul
+        return soul
+
+    def sync_session_state_from_entry(self, session_id: str) -> None:
+        """Mirror index entry (title/planMode) into persisted state."""
+        target = self.resolve_session_id(session_id) or session_id
+        try:
+            state = self.get_session_state(target)
+            entry = self._get_entry(target) or {}
+            if entry.get("planMode") != state.plan_mode:
+                state.plan_mode = bool(entry.get("planMode"))
+            self._save_session_state(target)
+        except Exception:
+            pass
 
     def get_diff(self, session_id: str | None = None, from_checkpoint: str | None = None) -> str:
         sid = session_id or self._active_session_id
@@ -801,6 +924,24 @@ class SessionManager:
             },
         )
         self._append_message(msg)
+        # Kimi parity: background completions also publish a task notification
+        # for out-of-band sinks. The LLM already sees the message above, so the
+        # manager copy targets wire/shell only (no duplicate context append).
+        try:
+            self.notify(
+                base_content,
+                log_tail or "",
+                category="task",
+                type="background_task_completed" if completion.ok else "background_task_failed",
+                source_kind="background_task",
+                source_id=completion.task_id,
+                severity="success" if completion.ok else "error",
+                targets=["wire", "shell"],
+                dedupe_key=f"bg-{completion.task_id}-{status}",
+                payload={"sessionId": session_id, "ok": completion.ok},
+            )
+        except Exception:
+            pass
 
     def _track_process_start(self, session_id: str, pid: int | str, command: str) -> None:
         pid_key = str(pid)
@@ -915,6 +1056,18 @@ class SessionManager:
         self._save_index(index)
         self.file_history.ensure_session(session_id)
         self._active_session_id = session_id
+        try:
+            state = self.get_session_state(session_id)
+            state.plan_mode = bool(plan_mode)
+            self._save_session_state(session_id)
+        except Exception:
+            pass
+        try:  # Kimi metadata.py parity: remember latest session per workdir.
+            from coderai.cli.metadata import record_last_session
+
+            record_last_session(self.project_root, session_id)
+        except Exception:
+            pass
         return session_id
 
     async def respond_permissions(
@@ -930,6 +1083,17 @@ class SessionManager:
         skills: list[str] | None = None,
     ) -> str:
         session_id = uuid.uuid4().hex
+        # Kimi parity: max_ralph_iterations != 0 turns the prompt into an
+        # automated repeat loop instead of a single turn (checked up front so
+        # the prompt is not appended twice).
+        try:
+            from coderai.core.flow.runner import ralph_iterations_for_prompt
+
+            ralph_iterations = ralph_iterations_for_prompt(
+                self.get_resolved_settings(), user_prompt
+            )
+        except Exception:
+            ralph_iterations = 0
         self._repeat_reminders.pop(session_id, None)
         summary = (user_prompt or "[Image Prompt]")[:100]
         now = _now()
@@ -987,36 +1151,129 @@ class SessionManager:
             )
         )
 
-        # Prepend dynamic workspace runtime context to the first user turn (keeping system prompt prefix 100% static)
-        runtime_context = get_runtime_context(self.project_root, model)
-        if runtime_context:
-            if isinstance(user_prompt, str):
-                effective_user_prompt = f"{runtime_context}\n\n---\n\n{user_prompt}"
-            elif isinstance(user_prompt, dict):
-                effective_user_prompt = dict(user_prompt)
-                effective_user_prompt["text"] = (
-                    f"{runtime_context}\n\n---\n\n{user_prompt.get('text', '')}"
-                )
+        if ralph_iterations == 0:
+            # Prepend dynamic workspace runtime context to the first user turn (keeping system prompt prefix 100% static)
+            runtime_context = get_runtime_context(self.project_root, model)
+            if runtime_context:
+                if isinstance(user_prompt, str):
+                    effective_user_prompt = f"{runtime_context}\n\n---\n\n{user_prompt}"
+                elif isinstance(user_prompt, dict):
+                    effective_user_prompt = dict(user_prompt)
+                    effective_user_prompt["text"] = (
+                        f"{runtime_context}\n\n---\n\n{user_prompt.get('text', '')}"
+                    )
+                else:
+                    effective_user_prompt = f"{runtime_context}\n\n---\n\n{str(user_prompt)}"
             else:
-                effective_user_prompt = f"{runtime_context}\n\n---\n\n{str(user_prompt)}"
-        else:
-            effective_user_prompt = user_prompt
+                effective_user_prompt = user_prompt
 
+            self._append_message(
+                self._build_message(
+                    session_id,
+                    "user",
+                    effective_user_prompt,
+                    meta={
+                        "checkpointHash": ckpt_res.checkpoint_hash,
+                        "userPrompt": {"planMode": plan_mode},
+                        "rawPrompt": user_prompt,
+                    },
+                )
+            )
+            await self._inject_matched_skills(session_id, user_prompt, skills)
+        self._active_session_id = session_id
+        # Kimi parity: SessionStart fires on creation.
+        try:
+            from coderai.core.hooks import run_session_start
+
+            run_session_start(session_id, self.project_root, "create")
+        except Exception:
+            pass
+        try:  # Kimi metadata.py parity: remember latest session per workdir.
+            from coderai.cli.metadata import record_last_session
+
+            record_last_session(self.project_root, session_id)
+        except Exception:
+            pass
+        if ralph_iterations != 0:
+            from coderai.core.flow.runner import FlowRunner
+
+            text = user_prompt if isinstance(user_prompt, str) else str(user_prompt or "")
+            await FlowRunner.ralph_loop(text.strip(), ralph_iterations).run(self, session_id)
+            return session_id
+        await self._activate(session_id)
+        return session_id
+
+    async def create_empty_session(self, plan_mode: bool = False) -> str:
+        """Create a session with only the system prompt (no turn runs).
+
+        Used by flow runs (``/flow:`` / ralph), which append their own turns.
+        Mirrors the ``create_session`` prologue without the user message.
+        """
+        session_id = uuid.uuid4().hex
+        self._repeat_reminders.pop(session_id, None)
+        now = _now()
+        index = self._load_index()
+        entry: dict[str, Any] = {
+            "id": session_id,
+            "summary": "[Flow session]",
+            "assistantReply": None,
+            "assistantThinking": None,
+            "assistantRefusal": None,
+            "toolCalls": None,
+            "status": "pending",
+            "failReason": None,
+            "usage": None,
+            "usagePerModel": None,
+            "activeTokens": 0,
+            "processes": {},
+            "createTime": now,
+            "updateTime": now,
+            "planMode": plan_mode,
+        }
+        index["entries"].append(entry)
+        index["entries"] = sorted(
+            index["entries"], key=lambda e: e.get("updateTime", ""), reverse=True
+        )[:MAX_SESSION_ENTRIES]
+        self._save_index(index)
+
+        self.file_history.ensure_session(session_id)
+
+        model = self.get_active_model()
+        settings = self.get_resolved_settings()
+        sandbox_mode = (settings.get("permissions") or {}).get("sandbox")
+        instructions = load_agent_instructions(self.project_root)
+        prompt_options = {
+            "model": model,
+            "nonInteractive": self.non_interactive,
+            "sandboxMode": sandbox_mode,
+            "workspaceRoot": self.project_root,
+            "preset": settings.get("preset") or settings.get("toolsPreset"),
+            "enabledSkills": settings.get("enabledSkills"),
+            "skillScanPaths": settings.get("skillScanPaths"),
+            "instructions": instructions,
+            "planMode": plan_mode,
+        }
         self._append_message(
             self._build_message(
                 session_id,
-                "user",
-                effective_user_prompt,
-                meta={
-                    "checkpointHash": ckpt_res.checkpoint_hash,
-                    "userPrompt": {"planMode": plan_mode},
-                    "rawPrompt": user_prompt,
-                },
+                "system",
+                get_system_prompt(prompt_options),
+                meta={"isPlanMode": bool(plan_mode)},
             )
         )
-        await self._inject_matched_skills(session_id, user_prompt, skills)
         self._active_session_id = session_id
-        await self._activate(session_id)
+        try:
+            from coderai.core.hooks import run_session_start
+
+            run_session_start(session_id, self.project_root, "create")
+        except Exception:
+            pass
+        try:
+            from coderai.cli.metadata import record_last_session
+
+            record_last_session(self.project_root, session_id)
+        except Exception:
+            pass
         return session_id
 
     def is_continue_prompt(self, user_prompt: Any) -> bool:
@@ -1075,6 +1332,16 @@ class SessionManager:
                             meta={"isPlanMode": False},
                         )
                     )
+                # Phase 2: persist plan-mode flips + schedule the activation
+                # reminder for the next LLM step (Kimi: Soul._set_plan_mode).
+                try:
+                    state = self.get_session_state(session_id)
+                    state.plan_mode = bool(plan_mode)
+                    self._save_session_state(session_id)
+                    if plan_mode:
+                        self.get_soul(session_id).schedule_plan_activation_reminder()
+                except Exception:
+                    pass
 
         # Handle /continue without appending redundant user message
         is_continue = self.is_continue_prompt(user_prompt)
@@ -1088,6 +1355,52 @@ class SessionManager:
             return
 
         if user_prompt and not is_continue:
+            # Kimi parity: UserPromptSubmit fires before the turn starts; hooks
+            # may inject additionalContext (appended) or deny (abort turn).
+            try:
+                from coderai.core.hooks import run_user_prompt_submit
+
+                _ups = run_user_prompt_submit(
+                    str(user_prompt),
+                    session_id,
+                    self.project_root,
+                    self.get_resolved_settings(),
+                )
+                if _ups.decision == "deny":
+                    self._append_message(
+                        self._build_message(
+                            session_id,
+                            "user",
+                            f"[UserPromptSubmit denied: {_ups.reason or 'blocked by hook.'}]",
+                            meta={"isHookDenial": True},
+                        )
+                    )
+                    return
+                for _ctx in _ups.additional_context:
+                    self._append_message(
+                        self._build_message(
+                            session_id, "user", str(_ctx), meta={"isHookContext": True}
+                        )
+                    )
+                for _sm in _ups.system_messages:
+                    self._append_message(
+                        self._build_message(
+                            session_id, "system", str(_sm), meta={"isHookSystem": True}
+                        )
+                    )
+            except Exception:
+                pass
+            # Kimi parity: max_ralph_iterations != 0 runs the automated repeat
+            # loop instead of a single turn (after UserPromptSubmit so hooks
+            # still see the prompt, before anything is appended).
+            try:
+                from coderai.core.flow.runner import maybe_run_ralph
+
+                if await maybe_run_ralph(self, session_id, str(user_prompt)):
+                    self._active_session_id = session_id
+                    return
+            except Exception:
+                pass
             if session_id in self._repeat_reminders:
                 self._repeat_reminders[session_id].reset()
             self.file_history.ensure_session(session_id)
@@ -1148,7 +1461,10 @@ class SessionManager:
         enabled = settings.get("enabledSkills") or {}
         custom_paths = settings.get("skillScanPaths") or []
         skills = list_skills(
-            self.project_root, enabled_skills=enabled, custom_scan_paths=custom_paths
+            self.project_root,
+            enabled_skills=enabled,
+            custom_scan_paths=custom_paths,
+            merge_all_available_skills=settings.get("mergeAllAvailableSkills", True),
         )
         loaded = self._loaded_skill_names(session_id) if session_id else set()
         for skill in skills:
@@ -1213,6 +1529,7 @@ class SessionManager:
                 enabled_skills=enabled,
                 loaded_names=loaded,
                 custom_scan_paths=custom_paths,
+                merge_all_available_skills=settings.get("mergeAllAvailableSkills", True),
             )
             for skill in matched:
                 if skill["name"] not in names:
@@ -1278,12 +1595,115 @@ class SessionManager:
 
         register_session_notice_sink(session_id, _notice_sink)
         try:
+            await self._deliver_llm_notifications(session_id)
+            await self._await_mcp_ready()
             await AgentLoop(self, session_id).run(
                 permission_replies=permission_replies,
                 deferred_prompt=deferred_prompt,
             )
         finally:
             unregister_session_notice_sink(session_id)
+
+    def notify(
+        self,
+        title: str,
+        body: str = "",
+        *,
+        category: str = "system",
+        type: str = "notice",
+        source_kind: str = "session",
+        source_id: str = "",
+        severity: str = "info",
+        targets: list[str] | None = None,
+        dedupe_key: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> Any:
+        """Publish a notification (Kimi ``NotificationManager.publish`` parity)."""
+        from coderai.core.notifications import NotificationEvent, to_wire_notification
+
+        manager = getattr(self, "notification_manager", None)
+        if manager is None:
+            return None
+        event = NotificationEvent(
+            id=manager.new_id(),
+            category=category,
+            type=type,
+            source_kind=source_kind,
+            source_id=source_id or "",
+            title=title,
+            body=body,
+            severity=severity,
+            targets=list(targets) if targets else ["llm", "wire", "shell"],
+            dedupe_key=dedupe_key,
+            payload=dict(payload or {}),
+        )
+        view = manager.publish(event)
+        try:
+            from coderai.core.wire.emitter import get_emitter
+
+            get_emitter().send(to_wire_notification(view))
+        except Exception:
+            pass
+        return view
+
+    async def _deliver_llm_notifications(self, session_id: str) -> None:
+        """Claim up to 4 pending ``llm`` notifications into this turn (Kimi parity).
+
+        Runs at activation start (Kimi delivers at step start; same effect for
+        the first step without loop surgery). Already-seen ids are acked
+        without re-appending; each delivery fires Notification hooks.
+        """
+        from coderai.core.notifications import (
+            TURN_DELIVER_LIMIT,
+            build_notification_message,
+            extract_notification_ids,
+        )
+
+        manager = getattr(self, "notification_manager", None)
+        if manager is None or not manager.has_pending_for_sink("llm"):
+            return
+        try:
+            seen = extract_notification_ids(
+                [
+                    str(m.content or "")
+                    for m in self.list_session_messages(session_id)
+                    if getattr(m, "role", "") == "user"
+                ]
+            )
+        except Exception:
+            seen = set()
+
+        async def _handle(view: Any) -> None:
+            if view.event.id in seen:
+                return
+            try:
+                from coderai.core.hooks import run_notification
+
+                run_notification(
+                    session_id,
+                    self.project_root,
+                    "llm",
+                    view.event.type,
+                    title=view.event.title,
+                    body=view.event.body,
+                    severity=view.event.severity,
+                    settings=self.get_resolved_settings(),
+                )
+            except Exception:
+                pass
+            self._append_message(
+                self._build_message(
+                    session_id,
+                    "user",
+                    build_notification_message(view),
+                    meta={"isNotification": True, "notificationId": view.event.id},
+                )
+            )
+
+        try:
+            await manager.deliver_pending("llm", on_notification=_handle, limit=TURN_DELIVER_LIMIT)
+        except Exception:
+            pass
 
     async def _append_tool_messages(
         self,
@@ -1516,6 +1936,11 @@ class SessionManager:
                             session_id,
                             lambda e: {**e, "planMode": False, "updateTime": _now()},
                         )
+                    if isinstance(result_meta, dict) and result_meta.get("enterPlanMode"):
+                        self._update_entry(
+                            session_id,
+                            lambda e: {**e, "planMode": True, "updateTime": _now()},
+                        )
 
                     tool_fn = self.message_converter.find_tool_function(tool_calls, exec_tc_id)
                     if not tool_fn:
@@ -1733,6 +2158,28 @@ class SessionManager:
         self, session_id: str, trigger: str = "pressure", custom_instruction: str | None = None
     ) -> None:
         """Execute session compaction through the pluggable CompactionEngine."""
+        # Kimi parity: PreCompact fires first; deny aborts compaction.
+        try:
+            from coderai.core.hooks import run_pre_compact
+
+            entry = self._get_entry(session_id) or {}
+            _pre = run_pre_compact(
+                session_id,
+                self.project_root,
+                trigger,
+                int(entry.get("activeTokens", 0) or 0),
+                self.get_resolved_settings(),
+            )
+            if _pre.decision == "deny":
+                return
+        except Exception:
+            pass
+        try:
+            from coderai.core.wire.emitter import get_emitter
+
+            get_emitter().compaction_begin()
+        except Exception:
+            pass
         res = await self.compaction_engine.compact_if_needed(session_id, trigger=trigger)
         if not res:
             # Forward custom_instruction if engine supports it
@@ -1742,6 +2189,12 @@ class SessionManager:
                 )  # type: ignore[call-arg]
             except TypeError:
                 res = await self.compaction_engine.compact_now(session_id, trigger=trigger)
+        try:
+            from coderai.core.wire.emitter import get_emitter
+
+            get_emitter().compaction_end()
+        except Exception:
+            pass
         if res:
             now = _now()
             self._update_entry(
@@ -1752,6 +2205,19 @@ class SessionManager:
                     "updateTime": now,
                 },
             )
+            # Kimi parity: PostCompact fires after successful compaction.
+            try:
+                from coderai.core.hooks import run_post_compact
+
+                run_post_compact(
+                    session_id,
+                    self.project_root,
+                    trigger,
+                    int(res.shadowed_token_count or 0),
+                    self.get_resolved_settings(),
+                )
+            except Exception:
+                pass
 
     async def compact_session(
         self, session_id: str, trigger: str = "manual", custom_instruction: str | None = None
@@ -1817,8 +2283,12 @@ class SessionManager:
         return True
 
     def rename_session(self, session_id: str, new_title: str) -> bool:
-        """Rename an existing session title/summary in index and memory."""
-        cleaned_title = (new_title or "").strip()
+        """Rename an existing session title/summary in index and memory.
+
+        Kimi ``/title`` parity: manual titles are capped at 200 chars and set
+        ``title_locked`` so auto-generation never overwrites them.
+        """
+        cleaned_title = (new_title or "").strip()[:200]
         if not cleaned_title:
             return False
         target_id = self.resolve_session_id(session_id) or session_id
@@ -1827,8 +2297,22 @@ class SessionManager:
             return False
         self._update_entry(
             target_id,
-            lambda e: {**e, "summary": cleaned_title, "updateTime": _now()},
+            lambda e: {
+                **e,
+                "summary": cleaned_title,
+                "title_locked": True,
+                "updateTime": _now(),
+            },
         )
+        # Phase 2: mirror manual titles into persisted state (Kimi: custom_title
+        # + title_generated guard against auto-generation overwrites).
+        try:
+            state = self.get_session_state(target_id)
+            state.custom_title = cleaned_title
+            state.title_generated = True
+            self._save_session_state(target_id)
+        except Exception:
+            pass
         return True
 
     def fork_session(
@@ -1909,6 +2393,21 @@ class SessionManager:
         self.file_history.ensure_session(forked_id)
         self.file_history.fork_session(target_src_id, forked_id, checkpoint_hash=checkpoint_hash)
 
+        # Phase 2: copy persisted state (Kimi: fork titles "Fork: <title>").
+        try:
+            from coderai.core.session_state import SessionState
+
+            src_state = self.get_session_state(target_src_id)
+            forked_state = SessionState.model_validate(
+                src_state.model_dump(mode="json"),
+            )
+            forked_state.custom_title = f"Fork: {src_entry.get('summary', '')}"[:200]
+            forked_state.title_generated = True
+            self._session_states[forked_id] = forked_state
+            self._save_session_state(forked_id)
+        except Exception:
+            pass
+
         # Update sessions index
         index = self._load_index()
         forked_entry = {
@@ -1934,6 +2433,12 @@ class SessionManager:
         index["entries"].insert(0, forked_entry)
         index["entries"] = index["entries"][:MAX_SESSION_ENTRIES]
         self._save_index(index)
+        try:  # Kimi metadata.py parity: forked session becomes the latest.
+            from coderai.cli.metadata import record_last_session
+
+            record_last_session(self.project_root, forked_id)
+        except Exception:
+            pass
 
         return forked_id
 
@@ -2045,6 +2550,21 @@ class SessionManager:
         return _entry_from_dict(entry) if entry else None
 
     async def init_mcp_servers(self) -> None:
+        # A background load already in flight wins (deferred-loading parity).
+        pending = getattr(self, "_mcp_load_task", None)
+        try:
+            running = pending is not None and not pending.done()
+        except Exception:
+            running = False
+        if running:
+            import asyncio as _asyncio
+
+            if pending is not _asyncio.current_task():
+                try:
+                    await pending
+                except Exception:
+                    pass
+            return
         await self.mcp_manager.initialize(self.get_resolved_settings().get("mcpServers"))
         self._refresh_mcp_tool_definitions()
 
@@ -2056,6 +2576,134 @@ class SessionManager:
 
     def _refresh_mcp_tool_definitions(self) -> None:
         self.mcp_tool_definitions = self.mcp_manager.get_mcp_tool_definitions()
+
+    def refresh_plugin_tools(self) -> None:
+        """Reload plugin definitions + refresh injected configs (Kimi parity: startup)."""
+        try:
+            self.tool_executor.refresh_plugin_tools()
+        except Exception:
+            pass
+        try:
+            from coderai.core.plugin.manager import (
+                collect_host_values,
+                get_plugins_dir,
+                refresh_plugin_configs,
+            )
+
+            merged = dict(self.get_resolved_settings())
+            try:
+                info = self.create_openai_client() or {}
+                if isinstance(info, dict):
+                    merged.update(info)
+            except Exception:
+                pass
+            refresh_plugin_configs(get_plugins_dir(), collect_host_values(merged))
+        except Exception:
+            pass
+
+    def get_external_tool_definitions(
+        self, tools_preset: str | None = None
+    ) -> list[dict[str, Any]] | None:
+        """MCP + plugin tool definitions for the model (None under a tool preset)."""
+        if tools_preset:
+            return None
+        defs = list(self.mcp_tool_definitions or [])
+        try:
+            defs.extend(self.tool_executor.plugin_tool_definitions())
+        except Exception:
+            pass
+        return defs
+
+    def start_background_mcp_loading(self) -> None:
+        """Connect MCP servers in the background (Kimi defer parity: fast shell start).
+
+        The first turn joins the load via ``_await_mcp_ready``; non-interactive
+        callers keep awaiting :meth:`init_mcp_servers` inline instead.
+        """
+        if self.mcp_manager.initialized:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        pending = getattr(self, "_mcp_load_task", None)
+        try:
+            if pending is not None and not pending.done():
+                return
+        except Exception:
+            pass
+        self._mcp_load_task = loop.create_task(self._background_mcp_load())
+
+    async def _background_mcp_load(self) -> None:
+        try:
+            from coderai.core.wire.emitter import get_emitter
+
+            get_emitter().mcp_loading_begin()
+        except Exception:
+            pass
+        try:
+            await self.mcp_manager.initialize(self.get_resolved_settings().get("mcpServers"))
+            self._refresh_mcp_tool_definitions()
+        except Exception:
+            pass
+        finally:
+            try:
+                from coderai.core.wire.emitter import get_emitter
+
+                get_emitter().mcp_loading_end()
+                self.emit_mcp_status(loading=False)
+            except Exception:
+                pass
+
+    async def _await_mcp_ready(self) -> None:
+        pending = getattr(self, "_mcp_load_task", None)
+        if pending is None:
+            return
+        try:
+            await pending
+        except Exception:
+            pass
+
+    def emit_mcp_status(self, loading: bool = False) -> None:
+        """Publish a wire ``StatusUpdate`` with the current MCP snapshot (Kimi parity)."""
+        try:
+            from coderai.core.wire.emitter import get_emitter
+            from coderai.core.wire.types import (
+                MCPServerSnapshot,
+                MCPStatusSnapshot,
+                StatusUpdate,
+            )
+
+            _snapshot_states = {
+                "ready": "connected",
+                "starting": "connecting",
+                "reconnecting": "connecting",
+                "failed": "failed",
+                "unauthorized": "unauthorized",
+                "disabled": "pending",
+            }
+            statuses = self.mcp_manager.get_status()
+            servers = tuple(
+                MCPServerSnapshot(
+                    name=s.name,
+                    status=_snapshot_states.get(s.status, "pending"),  # type: ignore[arg-type]
+                    tools=tuple(s.tools),
+                )
+                for s in statuses
+            )
+            get_emitter().send(
+                StatusUpdate(
+                    mcp_status=MCPStatusSnapshot(
+                        loading=loading,
+                        connected=sum(1 for s in statuses if s.connected),
+                        total=len(statuses),
+                        tools=len(self.mcp_manager.tools),
+                        servers=servers,
+                    )
+                )
+            )
+        except Exception:
+            pass
 
     def dispose(self) -> None:
         """Best-effort sync dispose. Prefer ``close_session_manager`` from an async context."""
@@ -2165,6 +2813,14 @@ def _call_stream_or_sync(
         "stream": True,
         "stream_options": {"include_usage": True},
     }
+    # Kimi parity: the response reasoning field follows the provider's
+    # reasoning_key (normalized back to "reasoning_content" downstream).
+    from coderai.core.common.openai_thinking import (
+        extract_reasoning_content,
+        reasoning_key_for_model,
+    )
+
+    reasoning_key = reasoning_key_for_model(str(request.get("model") or ""))
     try:
         try:
             resp = client.chat.completions.create(**stream_req)
@@ -2191,7 +2847,7 @@ def _call_stream_or_sync(
             return resp
 
         if hasattr(resp, "choices"):
-            return _format_completion_response(resp)
+            return _format_completion_response(resp, reasoning_key)
 
         if hasattr(resp, "__iter__"):
             content_parts: list[str] = []
@@ -2219,9 +2875,9 @@ def _call_stream_or_sync(
                                         {"estimatedTokens": estimated_tokens, "type": "update"}
                                     )
 
-                            delta_thinking = getattr(delta, "reasoning_content", None) or getattr(
-                                delta, "thinking", None
-                            )
+                            delta_thinking = extract_reasoning_content(
+                                delta, reasoning_key
+                            ) or getattr(delta, "thinking", None)
                             if delta_thinking:
                                 thinking_parts.append(delta_thinking)
                                 estimated_tokens += max(1, len(delta_thinking) // 4)
@@ -2316,9 +2972,11 @@ def _call_stream_or_sync(
     return _call_sync(client, request)
 
 
-def _format_completion_response(resp: Any) -> dict[str, Any]:
+def _format_completion_response(resp: Any, reasoning_key: str | None = None) -> dict[str, Any]:
     if isinstance(resp, dict):
         return resp
+    from coderai.core.common.openai_thinking import extract_reasoning_content
+
     message = getattr(resp.choices[0], "message", None)
     result: dict[str, Any] = {
         "choices": [
@@ -2326,7 +2984,7 @@ def _format_completion_response(resp: Any) -> dict[str, Any]:
                 "message": {
                     "content": getattr(message, "content", None) or "",
                     "tool_calls": _pydantic_tool_calls(message),
-                    "reasoning_content": getattr(message, "reasoning_content", None),
+                    "reasoning_content": extract_reasoning_content(message, reasoning_key),
                     "refusal": getattr(message, "refusal", None),
                 }
             }
@@ -2340,7 +2998,11 @@ def _format_completion_response(resp: Any) -> dict[str, Any]:
 
 def _call_sync(client: Any, request: dict[str, Any]) -> dict[str, Any]:
     resp = client.chat.completions.create(**request)
-    return _format_completion_response(resp)
+    from coderai.core.common.openai_thinking import reasoning_key_for_model
+
+    return _format_completion_response(
+        resp, reasoning_key_for_model(str(request.get("model") or ""))
+    )
 
 
 def _pydantic_tool_calls(message: Any) -> list[dict[str, Any]] | None:

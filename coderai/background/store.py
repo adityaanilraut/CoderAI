@@ -1,0 +1,174 @@
+# Ported from coderai/core/jobs.py - kimi structure (background/store.py).
+from __future__ import annotations
+
+import threading
+import time
+
+from coderai.background.models import Job, JobStatus, _MAX_JOBS_PER_SESSION
+from coderai.utils.subprocess_env import kill_process_tree
+
+# NOTE: coderai.core.orchestration is imported inside JobStore.start (not at
+# module top): importing it here pulls in coderai.core/__init__, which cycles
+# back through core/jobs.py before this module finishes initializing.
+class JobStore:
+    """Thread-safe in-process job registry keyed by job id, scoped by session."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._jobs: dict[str, Job] = {}
+
+    def start(
+        self,
+        *,
+        job_id: str,
+        session_id: str,
+        kind: str,
+        label: str,
+        process_id: int | None = None,
+        output_path: str | None = None,
+        detail: str | None = None,
+    ) -> Job:
+        job = Job(
+            id=job_id,
+            session_id=session_id,
+            kind=kind,
+            label=label[:240],
+            status="running",
+            started_at=int(time.time() * 1000),
+            process_id=process_id,
+            output_path=output_path,
+            detail=detail,
+        )
+        with self._lock:
+            from coderai.core.orchestration import resolve_max_running_jobs
+
+            max_running = resolve_max_running_jobs()
+            running = [
+                j
+                for j in self._jobs.values()
+                if j.session_id == session_id and j.status in ("running", "stopping")
+            ]
+            if len(running) >= max_running:
+                raise RuntimeError(
+                    f"background job cap reached: at most {max_running} "
+                    "running jobs per session (MAX_RUNNING_JOBS_PER_SESSION)"
+                )
+            self._jobs[job_id] = job
+            self._evict_locked(session_id)
+        return job
+
+    def complete(
+        self,
+        job_id: str,
+        *,
+        ok: bool,
+        exit_code: int | None = None,
+        signal: str | None = None,
+        detail: str | None = None,
+    ) -> Job | None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return None
+            if job.status in ("completed", "killed", "failed"):
+                return job
+            if job.status == "stopping":
+                job.status = "killed"
+                job.detail = job.detail or detail or "killed"
+            elif ok:
+                job.status = "completed"
+                if detail:
+                    job.detail = detail
+            else:
+                job.status = "failed"
+                job.detail = (
+                    detail or signal or (f"exit {exit_code}" if exit_code is not None else "failed")
+                )
+            job.finished_at = int(time.time() * 1000)
+            job.exit_code = exit_code
+            job.signal = signal
+            return job
+
+    def kill(self, job_id: str, session_id: str, reason: str | None = None) -> str:
+        """Request cancellation. Returns cancellation-requested | already-finished | not-found."""
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None or job.session_id != session_id:
+                return "not-found"
+            if job.status in ("completed", "killed", "failed"):
+                return "already-finished"
+            if not job.process_id:
+                job.status = "killed"
+                if reason:
+                    job.detail = reason
+                job.finished_at = int(time.time() * 1000)
+                return "cancellation-requested"
+            job.status = "stopping"
+            if reason:
+                job.detail = reason
+            pid = job.process_id
+        if pid:
+            try:
+                kill_process_tree(int(pid))
+            except Exception:
+                pass
+        return "cancellation-requested"
+
+    def kill_all(self, session_id: str | None = None, reason: str | None = None) -> list[str]:
+        """Terminate all running background jobs for a session or across all sessions."""
+        killed_ids: list[str] = []
+        with self._lock:
+            target_jobs = [
+                j
+                for j in self._jobs.values()
+                if (session_id is None or j.session_id == session_id)
+                and j.status in ("running", "stopping")
+            ]
+        for j in target_jobs:
+            res = self.kill(j.id, j.session_id, reason=reason or "Terminating background job")
+            if res != "already-finished":
+                killed_ids.append(j.id)
+        return killed_ids
+
+    def get(self, job_id: str, session_id: str | None = None) -> Job | None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return None
+            if session_id is not None and job.session_id != session_id:
+                return None
+            return job
+
+    def list(self, session_id: str) -> list[Job]:
+        with self._lock:
+            jobs = [j for j in self._jobs.values() if j.session_id == session_id]
+        return sorted(jobs, key=lambda j: j.started_at)
+
+    def read_output(self, job_id: str, session_id: str) -> tuple[str, Job] | None:
+        job = self.get(job_id, session_id)
+        if job is None:
+            return None
+        text = ""
+        if job.output_path:
+            try:
+                with open(job.output_path, encoding="utf-8", errors="replace") as handle:
+                    text = handle.read()
+            except OSError:
+                text = ""
+        with self._lock:
+            current = self._jobs.get(job_id)
+            if current is None or current.session_id != session_id:
+                return None
+            new_text = text[current.read_offset :]
+            current.read_offset = len(text)
+            return new_text, current
+
+    def _evict_locked(self, session_id: str) -> None:
+        owned = [j for j in self._jobs.values() if j.session_id == session_id]
+        if len(owned) <= _MAX_JOBS_PER_SESSION:
+            return
+        finished = [j for j in owned if j.status in ("completed", "killed", "failed")]
+        finished.sort(key=lambda j: j.finished_at or j.started_at)
+        overflow = len(owned) - _MAX_JOBS_PER_SESSION
+        for job in finished[:overflow]:
+            self._jobs.pop(job.id, None)

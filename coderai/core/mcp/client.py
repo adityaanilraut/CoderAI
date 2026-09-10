@@ -57,25 +57,27 @@ class McpClient:
 
     def _create_transport(self) -> McpTransport:
         if "url" in self.config:
+            from coderai.core.mcp.oauth import apply_bearer_auth
             from coderai.core.network.security import NetworkPolicy
 
-            policy = self.config.get("policy")
-            if policy is None and self.config.get("allowPrivateIps"):
+            config = apply_bearer_auth(self.config, self.server_name)
+            policy = config.get("policy")
+            if policy is None and config.get("allowPrivateIps"):
                 policy = NetworkPolicy(allow_private_ips=True)
             transport = str(
-                self.config.get("transport") or self.config.get("type") or "sse"
+                config.get("transport") or config.get("type") or "sse"
             ).lower()
             if transport in ("http", "streamable-http", "streamable_http"):
                 return StreamableHttpMcpTransport(
                     server_name=self.server_name,
-                    url=self.config["url"],
-                    headers=self.config.get("headers"),
+                    url=config["url"],
+                    headers=config.get("headers"),
                     policy=policy,
                 )
             return SseMcpTransport(
                 server_name=self.server_name,
-                url=self.config["url"],
-                headers=self.config.get("headers"),
+                url=config["url"],
+                headers=config.get("headers"),
                 policy=policy,
             )
         return StdioMcpTransport(
@@ -88,6 +90,11 @@ class McpClient:
 
     def is_connected(self) -> bool:
         return self.transport.is_connected() and not self._disconnected
+
+    @property
+    def last_http_status(self) -> int | None:
+        """Last HTTP status seen by the transport (401 → unauthorized, Kimi parity)."""
+        return getattr(self.transport, "last_http_status", None)
 
     def set_on_disconnect(self, handler: Callable[[str], None]) -> None:
         self._disconnect_handler = handler

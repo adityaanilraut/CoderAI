@@ -28,7 +28,7 @@ class McpToolEntry:
 @dataclass
 class McpServerStatus:
     name: str
-    status: str  # "starting" | "ready" | "failed" | "reconnecting"
+    status: str  # "starting" | "ready" | "failed" | "reconnecting" | "disabled" | "unauthorized"
     connected: bool
     error: str | None = None
     tool_count: int = 0
@@ -117,6 +117,8 @@ class McpManager:
         self.session_tool_masks: dict[str, dict[str, set[str]]] = {}
         self.initialized = False
         self.disposed = False
+        # Kimi parity: mcp.client.tool_call_timeout_ms (settings-driven).
+        self.default_tool_timeout_s: float = 60.0
         self.on_tools_list_changed: Callable[[], None] | None = None
         self.on_status_changed: Callable[[], None] | None = None
 
@@ -559,14 +561,28 @@ class McpManager:
                 self.on_tools_list_changed()
         except Exception as err:
             await client.disconnect()
-            self._set_status(
-                McpServerStatus(
-                    name=name,
-                    status="failed",
-                    connected=False,
-                    error=str(err),
+            http_status = getattr(client, "last_http_status", None)
+            if http_status == 401:
+                self._set_status(
+                    McpServerStatus(
+                        name=name,
+                        status="unauthorized",
+                        connected=False,
+                        error=(
+                            f"MCP server '{name}' requires authorization (HTTP 401). "
+                            f"Run `coderai mcp login {name}` or configure a bearer token."
+                        ),
+                    )
                 )
-            )
+            else:
+                self._set_status(
+                    McpServerStatus(
+                        name=name,
+                        status="failed",
+                        connected=False,
+                        error=str(err),
+                    )
+                )
 
     def _on_server_crash(self, name: str, reason: str) -> None:
         if self.disposed:
@@ -647,7 +663,7 @@ class McpManager:
         self,
         name: str,
         args: dict[str, Any],
-        timeout_s: float = 60.0,
+        timeout_s: float | None = None,
         session_id: str | None = None,
     ) -> ToolResult:
         if session_id and not self.is_tool_enabled_for_session(session_id, name):
@@ -660,8 +676,13 @@ class McpManager:
         if not tool:
             return ToolResult(ok=False, name=name, error=f"Unknown MCP tool: {name}")
 
+        effective_timeout = (
+            timeout_s if timeout_s and timeout_s > 0 else self.default_tool_timeout_s
+        )
         try:
-            result = await tool.client.call_tool(tool.original_name, args, timeout_s=timeout_s)
+            result = await tool.client.call_tool(
+                tool.original_name, args, timeout_s=effective_timeout
+            )
             content_list = result.get("content", [])
             text_parts = [
                 c.get("text", "")

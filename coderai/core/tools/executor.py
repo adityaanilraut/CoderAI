@@ -102,6 +102,47 @@ class ToolExecutor:
         self.rate_limiter = SlidingWindowRateLimiter()
         self.concurrency_limit = concurrency_limit
         self._concurrency_semaphore = asyncio.Semaphore(max(1, concurrency_limit))
+        self._plugin_defs: list[dict[str, Any]] | None = None
+
+    def refresh_plugin_tools(self) -> list[dict[str, Any]]:
+        """Reload plugin tool definitions (conflict-skip vs registry+MCP names)."""
+        from coderai.core.plugin.tool import plugin_tool_definitions
+
+        reserved = {t.name for t in self.registry.list_tools()}
+        if self.mcp_manager is not None:
+            try:
+                reserved.update(t.namespaced_name for t in self.mcp_manager.tools)
+            except Exception:
+                pass
+        self._plugin_defs = plugin_tool_definitions(reserved=reserved)
+        return list(self._plugin_defs)
+
+    def plugin_tool_definitions(self) -> list[dict[str, Any]]:
+        if self._plugin_defs is None:
+            return self.refresh_plugin_tools()
+        return list(self._plugin_defs)
+
+    def is_plugin_tool(self, name: str) -> bool:
+        return any(
+            d.get("function", {}).get("name") == name for d in self.plugin_tool_definitions()
+        )
+
+    def _plugin_host_values(self) -> dict[str, str]:
+        try:
+            from coderai.core.plugin.manager import collect_host_values
+            from coderai.core.settings import resolve_current_settings
+
+            merged = dict(resolve_current_settings(self.project_root))
+            if self.create_openai_client is not None:
+                try:
+                    info = self.create_openai_client() or {}
+                    if isinstance(info, dict):
+                        merged.update(info)
+                except Exception:
+                    pass
+            return collect_host_values(merged)
+        except Exception:
+            return {}
 
     async def execute_tool_calls(
         self,
@@ -260,6 +301,8 @@ class ToolExecutor:
                 )
             else:
                 result = await self._run_mcp(tool_name, raw_args, hooks, session_id=session_id)
+        elif self.is_plugin_tool(tool_name):
+            result = await self._run_plugin(tool_name, raw_args, hooks)
         else:
             result = ToolResult(ok=False, name=tool_name, error=f"Unknown tool: {tool_name}")
 
@@ -569,6 +612,41 @@ class ToolExecutor:
         except Exception as e:
             return ToolResult(ok=False, name=tool_name, error=f"McpToolExecutionError: {e}")
 
+    async def _run_plugin(
+        self,
+        tool_name: str,
+        raw_args: dict[str, Any],
+        hooks: Any,
+    ) -> ToolResult:
+        from coderai.core.plugin.tool import run_plugin_tool
+
+        timeout_ms = None
+        if hooks:
+            timeout_ms = getattr(hooks, "timeout_ms", None) or (
+                hooks.get("timeout_ms") if isinstance(hooks, dict) else None
+            )
+        try:
+
+            async def _invoke_plugin() -> Any:
+                return await run_plugin_tool(
+                    tool_name, raw_args, host_values=self._plugin_host_values()
+                )
+
+            if timeout_ms and int(timeout_ms) > 0:
+                res = await asyncio.wait_for(_invoke_plugin(), timeout=int(timeout_ms) / 1000.0)
+            else:
+                res = await _invoke_plugin()
+            return res if isinstance(res, ToolResult) else ToolResult(ok=True, name=tool_name, output=str(res))
+        except (TimeoutError, asyncio.TimeoutError):
+            return ToolResult(
+                ok=False,
+                name=tool_name,
+                error=f"TOOL_TIMEOUT: plugin tool exceeded {timeout_ms}ms.",
+                metadata={"code": "TOOL_TIMEOUT"},
+            )
+        except Exception as e:
+            return ToolResult(ok=False, name=tool_name, error=f"PluginToolExecutionError: {e}")
+
     def _apply_result_spill(
         self, tool_name: str, result: ToolResult, context: ToolExecutionContext
     ) -> ToolResult:
@@ -598,7 +676,11 @@ class ToolExecutor:
         context: ToolExecutionContext,
         hooks: ToolExecutionHooks | dict[str, Any] | None,
     ) -> ToolResult:
-        from coderai.core.hooks import run_post_tool_use, run_on_tool_error
+        from coderai.core.hooks import (
+            run_post_tool_use,
+            run_post_tool_use_failure,
+            run_on_tool_error,
+        )
 
         try:
             if not result.ok or result.error:
@@ -615,6 +697,24 @@ class ToolExecutor:
                     result.follow_up_messages = (
                         list(result.follow_up_messages or []) + err_follow_ups
                     )
+                # Kimi parity: PostToolUseFailure fires alongside legacy ToolError.
+                try:
+                    fail_outcome = run_post_tool_use_failure(
+                        tool_name=tool_name,
+                        args=args,
+                        error=result.error or "tool_failed",
+                        context=context,
+                    )
+                    if fail_outcome.additional_context:
+                        fail_follow_ups: list[ToolExecutionFollowUpMessage | dict[str, Any]] = [
+                            {"role": "user", "content": ctx}
+                            for ctx in fail_outcome.additional_context
+                        ]
+                        result.follow_up_messages = (
+                            list(result.follow_up_messages or []) + fail_follow_ups
+                        )
+                except Exception:
+                    pass
             else:
                 post_outcome = run_post_tool_use(
                     tool_name=tool_name,

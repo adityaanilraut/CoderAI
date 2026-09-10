@@ -153,11 +153,20 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--prompt",
         "-p",
+        "--command",
+        "-c",
         dest="prompt_flag",
         type=str,
         help="Submit a prompt on launch",
     )
     parser.add_argument("--model", "-m", help="LLM model to use")
+    parser.add_argument(
+        "--mcp-config",
+        dest="mcp_config_jsons",
+        action="append",
+        default=None,
+        help="MCP config JSON string to load (repeatable; highest precedence).",
+    )
     parser.add_argument(
         "--exec",
         "-x",
@@ -256,6 +265,160 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Save configuration to user global settings (~/.coderai)",
     )
     parser.add_argument("--plan", action="store_true", help="start session in Plan Mode")
+    # Kimi-parity run-mode flags
+    parser.add_argument(
+        "--continue",
+        "-C",
+        dest="continue_session",
+        action="store_true",
+        default=False,
+        help="Continue the previous session for the working directory.",
+    )
+    parser.add_argument(
+        "--afk",
+        action="store_true",
+        default=False,
+        help="Run in afk mode: AskUserQuestion auto-dismissed, tool calls auto-approved.",
+    )
+    parser.add_argument(
+        "--print",
+        dest="print_mode",
+        action="store_true",
+        default=False,
+        help="Run non-interactively (implies afk for this invocation).",
+    )
+    parser.add_argument(
+        "--quiet",
+        "-q",
+        action="store_true",
+        default=False,
+        help="Alias for --print with minimal output (final message only).",
+    )
+    parser.add_argument(
+        "--final-message-only",
+        dest="final_message_only",
+        action="store_true",
+        default=False,
+        help="Only print the final assistant message (requires --print).",
+    )
+    parser.add_argument(
+        "--yolo",
+        "--yes",
+        "-y",
+        "--auto-approve",
+        dest="yes",
+        action="store_true",
+        default=False,
+        help="Automatically approve all actions (still reachable via AskUserQuestion).",
+    )
+    parser.add_argument(
+        "--thinking",
+        dest="thinking",
+        action="store_true",
+        default=None,
+        help="Enable thinking mode for this invocation.",
+    )
+    parser.add_argument(
+        "--no-thinking",
+        dest="thinking",
+        action="store_false",
+        help="Disable thinking mode for this invocation.",
+    )
+    parser.add_argument(
+        "--work-dir",
+        "-w",
+        dest="work_dir",
+        default=None,
+        help="Working directory for the agent (default: current directory).",
+    )
+    parser.add_argument(
+        "--add-dir",
+        dest="add_dirs",
+        action="append",
+        default=None,
+        help="Add an additional directory to the workspace scope (repeatable).",
+    )
+    parser.add_argument(
+        "--skills-dir",
+        dest="skills_dirs",
+        action="append",
+        default=None,
+        help="Custom skills directories (repeatable, overrides default discovery).",
+    )
+    parser.add_argument(
+        "--max-steps-per-turn",
+        type=int,
+        default=None,
+        help="Maximum number of steps in one turn.",
+    )
+    parser.add_argument(
+        "--max-retries-per-step",
+        type=int,
+        default=None,
+        help="Maximum number of retries in one step.",
+    )
+    parser.add_argument(
+        "--max-ralph-iterations",
+        type=int,
+        default=None,
+        help="Extra iterations after the first turn in Ralph mode (-1 for unlimited).",
+    )
+    parser.add_argument(
+        "--input-format",
+        choices=["text", "stream-json"],
+        default=None,
+        help="Input format (only with --print reading from stdin).",
+    )
+    parser.add_argument(
+        "--wire",
+        dest="wire",
+        action="store_true",
+        default=False,
+        help="Serve the wire protocol (JSON-RPC) on stdio for IDE/headless clients.",
+    )
+    parser.add_argument(
+        "--output-format",
+        choices=["text", "stream-json", "json"],
+        default=None,
+        help="Output format (only with --print).",
+    )
+    parser.add_argument(
+        "--agent",
+        dest="agent",
+        default=None,
+        help="Builtin agent specification to use (e.g. default).",
+    )
+    parser.add_argument(
+        "--agent-file",
+        dest="agent_file",
+        default=None,
+        help="Custom agent specification file.",
+    )
+    parser.add_argument(
+        "--mcp-config-file",
+        dest="mcp_config_files",
+        action="append",
+        default=None,
+        help="MCP config file to load (repeatable).",
+    )
+    parser.add_argument(
+        "--config",
+        dest="config_string",
+        default=None,
+        help="Config JSON string to load (overrides files).",
+    )
+    parser.add_argument(
+        "--config-file",
+        dest="config_file",
+        default=None,
+        help="Config file to load instead of ~/.coderai/settings.",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        default=False,
+        help="Log debug information.",
+    )
     parser.add_argument(
         "--max-subagent-depth",
         type=int,
@@ -298,7 +461,6 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="maximum concurrent running background jobs per session (default 50; env CODERAI_MAX_RUNNING_JOBS_PER_SESSION)",
     )
-    parser.add_argument("--yes", "-y", action="store_true", help="auto-approve all permissions")
     parser.add_argument("--verbose", "-v", action="store_true", help="print debug information")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser
@@ -906,6 +1068,8 @@ class _StreamState:
         self._btw_panel: Any | None = None
         self._live_ref: Any | None = None  # current Live for Ctrl-E pause/resume
         self._btw_pending_queue: list[str] = []  # queued inputs while streaming (QUEUE)
+        # Kimi ``--final-message-only`` parity: collect chunks silently, emit once.
+        self.silent: bool = False
 
     def reset(self) -> None:
         self.streamed_content.clear()
@@ -930,6 +1094,8 @@ class _StreamState:
                 pass
 
     def on_thinking_chunk(self, chunk: str) -> None:
+        if self.silent:
+            return
         self.stop_spinner()
         self.thinking_streamer.on_chunk(chunk)
 
@@ -959,11 +1125,19 @@ class _StreamState:
     def on_chunk(self, chunk: str) -> None:
         if chunk:
             if self.thinking_streamer.is_active:
-                self.thinking_streamer.finalize(console, expanded=_THINKING_EXPANDED)
+                if self.silent:
+                    try:
+                        self.thinking_streamer.reset()
+                    except Exception:
+                        pass
+                else:
+                    self.thinking_streamer.finalize(console, expanded=_THINKING_EXPANDED)
                 self.thinking_rendered = True
             self.stop_spinner()
             self.streamed_content.append(chunk)
             self.is_streaming = True
+            if self.silent:
+                return
             # Try Live markdown streaming for rich terminals, fallback to raw
             md = self._ensure_md_renderer()
             if md is not None:
@@ -980,6 +1154,8 @@ class _StreamState:
                 sys.stdout.flush()
 
     def start_spinner(self, message: str) -> None:
+        if self.silent:
+            return
         if console is not None and _RICH and hasattr(console, "status"):
             self.stop_spinner()
             try:
@@ -1291,6 +1467,8 @@ _STREAM_STATE = _StreamState()
 
 def _on_assistant_message(message: SessionMessage, should_connect: bool) -> None:
     """Format and render assistant messages, thinking blocks, and tool executions."""
+    if _STREAM_STATE.silent:
+        return
     _STREAM_STATE.stop_spinner()
     was_streamed = _STREAM_STATE.ensure_newline()
 
@@ -1730,6 +1908,27 @@ async def _run_interactive(
                         )
                     ).strip()
                     active_plan_mode = _ptk_session.plan_mode
+                    # Kimi Ctrl-X parity: shell mode executes directly.
+                    if getattr(_ptk_session, "shell_mode", False) and raw and not raw.startswith("/"):
+                        import subprocess as _sp
+
+                        try:
+                            res = _sp.run(
+                                raw,
+                                shell=True,
+                                cwd=mgr.project_root,
+                                capture_output=True,
+                                text=True,
+                                timeout=120,
+                            )
+                            out = (res.stdout or "") + (res.stderr or "")
+                            if console is not None and _RICH:
+                                console.print(f"[dim]{out.strip()[:4000] or '(exit ' + str(res.returncode) + ')'}[/]")
+                            else:
+                                print(out.strip() or f"(exit {res.returncode})")
+                        except Exception as e:
+                            print(f"shell error: {e}")
+                        continue
                 else:
                     raw = read_user_turn(prompt_label).strip()
             except KeyboardInterrupt:
@@ -1765,26 +1964,44 @@ async def _run_interactive(
                     continue
                 if action.kind == "btw":
                     q = action.args
-                    # BTW side question — show BtwPanel modal, run side turn without queueing
+                    # BTW side question — BtwPanel modal + isolated LLM call (Kimi btw.py).
                     try:
+                        from coderai.core.sidecall import run_side_question
+
                         btw = _STREAM_STATE.start_btw(q)
                         if btw is not None:
                             console.print()
                             console.print(btw.render(columns=getattr(console, "width", 80) or 80))
-                        # Run side question as ephemeral turn (no session mutation if possible)
-                        # For now, just show spinner + mock answer; real LLM side call would go here
-                        # ponytail: stub response until wire BtwBegin/BtwEnd plumbed
-                        import time as _btw_t
 
-                        _btw_t.sleep(0.05)
-                        _STREAM_STATE.end_btw(f"Side answer for: {q}", None)
+                        async def _run_btw() -> None:
+                            try:
+                                answer = await run_side_question(
+                                    mgr,
+                                    session_id,
+                                    q,
+                                    on_chunk=_STREAM_STATE.append_btw_text,
+                                )
+                                _STREAM_STATE.end_btw(answer, None)
+                            except Exception as e:
+                                _STREAM_STATE.end_btw(None, str(e))
+
+                        active_turn_task = asyncio.create_task(_run_btw())
+                        try:
+                            await active_turn_task
+                        finally:
+                            active_turn_task = None
                         console.print()
-                        console.print(btw.render(columns=getattr(console, "width", 80) or 80))
+                        if btw is not None:
+                            console.print(btw.render(columns=getattr(console, "width", 80) or 80))
                         console.print("[dim]Press Enter to dismiss btw...[/]")
-                        # Dismiss immediately for non-interactive demo
+                        try:
+                            if sys.stdin.isatty():
+                                input()
+                        except (EOFError, KeyboardInterrupt):
+                            _clear_task_cancellation()
                         _STREAM_STATE.set_btw_panel(None)
-                    except Exception:
-                        print(f"btw: {q}")
+                    except Exception as e:
+                        print(f"btw failed: {e}")
                     continue
                 if action.kind == "queue":
                     # HOLD and send as new turn after current turn ends (Kimi QUEUE)
@@ -3169,6 +3386,136 @@ async def _run_interactive(
                             print("Conversation context has been cleared.")
                         continue
 
+                    if cmd == "/version":
+                        from coderai.cli.info_cmds import cmd_version
+
+                        cmd_version(console)
+                        continue
+
+                    if cmd in ("/changelog", "/release-notes"):
+                        from coderai.cli.info_cmds import cmd_changelog
+
+                        cmd_changelog(console)
+                        continue
+
+                    if cmd == "/feedback":
+                        from coderai.cli.info_cmds import cmd_feedback
+
+                        cmd_feedback(console, cmd_arg)
+                        continue
+
+                    if cmd == "/reload":
+                        from coderai.cli.info_cmds import cmd_reload
+
+                        cmd_reload(mgr, console)
+                        continue
+
+                    if cmd == "/debug":
+                        from coderai.cli.info_cmds import cmd_debug
+
+                        cmd_debug(mgr, session_id, console)
+                        continue
+
+                    if cmd in ("/usage", "/status", "/quota"):
+                        from coderai.cli.info_cmds import cmd_usage
+
+                        cmd_usage(mgr, session_id, console)
+                        continue
+
+                    if cmd in ("/rename", "/title"):
+                        from coderai.cli.info_cmds import cmd_title
+
+                        cmd_title(mgr, session_id, cmd_arg, console)
+                        continue
+
+                    if cmd == "/login":
+                        from coderai.cli.info_cmds import cmd_login
+
+                        cmd_login(console, mgr.project_root, mgr, cmd_arg or None)
+                        continue
+
+                    if cmd == "/logout":
+                        from coderai.cli.info_cmds import cmd_logout
+
+                        cmd_logout(console, mgr.project_root, mgr)
+                        continue
+
+                    if cmd == "/hooks":
+                        from coderai.cli.info_cmds import cmd_hooks
+
+                        cmd_hooks(console, mgr.project_root)
+                        continue
+
+                    if cmd == "/upgrade":
+                        from coderai.cli.info_cmds import cmd_upgrade
+
+                        cmd_upgrade(console)
+                        continue
+
+                    if cmd == "/task":
+                        from coderai.cli.task_browser import run_task_browser
+
+                        run_task_browser(console, mgr, session_id)
+                        continue
+
+                    if cmd == "/web":
+                        from coderai.cli.web_cmd import cmd_web
+
+                        cmd_web(console, mgr, session_id, cmd_arg)
+                        continue
+
+                    if cmd == "/vis":
+                        from coderai.cli.web_cmd import cmd_vis
+
+                        cmd_vis(console, mgr, session_id, cmd_arg)
+                        continue
+
+                    if cmd.startswith("/skill:"):
+                        skill_name = cmd[len("/skill:") :].strip() or cmd_arg.strip()
+                        if _queue_skill(mgr, console, skill_name, pending_skills):
+                            if session_id:
+                                mgr.inject_skills(session_id, pending_skills)
+                                pending_skills.clear()
+                        continue
+
+                    if cmd.startswith("/flow:"):
+                        flow_name = cmd[len("/flow:") :].strip() or cmd_arg.strip()
+                        if not flow_name:
+                            print("Usage: /flow:<name>")
+                            continue
+                        _STREAM_STATE.reset()
+
+                        async def _run_flow() -> str | None:
+                            nonlocal session_id
+                            from coderai.core.flow.runner import run_flow_skill
+
+                            if session_id is None:
+                                s_id = await mgr.create_empty_session(
+                                    plan_mode=active_plan_mode
+                                )
+                            else:
+                                s_id = session_id
+                            outcome = await run_flow_skill(mgr, s_id, flow_name)
+                            if outcome.status == "completed":
+                                print(f"Flow '{flow_name}' completed in {outcome.moves} moves.")
+                            elif outcome.status == "tool_rejected":
+                                print(f"Flow '{flow_name}' stopped: tool approval denied.")
+                            elif outcome.status == "budget_exceeded":
+                                print(f"Flow '{flow_name}' stopped: {outcome.detail}")
+                            else:
+                                print(f"Flow '{flow_name}' failed: {outcome.detail}")
+                            await _drain_pending_interactions(mgr, s_id, yes)
+                            return s_id
+
+                        active_turn_task = asyncio.create_task(_run_flow())
+                        try:
+                            res_id = await active_turn_task
+                            if session_id is None and res_id:
+                                session_id = res_id
+                        finally:
+                            active_turn_task = None
+                        continue
+
                     skill_alias = cmd.lstrip("/")
                     if _queue_skill(mgr, console, skill_alias, pending_skills, quiet_unknown=True):
                         if session_id:
@@ -3333,9 +3680,18 @@ async def _run_interactive(
                         reply = last_asst.content if last_asst else ""
 
                     if "<proposed_plan>" in reply:
-                        plan_action = prompt_plan_implementation(console)
-                        if plan_action == "execute":
+                        from coderai.cli.plan_review import prompt_plan_review
+
+                        decision = prompt_plan_review(console, reply)
+                        action_taken = decision.get("action", "reject")
+                        if action_taken in ("approve", "option"):
                             active_plan_mode = False
+                            opt = decision.get("option")
+                            follow = (
+                                f"Proceed with the implementation of the approved plan (selected Option {opt})."
+                                if opt
+                                else "Proceed with the implementation of the approved plan."
+                            )
                             if console is not None and _RICH:
                                 console.print(
                                     "[bold green]✓ Plan approved! Exiting Plan Mode and beginning implementation...[/]"
@@ -3349,7 +3705,7 @@ async def _run_interactive(
                             async def _run_plan_execution() -> None:
                                 await mgr.reply_session(
                                     session_id,
-                                    "Proceed with the implementation of the approved plan.",
+                                    follow,
                                     plan_mode=False,
                                 )
                                 await _drain_pending_interactions(mgr, session_id, yes)
@@ -3359,12 +3715,14 @@ async def _run_interactive(
                                 await active_turn_task
                             finally:
                                 active_turn_task = None
-                        elif action == "refine":
-                            try:
-                                refine_input = input("Enter plan refinements: ").strip()
-                            except (EOFError, KeyboardInterrupt):
-                                _clear_task_cancellation()
-                                refine_input = ""
+                        elif action_taken == "revise":
+                            refine_input = (decision.get("feedback") or "").strip()
+                            if not refine_input:
+                                try:
+                                    refine_input = input("Enter plan refinements: ").strip()
+                                except (EOFError, KeyboardInterrupt):
+                                    _clear_task_cancellation()
+                                    refine_input = ""
                             if refine_input:
                                 _STREAM_STATE.reset()
 
@@ -3381,6 +3739,13 @@ async def _run_interactive(
                                     await active_turn_task
                                 finally:
                                     active_turn_task = None
+                        elif action_taken == "reject-exit":
+                            active_plan_mode = False
+                            if console is not None and _RICH:
+                                console.print("[yellow]Plan rejected; exited plan mode.[/]")
+                            else:
+                                print("Plan rejected; exited plan mode.")
+                        # plain "reject" stays in plan mode; conversation continues.
             except (KeyboardInterrupt, asyncio.CancelledError):
                 _clear_task_cancellation()
                 try:
@@ -3410,18 +3775,85 @@ async def _run_interactive(
                 signal.signal(signal.SIGINT, old_sigint_handler)
             except (ValueError, AttributeError):
                 pass
+        # Kimi parity: SessionEnd + Notification hooks fire on REPL exit.
+        try:
+            from coderai.core.hooks import run_notification, run_session_end
+
+            if session_id:
+                run_session_end(session_id, mgr.project_root, "exit")
+                try:
+                    entry = mgr.get_session(session_id)
+                    turns = getattr(entry, "turn_count", 0) if entry else 0
+                except Exception:
+                    turns = 0
+                run_notification(
+                    session_id,
+                    mgr.project_root,
+                    sink="session",
+                    notification_type="session_end",
+                    title="Session ended",
+                    body=f"turns={turns}",
+                )
+        except Exception:
+            pass
         render_exit_summary(console, mgr, session_id)
 
     return 0
 
 
-async def _run_once(mgr: SessionManager, prompt: str, yes: bool, plan_mode: bool = False) -> int:
+def _emit_final_message_only(mgr: SessionManager, session_id: str) -> None:
+    """Print only the final assistant text (Kimi ``--final-message-only`` parity).
+
+    Stdout-only, no Rich markup: safe for pipes (``| head``, ``$(...)``).
+    Falls back to the index ``assistantReply`` when the log has no text.
+    """
+    text = ""
+    try:
+        for message in reversed(mgr.list_session_messages(session_id)):
+            if message.role == "assistant" and (message.content or "").strip():
+                text = message.content.strip()
+                break
+    except Exception:
+        text = ""
+    if not text:
+        try:
+            entry = mgr.get_session(session_id)
+            text = str((entry.assistant_reply if entry else "") or "").strip()
+        except Exception:
+            text = ""
+    if text:
+        print(text, flush=True)
+
+
+async def _run_once(
+    mgr: SessionManager,
+    prompt: str,
+    yes: bool,
+    plan_mode: bool = False,
+    *,
+    final_message_only: bool = False,
+    output_format: str | None = None,
+) -> int:
     """Execute a single prompt non-interactively and exit."""
     effective_prompt, _ = expand_file_mentions(prompt, mgr.project_root)
     _STREAM_STATE.reset()
+    if final_message_only:
+        # Kimi parity: silence streaming cards/spinners; emit final text only.
+        _STREAM_STATE.silent = True
     try:
         session_id = await mgr.create_session(effective_prompt, plan_mode=plan_mode)
         await _drain_pending_interactions(mgr, session_id, yes)
+        if output_format == "stream-json":
+            # Kimi parity: emit buffered wire events as JSON lines on stdout.
+            try:
+                from coderai.core.wire.emitter import get_emitter
+
+                for envelope in await get_emitter().drain_to_stream_json():
+                    print(json.dumps(envelope, ensure_ascii=False), flush=True)
+            except Exception:
+                pass
+        if final_message_only:
+            _emit_final_message_only(mgr, session_id)
         entry = mgr.get_session(session_id)
         if entry and entry.status == "failed":
             return 1
@@ -3435,10 +3867,54 @@ async def _run_once(mgr: SessionManager, prompt: str, yes: bool, plan_mode: bool
         else:
             print(f"Error: {e}", file=sys.stderr)
         return 1
+    finally:
+        _STREAM_STATE.silent = False
 
 
 def main(argv: list[str] | None = None) -> int:
     """Console entry point for CoderAI CLI."""
+    from coderai.core.common.env import normalize_proxy_env
+    from coderai.core.log import enable_logging
+
+    from coderai.cli.proctitle import init_process_name
+
+    init_process_name("CoderAI")
+    normalize_proxy_env()
+    # --debug enables file logging; resolved pre-parse so startup crashes land
+    # in ~/.coderai/logs/coderai.log (Kimi: enable_logging(debug)).
+    _debug_early = "--debug" in (argv if argv is not None else sys.argv[1:])
+    enable_logging(debug=_debug_early, redirect_stderr=False)
+    # Kimi parity: real subcommands bypass the interactive parser entirely
+    # (``kimi info|export|mcp`` stay usable with zero config / offline).
+    # Only treat the first token as a subcommand when it is NOT consumed by
+    # an option (e.g. ``-p info`` is a prompt, not the info subcommand).
+    _raw = list(argv if argv is not None else sys.argv[1:])
+    _first = _raw[0] if _raw else ""
+    if _first in ("info", "export", "mcp", "plugin", "login", "logout"):
+        if _first == "info":
+            from coderai.cli.info_cmd import run_info
+
+            return run_info(_raw[1:])
+        if _first == "export":
+            from coderai.cli.export_cmd import run_export
+
+            return run_export(_raw[1:], project_root=str(pathlib.Path.cwd().resolve()))
+        if _first == "mcp":
+            from coderai.cli.mcp_cmd import run_mcp
+
+            return run_mcp(_raw[1:])
+        if _first == "plugin":
+            from coderai.cli.plugin_cmd import run_plugin
+
+            return run_plugin(_raw[1:])
+        if _first == "login":
+            from coderai.cli.login_cmd import run_login
+
+            return run_login(_raw[1:])
+        if _first == "logout":
+            from coderai.cli.login_cmd import run_logout
+
+            return run_logout(_raw[1:])
     args = _build_parser().parse_args(argv)
     project_root = str(pathlib.Path.cwd().resolve())
 
@@ -3452,10 +3928,41 @@ def main(argv: list[str] | None = None) -> int:
         ("ralph_max_rounds", "CODERAI_RALPH_MAX_ROUNDS"),
         ("max_continuable_agents", "CODERAI_MAX_CONTINUABLE_AGENTS_PER_SESSION"),
         ("max_running_jobs", "CODERAI_MAX_RUNNING_JOBS_PER_SESSION"),
+        ("max_steps_per_turn", "CODERAI_MAX_STEPS_PER_TURN"),
+        ("max_retries_per_step", "CODERAI_MAX_RETRIES_PER_STEP"),
+        ("max_ralph_iterations", "CODERAI_MAX_RALPH_ITERATIONS"),
     ):
         value = getattr(args, flag, None)
         if value is not None:
             os.environ[env_name] = str(value)
+    # Kimi parity: --work-dir switches the project root; --config-file/--config
+    # redirect settings resolution; --skills-dir/--add-dir/--mcp-config-file preload.
+    if getattr(args, "work_dir", None):
+        project_root = str(pathlib.Path(args.work_dir).expanduser().resolve())
+    if getattr(args, "config_file", None):
+        os.environ["CODERAI_CONFIG_FILE"] = str(args.config_file)
+    if getattr(args, "config_string", None):
+        os.environ["CODERAI_CONFIG_STRING"] = str(args.config_string)
+    if getattr(args, "skills_dirs", None):
+        os.environ["CODERAI_SKILLS_DIRS"] = os.pathsep.join(args.skills_dirs)
+    if getattr(args, "mcp_config_files", None):
+        os.environ["CODERAI_MCP_CONFIG_FILES"] = os.pathsep.join(args.mcp_config_files)
+    if getattr(args, "mcp_config_jsons", None):
+        from coderai.core.mcp_files import collect_cli_mcp_overlays
+
+        _cli_servers, _cli_warnings = collect_cli_mcp_overlays(
+            config_jsons=list(args.mcp_config_jsons),
+        )
+        for _warning in _cli_warnings:
+            print(f"Warning: {_warning}", file=sys.stderr)
+        if _cli_servers:
+            import json as _json
+
+            os.environ["CODERAI_MCP_CONFIG_JSON"] = _json.dumps({"mcpServers": _cli_servers})
+    if getattr(args, "agent", None):
+        os.environ["CODERAI_AGENT"] = str(args.agent)
+    if getattr(args, "agent_file", None):
+        os.environ["CODERAI_AGENT_FILE"] = str(args.agent_file)
 
     # Check mutual exclusions & argument validity
     has_positional = bool(args.prompt)
@@ -3499,6 +4006,34 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
+    # Kimi parity: --quiet == --print --output-format text --final-message-only.
+    # --print implies afk auto-approval for the invocation (no extra flag needed).
+    if getattr(args, "quiet", False):
+        args.print_mode = True
+        args.output_format = args.output_format or "text"
+        args.final_message_only = True
+    if getattr(args, "final_message_only", False) and not getattr(args, "print_mode", False):
+        print("--final-message-only requires --print.", file=sys.stderr)
+        return 1
+    if getattr(args, "input_format", None) and not getattr(args, "print_mode", False):
+        print("--input-format requires --print.", file=sys.stderr)
+        return 1
+    if getattr(args, "output_format", None) and not getattr(args, "print_mode", False):
+        print("--output-format requires --print.", file=sys.stderr)
+        return 1
+    if getattr(args, "wire", False) and getattr(args, "print_mode", False):
+        print("Cannot use --wire together with --print.", file=sys.stderr)
+        return 1
+    if getattr(args, "continue_session", False) and args.resume is not None:
+        print("Cannot use --continue together with --resume.", file=sys.stderr)
+        return 1
+    if getattr(args, "continue_session", False) and args.fork is not None:
+        print("Cannot use --continue together with --fork.", file=sys.stderr)
+        return 1
+    if getattr(args, "continue_session", False) and args.last:
+        print("Cannot use --continue together with --last.", file=sys.stderr)
+        return 1
+
     if args.last and args.resume is not None:
         print(
             "Cannot use --last together with --resume. Use --last to resume the most recent session, or --resume <sessionId> for a specific session.",
@@ -3538,6 +4073,12 @@ def main(argv: list[str] | None = None) -> int:
         preset_mode = "core"
 
     async def _main() -> int:
+        # Kimi parity: --print/--quiet non-interactive single-shot path.
+        effective_yes = bool(args.yes or getattr(args, "print_mode", False))
+        if getattr(args, "afk", False):
+            os.environ["CODERAI_START_AFK"] = "1"
+        if getattr(args, "thinking", None) is not None:
+            os.environ["CODERAI_THINKING"] = "1" if args.thinking else "0"
         if has_exec and prompt_value:
             from coderai.cli.exec_runner import run_exec_session
 
@@ -3548,7 +4089,7 @@ def main(argv: list[str] | None = None) -> int:
                 model=args.model,
                 resume_session_id=resume_id,
                 plan_mode=args.plan,
-                auto_approve=args.yes,
+                auto_approve=effective_yes,
                 verbose=args.verbose,
                 preset=preset_mode or "core",
             )
@@ -3561,16 +4102,130 @@ def main(argv: list[str] | None = None) -> int:
             on_stream_chunk=_STREAM_STATE.on_chunk,
             on_thinking_chunk=_STREAM_STATE.on_thinking_chunk,
         )
-        await mgr.init_mcp_servers()
+        # Kimi parity: refresh OAuth-backed provider tokens at startup.
         try:
-            if prompt_value and not (args.resume or args.fork or args.last):
-                return await _run_once(mgr, prompt_value, args.yes, plan_mode=args.plan)
+            from coderai.core.openai_client import ensure_oauth_fresh
+
+            await ensure_oauth_fresh()
+        except Exception:
+            pass
+        # Kimi parity: --add-dir preload + --continue resolution.
+        if getattr(args, "add_dirs", None):
+            import pathlib as _plm
+
+            for _d in args.add_dirs:
+                _p = _plm.Path(_d).expanduser().resolve()
+                if _p.is_dir() and str(_p) not in mgr.additional_dirs:
+                    mgr.additional_dirs.append(str(_p))
+        resume_arg = args.resume
+        last_arg = bool(args.last or getattr(args, "continue_session", False))
+        if getattr(args, "afk", False):
+            try:
+                mgr.set_afk(True)
+            except Exception:
+                pass
+        if getattr(args, "wire", False):
+            # Kimi parity: --wire serves the wire protocol on stdio with a
+            # quiet manager: interactive stream callbacks print Rich markup,
+            # which would corrupt the JSON-RPC stream on stdout.
+            from coderai.core.wire.server import run_wire_stdio
+
+            wire_mgr = build_session_manager(
+                project_root,
+                model=args.model,
+                preset=preset_mode,
+                non_interactive=True,
+            )
+            if getattr(args, "add_dirs", None):
+                for _d in args.add_dirs:
+                    _p = _plm.Path(_d).expanduser().resolve()
+                    if _p.is_dir() and str(_p) not in wire_mgr.additional_dirs:
+                        wire_mgr.additional_dirs.append(str(_p))
+            wire_session: str | None = None
+            if isinstance(resume_arg, str) and resume_arg.strip():
+                wire_session = wire_mgr.resolve_session_id(resume_arg.strip()) or resume_arg.strip()
+            elif last_arg:
+                _sessions = wire_mgr.list_sessions()
+                wire_session = _sessions[0].id if _sessions else None
+            try:
+                return await run_wire_stdio(wire_mgr, wire_session)
+            finally:
+                await close_session_manager(wire_mgr)
+        # Kimi parity: headless modes connect MCP inline; the interactive
+        # shell defers to a background task (fast start, joined per turn).
+        _will_print = bool(getattr(args, "print_mode", False) and prompt_value)
+        _will_run_once = bool(prompt_value and not (resume_arg or args.fork or last_arg))
+        if _will_print or _will_run_once:
+            await mgr.init_mcp_servers()
+        else:
+            mgr.start_background_mcp_loading()
+        try:
+            if getattr(args, "print_mode", False) and prompt_value:
+                # Read stdin when --input-format stream-json / piped input.
+                stdin_prompt = ""
+                if not sys.stdin.isatty():
+                    try:
+                        stdin_prompt = sys.stdin.read().strip()
+                    except Exception:
+                        stdin_prompt = ""
+                full_prompt = prompt_value
+                if getattr(args, "input_format", None) == "stream-json" and stdin_prompt:
+                    try:
+                        payload = json.loads(stdin_prompt)
+                        if isinstance(payload, dict) and payload.get("prompt"):
+                            full_prompt = str(payload["prompt"])
+                    except Exception:
+                        full_prompt = stdin_prompt or prompt_value
+                elif stdin_prompt and not has_prompt_flag and not has_positional:
+                    full_prompt = stdin_prompt
+                # Kimi parity: --continue with a prompt resumes the latest
+                # session instead of forking a fresh one.
+                _resume_target: str | None = None
+                if last_arg and not (resume_arg or args.fork):
+                    from coderai.cli.metadata import get_last_session_id
+
+                    _sessions = mgr.list_sessions()
+                    _resume_target = _sessions[0].id if _sessions else None
+                    if _resume_target is None:
+                        try:
+                            _resume_target = get_last_session_id(project_root)
+                        except Exception:
+                            _resume_target = None
+                    if _resume_target is not None:
+                        await mgr.reply_session(
+                            _resume_target, full_prompt, plan_mode=args.plan
+                        )
+                        await _drain_pending_interactions(mgr, _resume_target, effective_yes)
+                        if getattr(args, "final_message_only", False):
+                            _emit_final_message_only(mgr, _resume_target)
+                        _entry = mgr.get_session(_resume_target)
+                        return 1 if (_entry and _entry.status == "failed") else 0
+                rc = await _run_once(
+                    mgr,
+                    full_prompt,
+                    effective_yes,
+                    plan_mode=args.plan,
+                    final_message_only=bool(getattr(args, "final_message_only", False)),
+                    output_format=getattr(args, "output_format", None),
+                )
+                if getattr(args, "output_format", None) in ("stream-json", "json"):
+                    print(json.dumps({"exit_code": rc, "session": "print-mode"}))
+                return rc
+            if prompt_value and not (resume_arg or args.fork or last_arg):
+                return await _run_once(
+                    mgr,
+                    prompt_value,
+                    effective_yes,
+                    plan_mode=args.plan,
+                    final_message_only=bool(getattr(args, "final_message_only", False)),
+                    output_format=getattr(args, "output_format", None),
+                )
             return await _run_interactive(
                 mgr,
-                args.yes,
-                resume=args.resume,
+                effective_yes,
+                resume=resume_arg,
                 fork=args.fork,
-                last=args.last,
+                last=last_arg,
                 plan_mode=args.plan,
                 initial_prompt=prompt_value,
             )

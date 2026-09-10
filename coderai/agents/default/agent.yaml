@@ -1,0 +1,35 @@
+version: 1
+agent:
+  name: "default"
+  system_prompt_path: ./system.md
+  system_prompt_args:
+    ROLE_ADDITIONAL: ""
+  tools:
+    - "subagent"
+    - "SendDMail"
+    - "Think"
+    - "AskUserQuestion"
+    - "todo_write"
+    - "bash"
+    - "job_list"
+    - "job_output"
+    - "job_kill"
+    - "read"
+    - "glob"
+    - "grep"
+    - "edit"
+    - "write"
+    - "WebSearch"
+    - "WebFetch"
+    - "exit_plan_mode"
+    - "enter_plan_mode"
+  subagents:
+    coder:
+      path: ./coder.yaml
+      description: "Good at general software engineering tasks."
+    explore:
+      path: ./explore.yaml
+      description: "Fast codebase exploration with prompt-enforced read-only behavior."
+    plan:
+      path: ./plan.yaml
+      description: "Read-only implementation planning and architecture design."

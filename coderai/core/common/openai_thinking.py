@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 ReasoningEffortLevel = Literal["off", "minimal", "low", "medium", "high", "max"]
+
+#: Default response field carrying reasoning text (Kimi ``reasoning_key`` parity).
+DEFAULT_REASONING_KEY = "reasoning_content"
 
 _OFF_ALIASES = {"off", "none", "disabled", "false", "0", "disable"}
 _OPENAI_EFFORTS = {"low", "medium", "high", "none"}
@@ -96,3 +99,42 @@ def build_thinking_request_options(
             "reasoning_effort": effort,
         }
     }
+
+
+def extract_reasoning_content(message: Any, reasoning_key: str | None = None) -> Any:
+    """Read reasoning text from a response message via the provider's key.
+
+    Kimi parity: ``reasoning_key`` (default ``"reasoning_content"``) selects
+    the response field, so providers that deviate from the OpenAI convention
+    still surface their thinking trace. Accepts dicts and objects.
+    """
+    key = (reasoning_key or "").strip() or DEFAULT_REASONING_KEY
+    if isinstance(message, dict):
+        return message.get(key)
+    return getattr(message, key, None)
+
+
+def resolve_reasoning_key(client_info: dict[str, Any] | None = None) -> str:
+    """Resolve the active reasoning key: client info → typed provider → default."""
+    if isinstance(client_info, dict):
+        key = str(client_info.get("reasoningKey") or "").strip()
+        if key:
+            return key
+    return DEFAULT_REASONING_KEY
+
+
+def reasoning_key_for_model(model: str) -> str:
+    """Look up the typed provider's reasoning key for a model (cheap, no client)."""
+    try:
+        from coderai.core.typed_config import load_typed_config
+
+        typed = load_typed_config()
+        for key, m in typed.models.items():
+            if key == model or m.model == model:
+                provider = typed.providers.get(m.provider)
+                if provider is not None and provider.reasoning_key:
+                    return provider.reasoning_key
+                break
+    except Exception:
+        pass
+    return DEFAULT_REASONING_KEY

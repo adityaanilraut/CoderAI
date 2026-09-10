@@ -27,6 +27,27 @@ dependencies = [
     "requests>=2.31.0",
     "pyyaml>=6.0",
     "prompt-toolkit>=3.0.52",
+    "pydantic>=2.0",
+    "tomlkit>=0.12.0",
+    # loguru is optional: core/log.py falls back to stdlib logging when absent.
+    # Phase 0 (PORT_PLAN.md): Kimi-structure deps, already installed in the
+    # Framework python3.14 build (kosong 0.56.0, pykaos 0.9.0, typer 0.21.1,
+    # fastmcp 3.2.4, agent-client-protocol 0.8.0).
+    "kosong[contrib]==0.56.0",
+    "pykaos==0.9.0",
+    "typer>=0.21",
+    "fastmcp>=3.2",
+    "tenacity>=9",
+    "jinja2>=3.1",
+    "aiofiles>=24",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "agent-client-protocol>=0.8",
+    # Phase 1 (PORT_PLAN.md): clipboard (pillow/pyperclip) + telemetry transport (aiohttp).
+    "pillow>=10",
+    "pyperclip>=1.8",
+    "aiohttp>=3.10",
+    "certifi>=2024",
 ]
 
 [project.optional-dependencies]
@@ -57,9 +78,13 @@ coderai = [
     "vendor/rg",
     "vendor/rg-*",
     "vendor/rg.exe",
+    "prompts/*.md",
+    "tools/plan/*.md",
     "skills/*/SKILL.md",
     "skills/*/references/*.md",
     "skills/*/scripts/*.py",
+    "agents/*/*.yaml",
+    "agents/*/*.md",
 ]
 
 [tool.setuptools.dynamic]
