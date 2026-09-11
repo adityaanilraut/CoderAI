@@ -36,7 +36,7 @@ class WireEmitter:
     """Fan-out hub: session wire passthrough + bounded replay buffer."""
 
     def __init__(self, buffer_size: int = 2000) -> None:
-        from coderai.core.wire.bus import Wire
+        from coderai.wire import Wire
 
         self._local = Wire()
         self._buffer: deque[Any] = deque(maxlen=buffer_size)
@@ -94,87 +94,87 @@ class WireEmitter:
 
     # -- typed helpers (Kimi soul event parity) --------------------------------
     def turn_begin(self, user_input: Any) -> None:
-        from coderai.core.wire.types import TurnBegin
+        from coderai.wire.types import TurnBegin
 
         self.send(TurnBegin(user_input=user_input))
 
     def turn_end(self) -> None:
-        from coderai.core.wire.types import TurnEnd
+        from coderai.wire.types import TurnEnd
 
         self.send(TurnEnd())
 
     def step_begin(self, n: int) -> None:
-        from coderai.core.wire.types import StepBegin
+        from coderai.wire.types import StepBegin
 
         self.send(StepBegin(n=n))
 
     def step_interrupted(self) -> None:
-        from coderai.core.wire.types import StepInterrupted
+        from coderai.wire.types import StepInterrupted
 
         self.send(StepInterrupted())
 
     def text(self, text: str) -> None:
-        from coderai.core.wire.types import TextPart
+        from coderai.wire.types import TextPart
 
         self.send(TextPart(text=text))
 
     def think(self, text: str) -> None:
-        from coderai.core.wire.types import ThinkPart
+        from coderai.wire.types import ThinkPart
 
         self.send(ThinkPart(text=text))
 
     def status(self, **kwargs: Any) -> None:
-        from coderai.core.wire.types import StatusUpdate
+        from coderai.wire.types import StatusUpdate
 
         self.send(StatusUpdate(**kwargs))
 
     def btw_begin(self, question: str) -> str:
-        from coderai.core.wire.types import BtwBegin
+        from coderai.wire.types import BtwBegin
 
         bid = uuid.uuid4().hex[:8]
         self.send(BtwBegin(id=bid, question=question))
         return bid
 
     def btw_end(self, bid: str, response: str | None, error: str | None) -> None:
-        from coderai.core.wire.types import BtwEnd
+        from coderai.wire.types import BtwEnd
 
         self.send(BtwEnd(id=bid, response=response, error=error))
 
     def compaction_begin(self) -> None:
-        from coderai.core.wire.types import CompactionBegin
+        from coderai.wire.types import CompactionBegin
 
         self.send(CompactionBegin())
 
     def compaction_end(self) -> None:
-        from coderai.core.wire.types import CompactionEnd
+        from coderai.wire.types import CompactionEnd
 
         self.send(CompactionEnd())
 
     def mcp_loading_begin(self) -> None:
-        from coderai.core.wire.types import MCPLoadingBegin
+        from coderai.wire.types import MCPLoadingBegin
 
         self.send(MCPLoadingBegin())
 
     def mcp_loading_end(self) -> None:
-        from coderai.core.wire.types import MCPLoadingEnd
+        from coderai.wire.types import MCPLoadingEnd
 
         self.send(MCPLoadingEnd())
 
     def hook_triggered(self, event: str, target: str = "", count: int = 1) -> None:
-        from coderai.core.wire.types import HookTriggered
+        from coderai.wire.types import HookTriggered
 
         self.send(HookTriggered(event=event, target=target, hook_count=count))
 
     def hook_resolved(
         self, event: str, target: str = "", action: str = "allow", reason: str = ""
     ) -> None:
-        from coderai.core.wire.types import HookResolved
+        from coderai.wire.types import HookResolved
 
         self.send(HookResolved(event=event, target=target, action=action, reason=reason))  # type: ignore[arg-type]
 
     async def drain_to_stream_json(self) -> list[dict[str, Any]]:
         """Serialize buffered messages as stream-json envelopes."""
-        from coderai.core.wire.types import serialize_wire_message
+        from coderai.wire.types import serialize_wire_message
 
         with self._lock:
             msgs = list(self._buffer)

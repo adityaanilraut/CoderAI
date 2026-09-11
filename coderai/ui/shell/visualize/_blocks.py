@@ -671,7 +671,7 @@ def _format_step_retry(retry: Any) -> Text:
 """Thinking mode visual hierarchy and reasoning styling.
 
 Canonical reasoning rendering lives here; live streaming pulse is
-now unified in coderai.cli.stream_blocks._ContentBlock(is_think=True).
+now unified in coderai.ui.shell.visualize._blocks._ContentBlock(is_think=True).
 This module keeps the stable public API (summarize_thinking,
 render_thinking_block) and retains LiveThinkingStreamer as legacy
 fallback for non-Rich / non-TTY paths (raw \\r). New live code should
@@ -897,7 +897,7 @@ from typing import Any
 from rich.markup import escape
 
 from coderai.utils.rich.diff_render import render_diff_preview
-from coderai.core.session import SessionMessage
+from coderai.soul.session.manager import SessionMessage
 
 _RICH = True
 

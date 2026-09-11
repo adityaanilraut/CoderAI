@@ -11,7 +11,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from coderai.core.tools.types import ToolResult, as_str
+from coderai.tools.legacy.types import ToolResult, as_str
 
 logger = logging.getLogger(__name__)
 

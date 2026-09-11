@@ -130,7 +130,7 @@ class ToolExecutor:
     def _plugin_host_values(self) -> dict[str, str]:
         try:
             from coderai.plugin.manager import collect_host_values
-            from coderai.core.settings import resolve_current_settings
+            from coderai.config import resolve_current_settings
 
             merged = dict(resolve_current_settings(self.project_root))
             if self.create_openai_client is not None:
@@ -458,7 +458,7 @@ class ToolExecutor:
                     metadata={"rateLimited": True, "retryAfterSeconds": retry_after},
                 )
 
-        from coderai.core.hooks import HookPoint, run_hook_point
+        from coderai.hooks import HookPoint, run_hook_point
 
         pre_outcome = run_hook_point(
             HookPoint.PRE_TOOL_USE,
@@ -676,7 +676,7 @@ class ToolExecutor:
         context: ToolExecutionContext,
         hooks: ToolExecutionHooks | dict[str, Any] | None,
     ) -> ToolResult:
-        from coderai.core.hooks import (
+        from coderai.hooks import (
             run_post_tool_use,
             run_post_tool_use_failure,
             run_on_tool_error,

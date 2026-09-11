@@ -235,7 +235,7 @@ class WireServer:
         if self._streaming:
             return _error(msg_id, ErrorCodes.INVALID_STATE, "An agent turn is already in progress")
         from coderai._version import __version__
-        from coderai.cli.commands import COMMAND_CATALOG
+        from coderai.ui.shell.slash import COMMAND_CATALOG
         from coderai.hooks.config import HOOK_EVENT_TYPES
 
         rejected: list[dict[str, str]] = []
@@ -405,7 +405,7 @@ class WireServer:
         events = 0
         requests = 0
         try:
-            from coderai.core.wire.emitter import get_emitter
+            from coderai.wire.emitter import get_emitter
 
             for msg in get_emitter().buffered():
                 if is_request(msg):
@@ -531,7 +531,7 @@ class WireServer:
     def _start_event_forwarding(self) -> asyncio.Task | None:
         """Forward live turn events from the process emitter to the client."""
         try:
-            from coderai.core.wire.emitter import get_emitter
+            from coderai.wire.emitter import get_emitter
 
             ui_side = get_emitter().ui_side(merge=False)
             # Subscribing replays emitter history; drop it so each turn only

@@ -24,7 +24,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from coderai.core.tools.types import ToolExecutionContext
+from coderai.tools.legacy.types import ToolExecutionContext
 
 logger = logging.getLogger(__name__)
 
@@ -327,7 +327,7 @@ def run_hook_point(
 
     _wire = None
     try:
-        from coderai.core.wire.emitter import get_emitter
+        from coderai.wire.emitter import get_emitter
 
         _wire = get_emitter()
     except Exception:
@@ -366,7 +366,7 @@ def run_hook_point(
     merged = merge_hook_outputs(outputs)
     if _wire is not None:
         try:
-            from coderai.core.wire.types import HookResolved
+            from coderai.wire.types import HookResolved
 
             _wire.send(
                 HookResolved(

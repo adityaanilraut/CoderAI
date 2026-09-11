@@ -15,18 +15,18 @@ from typing import Any
 
 import pytest
 
-from coderai.cli.plan_review import extract_plan_options, prompt_plan_review
-from coderai.core.lsp.client import LspClient
-from coderai.core.lsp.protocol import LspFrameParser, encode_lsp_message
-from coderai.core.mcp.client import McpClient
-from coderai.core.mcp.manager import McpManager
-from coderai.core.mcp.oauth import (
+from coderai.ui.shell.visualize._approval_panel import extract_plan_options, prompt_plan_review
+from coderai.lsp.client import LspClient
+from coderai.lsp.protocol import LspFrameParser, encode_lsp_message
+from coderai.mcp.client import McpClient
+from coderai.mcp.manager import McpManager
+from coderai.mcp_oauth import (
     apply_bearer_auth,
     has_server_token,
     resolve_server_bearer_token,
     store_server_token,
 )
-from coderai.core.oauth import (
+from coderai.auth.oauth import (
     KIMI_CODE_OAUTH_KEY,
     OAuthDeviceExpired,
     OAuthManager,
@@ -37,17 +37,17 @@ from coderai.core.oauth import (
     save_token,
     wait_for_device_token,
 )
-from coderai.core.plugin import PluginError, parse_plugin_json
-from coderai.core.plugin.manager import (
+from coderai.plugin import PluginError, parse_plugin_json
+from coderai.plugin.manager import (
     collect_host_values,
     install_plugin,
     list_plugins,
     refresh_plugin_configs,
     remove_plugin,
 )
-from coderai.core.plugin.tool import find_plugin_tool, run_plugin_tool
-from coderai.core.skill import list_skills
-from coderai.core.tools.lsp import handle_lsp_tool
+from coderai.plugin.tool import find_plugin_tool, run_plugin_tool
+from coderai.skill import list_skills
+from coderai.tools.legacy.lsp import handle_lsp_tool
 
 
 @pytest.fixture
@@ -190,7 +190,7 @@ async def test_mcp_manager_converts_discovered_schema():
 
 async def test_mcp_manager_reports_unauthorized_status(monkeypatch):
     """A 401 from an OAuth-guarded server surfaces as an unauthorized status."""
-    import coderai.core.mcp.manager as manager_mod
+    import coderai.mcp.manager as manager_mod
 
     class _FailClient:
         last_http_status = 401
@@ -216,7 +216,7 @@ async def test_mcp_manager_reports_unauthorized_status(monkeypatch):
 
 async def test_mcp_deferred_loads_in_background(tmp_path):
     """Session managers start MCP loading in the background and await readiness."""
-    from coderai.core.session import SessionManager
+    from coderai.soul.session.manager import SessionManager
 
     stub_client = lambda: {"client": None, "model": "m"}  # noqa: E731
     mgr = SessionManager(
@@ -349,7 +349,7 @@ def test_oauth_store_protects_token_file(share_dir: Path):
 
 def test_oauth_manager_refreshes_stale_token(share_dir: Path, monkeypatch: pytest.MonkeyPatch):
     """The manager swaps a stale token for a fresh one via the refresh hook."""
-    import coderai.core.oauth as oauth_mod
+    import coderai.auth.oauth as oauth_mod
 
     save_token("oauth/k3", OAuthToken(access_token="old", refresh_token="live", expires_at=1.0))
     fresh = OAuthToken(access_token="new", refresh_token="live2", expires_at=9999999999.0)

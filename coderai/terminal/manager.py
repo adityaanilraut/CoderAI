@@ -79,7 +79,7 @@ class TerminalSession:
 
         self._sandbox_meta: dict[str, Any] = {}
         if sandbox_mode:
-            from coderai.core.sandbox import wrap_sandbox_command
+            from coderai.sandbox import wrap_sandbox_command
 
             cmd_args, self._sandbox_meta = wrap_sandbox_command(
                 cmd_args,
@@ -111,7 +111,7 @@ class TerminalSession:
         except Exception:
             profile = self._sandbox_meta.get("sandboxProfile")
             if profile:
-                from coderai.core.sandbox import delete_seatbelt_profile
+                from coderai.sandbox import delete_seatbelt_profile
 
                 delete_seatbelt_profile(profile)
             os.close(self.master_fd)
@@ -236,7 +236,7 @@ class TerminalSession:
         """Terminate process tree with 3-stage escalation and close fds."""
         if self.is_alive:
             try:
-                from coderai.core.common.process_tree import escalated_kill_process_tree
+                from coderai.utils.subprocess_env import escalated_kill_process_tree
 
                 escalated_kill_process_tree(self.proc.pid, int_grace_sec=0.2, term_grace_sec=0.3)
                 if self.is_alive:
@@ -246,7 +246,7 @@ class TerminalSession:
 
         profile = getattr(self, "_sandbox_meta", {}).get("sandboxProfile")
         if profile:
-            from coderai.core.sandbox import delete_seatbelt_profile
+            from coderai.sandbox import delete_seatbelt_profile
 
             delete_seatbelt_profile(profile)
 

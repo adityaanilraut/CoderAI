@@ -6,7 +6,7 @@ alongside (not inside) the JSONL log. It owns approval flags, workspace
 scope, title bookkeeping, plan-mode persistence, and the todo list, so a
 resumed session restores behavior, not just history.
 
-Writes use :func:`coderai.core.common.atomic.atomic_json_write`.
+Writes use :func:`coderai.utils.io.atomic_json_write`.
 """
 
 from __future__ import annotations
@@ -17,8 +17,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
-from coderai.core.common.atomic import atomic_json_write
-from coderai.core.log import logger
+from coderai.utils.io import atomic_json_write
+from coderai.log import logger
 
 STATE_FILE_NAME = "state.json"
 

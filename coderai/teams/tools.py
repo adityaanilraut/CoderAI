@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from coderai.teams.manager import get_team_manager
-from coderai.core.tools.types import ToolExecutionContext, ToolResult, as_str
+from coderai.tools.legacy.types import ToolExecutionContext, ToolResult, as_str
 
 
 async def handle_spawn_teammate_tool(

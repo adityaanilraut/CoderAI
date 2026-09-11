@@ -8,7 +8,7 @@ import time
 import uuid
 from typing import Any
 
-from coderai.core.agents import get_agent_registry
+from coderai.subagents.core import get_agent_registry
 from coderai.teams.concurrency import ConcurrencyConflictError
 from coderai.teams.deadlock import assert_acyclic_dependencies
 from coderai.teams.mailbox import ActorChannel
@@ -348,7 +348,7 @@ class TeamManager:
         """Execute task assigned to a teammate."""
         try:
             from pathlib import Path
-            from coderai.core.openai_client import create_openai_client
+            from coderai.llm import create_openai_client
             from coderai.subagents.builder import SubAgentSpec
             from coderai.subagents.runner import SubAgentRunner
 

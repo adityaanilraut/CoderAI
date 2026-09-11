@@ -4,7 +4,7 @@ Persistence: append-only JSONL event log + a sessions index under
 `~/.coderai/projects/<projectCode>/`, with token-threshold compaction,
 isolated GitFileHistory checkpoint-based undo, subagent orchestration, and Plan Mode gating.
 
-Event model: ``SessionEvent`` from ``coderai.core.events`` is the canonical
+Event model: ``SessionEvent`` from ``coderai.events`` is the canonical
 log entry.  Legacy ``SessionMessage`` is preserved for backward compat with
 existing session files and CLI rendering.
 """
@@ -175,7 +175,7 @@ class SessionManager:
         # Subsystems: Jobs, Schedule, Agents
         from coderai.background.manager import JobStore
         from coderai.schedule import ScheduleManager
-        from coderai.core.agents import AgentRegistry
+        from coderai.subagents.core import AgentRegistry
 
         self.job_store = JobStore()
         sched_storage = str(self._storage()["project_dir"] / "schedule.json")
@@ -1268,7 +1268,7 @@ class SessionManager:
         deferred_prompt: str | None = None,
     ) -> None:
         from coderai.soul.kimisoul import AgentLoop
-        from coderai.core.agents import (
+        from coderai.subagents.core import (
             register_session_notice_sink,
             unregister_session_notice_sink,
         )
@@ -1942,7 +1942,7 @@ class SessionManager:
                 pass
 
         clear_session_state(target_id)
-        from coderai.core.agents import get_task_supervisor
+        from coderai.background import get_task_supervisor
 
         get_task_supervisor().cleanup_session_tasks(target_id)
         ctrl = self.session_controllers.pop(target_id, None)

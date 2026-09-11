@@ -8,18 +8,18 @@ from unittest.mock import MagicMock, patch
 
 from rich.console import Console
 
-from coderai.cli.tool_card import _render_search_card, render_tool_card
-from coderai.core.network.cache import ResponseCache, get_search_cache
-from coderai.core.network.client import HttpClient, HttpResponse
-from coderai.core.network.sanitizer import (
+from coderai.ui.shell.visualize._blocks import _render_search_card, render_tool_card
+from coderai.network.cache import ResponseCache, get_search_cache
+from coderai.utils.aiohttp import HttpClient, HttpResponse
+from coderai.tools.web.fetch import (
     extract_and_sanitize_html,
     sanitize_prompt_injection,
     slice_payload,
 )
-from coderai.core.session import SessionMessage
-from coderai.core.tools.web_fetch import handle_web_fetch_tool
-from coderai.core.tools.web_search import handle_web_search_tool
-from coderai.core.web_providers import (
+from coderai.soul.session.manager import SessionMessage
+from coderai.tools.web.fetch import handle_web_fetch_tool
+from coderai.tools.web.search import handle_web_search_tool
+from coderai.web_providers import (
     ExaSearchProvider,
     HttpSearchProvider,
     PerplexitySearchProvider,
@@ -108,7 +108,7 @@ async def test_web_search_returns_metadata_format():
             )
         ],
     )
-    with patch("coderai.core.tools.web_search.resolve_web_search_provider") as mock_resolve:
+    with patch("coderai.tools.web.search.resolve_web_search_provider") as mock_resolve:
         mock_prov = MagicMock(id="mock", search=MagicMock(return_value=fake_res))
         mock_resolve.return_value = mock_prov
         res = await handle_web_search_tool({"query": "openai news"}, None)

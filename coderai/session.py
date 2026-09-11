@@ -29,7 +29,7 @@ from coderai.wire.file import WireFile
 from coderai.wire.types import TurnBegin
 
 # Backward-compat re-exports from core.session
-from coderai.core.session import (
+from coderai.soul.session.manager import (
     SessionEntry,
     SessionManager,
     SessionMessage,

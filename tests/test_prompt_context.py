@@ -7,10 +7,10 @@ import pathlib
 from typing import Any
 from unittest.mock import MagicMock
 
-from coderai.cli.app import _StreamState
-from coderai.cli.file_mention import expand_file_mentions
-from coderai.core.common.file_utils import normalize_line_endings
-from coderai.core.common.invariants import (
+from coderai.ui.shell.app import _StreamState
+from coderai.ui.shell.prompt import expand_file_mentions
+from coderai.utils.path import normalize_line_endings
+from coderai.utils.common.invariants import (
     InvariantViolation,
     assert_session_invariants,
     verify_monotonic_sequence_numbers,
@@ -18,29 +18,29 @@ from coderai.core.common.invariants import (
     verify_session_invariants,
     verify_turn_step_boundaries,
 )
-from coderai.core.common.llm_error import describe_llm_error, mask_sensitive
-from coderai.core.common.llm_retry import classify_llm_failure, is_failover_eligible
-from coderai.core.common.message_converter import OpenAIMessageConverter
-from coderai.core.common.model_capabilities import (
+from coderai.utils.common.llm_error import describe_llm_error, mask_sensitive
+from coderai.utils.common.llm_retry import classify_llm_failure, is_failover_eligible
+from coderai.utils.common.message_converter import OpenAIMessageConverter
+from coderai.utils.common.model_capabilities import (
     defaults_to_thinking_mode,
     get_default_reasoning_effort,
     get_supported_reasoning_efforts,
     resolve_adaptive_reasoning_effort,
 )
-from coderai.core.common.openai_thinking import (
+from coderai.utils.common.openai_thinking import (
     ANTHROPIC_THINKING_BUDGETS,
     GEMINI_THINKING_BUDGETS,
     build_thinking_request_options,
     get_thinking_token_budget,
     normalize_reasoning_effort,
 )
-from coderai.core.common.session_reference import (
+from coderai.utils.common.session_reference import (
     extract_session_reference_ids,
     render_session_snapshot,
     resolve_session_references,
 )
-from coderai.core.common.usage import accumulate_usage_dict, extract_usage_dict
-from coderai.core.prompt import (
+from coderai.utils.common.usage import accumulate_usage_dict, extract_usage_dict
+from coderai.prompt import (
     CACHE_BOUNDARY_TOKEN,
     build_cache_stabilized_messages,
     format_tool_definitions,
@@ -48,15 +48,15 @@ from coderai.core.prompt import (
     get_system_prompt,
     get_tools,
 )
-from coderai.core.session import (
+from coderai.soul.session.manager import (
     SessionManager,
     SessionMessage,
     _call_stream_or_sync,
     sanitize_repetition_loops,
 )
-from coderai.core.session_store import JsonlSessionStore
-from coderai.core.tools.sanitizer import sanitize_text, sanitize_tool_output
-from coderai.core.tools.types import ToolResult
+from coderai.soul.session.store import JsonlSessionStore
+from coderai.tools.legacy.sanitizer import sanitize_text, sanitize_tool_output
+from coderai.tools.legacy.types import ToolResult
 
 
 def _msg(id: str, role: str, content: str = "", **kw: Any) -> SessionMessage:

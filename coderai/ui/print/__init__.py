@@ -16,8 +16,8 @@ from rich.markdown import Markdown
 
 from coderai.cli.session_factory import build_session_manager, close_session_manager
 from coderai.ui.shell.visualize._blocks import render_thinking_block
-from coderai.core.openai_client import create_openai_client as _core_client
-from coderai.core.session import SessionMessage
+from coderai.llm import create_openai_client as _core_client
+from coderai.soul.session.manager import SessionMessage
 
 console = Console()
 
@@ -79,7 +79,7 @@ async def run_exec_session(
 
     try:
         try:
-            from coderai.core.openai_client import ensure_oauth_fresh
+            from coderai.llm import ensure_oauth_fresh
 
             await ensure_oauth_fresh()
         except Exception:

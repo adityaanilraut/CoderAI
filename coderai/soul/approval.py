@@ -18,9 +18,9 @@ from typing import Any
 from collections.abc import Callable
 
 from coderai.approval_runtime import ApprovalRuntime  # Kimi parity: single registry
-from coderai.core.common.validate import clean_json_string
-from coderai.core.state import get_snippet, is_absolute_file_path, normalize_file_path
-from coderai.core.tools.types import normalize_tool_call
+from coderai.utils.common.validate import clean_json_string
+from coderai.state import get_snippet, is_absolute_file_path, normalize_file_path
+from coderai.tools.legacy.types import normalize_tool_call
 
 # Scopes (matching settings.PermissionScope). "unknown" is a bash-only sentinel.
 ASK_SCOPES = {
@@ -173,7 +173,7 @@ def _generate_file_diff_preview(
     if not file_path:
         return None
     try:
-        from coderai.core.common.file_utils import build_diff_preview
+        from coderai.utils.path import build_diff_preview
 
         abs_path = (
             pathlib.Path(file_path)
@@ -346,7 +346,7 @@ def parse_tool_call_for_permissions(tool_call: Any) -> dict[str, Any] | None:
 
 def permission_coverage_gaps() -> set[str]:
     """Return built-in canonical tool names missing an explicit permission policy."""
-    from coderai.core.tools.registry import ToolRegistry
+    from coderai.tools.legacy.registry import ToolRegistry
 
     registered = {tool.name for tool in ToolRegistry().list_tools()}
     covered = PERMISSION_DESCRIBED_TOOLS | PERMISSION_EXEMPT_REGISTERED_TOOLS
@@ -416,7 +416,7 @@ def describe_tool_permission_request(
     read_permission_exempt_paths: list[str] | None = None,
     resolve_snippet_path: Callable[[str, str], str | None] | None = None,
 ) -> dict[str, Any]:
-    from coderai.core.tools.registry import get_tool_registry
+    from coderai.tools.legacy.registry import get_tool_registry
 
     requested_name = tool_call["function"]["name"]
     registered_name = get_tool_registry().resolve_name(requested_name)

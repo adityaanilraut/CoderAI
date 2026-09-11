@@ -16,12 +16,12 @@ from rich.panel import Panel
 from rich.table import Table
 
 from coderai.ui.shell.session_picker import select_with_arrows
-from coderai.core.common.model_capabilities import (
+from coderai.utils.common.model_capabilities import (
     CURATED_MODELS,
     get_model_badges,
 )
-from coderai.core.openai_client import clear_client_pool, probe_provider_connectivity
-from coderai.core.settings import (
+from coderai.llm import clear_client_pool, probe_provider_connectivity
+from coderai.config import (
     DEFAULT_BASE_URL,
     DEFAULT_MODEL,
     KNOWN_PROVIDERS,

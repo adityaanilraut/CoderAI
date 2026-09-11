@@ -18,16 +18,16 @@ import datetime
 import time
 from typing import Any, TYPE_CHECKING
 
-from coderai.core.common.error_logger import log_api_error
-from coderai.core.common.llm_error import describe_llm_error
-from coderai.core.common.model_capabilities import (
+from coderai.utils.logging import log_api_error
+from coderai.utils.common.llm_error import describe_llm_error
+from coderai.utils.common.model_capabilities import (
     is_fast_model,
     resolve_adaptive_reasoning_effort,
 )
-from coderai.core.common.openai_thinking import build_thinking_request_options
-from coderai.core.common.usage import extract_usage_dict
+from coderai.utils.common.openai_thinking import build_thinking_request_options
+from coderai.utils.common.usage import extract_usage_dict
 from coderai.soul.compaction import evaluate_compaction_trigger
-from coderai.core.events import (
+from coderai.events import (
     SessionEvent,
     make_turn_start,
     make_turn_end,
@@ -39,16 +39,16 @@ from coderai.soul.approval import (
     compute_tool_call_permissions,
     resolve_snippet_file_path,
 )
-from coderai.core.prompt import (
+from coderai.prompt import (
     calculate_context_budget,
     format_tool_definitions,
     get_tools,
 )
-from coderai.core.skill import get_skill_read_exempt_paths
-from coderai.core.state import rebuild_session_state_from_history
+from coderai.skill import get_skill_read_exempt_paths
+from coderai.state import rebuild_session_state_from_history
 
 if TYPE_CHECKING:
-    from coderai.core.session import SessionManager
+    from coderai.soul.session.manager import SessionManager
 
 
 class AgentLoop:
@@ -69,7 +69,7 @@ class AgentLoop:
 
     def _wire(self) -> Any:
         try:
-            from coderai.core.wire.emitter import get_emitter
+            from coderai.wire.emitter import get_emitter
 
             return get_emitter()
         except Exception:
@@ -173,7 +173,7 @@ class AgentLoop:
         deferred_prompt: str | None = None,
     ) -> None:
         """Run one activation until completion, pause, interruption, or iteration limit."""
-        from coderai.core.session import (
+        from coderai.soul.session.manager import (
             _accumulate_usage,
             _accumulate_usage_per_model,
             _normalize_tool_calls,

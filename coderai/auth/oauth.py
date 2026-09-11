@@ -37,7 +37,7 @@ from typing import Any, Literal, NamedTuple
 
 import requests
 
-from coderai.core.common.atomic import atomic_json_write
+from coderai.utils.io import atomic_json_write
 from coderai.share import get_share_dir
 
 from coderai.auth.platforms import (

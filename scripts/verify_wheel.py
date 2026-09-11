@@ -178,10 +178,10 @@ import importlib.resources
 import sys
 
 from coderai._version import __version__
-from coderai.core.session import SessionManager
-from coderai.core.common.file_history import GitFileHistory
-from coderai.core.tools.executor import ToolExecutor
-from coderai.core.tools.registry import get_tool_registry
+from coderai.soul.session.manager import SessionManager
+from coderai.utils.common.file_history import GitFileHistory
+from coderai.tools.legacy.executor import ToolExecutor
+from coderai.tools.legacy.registry import get_tool_registry
 
 metadata = importlib.metadata.metadata('coderai-agent')
 assert __version__ == metadata['Version'], (__version__, metadata['Version'])

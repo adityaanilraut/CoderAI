@@ -14,16 +14,16 @@ from coderai.utils.path import (
     has_file_changed_since_state,
     read_text_file_with_metadata,
 )
-from coderai.core.common.openai_thinking import build_thinking_request_options
-from coderai.core.common.string_matcher import (
+from coderai.utils.common.openai_thinking import build_thinking_request_options
+from coderai.utils.common.string_matcher import (
     find_occurrences as _find_occurrences,
     match_multistage,
     normalize_escaping as _normalize_escaping,
     normalize_loose_text as _normalize_loose_text,
     normalize_quotes as _normalize_quotes,
 )
-from coderai.core.common.validate import execute_validated_tool, semantic_boolean, semantic_integer
-from coderai.core.state import (
+from coderai.utils.common.validate import execute_validated_tool, semantic_boolean, semantic_integer
+from coderai.state import (
     FileSnippet,
     FileState,
     create_full_file_snippet,
@@ -35,7 +35,7 @@ from coderai.core.state import (
     normalize_file_path,
     record_file_state,
 )
-from coderai.core.tools.types import ToolResult, as_str
+from coderai.tools.legacy.types import ToolResult, as_str
 from coderai.tools.file.utils import check_file_write_access, write_file_with_callbacks
 
 MAX_CANDIDATE_COUNT = 5
@@ -158,8 +158,8 @@ def handle_edit_tool(args: dict[str, Any], context: Any) -> ToolResult:
                 snippet = create_full_file_snippet(
                     session_id, file_path, 1, total_lines, content_res["content"]
                 )
-                from coderai.core.state import mark_file_read
-                from coderai.core.tools.observation import get_observation_tracker
+                from coderai.state import mark_file_read
+                from coderai.tools.legacy.observation import get_observation_tracker
 
                 get_observation_tracker().record_observation(
                     session_id, file_path, content_res["content"]
@@ -203,7 +203,7 @@ def handle_edit_tool(args: dict[str, Any], context: Any) -> ToolResult:
                 error="File has been modified since read. Read it again before editing.",
             )
 
-        from coderai.core.tools.observation import get_observation_tracker
+        from coderai.tools.legacy.observation import get_observation_tracker
 
         allowed, obs_err = get_observation_tracker().check_mutation_allowed(session_id, file_path)
         if not allowed and obs_err:
@@ -840,13 +840,13 @@ from coderai.utils.path import (
     ensure_parent_directory,
     read_text_file_with_metadata,
 )
-from coderai.core.common.string_matcher import match_multistage
-from coderai.core.state import (
+from coderai.utils.common.string_matcher import match_multistage
+from coderai.state import (
     FileState,
     normalize_file_path,
     record_file_state,
 )
-from coderai.core.tools.types import ToolResult, as_str
+from coderai.tools.legacy.types import ToolResult, as_str
 from coderai.tools.file.utils import check_file_write_access, write_file_with_callbacks
 
 DEFAULT_MAX_OUTPUT_CHARS = 32_000
@@ -1040,7 +1040,7 @@ def _handle_view(
         )
 
     session_id = str(getattr(context, "session_id", "default") or "default")
-    from coderai.core.tools.observation import get_observation_tracker
+    from coderai.tools.legacy.observation import get_observation_tracker
 
     get_observation_tracker().record_observation(session_id, target_path, content=content)
 
@@ -1163,7 +1163,7 @@ def _handle_str_replace(
     from coderai.tools.file.utils import generate_virtual_patch, is_dry_run
 
     if not is_dry_run(context, args):
-        from coderai.core.tools.observation import get_observation_tracker
+        from coderai.tools.legacy.observation import get_observation_tracker
 
         allowed, obs_err = get_observation_tracker().check_mutation_allowed(
             session_id, target_path, require_observed=True
@@ -1296,7 +1296,7 @@ def _handle_insert(
     from coderai.tools.file.utils import generate_virtual_patch, is_dry_run
 
     if not is_dry_run(context, args):
-        from coderai.core.tools.observation import get_observation_tracker
+        from coderai.tools.legacy.observation import get_observation_tracker
 
         allowed, obs_err = get_observation_tracker().check_mutation_allowed(
             session_id, target_path, require_observed=True

@@ -17,8 +17,8 @@ from collections.abc import Callable
 
 import requests
 
-from coderai.core.common.process_tree import kill_process_tree
-from coderai.core.network.security import check_outbound_url
+from coderai.utils.subprocess_env import kill_process_tree
+from coderai.network.security import check_outbound_url
 
 logger = logging.getLogger(__name__)
 

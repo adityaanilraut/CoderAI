@@ -12,7 +12,7 @@ from collections.abc import Sequence
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the CLI, installing crash handlers for the whole process."""
-    from coderai.cli.app import main as run_cli
+    from coderai.ui.shell.app import main as run_cli
     from coderai.telemetry.crash import install_crash_handlers, set_phase
 
     # Installed first so startup-phase crashes are captured (Kimi parity).

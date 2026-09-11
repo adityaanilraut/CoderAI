@@ -14,7 +14,7 @@ import webbrowser
 from contextlib import suppress
 from typing import Any
 
-from coderai.core.oauth import (
+from coderai.auth.oauth import (
     KIMI_CODE_PLATFORM_ID,
     OAuthDeviceExpired,
     OAuthError,
@@ -45,7 +45,7 @@ def _emit(event: Any, as_json: bool) -> None:
 
 def perform_login_sync(*, open_browser: bool = True, as_json: bool = False) -> int:
     """Run the device flow synchronously (subcommand + setup wizard share this)."""
-    from coderai.core.oauth import OAuthEvent
+    from coderai.auth.oauth import OAuthEvent
 
     platform = get_platform_by_id(KIMI_CODE_PLATFORM_ID)
     if platform is None:

@@ -175,7 +175,7 @@ class SessionManagerEngine:
         Mirrors ``KimiCLI.run``'s contract so ``ACPSession.prompt`` can consume
         either engine unchanged.
         """
-        from coderai.core.wire.emitter import get_emitter
+        from coderai.wire.emitter import get_emitter
 
         ui_side = get_emitter().ui_side(merge=False)
         # Subscribing replays emitter history; drop it so a turn only streams

@@ -20,8 +20,8 @@ from coderai.acp.session import (
     save_engine_session_id,
 )
 from coderai.config import LLMModel
-from coderai.core.acp.runner import AcpRunConfig as CoreRunConfig
-from coderai.core.acp.runner import AcpSubagentRunner as CoreSubagentRunner
+from coderai.acp.runner import AcpRunConfig as CoreRunConfig
+from coderai.acp.runner import AcpSubagentRunner as CoreSubagentRunner
 
 
 @dataclass

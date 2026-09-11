@@ -20,8 +20,8 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from coderai.core.spill import SpillRef, try_save_text
-from coderai.core.tools.types import ToolExecutionContext, ToolResult, as_str
+from coderai.spill import SpillRef, try_save_text
+from coderai.tools.legacy.types import ToolExecutionContext, ToolResult, as_str
 
 GLOB_MAX_RESULTS = 100
 GREP_MAX_MATCHES = 250

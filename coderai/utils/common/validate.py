@@ -189,7 +189,7 @@ def execute_validated_tool(
     if preprocessor:
         preprocessed = preprocessor(raw_args)
         if not preprocessed.ok:
-            from coderai.core.tools.types import ToolResult
+            from coderai.tools.legacy.types import ToolResult
 
             return ToolResult(
                 ok=False,
@@ -203,7 +203,7 @@ def execute_validated_tool(
     if validator:
         is_valid, validated_args, error_msg = validator(args_to_validate)
         if not is_valid:
-            from coderai.core.tools.types import ToolResult
+            from coderai.tools.legacy.types import ToolResult
 
             return ToolResult(
                 ok=False,

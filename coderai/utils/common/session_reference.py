@@ -8,7 +8,7 @@ import logging
 import re
 from typing import Any
 
-from coderai.core.session_store import JsonlSessionStore
+from coderai.soul.session.store import JsonlSessionStore
 
 logger = logging.getLogger(__name__)
 

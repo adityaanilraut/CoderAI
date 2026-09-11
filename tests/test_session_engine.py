@@ -7,14 +7,14 @@ import pathlib
 
 import pytest
 
-from coderai.core.common.invariants import verify_session_invariants
-from coderai.core.common.llm_retry import (
+from coderai.utils.common.invariants import verify_session_invariants
+from coderai.utils.common.llm_retry import (
     classify_llm_failure,
     is_empty_llm_response,
     retry_delay_ms,
 )
-from coderai.core.compaction import BasicCompaction, ToolResultPruner
-from coderai.core.events import (
+from coderai.soul.compaction import BasicCompaction, ToolResultPruner
+from coderai.events import (
     SessionEvent,
     derive_messages_from_events,
     make_assistant_event,
@@ -23,18 +23,18 @@ from coderai.core.events import (
     make_turn_start,
     make_user_event,
 )
-from coderai.core.jobs import get_job_store, reset_job_store
-from coderai.core.session import SessionManager, SessionMessage, get_project_code
-from coderai.core.session_query.engine import SessionQueryEngine
-from coderai.core.session_state import load_session_state, save_session_state
-from coderai.core.session_store import JsonlSessionStore
-from coderai.core.tools.jobs import (
+from coderai.background import get_job_store, reset_job_store
+from coderai.soul.session.manager import SessionManager, SessionMessage, get_project_code
+from coderai.session_query.engine import SessionQueryEngine
+from coderai.session_state import load_session_state, save_session_state
+from coderai.soul.session.store import JsonlSessionStore
+from coderai.tools.background import (
     handle_job_kill_tool,
     handle_job_list_tool,
     handle_job_output_tool,
 )
-from coderai.core.tools.session_query import handle_session_query_tool
-from coderai.core.tools.types import TOOL_ABORTED_BEFORE_DISPATCH
+from coderai.tools.legacy.session_query import handle_session_query_tool
+from coderai.tools.legacy.types import TOOL_ABORTED_BEFORE_DISPATCH
 
 
 def _manager(tmp_path: pathlib.Path, **kwargs) -> SessionManager:
@@ -358,7 +358,7 @@ async def test_session_query_tool_handles_search_and_list(tmp_path, monkeypatch)
     )
     engine.store.save_index({"entries": [{"id": "sess_100", "summary": "Fix Database Pool"}]})
     monkeypatch.setattr(
-        "coderai.core.tools.session_query.SessionQueryEngine", lambda project_root: engine
+        "coderai.tools.legacy.session_query.SessionQueryEngine", lambda project_root: engine
     )
     ctx = type("Ctx", (), {"project_root": str(tmp_path), "session_id": "cur"})()
     found = await handle_session_query_tool(
@@ -372,7 +372,7 @@ async def test_session_query_tool_handles_search_and_list(tmp_path, monkeypatch)
 @pytest.mark.asyncio
 async def test_session_loop_retry_recovers_after_rate_limit(tmp_path, monkeypatch):
     """Retryable LLM failures retry as new turns without persisting error text."""
-    monkeypatch.setattr("coderai.core.session.retry_delay_ms", lambda *_a, **_k: 0)
+    monkeypatch.setattr("coderai.soul.session.manager.retry_delay_ms", lambda *_a, **_k: 0)
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))

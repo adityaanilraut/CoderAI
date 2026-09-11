@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from coderai.core.session import SessionManager, SessionMessage
+    from coderai.soul.session.manager import SessionManager, SessionMessage
 
 DEFAULT_MAX_TOOL_RESULT_CHARS = 32_000
 
@@ -234,8 +234,8 @@ class BasicCompaction(CompactionEngine):
         trigger: str = "pressure",
         preserve_ids: set[str] | None = None,
     ) -> CompactionResult | None:
-        from coderai.core.prompt import get_compact_prompt
-        from coderai.core.events import (
+        from coderai.prompt import get_compact_prompt
+        from coderai.events import (
             make_compaction_start,
             make_compaction_summary,
             make_compaction_end,
@@ -267,7 +267,7 @@ class BasicCompaction(CompactionEngine):
         tools_preset = settings.get("toolsPreset") or settings.get("preset")
         multimodal_mode = settings.get("multimodal", "default")
 
-        from coderai.core.prompt import get_tools, format_tool_definitions
+        from coderai.prompt import get_tools, format_tool_definitions
 
         tools = get_tools(
             {
@@ -289,7 +289,7 @@ class BasicCompaction(CompactionEngine):
             or not hasattr(converter, "convert_session_messages")
             or "Mock" in type(converter).__name__
         ):
-            from coderai.core.common.message_converter import OpenAIMessageConverter
+            from coderai.utils.common.message_converter import OpenAIMessageConverter
 
             converter = OpenAIMessageConverter()
 
@@ -434,7 +434,7 @@ class BasicCompaction(CompactionEngine):
         trigger: str = "pressure",
         preserve_ids: set[str] | None = None,
     ) -> CompactionResult | None:
-        from coderai.core.prompt import calculate_context_budget
+        from coderai.prompt import calculate_context_budget
 
         entry = self.manager._get_entry(session_id) or {}
         active_tokens = entry.get("activeTokens", 0)

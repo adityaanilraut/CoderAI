@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from coderai.core.tools.types import ToolExecutionContext, ToolResult, as_str
+from coderai.tools.legacy.types import ToolExecutionContext, ToolResult, as_str
 from coderai.workflow.engine import WorkflowContext, execute_workflow_script
 
 MAX_RESULT_CHARS = 50_000

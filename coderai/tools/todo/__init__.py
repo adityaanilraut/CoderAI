@@ -30,8 +30,8 @@ def handle(args: dict[str, Any], context: Any) -> ToolResult:
 
 
 def handle_update_plan_tool(args: dict[str, Any], context: Any) -> ToolResult:
-    from coderai.core.common.validate import execute_validated_tool
-    from coderai.core.tools.types import ToolResult
+    from coderai.utils.common.validate import execute_validated_tool
+    from coderai.tools.legacy.types import ToolResult
 
     def run(validated_args: dict[str, Any], _ctx: Any) -> ToolResult:
         metadata: dict[str, Any] = {"plan": validated_args["plan"]}
@@ -83,7 +83,7 @@ def todos_to_plan(todos: list[dict[str, Any]]) -> str:
 
 
 def handle_todo_write_tool(args: dict[str, Any], context: Any) -> ToolResult:
-    from coderai.core.tools.types import ToolResult
+    from coderai.tools.legacy.types import ToolResult
 
     todos = args.get("todos")
     if not isinstance(todos, list) or not todos:
@@ -134,7 +134,7 @@ def handle_todo_write_tool(args: dict[str, Any], context: Any) -> ToolResult:
                     context, "session_manager", None
                 )
             if mgr is not None and session_id:
-                from coderai.core.session_state import TodoItemState
+                from coderai.session_state import TodoItemState
 
                 state = mgr.get_session_state(session_id)
                 state.todos = [

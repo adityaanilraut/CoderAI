@@ -8,7 +8,7 @@ import json
 import pathlib
 from typing import Any
 
-from coderai.core.session import SessionEntry, SessionManager, SessionMessage
+from coderai.soul.session.manager import SessionEntry, SessionManager, SessionMessage
 from coderai.utils.sensitive import is_sensitive_file, sensitive_file_warning
 
 

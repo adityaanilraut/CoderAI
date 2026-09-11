@@ -8,28 +8,28 @@ import pathlib
 
 import pytest
 
-from coderai.core.state import clear_session_state
-from coderai.core.tools.ask_user_question import handle as ask_handle
-from coderai.core.tools.bash import clear_session_working_dir, handle as bash_handle
-from coderai.core.tools.edit import handle as edit_handle
-from coderai.core.tools.executor import ToolExecutor
-from coderai.core.tools.read import handle as read_handle
-from coderai.core.tools.registry import ToolRegistry
-from coderai.core.tools.search import handle_glob_tool, handle_grep_tool, resolve_rg_path
-from coderai.core.tools.str_replace_editor import handle_str_replace_editor_tool
-from coderai.core.tools.terminal import (
+from coderai.state import clear_session_state
+from coderai.tools.ask_user import handle as ask_handle
+from coderai.tools.shell import clear_session_working_dir, handle as bash_handle
+from coderai.tools.file.replace import handle as edit_handle
+from coderai.tools.legacy.executor import ToolExecutor
+from coderai.tools.file.read import handle as read_handle
+from coderai.tools.legacy.registry import ToolRegistry
+from coderai.tools.file.glob import handle_glob_tool, handle_grep_tool, resolve_rg_path
+from coderai.tools.file.replace import handle_str_replace_editor_tool
+from coderai.tools.legacy.terminal import (
     handle_terminal_close_tool,
     handle_terminal_open_tool,
     handle_terminal_send_tool,
 )
-from coderai.core.tools.types import (
+from coderai.tools.legacy.types import (
     ToolDefinition,
     ToolExecutionContext,
     ToolExecutionHooks,
     ToolResult,
 )
-from coderai.core.tools.update_plan import handle as plan_handle
-from coderai.core.tools.write import handle as write_handle
+from coderai.tools.todo import handle as plan_handle
+from coderai.tools.file.write import handle as write_handle
 
 
 def _ctx(tmp_path: pathlib.Path, session_id: str = "sess") -> dict:
@@ -292,9 +292,9 @@ def test_terminal_lifecycle_opens_sends_closes(tmp_path):
 @pytest.mark.asyncio
 async def test_web_search_mocked_returns_sources(tmp_path, monkeypatch):
     """WebSearch renders mocked provider sources without network access."""
-    from coderai.core.tools.web_search import handle as search_handle
+    from coderai.tools.web.search import handle as search_handle
     import coderai.tools.web.search as search_mod
-    from coderai.core.web_providers import WebSearchResult, WebSearchSource
+    from coderai.web_providers import WebSearchResult, WebSearchSource
 
     class _FakeProvider:
         id = "mock"
@@ -322,7 +322,7 @@ async def test_web_search_mocked_returns_sources(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_web_fetch_mocked_returns_markdown(tmp_path, monkeypatch):
     """WebFetch converts mocked HTML into markdown without network access."""
-    from coderai.core.tools.web_fetch import handle as fetch_handle
+    from coderai.tools.web.fetch import handle as fetch_handle
     import coderai.tools.web.fetch as fetch_mod
 
     class _FakeResp:

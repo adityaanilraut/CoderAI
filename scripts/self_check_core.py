@@ -1,4 +1,4 @@
-"""Offline self-check for coderai.core — no network, no LLM needed."""
+"""Offline self-check for coderai — no network, no LLM needed."""
 
 from __future__ import annotations
 
@@ -13,27 +13,27 @@ from typing import Any
 
 sys.path.insert(0, ".")
 
-from coderai.core.common.file_history import GitFileHistory
-from coderai.core.common.message_converter import OpenAIMessageConverter
-from coderai.core.permissions import (
+from coderai.utils.common.file_history import GitFileHistory
+from coderai.utils.common.message_converter import OpenAIMessageConverter
+from coderai.soul.approval import (
     PLAN_MODE_FORCE_ASK_SCOPES,
     compute_tool_call_permissions,
     evaluate_permission_scopes,
 )
-from coderai.core.prompt import (
+from coderai.prompt import (
     get_plan_mode_prompt,
     get_runtime_context,
     get_tools,
     load_agent_instructions,
 )
-from coderai.core.skill import (
+from coderai.skill import (
     build_skill_documents_prompt,
     extract_skill_frontmatter,
     list_skill_resource_files,
     strip_skill_prompt_metadata,
 )
-from coderai.core.session import SessionManager, SessionMessage
-from coderai.core.state import (
+from coderai.soul.session.manager import SessionManager, SessionMessage
+from coderai.state import (
     FileState,
     clear_session_state,
     create_snippet,
@@ -41,10 +41,10 @@ from coderai.core.state import (
     has_snippet_outdated_file_version,
     record_file_state,
 )
-from coderai.core.tools.bash import handle as bash_handle
-from coderai.core.tools.edit import handle as edit_handle
-from coderai.core.tools.read import handle as read_handle
-from coderai.core.tools.write import handle as write_handle
+from coderai.tools.shell import handle as bash_handle
+from coderai.tools.file.replace import handle as edit_handle
+from coderai.tools.file.read import handle as read_handle
+from coderai.tools.file.write import handle as write_handle
 
 
 def assert_eq(a: Any, b: Any, msg: str = "") -> None:
@@ -340,9 +340,9 @@ async def main() -> None:
 
     # 10. AskUserQuestion & UpdatePlan & UnderstandImage tools
     with tempfile.TemporaryDirectory() as tmp:
-        from coderai.core.tools.ask_user_question import handle as ask_handle
-        from coderai.core.tools.update_plan import handle as plan_handle
-        from coderai.core.tools.understand_image import handle as img_handle
+        from coderai.tools.ask_user import handle as ask_handle
+        from coderai.tools.todo import handle as plan_handle
+        from coderai.tools.file.read_media import handle as img_handle
 
         img_client, _ = make_mock_client(lambda c, k: resp("A nice image"))
         tctx = {
@@ -389,14 +389,14 @@ async def main() -> None:
         print("✓ GitFileHistory diff + checkpoint log")
 
     # 12. Dynamic model switching and CLI helpers
-    from coderai.cli.app import describe_scope, get_scope_color
-    from coderai.cli.tool_card import parse_tool_message
-    from coderai.core.common.model_capabilities import (
+    from coderai.ui.shell.app import describe_scope, get_scope_color
+    from coderai.ui.shell.visualize._blocks import parse_tool_message
+    from coderai.utils.common.model_capabilities import (
         THINKING_CAPABLE_MODELS,
         defaults_to_thinking_mode,
         supports_multimodal,
     )
-    from coderai.core.openai_client import resolve_model_provider_routing
+    from coderai.llm import resolve_model_provider_routing
 
     assert describe_scope("write-in-cwd") == "writes inside this workspace"
     assert get_scope_color("write-in-cwd") == "yellow"

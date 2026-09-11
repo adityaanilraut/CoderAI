@@ -6,14 +6,14 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from coderai.core.agents import (
+from coderai.subagents.core import (
     append_parent_session_notice,
     get_agent_registry,
-    spawn_background_agent,
 )
-from coderai.core.orchestration import status_to_stop_reason
-from coderai.core.subagent import MAX_SUBAGENT_DEPTH, SubAgentManager, SubAgentSpec
-from coderai.core.tools.types import ToolExecutionContext, ToolResult, as_str
+from coderai.background import spawn_background_agent
+from coderai.orchestration import status_to_stop_reason
+from coderai.subagents.runner import MAX_SUBAGENT_DEPTH, SubAgentManager, SubAgentSpec
+from coderai.tools.legacy.types import ToolExecutionContext, ToolResult, as_str
 
 # job_id -> (manager, subagent_session_id, task) for background one-shot
 # subagent jobs, so job_kill can stop the underlying worker.
@@ -81,7 +81,7 @@ def _start_subagent_job(
     with ``job_output`` and stopped with ``job_kill``; the completion notice
     is delivered to the parent session once.
     """
-    from coderai.core.jobs import get_job_store
+    from coderai.background import get_job_store
 
     store = get_job_store()
     session_id = context.session_id or ""
@@ -116,7 +116,7 @@ def _start_subagent_job(
         )
         if result.summary:
             notice += f"\nResult: {result.summary}"
-        from coderai.core.agents import notify_parent_session
+        from coderai.subagents.core import notify_parent_session
 
         if not notify_parent_session(session_id, notice):
             append_parent_session_notice(
@@ -419,8 +419,8 @@ async def handle_report_tool(args: dict[str, Any], context: ToolExecutionContext
 
 from typing import Any
 
-from coderai.core.subagent import SubAgentManager, SubAgentSpec
-from coderai.core.tools.types import ToolExecutionContext, ToolResult, as_str
+from coderai.subagents.runner import SubAgentManager, SubAgentSpec
+from coderai.tools.legacy.types import ToolExecutionContext, ToolResult, as_str
 
 
 async def handle_subagent_tool(args: dict[str, Any], context: ToolExecutionContext) -> ToolResult:
@@ -482,7 +482,7 @@ async def handle_subagent_tool(args: dict[str, Any], context: ToolExecutionConte
 
     seed_messages = None
     if (args.get("fork_parent_history") is True or args.get("fork") is True) and context.session_id:
-        from coderai.core.session_store import JsonlSessionStore
+        from coderai.soul.session.store import JsonlSessionStore
 
         store = JsonlSessionStore(context.project_root)
         rows = store.read_rows(context.session_id)

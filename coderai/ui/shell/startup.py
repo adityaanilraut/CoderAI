@@ -6,7 +6,7 @@ import argparse
 from rich.status import Status
 
 from coderai._version import __version__
-from coderai.core.prompt_sections import TOOL_PRESETS
+from coderai.prompt.sections import TOOL_PRESETS
 from coderai.ui.shell.console import console
 
 

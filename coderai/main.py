@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from coderai.cli.app import main
+from coderai.ui.shell.app import main
 
 if __name__ == "__main__":
     raise SystemExit(main())

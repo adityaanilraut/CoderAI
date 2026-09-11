@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from coderai.core.tools.types import ToolResult
+from coderai.tools.legacy.types import ToolResult
 
 
 def handle_think_tool(args: dict[str, Any], context: Any) -> ToolResult:

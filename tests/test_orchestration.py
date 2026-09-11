@@ -14,8 +14,8 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from coderai.core.common.file_history import GitFileHistory
-from coderai.core.goals_dsh import (
+from coderai.utils.common.file_history import GitFileHistory
+from coderai.goals.dsh import (
     BLOCK_CODE_ROUND_LIMIT,
     DSHGoalStore,
     GoalBlockReason,
@@ -23,18 +23,18 @@ from coderai.core.goals_dsh import (
     get_dsh_goal_store,
     reset_dsh_goal_store,
 )
-from coderai.core.goal_round_driver import (
+from coderai.goals.round_driver import (
     finish_goal_round,
     maybe_queue_goal_round,
 )
-from coderai.core.orchestration import WorkflowLimits
-from coderai.core.spawn import (
+from coderai.orchestration import WorkflowLimits
+from coderai.subagents.builder import (
     check_subagent_depth_quota,
     cleanup_subagent_scratchpad,
     parse_subagent_descriptor,
     setup_subagent_scratchpad,
 )
-from coderai.core.teams import (
+from coderai.teams import (
     TeamTaskBoard,
     get_team_manager,
     handle_spawn_teammate_tool,
@@ -45,24 +45,24 @@ from coderai.core.teams import (
     handle_wait_agent_tool,
     reset_team_manager,
 )
-from coderai.core.teams.deadlock import (
+from coderai.teams.deadlock import (
     CycleDetectedError,
     DeadlockError,
     InterAgentWaitWatchdog,
     assert_acyclic_dependencies,
     detect_task_cycles,
 )
-from coderai.core.tools.goal_dsh import (
+from coderai.tools.legacy.goal_dsh import (
     handle_create_goal_tool,
     handle_get_goal_tool,
     handle_update_goal_tool,
 )
-from coderai.core.tools.jobs import handle_job_kill_tool, handle_job_output_tool
-from coderai.core.tools.path_lock import PathLockManager
-from coderai.core.tools.ralph import RalphHandoff, _validate_report, handle_ralph_tool
-from coderai.core.tools.subagent import handle_subagent_tool
-from coderai.core.tools.types import ToolExecutionContext
-from coderai.core.workflow.engine import WorkflowContext, execute_workflow_script
+from coderai.tools.background import handle_job_kill_tool, handle_job_output_tool
+from coderai.tools.legacy.path_lock import PathLockManager
+from coderai.tools.legacy.ralph import RalphHandoff, _validate_report, handle_ralph_tool
+from coderai.tools.agent import handle_subagent_tool
+from coderai.tools.legacy.types import ToolExecutionContext
+from coderai.workflow.engine import WorkflowContext, execute_workflow_script
 
 
 def _client_factory(content: str = "All done.", delay: float = 0.0):

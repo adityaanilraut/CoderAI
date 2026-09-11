@@ -8,20 +8,20 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from coderai.cli.doctor import mask_secret
-from coderai.core.network.security import (
+from coderai.network.security import (
     NetworkPolicy,
     is_domain_matching,
     is_private_or_loopback_ip,
     validate_outbound_url,
 )
-from coderai.core.permissions import (
+from coderai.soul.approval import (
     PLAN_MODE_FORCE_ASK_SCOPES,
     append_project_permission_allows,
     compute_tool_call_permissions,
     describe_tool_permission_request,
     evaluate_permission_scopes,
 )
-from coderai.core.sandbox import (
+from coderai.sandbox import (
     build_seatbelt_profile,
     check_sandbox_path_access,
     parse_sandbox_mode,
@@ -29,9 +29,9 @@ from coderai.core.sandbox import (
     sandbox_policy_prompt,
     wrap_sandbox_command,
 )
-from coderai.core.session import sanitize_repetition_loops
-from coderai.core.settings import read_project_settings
-from coderai.core.network.client import HttpClient
+from coderai.soul.session.manager import sanitize_repetition_loops
+from coderai.config import read_project_settings
+from coderai.utils.aiohttp import HttpClient
 from coderai.tools.file.utils import is_dry_run
 
 pytestmark = pytest.mark.security

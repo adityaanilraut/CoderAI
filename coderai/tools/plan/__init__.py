@@ -8,9 +8,9 @@ import re
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from coderai.core.tools.types import ToolResult
+    from coderai.tools.legacy.types import ToolResult
 
-# NOTE: coderai.core.tools.types is imported inside the handlers (not at
+# NOTE: coderai.tools.legacy.types is imported inside the handlers (not at
 # module top): this package is pulled in while the tool registry is still
 # being built, and a top-level core import would circulate back here through
 # the core.tools.plan_mode shim before this module finishes initializing.
@@ -39,7 +39,7 @@ _HEADING_RE = re.compile(r"^#\s+\S", re.MULTILINE)
 
 
 def handle_exit_plan_mode_tool(args: dict[str, Any], context: Any) -> ToolResult:
-    from coderai.core.tools.types import ToolResult, as_str
+    from coderai.tools.legacy.types import ToolResult, as_str
 
     raw = args.get("plan") if args.get("plan") is not None else args.get("summary")
     plan = as_str(raw).strip()

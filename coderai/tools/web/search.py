@@ -7,9 +7,9 @@ import asyncio
 import inspect
 from typing import Any
 
-from coderai.core.network.cache import get_search_cache
-from coderai.core.tools.types import ToolResult, as_str
-from coderai.core.web_providers import (
+from coderai.network.cache import get_search_cache
+from coderai.tools.legacy.types import ToolResult, as_str
+from coderai.web_providers import (
     WebSearchResult,
     resolve_web_search_provider,
 )

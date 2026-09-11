@@ -14,8 +14,8 @@ from coderai.utils.path import (
     normalize_content,
     read_text_file_with_metadata,
 )
-from coderai.core.common.validate import ValidationResult, execute_validated_tool
-from coderai.core.state import (
+from coderai.utils.common.validate import ValidationResult, execute_validated_tool
+from coderai.state import (
     FileState,
     get_file_state,
     is_absolute_file_path,
@@ -23,7 +23,7 @@ from coderai.core.state import (
     normalize_file_path,
     record_file_state,
 )
-from coderai.core.tools.types import ToolResult, as_str
+from coderai.tools.legacy.types import ToolResult, as_str
 from coderai.tools.file.utils import (
     check_file_write_access,
     context_value,
@@ -199,7 +199,7 @@ def handle_write_tool(args: dict[str, Any], context: Any) -> ToolResult:
                 increment_version=True,
             )
 
-            from coderai.core.tools.observation import get_observation_tracker
+            from coderai.tools.legacy.observation import get_observation_tracker
 
             get_observation_tracker().record_observation(
                 session_id, file_path, content=fresh_metadata["content"]

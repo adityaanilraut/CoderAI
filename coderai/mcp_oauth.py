@@ -24,7 +24,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
-from coderai.core.share import get_share_dir
+from coderai.share import get_share_dir
 
 
 def oauth_token_dir() -> Path:

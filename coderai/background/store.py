@@ -7,8 +7,8 @@ import time
 from coderai.background.models import Job, JobStatus, _MAX_JOBS_PER_SESSION
 from coderai.utils.subprocess_env import kill_process_tree
 
-# NOTE: coderai.core.orchestration is imported inside JobStore.start (not at
-# module top): importing it here pulls in coderai.core/__init__, which cycles
+# NOTE: coderai.orchestration is imported inside JobStore.start (not at
+# module top): importing it here can create an import cycle through
 # back through core/jobs.py before this module finishes initializing.
 class JobStore:
     """Thread-safe in-process job registry keyed by job id, scoped by session."""
@@ -40,7 +40,7 @@ class JobStore:
             detail=detail,
         )
         with self._lock:
-            from coderai.core.orchestration import resolve_max_running_jobs
+            from coderai.orchestration import resolve_max_running_jobs
 
             max_running = resolve_max_running_jobs()
             running = [

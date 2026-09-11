@@ -14,9 +14,9 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from coderai.core.tools.types import ToolResult
+    from coderai.tools.legacy.types import ToolResult
 
-# NOTE: coderai.core.tools.types is imported inside the handler (not at
+# NOTE: coderai.tools.legacy.types is imported inside the handler (not at
 # module top) — see tools/plan/__init__.py for the registry-init cycle.
 
 DESCRIPTION = (Path(__file__).parent / "enter_description.md").read_text(encoding="utf-8")
@@ -46,7 +46,7 @@ def _plan_mode_from(context: Any, session_id: str | None) -> bool:
 
 
 def handle_enter_plan_mode_tool(args: dict[str, Any], context: Any) -> ToolResult:
-    from coderai.core.tools.types import ToolResult
+    from coderai.tools.legacy.types import ToolResult
 
     _ = args
     session_id = _session_id_from(context)

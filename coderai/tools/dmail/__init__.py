@@ -13,8 +13,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from coderai.core.denwarenji import DenwaRenjiError, DMail
-from coderai.core.tools.types import ToolResult
+from coderai.soul.denwarenji import DenwaRenjiError, DMail
+from coderai.tools.legacy.types import ToolResult
 
 DMAIL_PREFIX = "[D-Mail / time-leap directive — obey immediately] "
 
@@ -49,7 +49,7 @@ def handle_send_dmail_tool(args: dict[str, Any], context: Any) -> ToolResult:
             # Phase 2: validate against the soul's checkpoint space so a
             # stale checkpoint_id fails loudly instead of steering nowhere.
             try:
-                from coderai.core.denwarenji import DenwaRenji
+                from coderai.soul.denwarenji import DenwaRenji
 
                 soul = mgr.get_soul(session_id) if hasattr(mgr, "get_soul") else None
                 renji = DenwaRenji()

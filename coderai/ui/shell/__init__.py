@@ -39,7 +39,7 @@ def render_welcome_screen(
 ) -> None:
     """Render the stylish CoderAI welcome screen with connection status and focused shortcuts."""
     from coderai.cli.ascii_art import get_gradient_ascii_logo  # lazy: avoids cli/__init__ cycle
-    from coderai.core.common.model_capabilities import defaults_to_thinking_mode  # lazy
+    from coderai.utils.common.model_capabilities import defaults_to_thinking_mode  # lazy
     from coderai.ui.shell.prompt import get_git_status  # lazy: prompt hub is heavy
 
     branch, is_dirty = get_git_status(project_root)
@@ -54,8 +54,8 @@ def render_welcome_screen(
     # Check API key configuration status
     has_api_key = False
     try:
-        from coderai.core.openai_client import resolve_model_provider_routing
-        from coderai.core.settings import resolve_current_settings
+        from coderai.llm import resolve_model_provider_routing
+        from coderai.config import resolve_current_settings
 
         cur_settings = resolve_current_settings(project_root)
         _, resolved_key = resolve_model_provider_routing(

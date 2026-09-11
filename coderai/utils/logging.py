@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 import pathlib
-from coderai.core.log import (
+from coderai.log import (
     logger,
     enable_logging,
     redirect_stderr_to_logger,

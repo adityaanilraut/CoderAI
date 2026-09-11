@@ -15,7 +15,7 @@ import json
 from typing import Any
 
 from coderai.utils.common.model_capabilities import supports_multimodal
-from coderai.core.session_log import derive_messages
+from coderai.soul.session.log import derive_messages
 
 
 def canonicalize_tool_call(tool_call: Any) -> dict[str, Any]:

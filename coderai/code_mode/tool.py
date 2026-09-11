@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from coderai.code_mode.engine import get_code_mode_sandbox
-from coderai.core.tools.types import ToolExecutionContext, ToolResult, as_str
+from coderai.tools.legacy.types import ToolExecutionContext, ToolResult, as_str
 
 
 async def handle_code_mode_tool(args: dict[str, Any], context: ToolExecutionContext) -> ToolResult:

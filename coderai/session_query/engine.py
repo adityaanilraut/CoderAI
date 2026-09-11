@@ -8,7 +8,7 @@ import pathlib
 import re
 from typing import Any
 
-from coderai.core.events import (
+from coderai.events import (
     ASSISTANT_MESSAGE,
     COMPACTION_SUMMARY,
     STEERING_MESSAGE,
@@ -16,7 +16,7 @@ from coderai.core.events import (
     TOOL_RESULT,
     USER_MESSAGE,
 )
-from coderai.core.session_store import JsonlSessionStore
+from coderai.soul.session.store import JsonlSessionStore
 
 
 def _timestamp(value: Any) -> float:

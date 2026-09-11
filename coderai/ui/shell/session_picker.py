@@ -11,12 +11,12 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
 
-from coderai.core.common.model_capabilities import (
+from coderai.utils.common.model_capabilities import (
     CURATED_MODELS,
     get_model_badges,
 )
-from coderai.core.session import SessionEntry, SessionManager, SessionMessage
-from coderai.core.skill import list_skills
+from coderai.soul.session.manager import SessionEntry, SessionManager, SessionMessage
+from coderai.skill import list_skills
 
 _RICH = True
 
@@ -655,7 +655,7 @@ def select_reasoning_effort_interactive(
     if isinstance(res, int) and 0 <= res < len(items):
         return items[res][0]
     elif isinstance(res, str) and res:
-        from coderai.core.common.openai_thinking import normalize_reasoning_effort
+        from coderai.utils.common.openai_thinking import normalize_reasoning_effort
 
         return normalize_reasoning_effort(res)
     return norm_cur
@@ -1207,7 +1207,7 @@ def render_mcp_interactive(console: Any | None, mgr: SessionManager) -> None:
 
 def render_config_interactive(console: Any | None, project_root: str) -> None:
     """Display active workspace and user configuration."""
-    from coderai.core.settings import (
+    from coderai.config import (
         get_project_settings_path,
         get_user_settings_path,
         mask_api_key,
@@ -1329,7 +1329,7 @@ def render_token_breakdown(
     total_cost = estimate_model_cost(active_model, prompt_tokens, completion_tokens, cached_tokens)
 
     # Default context window ~256k
-    from coderai.core.settings import get_default_context_window
+    from coderai.config import get_default_context_window
 
     max_context = get_default_context_window(active_model)
     pct_used = (active_tokens / max_context) * 100 if max_context > 0 else 0.0

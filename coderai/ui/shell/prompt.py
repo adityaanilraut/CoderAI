@@ -338,7 +338,7 @@ class SlashCommandCompleter(Completer):
                         candidates.append((role_name, f"Agent role: {role_name}"))
 
             elif lead_cmd in ("/skill",) or lead_cmd.startswith(("/skill:", "/flow:")):
-                from coderai.core.skill import list_skills
+                from coderai.skill import list_skills
 
                 try:
                     skills = list_skills(self.project_root)
@@ -399,7 +399,7 @@ class SlashCommandCompleter(Completer):
         if typed.startswith(("skill:", "flow:")):
             prefix, _, partial = typed.partition(":")
             try:
-                from coderai.core.skill import list_skills
+                from coderai.skill import list_skills
 
                 skills = list_skills(self.project_root)
                 names = [
@@ -2521,7 +2521,7 @@ AVAILABLE_SLASH_COMMANDS = completion_entries()
 def _get_saved_session_ids(project_root: str) -> list[str]:
     """Retrieve saved session IDs from workspace index for autocompletion."""
     try:
-        from coderai.core.session_store import JsonlSessionStore
+        from coderai.soul.session.store import JsonlSessionStore
 
         store = JsonlSessionStore(project_root)
         data = store.load_index()
@@ -2542,7 +2542,7 @@ def _get_saved_session_ids(project_root: str) -> list[str]:
 def _get_discovered_skill_names(project_root: str) -> list[str]:
     """Retrieve skill names discovered in workspace and global directories."""
     try:
-        from coderai.core.skill import list_skills
+        from coderai.skill import list_skills
 
         skills = list_skills(project_root)
         return [
@@ -2815,7 +2815,7 @@ def read_file_mention_snippet(
 
 def expand_file_mentions(prompt: str, project_root: str) -> tuple[str, list[str]]:
     """Expand all @file mentions and @session references in the user prompt into embedded contexts."""
-    from coderai.core.common.session_reference import resolve_session_references
+    from coderai.utils.common.session_reference import resolve_session_references
 
     matches = FILE_MENTION_PATTERN.findall(prompt)
     attached_files: list[str] = []
@@ -2943,7 +2943,7 @@ def suggest_workspace_files(query: str, project_root: str, limit: int = 15) -> l
 
 
 class FileMentionCompleter(Completer):
-    """@-file completer — thin wrapper over coderai.cli.file_mention.
+    """@-file completer — thin wrapper over coderai.ui.shell.prompt.
 
     Canonical file list / fuzzy logic lives in file_mention.py
     (git ls-files 5s TTL + walk fallback 1000 cap + basename re-rank).
@@ -2968,7 +2968,7 @@ class FileMentionCompleter(Completer):
         query = token
         # Delegate to canonical file_mention helper (single source)
         try:
-            from coderai.cli.file_mention import suggest_workspace_files
+            from coderai.ui.shell.prompt import suggest_workspace_files
 
             candidates = suggest_workspace_files(query, self.project_root, limit=20)
         except Exception:
@@ -3507,7 +3507,7 @@ from typing import Any
 from rich.console import Console
 from rich.text import Text
 
-from coderai.core.settings import get_default_context_window
+from coderai.config import get_default_context_window
 
 ANSI_ESCAPE_PATTERN = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 

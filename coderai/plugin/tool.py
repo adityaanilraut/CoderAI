@@ -17,7 +17,7 @@ from typing import Any
 
 from coderai.plugin import PLUGIN_JSON, PluginSpec, PluginToolSpec, parse_plugin_json
 from coderai.plugin.manager import get_plugins_dir
-from coderai.core.tools.types import ToolResult
+from coderai.tools.legacy.types import ToolResult
 
 PLUGIN_TOOL_TIMEOUT_S = 120.0
 

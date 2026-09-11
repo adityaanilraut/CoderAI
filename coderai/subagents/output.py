@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from coderai.core.orchestration import status_to_stop_reason
+from coderai.orchestration import status_to_stop_reason
 
 @dataclass
 class SubAgentResult:

@@ -1,4 +1,4 @@
-"""Rich terminal interface over :mod:`coderai.core`.
+"""Rich terminal interface over the CoderAI modular engine.
 
 Presentation layer: argparse, interactive REPL, markdown rendering, tool execution cards,
 diff previews, thinking mode summaries, dynamic status bar, interactive menus, permission
@@ -16,15 +16,15 @@ import subprocess
 import sys
 from typing import Any
 
-from coderai.cli.commands import parse_slash_command
-from coderai.cli.completer import setup_readline
-from coderai.cli.diff_render import render_diff_preview
+from coderai.ui.shell.slash import parse_slash_command
+from coderai.ui.shell.prompt import setup_readline
+from coderai.utils.rich.diff_render import render_diff_preview
 from coderai.cli.exit_summary import render_exit_summary
-from coderai.cli.export_render import export_session_to_json, export_session_to_markdown
-from coderai.cli.file_mention import expand_file_mentions
-from coderai.cli.help import render_help
-from coderai.cli.input_engine import read_user_turn
-from coderai.cli.interactive_menu import (
+from coderai.utils.export import export_session_to_json, export_session_to_markdown
+from coderai.ui.shell.prompt import expand_file_mentions
+from coderai.ui.shell.slash import render_help
+from coderai.ui.shell.prompt import read_user_turn
+from coderai.ui.shell.session_picker import (
     render_config_interactive,
     render_mcp_interactive,
     render_mcp_prompts,
@@ -38,28 +38,28 @@ from coderai.cli.interactive_menu import (
     select_with_arrows,
 )
 from coderai.cli.session_factory import build_session_manager, close_session_manager
-from coderai.cli.thinking import LiveThinkingStreamer, render_thinking_block
-from coderai.cli.tool_card import render_tool_card
-from coderai.cli.welcome import render_welcome_screen
+from coderai.ui.shell.visualize._blocks import LiveThinkingStreamer, render_thinking_block
+from coderai.ui.shell.visualize._blocks import render_tool_card
+from coderai.ui.shell import render_welcome_screen
 from coderai.soul.approval import (
     PLAN_MODE_FORCE_ASK_SCOPES,
     append_project_permission_allows,
 )
 from coderai.soul.session.manager import SessionManager, SessionMessage
-from coderai.core.skill import list_skills, load_skill
+from coderai.skill import list_skills, load_skill
 
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 
-from coderai.cli.term import ensure_new_line, ensure_tty_sane
+from coderai.utils.term import ensure_new_line, ensure_tty_sane
 
 _RICH = True
 # Phase0: neutral-themed console with MANPAGER-safe pager (Kimi parity: ui/shell/console.py:63)
 console: Any
 try:
-    from coderai.cli.console import console as _kimi_console  # type: ignore[assignment]
+    from coderai.ui.shell.console import console as _kimi_console  # type: ignore[assignment]
 
     console = _kimi_console
 except Exception:
@@ -174,7 +174,7 @@ def _prompt_permissions(
         use_panel = bool(console is not None and _RICH and sys.stdin.isatty())
         if use_panel:
             try:
-                from coderai.cli.approval_panel import ApprovalRequestPanel, show_approval_in_pager
+                from coderai.ui.shell.visualize._approval_panel import ApprovalRequestPanel, show_approval_in_pager
 
                 panel = ApprovalRequestPanel(req)
                 console.print()
@@ -200,7 +200,7 @@ def _prompt_permissions(
                         live = getattr(_STREAM_STATE, "_live_ref", None)
                         if live is not None:
                             try:
-                                from coderai.cli.progress import _reset_live_shape
+                                from coderai.ui.shell.visualize._blocks import _reset_live_shape
 
                                 live.stop()
                                 show_approval_in_pager(panel)
@@ -492,7 +492,7 @@ def _prompt_user_questions(questions: list[dict[str, Any]]) -> str:
     use_panel = bool(console is not None and _RICH and sys.stdin.isatty())
     if use_panel:
         try:
-            from coderai.cli.question_panel import QuestionRequestPanel, show_question_body_in_pager
+            from coderai.ui.shell.visualize._question_panel import QuestionRequestPanel, show_question_body_in_pager
 
             panel = QuestionRequestPanel(questions)
             # ponytail: input() loop with tabs + Space toggle + _saved_selections
@@ -719,7 +719,7 @@ class _StreamState:
     """Track streaming progress, live reasoning tokens, and execution spinners.
 
     Phase3: unified Live(Group, transient, vertical_overflow=visible) via
-    coderai.cli.stream_blocks._ContentBlock. Legacy MarkdownStreamRenderer +
+    coderai.ui.shell.visualize._blocks._ContentBlock. Legacy MarkdownStreamRenderer +
     LiveThinkingStreamer \\r kept for non-TTY fallback; new visualize()
     factory shares state between Rich Live and PromptToolkit when PTK active.
     """
@@ -780,7 +780,7 @@ class _StreamState:
         if self._md_renderer is not None:
             return self._md_renderer
         try:
-            from coderai.cli.markdown_stream import MarkdownStreamRenderer
+            from coderai.ui.shell.visualize._blocks import MarkdownStreamRenderer
 
             # Only use Live markdown for rich tty terminals; otherwise fallback to raw write
             use_live = bool(
@@ -906,7 +906,7 @@ class _StreamState:
                 except Exception:
                     pass
             try:
-                from coderai.cli.stream_blocks import _ContentBlock
+                from coderai.ui.shell.visualize._blocks import _ContentBlock
 
                 self._unified_block = _ContentBlock(is_think)
                 self._unified_is_think = is_think
@@ -917,7 +917,7 @@ class _StreamState:
     def on_retry(self, retry: Any) -> None:
         """Handle StepRetry banner + discard partial stream (Kimi discard_retry_attempt)."""
         try:
-            from coderai.cli.stream_blocks import _format_step_retry
+            from coderai.ui.shell.visualize._blocks import _format_step_retry
 
             self._retry_banner = _format_step_retry(retry)
             # discard LLM-stream state only
@@ -937,7 +937,7 @@ class _StreamState:
     def on_status_update(self, status: Any) -> None:
         """Handle StatusUpdate context % — Kimi _StatusBlock."""
         try:
-            from coderai.cli.stream_blocks import StatusUpdate, _StatusBlock
+            from coderai.ui.shell.visualize._blocks import StatusUpdate, _StatusBlock
 
             if isinstance(status, dict):
                 upd = StatusUpdate(
@@ -1023,14 +1023,14 @@ class _StreamState:
             if self._current_approval_panel is not None and getattr(
                 self._current_approval_panel, "has_expandable_content", False
             ):
-                from coderai.cli.approval_panel import show_approval_in_pager
+                from coderai.ui.shell.visualize._approval_panel import show_approval_in_pager
 
                 show_approval_in_pager(self._current_approval_panel)
                 return True
             if self._current_question_panel is not None and getattr(
                 self._current_question_panel, "has_expandable_content", False
             ):
-                from coderai.cli.question_panel import show_question_body_in_pager
+                from coderai.ui.shell.visualize._question_panel import show_question_body_in_pager
 
                 show_question_body_in_pager(self._current_question_panel)
                 return True
@@ -1049,7 +1049,7 @@ class _StreamState:
 
     def start_btw(self, question: str) -> Any:
         try:
-            from coderai.cli.btw_panel import BtwPanel
+            from coderai.ui.shell.visualize._btw_panel import BtwPanel
 
             p = BtwPanel(on_dismiss=lambda: setattr(self, "_btw_panel", None))
             p.set_question(question)
@@ -1105,7 +1105,7 @@ class _StreamState:
 
                 renderable = Text("")
             # ponytail: single Live, shared state, reuse progress SIGWINCH helper
-            from coderai.cli.progress import _install_sigwinch, _reset_live_shape
+            from coderai.ui.shell.visualize._blocks import _install_sigwinch, _reset_live_shape
 
             live = Live(
                 renderable,
@@ -1399,7 +1399,7 @@ async def _run_interactive(
     # Phase2: Prompt Toolkit session (Kimi ui/shell/prompt.py parity) — lazy, tty check
     _ptk_session = None
     try:
-        from coderai.cli.prompt_session import CoderAIPromptSession, is_ptk_available
+        from coderai.ui.shell.prompt import CoderAIPromptSession, is_ptk_available
 
         if is_ptk_available() and sys.stdin.isatty() and sys.stdout.isatty():
             _ptk_session = CoderAIPromptSession(
@@ -1572,7 +1572,7 @@ async def _run_interactive(
             }
 
             try:
-                from coderai.cli.input_engine import styled_prompt
+                from coderai.ui.shell.prompt import styled_prompt
 
                 prompt_label = styled_prompt(plan_mode=active_plan_mode)
                 # Phase2: PTK session if available and TTY, else readline fallback (keeps test mocks)
@@ -1584,7 +1584,7 @@ async def _run_interactive(
                         plan_mode=active_plan_mode,
                         agent_role=active_role,
                     )
-                    from coderai.cli.prompt_session import read_user_turn_ptk
+                    from coderai.ui.shell.prompt import read_user_turn_ptk
 
                     raw = (
                         await read_user_turn_ptk(
@@ -1641,7 +1641,7 @@ async def _run_interactive(
             # Phase4: input router — BTW/QUEUE/SEND (Kimi _input_router.py:31)
             # ponytail: lean classify; BTW modal not ❯ queue, QUEUE holds until turn ends
             try:
-                from coderai.cli.input_router import classify_input
+                from coderai.ui.shell.visualize._input_router import classify_input
 
                 is_streaming = active_turn_task is not None and not active_turn_task.done()
                 # also consider _STREAM_STATE.is_streaming for Live tail
@@ -1721,7 +1721,7 @@ async def _run_interactive(
                     continue
 
                 if cmd in ("/setup", "/auth", "/keys", "/configure"):
-                    from coderai.cli.setup_wizard import run_setup_wizard
+                    from coderai.ui.shell.setup import run_setup_wizard
 
                     run_setup_wizard(
                         console,
@@ -2245,7 +2245,7 @@ async def _run_interactive(
                     continue
 
                 if cmd in ("/editor", "/edit"):
-                    from coderai.cli.input_engine import open_external_editor
+                    from coderai.utils.editor import open_external_editor
 
                     initial_draft = cmd_arg if cmd_arg else ""
                     composed = open_external_editor(initial_draft)
@@ -2262,7 +2262,7 @@ async def _run_interactive(
                     # Fallthrough to normal prompt processing below!
 
                 elif cmd == "/paste":
-                    from coderai.cli.input_engine import read_paste_mode
+                    from coderai.ui.shell.prompt import read_paste_mode
 
                     composed = read_paste_mode()
                     if not composed:
@@ -2441,7 +2441,7 @@ async def _run_interactive(
                         arg = cmd_arg.strip().lower()
                         if arg in ("dark", "light"):
                             try:
-                                from coderai.cli.theme import set_active_theme
+                                from coderai.ui.theme import set_active_theme
 
                                 set_active_theme(arg)  # type: ignore[arg-type]
                                 if console is not None and _RICH:
@@ -2452,7 +2452,7 @@ async def _run_interactive(
                                 print(f"Failed to set theme: {e}")
                         elif not arg:
                             try:
-                                from coderai.cli.theme import get_active_theme
+                                from coderai.ui.theme import get_active_theme
 
                                 cur = get_active_theme()
                                 if console is not None and _RICH:
@@ -2763,7 +2763,7 @@ async def _run_interactive(
                                 if 1 <= idx <= len(available):
                                     target_model = available[idx - 1][0]
                             else:
-                                from coderai.cli.fuzzy import fuzzy_filter
+                                from coderai.ui.shell.prompt import fuzzy_filter
 
                                 model_names = [name for name, _, _ in available]
                                 fuzzy_models = fuzzy_filter(target_model, model_names, limit=1)
@@ -2789,7 +2789,7 @@ async def _run_interactive(
 
                     if cmd in ("/effort", "/reasoning"):
                         if not cmd_arg:
-                            from coderai.cli.interactive_menu import (
+                            from coderai.ui.shell.session_picker import (
                                 select_reasoning_effort_interactive,
                             )
 
@@ -3201,73 +3201,73 @@ async def _run_interactive(
                         continue
 
                     if cmd == "/version":
-                        from coderai.cli.info_cmds import cmd_version
+                        from coderai.cli.infos import cmd_version
 
                         cmd_version(console)
                         continue
 
                     if cmd in ("/changelog", "/release-notes"):
-                        from coderai.cli.info_cmds import cmd_changelog
+                        from coderai.cli.infos import cmd_changelog
 
                         cmd_changelog(console)
                         continue
 
                     if cmd == "/feedback":
-                        from coderai.cli.info_cmds import cmd_feedback
+                        from coderai.cli.infos import cmd_feedback
 
                         cmd_feedback(console, cmd_arg)
                         continue
 
                     if cmd == "/reload":
-                        from coderai.cli.info_cmds import cmd_reload
+                        from coderai.cli.infos import cmd_reload
 
                         cmd_reload(mgr, console)
                         continue
 
                     if cmd == "/debug":
-                        from coderai.cli.info_cmds import cmd_debug
+                        from coderai.cli.infos import cmd_debug
 
                         cmd_debug(mgr, session_id, console)
                         continue
 
                     if cmd in ("/usage", "/status", "/quota"):
-                        from coderai.cli.info_cmds import cmd_usage
+                        from coderai.cli.infos import cmd_usage
 
                         cmd_usage(mgr, session_id, console)
                         continue
 
                     if cmd in ("/rename", "/title"):
-                        from coderai.cli.info_cmds import cmd_title
+                        from coderai.cli.infos import cmd_title
 
                         cmd_title(mgr, session_id, cmd_arg, console)
                         continue
 
                     if cmd == "/login":
-                        from coderai.cli.info_cmds import cmd_login
+                        from coderai.cli.infos import cmd_login
 
                         cmd_login(console, mgr.project_root, mgr, cmd_arg or None)
                         continue
 
                     if cmd == "/logout":
-                        from coderai.cli.info_cmds import cmd_logout
+                        from coderai.cli.infos import cmd_logout
 
                         cmd_logout(console, mgr.project_root, mgr)
                         continue
 
                     if cmd == "/hooks":
-                        from coderai.cli.info_cmds import cmd_hooks
+                        from coderai.cli.infos import cmd_hooks
 
                         cmd_hooks(console, mgr.project_root)
                         continue
 
                     if cmd == "/upgrade":
-                        from coderai.cli.info_cmds import cmd_upgrade
+                        from coderai.cli.infos import cmd_upgrade
 
                         cmd_upgrade(console)
                         continue
 
                     if cmd == "/task":
-                        from coderai.cli.task_browser import run_task_browser
+                        from coderai.ui.shell.task_browser import run_task_browser
 
                         run_task_browser(console, mgr, session_id)
                         continue
@@ -3343,7 +3343,7 @@ async def _run_interactive(
             # ponytail: display token [Pasted text #n +N lines] for history, resolved_text for LLM via PromptPlaceholderManager
             display_command = raw
             try:
-                from coderai.cli.placeholders import get_placeholder_manager
+                from coderai.ui.shell.placeholders import get_placeholder_manager
 
                 pm = get_placeholder_manager()
                 maybe = pm.maybe_placeholderize_pasted_text(raw)
@@ -3353,7 +3353,7 @@ async def _run_interactive(
                         console.print(f"[dim]{display_command}[/]")
                     # toast dedup (Kimi prompt.py:1131)
                     try:
-                        from coderai.cli.toast import toast
+                        from coderai.ui.shell.prompt import toast
 
                         toast(
                             f"Large paste collapsed → {display_command}",
@@ -3389,7 +3389,7 @@ async def _run_interactive(
             # For history flood guard, FileHistory would have stored raw; we replace last entry with display_command if collapsed
             if display_command != raw:
                 try:
-                    from coderai.cli.prompt_session import _get_history_file
+                    from coderai.ui.shell.prompt import _get_history_file
 
                     hist = _get_history_file(mgr.project_root)
                     if hist.exists():
@@ -3493,7 +3493,7 @@ async def _run_interactive(
                         reply = last_asst.content if last_asst else ""
 
                     if "<proposed_plan>" in reply:
-                        from coderai.cli.plan_review import prompt_plan_review
+                        from coderai.ui.shell.visualize._approval_panel import prompt_plan_review
 
                         decision = prompt_plan_review(console, reply)
                         action_taken = decision.get("action", "reject")
@@ -3689,7 +3689,7 @@ def main(argv: list[str] | None = None) -> int:
     from coderai.utils.proxy import normalize_proxy_env
     from coderai.log import enable_logging
 
-    from coderai.cli.proctitle import init_process_name
+    from coderai.utils.proctitle import init_process_name
 
     init_process_name("CoderAI")
     normalize_proxy_env()
@@ -3705,27 +3705,27 @@ def main(argv: list[str] | None = None) -> int:
     _first = _raw[0] if _raw else ""
     if _first in ("info", "export", "mcp", "plugin", "login", "logout", "acp"):
         if _first == "info":
-            from coderai.cli.info_cmd import run_info
+            from coderai.cli.info import run_info
 
             return run_info(_raw[1:])
         if _first == "export":
-            from coderai.cli.export_cmd import run_export
+            from coderai.cli.export import run_export
 
             return run_export(_raw[1:], project_root=str(pathlib.Path.cwd().resolve()))
         if _first == "mcp":
-            from coderai.cli.mcp_cmd import run_mcp
+            from coderai.cli.mcp import run_mcp
 
             return run_mcp(_raw[1:])
         if _first == "plugin":
-            from coderai.cli.plugin_cmd import run_plugin
+            from coderai.cli.plugin import run_plugin
 
             return run_plugin(_raw[1:])
         if _first == "login":
-            from coderai.cli.login_cmd import run_login
+            from coderai.ui.shell.oauth import run_login
 
             return run_login(_raw[1:])
         if _first == "logout":
-            from coderai.cli.login_cmd import run_logout
+            from coderai.ui.shell.oauth import run_logout
 
             return run_logout(_raw[1:])
         if _first == "acp":
@@ -3814,7 +3814,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
     if is_setup_cmd:
-        from coderai.cli.setup_wizard import run_setup_cli
+        from coderai.ui.shell.setup import run_setup_cli
 
         return run_setup_cli(args, project_root=project_root)
 

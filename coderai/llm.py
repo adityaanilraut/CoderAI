@@ -953,8 +953,8 @@ def create_openai_client(
     project_root: str = ".", model_override: str | None = None
 ) -> dict[str, Any]:
     global _client_pool
-    from coderai.core.settings import resolve_current_settings
-    from coderai.core.common.model_capabilities import defaults_to_thinking_mode
+    from coderai.config import resolve_current_settings
+    from coderai.utils.common.model_capabilities import defaults_to_thinking_mode
 
     settings = resolve_current_settings(project_root)
     active_model = model_override or settings["model"]

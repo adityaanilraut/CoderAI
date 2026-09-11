@@ -6,7 +6,7 @@ import json
 import time
 from typing import Any
 
-from coderai.core.jobs import get_job_store
+from coderai.background import get_job_store
 from coderai.terminal.manager import get_terminal_manager
 from coderai.tools.legacy.types import ToolResult, as_str
 

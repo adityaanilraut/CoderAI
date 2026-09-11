@@ -21,7 +21,7 @@ from prompt_toolkit.document import Document
 from rich.console import Console
 from rich.tree import Tree
 
-from coderai.core.session import SessionManager
+from coderai.soul.session.manager import SessionManager
 from coderai.ui.shell import render_welcome_screen
 from coderai.ui.shell.prompt import SlashCommandCompleter, get_bottom_toolbar_tokens
 from coderai.ui.shell.startup import _build_parser

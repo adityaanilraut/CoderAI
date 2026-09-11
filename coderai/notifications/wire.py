@@ -6,7 +6,7 @@ from typing import Any
 from coderai.notifications.models import NotificationView
 def to_wire_notification(view: NotificationView) -> Any:
     """Convert to a wire ``Notification`` event (Kimi ``notifications/wire.py``)."""
-    from coderai.core.wire.types import Notification
+    from coderai.wire.types import Notification
 
     event = view.event
     return Notification(

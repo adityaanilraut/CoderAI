@@ -385,8 +385,8 @@ import uuid
 from typing import Any
 
 from coderai.utils.aiohttp import get_http_client
-from coderai.core.network.security import NetworkSecurityError
-from coderai.core.tools.types import ToolResult, as_str
+from coderai.network.security import NetworkSecurityError
+from coderai.tools.legacy.types import ToolResult, as_str
 
 WEB_FETCH_ACTIVITY_PREFIX = "WebFetch:"
 MAX_OUTPUT_CHARS = 30_000

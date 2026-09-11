@@ -10,7 +10,7 @@ from typing import Any
 from collections.abc import Callable, Sequence
 
 from coderai.mcp.client import McpClient
-from coderai.core.tools.types import ToolResult
+from coderai.tools.legacy.types import ToolResult
 
 API_TOOL_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 API_TOOL_NAME_MAX_LENGTH = 64

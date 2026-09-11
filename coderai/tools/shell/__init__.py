@@ -17,9 +17,9 @@ from typing import Any
 
 from coderai.utils.subprocess_env import DEFAULT_BASH_TIMEOUT_MS, clamp_bash_timeout_ms
 from coderai.utils.subprocess_env import kill_process_tree
-from coderai.core.jobs import get_job_store
-from coderai.core.sandbox import wrap_sandbox_command
-from coderai.core.spill import apply_spill_policy
+from coderai.background import get_job_store
+from coderai.sandbox import wrap_sandbox_command
+from coderai.spill import apply_spill_policy
 from coderai.utils.shell_quoting import (
     build_disable_extglob_command,
     build_shell_env,
@@ -28,8 +28,8 @@ from coderai.utils.shell_quoting import (
     rewrite_windows_null_redirect,
     to_native_cwd,
 )
-from coderai.core.terminal.manager import get_terminal_manager
-from coderai.core.tools.types import (
+from coderai.terminal.manager import get_terminal_manager
+from coderai.tools.legacy.types import (
     BackgroundProcessCompletion,
     ProcessTimeoutControl,
     ProcessTimeoutInfo,
@@ -858,10 +858,10 @@ import time
 import uuid
 from typing import Any
 
-from coderai.core.jobs import get_job_store
-from coderai.core.sandbox import delete_seatbelt_profile, wrap_sandbox_command
-from coderai.core.spill import apply_spill_policy
-from coderai.core.tools.types import ToolResult, as_str
+from coderai.background import get_job_store
+from coderai.sandbox import delete_seatbelt_profile, wrap_sandbox_command
+from coderai.spill import apply_spill_policy
+from coderai.tools.legacy.types import ToolResult, as_str
 
 MAX_OUTPUT_CHARS = 30000
 DEFAULT_PWSH_TIMEOUT_S = 120.0

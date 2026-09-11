@@ -7,7 +7,7 @@ import json
 import uuid
 from typing import Any
 
-from coderai.core.tools.types import ToolResult
+from coderai.tools.legacy.types import ToolResult
 
 
 def _parse_questions(raw: Any) -> tuple[bool, list[dict[str, Any]], str | None]:
@@ -95,7 +95,7 @@ async def handle_ask_user_question_tool(args: dict[str, Any], context: Any) -> T
     # AFK parity: auto-dismiss AskUserQuestion when AFK/YOLO is enabled
     is_afk = False
     try:
-        from coderai.core.session import _global_afk_check  # type: ignore
+        from coderai.soul.session.manager import _global_afk_check  # type: ignore
 
         if _global_afk_check():
             is_afk = True
@@ -105,7 +105,7 @@ async def handle_ask_user_question_tool(args: dict[str, Any], context: Any) -> T
         try:
             sid = getattr(context, "session_id", "")
             if sid:
-                from coderai.core.session import _check_afk_for_session
+                from coderai.soul.session.manager import _check_afk_for_session
 
                 if _check_afk_for_session(sid):
                     is_afk = True
@@ -130,7 +130,7 @@ async def handle_ask_user_question_tool(args: dict[str, Any], context: Any) -> T
     if is_afk:
         if wire_server is not None:
             from kosong.tooling import BriefDisplayBlock, ToolResult as WireToolResult, ToolReturnValue
-            from coderai.core.wire.emitter import wire_send
+            from coderai.wire.emitter import wire_send
 
             rv = ToolReturnValue(
                 is_error=False,
@@ -154,7 +154,7 @@ async def handle_ask_user_question_tool(args: dict[str, Any], context: Any) -> T
         )
 
     if wire_server is not None:
-        from coderai.core.wire.emitter import wire_send
+        from coderai.wire.emitter import wire_send
         from coderai.wire.types import (
             QuestionItem,
             QuestionNotSupported,

@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from collections.abc import Callable, Coroutine, Iterable, Sequence
 
-from coderai.core.orchestration import (
+from coderai.orchestration import (
     WorkflowLimits,
     get_orchestration_event_bus,
     resolve_workflow_limits,
@@ -486,7 +486,7 @@ class WorkflowEngine:
 
     def _child_depth(self) -> int:
         """Lineage-derived child depth for workflow children."""
-        from coderai.core.agents import get_agent_registry
+        from coderai.subagents.core import get_agent_registry
 
         for handle in get_agent_registry().list():
             if getattr(handle, "run_session_id", None) == self.context.parent_session_id:

@@ -212,7 +212,7 @@ class ApprovalRuntime:
         if self._root_wire_hub is None:
             return
         try:
-            from coderai.core.wire.types import ApprovalRequest
+            from coderai.wire.types import ApprovalRequest
 
             self._root_wire_hub.publish_nowait(
                 ApprovalRequest(
@@ -237,7 +237,7 @@ class ApprovalRuntime:
         if self._root_wire_hub is None:
             return
         try:
-            from coderai.core.wire.types import ApprovalResponse
+            from coderai.wire.types import ApprovalResponse
 
             self._root_wire_hub.publish_nowait(
                 ApprovalResponse(request_id=request_id, response=response, feedback=feedback)

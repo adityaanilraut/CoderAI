@@ -270,7 +270,7 @@ def get_tools(
     external_tools: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Retrieve formatted tool definitions using ToolRegistry as the canonical source of truth."""
-    from coderai.core.tools.registry import get_tool_registry
+    from coderai.tools.legacy.registry import get_tool_registry
 
     registry = get_tool_registry()
     return registry.to_openai_schemas(
@@ -286,7 +286,7 @@ def format_tool_definitions(
 ) -> list[dict[str, Any]]:
     """Format tool definitions for specific model families (e.g. strict schemas vs standard function calling)."""
     from coderai.prompt.sections import order_tools
-    from coderai.core.tools.types import canonicalize_tool_schema
+    from coderai.tools.legacy.types import canonicalize_tool_schema
 
     formatted: list[dict[str, Any]] = []
     is_strict_model = bool(strict)
@@ -627,7 +627,7 @@ def build_cache_stabilized_messages(
     stabilized_tools = None
     if tools is not None:
         from coderai.prompt.sections import order_tools
-        from coderai.core.tools.types import canonicalize_tool_schema
+        from coderai.tools.legacy.types import canonicalize_tool_schema
 
         stabilized_tools = order_tools([canonicalize_tool_schema(t) for t in tools])
 

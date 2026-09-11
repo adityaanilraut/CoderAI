@@ -109,7 +109,7 @@ __all__ = [
 
 def enable_logging(debug: bool = False, *, redirect_stderr: bool = True) -> None:
     """Enable file logging under the share dir; optionally capture fd=2."""
-    from coderai.core.share import get_share_dir
+    from coderai.share import get_share_dir
 
     inner = _LazyLogger()._get()  # noqa: SLF001 - same-module access
     if hasattr(inner, "remove"):

@@ -14,7 +14,7 @@ import pytest
 from kosong.message import TextPart as KTextPart
 
 from coderai.acp.engine import SessionManagerEngine, build_prompt
-from coderai.core.wire.emitter import get_emitter
+from coderai.wire.emitter import get_emitter
 from coderai.wire.types import ApprovalRequest, QuestionRequest, TextPart
 
 TIMEOUT = 10.0

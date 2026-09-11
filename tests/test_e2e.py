@@ -30,7 +30,7 @@ def test_e2e_info_human_returns_zero(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
     """`info` prints human-readable version lines and exits zero."""
-    from coderai.cli.app import main
+    from coderai.ui.shell.app import main
 
     _isolate_env(tmp_path, monkeypatch)
     assert main(["info"]) == 0
@@ -42,7 +42,7 @@ def test_e2e_info_json_returns_parseable_json(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
     """`info --json` prints a parseable payload with a version key."""
-    from coderai.cli.app import main
+    from coderai.ui.shell.app import main
 
     _isolate_env(tmp_path, monkeypatch)
     assert main(["info", "--json"]) == 0
@@ -54,7 +54,7 @@ def test_e2e_validation_rejects_positional_plus_prompt_flag(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A positional prompt combined with --prompt is rejected non-zero."""
-    from coderai.cli.app import main
+    from coderai.ui.shell.app import main
 
     _isolate_env(tmp_path, monkeypatch)
     assert main(["hello", "--prompt", "world"]) == 1
@@ -64,7 +64,7 @@ def test_e2e_version_flag_exits_zero(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """--version exits via SystemExit(0) like a standard CLI flag."""
-    from coderai.cli.app import main
+    from coderai.ui.shell.app import main
 
     _isolate_env(tmp_path, monkeypatch)
     with pytest.raises(SystemExit) as exc:
@@ -76,7 +76,7 @@ def test_e2e_export_creates_zip_in_tmp(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """`export <id> -o <zip> -y` zips session files with a manifest."""
-    from coderai.cli.app import main
+    from coderai.ui.shell.app import main
 
     _isolate_env(tmp_path, monkeypatch)
     monkeypatch.chdir(tmp_path)

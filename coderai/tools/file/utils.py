@@ -8,7 +8,7 @@ import pathlib
 from typing import Any
 
 from coderai.utils.path import write_text_file
-from coderai.core.sandbox import check_sandbox_path_access, validate_sandboxed_path
+from coderai.sandbox import check_sandbox_path_access, validate_sandboxed_path
 
 
 def context_value(context: Any, name: str, default: Any = None) -> Any:
@@ -119,7 +119,7 @@ async def async_write_file_with_locks(
     line_endings: str = "LF",
 ) -> int:
     """Acquire fine-grained path write lock and write file with lifecycle callbacks."""
-    from coderai.core.tools.path_lock import get_path_lock_manager
+    from coderai.tools.legacy.path_lock import get_path_lock_manager
 
     ws_root = context_value(context, "project_root")
     path_lock = get_path_lock_manager()

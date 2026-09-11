@@ -5,30 +5,30 @@ from __future__ import annotations
 from typing import Any
 from collections.abc import Callable, Sequence
 
-from coderai.core.tools import ask_user_question as _ask
-from coderai.core.tools import agents as _agents
-from coderai.core.tools import bash as _bash
-from coderai.core.tools import dmail as _dmail
-from coderai.core.tools import edit as _edit
-from coderai.core.tools import think as _think
-from coderai.core.tools import jobs as _jobs
+from coderai.tools import ask_user as _ask
+from coderai.tools import agent as _agents
+from coderai.tools import shell as _bash
+from coderai.tools import dmail as _dmail
+from coderai.tools.file import replace as _edit
+from coderai.tools import think as _think
+from coderai.tools import background as _jobs
 from coderai.tools.legacy import lsp as _lsp
-from coderai.core.tools import plan_mode as _plan_mode
+from coderai.tools import plan as _plan_mode
 from coderai.tools.legacy import ralph as _ralph
-from coderai.core.tools import read as _read
+from coderai.tools.file import read as _read
 from coderai.tools.legacy import schedule as _schedule
-from coderai.core.tools import search as _search_fs
+from coderai.tools.file import glob as _search_fs
 from coderai.tools.legacy import skill as _skill
-from coderai.core.tools import str_replace_editor as _str_replace
-from coderai.core.tools import subagent as _subagent
+from coderai.tools.file import replace as _str_replace
+from coderai.tools import agent as _subagent
 from coderai.tools.legacy import terminal as _terminal
-from coderai.core.tools import todo_write as _todo
-from coderai.core.tools import understand_image as _image
-from coderai.core.tools import update_plan as _plan
-from coderai.core.tools import web_fetch as _fetch
-from coderai.core.tools import web_search as _search
+from coderai.tools import todo as _todo
+from coderai.tools.file import read_media as _image
+from coderai.tools import todo as _plan
+from coderai.tools.web import fetch as _fetch
+from coderai.tools.web import search as _search
 from coderai.tools.legacy import browser as _browser
-from coderai.core.tools import write as _write
+from coderai.tools.file import write as _write
 
 from coderai.goals.core import handle_goal_tool as _goal_handle
 from coderai.tools.legacy.goal_dsh import (
@@ -45,7 +45,7 @@ from coderai.tools.legacy.session_query import (
     handle_session_event_search_tool as _session_event_search_handle,
     handle_session_event_read_tool as _session_event_read_handle,
 )
-from coderai.core.tools import pwsh as _pwsh
+from coderai.tools import shell as _pwsh
 from coderai.teams import (
     handle_spawn_teammate_tool as _spawn_teammate_handle,
     handle_team_task_create_tool as _task_create_handle,

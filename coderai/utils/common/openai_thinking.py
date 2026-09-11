@@ -126,7 +126,7 @@ def resolve_reasoning_key(client_info: dict[str, Any] | None = None) -> str:
 def reasoning_key_for_model(model: str) -> str:
     """Look up the typed provider's reasoning key for a model (cheap, no client)."""
     try:
-        from coderai.core.typed_config import load_typed_config
+        from coderai.config import load_typed_config
 
         typed = load_typed_config()
         for key, m in typed.models.items():

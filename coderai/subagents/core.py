@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from coderai.core.orchestration import DEFAULT_MAX_CONTINUABLE_AGENTS
+from coderai.orchestration import DEFAULT_MAX_CONTINUABLE_AGENTS
 from coderai.subagents.builder import SubAgentSpec
 from coderai.subagents.output import SubAgentResult
 
@@ -59,8 +59,8 @@ def append_parent_session_notice(
     if not session_id:
         return False
     try:
-        from coderai.core.events import make_user_message
-        from coderai.core.session_store import JsonlSessionStore
+        from coderai.events import make_user_message
+        from coderai.soul.session.store import JsonlSessionStore
 
         store = JsonlSessionStore(project_root)
         max_seq = 0
@@ -251,7 +251,7 @@ def get_agent_registry() -> AgentRegistry:
 # --- module helpers (from coderai/core/subagent.py) ---
 import uuid
 
-from coderai.core.common.usage import extract_usage_dict
+from coderai.utils.common.usage import extract_usage_dict
 
 def _normalize_subagent_tool_calls(raw: Any) -> list[dict[str, Any]] | None:
     if not raw:
@@ -288,7 +288,7 @@ def _normalize_subagent_tool_calls(raw: Any) -> list[dict[str, Any]] | None:
 
 def _call_llm_sync(client: Any, request: dict[str, Any]) -> dict[str, Any]:
     """Synchronous LLM call wrapper supporting both OpenAI SDK objects and dict responses."""
-    from coderai.core.common.openai_thinking import (
+    from coderai.utils.common.openai_thinking import (
         extract_reasoning_content,
         reasoning_key_for_model,
     )

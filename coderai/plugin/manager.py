@@ -17,7 +17,7 @@ from coderai.plugin import (
     parse_plugin_json,
     write_runtime,
 )
-from coderai.core.share import get_share_dir
+from coderai.share import get_share_dir
 
 
 def get_plugins_dir() -> Path:
@@ -36,7 +36,7 @@ def collect_host_values(source: dict[str, Any]) -> dict[str, str]:
     oauth_key = str(source.get("oauthKey") or "")
     if oauth_key:
         try:
-            from coderai.core.oauth import OAuthManager
+            from coderai.auth.oauth import OAuthManager
 
             resolved = OAuthManager([oauth_key]).resolve_api_key(api_key, oauth_key)
             if resolved:

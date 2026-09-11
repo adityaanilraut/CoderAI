@@ -82,7 +82,7 @@ async def run_side_question(
     # Kimi parity: BtwBegin emitted before the call, BtwEnd after.
     bid = ""
     try:
-        from coderai.core.wire.emitter import get_emitter
+        from coderai.wire.emitter import get_emitter
 
         bid = get_emitter().btw_begin(question[:500])
     except Exception:
@@ -113,7 +113,7 @@ async def run_side_question(
         answer = await asyncio.wait_for(asyncio.to_thread(_call), timeout=timeout_s + 10)
     except Exception as e:
         try:
-            from coderai.core.wire.emitter import get_emitter
+            from coderai.wire.emitter import get_emitter
 
             get_emitter().btw_end(bid, None, str(e))
         except Exception:
@@ -128,7 +128,7 @@ async def run_side_question(
         except Exception:
             pass
     try:
-        from coderai.core.wire.emitter import get_emitter
+        from coderai.wire.emitter import get_emitter
 
         get_emitter().btw_end(bid, answer, None)
     except Exception:

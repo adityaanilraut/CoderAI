@@ -7,13 +7,13 @@ import asyncio
 import time
 from typing import Any
 
-from coderai.core.jobs import (
+from coderai.background import (
     DEFAULT_WAIT_TIMEOUT_MS,
     MAX_WAIT_TIMEOUT_MS,
     get_job_store,
     status_line,
 )
-from coderai.core.tools.types import ToolExecutionContext, ToolResult, as_str
+from coderai.tools.legacy.types import ToolExecutionContext, ToolResult, as_str
 
 
 def _session_id(context: ToolExecutionContext | Any) -> str:

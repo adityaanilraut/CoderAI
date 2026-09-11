@@ -45,8 +45,8 @@ class HttpClient:
         pool_connections: int = 20,
         pool_maxsize: int = 20,
     ) -> None:
-        from coderai.core.network.cache import get_fetch_cache
-        from coderai.core.network.security import NetworkPolicy
+        from coderai.network.cache import get_fetch_cache
+        from coderai.network.security import NetworkPolicy
 
         self.policy = policy or NetworkPolicy()
         self.cache = cache or get_fetch_cache()
@@ -79,7 +79,7 @@ class HttpClient:
         cache_ttl: float | None = None,
     ) -> HttpResponse:
         """Perform a synchronous HTTP GET request with security validation and caching."""
-        from coderai.core.network.security import check_outbound_url, is_same_origin
+        from coderai.network.security import check_outbound_url, is_same_origin
 
         # 1. Security validation (SSRF & Domain policy)
         check_outbound_url(url, self.policy)
@@ -172,7 +172,7 @@ class HttpClient:
         timeout: tuple[float, float] | float = (DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIMEOUT),
     ) -> HttpResponse:
         """Perform a synchronous HTTP POST request with security validation."""
-        from coderai.core.network.security import check_outbound_url, is_same_origin
+        from coderai.network.security import check_outbound_url, is_same_origin
 
         check_outbound_url(url, self.policy)
 

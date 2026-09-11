@@ -7,27 +7,27 @@ import pathlib
 
 import pytest
 
-from coderai.core.jobs import get_job_store, reset_job_store
-from coderai.core.permissions import (
+from coderai.background import get_job_store, reset_job_store
+from coderai.soul.approval import (
     describe_tool_permission_request,
     evaluate_permission_scopes,
     permission_coverage_gaps,
 )
-from coderai.core.spill import cleanup_spill_session, save_text
-from coderai.core.state import clear_session_state
-from coderai.core.tools.read import handle as read_handle
-from coderai.core.tools.registry import ToolRegistry, get_tool_registry
-from coderai.core.tools.schema import (
+from coderai.spill import cleanup_spill_session, save_text
+from coderai.state import clear_session_state
+from coderai.tools.file.read import handle as read_handle
+from coderai.tools.legacy.registry import ToolRegistry, get_tool_registry
+from coderai.tools.legacy.schema import (
     assert_supported_json_schema,
     define_tool,
     validate_json_schema_value,
 )
-from coderai.core.tools.terminal import (
+from coderai.tools.legacy.terminal import (
     handle_terminal_close_tool,
     handle_terminal_list_tool,
     handle_terminal_open_tool,
 )
-from coderai.core.tools.types import ToolDefinition, ToolExecutionContext, ValidationError
+from coderai.tools.legacy.types import ToolDefinition, ToolExecutionContext, ValidationError
 
 
 def test_registry_validates_required_arguments():

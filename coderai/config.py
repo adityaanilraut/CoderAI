@@ -15,9 +15,9 @@ import pathlib
 import re
 from typing import Any, Literal, cast
 
-from coderai.core.common.model_capabilities import defaults_to_thinking_mode
-from coderai.core.prompt_sections import normalize_tool_preset
-from coderai.core.sandbox import apply_preset, parse_sandbox_mode
+from coderai.utils.common.model_capabilities import defaults_to_thinking_mode
+from coderai.prompt.sections import normalize_tool_preset
+from coderai.sandbox import apply_preset, parse_sandbox_mode
 
 DEFAULT_MODEL = "gpt-5.6-luna"
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
@@ -759,7 +759,7 @@ def _merge_mcp_servers(
     Global ``~/.coderai/mcp.json`` seeds the merge (Kimi: ``~/.kimi/mcp.json``);
     ``--mcp-config-file`` / ``--mcp-config`` overlays win per server.
     """
-    from coderai.core.mcp_files import (
+    from coderai.mcp.files import (
         collect_cli_mcp_overlays,
         load_global_mcp_servers,
         merge_mcp_servers_dicts,
@@ -1136,7 +1136,7 @@ from typing import Literal, Self
 
 from coderai.exception import ConfigError
 from coderai.llm import ModelCapability, ProviderType
-from coderai.core.log import logger
+from coderai.log import logger
 from coderai.share import get_share_dir
 
 try:

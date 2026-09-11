@@ -1088,7 +1088,7 @@ def cmd_feedback(console: Any = None, text: str = "") -> str:
 def cmd_reload(mgr: Any, console: Any = None) -> bool:
     """Reload resolved settings without exiting (Kimi ``/reload`` parity)."""
     try:
-        from coderai.core.settings import resolve_current_settings
+        from coderai.config import resolve_current_settings
 
         settings = resolve_current_settings(getattr(mgr, "project_root", "."))
         model = settings.get("model") or settings.get("active_model")
@@ -1168,7 +1168,7 @@ def cmd_title(
 
 def cmd_hooks(console: Any = None, project_root: str = ".") -> dict[str, Any]:
     """Show configured hooks (Kimi ``/hooks`` parity: event types + counts)."""
-    from coderai.core.hooks import load_hook_config, normalize_hook_point
+    from coderai.hooks import load_hook_config, normalize_hook_point
 
     cfg = load_hook_config(project_root)
     events: dict[str, int] = {}
@@ -1268,7 +1268,7 @@ def cmd_login(
 def cmd_logout(console: Any = None, project_root: str = ".", mgr: Any = None) -> int:
     """Kimi ``/logout`` parity: clear stored credentials."""
     try:
-        from coderai.core.settings import (
+        from coderai.config import (
             get_configured_provider_keys,
             resolve_current_settings,
             write_settings,
@@ -1279,7 +1279,7 @@ def cmd_logout(console: Any = None, project_root: str = ".", mgr: Any = None) ->
         # Strip API keys from user settings providers block.
         usersettings_path = None
         try:
-            from coderai.core.settings import get_user_settings_path
+            from coderai.config import get_user_settings_path
 
             usersettings_path = get_user_settings_path()
         except Exception:
@@ -1301,7 +1301,7 @@ def cmd_logout(console: Any = None, project_root: str = ".", mgr: Any = None) ->
                 del os.environ[name]
         # Kimi parity: drop OAuth tokens + the managed provider too.
         try:
-            from coderai.core.oauth import clear_login_config, logout_all
+            from coderai.auth.oauth import clear_login_config, logout_all
 
             removed_tokens = logout_all()
             cleared_provider = clear_login_config()

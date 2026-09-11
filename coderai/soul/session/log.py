@@ -1,7 +1,7 @@
 """Append-only session log helpers: deriveMessages() and pairing-balanced tool-result pruning.
 
 Legacy message-based ``derive_messages()`` is preserved for backward compat.
-New code should prefer ``derive_messages_from_events()`` from ``coderai.core.events``.
+New code should prefer ``derive_messages_from_events()`` from ``coderai.events``.
 """
 
 from __future__ import annotations

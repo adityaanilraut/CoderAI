@@ -20,7 +20,7 @@ from typing import Any
 
 def get_global_mcp_config_file() -> Path:
     """Return the global MCP config file path (``~/.coderai/mcp.json``)."""
-    from coderai.core.share import get_share_dir
+    from coderai.share import get_share_dir
 
     return get_share_dir() / "mcp.json"
 

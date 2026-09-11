@@ -9,7 +9,7 @@ def cmd_usage(mgr: Any, session_id: str | None, console: Any = None) -> dict[str
     Uses local token accounting; quota endpoints are provider-specific so this
     reports consumption against the configured context window.
     """
-    from coderai.core.settings import get_default_context_window
+    from coderai.config import get_default_context_window
 
     data: dict[str, Any] = {
         "active_tokens": 0,

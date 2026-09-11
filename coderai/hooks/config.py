@@ -24,7 +24,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from coderai.core.tools.types import ToolExecutionContext
+from coderai.tools.legacy.types import ToolExecutionContext
 
 logger = logging.getLogger(__name__)
 

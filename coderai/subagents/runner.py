@@ -16,15 +16,15 @@ from dataclasses import dataclass, field
 from typing import Any
 from collections.abc import Callable
 
-from coderai.core.common.message_converter import OpenAIMessageConverter
-from coderai.core.common.openai_thinking import build_thinking_request_options
-from coderai.core.common.usage import extract_usage_dict
-from coderai.core.orchestration import (
+from coderai.utils.common.message_converter import OpenAIMessageConverter
+from coderai.utils.common.openai_thinking import build_thinking_request_options
+from coderai.utils.common.usage import extract_usage_dict
+from coderai.orchestration import (
     publish_subagent_end,
     publish_subagent_start,
     status_to_stop_reason,
 )
-from coderai.core.prompt import get_runtime_context, get_subagent_system_prompt, get_tools
+from coderai.prompt import get_runtime_context, get_subagent_system_prompt, get_tools
 from coderai.subagents.builder import (
     DEFAULT_MAX_SUBAGENT_DEPTH,
     DEFAULT_SUBAGENT_MAX_ITERATIONS,
@@ -33,8 +33,8 @@ from coderai.subagents.builder import (
     check_subagent_depth_quota,
     setup_subagent_scratchpad,
 )
-from coderai.core.state import clear_session_state
-from coderai.core.tools.types import ToolExecutionHooks
+from coderai.state import clear_session_state
+from coderai.tools.legacy.types import ToolExecutionHooks
 
 logger = logging.getLogger(__name__)
 from coderai.subagents.builder import (
@@ -227,7 +227,7 @@ class SubAgentManager:
 
         try:
             if spec.provider == "claude_code":
-                from coderai.core.subagent_backends.claude_code import (
+                from coderai.subagents.backends.claude_code import (
                     ClaudeCodeDriver,
                     ClaudeCodeConfig,
                 )
@@ -253,7 +253,7 @@ class SubAgentManager:
                     duration_seconds=raw_res.get("duration_seconds", 0.0),
                 )
             elif spec.provider == "codex":
-                from coderai.core.subagent_backends.codex import CodexDriver, CodexConfig
+                from coderai.subagents.backends.codex import CodexDriver, CodexConfig
 
                 codex_driver = CodexDriver(
                     CodexConfig(
@@ -276,7 +276,7 @@ class SubAgentManager:
                     duration_seconds=raw_res.get("duration_seconds", 0.0),
                 )
             elif spec.provider == "acp":
-                from coderai.core.acp.runner import AcpSubagentRunner, AcpRunConfig
+                from coderai.acp.runner import AcpSubagentRunner, AcpRunConfig
 
                 runner = AcpSubagentRunner(
                     AcpRunConfig(
@@ -448,7 +448,7 @@ class SubAgentManager:
         messages stay parked), and a one-shot settlement notice when a turn
         finishes with no queued follow-up work.
         """
-        from coderai.core.orchestration import settlement_summary
+        from coderai.orchestration import settlement_summary
 
         handle = spec.handle
         if handle is None:
@@ -591,7 +591,7 @@ class SubAgentManager:
             )
 
         # Setup sandboxed tools
-        from coderai.core.tools.executor import ToolExecutor
+        from coderai.tools.legacy.executor import ToolExecutor
 
         effective_root = spec.isolated_cwd or self.project_root
         tool_executor = ToolExecutor(effective_root, self.create_openai_client)
@@ -721,7 +721,7 @@ class SubAgentManager:
 
             # LLM invocation with retryable-failure backoff (harness retry
             # policy: 429/5xx/timeout/transport retried with jittered backoff)
-            from coderai.core.common.llm_retry import (
+            from coderai.utils.common.llm_retry import (
                 classify_llm_failure,
                 provider_retry_after_ms,
                 retry_delay_ms,
@@ -1017,9 +1017,9 @@ class SubAgentManager:
 
     def _get_sandboxed_tools(self, spec: SubAgentSpec, model: str) -> list[dict[str, Any]]:
         """Filter tools for subagent execution with deterministic ordering and canonicalization."""
-        from coderai.core.prompt import format_tool_definitions
-        from coderai.core.prompt_sections import order_tools
-        from coderai.core.tools.types import canonicalize_tool_schema
+        from coderai.prompt import format_tool_definitions
+        from coderai.prompt.sections import order_tools
+        from coderai.tools.legacy.types import canonicalize_tool_schema
 
         all_tools = get_tools({"model": model, "nonInteractive": True, "childAgent": True})
 

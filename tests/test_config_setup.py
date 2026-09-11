@@ -41,7 +41,7 @@ def fake_home(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> pathli
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("CODERAI_SHARE_DIR", str(home / ".coderai"))
-    monkeypatch.setattr("coderai.core.settings._home", lambda: home)
+    monkeypatch.setattr("coderai.config._home", lambda: home)
     for var in (
         "OPENAI_API_KEY",
         "ANTHROPIC_API_KEY",
@@ -68,7 +68,7 @@ max_context_size = 128000
 
 def test_config_typed_round_trip_saves_and_reloads(isolated_home: pathlib.Path) -> None:
     """A parsed typed config survives a save/load round-trip with defaults."""
-    from coderai.core.typed_config import (
+    from coderai.config import (
         get_config_file,
         load_typed_config,
         load_typed_config_from_string,
@@ -89,8 +89,8 @@ def test_config_typed_round_trip_saves_and_reloads(isolated_home: pathlib.Path) 
 
 def test_config_json_string_parses_and_rejects_invalid() -> None:
     """JSON config strings parse; malformed or empty input raises."""
-    from coderai.core.errors import ConfigError
-    from coderai.core.typed_config import load_typed_config_from_string
+    from coderai.exception import ConfigError
+    from coderai.config import load_typed_config_from_string
 
     payload = json.dumps(
         {
@@ -108,8 +108,8 @@ def test_config_json_string_parses_and_rejects_invalid() -> None:
 
 def test_config_legacy_settings_migrate_to_typed(isolated_home: pathlib.Path) -> None:
     """A legacy share/settings.json migrates into the typed config on load."""
-    from coderai.core.share import get_share_dir
-    from coderai.core.typed_config import get_config_file, load_typed_config
+    from coderai.share import get_share_dir
+    from coderai.config import get_config_file, load_typed_config
 
     get_share_dir().joinpath("settings.json").write_text(
         json.dumps({"model": "gpt-x", "baseURL": "https://x.test/v1", "apiKey": "sk-legacy"})
@@ -125,7 +125,7 @@ def test_config_share_dir_env_override_creates_dir(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """CODERAI_SHARE_DIR redirects the share dir and creates it."""
-    from coderai.core.share import get_share_dir
+    from coderai.share import get_share_dir
 
     target = tmp_path / "custom-share"
     monkeypatch.setenv("CODERAI_SHARE_DIR", str(target))
@@ -135,7 +135,7 @@ def test_config_share_dir_env_override_creates_dir(
 
 def test_config_atomic_write_leaves_no_tmp(tmp_path: pathlib.Path) -> None:
     """Atomic JSON writes land fully formed with no temp files left behind."""
-    from coderai.core.common.atomic import atomic_json_write
+    from coderai.utils.io import atomic_json_write
 
     target = tmp_path / "sub" / "data.json"
     atomic_json_write({"a": [1, 2, 3]}, target)
@@ -145,9 +145,9 @@ def test_config_atomic_write_leaves_no_tmp(tmp_path: pathlib.Path) -> None:
 
 def test_config_settings_overlay_resolves_model_and_client(isolated_home: pathlib.Path) -> None:
     """Saved typed config resolves to settings and an offline client dict."""
-    from coderai.core.openai_client import create_openai_client
-    from coderai.core.settings import resolve_current_settings
-    from coderai.core.typed_config import LLMModel, LLMProvider, TypedConfig, save_typed_config
+    from coderai.llm import create_openai_client
+    from coderai.config import resolve_current_settings
+    from coderai.config import LLMModel, LLMProvider, TypedConfig, save_typed_config
     from pydantic import SecretStr
 
     cfg = TypedConfig()
@@ -167,7 +167,7 @@ def test_config_settings_overlay_resolves_model_and_client(isolated_home: pathli
 
 def test_config_settings_legacy_fallback_returns_default_model(isolated_home: pathlib.Path) -> None:
     """With no config on disk, settings fall back to the built-in default."""
-    from coderai.core.settings import resolve_current_settings
+    from coderai.config import resolve_current_settings
 
     resolved = resolve_current_settings(str(isolated_home))
     assert resolved["model"] == "gpt-5.6-luna"
@@ -176,7 +176,7 @@ def test_config_settings_legacy_fallback_returns_default_model(isolated_home: pa
 
 def test_config_save_provider_key_user_scope_persists(fake_home: pathlib.Path) -> None:
     """Saving a provider key persists it to user settings and the env."""
-    from coderai.core.settings import mask_api_key, read_settings, save_provider_api_key
+    from coderai.config import mask_api_key, read_settings, save_provider_api_key
 
     try:
         assert (
@@ -194,9 +194,9 @@ def test_config_setup_cli_key_saves_model_and_key(
     tmp_path: pathlib.Path, fake_home: pathlib.Path
 ) -> None:
     """Non-interactive --provider/--key/--setup-model run saves settings."""
-    from coderai.cli.app import _build_parser
-    from coderai.cli.setup_wizard import run_setup_cli
-    from coderai.core.settings import read_settings
+    from coderai.ui.shell.app import _build_parser
+    from coderai.ui.shell.setup import run_setup_cli
+    from coderai.config import read_settings
 
     try:
         args = _build_parser().parse_args(
@@ -212,8 +212,8 @@ def test_config_setup_cli_key_saves_model_and_key(
 
 def test_config_setup_cli_status_returns_zero(tmp_path: pathlib.Path) -> None:
     """--status reports provider state and exits zero without network."""
-    from coderai.cli.app import _build_parser
-    from coderai.cli.setup_wizard import run_setup_cli
+    from coderai.ui.shell.app import _build_parser
+    from coderai.ui.shell.setup import run_setup_cli
 
     assert run_setup_cli(_build_parser().parse_args(["--status"]), project_root=str(tmp_path)) == 0
 
@@ -222,16 +222,16 @@ def test_config_setup_cli_positional_setup_dispatches_wizard(
     tmp_path: pathlib.Path, fake_home: pathlib.Path
 ) -> None:
     """Bare `setup` prompt dispatches to the setup wizard CLI."""
-    from coderai.cli.app import main
+    from coderai.ui.shell.app import main
 
-    with patch("coderai.cli.setup_wizard.run_setup_cli", return_value=0) as mock_setup:
+    with patch("coderai.ui.shell.setup.run_setup_cli", return_value=0) as mock_setup:
         assert main(["setup"]) == 0
         assert mock_setup.called
 
 
 def test_config_probe_succeeds_with_mocked_client() -> None:
     """Connectivity probe reports success when the mocked client answers."""
-    from coderai.core.openai_client import probe_provider_connectivity
+    from coderai.llm import probe_provider_connectivity
 
     mock_client = MagicMock()
     mock_client.chat.completions.create.return_value = MagicMock(model="gpt-5.6-sol")
@@ -245,7 +245,7 @@ def test_config_probe_succeeds_with_mocked_client() -> None:
 
 def test_config_probe_fails_without_key(monkeypatch: pytest.MonkeyPatch) -> None:
     """Connectivity probe fails cleanly when no API key is configured."""
-    from coderai.core.openai_client import probe_provider_connectivity
+    from coderai.llm import probe_provider_connectivity
 
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("CODERAI_API_KEY", raising=False)
@@ -257,10 +257,10 @@ def test_config_probe_fails_without_key(monkeypatch: pytest.MonkeyPatch) -> None
 
 def test_setup_wizard_cancel_leaves_settings_untouched(fake_home: pathlib.Path) -> None:
     """Cancelling the save-scope prompt configures nothing and writes nothing."""
-    from coderai.cli.setup_wizard import prompt_save_scope
-    from coderai.core.settings import get_configured_provider_keys
+    from coderai.ui.shell.setup import prompt_save_scope
+    from coderai.config import get_configured_provider_keys
 
-    with patch("coderai.cli.setup_wizard.select_with_arrows", return_value=None):
+    with patch("coderai.ui.shell.setup.select_with_arrows", return_value=None):
         assert prompt_save_scope() is None
     status_map = get_configured_provider_keys()
     assert status_map
@@ -270,15 +270,15 @@ def test_setup_wizard_cancel_leaves_settings_untouched(fake_home: pathlib.Path) 
 
 def test_config_model_picker_cancel_keeps_current() -> None:
     """Cancelling the model picker keeps the current model unchanged."""
-    from coderai.cli.interactive_menu import select_model_interactive
+    from coderai.ui.shell.session_picker import select_model_interactive
 
-    with patch("coderai.cli.interactive_menu.select_with_arrows", return_value=None):
+    with patch("coderai.ui.shell.session_picker.select_with_arrows", return_value=None):
         assert select_model_interactive(None, "gpt-5.6-terra") == "gpt-5.6-terra"
 
 
 def test_config_model_picker_number_selects_curated(monkeypatch: pytest.MonkeyPatch) -> None:
     """Numeric model-picker input selects the corresponding curated model."""
-    from coderai.cli.interactive_menu import select_model_interactive
+    from coderai.ui.shell.session_picker import select_model_interactive
 
     monkeypatch.setattr("builtins.input", lambda _: "1")
     assert select_model_interactive(None, "gpt-5.6-luna") == "gpt-5.6-sol"
@@ -336,7 +336,7 @@ def test_typed_config_rejects_missing_provider() -> None:
 
 def test_create_openai_client_resilient_to_typed_config_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     """create_openai_client does not raise UnboundLocalError when load_typed_config fails."""
-    from coderai.core.openai_client import create_openai_client
+    from coderai.llm import create_openai_client
 
     def mock_broken_load():
         raise RuntimeError("simulated config failure")

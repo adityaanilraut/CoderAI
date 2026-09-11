@@ -12,7 +12,7 @@ _MAX_JOBS_PER_SESSION = 100
 # CODERAI_MAX_RUNNING_JOBS_PER_SESSION or settings orchestration.maxRunningJobs).
 # Static mirror of core.orchestration.DEFAULT_MAX_RUNNING_JOBS (50). Kept as a
 # literal so this module stays stdlib-only: importing orchestration pulls in
-# coderai.core/__init__, which cycles back here through core/jobs.py when
+# the package __init__, which can cycle back here when
 # background.* is imported first in a fresh interpreter. The live limit is
 # resolved at call time via resolve_max_running_jobs(); this is just the default.
 MAX_RUNNING_JOBS_PER_SESSION = 50

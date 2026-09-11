@@ -12,7 +12,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from coderai.core.sandbox import DEFAULT_SANDBOX_MODE, parse_sandbox_mode, wrap_sandbox_command
+from coderai.sandbox import DEFAULT_SANDBOX_MODE, parse_sandbox_mode, wrap_sandbox_command
 
 logger = logging.getLogger(__name__)
 

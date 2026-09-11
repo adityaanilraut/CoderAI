@@ -13,10 +13,10 @@ from typing import Any
 
 import pytest
 
-import coderai.core.session  # noqa: F401  (engine first: background.* before core.* is order-fragile)
+import coderai.soul.session.manager  # noqa: F401  (engine first: background.* before core.* is order-fragile)
 from coderai.background.manager import get_job_store, reset_job_store
 from coderai.background.worker import run_background_task_worker
-from coderai.core.common.file_utils import with_file_lock, write_file_atomic
+from coderai.utils.path import with_file_lock, write_file_atomic
 from coderai.skill.flow import (
     Flow,
     FlowEdge,
@@ -27,7 +27,7 @@ from coderai.skill.flow import (
 )
 from coderai.skill.flow.mermaid import parse_mermaid_flowchart
 from coderai.skill.flow.runner import FlowRunner, maybe_run_ralph, resolve_max_ralph_iterations
-from coderai.core.hooks import (
+from coderai.hooks import (
     HookOutput,
     HookPoint,
     load_hook_config,
@@ -36,9 +36,9 @@ from coderai.core.hooks import (
     run_hook_point,
     run_pre_tool_use,
 )
-from coderai.core.notifications import NotificationEvent, NotificationManager
-from coderai.core.telemetry import ExecutionSpan, TelemetryCollector
-from coderai.core.tools.browser import (
+from coderai.notifications import NotificationEvent, NotificationManager
+from coderai.telemetry.sink import ExecutionSpan, TelemetryCollector
+from coderai.tools.legacy.browser import (
     DOMExtractor,
     HeadlessBrowserDriver,
     handle_browser_click_tool,
@@ -47,9 +47,9 @@ from coderai.core.tools.browser import (
     handle_browser_snapshot_tool,
     handle_browser_type_tool,
 )
-from coderai.core.wire.serde import deserialize_wire_message, serialize_wire_message
-from coderai.core.wire.server import WireServer
-from coderai.core.wire.types import TurnBegin
+from coderai.wire.serde import deserialize_wire_message, serialize_wire_message
+from coderai.wire.server import WireServer
+from coderai.wire.types import TurnBegin
 
 
 @pytest.fixture(autouse=True)

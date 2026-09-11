@@ -18,27 +18,28 @@ from unittest.mock import MagicMock, patch
 import pytest
 from types import SimpleNamespace as NS
 
-from coderai.core.acp.protocol import AcpMessage, AcpNdjsonParser
-from coderai.core.agents import get_task_supervisor, spawn_background_agent
-from coderai.core.common.shell_utils import (
+from coderai.acp.convert import AcpNdjsonParser
+from coderai.acp.types import AcpMessage
+from coderai.background import get_task_supervisor, spawn_background_agent
+from coderai.utils.shell_quoting import (
     build_shell_env,
     is_sensitive_env_var,
     scrub_subprocess_env,
 )
-from coderai.core.orchestration import (
+from coderai.orchestration import (
     DEFAULT_MAX_CONTINUABLE_AGENTS,
     DEFAULT_MAX_RUNNING_JOBS,
     resolve_max_continuable_agents,
     resolve_max_running_jobs,
     settlement_summary,
 )
-from coderai.core.subagent import MAX_SUBAGENT_DEPTH, SubAgentManager, SubAgentResult, SubAgentSpec
-from coderai.core.subagent_backends.claude_code import ClaudeCodeConfig, ClaudeCodeDriver
-from coderai.core.subagent_backends.codex import CodexConfig, CodexDriver
-from coderai.core.tools.agents import handle_list_agents_tool
-from coderai.core.tools.bash import handle_bash_tool
-from coderai.core.tools.subagent import handle_subagent_tool
-from coderai.core.tools.types import ToolExecutionContext
+from coderai.subagents.runner import MAX_SUBAGENT_DEPTH, SubAgentManager, SubAgentResult, SubAgentSpec
+from coderai.subagents.backends.claude_code import ClaudeCodeConfig, ClaudeCodeDriver
+from coderai.subagents.backends.codex import CodexConfig, CodexDriver
+from coderai.tools.agent import handle_list_agents_tool
+from coderai.tools.shell import handle_bash_tool
+from coderai.tools.agent import handle_subagent_tool
+from coderai.tools.legacy.types import ToolExecutionContext
 
 
 def _msg(content, tool_calls=None):
@@ -171,7 +172,7 @@ async def test_subagent_spawn_rejects_depth_over_max_depth(tmp_path: pathlib.Pat
 
 async def test_subagent_spawn_halts_on_token_budget(tmp_path: pathlib.Path):
     """Spawn stops with budget_exceeded once the token budget is consumed."""
-    import coderai.core.subagent as subagent_mod
+    import coderai.subagents.runner as subagent_mod
 
     def mock_call_llm_sync(client, request):
         return {

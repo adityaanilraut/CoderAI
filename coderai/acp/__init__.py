@@ -11,7 +11,7 @@ def acp_main() -> None:
     import acp
 
     from coderai.acp.server import ACPServer
-    from coderai.core.log import enable_logging
+    from coderai.log import enable_logging
     from coderai.utils.logging import logger
 
     enable_logging(redirect_stderr=False)

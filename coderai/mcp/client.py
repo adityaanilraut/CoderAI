@@ -58,7 +58,7 @@ class McpClient:
     def _create_transport(self) -> McpTransport:
         if "url" in self.config:
             from coderai.mcp_oauth import apply_bearer_auth
-            from coderai.core.network.security import NetworkPolicy
+            from coderai.network.security import NetworkPolicy
 
             config = apply_bearer_auth(self.config, self.server_name)
             policy = config.get("policy")

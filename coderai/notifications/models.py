@@ -23,7 +23,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from coderai.core.common.atomic import atomic_json_write
+from coderai.utils.io import atomic_json_write
 
 NotificationCategory = str  # "task" | "agent" | "system"
 NotificationSeverity = str  # "info" | "success" | "warning" | "error"

@@ -17,8 +17,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from coderai.core.common.atomic import atomic_json_write
-from coderai.core.log import logger
+from coderai.utils.io import atomic_json_write
+from coderai.log import logger
 
 SubagentStatus = Literal[
     "idle",

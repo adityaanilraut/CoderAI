@@ -1,4 +1,4 @@
-"""coderai.cli — thin UI layer over coderai.core."""
+"""coderai.cli — thin UI layer over the CoderAI modular engine."""
 
 from typing import Any, Literal
 
@@ -22,7 +22,7 @@ def __getattr__(name: str) -> Any:
     # via coderai.ui.shell.visualize._blocks) doesn't eagerly import the
     # interactive app monolith and create import cycles through moved shims.
     if name == "main":
-        from coderai.cli.app import main
+        from coderai.ui.shell.app import main
 
         return main
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

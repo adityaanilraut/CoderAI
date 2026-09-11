@@ -201,7 +201,7 @@ class FlowRunner:
     async def _flow_turn(mgr: Any, session_id: str, prompt: str) -> FlowTurnResult:
         """Run one flow node as a session turn (append + activate + read back)."""
         try:
-            from coderai.core.wire.emitter import get_emitter
+            from coderai.wire.emitter import get_emitter
 
             emitter = get_emitter()
             emitter.turn_begin(prompt)
@@ -223,7 +223,7 @@ class FlowRunner:
             has_user = True
         if not has_user:
             try:
-                from coderai.core.prompt import get_runtime_context
+                from coderai.prompt import get_runtime_context
 
                 runtime_context = get_runtime_context(
                     mgr.project_root, mgr.get_active_model()
@@ -363,14 +363,14 @@ def ralph_iterations_for_prompt(settings: dict[str, Any] | None, prompt_text: An
 async def run_flow_skill(mgr: Any, session_id: str, name: str) -> FlowOutcome:
     """Run a ``type: flow`` skill by name in the current session."""
     from coderai.skill.flow import parse_flow_from_skill_content
-    from coderai.core.skill import load_skill
+    from coderai.skill import load_skill
 
     skill = load_skill(name, getattr(mgr, "project_root", None))
     if not skill:
         return FlowOutcome(status="error", detail=f"Unknown skill: {name}.")
     meta_type = ""
     try:
-        from coderai.core.skill.loader import extract_skill_frontmatter
+        from coderai.skill import extract_skill_frontmatter
 
         meta_type = str(
             (extract_skill_frontmatter(skill.get("content", "")) or {}).get("type", "")

@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any
 import requests
 
-from coderai.core.network.cache import ResponseCache, get_search_cache
+from coderai.network.cache import ResponseCache, get_search_cache
 from coderai.utils.aiohttp import get_http_client
 
 logger = logging.getLogger(__name__)

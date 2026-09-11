@@ -7,7 +7,7 @@ admitted-round counter ``roundsStarted``, and process-local ``activation``
 (``armed``/``disarmed`` — never persisted, so a reloaded/resumed goal starts
 disarmed and must be rearmed with ``update_goal action resume``).
 
-This is a separate domain from the legacy ``coderai.core.goals.GoalStore``
+This is a separate domain from the legacy ``coderai.goals.core.GoalStore``
 (which keeps its action-style status vocabulary and 20-round default for
 backward compatibility).
 """
@@ -23,7 +23,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from coderai.core.orchestration import get_orchestration_event_bus, resolve_goal_defaults
+from coderai.orchestration import get_orchestration_event_bus, resolve_goal_defaults
 
 logger = logging.getLogger(__name__)
 

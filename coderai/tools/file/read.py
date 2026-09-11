@@ -11,14 +11,14 @@ import re
 from typing import Any
 
 from coderai.utils.path import is_binary_buffer, read_text_file_with_metadata
-from coderai.core.state import (
+from coderai.state import (
     create_full_file_snippet,
     create_snippet,
     is_absolute_file_path,
     mark_file_read,
     normalize_file_path,
 )
-from coderai.core.tools.types import (
+from coderai.tools.legacy.types import (
     ToolExecutionFollowUpMessage,
     ToolResult,
     as_str,
@@ -692,7 +692,7 @@ def handle_read_tool(args: dict[str, Any], context: Any) -> ToolResult:
         },
     )
 
-    from coderai.core.tools.observation import get_observation_tracker
+    from coderai.tools.legacy.observation import get_observation_tracker
 
     get_observation_tracker().record_observation(session_id, file_path, content=raw)
 
