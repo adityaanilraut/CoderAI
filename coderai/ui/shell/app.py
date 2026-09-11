@@ -7,7 +7,6 @@ flows, autocompletion, session management, and slash commands.
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import json
 import os
@@ -17,7 +16,6 @@ import subprocess
 import sys
 from typing import Any
 
-from coderai._version import __version__
 from coderai.cli.commands import parse_slash_command
 from coderai.cli.completer import setup_readline
 from coderai.cli.diff_render import render_diff_preview
@@ -27,7 +25,6 @@ from coderai.cli.file_mention import expand_file_mentions
 from coderai.cli.help import render_help
 from coderai.cli.input_engine import read_user_turn
 from coderai.cli.interactive_menu import (
-    prompt_plan_implementation,
     render_config_interactive,
     render_mcp_interactive,
     render_mcp_prompts,
@@ -48,7 +45,6 @@ from coderai.soul.approval import (
     PLAN_MODE_FORCE_ASK_SCOPES,
     append_project_permission_allows,
 )
-from coderai.prompt.sections import TOOL_PRESETS
 from coderai.soul.session.manager import SessionManager, SessionMessage
 from coderai.core.skill import list_skills, load_skill
 
@@ -144,7 +140,7 @@ def _render_markdown(text: str) -> None:
     console.print(Markdown(text))
 
 
-from coderai.ui.shell.startup import _build_parser
+from coderai.ui.shell.startup import _build_parser  # noqa: E402
 
 
 def _prompt_permissions(

@@ -100,7 +100,7 @@ class ACPServer:
                 id="login",
                 name=f"Login with {NAME} account",
                 description=(
-                    f"Run `coderai login` command in the terminal, "
+                    "Run `coderai login` command in the terminal, "
                     "then follow the instructions to finish login."
                 ),
                 field_meta={
