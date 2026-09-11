@@ -9,11 +9,11 @@ This document serves as the operational guide and architectural specification fo
 CoderAI is an enterprise-grade AI software engineering CLI and agentic execution platform.
 
 ### Core Systems
-- **Terminal CLI (`coderai/cli/`)**: Pure CLI interface (`coderai` and `cai`) with rich terminal rendering, interactive REPL, slash command dispatcher (`coderai/ui/shell/slash.py`), and multi-provider configuration.
-- **Session Manager (`coderai/core/session.py`)**: Stateful session orchestrator managing conversation histories, event streams, turn life cycles, compaction, and file history checkpoints.
+- **Terminal CLI (`coderai/ui/shell/`, `coderai/cli/`)**: Pure CLI interface (`coderai` and `cai`) with rich terminal rendering, interactive REPL, slash command dispatcher (`coderai/ui/shell/slash.py`), and multi-provider configuration.
+- **Session Manager (`coderai/soul/session/manager.py`)**: Stateful session orchestrator managing conversation histories, event streams, turn life cycles, compaction, and file history checkpoints.
 - **Agent Roles & Discovery (`coderai/subagents/` & `.coderai/agents/`)**: Dynamic discovery of specialized markdown agent specifications (`.coderai/agents/*.md`, `.agents/agents/*.md`, `~/.agents/agents/*.md`). Discovered roles include `architect`, `build-error-resolver`, `code-reviewer`, `planner`, `security-reviewer`, and `tdd-guide`.
-- **Autonomous Swarms (`coderai/core/teams/`)**: Decentralized multi-agent swarm coordination featuring `TeamManager`, DAG-validated `TeamTaskBoard`, priority actor mailboxes (`ActorChannel` / `AsyncMailbox`), and synchronization barriers (`wait_agent`).
-- **Tool Platform (`coderai/core/tools/`)**: Sandboxed tool execution with dry-run verification, approval workflows (`YOLO` and `AFK` modes), AST-based code transforms, ripgrep search, and git working tree isolation.
+- **Autonomous Swarms (`coderai/teams/`)**: Decentralized multi-agent swarm coordination featuring `TeamManager`, DAG-validated `TeamTaskBoard`, priority actor mailboxes (`ActorChannel` / `AsyncMailbox`), and synchronization barriers (`wait_agent`).
+- **Tool Platform (`coderai/tools/`, `coderai/tools/legacy/`)**: Sandboxed tool execution with dry-run verification, approval workflows (`YOLO` and `AFK` modes), AST-based code transforms, ripgrep search, and git working tree isolation.
 - **Agent Control Protocol (`coderai/acp/`)**: In-process JSON-RPC server implementing the ACP protocol with session creation, resume, fork (`fork_session`), and extensible method dispatch (`ext_method`).
 
 ---

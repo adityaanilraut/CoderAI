@@ -11,18 +11,12 @@ priority order.
 
 ## 1. Where the project stands
 
-The port has two trees and a shim layer between them:
+The port now has a single modular tree. The legacy `coderai/core/**` package and
+the `_moved.forward()` shim layer have been removed.
 
 | Tree | Path | Purpose |
 |---|---|---|
-| **New (modular)** | `coderai/{soul,tools,ui,wire,acp,subagents,background,hooks,skill,plugin,auth,notifications,telemetry,utils,approval_runtime}/`, `config.py`, `llm.py`, `session.py` | Kimi-mirrored public surface |
-| **Legacy** | `coderai/core/**`, `coderai/cli/**` | Original CoderAI engine, still the live implementation |
-| **Shims** | 96 modules calling `coderai._moved.forward(__name__, "coderai.X")` | Backward-compat forwarding from legacy import paths to the new tree |
-
-`_moved.forward()` makes the calling module a transparent proxy: reads fall through
-to the new module, and **writes** (`mock.patch`, `monkeypatch.setattr` against the
-old path) land on the implementation module. Do not replace shims with
-`from new import *` — that swallows patches.
+| **Modular** | `coderai/{soul,tools,ui,wire,acp,subagents,background,hooks,skill,plugin,auth,notifications,telemetry,utils,approval_runtime,lsp,terminal,teams,workflow,mcp,network,prompt,session_query,code_mode,goals}/`, `config.py`, `llm.py`, `session.py`, `log.py`, `events.py`, `state.py`, `orchestration.py` | Live implementation and Kimi-mirrored public surface |
 
 ### Completed
 
@@ -121,7 +115,7 @@ Two false positives to always rule out:
 
 ### P0 — Step 6: relocate the legacy engine (the bulk of the port)
 
-**Status: not started. Size: 103 real, reachable legacy modules ≈ 30,799 LOC.**
+**Status: complete.** All real legacy implementation clusters were moved to the modular tree, `coderai/cli/app.py` moved to `coderai/ui/shell/app.py`, and the legacy `coderai/core/**` tree plus `coderai/_moved.py` were deleted.
 
 These are CoderAI-native features with **no Kimi counterpart**, so they cannot be
 "ported from Kimi" — they need a new home in the modular layout. Largest:
@@ -163,20 +157,15 @@ Rough grouping to consider for target packages:
 | `core/prompt.py`, `prompt_sections.py`, `core/common/*` | `coderai/prompt/`, `coderai/utils/` |
 | `cli/app.py`, `cli/{info,mcp,plugin,export,doctor}.py` | `coderai/ui/shell/`, `coderai/cli/` |
 
-**Recommended approach:** one cluster per commit; move the implementation to the new
-path and leave a `_moved.forward()` shim at the old path so nothing breaks. Repoint
-internal imports. Verify with the full per-file suite after each cluster.
-
-**Then:** delete `coderai/core/**` shims once no consumer imports legacy paths.
+**Result:** the relocation was executed cluster by cluster, all shims were removed, and no consumer imports legacy paths.
 
 ### P1 — Remove the 96 forward shims
 
-**Status: blocked on P0.** Each shim is a second import path for a module. They are
-load-bearing today: 103 real legacy modules import each other through legacy paths,
-and test files import `coderai.core.*`. Only delete after P0 and after repointing
-tests.
+**Status: complete.** All forward shims, `coderai/_moved.py`, and the `coderai/core/**` compatibility tree were removed after repointing consumers, tests, scripts, and examples to the modular paths. Legacy-path grep is clean.
 
-### P2 — Phases 9 & 10 (never started)
+### P2 — Phases 9 & 10 (partial)
+
+**Status:** partial. PyInstaller spec/verifier and the headless SDK skeleton exist. Remaining: real binary build verification and SDK integration/real-session validation.
 
 - **Phase 9 — PyInstaller:** `coderai.spec` (ref `kimi.spec`), `coderai/utils/pyinstaller.py`
   (ref `src/kimi_cli/utils/pyinstaller.py`, ~80 lines), `scripts/verify_binary.py`.
@@ -185,35 +174,35 @@ tests.
   `src/coderai_sdk/client.py`, `models.py`, `tests/test_sdk.py`.
   `coderai/acp/engine.py` shows how to drive a session programmatically without a terminal.
 
-### P3 — Phase 8 skills gap
+### P3 — Phase 8 skills gap (complete)
+
+**Status:** complete. The five missing skills were added under `.coderai/skills/`.
 
 Planned 5 bundled skills in `.coderai/skills/`; only 2 exist (`security-audit`,
 `tdd-workflow`). Missing: `skill-creator`, `feature-smoke-test`, `pull-request`,
 `release`, `worktree-status` (refs in `kimi-cli-main/skills/` and `.agents/skills/`).
 
-### P4 — ACP capability gaps
+### P4 — ACP capability gaps (partial)
+
+**Status:** cross-process resume persistence is done. The remaining gaps are:
 
 Deferred during the Option 3 migration; each is a known limitation:
 
 | Gap | Where to work |
 |---|---|
 | Cross-process resume doesn't rehydrate `SessionManager` history (ACP↔engine id binding is in-process) | `acp/server.py::_setup_session`; persist the mapping |
-| ACP-client terminal bridge removed (`replace_tools` was deleted) — Stack A runs local terminal tools instead | would need a `Terminal` bridge over `core/terminal/manager.py` |
+| ACP-client terminal bridge removed (`replace_tools` was deleted) — Stack A runs local terminal tools instead | would need a `Terminal` bridge over `coderai/terminal/manager.py` |
 | MCP injection is process-global via `CODERAI_MCP_CONFIG_JSON`, so concurrent sessions with different servers collide | `acp/server.py::_build_engine` |
 | Images are persisted to temp files and referenced in the prompt for `read` (indirect) | `acp/engine.py::build_prompt` |
 | Model switching maps ACP model keys onto Stack A's model override; the two config systems can disagree | `acp/server.py::set_session_model` |
 
 ### P5 — Small leftovers
 
-- `normalize_proxy_env` is duplicated in `coderai/utils/proxy.py` **and**
-  `coderai/utils/envvar.py` (both callable; pick one).
-- `coderai/core/subagent_backends/` (`base.py` 100, `claude_code.py` 66,
-  `codex.py` 63, `acp.py` 48) appears unreachable — verify and delete if so.
-- `core/acp/protocol.py` (3 lines) is a `import *` re-export; fold into `acp/types.py`.
-- Pre-existing lint debt in `core/session.py` (~29 unused imports/E402) — resolves
-  naturally during P0 relocation.
-- `AGENTS.md` still documents the **legacy** layout (`coderai/core/session.py`,
-  `coderai/core/teams/`, `coderai/core/tools/`); update it after P0.
+- `normalize_proxy_env` duplicate: **done** — canonical in `coderai/utils/proxy.py`.
+- `subagent_backends`: moved to `coderai/subagents/backends/` and covered by tests; not dead.
+- `core/acp/protocol.py`: removed with the legacy `coderai/core/**` tree.
+- `core/session.py` lint debt: removed with the legacy tree; some unrelated pre-existing lint remains across the repo.
+- `AGENTS.md` legacy layout: updated for the new modular layout.
 
 ---
 
