@@ -1,17 +1,6 @@
-"""LSP subsystem package."""
+"""Moved to coderai.lsp - shim (kimi structure). Reads and writes
+(mock.patch / monkeypatch) forward to the implementation module.
+Do not add code here."""
+from coderai._moved import forward as _forward
 
-from coderai.core.lsp.client import (
-    LspClient,
-    LspHoverResult,
-    LspLocation,
-    LspSymbol,
-    get_lsp_client,
-)
-
-__all__ = [
-    "LspClient",
-    "LspHoverResult",
-    "LspLocation",
-    "LspSymbol",
-    "get_lsp_client",
-]
+_forward(__name__, "coderai.lsp")
