@@ -20,6 +20,10 @@ the `_moved.forward()` shim layer have been removed.
 
 ### Completed
 
+- **P0/P1 complete at `c66dc64`**: all real legacy implementation clusters were moved
+  into the modular tree, `coderai/cli/app.py` moved to `coderai/ui/shell/app.py`, and
+  the `coderai/core/**` tree, all `_moved.forward()` shims, and `coderai/_moved.py`
+  were deleted.
 - **Phases 0–7** of `PORT_PLAN.md`: engine leaves, `soul/`, `tools/`, `ui/`, `wire/`,
   `acp/`, `subagents/`, `hooks/`, `config.py`, `llm.py`; `tests_e2e/` (13 files);
   `scripts/`, `docs/`, `clips/`.
@@ -113,98 +117,67 @@ Two false positives to always rule out:
 
 ## 3. Remaining work, in priority order
 
-### P0 — Step 6: relocate the legacy engine (the bulk of the port)
+P0 and P1 are complete. The legacy `coderai/core/**` tree, `coderai/_moved.py`, and
+all forwarding shims have been deleted. The live implementation is the modular tree.
 
-**Status: complete.** All real legacy implementation clusters were moved to the modular tree, `coderai/cli/app.py` moved to `coderai/ui/shell/app.py`, and the legacy `coderai/core/**` tree plus `coderai/_moved.py` were deleted.
+### Verified state at `c66dc64`
 
-These are CoderAI-native features with **no Kimi counterpart**, so they cannot be
-"ported from Kimi" — they need a new home in the modular layout. Largest:
+- Full per-file unit sweep: all files pass except 6 known environment-only failures:
+  - 3 × `~/.coderai/sessions` permission denied
+  - 3 × `out of pty devices`
+- E2E: 49 passed, 4 skipped.
+- SDK tests: 12 passed.
+- `compileall` clean across `coderai`, `tests`, `tests_e2e`, `scripts`, `examples`, and `sdks`.
+- `python -m coderai --help` and `python -m coderai.cli --help` work.
+- Full `ruff check coderai` still reports ~409 pre-existing errors (mostly E402/F401/F811/F821) outside the P1 migration scope.
 
-```
-4065  coderai/cli/app.py          <- the entire interactive CLI (should become ui/shell/)
-2260  coderai/core/session.py      <- SessionManager (should become session/ or soul/)
-1882  coderai/core/tools/registry.py   <- ToolRegistry (vs Soul A tools/)
- 987  coderai/core/workflow/engine.py
- 935  coderai/core/prompt.py
- 825  coderai/core/tools/executor.py
- 759  coderai/core/mcp/manager.py
- 649  coderai/core/web_providers.py
- 570  coderai/core/tools/ralph.py
- 543  coderai/core/events.py
- 475  coderai/core/mcp/transport.py
- 464  coderai/core/teams/manager.py
- 463  coderai/core/common/file_history.py
- 457  coderai/core/code_mode/engine.py
- 447  coderai/core/state.py
- 416  coderai/core/lsp/client.py
- 407  coderai/core/sandbox.py
- 407  coderai/core/tools/browser.py
- ... (full list reproducible with the reachability script in §5)
-```
+### P2 — Finish packaging and SDK integration (partial)
 
-Rough grouping to consider for target packages:
+**Status:** PyInstaller artifacts and the headless SDK skeleton exist; real build and
+integration validation remain.
 
-| Legacy cluster | Suggested new home |
-|---|---|
-| `core/session.py`, `session_*.py`, `session_store.py`, `state.py`, `session_query/` | `coderai/soul/` (next to `kimisoul.AgentLoop`) or a new `coderai/session/` |
-| `core/tools/{registry,executor,schema,types,sanitizer,path_lock}.py` | `coderai/tools/` (or `coderai/soul/toolset.py`) |
-| `core/teams/`, `core/goals.py`, `goals_dsh.py`, `goal_round_driver.py` | `coderai/teams/`, `coderai/goals/` |
-| `core/workflow/`, `core/tools/ralph.py` | `coderai/workflow/` |
-| `core/lsp/` | `coderai/lsp/` |
-| `core/mcp/`, `core/mcp_files.py` | `coderai/mcp/` (Kimi has no equivalent) |
-| `core/code_mode/` | `coderai/code_mode/` |
-| `core/terminal/`, `core/sandbox.py`, `core/spill.py`, `core/schedule.py` | `coderai/terminal/`, etc. |
-| `core/prompt.py`, `prompt_sections.py`, `core/common/*` | `coderai/prompt/`, `coderai/utils/` |
-| `cli/app.py`, `cli/{info,mcp,plugin,export,doctor}.py` | `coderai/ui/shell/`, `coderai/cli/` |
+- **PyInstaller**
+  - Verify `coderai.spec`, `coderai/utils/pyinstaller.py`, and `scripts/verify_binary.py`
+    against a real PyInstaller build.
+  - Install/add `pyinstaller` where appropriate.
+  - Build the binary and run `scripts/verify_binary.py` against it.
+  - Fix missing datas/hidden imports, especially skills, agents, prompts, vendor `rg`,
+    and dynamic MCP/tool imports.
+  - If needed, update `pyproject.toml`, `requirements-dev.txt`, and CI workflow.
+- **Headless SDK**
+  - Validate `sdks/coderai-sdk/src/coderai_sdk/client.py` against the real
+    `coderai.acp.engine.SessionManagerEngine` + `coderai.cli.session_factory.build_session_manager`.
+  - Add an optional integration test, gated behind an environment variable so the
+    default SDK test remains offline.
+  - Confirm the SDK can import without the main repo on `sys.path` after packaging.
 
-**Result:** the relocation was executed cluster by cluster, all shims were removed, and no consumer imports legacy paths.
+### P3 — Skills gap (complete)
 
-### P1 — Remove the 96 forward shims
+**Status:** complete. The five missing skills were added under `.coderai/skills/`:
+`skill-creator`, `feature-smoke-test`, `pull-request`, `release`, `worktree-status`.
 
-**Status: complete.** All forward shims, `coderai/_moved.py`, and the `coderai/core/**` compatibility tree were removed after repointing consumers, tests, scripts, and examples to the modular paths. Legacy-path grep is clean.
+### P4 — Remaining ACP capability gaps (partial)
 
-### P2 — Phases 9 & 10 (partial)
+**Status:** cross-process resume persistence is done.
 
-**Status:** partial. PyInstaller spec/verifier and the headless SDK skeleton exist. Remaining: real binary build verification and SDK integration/real-session validation.
+1. **ACP-client terminal bridge** — add a `Terminal` bridge over
+   `coderai/terminal/manager.py` so ACP clients can drive terminals remotely.
+2. **Per-session MCP injection** — stop relying on process-global
+   `CODERAI_MCP_CONFIG_JSON` in `coderai/acp/server.py::_build_engine`; make MCP
+   config session-scoped so concurrent sessions cannot collide.
+3. **Image handling** — avoid persisting images to temp files and referencing them
+   indirectly in prompts; wire image blocks through `coderai/acp/engine.py::build_prompt`.
+4. **Model switching consistency** — align ACP model keys with Stack A model
+   overrides in `coderai/acp/server.py::set_session_model`.
 
-- **Phase 9 — PyInstaller:** `coderai.spec` (ref `kimi.spec`), `coderai/utils/pyinstaller.py`
-  (ref `src/kimi_cli/utils/pyinstaller.py`, ~80 lines), `scripts/verify_binary.py`.
-  `scripts/inject_build_sha.py` and `scripts/check_dependency_versions.py` already exist.
-- **Phase 10 — Headless SDK:** `sdks/coderai-sdk/` with `pyproject.toml`,
-  `src/coderai_sdk/client.py`, `models.py`, `tests/test_sdk.py`.
-  `coderai/acp/engine.py` shows how to drive a session programmatically without a terminal.
+### P5 — Residual cleanup
 
-### P3 — Phase 8 skills gap (complete)
-
-**Status:** complete. The five missing skills were added under `.coderai/skills/`.
-
-Planned 5 bundled skills in `.coderai/skills/`; only 2 exist (`security-audit`,
-`tdd-workflow`). Missing: `skill-creator`, `feature-smoke-test`, `pull-request`,
-`release`, `worktree-status` (refs in `kimi-cli-main/skills/` and `.agents/skills/`).
-
-### P4 — ACP capability gaps (partial)
-
-**Status:** cross-process resume persistence is done. The remaining gaps are:
-
-Deferred during the Option 3 migration; each is a known limitation:
-
-| Gap | Where to work |
-|---|---|
-| Cross-process resume doesn't rehydrate `SessionManager` history (ACP↔engine id binding is in-process) | `acp/server.py::_setup_session`; persist the mapping |
-| ACP-client terminal bridge removed (`replace_tools` was deleted) — Stack A runs local terminal tools instead | would need a `Terminal` bridge over `coderai/terminal/manager.py` |
-| MCP injection is process-global via `CODERAI_MCP_CONFIG_JSON`, so concurrent sessions with different servers collide | `acp/server.py::_build_engine` |
-| Images are persisted to temp files and referenced in the prompt for `read` (indirect) | `acp/engine.py::build_prompt` |
-| Model switching maps ACP model keys onto Stack A's model override; the two config systems can disagree | `acp/server.py::set_session_model` |
-
-### P5 — Small leftovers
-
-- `normalize_proxy_env` duplicate: **done** — canonical in `coderai/utils/proxy.py`.
-- `subagent_backends`: moved to `coderai/subagents/backends/` and covered by tests; not dead.
-- `core/acp/protocol.py`: removed with the legacy `coderai/core/**` tree.
-- `core/session.py` lint debt: removed with the legacy tree; some unrelated pre-existing lint remains across the repo.
-- `AGENTS.md` legacy layout: updated for the new modular layout.
-
----
+- Full-repo `ruff check coderai` still reports pre-existing lint debt; decide
+  whether to clean by directory or rule category.
+- Run `mypy` and fix regressions introduced by the modular import rewrites.
+- Optional: rename `scripts/self_check_core.py` to a non-core name and update references.
+- Consider updating `README.md`, `PORT_PLAN.md`, and CI references that still describe
+  the old `coderai/core/**` tree.
 
 ## 4. Definition of done (per phase, from `PORT_PLAN.md`)
 
