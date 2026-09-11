@@ -52,7 +52,7 @@ from coderai.wire.types import (
 )
 
 # Backward-compatible re-exports from core runner
-from coderai.core.acp.runner import AcpRunConfig, AcpSubagentRunner
+from coderai.acp.runner import AcpRunConfig, AcpSubagentRunner
 
 
 _current_turn_id = ContextVar[str | None]("current_turn_id", default=None)
