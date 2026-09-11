@@ -3906,7 +3906,7 @@ def main(argv: list[str] | None = None) -> int:
     # an option (e.g. ``-p info`` is a prompt, not the info subcommand).
     _raw = list(argv if argv is not None else sys.argv[1:])
     _first = _raw[0] if _raw else ""
-    if _first in ("info", "export", "mcp", "plugin", "login", "logout"):
+    if _first in ("info", "export", "mcp", "plugin", "login", "logout", "acp"):
         if _first == "info":
             from coderai.cli.info_cmd import run_info
 
@@ -3931,6 +3931,12 @@ def main(argv: list[str] | None = None) -> int:
             from coderai.cli.login_cmd import run_logout
 
             return run_logout(_raw[1:])
+        if _first == "acp":
+            # Kimi parity: run the ACP server on stdio (Agent Control Protocol).
+            from coderai.acp import acp_main
+
+            acp_main()
+            return 0
     args = _build_parser().parse_args(argv)
     project_root = str(pathlib.Path.cwd().resolve())
 

@@ -13,6 +13,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+# Single source of truth (also used by coderai.utils.path / tools.file.*).
+from coderai.utils.path import normalize_line_endings
+
 
 @dataclass
 class MatchResult:
@@ -21,11 +24,6 @@ class MatchResult:
     matched_text: str
     replaced_old: str
     replaced_new: str
-
-
-def normalize_line_endings(val: str) -> str:
-    """Normalize CRLF and CR to LF."""
-    return val.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def find_occurrences(haystack: str, needle: str) -> list[tuple[int, int]]:
